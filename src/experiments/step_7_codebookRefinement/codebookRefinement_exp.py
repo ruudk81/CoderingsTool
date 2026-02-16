@@ -44,8 +44,11 @@ class LLMRefinementResponse(BaseModel):
     analysis: str = Field(..., description="Detailed analysis of refinement decisions")
     refined_codebook: List[LLMThemeItem] = Field(..., description="Refined codebook with themes and codes")
     model_config = ConfigDict(arbitrary_types_allowed=True)
-from prompts import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
-from models import (
+try:
+    from .prompts_exp import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
+except ImportError:
+    from prompts_exp import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
+from experiments.models_exp import (
     RefinedCodebookModel, CodeRefinementResults, RefinedSubcode, RefinedCodebookCategory,
     CodeTransformation, BatchTransformationRecord, RefinementLineage
 )

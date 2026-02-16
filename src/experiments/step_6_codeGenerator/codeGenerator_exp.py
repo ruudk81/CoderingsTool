@@ -25,7 +25,7 @@ from sklearn.preprocessing import normalize
 from sklearn.metrics.pairwise import cosine_similarity
 
 # === CONFIG & MODELS ========================================================================================================
-from models import ClusterModel
+from experiments.models_exp import ClusterModel
 # Import from experimental config_exp (re-exports production config + experimental overrides)
 try:
     from .config_exp import (
@@ -36,7 +36,7 @@ try:
         # Experimental CodeDesigner config (aliased as DEFAULT_CODEDESIGNER_CONFIG)
         DEFAULT_CODEDESIGNER_CONFIG_EXP as DEFAULT_CODEDESIGNER_CONFIG,
         # Experimental constants
-        EXTRA_VERBOSE, STAGE1_TEXT_SOURCE,
+        EXTRA_VERBOSE, STAGE1_TEXT_SOURCE, STAGE1_INPUT_SOURCE,
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS, MIN_LATENCY_SECONDS,
         TOKENS_FOR_BASELINE_LATENCY, TIMEOUT_PER_1000_TOKENS,
         OUTPUT_TOKEN_ESTIMATE_MARGIN, FALLBACK_TOKEN_ESTIMATE,
@@ -56,7 +56,7 @@ except ImportError:
         DEFAULT_PROCESSING_CONFIG, API_PROVIDER,
         AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM,
         DEFAULT_CODEDESIGNER_CONFIG_EXP as DEFAULT_CODEDESIGNER_CONFIG,
-        EXTRA_VERBOSE, STAGE1_TEXT_SOURCE,
+        EXTRA_VERBOSE, STAGE1_TEXT_SOURCE, STAGE1_INPUT_SOURCE,
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS, MIN_LATENCY_SECONDS,
         TOKENS_FOR_BASELINE_LATENCY, TIMEOUT_PER_1000_TOKENS,
         OUTPUT_TOKEN_ESTIMATE_MARGIN, FALLBACK_TOKEN_ESTIMATE,
@@ -73,7 +73,8 @@ except ImportError:
 # Import prompts and response models from experimental prompts_exp
 try:
     from .prompts_exp import (
-        CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
+        CLUSTER_SUMMARY_PROMPT, CLUSTER_SUMMARY_PROMPT_MECE,
+        CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
         HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
         VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
         MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
@@ -89,7 +90,8 @@ try:
     )
 except ImportError:
     from prompts_exp import (
-        CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
+        CLUSTER_SUMMARY_PROMPT, CLUSTER_SUMMARY_PROMPT_MECE,
+        CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
         HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
         VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
         MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
@@ -1332,10 +1334,12 @@ class InductiveCodeGenerator:
         verbose_reporter: Optional['VerboseReporter'] = None,
         stages_to_run: str = 'all',  # 'all' or 'theme_extraction_only'
         extraction_metadata = None,  # ExtractionMetadata for experimental theme extraction
+        mece_topics: Optional[Dict[int, dict]] = None,  # MECE Phase A output per cluster
         **kwargs  # For backward compatibility
     ):
         self.cluster_results = cluster_results
         self._extraction_metadata = extraction_metadata  # For experimental theme extraction
+        self._mece_topics = mece_topics  # Pre-extracted MECE topics (alternative Phase 1 input)
                 
         self.starter_codes = starter_codes
         self.var_lab = var_lab
@@ -1489,7 +1493,7 @@ class InductiveCodeGenerator:
         from AXIS_LABEL_CONTRACT based on taxonomy_axis.
         """
         if self._extraction_metadata:
-            taxonomy_axis = self._extraction_metadata.taxonomy_primary_axis or ""
+            taxonomy_axis = self._extraction_metadata.taxonomy_axis or ""
             axis_contract = AXIS_LABEL_CONTRACT.get(taxonomy_axis, {})
             return {
                 'lang': self._extraction_metadata.lang or "",
@@ -1598,10 +1602,10 @@ class InductiveCodeGenerator:
                     cluster_data = next(cluster_cycle)
                     ideas_list = cluster_data.response_ideas or []
 
-                    # Create probe task with idea objects (not strings) to preserve taxonomy_phrase
+                    # Create probe task with idea objects (not strings)
                     probe_task = {
                         'cluster_id': 'bootstrap_probe',
-                        'ideas': ideas_list[:10]  # Pass idea objects for STAGE1_TEXT_SOURCE support
+                        'ideas': ideas_list[:10]
                     }
                     return await self.probe_call_theme_extraction(probe_task)
                 
@@ -1670,11 +1674,12 @@ class InductiveCodeGenerator:
             self.avg_tokens,
             self.processing_config,
             cap=self.config.async_concurrency_limit,
+            min_conc=3,  # Low floor — trust Little's Law calculation for Azure rate limits
             headroom=self.processing_config.rate_limit_headroom
         )
 
-        # Update concurrency semaphore
-        self.concurrency_semaphore = asyncio.Semaphore(min(len(self.cluster_results), max(optimal_concurrency, 100)))
+        # Update concurrency semaphore — respect computed optimal, don't override with hardcoded floor
+        self.concurrency_semaphore = asyncio.Semaphore(min(len(self.cluster_results), optimal_concurrency))
         
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"Rate limiting updated - arrival rate: {arrival_rate:.2f}/s, concurrency: {optimal_concurrency}")
@@ -2714,17 +2719,11 @@ class InductiveCodeGenerator:
         return text
 
     def _get_stage1_idea_text(self, idea) -> str:
-        """Get idea text for Stage 1 based on STAGE1_TEXT_SOURCE config.
+        """Get idea text for Stage 1.
 
-        Returns taxonomy_phrase if configured and available, otherwise falls back to idea.
-        When falling back to idea text, applies template prefix stripping.
+        Returns idea text with template prefix stripping applied.
         Only affects Stage 1 (theme extraction with CLUSTER_SUMMARY_PROMPT).
         """
-        if STAGE1_TEXT_SOURCE == "taxonomy_phrase":
-            taxonomy_phrase = getattr(idea, 'taxonomy_phrase', '') or ''
-            if taxonomy_phrase:
-                return taxonomy_phrase
-        # Fallback to idea text (with template prefix stripping)
         idea_text = getattr(idea, 'idea', '') or str(idea)
         return self._strip_template_prefix(idea_text)
 
@@ -2899,6 +2898,35 @@ class InductiveCodeGenerator:
 
         return "\n\n".join(sections)
 
+    def _format_mece_topics_as_cluster_text(self, mece_data: dict) -> str:
+        """Format MECE Phase A output for a single cluster as structured text for the prompt.
+
+        Args:
+            mece_data: Dict from ClusterMECETopics.model_dump() with keys:
+                - semantic_theme: str
+                - topics: List[dict] with topic_label, inclusion_definition, key_expressions
+        """
+        semantic_theme = mece_data.get('semantic_theme', 'Unknown')
+        topics = mece_data.get('topics', [])
+
+        sections = [f"Cluster Theme: {semantic_theme}"]
+
+        for i, topic in enumerate(topics, 1):
+            label = topic.get('topic_label', f'Topic {i}')
+            definition = topic.get('inclusion_definition', '')
+            expressions = topic.get('key_expressions', [])
+
+            topic_section = f"\nTopic {i}: {label}"
+            if definition:
+                topic_section += f"\n  Definition: {definition}"
+            if expressions:
+                expr_str = "; ".join(expressions[:5])
+                topic_section += f"\n  Key expressions: {expr_str}"
+
+            sections.append(topic_section)
+
+        return "\n".join(sections)
+
     #########################################################################################################
     # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -
     #########################################################################################################
@@ -2918,50 +2946,69 @@ class InductiveCodeGenerator:
             self.verbose_reporter.error(f"No ideas in cluster {cluster_id}")
             return None
 
-        # Build ClusterData with text based on STAGE1_TEXT_SOURCE config
-        idea_texts = []
-        idea_embeddings = []
+        # --- MECE topics input path ---
+        # When STAGE1_INPUT_SOURCE is "mece_topics" and topics are available,
+        # use pre-extracted MECE topics instead of sampling raw ideas.
+        use_mece = False
+        if STAGE1_INPUT_SOURCE == "mece_topics" and self._mece_topics:
+            mece_key = int(cluster_id) if str(cluster_id).isdigit() else cluster_id
+            mece_data = self._mece_topics.get(mece_key)
+            if mece_data and mece_data.get('topics'):
+                use_mece = True
+                ideas_text = self._format_mece_topics_as_cluster_text(mece_data)
+                prompt_template = CLUSTER_SUMMARY_PROMPT_MECE
+                input_source_label = "mece_topics"
 
-        for i, idea in enumerate(ideas):
-            text = self._get_stage1_idea_text(idea)
-            idea_texts.append(text)
+        # --- Standard ideas input path ---
+        if not use_mece:
+            prompt_template = CLUSTER_SUMMARY_PROMPT
+            input_source_label = "ideas"
 
-            # Collect embeddings
-            if i < len(embeddings):
-                idea_embeddings.append(np.asarray(embeddings[i], dtype=np.float32))
-            elif hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                idea_embeddings.append(np.asarray(idea.idea_embedding, dtype=np.float32))
+            # Build ClusterData with idea texts (template prefix stripped)
+            idea_texts = []
+            idea_embeddings = []
 
-        # Build ClusterData for sampling
-        temp_cluster_data = _ClusterData(
-            cluster_id=cluster_id,
-            ideas=ideas,
-            embeddings=idea_embeddings,
-            idea_texts=idea_texts
-        )
+            for i, idea in enumerate(ideas):
+                text = self._get_stage1_idea_text(idea)
+                idea_texts.append(text)
 
-        # Sample using probability bands
-        sampled_bands = self._sample_ideas_by_probability_band(temp_cluster_data)
+                # Collect embeddings
+                if i < len(embeddings):
+                    idea_embeddings.append(np.asarray(embeddings[i], dtype=np.float32))
+                elif hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
+                    idea_embeddings.append(np.asarray(idea.idea_embedding, dtype=np.float32))
 
-        # Format ideas text
-        if sampled_bands and sum(len(v) for v in sampled_bands.values()) > 0:
-            ideas_text = self._format_cluster_text_by_bands(sampled_bands)
-        else:
-            # Pure-core cluster (all members have prob >= 0.8)
-            # Use Step 5 starter_code label directly instead of re-extracting
-            starter_code = self._get_starter_code_for_cluster(cluster_id)
-            if starter_code:
-                self.verbose_reporter.stat_line(
-                    f"Cluster {cluster_id}: Pure-core cluster, using Step 5 label: '{starter_code['code']}'"
-                )
-                return self._create_theme_from_starter_code(cluster_id, starter_code, ideas)
+            # Build ClusterData for sampling
+            temp_cluster_data = _ClusterData(
+                cluster_id=cluster_id,
+                ideas=ideas,
+                embeddings=idea_embeddings,
+                idea_texts=idea_texts
+            )
 
-            # Fallback: random sample if no starter code available
-            import random
-            k = min(self.config.max_ideas_per_cluster, len(idea_texts))
-            sampled_ideas = random.sample(idea_texts, k) if len(idea_texts) > k else idea_texts
-            ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
+            # Sample using probability bands
+            sampled_bands = self._sample_ideas_by_probability_band(temp_cluster_data)
 
+            # Format ideas text
+            if sampled_bands and sum(len(v) for v in sampled_bands.values()) > 0:
+                ideas_text = self._format_cluster_text_by_bands(sampled_bands)
+            else:
+                # Pure-core cluster (all members have prob >= 0.8)
+                # Use Step 5 starter_code label directly instead of re-extracting
+                starter_code = self._get_starter_code_for_cluster(cluster_id)
+                if starter_code:
+                    self.verbose_reporter.stat_line(
+                        f"Cluster {cluster_id}: Pure-core cluster, using Step 5 label: '{starter_code['code']}'"
+                    )
+                    return self._create_theme_from_starter_code(cluster_id, starter_code, ideas)
+
+                # Fallback: random sample if no starter code available
+                import random
+                k = min(self.config.max_ideas_per_cluster, len(idea_texts))
+                sampled_ideas = random.sample(idea_texts, k) if len(idea_texts) > k else idea_texts
+                ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
+
+        # --- Common path: prompt construction + LLM call ---
         # Determine language
         language = self._extraction_metadata.lang if self._extraction_metadata and self._extraction_metadata.lang else DEFAULT_LANGUAGE
 
@@ -2974,7 +3021,7 @@ class InductiveCodeGenerator:
             **self._get_context_specifier_params()
         }
 
-        prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
+        prompt = prompt_template.format(**params)
 
         # Capture prompt parameters
         params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
@@ -2984,14 +3031,15 @@ class InductiveCodeGenerator:
         if self.prompt_printer and not self._prompt_captured['stage1_theme']:
             self._prompt_captured['stage1_theme'] = True
             self.prompt_printer.capture_prompt(
-                step_name="Stage 1: Theme Extraction",
+                step_name=f"Stage 1: Theme Extraction ({input_source_label})",
                 utility_name="codeGenerator",
                 prompt_content=prompt,
-                prompt_type="cluster_summary",
+                prompt_type=f"cluster_summary_{input_source_label}",
                 metadata={
                     "cluster_id": cluster_id,
                     "model": self.config.model,
-                    "ideas_count": len(ideas)
+                    "ideas_count": len(ideas),
+                    "input_source": input_source_label,
                 }
             )
 
@@ -4448,7 +4496,7 @@ class InductiveCodeGenerator:
             
             # Must have candidate_selection for all decisions
             if not result.get('candidate_selection'):
-                self.verbose_reporter.error(f"C{cluster_id}: Missing candidate_selection - adding to error_leaks for retry")
+                self.verbose_reporter.warning(f"C{cluster_id}: Missing candidate_selection — queued for retry")
                 # Step 1 failure - capture for retry (rate limits are temporary)
                 if self._is_retryable_error('missing_candidate_selection'):
                     error_leak = {
@@ -4899,13 +4947,16 @@ class InductiveCodeGenerator:
             return response
             
         except Exception as e:
-            # Error logging with context
             error_msg = str(e).strip()
-            self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Candidate selection failed")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error type: {type(e).__name__}")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error message: '{error_msg}' (length: {len(error_msg)})")
-            if error_msg == '\n' or error_msg == '':
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
+            # Suppress verbose output for rate limit errors — they'll be retried via error_leaks
+            if '429' in error_msg or 'RateLimitReached' in error_msg:
+                self.verbose_reporter.warning(f"C{cluster_id}: STEP1 rate-limited (429) — will retry via error_leaks")
+            else:
+                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Candidate selection failed")
+                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error type: {type(e).__name__}")
+                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error message: '{error_msg[:200]}' (length: {len(error_msg)})")
+                if error_msg == '\n' or error_msg == '':
+                    self.verbose_reporter.error(f"C{cluster_id}: STEP1 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
             return None  # Signal failure properly for retry mechanism
     
     #########################################################################################################

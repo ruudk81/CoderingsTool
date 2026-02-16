@@ -28,15 +28,15 @@ model_config = ModelConfig()
 #var_name = "Q20"
 #sample_size = 50
 
-filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "DLNMID"
-var_name = "Q20"
-sample_size = 500
-
-#filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 #id_column = "DLNMID"
-#var_name = "Qd1_combined"
-#sample_size = 2000 
+#var_name = "Q20"
+#sample_size = 500
+
+filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+id_column = "DLNMID"
+var_name = "Qd1_combined"
+sample_size = 2000 
 
 #filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 #id_column = "DLNMID"
@@ -48,7 +48,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 6
+RUN_UNTIL_STEP = 5
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -2161,7 +2161,7 @@ if __name__ == '__main__':
     else:
         FORCE_STEP = ""
     
-    USE_SPECULATIVE_STARTER_CODES = True  # Uses LLM labels from Clusterer (step 5) if available
+    USE_SPECULATIVE_STARTER_CODES = False  # Uses LLM labels from Clusterer (step 5) if available
     data_loader = dataLoader.DataLoader(verbose=False)
     var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
@@ -2376,3 +2376,5 @@ if __name__ == '__main__':
 
     # Save captured verbose output
     verbose_capture.__exit__(None, None, None)
+
+# %%

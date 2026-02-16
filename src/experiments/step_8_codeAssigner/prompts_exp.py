@@ -219,7 +219,6 @@ Here are the available codes in the codebook:
 - If the response is broader/more generic than a code's definition, that code does NOT fit.
 - Prefer codes whose definitions are most specific to the quoted evidence (not merely thematically related).
 - Do not infer meaning beyond the text. Negated or hypothetical/conditional mentions (e.g., "not X", "would/if/might") do NOT qualify as evidence.
-- If no code has clear evidence, assign "{unknown_label}" with low confidence.
 
 **Confidence Level Anchors:**
 * 0.90-1.00 (A: Explicit Evidence): The meaning of the code is explicitly and directly stated in the response; no interpretation needed. Another trained coder would definitely agree.
@@ -240,21 +239,20 @@ Tie-breaking (when multiple candidates look plausible):
      "Match:" if assigning a code (confidence >= 0.70)
      "{unknown_label}:" if assigning "{unknown_label}" (confidence < 0.70 or no clear concept match)
 - If MATCH: include the minimal supporting span in quotes, then explain why it fits the selected code.
-- If {unknown_label}: briefly explain that no code was clearly supported.
 
 **Analysis Process:**
 1) Evidence Identification: Scan the response for candidate spans that might support specific code concepts.
 2) Supporting Span Extraction: For the best-fitting code, identify the shortest verbatim span that demonstrates the concept (preserve casing/spelling).
 3) Conceptual Matching: Confirm the span satisfies the chosen code's definition (not just a related theme).
 4) Confidence Assessment: Apply the anchors above.
-5) Final Assignment: Output a single code, or "{unknown_label}" if none fit well.
+5) Final Assignment: Output a single code
 
 Provide your analysis and assignment in this exact JSON format:
 {{
   "idea_id": "{idea_id}",
   "assigned_codes": ["SINGLE_CODE_NAME"],
   "assignment_confidence": CONFIDENCE_SCORE,
-  "assignment_rationale": "Match: \\"...\\" -> explanation" OR "{unknown_label}: explanation in {language}"
+  "assignment_rationale": "Match: \\"...\\" -> explanation": explanation in {language}"
 }}
 
 """

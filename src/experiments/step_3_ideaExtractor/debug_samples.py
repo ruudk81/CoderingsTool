@@ -15,7 +15,7 @@ sys.path.insert(0, str(src_dir))
 
 import random
 import re
-import models
+from experiments import models_exp as models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
@@ -72,15 +72,9 @@ def print_extraction_metadata(cache_manager, filename, variable_key):
 
     # Taxonomy
     print("\n[Taxonomy]")
-    print(f"  Primary axis:      {metadata.taxonomy_primary_axis or '(not set)'}")
-    if metadata.taxonomy_secondary_axis:
-        print(f"  Secondary axis:    {metadata.taxonomy_secondary_axis}")
+    print(f"  Axis:              {metadata.taxonomy_axis or '(not set)'}")
     print(f"  Actionable type:   {metadata.taxonomy_actionable_type or '(not set)'}")
     print(f"  Axis description:  {metadata.taxonomy_axis_description or '(not set)'}")
-    if metadata.taxonomy_rationale:
-        print(f"  Rationale:         {metadata.taxonomy_rationale}")
-    if metadata.taxonomy_sample_phrases:
-        print(f"  Sample phrases:    {', '.join(metadata.taxonomy_sample_phrases)}")
 
     print()
 

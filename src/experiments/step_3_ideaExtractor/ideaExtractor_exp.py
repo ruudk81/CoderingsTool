@@ -37,7 +37,7 @@ from aiolimiter import AsyncLimiter
 logger = logging.getLogger(__name__)
 
 # === MODELS ========================================================================================================
-import models
+from experiments import models_exp as models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
@@ -1384,7 +1384,7 @@ class IdeaExtractor:
         """Build taxonomy-enriched prompt for idea extraction.
 
         Injects axis-specific instructions from template_lookup.py for
-        node/category/taxonomy_phrase guidance.
+        taxonomy field guidance (instance/node/semantic_category/category_label/root).
 
         Args:
             respondent_id: Respondent identifier
@@ -1899,8 +1899,8 @@ class IdeaExtractor:
     def _format_idea_text(self, normalized_text: str) -> str:
         """Return clean idea text.
 
-        Metadata (taxonomy_phrase, sentiment, sense) are stored as separate fields
-        on the IdeasExtractedSubmodel.
+        Taxonomy fields (instance, node, semantic_category, category_label, root)
+        are stored as separate fields on IdeasExtractedSubmodel.
 
         Args:
             normalized_text: The normalized idea text
@@ -1923,15 +1923,13 @@ class IdeaExtractor:
         Returns:
             ExtractionMetadata instance with all fields populated
         """
-        from datetime import datetime
-
         return models.ExtractionMetadata(
             # File/variable info
             filename=filename,
             var_name=var_name,
             var_lab=self.var_lab,
 
-            # Template (V3: restored for normalized clustering)
+            # Template
             template_prefix=self.template_prefix or "",
 
             # Context specifiers (6 fields)
@@ -1942,16 +1940,10 @@ class IdeaExtractor:
             entity=self.generic_specifiers.get('entity', ''),
             intent=self.generic_specifiers.get('intent', ''),
 
-            # Taxonomy axis info
-            taxonomy_primary_axis=self.taxonomy_axis or '',
-            taxonomy_secondary_axis=None,
-            taxonomy_rationale=self.taxonomy_rationale or '',
+            # Taxonomy
+            taxonomy_axis=self.taxonomy_axis or '',
             taxonomy_axis_description=self.taxonomy_axis_description or '',
-            taxonomy_sample_phrases=[],
             taxonomy_actionable_type=self.taxonomy_actionable_type or '',
-
-            # Timestamp
-            extraction_timestamp=datetime.now().isoformat()
         )
 
     async def _fetch_rate_limits_from_api(self) -> RateLimits:

@@ -5,9 +5,9 @@ Generate embeddings for survey response ideas with configurable text formats
 and quality analysis.
 
 Supports:
-- Configurable text formats: "idea", "taxonomy_phrase", "idea_without_template_prefix",
-  "both_taxonomy_phrase", "ontology", "both_ontology", "all"
-- Multi-pass embedding via MULTI_PASS_SPECS from config_exp
+- 4 text sources: "idea" (template_prefix + idea), "node" (canonical concept),
+  "category" (semantic_category), "taxonomy" (node → category_label → semantic_category → root)
+- Multi-pass mode: "all" (all 4 passes) via MULTI_PASS_SPECS
 - OpenAI and Gemini embedding providers
 - Batch processing with configurable concurrency
 - Text deduplication for efficiency
@@ -26,7 +26,7 @@ import numpy as np
 from openai import AsyncOpenAI
 
 # === MODELS ========================================================================================================
-import models
+from experiments import models_exp as models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, GEMINI_API_KEY, ModelConfig, get_embedding_dimensions
@@ -76,7 +76,8 @@ class Embedder:
     """Generate embeddings for survey response ideas with configurable text formats.
 
     Supports OpenAI and Gemini embedding providers with:
-    - Configurable text format: "idea", "taxonomy_phrase", "idea_without_template_prefix", "both_taxonomy_phrase"
+    - 4 text sources: "idea", "node", "category", "taxonomy"
+    - Multi-pass mode: "all" (all 4 passes)
     - Batch processing with configurable concurrency
     - Text deduplication for efficiency
     - Optional question-aware embedding transformation
@@ -127,7 +128,7 @@ class Embedder:
         # Analysis results
         self.analysis: Optional[EmbeddingAnalysis] = None
 
-        # Extraction metadata (optional, for template_prefix)
+        # Extraction metadata (optional, for downstream context)
         self.extraction_metadata: Optional[models.ExtractionMetadata] = None
 
         self.verbose_reporter.stat_line(f"Model: {self.embedding_model} ({self.embedding_dimensions} dimensions)")
@@ -135,84 +136,52 @@ class Embedder:
         self.verbose_reporter.stat_line(f"Text format: {self.embedding_text_format}")
 
     def set_extraction_metadata(self, metadata: models.ExtractionMetadata):
-        """Set extraction metadata for template_prefix access.
+        """Set extraction metadata for downstream context.
 
         Args:
-            metadata: ExtractionMetadata from ideaExtractor (contains template_prefix)
+            metadata: ExtractionMetadata from ideaExtractor
         """
         self.extraction_metadata = metadata
         if metadata and metadata.template_prefix:
             self.verbose_reporter.stat_line(f"Template prefix loaded: '{metadata.template_prefix[:50]}...' " if len(metadata.template_prefix) > 50 else f"Template prefix loaded: '{metadata.template_prefix}'")
 
-    def _get_template_prefix(self) -> Optional[str]:
-        """Get template_prefix from extraction_metadata.
+    def _format_taxonomy_text(self, idea) -> str:
+        """Format taxonomy chain: node → category_label → semantic_category → root.
 
-        Returns:
-            The template_prefix string or None if not available.
+        Falls back to idea.idea when all taxonomy fields are empty.
         """
-        if self.extraction_metadata and self.extraction_metadata.template_prefix:
-            return self.extraction_metadata.template_prefix
-        return None
-
-    def _format_ontology_text(self, idea) -> str:
-        """Format ontology fields into embedding text: 'instance - node (category)'.
-
-        Falls back to idea.idea when ontology is None or all fields are empty.
-        """
-        ontology = getattr(idea, 'ontology', None)
-        if ontology is None:
-            return idea.idea
-
-        instance = (getattr(ontology, 'instance', '') or '').strip()
-        node = (getattr(ontology, 'node', '') or '').strip()
-        category = (getattr(ontology, 'category', '') or '').strip()
-
         parts = []
-        if instance:
-            parts.append(instance)
-        if node:
-            if category:
-                parts.append(f"{node} ({category})")
-            else:
-                parts.append(node)
-        elif category:
-            parts.append(f"({category})")
-
-        result = " - ".join(parts) if parts else ""
-        return result if result else idea.idea
+        for field in ('node', 'category_label', 'semantic_category', 'root'):
+            val = (getattr(idea, field, '') or '').strip()
+            if val:
+                parts.append(val)
+        return " → ".join(parts) if parts else idea.idea
 
     def _get_text_for_embedding(self, idea) -> str:
         """Extract text for embedding based on config.
 
         Args:
-            idea: Idea object with idea text, taxonomy_phrase, and ontology fields
+            idea: Idea object with idea text and taxonomy fields
 
         Returns:
             Text to embed based on config mode:
-            - "idea": The clean idea text (idea.idea)
-            - "taxonomy_phrase": The taxonomy phrase (idea.taxonomy_phrase)
-            - "idea_without_template_prefix": The idea text with template_prefix stripped
-            - "ontology": Formatted ontology string "instance - node (category)"
+            - "idea": Full idea text (template_prefix + idea)
+            - "node": Canonical concept (idea.node)
+            - "category": Semantic category (idea.semantic_category)
+            - "taxonomy": Chain "node → category_label → semantic_category → root"
         """
-        if self.embedding_text_format == "taxonomy_phrase":
-            taxonomy_phrase = getattr(idea, 'taxonomy_phrase', '') or ''
-            # Fallback to idea text if no taxonomy_phrase
-            return taxonomy_phrase if taxonomy_phrase else idea.idea
+        if self.embedding_text_format == "node":
+            node = getattr(idea, 'node', '') or ''
+            return node if node else idea.idea
 
-        if self.embedding_text_format == "ontology":
-            return self._format_ontology_text(idea)
+        if self.embedding_text_format == "category":
+            cat = getattr(idea, 'semantic_category', '') or ''
+            return cat if cat else idea.idea
 
-        if self.embedding_text_format == "idea_without_template_prefix":
-            idea_text = idea.idea
-            template_prefix = self._get_template_prefix()
-            if template_prefix and idea_text.startswith(template_prefix):
-                unique_content = idea_text[len(template_prefix):].strip()
-                # Return unique content if non-empty, otherwise return the idea text
-                return unique_content if unique_content else idea_text
-            # No template_prefix available or idea doesn't start with it
-            return idea_text
+        if self.embedding_text_format == "taxonomy":
+            return self._format_taxonomy_text(idea)
 
-        # Default: "idea" mode - return the idea text directly
+        # Default: "idea" mode - full idea text (template_prefix + idea)
         return idea.idea
 
     def _get_ResponseData(self, data: List[models.EmbeddingsModel]) -> List[ResponseData]:
@@ -220,19 +189,14 @@ class Embedder:
         response_data = []
 
         # Log which embedding format is being used
-        if self.embedding_text_format == "taxonomy_phrase":
-            self.verbose_reporter.stat_line("Embedding format: taxonomy_phrase")
-        elif self.embedding_text_format == "ontology":
-            self.verbose_reporter.stat_line("Embedding format: ontology (instance - node (category))")
-        elif self.embedding_text_format == "idea_without_template_prefix":
-            prefix = self._get_template_prefix()
-            if prefix:
-                prefix_display = prefix[:50] + "..." if len(prefix) > 50 else prefix
-                self.verbose_reporter.stat_line(f"Embedding format: idea_without_template_prefix (stripping: '{prefix_display}')")
-            else:
-                self.verbose_reporter.stat_line("Embedding format: idea_without_template_prefix (no prefix available, using full idea)")
-        else:
-            self.verbose_reporter.stat_line("Embedding format: idea")
+        format_labels = {
+            "idea": "idea (template_prefix + idea text)",
+            "node": "node (canonical concept)",
+            "category": "category (semantic_category)",
+            "taxonomy": "taxonomy (node → category_label → semantic_category → root)",
+        }
+        label = format_labels.get(self.embedding_text_format, self.embedding_text_format)
+        self.verbose_reporter.stat_line(f"Embedding format: {label}")
 
         for respondent_data in data:
             if respondent_data.response_ideas:
@@ -536,11 +500,12 @@ class Embedder:
                     embedding_data = {
                         'idea_id': response_idea.idea_id,
                         'idea': response_idea.idea,
-                        # Pass through clean fields from input
-                        'taxonomy_phrase': getattr(response_idea, 'taxonomy_phrase', '') or '',
-                        'ontology': getattr(response_idea, 'ontology', None),
-                        'sentiment': getattr(response_idea, 'sentiment', 'neutral') or 'neutral',
-                        'sense': getattr(response_idea, 'sense', 'factual') or 'factual',
+                        # Ontology fields (instance → node → semantic_category → category_label → root)
+                        'instance': getattr(response_idea, 'instance', '') or '',
+                        'node': getattr(response_idea, 'node', '') or '',
+                        'semantic_category': getattr(response_idea, 'semantic_category', '') or '',
+                        'category_label': getattr(response_idea, 'category_label', '') or '',
+                        'root': getattr(response_idea, 'root', '') or '',
                     }
                     if key in embedding_lookup:
                         embedding_data['idea_embedding'] = embedding_lookup[key]
@@ -597,7 +562,7 @@ class Embedder:
         """Merge embeddings from a pass result into a specific field on the base result.
 
         Each pass produces embeddings in idea_embedding. This method copies those
-        into the correct target field (e.g. taxonomy_embedding, ontology_embedding).
+        into the correct target field (e.g. taxonomy_embedding).
 
         Returns:
             Number of embeddings merged.

@@ -1920,11 +1920,15 @@ class CodeAssigner:
                         idea_id=idea_submodel.idea_id,
                         idea=idea_submodel.idea,
                         taxonomy_phrase=getattr(idea_submodel, 'taxonomy_phrase', ''),
-                        ontology=getattr(idea_submodel, 'ontology', None),
+                        instance=getattr(idea_submodel, 'instance', ''),
+                        node=getattr(idea_submodel, 'node', ''),
+                        category=getattr(idea_submodel, 'category', ''),
+                        root=getattr(idea_submodel, 'root', ''),
                         sentiment=getattr(idea_submodel, 'sentiment', 'neutral'),
                         sense=getattr(idea_submodel, 'sense', 'factual'),
                         # From EmbeddingsSubmodel
                         idea_embedding=getattr(idea_submodel, 'idea_embedding', None),
+                        node_embedding=getattr(idea_submodel, 'node_embedding', None),
                         taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
                         ontology_embedding=getattr(idea_submodel, 'ontology_embedding', None),
                         # From ClusterSubmodel

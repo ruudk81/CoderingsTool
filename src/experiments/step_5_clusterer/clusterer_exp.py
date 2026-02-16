@@ -1,7 +1,7 @@
 """
 Clusterer - Unified Clustering Module - EXPERIMENTAL VERSION
 
-This is an isolated copy for experimentation in clusterer_v3.
+This is an isolated copy for experimentation in step_5_clusterer.
 Changes here do NOT affect the production pipeline.
 
 Original: src/utils/clusterer.py
@@ -40,7 +40,6 @@ import re
 import warnings
 from typing import List, Dict, Tuple, Optional, Any
 from collections import Counter
-from pathlib import Path
 
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering, KMeans
@@ -49,24 +48,44 @@ from sklearn.metrics.pairwise import cosine_similarity
 import hdbscan
 import umap
 
-import models
-from .config_clusterer_exp import ClustererConfig
-from .clusterer_helpers_exp import (
-    # Preprocessing
-    preprocess_embeddings, l2_normalize,
-    # Algorithm Selection
-    AlgorithmSelector, AlgorithmRecommendation,
-    # Parameter Optimization
-    ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid, ms_grid,
-    # Quality Metrics
-    ClusterQualityMetrics, ClusteringMetrics, calculate_coherence_score,
-    # Post-Processing
-    merge_similar_clusters, recluster_noise, reduce_noise_by_embedding_similarity,
-    # Representation
-    RepresentationEngine, extract_text_for_format,
-    # Label Generation
-    LabelGenerator, ClusterLabel
-)
+from experiments import models_exp as models
+
+try:
+    from .config_clusterer_exp import ClustererConfig
+    from .clusterer_helpers_exp import (
+        # Preprocessing
+        preprocess_embeddings, l2_normalize,
+        # Algorithm Selection
+        AlgorithmSelector, AlgorithmRecommendation,
+        # Parameter Optimization
+        ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid_sqrt,
+        # Quality Metrics
+        ClusterQualityMetrics, ClusteringMetrics,
+        # Post-Processing
+        merge_similar_clusters, recluster_noise, reduce_noise_by_embedding_similarity,
+        # Representation
+        RepresentationEngine, extract_text_for_format,
+        # Label Generation
+        LabelGenerator, ClusterLabel
+    )
+except ImportError:
+    from config_clusterer_exp import ClustererConfig
+    from clusterer_helpers_exp import (
+        # Preprocessing
+        preprocess_embeddings, l2_normalize,
+        # Algorithm Selection
+        AlgorithmSelector, AlgorithmRecommendation,
+        # Parameter Optimization
+        ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid_sqrt,
+        # Quality Metrics
+        ClusterQualityMetrics, ClusteringMetrics,
+        # Post-Processing
+        merge_similar_clusters, recluster_noise, reduce_noise_by_embedding_similarity,
+        # Representation
+        RepresentationEngine, extract_text_for_format,
+        # Label Generation
+        LabelGenerator, ClusterLabel
+    )
 
 # Suppress common warnings
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
@@ -125,8 +144,6 @@ class Clusterer:
         self._embeddings_original: Optional[np.ndarray] = None
         self._embeddings_processed: Optional[np.ndarray] = None
         self._idea_texts: Optional[List[str]] = None
-        self._taxonomy_phrases: Optional[List[str]] = None
-        self._ontology_texts: Optional[List[str]] = None
         self._idea_indices: Optional[List[Tuple[int, int]]] = None
         self._template_prefix: Optional[str] = None
         self._embedding_text_format: Optional[str] = None  # Text format used for embedding
@@ -140,7 +157,6 @@ class Clusterer:
         self._cluster_labels: Optional[Dict[int, ClusterLabel]] = None
         self._algorithm_used: str = ""
         self._algorithm_params: Dict[str, Any] = {}
-        self._optimizer: Optional[ParameterOptimizer] = None  # Store for visualization access
 
         # Components
         self._selector = AlgorithmSelector(self.config)
@@ -212,8 +228,6 @@ class Clusterer:
             self._embeddings_original,
             self._embeddings_processed,
             self._idea_texts,
-            self._taxonomy_phrases,
-            self._ontology_texts,
             self._idea_indices,
             _,
             self._template_prefix,
@@ -253,9 +267,9 @@ class Clusterer:
             }
         else:
             # Run trial UMAP for knee detection
+            # Use middle of n_neighbors grid
             n_neighbors_list = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)
-            nn_idx = len(n_neighbors_list) // 2 if self.config.trial_umap_nn_index == -1 else self.config.trial_umap_nn_index
-            trial_n_neighbors = n_neighbors_list[nn_idx]
+            trial_n_neighbors = n_neighbors_list[len(n_neighbors_list) // 2]
 
             # Use first n_components from grid for trial UMAP
             trial_n_components = self.config.umap_n_components_grid[0]
@@ -285,12 +299,12 @@ class Clusterer:
 
     def _map_recommendation_to_algorithm(self) -> str:
         """Map combined recommendation to algorithm name."""
-        if self.config.force_hdbscan:
-            return "hdbscan"
         rec = self._recommendation.combined_recommendation
         if "HDBSCAN" in rec:
             return "hdbscan"
         elif rec == "AGGLOMERATIVE_OR_KMEANS":
+            # Use DVC to decide between agglomerative and kmeans
+            # (both work similarly on uniform density data)
             return "agglomerative"
         else:
             return "agglomerative"
@@ -300,14 +314,14 @@ class Clusterer:
         if self._verbose:
             print("\n[Phase 3] HDBSCAN Optimization (Optuna)")
 
-        self._optimizer = ParameterOptimizer(
+        optimizer = ParameterOptimizer(
             self.config,
             self._embeddings_processed,
             self._embeddings_original,
             verbose=self._verbose
         )
 
-        result = self._optimizer.optimize()
+        result = optimizer.optimize()
 
         self._labels = result.best_labels.copy()
         self._umap_embeddings = result.umap_embeddings
@@ -326,8 +340,8 @@ class Clusterer:
         if self._verbose:
             print("\n[Phase 3] Agglomerative Clustering")
 
-        # Single UMAP reduction
-        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[self.config.agglomerative_nn_index]
+        # Single UMAP reduction - use first n_components from grid
+        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[1]  # Second value
         n_components = self.config.umap_n_components_grid[0]
 
         if self._verbose:
@@ -352,14 +366,10 @@ class Clusterer:
         if self._verbose:
             print(f"  K grid: {k_grid}")
 
-        # Find best K by coherence (mean intra-cluster cosine similarity on original embeddings)
+        # Find best K by silhouette score
         best_k = k_grid[0]
-        best_coherence = -1.0
+        best_sil = -1.0
         best_labels = None
-
-        if self._verbose:
-            print(f"  {'k':>3} | {'coherence':>9} | {'silhouette':>10}")
-            print(f"  {'-'*3}-+-{'-'*9}-+-{'-'*10}")
 
         for k in k_grid:
             if k >= len(self._umap_embeddings):
@@ -373,12 +383,11 @@ class Clusterer:
             labels = clusterer.fit_predict(self._umap_embeddings)
 
             if len(set(labels)) > 1:
-                coherence = calculate_coherence_score(labels, self._embeddings_original)
                 sil = silhouette_score(self._umap_embeddings, labels)
                 if self._verbose:
-                    print(f"  {k:>3} | {coherence:>9.3f} | {sil:>10.3f}")
-                if coherence > best_coherence:
-                    best_coherence = coherence
+                    print(f"    k={k}: silhouette={sil:.3f}")
+                if sil > best_sil:
+                    best_sil = sil
                     best_k = k
                     best_labels = labels.copy()
 
@@ -393,7 +402,7 @@ class Clusterer:
         self._algorithm_params = {'n_clusters': best_k, 'linkage': self.config.agglomerative_linkage}
 
         if self._verbose:
-            print(f"  Best: k={best_k}, coherence={best_coherence:.3f}")
+            print(f"  Best: k={best_k}, silhouette={best_sil:.3f}")
 
     def _run_agglomerative_small(self):
         """
@@ -522,8 +531,8 @@ class Clusterer:
         all_labels = {r[0]: r[1] for r in results}  # k -> labels mapping
 
         # Bootstrap parameters
-        n_bootstrap = self.config.agglomerative_bootstrap_iterations
-        confidence_level = self.config.agglomerative_bootstrap_confidence
+        n_bootstrap = 100  # Number of bootstrap iterations
+        confidence_level = 0.95
         alpha = 1 - confidence_level
 
         # Compute bootstrap CIs for each K
@@ -605,8 +614,8 @@ class Clusterer:
         if self._verbose:
             print("\n[Phase 3] K-means Clustering")
 
-        # Single UMAP reduction
-        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[self.config.kmeans_nn_index]
+        # Single UMAP reduction - use first n_components from grid
+        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[1]
         n_components = self.config.umap_n_components_grid[0]
 
         if self._verbose:
@@ -640,7 +649,7 @@ class Clusterer:
             if k >= len(self._umap_embeddings):
                 continue
 
-            clusterer = KMeans(n_clusters=k, random_state=self.config.kmeans_random_state, n_init=self.config.kmeans_n_init)
+            clusterer = KMeans(n_clusters=k, random_state=42, n_init=10)
             labels = clusterer.fit_predict(self._umap_embeddings)
 
             if len(set(labels)) > 1:
@@ -653,7 +662,7 @@ class Clusterer:
                     best_labels = labels.copy()
 
         if best_labels is None:
-            clusterer = KMeans(n_clusters=k_grid[0], random_state=self.config.kmeans_random_state, n_init=self.config.kmeans_n_init)
+            clusterer = KMeans(n_clusters=k_grid[0], random_state=42, n_init=10)
             best_labels = clusterer.fit_predict(self._umap_embeddings)
             best_k = k_grid[0]
 
@@ -746,8 +755,6 @@ class Clusterer:
         self._cluster_keywords = self._representation_engine.extract_all_keywords_from_labels(
             self._labels,
             self._idea_texts,
-            taxonomy_phrases=self._taxonomy_phrases,
-            ontology_texts=self._ontology_texts,
             embedding_text_format=self._embedding_text_format,
             probabilities=probabilities,
             min_probability=min_probability,
@@ -760,29 +767,25 @@ class Clusterer:
 
     def _compute_cluster_metadata_distributions(self, cluster_id: int) -> Dict[str, Dict[str, float]]:
         """
-        Compute sentiment, sense, and taxonomy_phrase distributions for a cluster.
+        Compute semantic_category distribution for a cluster.
 
         Args:
             cluster_id: The cluster to analyze
 
         Returns:
-            Dict with keys: 'sentiment', 'sense', 'taxonomy_phrases'
+            Dict with keys: 'semantic_category'
             Each value is a dict of {value: percentage}
         """
         cluster_mask = self._labels == cluster_id
         cluster_indices = np.where(cluster_mask)[0]
 
-        sentiments = []
-        senses = []
-        taxonomy_phrases = []
+        categories = []
 
         for global_idx in cluster_indices:
             resp_idx, idea_idx = self._idea_indices[global_idx]
             idea = self._input_list[resp_idx].response_ideas[idea_idx]
-            sentiments.append(idea.sentiment)
-            senses.append(idea.sense)
-            if idea.taxonomy_phrase:
-                taxonomy_phrases.append(idea.taxonomy_phrase)
+            if hasattr(idea, 'semantic_category') and idea.semantic_category:
+                categories.append(idea.semantic_category)
 
         def to_distribution(items: List[str]) -> Dict[str, float]:
             if not items:
@@ -792,9 +795,7 @@ class Clusterer:
             return {k: round(v/total, 2) for k, v in counts.most_common()}
 
         return {
-            'sentiment': to_distribution(sentiments),
-            'sense': to_distribution(senses),
-            'taxonomy_phrases': to_distribution(taxonomy_phrases)
+            'semantic_category': to_distribution(categories),
         }
 
     def _run_llm_labels(self):
@@ -802,19 +803,13 @@ class Clusterer:
         if self._verbose:
             print("\n[Phase 7] LLM Cluster Label Generation")
 
-        # Build cluster_texts dict using format-aware extraction
+        # Build cluster_texts dict
         cluster_texts = {}
         for i, label in enumerate(self._labels):
             if label >= 0:
                 if label not in cluster_texts:
                     cluster_texts[label] = []
-                text = self._idea_texts[i]
-                taxonomy = self._taxonomy_phrases[i] if self._taxonomy_phrases else ""
-                ontology = self._ontology_texts[i] if self._ontology_texts else ""
-                cleaned_text = extract_text_for_format(
-                    text, taxonomy, self._embedding_text_format, ontology_text=ontology
-                )
-                cluster_texts[label].append(cleaned_text)
+                cluster_texts[label].append(self._idea_texts[i])
 
         # Extract survey question from metadata (var_lab field)
         survey_question = ""
@@ -839,7 +834,7 @@ class Clusterer:
             method_name = "cluster probability" if use_dense_region else "centroid similarity"
             print(f"  Selected {self.config.llm_max_ideas_per_cluster} representative samples per cluster ({method_name})")
 
-        # Compute per-cluster metadata distributions (sentiment, sense, taxonomy phrases)
+        # Compute per-cluster metadata distributions
         cluster_distributions = {}
         for cluster_id in cluster_texts.keys():
             cluster_distributions[cluster_id] = self._compute_cluster_metadata_distributions(cluster_id)
@@ -1003,11 +998,6 @@ class Clusterer:
 
         for local_idx, global_idx in enumerate(cluster_indices):
             text = self._idea_texts[global_idx]
-            taxonomy = self._taxonomy_phrases[global_idx] if self._taxonomy_phrases else ""
-            ontology = self._ontology_texts[global_idx] if self._ontology_texts else ""
-            cleaned_text = extract_text_for_format(
-                text, taxonomy, self._embedding_text_format, ontology_text=ontology
-            )
 
             if use_dense_region:
                 prob = float(self._hdbscan_model.probabilities_[global_idx])
@@ -1015,12 +1005,12 @@ class Clusterer:
                 if prob <= self.config.representative_min_probability:
                     continue
                 # Higher probability = stronger cluster member = better
-                if cleaned_text not in text_to_best or prob > text_to_best[cleaned_text][2]:
-                    text_to_best[cleaned_text] = (global_idx, local_idx, prob)
+                if text not in text_to_best or prob > text_to_best[text][2]:
+                    text_to_best[text] = (global_idx, local_idx, prob)
             else:
                 # Centroid method: just keep first occurrence (score computed later)
-                if cleaned_text not in text_to_best:
-                    text_to_best[cleaned_text] = (global_idx, local_idx, None)
+                if text not in text_to_best:
+                    text_to_best[text] = (global_idx, local_idx, None)
 
         # Step 2: Select top N based on method
         if use_dense_region:
@@ -1096,66 +1086,6 @@ class Clusterer:
         """
         return self._cluster_labels
 
-    def visualize_elbow(self, output_dir: Optional[Path] = None, filename_prefix: str = "elbow_analysis") -> Optional[Path]:
-        """
-        Generate and save the elbow analysis visualization.
-
-        This creates a 2x2 panel plot showing:
-        - Score vs K
-        - Log(Score) vs K
-        - Δlog/Δk vs K (the elbow curve)
-        - Selection summary
-
-        Args:
-            output_dir: Directory for output (defaults to exports/)
-            filename_prefix: Prefix for output filename
-
-        Returns:
-            Path to saved PNG file, or None if visualization not available
-            (e.g., if HDBSCAN optimization was not used)
-        """
-        if self._optimizer is None:
-            if self._verbose:
-                print("[Elbow Visualization] Not available - HDBSCAN optimization was not used")
-            return None
-
-        return self._optimizer.visualize_elbow_analysis(
-            output_dir=output_dir,
-            filename_prefix=filename_prefix
-        )
-
-    def visualize_metrics(self, output_dir: Optional[Path] = None, filename_prefix: str = "metric_comparison") -> Optional[Path]:
-        """
-        Generate metric comparison visualization to find best elbow candidate.
-
-        This creates a 2x3 panel plot comparing different metrics vs K:
-        - relative_validity (DBCV)
-        - mean_probability (cluster membership confidence)
-        - coherence (intra-cluster similarity)
-        - composite_score
-        - noise_rate
-        - low_prob_ratio
-
-        Use this to determine which metric has the best elbow shape for
-        parsimony-based K selection.
-
-        Args:
-            output_dir: Directory for output (defaults to exports/)
-            filename_prefix: Prefix for output filename
-
-        Returns:
-            Path to saved PNG file, or None if visualization not available
-        """
-        if self._optimizer is None:
-            if self._verbose:
-                print("[Metric Comparison] Not available - HDBSCAN optimization was not used")
-            return None
-
-        return self._optimizer.visualize_metric_comparison(
-            output_dir=output_dir,
-            filename_prefix=filename_prefix
-        )
-
     def print_all_clusters(self, n_samples: int = 5):
         """
         Print all clusters with sample ideas.
@@ -1168,18 +1098,13 @@ class Clusterer:
 
         import random
 
-        # Build cluster data dict (texts and taxonomy_phrases)
-        cluster_data = {}  # cluster_id -> list of (text, taxonomy_phrase) tuples
+        # Build cluster_texts dict
+        cluster_texts = {}
         for i, label in enumerate(self._labels):
             if label >= 0:
-                if label not in cluster_data:
-                    cluster_data[label] = []
-                text = self._idea_texts[i]
-                taxonomy = self._taxonomy_phrases[i] if self._taxonomy_phrases else ""
-                cluster_data[label].append((text, taxonomy))
-
-        # For compatibility, also build cluster_texts for the loop
-        cluster_texts = {cid: [t for t, _ in items] for cid, items in cluster_data.items()}
+                if label not in cluster_texts:
+                    cluster_texts[label] = []
+                cluster_texts[label].append(self._idea_texts[i])
 
         print(f"\n{'='*80}")
         print(f"ALL CLUSTERS ({len(cluster_texts)} clusters)")
@@ -1187,7 +1112,6 @@ class Clusterer:
 
         # Build per-cluster probability lookup if HDBSCAN was used
         per_cluster_prob = {}
-        per_cluster_probs_array = {}  # Store full probability arrays for histogram
         if self._hdbscan_model is not None and hasattr(self._hdbscan_model, 'probabilities_'):
             probs = self._hdbscan_model.probabilities_
             for cluster_id_tmp in sorted(cluster_texts.keys()):
@@ -1196,7 +1120,6 @@ class Clusterer:
                 mean_prob = float(np.mean(cluster_probs)) if len(cluster_probs) > 0 else 0.0
                 low_ratio = float((cluster_probs < self.config.low_probability_threshold).sum() / len(cluster_probs)) if len(cluster_probs) > 0 else 0.0
                 per_cluster_prob[cluster_id_tmp] = (mean_prob, low_ratio)
-                per_cluster_probs_array[cluster_id_tmp] = cluster_probs
 
         for cluster_id in sorted(cluster_texts.keys()):
             texts = cluster_texts[cluster_id]
@@ -1210,26 +1133,6 @@ class Clusterer:
             else:
                 print(f"CLUSTER {cluster_id} (n={n_ideas})")
             print(f"{'─'*80}")
-
-            # Show probability distribution histogram (10 bins) with visual bars
-            if cluster_id in per_cluster_probs_array:
-                cluster_probs = per_cluster_probs_array[cluster_id]
-                if len(cluster_probs) > 0:
-                    bins = np.linspace(0, 1, 11)
-                    hist, _ = np.histogram(cluster_probs, bins=bins)
-                    max_count = max(hist) if max(hist) > 0 else 1
-                    # Visual histogram with block characters
-                    bar_chars = "▁▂▃▄▅▆▇█"
-                    bars = []
-                    for count in hist:
-                        if count == 0:
-                            bars.append(" ")
-                        else:
-                            # Scale to bar character (1-8)
-                            level = min(7, int((count / max_count) * 7.99))
-                            bars.append(bar_chars[level])
-                    # Format: show bars with bin labels below
-                    print(f"\nProb dist: [{''.join(bars)}]  (0%→100%, n={len(cluster_probs)})")
 
             # Show LLM label if available
             if self._cluster_labels and cluster_id in self._cluster_labels:
@@ -1290,33 +1193,33 @@ class Clusterer:
 
     def _get_cluster_distributions(self, cluster_id: int) -> Optional[Dict[str, Dict[str, float]]]:
         """
-        Compute sentiment/sense distributions for a cluster.
+        Compute semantic_category distribution for a cluster (for metadata caching).
 
         Returns:
-            Dict with 'sentiment' and 'sense' distributions, e.g.:
-            {'sentiment': {'positive': 0.3, 'neutral': 0.6, 'negative': 0.1},
-             'sense': {'factual': 0.7, 'evaluative': 0.3}}
+            Dict with 'semantic_category' distribution, e.g.:
+            {'semantic_category': {'attribute': 0.5, 'identity': 0.3, 'function': 0.2}}
         """
         cluster_indices = np.where(self._labels == cluster_id)[0]
         if len(cluster_indices) == 0:
             return None
 
-        # Count sentiment/sense values from idea data
-        sentiment_counts = Counter()
-        sense_counts = Counter()
+        category_counts = Counter()
 
         for idx in cluster_indices:
             resp_idx, idea_idx = self._idea_indices[idx]
             response = self._input_list[resp_idx]
             if response.response_ideas and idea_idx < len(response.response_ideas):
                 idea = response.response_ideas[idea_idx]
-                sentiment_counts[getattr(idea, 'sentiment', 'neutral')] += 1
-                sense_counts[getattr(idea, 'sense', 'factual')] += 1
+                cat = getattr(idea, 'semantic_category', '')
+                if cat:
+                    category_counts[cat] += 1
 
-        total = len(cluster_indices)
+        if not category_counts:
+            return None
+
+        total = sum(category_counts.values())
         return {
-            'sentiment': {k: v/total for k, v in sentiment_counts.items()},
-            'sense': {k: v/total for k, v in sense_counts.items()},
+            'semantic_category': {k: v/total for k, v in category_counts.items()},
         }
 
     def to_metadata_model(self) -> models.ClusteringMetadataModel:
@@ -1327,7 +1230,7 @@ class Clusterer:
         - Representative samples that were given to the LLM
         - Keywords (c-TF-IDF, MMR, TF-IDF)
         - LLM-generated labels
-        - Cluster distributions (sentiment/sense)
+        - Cluster distributions
         - Global LLM context (survey question, taxonomy, etc.)
         - Quality metrics
 
@@ -1360,7 +1263,7 @@ class Clusterer:
             # Cluster size
             size = int(np.sum(self._labels == cluster_id))
 
-            # Get cluster distributions (sentiment/sense)
+            # Get cluster distributions
             distributions = self._get_cluster_distributions(cluster_id)
 
             clusters[cluster_id] = models.ClusterRepresentationCacheModel(
@@ -1370,8 +1273,6 @@ class Clusterer:
                 keywords_ctfidf=kw_ctfidf,
                 keywords_mmr=kw_mmr,
                 keywords_tfidf=kw_tfidf,
-                sentiment_distribution=distributions.get('sentiment') if distributions else None,
-                sense_distribution=distributions.get('sense') if distributions else None,
                 label_theme=label.theme if label else None,
                 label_description=label.description if label else None,
                 label_key_concepts=label.key_concepts if label else None,
@@ -1402,7 +1303,7 @@ class Clusterer:
                 topic=meta.topic or None,
                 perspective=meta.perspective or None,
                 intent=meta.intent or None,
-                taxonomy_axis=meta.taxonomy_primary_axis or None,
+                taxonomy_axis=meta.taxonomy_axis or None,
                 taxonomy_description=meta.taxonomy_axis_description or None,
                 taxonomy_actionable_type=meta.taxonomy_actionable_type or None,
             )
@@ -1415,62 +1316,6 @@ class Clusterer:
             algorithm_params=self._algorithm_params,
             timestamp=datetime.now().isoformat(),
         )
-
-    def get_hdbscan_artifacts(self) -> Dict[str, Any]:
-        """
-        Return HDBSCAN tree structures for external caching and hierarchy analysis.
-
-        These artifacts enable post-hoc analysis of:
-        - Cluster hierarchy (condensed_tree, single_linkage_tree)
-        - Cluster stability (cluster_persistence)
-        - Point outlier scores
-        - Membership probabilities
-
-        Returns:
-            Dict containing HDBSCAN artifacts, or empty dict if HDBSCAN not used.
-            Keys: probabilities, labels, single_linkage_tree, condensed_tree,
-                  cluster_persistence, outlier_scores
-        """
-        if self._hdbscan_model is None:
-            return {}
-
-        return {
-            "probabilities": self._hdbscan_model.probabilities_,
-            "labels": self._hdbscan_model.labels_,
-            "single_linkage_tree": self._hdbscan_model.single_linkage_tree_,
-            "condensed_tree": self._hdbscan_model.condensed_tree_,
-            "cluster_persistence": getattr(self._hdbscan_model, 'cluster_persistence_', None),
-            "outlier_scores": getattr(self._hdbscan_model, 'outlier_scores_', None),
-        }
-
-    def get_umap_embeddings(self) -> Optional[np.ndarray]:
-        """
-        Return UMAP-reduced embeddings for caching.
-
-        These embeddings can be reused for Layer 2 experiments (e.g., running
-        HDBSCAN with different cluster_selection_method) without recomputing UMAP.
-
-        Returns:
-            UMAP-reduced embeddings array, or None if not available.
-        """
-        return self._umap_embeddings
-
-    def get_hdbscan_params(self) -> Dict[str, Any]:
-        """
-        Return the winning HDBSCAN parameters from optimization.
-
-        These parameters can be reused in Layer 2 experiments to ensure
-        consistent clustering configuration.
-
-        Returns:
-            Dict with keys: min_cluster_size, min_samples, n_neighbors,
-            n_components, min_dist, cluster_selection_method
-        """
-        params = dict(self._algorithm_params) if self._algorithm_params else {}
-        # Ensure cluster_selection_method is included
-        if 'cluster_selection_method' not in params:
-            params['cluster_selection_method'] = self.config.hdbscan_cluster_selection_method
-        return params
 
 
 def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[models.ClusterModel]:
@@ -1499,12 +1344,15 @@ def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[mode
                     # From IdeasExtractedSubmodel
                     idea_id=idea_submodel.idea_id,
                     idea=cleaned_idea,
-                    taxonomy_phrase=idea_submodel.taxonomy_phrase,
-                    parent_category=idea_submodel.parent_category,
-                    sentiment=idea_submodel.sentiment,
-                    sense=idea_submodel.sense,
+                    instance=idea_submodel.instance,
+                    node=idea_submodel.node,
+                    semantic_category=idea_submodel.semantic_category,
+                    category_label=idea_submodel.category_label,
+                    root=idea_submodel.root,
                     # From EmbeddingsSubmodel
                     idea_embedding=idea_submodel.idea_embedding,
+                    node_embedding=getattr(idea_submodel, 'node_embedding', None),
+                    category_embedding=getattr(idea_submodel, 'category_embedding', None),
                     taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
                     # From ClusterSubmodel
                     initial_cluster=idea_submodel.initial_cluster,

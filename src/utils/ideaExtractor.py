@@ -1646,30 +1646,19 @@ class IdeaExtractor:
                     for i, idea_response in enumerate(response):
                         normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                         if normalized and normalized not in ["", "NA", "N/A"]:
-                            # Extract taxonomy_phrase, ontology, sentiment, sense as separate fields
-                            taxonomy_phrase = getattr(idea_response, 'taxonomy_phrase', "") or ""
-                            sentiment = getattr(idea_response, 'sentiment', "neutral") or "neutral"
-                            sense = getattr(idea_response, 'sense', "factual") or "factual"
-
-                            # Extract ontology (nested object)
+                            # Extract ontology fields (flat)
                             ontology_resp = getattr(idea_response, 'ontology', None)
-                            ontology = models.OntologySubmodel(
-                                instance=ontology_resp.instance if ontology_resp else "",
-                                node=ontology_resp.node if ontology_resp else "",
-                                category=ontology_resp.category if ontology_resp else "",
-                                root=ontology_resp.root if ontology_resp else ""
-                            ) if ontology_resp else None
 
-                            # Clean idea text (metadata stored in separate fields)
+                            # Clean idea text
                             idea_text = self._format_idea_text(normalized)
                             response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
                             ideas.append(models.IdeasExtractedSubmodel(
                                 idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                 idea=idea_text,
-                                taxonomy_phrase=taxonomy_phrase,
-                                ontology=ontology,
-                                sentiment=sentiment,
-                                sense=sense
+                                instance=ontology_resp.instance if ontology_resp else "",
+                                node=ontology_resp.node if ontology_resp else "",
+                                category=ontology_resp.category if ontology_resp else "",
+                                root=ontology_resp.root if ontology_resp else "",
                             ))
 
                     if ideas:
@@ -2348,10 +2337,10 @@ class IdeaExtractor:
                         # Store full idea info including ontology
                         valid_ideas.append({
                             'idea': idea.idea,
-                            'taxonomy_phrase': idea.taxonomy_phrase,
-                            'ontology': idea.ontology,
-                            'sentiment': idea.sentiment,
-                            'sense': idea.sense
+                            'instance': idea.instance,
+                            'node': idea.node,
+                            'category': idea.category,
+                            'root': idea.root,
                         })
 
                 if valid_ideas and len(response_examples) < self.config.max_code_examples:
@@ -2388,9 +2377,9 @@ class IdeaExtractor:
                     cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
                     print(f'    → "{cleaned_idea}"')
                     # Show ontology if available
-                    if idea_info.get('ontology'):
-                        ont = idea_info['ontology']
-                        print(f'      ontology: {ont.node} → {ont.category} → {ont.root}')
+                    ont_parts = [idea_info[f] for f in ('instance', 'node', 'category', 'root') if idea_info.get(f)]
+                    if ont_parts:
+                        print(f'      ontology: {" → ".join(ont_parts)}')
                 if example != response_examples[-1]:
                     print()
 

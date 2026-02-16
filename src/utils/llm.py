@@ -60,7 +60,7 @@ def _is_reasoning_model(model: str) -> bool:
 # =============================================================================
 DEBUG_LLM_REQUESTS = False  # Set to True to print full LLM requests
 DEBUG_LLM_FIRST_ONLY = True  # Only print the first matching request
-DEBUG_LLM_FILTER_MODEL = "TaxonomyChunkResponse"  # Only print requests with specific pydantic / esponse_model name (None = all)
+DEBUG_LLM_FILTER_MODEL = None # Only print requests with specific pydantic / esponse_model name (None = all)
 _debug_request_count = 0
 _debug_filtered_count = 0  # Count of matching requests printed
 

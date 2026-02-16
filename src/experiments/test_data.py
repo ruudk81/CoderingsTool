@@ -22,15 +22,15 @@ class TestDataConfig:
     #var_name = "Q20"
     #sample_size = 500
 
-    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    id_column = "DLNMID"
-    var_name = "Q20"
-    sample_size = 500
-
-    #filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+    #filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     #id_column = "DLNMID"
-    #var_name = "Qd1_combined"
-    #sample_size = 2000 
+    #var_name = "Q20"
+    #sample_size = 500
+
+    filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+    id_column = "DLNMID"
+    var_name = "Qd1_combined"
+    sample_size = 2000 
 
     #filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
     #id_column = "DLNMID"

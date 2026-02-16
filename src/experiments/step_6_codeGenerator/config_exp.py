@@ -26,8 +26,12 @@ from config import (
 # Verbose/debug settings
 EXTRA_VERBOSE = False
 
-# Stage 1 text source: "idea" (full response) or "taxonomy_phrase" (2-4 word categorization)
-STAGE1_TEXT_SOURCE: Literal["idea", "taxonomy_phrase"] = "taxonomy_phrase"
+# Stage 1 text source: "idea" (full response text)
+STAGE1_TEXT_SOURCE: Literal["idea"] = "idea"
+
+# Stage 1 input source: "ideas" (sample raw ideas from clusters) or "mece_topics" (use MECE Phase A output)
+# When "mece_topics", pass mece_topics= to InductiveCodeGenerator; STAGE1_TEXT_SOURCE is ignored.
+STAGE1_INPUT_SOURCE: Literal["ideas", "mece_topics"] = "mece_topics"
 
 # Timeout and latency
 DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data

@@ -14,6 +14,7 @@ Toggle:
     USE_EXPERIMENTAL = False -> Uses production codeGenerator from utils/
 """
 
+import pickle
 import sys
 import time
 from pathlib import Path
@@ -34,7 +35,7 @@ from typing import Optional
 # =============================================================================
 # SHARED IMPORTS (from production)
 # =============================================================================
-import models
+from experiments import models_exp as models
 from config import CacheConfig, ModelConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -81,11 +82,13 @@ USE_EXPERIMENTAL = EXPERIMENT_CONFIG.use_experimental
 if USE_EXPERIMENTAL:
     try:
         from .codeGenerator_exp import InductiveCodeGenerator
+        from .config_exp import STAGE1_INPUT_SOURCE
     except ImportError:
         exp_dir = Path(__file__).parent
         if str(exp_dir) not in sys.path:
             sys.path.insert(0, str(exp_dir))
         from codeGenerator_exp import InductiveCodeGenerator
+        from config_exp import STAGE1_INPUT_SOURCE
     print("[EXPERIMENTAL] Using codeGenerator_exp.py from experiments folder")
 else:
     from utils.codeGenerator import InductiveCodeGenerator
@@ -143,6 +146,21 @@ def get_var_lab(config: ExperimentConfig) -> str:
     return loader.get_varlab(filename=config.filename, var_name=config.var_name)
 
 
+def load_mece_topics(config: ExperimentConfig, variable_key: str):
+    """Load MECE Phase A topics from cache if available."""
+    base_name = Path(config.filename).stem
+    cache_dir = project_root / "data" / "cache"
+    cache_path = cache_dir / f"mece_phase_a_{base_name}_{variable_key}.pkl"
+    if cache_path.exists():
+        with open(cache_path, "rb") as f:
+            mece_topics = pickle.load(f)
+        print(f"  Loaded MECE Phase A topics for {len(mece_topics)} clusters from '{cache_path.name}'")
+        return mece_topics
+    else:
+        print(f"  WARNING: MECE Phase A cache not found: '{cache_path.name}' — falling back to idea sampling")
+        return None
+
+
 # =============================================================================
 # MAIN EXPERIMENT RUNNER
 # =============================================================================
@@ -180,6 +198,14 @@ def run_experiment(config: ExperimentConfig = None):
     # Clean ideas
     cleaned_cluster_results = clusterer_utils.clean_cluster_ideas(initial_cluster_results)
 
+    # Load MECE topics if configured
+    mece_topics = None
+    if USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "mece_topics":
+        verbose_reporter.stat_line(f"Input source: MECE topics (STAGE1_INPUT_SOURCE={STAGE1_INPUT_SOURCE!r})")
+        mece_topics = load_mece_topics(config, variable_key)
+    else:
+        verbose_reporter.stat_line(f"Input source: idea sampling (STAGE1_INPUT_SOURCE={'ideas'!r})")
+
     # Generate codebook
     generator = InductiveCodeGenerator(
         cluster_results=cleaned_cluster_results,
@@ -188,7 +214,8 @@ def run_experiment(config: ExperimentConfig = None):
         verbose=config.verbose,
         verbose_detailed=config.verbose_detailed,
         prompt_printer=prompt_printer,
-        extraction_metadata=extraction_metadata
+        extraction_metadata=extraction_metadata,
+        mece_topics=mece_topics,
     )
     codebook_reasoning = generator.generate()
 
@@ -233,6 +260,8 @@ if __name__ == "__main__":
     print(f"Sample size: {config.sample_size}")
     print(f"Using experimental: {USE_EXPERIMENTAL}")
     print(f"Speculative starter codes: {config.use_speculative_starter_codes}")
+    if USE_EXPERIMENTAL:
+        print(f"Stage 1 input source: {STAGE1_INPUT_SOURCE}")
     print("=" * 70)
 
     try:

@@ -1,3 +1,4 @@
+#%%
 """
 Step 7: Codebook Refinement Experiment Runner
 
@@ -32,7 +33,7 @@ from typing import Optional
 # =============================================================================
 # SHARED IMPORTS (from production)
 # =============================================================================
-import models
+from experiments import models_exp as models
 from config import CacheConfig, ModelConfig, DEFAULT_LANGUAGE
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -61,7 +62,7 @@ class ExperimentConfig:
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
     # Experiment-specific settings
-    use_experimental: bool = False
+    use_experimental: bool = True
     verbose: bool = True
     prompt_printer_enabled: bool = False
     language: str = DEFAULT_LANGUAGE

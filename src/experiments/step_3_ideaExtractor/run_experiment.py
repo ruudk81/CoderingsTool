@@ -16,7 +16,7 @@ Toggle:
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
-EXPERIMENT_N  = 20  # n or None
+EXPERIMENT_N  = None  # n or None
 
 import sys
 import time
@@ -39,7 +39,7 @@ from typing import Optional
 # =============================================================================
 # SHARED IMPORTS (from production)
 # =============================================================================
-import models
+from experiments import models_exp as models
 from config import CacheConfig, ModelConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -218,7 +218,7 @@ def run_experiment(config: ExperimentConfig = None):
         )
         if config.verbose:
             verbose_reporter.stat_line(
-                f"Cached extraction metadata: taxonomy={extraction_metadata.taxonomy_primary_axis}"
+                f"Cached extraction metadata: taxonomy={extraction_metadata.taxonomy_axis}"
             )
 
     # Report any PROCESSING_ERROR failures
