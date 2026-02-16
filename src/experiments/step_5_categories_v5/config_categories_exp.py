@@ -54,9 +54,9 @@ class CategoriesConfig:
     mapreduce_max_tokens_mece: int = 4000
 
     # Batching: max labels per map batch
-    mapreduce_batch_size: int = 20
+    mapreduce_batch_size: int = 40
 
-    # Concurrency for parallel map batches within a partition
+    # Fallback concurrency (used only if dynamic bootstrap fails)
     mapreduce_concurrency: int = 5
     mapreduce_rpm_limit: int = 30
 
