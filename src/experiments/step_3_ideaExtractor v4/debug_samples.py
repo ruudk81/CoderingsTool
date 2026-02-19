@@ -15,7 +15,14 @@ sys.path.insert(0, str(src_dir))
 
 import random
 import re
-from experiments import models_exp as models
+# v4 uses local models with primary_facet/concept_type fields
+try:
+    from experiments.step_3_ideaExtractor_v4 import models_exp_v3 as models
+except ImportError:
+    models_v4_dir = Path(__file__).parent
+    if str(models_v4_dir) not in sys.path:
+        sys.path.insert(0, str(models_v4_dir))
+    import models_exp_v3 as models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
@@ -70,11 +77,17 @@ def print_extraction_metadata(cache_manager, filename, variable_key):
         print(f"\n[Template Prefix]")
         print(f"  \"{metadata.template_prefix}\"")
 
-    # Taxonomy
-    print("\n[Taxonomy]")
-    print(f"  Axis:              {metadata.taxonomy_axis or '(not set)'}")
+    # Primary Facet
+    print("\n[Primary Facet]")
+    print(f"  Facet:             {metadata.primary_facet or '(not set)'}")
     print(f"  Actionable type:   {metadata.taxonomy_actionable_type or '(not set)'}")
-    print(f"  Axis description:  {metadata.taxonomy_axis_description or '(not set)'}")
+    print(f"  Facet description: {metadata.primary_facet_description or '(not set)'}")
+
+    # Concept Types
+    if metadata.concept_types:
+        print("\n[Concept Types]")
+        for ct in metadata.concept_types:
+            print(f"  {ct['key']}: {ct['label']} — {ct['definition']}")
 
     print()
 
@@ -85,9 +98,19 @@ def print_idea_details(idea: models.IdeasExtractedSubmodel, indent: str = "  "):
     print(f"{indent}Idea: {cleaned}")
 
     # Taxonomy (flat fields)
-    tax_parts = [v for v in (idea.instance, idea.node, idea.semantic_category, idea.category_label, idea.root) if v]
+    tax_parts = [v for v in (idea.instance, idea.node, idea.concept_type) if v]
     if tax_parts:
         print(f"{indent}  taxonomy: {' → '.join(tax_parts)}")
+    # Secondary facets
+    sec = []
+    if idea.valence:
+        sec.append(f"valence={idea.valence}")
+    if idea.agency_focus:
+        sec.append(f"agency={idea.agency_focus}")
+    if idea.prescriptiveness:
+        sec.append(f"presc={idea.prescriptiveness}")
+    if sec:
+        print(f"{indent}  facets: {', '.join(sec)}")
 
 
 def main():

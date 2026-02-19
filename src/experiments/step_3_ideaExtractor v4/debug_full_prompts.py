@@ -32,53 +32,33 @@ except ImportError:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
-# Import response models and factories from prompts_exp.py
+# Import response models and factories from v4 modules
 try:
-    from experiments.step_3_ideaExtractor.prompts_exp import (
+    from experiments.step_3_ideaExtractor_v4.prompts_exp import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
-        CodingDimensionChunkResponse,
-        CodingDimensionConsolidatedResponse,
-        create_subject_extraction_model,
-        create_taxonomy_enriched_model,
+        PrimaryFacetChunkResponse,
+        PrimaryFacetConsolidatedResponse,
+        create_subject_model,
+        create_extraction_model,
     )
-    from experiments.step_3_ideaExtractor.template_lookup import TEMPLATE_LOOKUP
-    from experiments.step_3_ideaExtractor.ideaExtractor_exp import _format_lookup_for_axis, _resolve_schema_data
+    from experiments.step_3_ideaExtractor_v4.facet_data import get_facet
 except ImportError:
     from prompts_exp import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
-        CodingDimensionChunkResponse,
-        CodingDimensionConsolidatedResponse,
-        create_subject_extraction_model,
-        create_taxonomy_enriched_model,
+        PrimaryFacetChunkResponse,
+        PrimaryFacetConsolidatedResponse,
+        create_subject_model,
+        create_extraction_model,
     )
-    from template_lookup import TEMPLATE_LOOKUP
-    from ideaExtractor_exp import _format_lookup_for_axis, _resolve_schema_data
+    from facet_data import get_facet
 
 
 # Configuration (from centralized test_data.py)
 FILENAME = TEST_DATA.filename
 VAR_NAME = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
-
-
-# =============================================================================
-# Schema Resolution (local copy to avoid heavy imports from ideaExtractor_exp)
-# =============================================================================
-
-def _resolve_schema_data(axis_data: dict) -> dict:
-    """Resolve template_schema data from an axis's schema reference.
-
-    Handles HOW's conditional dict schema (default + prescriptive variant)
-    and regular string schema references on other axes.
-    """
-    schema_ref = axis_data.get("schema", "")
-    if isinstance(schema_ref, dict):
-        schema_name = schema_ref.get("default", "")
-    else:
-        schema_name = schema_ref
-    return TEMPLATE_LOOKUP.get("template_schemas", {}).get(schema_name, {})
 
 
 # =============================================================================
@@ -90,8 +70,8 @@ STATIC_PROMPT_MODELS = {
     "context_specifier_group2": GenericSpecifierGroup2Response,
     "consolidate_specifiers_group1": GenericSpecifierGroup1Response,
     "consolidate_specifiers_group2": GenericSpecifierGroup2Response,
-    "taxonomy_chunk_scoring": CodingDimensionChunkResponse,
-    "taxonomy_consolidation": CodingDimensionConsolidatedResponse,
+    "taxonomy_chunk_scoring": PrimaryFacetChunkResponse,
+    "taxonomy_consolidation": PrimaryFacetConsolidatedResponse,
 }
 
 
@@ -114,23 +94,18 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
 
     # Dynamic: taxonomy_aware_subject_extraction
     if prompt_type == "taxonomy_aware_subject_extraction":
-        axis = metadata.get("taxonomy_axis", "WHAT")
-        axis_data = TEMPLATE_LOOKUP["axes"].get(axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
-        schema_data = _resolve_schema_data(axis_data)
-        language = metadata.get("language", "")
-        lookup = _format_lookup_for_axis(axis, language=language)
-        model = create_subject_extraction_model(axis, axis_data, schema_data, slot_type_map=lookup.get("slot_type_map"))
-        return (model, False, f"Dynamic model: SubjectExtractionResponse_{axis} (axis={axis})")
+        facet_key = metadata.get("primary_facet", "COMPOSITION_ATTRIBUTES")
+        facet = get_facet(facet_key)
+        model = create_subject_model(facet=facet)
+        return (model, False, f"Dynamic model: SubjectExtractionResponse_{facet_key} (facet={facet_key})")
 
     # Dynamic: idea_extraction_v3
     if prompt_type == "idea_extraction_v3":
-        axis = metadata.get("taxonomy_axis", "WHAT")
-        axis_data = TEMPLATE_LOOKUP["axes"].get(axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
-        schema_data = _resolve_schema_data(axis_data)
-        language = metadata.get("language", "")
-        lookup = _format_lookup_for_axis(axis, language=language)
-        model = create_taxonomy_enriched_model(axis, axis_data, schema_data, slot_type_map=lookup.get("slot_type_map"))
-        return (model, True, f"Dynamic model: List[TaxonomyEnrichedIdeaResponse_{axis}] (axis={axis})")
+        facet_key = metadata.get("primary_facet", "COMPOSITION_ATTRIBUTES")
+        facet = get_facet(facet_key)
+        template_prefix = metadata.get("template_prefix", "")
+        model = create_extraction_model(facet=facet, template_prefix=template_prefix)
+        return (model, True, f"Dynamic model: List[TaxonomyEnrichedIdeaResponse_{facet_key}] (facet={facet_key})")
 
     return (None, False, f"Unknown prompt type: {prompt_type}")
 
@@ -173,12 +148,12 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
         print(f"Model:     {metadata['model']}")
     if "language" in metadata:
         print(f"Language:  {metadata['language']}")
-    if "taxonomy_axis" in metadata:
-        print(f"Axis:      {metadata['taxonomy_axis']}")
+    if "primary_facet" in metadata:
+        print(f"Facet:     {metadata['primary_facet']}")
 
     # Other metadata
     other_meta = {k: v for k, v in metadata.items()
-                  if k not in ("model", "language", "taxonomy_axis")}
+                  if k not in ("model", "language", "primary_facet")}
     if other_meta:
         print(f"\n[Other Metadata]")
         for key, value in other_meta.items():

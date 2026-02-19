@@ -1,32 +1,27 @@
 """
-Experimental Models — Clean Pydantic models aligned with step 3 prompt outputs.
+Local Pipeline Models for step_3_ideaExtractor v4.
 
-Differences from production models.py:
-- ExtractionMetadata: removed dead fields (taxonomy_secondary_axis, taxonomy_sample_phrases,
-  taxonomy_rationale, extraction_timestamp); renamed taxonomy_primary_axis → taxonomy_axis
-- IdeasExtractedSubmodel: removed legacy fields (taxonomy_phrase, sentiment, sense)
-- EmbeddingsSubmodel: 4 embedding fields (idea, node, category, taxonomy)
-- OntologySubmodel: removed entirely (was unused)
+Differences from shared models_exp.py:
+- ExtractionMetadata: taxonomy_axis → primary_facet, topical_categories → concept_types
+- IdeasExtractedSubmodel: dropped root/category_label, semantic_category → concept_type,
+  added valence/agency_focus/prescriptiveness
+- EmbeddingsSubmodel: category_embedding → concept_type_embedding
 
-Usage in experimental steps:
-    from experiments import models_exp as models
+Keeps shared models_exp.py untouched so v2 remains runnable.
 """
 
-from typing import List, Any, Optional, Type, Union, Dict, Tuple
+from typing import List, Any, Optional, Union, Dict
 from pydantic import BaseModel, ConfigDict, Field
 import numpy as np
 import numpy.typing as npt
 
-# === UNCHANGED MODELS (re-exported from production) ================================================
+# === RE-EXPORTS from production models (unchanged) ============================================
 
 from models import (
-    # Base pipeline models (unchanged)
     ResponseModel,
     PreprocessedModel,
     QualityFilteredModel,
     QualityFilterLLMResponse,
-
-    # Codebook models (unchanged)
     CodebookEntry,
     CodebookModel,
     RefinedSubcode,
@@ -40,8 +35,6 @@ from models import (
     Codebook,
     ThemeEnrichedCodebookEntry,
     ThemeEnrichedCodebookModel,
-
-    # Cluster representation models (unchanged)
     ClusterLabelModel,
     ClusterRepresentationModel,
     ClusterRepresentationsModel,
@@ -52,10 +45,10 @@ from models import (
 )
 
 
-# === CLEANED METADATA MODEL ========================================================================
+# === v3 METADATA MODEL ========================================================================
 
 class ExtractionMetadata(BaseModel):
-    """Extraction-level metadata from step 3 (applies to entire dataset, not per-idea)."""
+    """Extraction-level metadata from step 3 v3 (applies to entire dataset, not per-idea)."""
 
     # File/variable info
     filename: str = ""
@@ -73,35 +66,36 @@ class ExtractionMetadata(BaseModel):
     entity: str = ""                      # e.g., "asn_bank"
     intent: str = ""                      # e.g., "evaluate"
 
-    # Taxonomy (from CodingDimensionConsolidatedResponse + SubjectExtractionResponse)
-    taxonomy_axis: str = ""               # e.g., "WHAT" (was: taxonomy_primary_axis)
-    taxonomy_axis_description: str = ""   # Context-specific description of the axis
+    # Primary facet (replaces taxonomy_axis)
+    primary_facet: str = ""               # e.g., "EVALUATION_JUDGMENT"
+    primary_facet_description: str = ""   # Context-specific description of the facet
     taxonomy_actionable_type: str = ""    # e.g., "attributes", "features", "concepts"
 
-    # Topical categories (data-driven, replaces fixed ontological categories)
-    topical_categories: List[Dict[str, str]] = Field(
+    # Concept types (data-driven, replaces topical_categories)
+    concept_types: List[Dict[str, str]] = Field(
         default_factory=list,
-        description="Data-driven association-type categories [{key, label, definition}, ...]"
+        description="Data-driven concept types [{key, label, definition}, ...]"
     )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-# === CLEANED PIPELINE MODELS =======================================================================
+# === v3 PIPELINE MODELS =======================================================================
 
 class IdeasExtractedSubmodel(BaseModel):
-    """Per-idea data from step 3 extraction.
+    """Per-idea data from step 3 v3 extraction.
 
-    Fields match SemanticTaxonomyResponse from prompts_exp.py:
-    instance → node → semantic_category (category_label) → root
+    Hierarchy: instance → node → concept_type → primary_facet (dataset-level)
+    Secondary facets: valence, agency_focus, prescriptiveness
     """
-    idea_id: str                    # Format: {respondent_id}_{sequence_number}
-    idea: str                       # Clean text
-    instance: str = ""              # Verbatim span from response
-    node: str = ""                  # Canonical, reusable concept (noun phrase)
-    semantic_category: str = ""     # One of: identity, attribute, function, state, evaluation, relation
-    category_label: str = ""        # Concise descriptive label within the category
-    root: str = ""                  # Top-level domain framing
+    idea_id: str                          # Format: {respondent_id}_{sequence_number}
+    idea: str                             # Clean text (starts with template prefix)
+    instance: str = ""                    # Verbatim span from response
+    node: str = ""                        # Canonical, reusable concept (noun phrase)
+    concept_type: str = ""                # Discovered concept type (e.g., "recommendation")
+    valence: str = ""                     # positive / negative / neutral_mixed
+    agency_focus: str = ""                # system_entity / stakeholder_actor / respondent
+    prescriptiveness: str = ""            # descriptive / prescriptive
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -114,8 +108,8 @@ class IdeasExtractedModel(QualityFilteredModel):
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     idea_embedding: Optional[npt.NDArray[np.float32]] = None        # template_prefix + idea
     node_embedding: Optional[npt.NDArray[np.float32]] = None        # node (canonical concept)
-    category_embedding: Optional[npt.NDArray[np.float32]] = None    # semantic_category
-    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None    # node → category_label → semantic_category → root
+    concept_type_embedding: Optional[npt.NDArray[np.float32]] = None  # concept_type
+    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None    # node → concept_type → primary_facet
 
 
 class EmbeddingsModel(IdeasExtractedModel):

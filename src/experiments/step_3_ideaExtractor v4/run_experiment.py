@@ -1,13 +1,15 @@
 #%% 
 
 """
-Step 3: Idea Extractor Experiment Runner
+Step 3: Idea Extractor Experiment Runner (v4 — Primary Facets)
 
 Runs the idea extraction step in isolation for experimentation.
 Loads Step 2 (quality_filter) results from cache and runs idea extraction.
 
+v4 taxonomy: Primary Facets + Concept Types + Secondary Facets (valence, agency, prescriptiveness)
+
 Usage:
-    cd src && python -m experiments.step_3_ideaExtractor.run_experiment
+    cd src && python -m "experiments.step_3_ideaExtractor v4.run_experiment"
 
 Toggle:
     USE_EXPERIMENTAL = True  -> Uses experimental ideaExtractor from this folder
@@ -16,7 +18,8 @@ Toggle:
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
-EXPERIMENT_N  = None  # n or None
+EXPERIMENT_N  = 20  # n or None
+DISCOVER_CONCEPT_TYPES = True  # True = Phase 3 discovers types upfront; False = on-the-fly
 
 import sys
 import time
@@ -39,7 +42,15 @@ from typing import Optional
 # =============================================================================
 # SHARED IMPORTS (from production)
 # =============================================================================
-from experiments import models_exp as models
+# v4 uses local models with primary_facet/concept_type fields
+try:
+    from experiments.step_3_ideaExtractor_v4 import models_exp_v3 as models
+except ImportError:
+    # Fallback for direct execution
+    models_v4_dir = Path(__file__).parent
+    if str(models_v4_dir) not in sys.path:
+        sys.path.insert(0, str(models_v4_dir))
+    import models_exp_v3 as models
 from config import CacheConfig, ModelConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -181,7 +192,8 @@ def run_experiment(config: ExperimentConfig = None):
         var_lab=var_lab,
         model_config=model_config,
         verbose=config.verbose,
-        prompt_printer=prompt_printer
+        prompt_printer=prompt_printer,
+        discover_concept_types=DISCOVER_CONCEPT_TYPES,
     )
     encoded_text = extractor.extract()
 
@@ -218,7 +230,7 @@ def run_experiment(config: ExperimentConfig = None):
         )
         if config.verbose:
             verbose_reporter.stat_line(
-                f"Cached extraction metadata: taxonomy={extraction_metadata.taxonomy_axis}"
+                f"Cached extraction metadata: primary_facet={extraction_metadata.primary_facet}"
             )
 
     # Report any PROCESSING_ERROR failures
@@ -290,29 +302,41 @@ if __name__ == "__main__":
             print(f"Ideas ({sample.idea_count}):")
             for idea in sample.response_ideas:
                 print(f"  - {idea.idea}")
-                tax_parts = [v for v in (idea.instance, idea.node, idea.semantic_category, idea.category_label, idea.root) if v]
+                tax_parts = [v for v in (idea.instance, idea.node, idea.concept_type) if v]
                 if tax_parts:
                     print(f"    taxonomy: {' → '.join(tax_parts)}")
+                sec = []
+                if idea.valence:
+                    sec.append(f"valence={idea.valence}")
+                if idea.agency_focus:
+                    sec.append(f"agency={idea.agency_focus}")
+                if idea.prescriptiveness:
+                    sec.append(f"presc={idea.prescriptiveness}")
+                if sec:
+                    print(f"    facets: {', '.join(sec)}")
             print("=" * 70)
 
         # Print all taxonomies
         if results:
             print("\n" + "=" * 70)
-            print("ALL TAXONOMIES  (instance → node → semantic_category [category_label] → root)")
+            print("ALL TAXONOMIES  (instance → node → concept_type | valence, agency, prescriptiveness)")
             print("=" * 70)
             tax_count = 0
             for item in results:
                 if not item.response_ideas:
                     continue
                 for idea in item.response_ideas:
-                    parts = {
-                        "instance": idea.instance or "",
-                        "node": idea.node or "",
-                        "semantic_category": idea.semantic_category or "",
-                        "category_label": idea.category_label or "",
-                        "root": idea.root or "",
-                    }
-                    chain = " → ".join(f"{v}" for v in parts.values() if v)
+                    chain_parts = [v for v in (idea.instance, idea.node, idea.concept_type) if v]
+                    sec_parts = []
+                    if idea.valence:
+                        sec_parts.append(idea.valence)
+                    if idea.agency_focus:
+                        sec_parts.append(idea.agency_focus)
+                    if idea.prescriptiveness:
+                        sec_parts.append(idea.prescriptiveness)
+                    chain = " → ".join(chain_parts)
+                    if sec_parts:
+                        chain += f" | {', '.join(sec_parts)}"
                     if chain:
                         tax_count += 1
                         print(f"  {tax_count:3d}. {chain}")
