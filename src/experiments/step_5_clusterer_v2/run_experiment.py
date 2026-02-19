@@ -81,12 +81,12 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 # "node"     = deduplicate to unique nodes, then cluster
 # "category" = deduplicate to unique categories, then cluster
 # "root"     = deduplicate to unique roots, then cluster
-CLUSTERING_UNIT = "idea"
+CLUSTERING_UNIT = "category_label"
 
 # Prompt mode: "topics" (default) or "objects"
 # "topics"  = standard topic prompts (for idea-level clustering)
 # "objects" = object-discovery prompts (for ontology-level clustering)
-PROMPT_MODE = "topics"
+PROMPT_MODE = "category_label"
 
 # Map ontology level → pre-computed embedding field (None = embed on the fly)
 LEVEL_TO_EMBEDDING_FIELD = {

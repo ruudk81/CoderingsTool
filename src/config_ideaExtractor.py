@@ -152,7 +152,7 @@ class SpecifierConfig:
     """
     sample_min: int = 50                    # Min samples for generic specifiers
     sample_max: int = 1000                  # Max samples for generic specifiers
-    chunk_size: int = 100                   # Chunk size for specifier extraction
+    chunk_size: int = 50                    # Chunk size for specifier extraction
     max_workers: int = 10                   # Max workers for specifier extraction
 
 
