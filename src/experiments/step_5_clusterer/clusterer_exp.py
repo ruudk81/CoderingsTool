@@ -66,7 +66,9 @@ try:
         # Representation
         RepresentationEngine, extract_text_for_format,
         # Label Generation
-        LabelGenerator, ClusterLabel
+        LabelGenerator, ClusterLabel,
+        # Text field access
+        get_idea_field_text,
     )
 except ImportError:
     from config_clusterer_exp import ClustererConfig
@@ -84,7 +86,9 @@ except ImportError:
         # Representation
         RepresentationEngine, extract_text_for_format,
         # Label Generation
-        LabelGenerator, ClusterLabel
+        LabelGenerator, ClusterLabel,
+        # Text field access
+        get_idea_field_text,
     )
 
 # Suppress common warnings
@@ -752,9 +756,17 @@ class Clusterer:
             if self._verbose:
                 print(f"  Using core cluster members (probability > {min_probability}) for keywords and LLM samples")
 
+        keyword_texts = (
+            [self._get_idea_text(i, self.config.keyword_text_source) for i in range(len(self._labels))]
+            if self.config.keyword_text_source != "idea"
+            else self._idea_texts
+        )
+        if self._verbose and self.config.keyword_text_source != "idea":
+            print(f"  Keyword text source: {self.config.keyword_text_source}")
+
         self._cluster_keywords = self._representation_engine.extract_all_keywords_from_labels(
             self._labels,
-            self._idea_texts,
+            keyword_texts,
             embedding_text_format=self._embedding_text_format,
             probabilities=probabilities,
             min_probability=min_probability,
@@ -767,13 +779,13 @@ class Clusterer:
 
     def _compute_cluster_metadata_distributions(self, cluster_id: int) -> Dict[str, Dict[str, float]]:
         """
-        Compute semantic_category distribution for a cluster.
+        Compute concept_type distribution for a cluster.
 
         Args:
             cluster_id: The cluster to analyze
 
         Returns:
-            Dict with keys: 'semantic_category'
+            Dict with keys: 'concept_type'
             Each value is a dict of {value: percentage}
         """
         cluster_mask = self._labels == cluster_id
@@ -784,8 +796,8 @@ class Clusterer:
         for global_idx in cluster_indices:
             resp_idx, idea_idx = self._idea_indices[global_idx]
             idea = self._input_list[resp_idx].response_ideas[idea_idx]
-            if hasattr(idea, 'semantic_category') and idea.semantic_category:
-                categories.append(idea.semantic_category)
+            if hasattr(idea, 'concept_type') and idea.concept_type:
+                categories.append(idea.concept_type)
 
         def to_distribution(items: List[str]) -> Dict[str, float]:
             if not items:
@@ -795,7 +807,7 @@ class Clusterer:
             return {k: round(v/total, 2) for k, v in counts.most_common()}
 
         return {
-            'semantic_category': to_distribution(categories),
+            'concept_type': to_distribution(categories),
         }
 
     def _run_llm_labels(self):
@@ -803,13 +815,13 @@ class Clusterer:
         if self._verbose:
             print("\n[Phase 7] LLM Cluster Label Generation")
 
-        # Build cluster_texts dict
+        # Build cluster_texts dict using configured label text source
         cluster_texts = {}
         for i, label in enumerate(self._labels):
             if label >= 0:
                 if label not in cluster_texts:
                     cluster_texts[label] = []
-                cluster_texts[label].append(self._idea_texts[i])
+                cluster_texts[label].append(self._get_idea_text(i, self.config.label_text_source))
 
         # Extract survey question from metadata (var_lab field)
         survey_question = ""
@@ -833,6 +845,8 @@ class Clusterer:
             )
             method_name = "cluster probability" if use_dense_region else "centroid similarity"
             print(f"  Selected {self.config.llm_max_ideas_per_cluster} representative samples per cluster ({method_name})")
+            if self.config.label_text_source != "idea":
+                print(f"  Label text source: {self.config.label_text_source}")
 
         # Compute per-cluster metadata distributions
         cluster_distributions = {}
@@ -942,10 +956,24 @@ class Clusterer:
         """
         return self._cluster_keywords
 
+    def _get_idea_text(self, flat_idx: int, source: str) -> str:
+        """Get text for an idea by flat index and configurable field source.
+
+        Args:
+            flat_idx: Index into the flat arrays (idea_texts, labels, etc.)
+            source: Field name - "idea", "ladder", "instance", "concept",
+                    "concept_type", "concept_type_definition",
+                    or composite: "idea+concept_type_definition"
+        """
+        resp_idx, idea_idx = self._idea_indices[flat_idx]
+        idea = self._input_list[resp_idx].response_ideas[idea_idx]
+        return get_idea_field_text(idea, source, separator=self.config.text_separator)
+
     def get_representative_ideas(
         self,
         cluster_id: int,
-        n: int = 5
+        n: int = 5,
+        text_source: Optional[str] = None
     ) -> List[Tuple[str, float]]:
         """
         Get most representative ideas for a cluster.
@@ -968,6 +996,9 @@ class Clusterer:
         Args:
             cluster_id: The cluster ID to get representatives for
             n: Number of representative ideas to return (default 5)
+            text_source: Field source for idea text (default: config.label_text_source).
+                Supports single fields ("idea", "concept_type_definition") and
+                composites ("idea+concept_type_definition").
 
         Returns:
             List of (idea_text, score) tuples. For dense_region method, score is
@@ -976,6 +1007,8 @@ class Clusterer:
         """
         if self._labels is None or self._embeddings_original is None:
             raise RuntimeError("Must call run() before get_representative_ideas()")
+
+        source = text_source or self.config.label_text_source
 
         # Get indices of ideas in this cluster
         cluster_mask = self._labels == cluster_id
@@ -997,7 +1030,7 @@ class Clusterer:
         text_to_best = {}  # text -> (global_idx, local_idx, score)
 
         for local_idx, global_idx in enumerate(cluster_indices):
-            text = self._idea_texts[global_idx]
+            text = self._get_idea_text(global_idx, source)
 
             if use_dense_region:
                 prob = float(self._hdbscan_model.probabilities_[global_idx])
@@ -1098,16 +1131,18 @@ class Clusterer:
 
         import random
 
-        # Build cluster_texts dict
+        # Build cluster_texts dict using configured verbose text source
         cluster_texts = {}
         for i, label in enumerate(self._labels):
             if label >= 0:
                 if label not in cluster_texts:
                     cluster_texts[label] = []
-                cluster_texts[label].append(self._idea_texts[i])
+                cluster_texts[label].append(self._get_idea_text(i, self.config.verbose_text_source))
 
         print(f"\n{'='*80}")
         print(f"ALL CLUSTERS ({len(cluster_texts)} clusters)")
+        if self.config.verbose_text_source != "idea":
+            print(f"  Text source: {self.config.verbose_text_source}")
         print(f"{'='*80}")
 
         # Build per-cluster probability lookup if HDBSCAN was used
@@ -1150,8 +1185,10 @@ class Clusterer:
                     kw_str = ", ".join([f"{kw} ({score:.3f})" for kw, score in keywords[:8]])
                     print(f"\nKeywords: {kw_str}")
 
-            # Show representative ideas (same as LLM gets)
-            representative = self.get_representative_ideas(cluster_id, n=n_samples)
+            # Show representative ideas using verbose text source
+            representative = self.get_representative_ideas(
+                cluster_id, n=n_samples, text_source=self.config.verbose_text_source
+            )
 
             # Deduplicate (preserve order, keep first occurrence) - same as label_generator
             seen = set()
@@ -1193,11 +1230,11 @@ class Clusterer:
 
     def _get_cluster_distributions(self, cluster_id: int) -> Optional[Dict[str, Dict[str, float]]]:
         """
-        Compute semantic_category distribution for a cluster (for metadata caching).
+        Compute concept_type distribution for a cluster (for metadata caching).
 
         Returns:
-            Dict with 'semantic_category' distribution, e.g.:
-            {'semantic_category': {'attribute': 0.5, 'identity': 0.3, 'function': 0.2}}
+            Dict with 'concept_type' distribution, e.g.:
+            {'concept_type': {'recommendation': 0.5, 'attribute': 0.3, 'opinion': 0.2}}
         """
         cluster_indices = np.where(self._labels == cluster_id)[0]
         if len(cluster_indices) == 0:
@@ -1210,7 +1247,7 @@ class Clusterer:
             response = self._input_list[resp_idx]
             if response.response_ideas and idea_idx < len(response.response_ideas):
                 idea = response.response_ideas[idea_idx]
-                cat = getattr(idea, 'semantic_category', '')
+                cat = getattr(idea, 'concept_type', '')
                 if cat:
                     category_counts[cat] += 1
 
@@ -1219,7 +1256,7 @@ class Clusterer:
 
         total = sum(category_counts.values())
         return {
-            'semantic_category': {k: v/total for k, v in category_counts.items()},
+            'concept_type': {k: v/total for k, v in category_counts.items()},
         }
 
     def to_metadata_model(self) -> models.ClusteringMetadataModel:
@@ -1303,8 +1340,8 @@ class Clusterer:
                 topic=meta.topic or None,
                 perspective=meta.perspective or None,
                 intent=meta.intent or None,
-                taxonomy_axis=meta.taxonomy_axis or None,
-                taxonomy_description=meta.taxonomy_axis_description or None,
+                taxonomy_axis=meta.primary_facet or None,
+                taxonomy_description=meta.primary_facet_description or None,
                 taxonomy_actionable_type=meta.taxonomy_actionable_type or None,
             )
 
@@ -1345,15 +1382,15 @@ def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[mode
                     idea_id=idea_submodel.idea_id,
                     idea=cleaned_idea,
                     instance=idea_submodel.instance,
-                    node=idea_submodel.node,
-                    semantic_category=idea_submodel.semantic_category,
-                    category_label=idea_submodel.category_label,
-                    root=idea_submodel.root,
+                    concept=idea_submodel.concept,
+                    concept_type=idea_submodel.concept_type,
+                    concept_type_definition=idea_submodel.concept_type_definition,
+                    valence=idea_submodel.valence,
                     # From EmbeddingsSubmodel
                     idea_embedding=idea_submodel.idea_embedding,
-                    node_embedding=getattr(idea_submodel, 'node_embedding', None),
-                    category_embedding=getattr(idea_submodel, 'category_embedding', None),
-                    taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
+                    concept_embedding=getattr(idea_submodel, 'concept_embedding', None),
+                    concept_type_embedding=getattr(idea_submodel, 'concept_type_embedding', None),
+                    ladder_embedding=getattr(idea_submodel, 'ladder_embedding', None),
                     # From ClusterSubmodel
                     initial_cluster=idea_submodel.initial_cluster,
                     cluster_probability=idea_submodel.cluster_probability,

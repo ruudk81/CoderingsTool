@@ -1,5 +1,8 @@
 """
-Prompt builders and response models for step_3_ideaExtractor v4.
+Prompt builders and response models for step_3_ideaExtractor v5.
+
+v5 overhaul: 10 MECE facets with decision-tree ordering (apply in order, stop at first fit).
+Replaces v4's 6-facet scoring-based system. Prescriptiveness secondary facet removed.
 
 Organized by pipeline stage so each prompt builder is immediately followed
 by the response model/schema that instructor injects — matching what the LLM sees.
@@ -16,9 +19,9 @@ from typing import ClassVar, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, create_model
 
 try:
-    from .facet_data import FacetDefinition, PromptRules, resolve_slot_type
+    from .facet_data import FacetDefinition, PromptRules, resolve_slot_type, get_facets_in_decision_order
 except ImportError:
-    from facet_data import FacetDefinition, PromptRules, resolve_slot_type
+    from facet_data import FacetDefinition, PromptRules, resolve_slot_type, get_facets_in_decision_order
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -208,13 +211,51 @@ Return ONE consolidated set of GROUP 2 specifiers as valid JSON following the re
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# STAGE 3: Primary Facet Selection
+# STAGE 3: Primary Facet Selection (Decision Tree)
 # ═══════════════════════════════════════════════════════════════════════
 
+# All 10 facet keys for Literal type validation
+_ALL_FACET_KEYS = (
+    "PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS", "IDENTITY_DEFINITION",
+    "ACTORS_TARGETS", "CONTEXT_CONDITIONS", "MOTIVATIONS_DRIVERS",
+    "EXPERIENCE_PERCEPTION", "EVALUATION_PRIORITIZATION",
+    "BEHAVIOR_FUNCTION", "ATTRIBUTES_ASSOCIATIONS", "RELATIONS_DEPENDENCIES",
+)
 
-# --- 3a. Per-chunk facet scoring ---
 
-def build_primary_facet_scoring_prompt(
+def _build_decision_tree_block() -> str:
+    """Build the decision tree block dynamically from facet_data.py definitions.
+
+    Keeps prompt and data in sync — criterion text lives in FacetDefinition only.
+    Includes criterion signals, optional clarification, and exclusions for disambiguation.
+    """
+    facets = get_facets_in_decision_order()
+    emoji_numbers = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    lines = []
+    for facet, emoji in zip(facets, emoji_numbers):
+        signals = "\n".join(f"  • {s}" for s in facet.criterion_signals)
+        exclusions = "\n".join(f"  ✗ {e}" for e in facet.exclusions)
+        block = (
+            f"{emoji} {facet.key}\n"
+            f"  {facet.criterion}\n"
+            f"  **Criterion signals**\n"
+            f"{signals}\n"
+        )
+        if facet.clarification:
+            clarification = "\n".join(f"  • {c}" for c in facet.clarification)
+            block += f"  **Clarification**\n{clarification}\n"
+        block += (
+            f"  **Exclusions**\n"
+            f"{exclusions}\n"
+            f"  ➡ If YES → select {facet.key}"
+        )
+        lines.append(block)
+    return "\n\n".join(lines)
+
+
+# --- 3a. Per-chunk facet selection (decision tree) ---
+
+def build_primary_facet_decision_tree_prompt(
     *,
     language: str,
     survey_question: str,
@@ -226,11 +267,14 @@ def build_primary_facet_scoring_prompt(
     entity: str,
     topic: str,
 ) -> str:
-    """Build the primary facet scoring prompt for a single chunk."""
-    return f"""You are selecting the SINGLE best primary facet for organizing a set of survey responses.
+    """Build the primary facet decision tree prompt for a single chunk.
 
-Your task is NOT to summarize responses, judge quality, or assign labels to each response.
-Your ONLY goal is to decide which ONE facet best explains the MAIN way the responses DIFFER from one another.
+    Replaces the v4 scoring prompt. Uses ordered decision tree (stop at first fit).
+    """
+    decision_tree = _build_decision_tree_block()
+
+    return f"""You are selecting the SINGLE best primary facet for organizing a set of open-ended responses.
+Your task is not to summarize responses or label each one. Your task is to identify the main semantic axis along which the responses DIFFER.
 
 Here is the language you will be working in:
 <language>
@@ -259,7 +303,7 @@ For reference, the question asks respondents to:
 {intent}
 </question_intent>
 
-NOTE: Question intent is background context only. Select the facet based on how responses actually DIFFER from each other, not based on the question's communicative task.
+NOTE: Question intent is background context only. Select the facet based on how responses actually DIFFER from each other, not based on the question's communicative task. Do not infer intent from the question — use actual response differences.
 
 Here is a sample of SHORT, COARSE responses for you to analyze:
 <sample_responses>
@@ -270,51 +314,41 @@ Here is a sample of SHORT, COARSE responses for you to analyze:
 HOW TO THINK ABOUT THE TASK
 ------------------------------
 Ask yourself:
-"If I had to cluster these responses into groups, which facet would create the most meaningful separation in answering the survey question?"
+"If I had to organize these responses into groups, which facet would best explain the biggest, most meaningful differences between them?"
 
-Choose the facet that explains the LARGEST share of meaningful variation across MOST responses (not just edge cases).
+Choose the facet that:
+* Explains variation across most responses
+* Creates the clearest top-level separation
+* Would naturally be used as the first folder when organizing insights
 
 If multiple facets seem plausible:
-- Choose the facet that would be used as the *top-level folder* to organize these responses.
-- If still tied, choose the facet that applies to a larger fraction of responses.
+1. Choose the facet that applies to a larger share of responses
+2. If still tied, choose the facet earlier in the decision order
 
 ------------------------------
-Primary facets (choose exactly one)
+DECISION TREE (Apply in Order, Stop at First Fit)
 ------------------------------
 
-1) DEFINITION_IDENTITY
-- Differences are in how the entity is defined, categorized, named, or framed. What it is, why it exists.
-- Excludes: properties/features (COMPOSITION_ATTRIBUTES), actions/processes (BEHAVIOR_FUNCTION), conditions/timing (CONDITIONS_CONTEXT), relationships (RELATIONS_INTERACTIONS), judgments/recommendations (EVALUATION_JUDGMENT).
+{decision_tree}
 
-2) COMPOSITION_ATTRIBUTES
-- Differences are in properties, features, components, or qualities described. What it has, what it's like.
-- Excludes: definitions/identity (DEFINITION_IDENTITY), actions/processes (BEHAVIOR_FUNCTION), conditions/timing (CONDITIONS_CONTEXT), relationships (RELATIONS_INTERACTIONS), judgments/recommendations (EVALUATION_JUDGMENT).
-
-3) BEHAVIOR_FUNCTION
-- Differences are in actions, processes, behaviors, effects, or outcomes described. What it does.
-- Excludes: definitions/identity (DEFINITION_IDENTITY), properties/features (COMPOSITION_ATTRIBUTES), conditions/timing (CONDITIONS_CONTEXT), relationships (RELATIONS_INTERACTIONS), judgments/recommendations (EVALUATION_JUDGMENT).
-
-4) CONDITIONS_CONTEXT
-- Differences are in conditions, contexts, constraints, triggers, timing, or situations described. When, where, why it works or fails.
-- Excludes: definitions/identity (DEFINITION_IDENTITY), properties/features (COMPOSITION_ATTRIBUTES), actions/processes (BEHAVIOR_FUNCTION), relationships (RELATIONS_INTERACTIONS), judgments/recommendations (EVALUATION_JUDGMENT).
-
-5) RELATIONS_INTERACTIONS
-- Differences are in relationships, stakeholders, dependencies, comparisons, or influences described. Who/what it connects to.
-- Excludes: definitions/identity (DEFINITION_IDENTITY), properties/features (COMPOSITION_ATTRIBUTES), actions/processes (BEHAVIOR_FUNCTION), conditions/timing (CONDITIONS_CONTEXT), judgments/recommendations (EVALUATION_JUDGMENT).
-
-6) EVALUATION_JUDGMENT
-- Differences are in evaluative stances: judgments, recommendations, preferences, risk assessments, priorities. How it is assessed or what should be done.
-- Excludes: definitions/identity (DEFINITION_IDENTITY), properties/features (COMPOSITION_ATTRIBUTES), actions/processes (BEHAVIOR_FUNCTION), conditions/timing (CONDITIONS_CONTEXT), relationships (RELATIONS_INTERACTIONS).
+------------------------------
+RULES (Do Not Skip)
+------------------------------
+* Select exactly one facet.
+* Apply the decision tree steps in order (1 through 10). Stop at the FIRST step where the answer is clearly YES for the dominant variation.
+* Base your decision on dominant variation, not edge cases.
+* Facets are organizational lenses, not labels for individual responses.
 
 ------------------------------
 ANALYSIS PROCESS (internal)
 ------------------------------
 Do NOT output your step-by-step reasoning.
 You MUST still follow this process internally:
-1) Identify the dominant pattern of variation across the sample by examining what the responses actually SAY and how they DIFFER from each other.
-2) Score each facet for explanatory power over the variation: 0 = absent, 1 = present but secondary, 2 = primary.
-3) Choose the single facet with the highest score (break ties using the rules above).
-4) Extract 2-3 verbatim snippets from <sample_responses> that support the chosen facet.
+1) Read through the sample responses and identify the dominant pattern of variation.
+2) Walk through the decision tree from step 1 to step 10.
+3) For each step, ask: "Do most responses mainly differ along THIS axis?" If clearly YES, stop and select that facet.
+4) Record which decision tree step triggered your selection.
+5) Extract 2-3 verbatim snippets from <sample_responses> that support the chosen facet.
 
 All string values (including evidence snippets) must be in {language}.
 Evidence snippets must be copied verbatim from <sample_responses>.
@@ -325,16 +359,24 @@ Begin processing now and provide your output as valid JSON following the respons
 
 
 class PrimaryFacetChunkResponse(BaseModel):
-    """LLM response for single chunk primary facet scoring."""
+    """LLM response for single chunk primary facet selection (decision tree)."""
     primary_facet: Literal[
-        "DEFINITION_IDENTITY",
-        "COMPOSITION_ATTRIBUTES",
+        "PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS",
+        "IDENTITY_DEFINITION",
+        "ACTORS_TARGETS",
+        "CONTEXT_CONDITIONS",
+        "MOTIVATIONS_DRIVERS",
+        "EXPERIENCE_PERCEPTION",
+        "EVALUATION_PRIORITIZATION",
         "BEHAVIOR_FUNCTION",
-        "CONDITIONS_CONTEXT",
-        "RELATIONS_INTERACTIONS",
-        "EVALUATION_JUDGMENT"
+        "ATTRIBUTES_ASSOCIATIONS",
+        "RELATIONS_DEPENDENCIES",
     ] = Field(
         description="The single best primary facet for organizing responses"
+    )
+    decision_tree_stop_position: int = Field(
+        description="Which decision tree step (1-10) triggered the selection",
+        ge=1, le=10,
     )
     evidence: List[str] = Field(
         description="2-3 verbatim snippets from sample_responses supporting the chosen facet",
@@ -359,6 +401,8 @@ def build_primary_facet_consolidation_prompt(
     chunk_results: str,
 ) -> str:
     """Build the primary facet consolidation prompt."""
+    facet_keys_str = ", ".join(_ALL_FACET_KEYS)
+
     return f"""You are a taxonomy consolidation specialist.
 Your task is to analyze multiple chunk-level primary facet analyses and consolidate them into a single, coherent global primary facet for a survey question.
 
@@ -374,7 +418,8 @@ Here is the survey question that was asked:
 
 Here is contextual information from prior analysis:
 <context>
-- Domain: {domain}: {entity}
+- Domain: {domain}
+- Entity of interest: {entity}
 - Topic: {topic}
 - Type of respondent: {perspective}
 - Question intent: {intent}
@@ -387,7 +432,7 @@ Here are the chunk-level analyses you need to consolidate:
 
 ## YOUR TASK
 
-You must consolidate these chunk-level analyses into a single global primary facet. Each chunk analysis evaluated the same survey question and produced a primary facet and supporting evidence. Your job is to synthesize these into one coherent framework.
+You must consolidate these chunk-level analyses into a single global primary facet. Each chunk analysis used a 10-step decision tree and produced a primary facet with supporting evidence. Your job is to synthesize these into one coherent framework.
 
 ## ANALYSIS STEPS
 
@@ -397,7 +442,7 @@ Follow these steps in order:
 Examine all chunk-level analyses carefully. Note areas of convergence and divergence. Identify which facets appear across multiple chunks and assess the quality of evidence supporting each.
 
 **Step 2: Select the PRIMARY facet**
-Choose the ONE facet (DEFINITION_IDENTITY, COMPOSITION_ATTRIBUTES, BEHAVIOR_FUNCTION, CONDITIONS_CONTEXT, RELATIONS_INTERACTIONS, or EVALUATION_JUDGMENT) that:
+Choose the ONE facet ({facet_keys_str}) that:
 - Shows strong and consistent support across chunks
 - Provides the clearest partition boundaries for coding responses
 - Offers the best interpretability and stability for downstream use
@@ -418,6 +463,7 @@ Write a primary facet description that:
 When consolidating:
 - If chunk analyses converge on the same facet, follow the consensus
 - If chunk analyses diverge, rely on MECE quality (mutually exclusive, collectively exhaustive) to determine which facet provides the clearest boundaries
+- When chunks are split, prefer the facet that appears earlier in the decision tree order (the tree is designed so earlier steps capture more common variation patterns)
 - Optimize for downstream coding usability and cross-coder consistency
 - Prefer clarity and stability over cleverness or novelty
 
@@ -430,8 +476,7 @@ class PrimaryFacetConsolidatedResponse(BaseModel):
     """Consolidated primary facet selection after merging all chunks."""
     primary_facet: str = Field(
         description="The selected primary facet",
-        examples=["DEFINITION_IDENTITY", "COMPOSITION_ATTRIBUTES", "BEHAVIOR_FUNCTION",
-                   "CONDITIONS_CONTEXT", "RELATIONS_INTERACTIONS", "EVALUATION_JUDGMENT"]
+        examples=list(_ALL_FACET_KEYS),
     )
     primary_facet_rationale: str = Field(
         description="2-4 sentence explanation of why this facet is the dominant organizing principle"
@@ -461,7 +506,6 @@ def build_concept_type_discovery_prompt(
     topic: str,
     primary_facet: str,
     primary_facet_description: str,
-    seed_examples: str,
 ) -> str:
     """Build the concept type discovery prompt for a single chunk."""
     return f"""You are a qualitative research methodologist analyzing survey responses.
@@ -478,7 +522,8 @@ Here is the survey question that was asked:
 
 Here is contextual information from prior analysis:
 <context>
-- Domain: {domain}: {entity}
+- Domain: {domain}
+- Entity of interest: {entity} 
 - Topic: {topic}
 - Type of respondent: {perspective}
 - Question intent: {intent}
@@ -498,58 +543,53 @@ Here is a representative sample of {chunk_size} verbatim responses:
 {chunk_responses}
 </sample_responses>
 
-Seed examples of concept types for this facet (for illustration only — you may deviate):
-<seed_examples>
-{seed_examples}
-</seed_examples>
-
 ## YOUR TASK
 
-Identify 5-15 **mutually exclusive concept types** that describe the **semantic roles** ideas can play within the {primary_facet} facet.
+Identify 5–15 **mutually exclusive, collectively exhaustive thematic domains** that represent **distinct domains of relevance, impact, or meaning for {entity}**, as evidenced by the responses.
 
-Concept types are SEMANTIC ROLES — they describe the KIND of thing an idea is within this facet, NOT the specific content or topic.
+These thematic domains should be defined from the point of view of the topic, describing *what it means for {entity}, rather than grouping or summarizing what respondents said.
 
-- GOOD: "Judgment" (a kind of evaluation — a semantic role)
-- GOOD: "Recommendation" (a kind of evaluation — a semantic role)
-- GOOD: "Physical Property" (a kind of attribute — a semantic role)
-- BAD: "sustainability" (a specific topic, NOT a semantic role)
-- BAD: "advertising" (a specific topic, NOT a semantic role)
-- BAD: "customer service" (a specific topic, NOT a semantic role)
+## GUIDANCE
 
-The same topic (e.g. sustainability) should fall consistently into ONE concept type (e.g. "Judgment" if it's an evaluative statement about sustainability), regardless of how the respondent phrases it.
+- Treat survey responses as **evidence**, not as the units being categorized.
+- Each thematic domain should describe **a structural domain in which {entity} is situated, affected, evaluated, or understood**.
+- Think of thematic domains as **section headers in a research report about {entity}**, not as topics, sentiments, or response types.
+- The same underlying concept should always map to **one and only one** thematic domain, regardless of wording or opinion.
 
 ## REQUIREMENTS
 
-1. Concept types must be **mutually exclusive** — each idea should clearly belong to exactly one concept type
-2. Concept types must be **collectively exhaustive** — every idea extractable from the sample should fit into at least one concept type
-3. Each concept type needs a **snake_case key**, a **human-readable label**, and a **one-sentence definition** explaining what semantic role it captures
-4. Aim for 5-15 concept types — enough to differentiate meaningfully, few enough to be useful
-5. Concept types must be **semantic roles within the {primary_facet} facet**, not content topics
+1. Thematic domains must be **mutually exclusive** — each concept should clearly belong to exactly one domain.
+2. Thematic domains must be **collectively exhaustive** — every idea extractable from the sample should fit into at least one domain.
+3. Each thematic domain must include:
+   - a **human-readable label**
+   - a **one-sentence definition** explaining the domain of relevance or implication for {entity}
+4. Aim for **5–15 thematic domains** — enough to differentiate meaningfully, few enough to be analytically useful.
+5. Thematic domains must organize **domains of relevance for {entity}**, not linguistic forms, response styles, or abstract role labels (e.g., avoid “sentiment,” “opinion type,” “functional trait”).
 
-All output values (labels, definitions) must be in {language}.
+All output values (labels and definitions) must be in {language}.
 
-Begin processing now and provide your output as valid JSON following the response schema provided."""
+Begin processing now and provide your output as **valid JSON** following the response schema provided."""
 
 
 class ConceptTypeItem(BaseModel):
-    """A single concept type discovered from the data."""
+    """A single thematic domain discovered from the data."""
     key: str = Field(
-        description="Short snake_case identifier, e.g. 'judgment', 'recommendation'",
-        examples=["judgment", "recommendation", "physical_property", "core_service"]
+        description="Short natural-language identifier (1-4 words, no underscores)",
+        examples=["access and logistics", "value proposition", "hospitality and interaction"]
     )
     label: str = Field(
-        description="Human-readable label in the response language, e.g. 'Oordeel', 'Aanbeveling'",
-        examples=["Oordeel", "Aanbeveling", "Fysieke eigenschap", "Kerndienst"]
+        description="Human-readable label in the response language",
+        examples=["Toegang en logistiek", "Waardepropositie", "Gastvrijheid en interactie"]
     )
     definition: str = Field(
-        description="One-sentence definition of what semantic role this concept type captures"
+        description="One-sentence definition of what ASPECT of the entity this thematic domain covers"
     )
 
 
 class ConceptTypeChunkResponse(BaseModel):
     """LLM response for single chunk concept type discovery."""
     concept_types: List[ConceptTypeItem] = Field(
-        description="5-15 mutually exclusive concept types (semantic roles) discovered from the responses"
+        description="5-15 mutually exclusive thematic domains discovered from the responses"
     )
 
 
@@ -601,16 +641,16 @@ Here are the chunk-level concept type analyses you need to consolidate:
 
 ## YOUR TASK
 
-Consolidate these chunk-level concept type lists into a single set of 5-15 mutually exclusive concept types.
+Consolidate these chunk-level thematic domain lists into a single set of 5-15 mutually exclusive thematic domains.
 
 ## CONSOLIDATION RULES
 
-1. **Merge semantically equivalent concept types** — if multiple chunks produced similar types (e.g. "judgment" and "evaluative_stance"), merge them into one
-2. **Preserve distinctions that appear across chunks** — if a concept type appears consistently across chunks, it reflects a real pattern in the data
-3. **Drop concept types that only appeared in one chunk** and seem idiosyncratic
+1. **Merge semantically equivalent domains** — if multiple chunks produced similar domains (e.g. "access and logistics" and "service accessibility"), merge them into one
+2. **Preserve distinctions that appear across chunks** — if a domain appears consistently across chunks, it reflects a real pattern in the data
+3. **Drop domains that only appeared in one chunk** and seem idiosyncratic
 4. **Ensure MECE** — the final set must be mutually exclusive and collectively exhaustive
-5. **Prefer broader, more stable concept types** over narrow ones — the goal is a robust partition that works across all responses
-6. **Concept types must remain semantic roles**, not content topics — verify each consolidated type is still a semantic role within the {primary_facet} facet
+5. **Prefer broader, more stable domains** over narrow ones — the goal is a robust partition that works across all responses
+6. **Domains must organize ASPECTS of the entity**, not be linguistic role labels — verify each consolidated domain describes a thematic aspect, not a semantic role like "moral attribute" or "functional trait"
 
 All output values (labels, definitions) must be in {language}.
 
@@ -618,9 +658,9 @@ Begin processing now and provide your output as valid JSON following the respons
 
 
 class ConceptTypeConsolidatedResponse(BaseModel):
-    """Consolidated concept types after merging all chunks."""
+    """Consolidated thematic domains after merging all chunks."""
     concept_types: List[ConceptTypeItem] = Field(
-        description="5-15 mutually exclusive concept types (semantic roles), consolidated from all chunks"
+        description="5-15 mutually exclusive thematic domains, consolidated from all chunks"
     )
 
 
@@ -667,10 +707,17 @@ def build_taxonomy_subject_prompt(
 <survey_question>{survey_question}</survey_question>
 
 <context>
-Respondent type: {perspective} | Domain: {domain} | Entity: {entity} | Topic: {topic} | Question intent: {intent}
+Respondent type: {perspective} 
+Domain: {domain} 
+Entity of interest: {entity} 
+Topic: {topic} 
+Question intent: {intent}
 </context>
 
 <primary_facet>
+{facet.noun_phrase_descriptor}
+
+Usage:
 {facet.dimension_description}
 </primary_facet>
 
@@ -682,13 +729,11 @@ Slots:
 
 ---
 
-**Your task** (three steps):
+**Your two tasks**:
 
 1. **canonical_term** -- Pick a short noun phrase (in {language}) for the ANCHOR slot. Avoid respondent pronouns unless the question demands first-person framing.
 
-2. **taxonomy_actionable_type** -- Select the single best concept type from: {allowed_concepts_str}
-
-3. **canonical_phrasing** -- Build a single-clause sentence following the pattern above.
+2. **canonical_phrasing** -- Build a single-clause sentence following the pattern above.
    - Replace ANCHOR with your canonical_term from step 1.
    - Keep the literal marker token {facet.dimension_marker} for the DIMENSION slot.
    - Must read as a natural answer to the survey question once the marker is replaced.
@@ -703,9 +748,6 @@ class SubjectExtractionResponse(BaseModel):
     """Base model for subject extraction. Use create_subject_model() for facet-specific versions."""
     canonical_term: str = Field(
         description="Short noun phrase for the anchor slot of the template"
-    )
-    taxonomy_actionable_type: str = Field(
-        description="The chosen concept type on the primary facet",
     )
     canonical_phrasing: str = Field(
         description="Single grammatical clause with the dimension marker token as placeholder"
@@ -742,9 +784,6 @@ def create_subject_model(
 
         canonical_term: str = Field(
             description=f"Short noun phrase: {facet.noun_phrase_descriptor}.{anchor_hint}"
-        )
-        taxonomy_actionable_type: str = Field(
-            description=f"The actionable taxonomy type on the {facet.key} facet. Must be one of: {allowed_str}."
         )
         canonical_phrasing: str = Field(description=phrasing_desc)
 
@@ -799,7 +838,8 @@ def build_taxonomy_enriched_extraction_prompt(
     return f"""You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis.
 Your task is to identify distinct ideas in a survey response, reformulate each idea using a canonical template, and produce a lightweight taxonomy classification for each idea.
 
-**SURVEY CONTEXT**
+First, here is the survey context you'll be working with:
+
 <survey_context>
 You will be working in the following language: {language}
 
@@ -813,106 +853,171 @@ Here is the context for the survey:
 - Question intent: {intent}
 </survey_context>
 
-**TAXONOMY FRAMEWORK**
-<taxonomy_instructions>
+Next, here is the taxonomy framework you should apply:
+
+<taxonomy_lens>
 Taxonomy lens: "{facet.noun_phrase_descriptor}"
+Anchor: {facet.dimension_marker}
+</taxonomy_lens>
 
-Instruction: {facet.instruction}
+Here is the survey response you need to analyze:
 
-The pattern: {canonical_phrasing}
-
-{facet.dimension_marker} must be replaced with: {dim_guidance}
-</taxonomy_instructions>
-
-**RESPONSE TO ANALYZE**
 <response>
 Respondent ID: {respondent_id}
 Response: {response}
 </response>
 
+----
+
+----
+
+## TASK OVERVIEW (READ CAREFULLY)
+
+You must convert the survey response into a structured list of ATOMIC ideas.
+Each output object represents EXACTLY ONE distinct idea about {entity}, expressed using a fixed canonical template and classified using the provided taxonomy lens.
+
+CRITICAL CONTRACT:
+- One idea = one object
+- When in doubt → SPLIT
+- Over-splitting is preferred to under-splitting
+- All outputs must strictly follow the schema and validation rules
+
 ---
 
-Now follow these three steps to complete the extraction:
+## STEP 1 — IDENTIFY ATOMIC IDEAS
 
-**STEP 1: IDENTIFY AND SPLIT IDEAS**
+Carefully read the response and extract ALL distinct ideas.
 
-Identify all conceptually distinct ideas in the response, interpreted in light of the survey question. Assign each a sequential idea_id starting from "1".
+{facet.instruction}
 
-CRITICAL SPLITTING RULES:
-- Items joined by conjunctions ("and", "or", "en", "und", "et", "y", "ou") or commas that refer to different concepts MUST be split into separate ideas
-- Example: "faster and cheaper" -> TWO ideas: "faster" (idea 1) and "cheaper" (idea 2)
-- Each split idea gets its OWN template instantiation and its OWN taxonomy classification
-- When in doubt, err on the side of splitting
+CRITICAL SPLITTING RULES (NON-NEGOTIABLE):
+- Any items joined by conjunctions ("and", "or", "en", "und", "et", "y", "ou") or commas that express DIFFERENT concepts MUST be split
+- Example:
+  - "faster and cheaper" → TWO ideas:
+    1. "faster"
+    2. "cheaper"
+- Each idea MUST receive:
+  - its own canonical phrasing
+  - its own taxonomy classification
+- If unsure whether something is one idea or two → SPLIT
 
-**STEP 2: COMPLETE THE PATTERN**
+---
 
-For each idea, reformulate it using the pattern provided in the taxonomy framework.
+## STEP 2 — REFORMULATE EACH IDEA
 
-Rules:
-- Keep the fixed pattern prefix exactly as provided (do NOT alter it)
-- Replace the marker token {facet.dimension_marker} with the shortest verbatim span from the original response that expresses the idea
-- Use the exact respondent_id provided in the response
+For EACH atomic idea, produce an idea statement using EXACTLY this pattern:
 
-**STEP 3: CLASSIFY EACH IDEA**
+{canonical_phrasing}
 
-For each idea, assign a semantic classification in the specified language.
+Rules (STRICT):
+- Do NOT alter the template prefix
+- Replace the marker token {facet.dimension_marker} with the SHORTEST verbatim span from the response that expresses the idea
+- Do NOT include the literal marker token in the final output
+- Use the EXACT respondent_id: {respondent_id}
+- Preserve the original meaning
+- Use the same language as the response ({language})
 
-1. **INSTANCE**: The verbatim span from the response expressing the idea (cleaned and minimally standardized)
+---
 
-2. **NODE**: A canonical, reusable concept label
-   - Remove descriptive qualifiers (e.g., adjectives like "slow," "cheap," "great")
-   - Reduce to the base object, action, or concept (noun phrase)
-   - Must stay semantically equivalent to the instance
+## STEP 3 — PROVIDE AN ABSTRACTION LADDER USING THE TAXONOMY LENS
 
-3. **CONCEPT TYPE**: Classify the idea into one of the discovered concept types for the {facet.key} facet:
+For each idea, provide an abstraction ladder with the following fields (all in {language}):
+
+1. INSTANCE  
+   - Literal wording from the response (cleaned, minimal normalization)
+
+2. CONCEPT (interpretive meaning in context)
+   - What is the respondent REALLY talking about when they say this?
+   - Name the underlying thing, phenomenon, or idea the instance refers to in the context of {entity} and {domain}
+   - This requires INTERPRETATION, not just normalization or nominalization
+   - Different surface expressions that point to the same underlying meaning should map to the same concept
+   - NOT a spelling fix, nominalization, or synonym of the instance
+
+3. CONCEPT TYPE (thematic domain)
+   - A thematic domain should describe a structural domain in which {entity} is situated, affected, evaluated, or understood
+   - Ask yourself: Which distinct domain of relevance, impact, or meaning for {entity} does the concept identified in step 2 belong to?
+   - Must be a high-level thematic category suitable for organizing a codebook
+   - Should be reusable across many different concepts that relate to the same aspect
+   - Think of thematic domains as **section headers in a research report about {entity}**, not as topics, sentiments, or response types.
 {concept_type_table}
 
-4. **VALENCE**: The evaluative direction of the idea
-   - "positive": favorable, desirable, praising
-   - "negative": unfavorable, undesirable, critical
-   - "neutral_mixed": factual, balanced, or ambiguous
+4. CONCEPT TYPE DEFINITION (contextual framing)
+    - One short phrase (2–5 words) explaining what this thematic domain REPRESENTS for {entity} in this survey context
+    - Frames WHY this domain matters — what larger question or concern does it address?
+    - The same definition should apply to all concepts within the same concept type
+    - NOT a paraphrase, synonym, or translation of the concept type
 
-5. **AGENCY FOCUS**: Who or what is the primary agent or focus
-   - "system_entity": the entity/system being discussed
-   - "stakeholder_actor": an external stakeholder or actor
-   - "respondent": the respondent themselves
-   - "": leave empty if unclear or not applicable
+## ABSTRACTION LADDER EXAMPLES (study the PRINCIPLE, not the content)
 
-6. **PRESCRIPTIVENESS**: Is the idea descriptive or prescriptive?
-   - "descriptive": describes what is or was
-   - "prescriptive": suggests what should be or could be done
-   - "": leave empty if unclear
+These examples are from OTHER surveys in English. Your output must be in {language}.
 
-**Priority Rules** (apply in order when uncertain):
+### Example A — Healthcare satisfaction survey (entity: City Hospital)
+Response: "long wait at the reception desk"
+  WRONG: long wait at reception → long wait at reception → functional trait → operational characteristic
+  RIGHT: long wait at reception → appointment scheduling → access and logistics → patient journey efficiency
+  WHY: The respondent is really talking about appointment scheduling (concept). This belongs to the "access and logistics" aspect of the hospital (concept type). That aspect represents "patient journey efficiency" for this entity (definition).
+
+### Example B — Public transport survey (entity: Metro Line 5)
+Response: "always running late"
+  WRONG: running late → running late → quality judgment → perception of characteristics
+  RIGHT: running late → schedule reliability → operations and planning → core service promise
+  WHY: "running late" points to schedule reliability (concept). This falls under "operations and planning" (concept type). For a transit line, that domain represents the "core service promise" (definition).
+
+### Example C — Restaurant review survey (entity: Bistro Roma)
+Response: "friendly staff and small portions"
+  Idea 1: friendly staff
+    WRONG: friendly staff → friendly staff → trait → characteristic
+    RIGHT: friendly staff → warmth of service → hospitality and interaction → dining experience
+  Idea 2: small portions
+    WRONG: small portions → small portions → quality measure → objective property
+    RIGHT: small portions → portion sizing → value proposition → price-quality balance
+
+KEY PRINCIPLE: Each level answers a different question:
+  - INSTANCE: What did they SAY?
+  - CONCEPT: What are they REALLY TALKING ABOUT?
+  - CONCEPT TYPE: Which ASPECT of {entity} does this relate to?
+  - CONCEPT TYPE DEFINITION: What does this aspect REPRESENT in this survey context?
+
+5. VALENCE 
+  - positive / negative / neutral_mixed  
+
+---
+
+## PRIORITY RULES (APPLY IN ORDER)
+
 {priority_rules}
 
 ---
 
-**EDGE CASES**
-- If the response is empty, irrelevant, or nonsensical: return []
-- If there is one idea: return an array with one object
-- If there are multiple ideas: return an array with multiple objects
+## EDGE CASES
+- Empty, irrelevant, or nonsensical response → return []
+- One idea → array with one object
+- Multiple ideas → array with multiple objects
 
-**OUTPUT**
+---
+
+## OUTPUT REQUIREMENTS (STRICT)
+- Valid JSON only
+- Must match the required response schema
+- No explanations or extra text
+- All fields must be in {language}
 
 Begin processing now and provide your output as valid JSON matching the required response schema.
-CRITICAL: all output fields must be in {language}
 """
 
 
 class SemanticTaxonomyResponse(BaseModel):
-    """Semantic taxonomy classification for extracted ideas.
-    4-layer classification + secondary facets:
-    instance, node, concept_type, valence, agency_focus, prescriptiveness."""
+    """Abstraction ladder for extracted ideas.
+    4-layer classification:
+    instance (what they said), concept (what they mean),
+    concept_type (thematic domain), concept_type_definition (contextual framing)."""
 
     instance: str = ""
-    node: str = ""
+    concept: str = ""
     concept_type: str = ""
-    valence: Literal["positive", "negative", "neutral_mixed"] = "neutral_mixed"
-    agency_focus: Literal["system_entity", "stakeholder_actor", "respondent", ""] = ""
-    prescriptiveness: Literal["descriptive", "prescriptive", ""] = ""
+    concept_type_definition: str = ""
 
-    @field_validator('instance', 'node', mode='before')
+    @field_validator('instance', 'concept', 'concept_type_definition', mode='before')
     @classmethod
     def reject_invalid(cls, v: object) -> str:
         """STRICT: Reject None and non-string values instead of auto-fixing."""
@@ -938,51 +1043,14 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     idea: str = Field(
         description="Complete idea statement beginning with the canonical_phrasing template"
     )
-    taxonomy: Optional[SemanticTaxonomyResponse] = Field(
+    abstraction_ladder: Optional[SemanticTaxonomyResponse] = Field(
         default=None,
-        description="Semantic taxonomy: instance -> node -> concept_type + valence, agency_focus, prescriptiveness"
+        description="Abstraction ladder: instance (verbatim) -> concept (interpretive meaning) -> concept_type (thematic domain) -> concept_type_definition (contextual framing)"
     )
-
-
-# Facet-specific Dutch examples for semantic taxonomy fields.
-_TAXONOMY_EXAMPLES = {
-    "DEFINITION_IDENTITY": {
-        "instance": ["een betrouwbare bank", "innovatief bedrijf", "traditionele instelling"],
-        "node": ["betrouwbaarheid", "innovatie", "traditie"],
-        "concept_type": ["definition", "categorization", "framing"],
-        "valence": ["positive", "positive", "neutral_mixed"],
-    },
-    "COMPOSITION_ATTRIBUTES": {
-        "instance": ["goede service", "te dure producten", "modern design"],
-        "node": ["klantenservice", "prijsniveau", "productontwerp"],
-        "concept_type": ["quality_measure", "functional_feature", "physical_property"],
-        "valence": ["positive", "negative", "positive"],
-    },
-    "BEHAVIOR_FUNCTION": {
-        "instance": ["meer personeel inzetten", "sneller reageren"],
-        "node": ["personeelsbezetting", "reactiesnelheid"],
-        "concept_type": ["core_service", "process_step"],
-        "valence": ["neutral_mixed", "negative"],
-    },
-    "CONDITIONS_CONTEXT": {
-        "instance": ["te lang wachten", "in het weekend"],
-        "node": ["wachttijd", "weekendperiode"],
-        "concept_type": ["constraint", "temporal_pattern"],
-        "valence": ["negative", "neutral_mixed"],
-    },
-    "RELATIONS_INTERACTIONS": {
-        "instance": ["oudere klanten", "samenwerking met partners"],
-        "node": ["senioren", "partnerschap"],
-        "concept_type": ["stakeholder_link", "partnership"],
-        "valence": ["neutral_mixed", "positive"],
-    },
-    "EVALUATION_JUDGMENT": {
-        "instance": ["te duur voor wat je krijgt", "zou meer aandacht moeten besteden"],
-        "node": ["prijskwaliteitverhouding", "aandachtsniveau"],
-        "concept_type": ["judgment", "recommendation"],
-        "valence": ["negative", "negative"],
-    },
-}
+    valence: Literal["positive", "negative", "neutral_mixed"] = Field(
+        default="neutral_mixed",
+        description="Evaluative direction: positive (favorable), negative (unfavorable), neutral_mixed (factual/balanced/ambiguous)"
+    )
 
 
 def create_extraction_model(
@@ -1001,22 +1069,19 @@ def create_extraction_model(
     prompt_rules = facet.prompt_rules
     facet_key = facet.key
 
-    # Resolve dimension type for node description enrichment
+    # Resolve dimension type for concept description enrichment
     dim_is_alias, dim_short, dim_desc = resolve_slot_type(facet.dimension_slot.type_name)
-    node_desc = prompt_rules.node_instruction
+    concept_desc = prompt_rules.concept_instruction
     if dim_is_alias:
-        node_desc += f" Must be a {facet.dimension_slot.type_name}."
+        concept_desc += f" Must be a {facet.dimension_slot.type_name}."
 
-    # Facet-specific examples
-    ex = _TAXONOMY_EXAMPLES.get(facet_key, {})
-
-    # Build concept_type field
+    # Build concept_type field (thematic domain)
     if concept_types:
         concept_type_field = (
             Literal[tuple(c.key for c in concept_types)],
             Field(
                 description=(
-                    "Concept type (semantic role within the facet). One of: " +
+                    "Thematic domain — which aspect of the entity does this concept belong to? One of: " +
                     ", ".join(f"{c.key} ({c.definition})" for c in concept_types)
                 ),
                 examples=[c.key for c in concept_types[:3]]
@@ -1027,11 +1092,11 @@ def create_extraction_model(
             str,
             Field(
                 description=(
-                    f"Concept type: a short snake_case semantic role label describing HOW this idea "
-                    f"relates to the {facet_key} facet (e.g., quality_measure, functional_feature, "
-                    f"moral_attribute, symbolic_element). Must be a reusable ROLE, not a topic."
+                    f"Thematic domain: which ASPECT of the entity does this concept belong to? "
+                    f"Use a short label (1-4 words) suitable for organizing a codebook section. "
+                    f"NOT a linguistic role ('moral attribute', 'functional trait') but a thematic category "
+                    f"('products and services', 'marketing and communication', 'social responsibility')."
                 ),
-                examples=ex.get("concept_type", [])
             )
         )
 
@@ -1041,36 +1106,19 @@ def create_extraction_model(
         __base__=SemanticTaxonomyResponse,
         instance=(str, Field(
             description=prompt_rules.instance_instruction,
-            examples=ex.get("instance", [])
         )),
-        node=(str, Field(
-            description=node_desc,
-            examples=ex.get("node", [])
+        concept=(str, Field(
+            description=concept_desc + " Name what the respondent is REALLY talking about in context, not a spelling fix or nominalization.",
         )),
         concept_type=concept_type_field,
-        valence=(
-            Literal["positive", "negative", "neutral_mixed"],
-            Field(
-                description="Evaluative direction: positive (favorable), negative (unfavorable), neutral_mixed (factual/balanced/ambiguous)",
-                examples=ex.get("valence", ["positive", "negative", "neutral_mixed"])
-            )
-        ),
-        agency_focus=(
-            Literal["system_entity", "stakeholder_actor", "respondent", ""],
-            Field(
-                default="",
-                description="Primary agent/focus: system_entity, stakeholder_actor, respondent, or empty if unclear",
-                examples=["system_entity", "stakeholder_actor", "respondent", ""]
-            )
-        ),
-        prescriptiveness=(
-            Literal["descriptive", "prescriptive", ""],
-            Field(
-                default="",
-                description="Descriptive (what is/was) vs prescriptive (what should be). Empty if unclear.",
-                examples=["descriptive", "prescriptive", ""]
-            )
-        ),
+        concept_type_definition=(str, Field(
+            description=(
+                "One short phrase (2-5 words) explaining what this thematic domain REPRESENTS "
+                "for the entity in this survey context. Frames WHY this domain matters. "
+                "NOT a paraphrase or synonym of concept_type. "
+                "Example: concept_type='operations and planning' → definition='core service promise'."
+            ),
+        )),
     )
 
     # Create facet-specific extraction model with strict validators
@@ -1084,9 +1132,9 @@ def create_extraction_model(
                 f"Must begin with the canonical_phrasing template."
             )
         )
-        taxonomy: Optional[FacetTaxonomy] = Field(
+        abstraction_ladder: Optional[FacetTaxonomy] = Field(
             default=None,
-            description="Semantic taxonomy: instance -> node -> concept_type + valence, agency_focus, prescriptiveness"
+            description="Abstraction ladder: instance -> concept -> concept_type -> concept_type_definition"
         )
 
         @field_validator('idea', mode='before')

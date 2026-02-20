@@ -70,7 +70,7 @@ STATIC_PROMPT_MODELS = {
     "context_specifier_group2": GenericSpecifierGroup2Response,
     "consolidate_specifiers_group1": GenericSpecifierGroup1Response,
     "consolidate_specifiers_group2": GenericSpecifierGroup2Response,
-    "taxonomy_chunk_scoring": PrimaryFacetChunkResponse,
+    "taxonomy_chunk_decision_tree": PrimaryFacetChunkResponse,
     "taxonomy_consolidation": PrimaryFacetConsolidatedResponse,
 }
 
@@ -94,14 +94,14 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
 
     # Dynamic: taxonomy_aware_subject_extraction
     if prompt_type == "taxonomy_aware_subject_extraction":
-        facet_key = metadata.get("primary_facet", "COMPOSITION_ATTRIBUTES")
+        facet_key = metadata.get("primary_facet", "ATTRIBUTES_ASSOCIATIONS")
         facet = get_facet(facet_key)
         model = create_subject_model(facet=facet)
         return (model, False, f"Dynamic model: SubjectExtractionResponse_{facet_key} (facet={facet_key})")
 
     # Dynamic: idea_extraction_v3
     if prompt_type == "idea_extraction_v3":
-        facet_key = metadata.get("primary_facet", "COMPOSITION_ATTRIBUTES")
+        facet_key = metadata.get("primary_facet", "ATTRIBUTES_ASSOCIATIONS")
         facet = get_facet(facet_key)
         template_prefix = metadata.get("template_prefix", "")
         model = create_extraction_model(facet=facet, template_prefix=template_prefix)

@@ -113,6 +113,23 @@ class VerboseCapture:
         if self._tee is not None:
             self._save_output(self._tee.getvalue(), exc_type is not None)
 
+        # Auto-cleanup old export files after each pipeline run
+        try:
+            from config import ExportCleanupConfig
+            from utils.exportCleaner import auto_cleanup
+
+            cleanup_cfg = ExportCleanupConfig()
+            if cleanup_cfg.enabled:
+                exports_dir = Path(__file__).parent.parent.parent / "exports"
+                auto_cleanup(
+                    exports_dir=exports_dir,
+                    max_age_days=cleanup_cfg.max_age_days,
+                    keep_latest_n=cleanup_cfg.keep_latest_n,
+                    silent=cleanup_cfg.silent,
+                )
+        except Exception:
+            pass  # Never let cleanup errors interrupt the pipeline
+
     def _build_output_filename(self) -> str:
         """Build the output filename from parameters."""
         # Extract base name from filename

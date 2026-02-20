@@ -1,35 +1,31 @@
 """
-Embedder - Experimental Implementation
+Embedder - Experimental Implementation (v5-aligned)
 
 Generate embeddings for survey response ideas with configurable text formats
 and quality analysis.
 
 Supports:
-- 4 text sources: "idea" (template_prefix + idea), "node" (canonical concept),
-  "category" (semantic_category), "taxonomy" (node → category_label → semantic_category → root)
-- Multi-pass mode: "all" (all 4 passes) via MULTI_PASS_SPECS
-- OpenAI and Gemini embedding providers
+- 8 single-pass text formats: "idea", "idea_bare", "concept", "concept_type",
+  "concept_defined", "concept_typed", "idea_concept_defined", "ladder"
+- Multi-pass modes: "default" (4 passes), "all" (4 passes) via MULTI_PASS_SPECS
 - Batch processing with configurable concurrency
 - Text deduplication for efficiency
-- Optional question-aware embedding transformation
 - Embedding quality analysis (norms, pairwise similarity)
 - Full ID tracking through async operations
 """
 
 # === MODULES ========================================================================================================
 import asyncio
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
-# Third-party imports
 import numpy as np
-from openai import AsyncOpenAI
 
 # === MODELS ========================================================================================================
 from experiments import models_exp as models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, GEMINI_API_KEY, ModelConfig, get_embedding_dimensions
+from config import ModelConfig, get_embedding_dimensions
 from utils.llm import create_embedding_client
 
 # === STEP-SPECIFIC CONFIG ==========================================================================================
@@ -75,47 +71,42 @@ class EmbeddingAnalysis:
 class Embedder:
     """Generate embeddings for survey response ideas with configurable text formats.
 
-    Supports OpenAI and Gemini embedding providers with:
-    - 4 text sources: "idea", "node", "category", "taxonomy"
-    - Multi-pass mode: "all" (all 4 passes)
-    - Batch processing with configurable concurrency
-    - Text deduplication for efficiency
-    - Optional question-aware embedding transformation
-    - Embedding quality analysis
-    - Full ID tracking through async operations
+    Single-pass formats (stored in idea_embedding):
+        "idea"            — idea text as-is (natural sentence incl. template_prefix)
+        "idea_bare"       — idea with template_prefix stripped
+        "concept"         — canonical concept noun phrase
+        "concept_type"    — discovered concept type
+        "concept_defined"      — concept → concept_type_definition
+        "concept_typed"        — concept (concept_type)
+        "idea_concept_defined" — idea → concept → concept_type_definition
+        "ladder"               — instance → concept → concept_type → concept_type_definition
+
+    Multi-pass formats (each pass stored in its own field):
+        "default"         — 4 passes: idea, ladder, concept_defined, idea_concept_defined
+        "all"             — 4 passes: idea, concept, concept_type, ladder
 
     Args:
         config: EmbedderConfig with all embedder settings
         model_config: ModelConfig specifying embedding model (optional)
-        client: Optional pre-configured API client
-        var_lab: Survey question label for question-aware embeddings
+        client: Optional pre-configured async OpenAI client
+        var_lab: Survey question label
     """
 
     def __init__(
         self,
         config: EmbedderConfig = None,
         model_config: ModelConfig = None,
-        client: Any = None,
+        client=None,
         var_lab: str = None
     ):
         self.config = config or DEFAULT_EMBEDDER_CONFIG
         self.model_config = model_config or ModelConfig()
-
-        self.provider = self.config.provider.lower()
         self.verbose = self.config.verbose
 
-        # Initialize provider-specific client
-        if self.provider == "openai":
-            self.client = client or create_embedding_client(async_mode=True)
-            self.genai_client = None
-        elif self.provider == "gemini":
-            from google import genai
-            self.client = None
-            self.genai_client = genai.Client(api_key=GEMINI_API_KEY)
-        else:
-            raise ValueError(f"Unknown provider: {self.provider}")
+        # OpenAI embedding client
+        self.client = client or create_embedding_client(async_mode=True)
 
-        # Get embedding model
+        # Embedding model
         self.embedding_model = self.model_config.get_model_for_stage('embedding')
         self.var_lab = var_lab
         self.verbose_reporter = VerboseReporter(self.verbose, capture_logging=True)
@@ -128,72 +119,107 @@ class Embedder:
         # Analysis results
         self.analysis: Optional[EmbeddingAnalysis] = None
 
-        # Extraction metadata (optional, for downstream context)
+        # Extraction metadata (optional, for template_prefix stripping)
         self.extraction_metadata: Optional[models.ExtractionMetadata] = None
 
         self.verbose_reporter.stat_line(f"Model: {self.embedding_model} ({self.embedding_dimensions} dimensions)")
-        self.verbose_reporter.stat_line(f"Provider: {self.provider}")
         self.verbose_reporter.stat_line(f"Text format: {self.embedding_text_format}")
 
     def set_extraction_metadata(self, metadata: models.ExtractionMetadata):
-        """Set extraction metadata for downstream context.
-
-        Args:
-            metadata: ExtractionMetadata from ideaExtractor
-        """
+        """Set extraction metadata for template_prefix access."""
         self.extraction_metadata = metadata
         if metadata and metadata.template_prefix:
-            self.verbose_reporter.stat_line(f"Template prefix loaded: '{metadata.template_prefix[:50]}...' " if len(metadata.template_prefix) > 50 else f"Template prefix loaded: '{metadata.template_prefix}'")
+            prefix = metadata.template_prefix
+            display = f"'{prefix[:50]}...'" if len(prefix) > 50 else f"'{prefix}'"
+            self.verbose_reporter.stat_line(f"Template prefix loaded: {display}")
 
-    def _format_taxonomy_text(self, idea) -> str:
-        """Format taxonomy chain: node → category_label → semantic_category → root.
+    # =========================================================================
+    # TEXT FORMAT DISPATCH
+    # =========================================================================
 
-        Falls back to idea.idea when all taxonomy fields are empty.
+    def _format_ladder_text(self, idea) -> str:
+        """Format abstraction ladder: instance → concept → concept_type → concept_type_definition.
+
+        Falls back to idea.idea when all ladder fields are empty.
         """
         parts = []
-        for field in ('node', 'category_label', 'semantic_category', 'root'):
+        for field in ('instance', 'concept', 'concept_type', 'concept_type_definition'):
             val = (getattr(idea, field, '') or '').strip()
             if val:
                 parts.append(val)
         return " → ".join(parts) if parts else idea.idea
 
     def _get_text_for_embedding(self, idea) -> str:
-        """Extract text for embedding based on config.
+        """Extract text for embedding based on current format setting.
 
-        Args:
-            idea: Idea object with idea text and taxonomy fields
-
-        Returns:
-            Text to embed based on config mode:
-            - "idea": Full idea text (template_prefix + idea)
-            - "node": Canonical concept (idea.node)
-            - "category": Semantic category (idea.semantic_category)
-            - "taxonomy": Chain "node → category_label → semantic_category → root"
+        All multi-field formats use ' → ' (unicode arrow) as separator.
         """
-        if self.embedding_text_format == "node":
-            node = getattr(idea, 'node', '') or ''
-            return node if node else idea.idea
+        fmt = self.embedding_text_format
 
-        if self.embedding_text_format == "category":
-            cat = getattr(idea, 'semantic_category', '') or ''
-            return cat if cat else idea.idea
+        if fmt == "idea_bare":
+            # Strip template_prefix from idea text
+            if self.extraction_metadata and self.extraction_metadata.template_prefix:
+                prefix = self.extraction_metadata.template_prefix
+                if idea.idea.startswith(prefix):
+                    stripped = idea.idea[len(prefix):].strip()
+                    return stripped if stripped else idea.idea
+            return idea.idea
 
-        if self.embedding_text_format == "taxonomy":
-            return self._format_taxonomy_text(idea)
+        if fmt == "concept":
+            val = (getattr(idea, 'concept', '') or '').strip()
+            return val if val else idea.idea
 
-        # Default: "idea" mode - full idea text (template_prefix + idea)
+        if fmt == "concept_type":
+            val = (getattr(idea, 'concept_type', '') or '').strip()
+            return val if val else idea.idea
+
+        if fmt == "concept_typed":
+            concept = (getattr(idea, 'concept', '') or '').strip()
+            concept_type = (getattr(idea, 'concept_type', '') or '').strip()
+            if concept and concept_type:
+                return f"{concept} ({concept_type})"
+            return concept or idea.idea
+
+        if fmt == "concept_defined":
+            concept = (getattr(idea, 'concept', '') or '').strip()
+            definition = (getattr(idea, 'concept_type_definition', '') or '').strip()
+            if concept and definition:
+                return f"{concept} → {definition}"
+            return concept or idea.idea
+
+        if fmt == "idea_concept_defined":
+            concept = (getattr(idea, 'concept', '') or '').strip()
+            definition = (getattr(idea, 'concept_type_definition', '') or '').strip()
+            parts = [idea.idea]
+            if concept:
+                parts.append(concept)
+            if definition:
+                parts.append(definition)
+            return " → ".join(parts)
+
+        if fmt == "ladder":
+            return self._format_ladder_text(idea)
+
+        # Default: "idea" — full idea text (natural sentence incl. template_prefix)
         return idea.idea
+
+    # =========================================================================
+    # RESPONSE DATA EXTRACTION
+    # =========================================================================
 
     def _get_ResponseData(self, data: List[models.EmbeddingsModel]) -> List[ResponseData]:
         """Create segment identifiers for tracking with text extraction for embedding."""
         response_data = []
 
-        # Log which embedding format is being used
         format_labels = {
-            "idea": "idea (template_prefix + idea text)",
-            "node": "node (canonical concept)",
-            "category": "category (semantic_category)",
-            "taxonomy": "taxonomy (node → category_label → semantic_category → root)",
+            "idea":            "idea (natural sentence incl. template_prefix)",
+            "idea_bare":       "idea (template_prefix stripped)",
+            "concept":         "concept (canonical noun phrase)",
+            "concept_type":    "concept_type (discovered type)",
+            "concept_defined":      "concept → concept_type_definition",
+            "concept_typed":        "concept (concept_type)",
+            "idea_concept_defined": "idea → concept → concept_type_definition",
+            "ladder":               "abstraction ladder (instance → concept → concept_type → concept_type_definition)",
         }
         label = format_labels.get(self.embedding_text_format, self.embedding_text_format)
         self.verbose_reporter.stat_line(f"Embedding format: {label}")
@@ -213,84 +239,17 @@ class Embedder:
 
         return response_data
 
-    async def _generate_question_aware_embeddings(self, response_embeddings: np.ndarray, question: str) -> np.ndarray:
-        """Generate question-aware embeddings by combining response and question embeddings."""
-        # Generate question embedding
-        question_embedding = await self._embed_single(question)
+    # =========================================================================
+    # OPENAI EMBEDDING API
+    # =========================================================================
 
-        # Create domain anchor (average of all response embeddings)
-        domain_anchor = np.mean(response_embeddings, axis=0)
-
-        # Combine embeddings using configured weights
-        question_aware_embeddings = []
-        for response_emb in response_embeddings:
-            combined = (
-                self.config.response_weight * response_emb +
-                self.config.question_weight * question_embedding +
-                self.config.domain_anchor_weight * domain_anchor
-            )
-            question_aware_embeddings.append(combined)
-
-        return np.array(question_aware_embeddings)
-
-    async def _embed_openai_batch(self, batch_texts: List[str]) -> List[np.ndarray]:
+    async def _embed_batch(self, batch_texts: List[str]) -> List[np.ndarray]:
         """Generate embeddings for a batch of texts using OpenAI API."""
         response = await self.client.embeddings.create(
             input=batch_texts,
             model=self.embedding_model
         )
         return [np.array(item.embedding, dtype=np.float32) for item in response.data]
-
-    def _gemini_values(self, embeddings: List[Any]) -> List[np.ndarray]:
-        """Extract embedding values from google.genai response."""
-        return [np.array(emb.values, dtype=np.float32) for emb in embeddings]
-
-    async def _embed_gemini_batch(self, batch_texts: List[str]) -> List[np.ndarray]:
-        """Generate embeddings using google.genai SDK with native batch support."""
-        from google.genai import types
-
-        def _embed_batch_sync():
-            return self.genai_client.models.embed_content(
-                model=self.embedding_model,
-                contents=batch_texts,
-                config=types.EmbedContentConfig(
-                    task_type="SEMANTIC_SIMILARITY"
-                )
-            )
-
-        try:
-            result = await asyncio.to_thread(_embed_batch_sync)
-            return self._gemini_values(result.embeddings)
-        except Exception as e:
-            raise RuntimeError(f"Failed to embed batch of {len(batch_texts)} texts: {str(e)[:200]}") from e
-
-    async def _embed_batch(self, batch_texts: List[str]):
-        """Embed a batch of texts using the configured provider."""
-        if self.provider == "openai":
-            return await self._embed_openai_batch(batch_texts)
-        elif self.provider == "gemini":
-            return await self._embed_gemini_batch(batch_texts)
-        else:
-            raise ValueError(f"Unknown provider: {self.provider}")
-
-    async def _embed_single(self, text_to_embed: str) -> np.ndarray:
-        """Generate embedding for a single text using configured provider."""
-        if self.provider == "openai":
-            response = await self.client.embeddings.create(input=[text_to_embed], model=self.embedding_model)
-            return np.array(response.data[0].embedding, dtype=np.float32)
-        else:
-            from google.genai import types
-
-            def _call():
-                return self.genai_client.models.embed_content(
-                    model=self.embedding_model,
-                    contents=[text_to_embed],
-                    config=types.EmbedContentConfig(
-                        task_type="SEMANTIC_SIMILARITY"
-                    )
-                )
-            response = await asyncio.to_thread(_call)
-            return self._gemini_values(response.embeddings)[0]
 
     async def _with_retries(self, fn, *, retries: int = None, base: float = None):
         """Retry async function with exponential backoff."""
@@ -306,6 +265,10 @@ class Embedder:
                 if i == retries - 1:
                     raise
                 await asyncio.sleep(base * (2 ** i))
+
+    # =========================================================================
+    # DEDUPLICATION
+    # =========================================================================
 
     def _deduplicate_texts(self, response_data: List[ResponseData]) -> Tuple[List[str], Dict[str, List[int]], float]:
         """Extract unique texts and create replication mapping."""
@@ -341,23 +304,16 @@ class Embedder:
 
         return all_embeddings
 
+    # =========================================================================
+    # ANALYSIS
+    # =========================================================================
+
     def analyze_embeddings(self, embeddings: List[np.ndarray]) -> EmbeddingAnalysis:
-        """Analyze embedding quality and statistics.
-
-        Args:
-            embeddings: List of embedding vectors
-
-        Returns:
-            EmbeddingAnalysis with quality metrics
-        """
+        """Analyze embedding quality and statistics."""
         if not embeddings:
             return EmbeddingAnalysis(
-                n_embeddings=0,
-                embedding_dim=0,
-                mean_norm=0.0,
-                std_norm=0.0,
-                min_norm=0.0,
-                max_norm=0.0
+                n_embeddings=0, embedding_dim=0,
+                mean_norm=0.0, std_norm=0.0, min_norm=0.0, max_norm=0.0
             )
 
         embeddings_array = np.array(embeddings)
@@ -372,13 +328,9 @@ class Embedder:
             max_norm=float(np.max(norms))
         )
 
-        # Compute pairwise similarity if enabled and not too many embeddings
         max_for_similarity = self.config.max_embeddings_for_similarity
         if self.config.compute_similarity_stats and len(embeddings) <= max_for_similarity:
-            # Normalize embeddings for cosine similarity
             normalized = embeddings_array / norms[:, np.newaxis]
-
-            # Compute pairwise cosine similarities (upper triangle only)
             n = len(embeddings)
             similarities = []
             for i in range(n):
@@ -394,10 +346,13 @@ class Embedder:
 
         return analysis
 
+    # =========================================================================
+    # CORE EMBEDDING PIPELINE
+    # =========================================================================
+
     async def _process_embeddings_with_id_tracking(self, data: List[models.EmbeddingsModel]) -> List[models.EmbeddingsModel]:
         """Process embeddings with explicit ID tracking."""
 
-        # Generate segment identifiers
         response_data = self._get_ResponseData(data)
 
         if not response_data:
@@ -411,40 +366,23 @@ class Embedder:
             f"({compression_ratio:.1%} compression)"
         )
 
-        # Extract unique texts for embedding
-        texts_to_embed = unique_texts
-
-        # Create batches of unique texts only
-        if self.provider == "gemini":
-            batch_size = self.config.gemini_batch_size
-        elif self.provider == "openai":
-            batch_size = self.config.openai_batch_size
-        else:
-            batch_size = 100
-
+        # Create batches
+        batch_size = self.config.openai_batch_size
         batches = []
-        for i in range(0, len(texts_to_embed), batch_size):
-            batch_texts = texts_to_embed[i:i+batch_size]
-            batches.append(batch_texts)
+        for i in range(0, len(unique_texts), batch_size):
+            batches.append(unique_texts[i:i+batch_size])
 
-        # Process batches concurrently with provider-specific limits
-        if self.provider == "gemini":
-            max_concurrent = self.config.gemini_max_concurrent
-        elif self.provider == "openai":
-            max_concurrent = self.config.openai_max_concurrent
-        else:
-            max_concurrent = 5
-
+        # Process batches concurrently
+        max_concurrent = self.config.openai_max_concurrent
         semaphore = asyncio.Semaphore(max_concurrent)
 
         async def process_batch(batch_texts: List[str]) -> List[np.ndarray]:
             async with semaphore:
                 vectors = await self._with_retries(lambda: self._embed_batch(batch_texts))
                 if len(vectors) != len(batch_texts):
-                    raise RuntimeError(f"Provider returned {len(vectors)} vectors for {len(batch_texts)} texts")
+                    raise RuntimeError(f"API returned {len(vectors)} vectors for {len(batch_texts)} texts")
                 return vectors
 
-        # Process all batches
         tasks = [process_batch(batch_texts) for batch_texts in batches]
         batch_results = await asyncio.gather(*tasks)
 
@@ -458,16 +396,7 @@ class Embedder:
             response_data, unique_texts, unique_embeddings, text_to_indices
         )
 
-        # Create identifiers list for compatibility
         all_identifiers = response_data
-
-        # Apply question-aware processing if enabled
-        if self.config.use_question_aware and self.var_lab:
-            self.verbose_reporter.stat_line("Applying question-aware embedding transformation...")
-            all_embeddings = await self._generate_question_aware_embeddings(
-                np.array(all_embeddings),
-                self.var_lab
-            )
 
         # Run embedding analysis if enabled
         if self.config.analyze_embeddings:
@@ -500,12 +429,11 @@ class Embedder:
                     embedding_data = {
                         'idea_id': response_idea.idea_id,
                         'idea': response_idea.idea,
-                        # Ontology fields (instance → node → semantic_category → category_label → root)
                         'instance': getattr(response_idea, 'instance', '') or '',
-                        'node': getattr(response_idea, 'node', '') or '',
-                        'semantic_category': getattr(response_idea, 'semantic_category', '') or '',
-                        'category_label': getattr(response_idea, 'category_label', '') or '',
-                        'root': getattr(response_idea, 'root', '') or '',
+                        'concept': getattr(response_idea, 'concept', '') or '',
+                        'concept_type': getattr(response_idea, 'concept_type', '') or '',
+                        'concept_type_definition': getattr(response_idea, 'concept_type_definition', '') or '',
+                        'valence': getattr(response_idea, 'valence', '') or '',
                     }
                     if key in embedding_lookup:
                         embedding_data['idea_embedding'] = embedding_lookup[key]
@@ -522,7 +450,7 @@ class Embedder:
                 response_ideas=embeddings_submodels,
                 idea_count=len(embeddings_submodels),
                 template_prefix=getattr(respondent_data, 'template_prefix', None),
-                embedding_text_format=self.embedding_text_format  # Store format for downstream alignment
+                embedding_text_format=self.embedding_text_format
             )
             result.append(embeddings_model)
 
@@ -530,28 +458,9 @@ class Embedder:
 
         return result
 
-    def get_embeddings_with_tracking(self, data: List[models.EmbeddingsModel], var_lab: str = None) -> List[models.EmbeddingsModel]:
-        """Generate embeddings with ID tracking.
-
-        Args:
-            data: List of EmbeddingsModel (or IdeasExtractedModel) instances
-            var_lab: Survey question label for question-aware embeddings
-
-        Returns:
-            List of EmbeddingsModel with embeddings applied
-        """
-        if var_lab is not None:
-            self.var_lab = var_lab
-
-        # Handle multi-pass modes (both, both_ontology, all) via config_exp specs
-        if self.embedding_text_format in MULTI_PASS_SPECS:
-            return self._process_multi_pass_embeddings(
-                data, MULTI_PASS_SPECS[self.embedding_text_format]
-            )
-
-        result = asyncio.run(self._process_embeddings_with_id_tracking(data))
-
-        return result
+    # =========================================================================
+    # MULTI-PASS EMBEDDING
+    # =========================================================================
 
     def _merge_pass_embeddings(
         self,
@@ -562,7 +471,7 @@ class Embedder:
         """Merge embeddings from a pass result into a specific field on the base result.
 
         Each pass produces embeddings in idea_embedding. This method copies those
-        into the correct target field (e.g. taxonomy_embedding).
+        into the correct target field (e.g. ladder_embedding).
 
         Returns:
             Number of embeddings merged.
@@ -585,13 +494,6 @@ class Embedder:
 
         Runs N embedding passes based on pass_specs, merging each pass's
         embeddings into the correct target field on the result.
-
-        Args:
-            data: List of EmbeddingsModel instances
-            pass_specs: List of EmbeddingPass specs defining each pass
-
-        Returns:
-            List of EmbeddingsModel with all specified embedding fields populated
         """
         original_format = self.embedding_text_format
         result = None
@@ -610,7 +512,6 @@ class Embedder:
                 if pass_spec.target_field != "idea_embedding":
                     # First pass targets a non-default field; move embeddings
                     merged = self._merge_pass_embeddings(result, pass_result, pass_spec.target_field)
-                    # Clear idea_embedding since it was moved
                     for resp in result:
                         if resp.response_ideas:
                             for idea in resp.response_ideas:
@@ -629,19 +530,33 @@ class Embedder:
 
         return result
 
+    # =========================================================================
+    # PUBLIC API
+    # =========================================================================
+
+    def get_embeddings_with_tracking(self, data: List[models.EmbeddingsModel], var_lab: str = None) -> List[models.EmbeddingsModel]:
+        """Generate embeddings with ID tracking.
+
+        Args:
+            data: List of EmbeddingsModel (or IdeasExtractedModel) instances
+            var_lab: Survey question label
+
+        Returns:
+            List of EmbeddingsModel with embeddings applied
+        """
+        if var_lab is not None:
+            self.var_lab = var_lab
+
+        # Handle multi-pass modes via config_exp specs
+        if self.embedding_text_format in MULTI_PASS_SPECS:
+            return self._process_multi_pass_embeddings(
+                data, MULTI_PASS_SPECS[self.embedding_text_format]
+            )
+
+        result = asyncio.run(self._process_embeddings_with_id_tracking(data))
+
+        return result
+
     def get_analysis(self) -> Optional[EmbeddingAnalysis]:
         """Get embedding analysis results."""
         return self.analysis
-
-    def close(self):
-        """Close the Gemini client to release resources."""
-        if self.genai_client is not None:
-            try:
-                self.genai_client.close()
-            except Exception:
-                pass
-            self.genai_client = None
-
-    def __del__(self):
-        """Cleanup Gemini client on garbage collection."""
-        self.close()

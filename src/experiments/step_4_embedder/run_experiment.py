@@ -187,7 +187,7 @@ def run_experiment(config: ExperimentConfig = None):
     elapsed_time = time.time() - start_time
 
     # Count embeddings per type
-    embed_fields = ['idea_embedding', 'node_embedding', 'category_embedding', 'taxonomy_embedding']
+    embed_fields = ['idea_embedding', 'concept_embedding', 'concept_type_embedding', 'ladder_embedding']
     for field in embed_fields:
         count = sum(
             1 for resp in embedded_text

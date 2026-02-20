@@ -1,11 +1,12 @@
 """
-Experimental Models — Clean Pydantic models aligned with step 3 prompt outputs.
+Experimental Models — Clean Pydantic models aligned with step 3 v5 prompt outputs.
 
 Differences from production models.py:
-- ExtractionMetadata: removed dead fields (taxonomy_secondary_axis, taxonomy_sample_phrases,
-  taxonomy_rationale, extraction_timestamp); renamed taxonomy_primary_axis → taxonomy_axis
-- IdeasExtractedSubmodel: removed legacy fields (taxonomy_phrase, sentiment, sense)
-- EmbeddingsSubmodel: 4 embedding fields (idea, node, category, taxonomy)
+- ExtractionMetadata: taxonomy_primary_axis → primary_facet + primary_facet_description
+  + decision_tree_stop_position; taxonomy_sample_phrases → concept_types
+- IdeasExtractedSubmodel: node → concept, semantic_category → concept_type,
+  category_label → concept_type_definition; dropped root; added valence
+- EmbeddingsSubmodel: 4 embedding fields (idea, concept, concept_type, ladder)
 - OntologySubmodel: removed entirely (was unused)
 
 Usage in experimental steps:
@@ -55,7 +56,7 @@ from models import (
 # === CLEANED METADATA MODEL ========================================================================
 
 class ExtractionMetadata(BaseModel):
-    """Extraction-level metadata from step 3 (applies to entire dataset, not per-idea)."""
+    """Extraction-level metadata from step 3 v5 (applies to entire dataset, not per-idea)."""
 
     # File/variable info
     filename: str = ""
@@ -73,15 +74,16 @@ class ExtractionMetadata(BaseModel):
     entity: str = ""                      # e.g., "merk_x"
     intent: str = ""                      # e.g., "evaluate"
 
-    # Taxonomy (from CodingDimensionConsolidatedResponse + SubjectExtractionResponse)
-    taxonomy_axis: str = ""               # e.g., "WHAT" (was: taxonomy_primary_axis)
-    taxonomy_axis_description: str = ""   # Context-specific description of the axis
+    # Primary facet (from MECE decision tree)
+    primary_facet: str = ""               # e.g., "EVALUATION_PRIORITIZATION"
+    primary_facet_description: str = ""   # Context-specific description of the facet
+    decision_tree_stop_position: int = 0  # 1-10, which decision tree step triggered facet selection
     taxonomy_actionable_type: str = ""    # e.g., "attributes", "features", "concepts"
 
-    # Topical categories (data-driven, replaces fixed ontological categories)
-    topical_categories: List[Dict[str, str]] = Field(
+    # Concept types (data-driven)
+    concept_types: List[Dict[str, str]] = Field(
         default_factory=list,
-        description="Data-driven association-type categories [{key, label, definition}, ...]"
+        description="Data-driven concept types [{key, label, definition}, ...]"
     )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -90,18 +92,18 @@ class ExtractionMetadata(BaseModel):
 # === CLEANED PIPELINE MODELS =======================================================================
 
 class IdeasExtractedSubmodel(BaseModel):
-    """Per-idea data from step 3 extraction.
+    """Per-idea data from step 3 v5 extraction.
 
-    Fields match SemanticTaxonomyResponse from prompts_exp.py:
-    instance → node → semantic_category (category_label) → root
+    Hierarchy: instance → concept → concept_type → primary_facet (dataset-level)
+    Secondary facets: valence
     """
-    idea_id: str                    # Format: {respondent_id}_{sequence_number}
-    idea: str                       # Clean text
-    instance: str = ""              # Verbatim span from response
-    node: str = ""                  # Canonical, reusable concept (noun phrase)
-    semantic_category: str = ""     # One of: identity, attribute, function, state, evaluation, relation
-    category_label: str = ""        # Concise descriptive label within the category
-    root: str = ""                  # Top-level domain framing
+    idea_id: str                          # Format: {respondent_id}_{sequence_number}
+    idea: str                             # Clean text (starts with template prefix)
+    instance: str = ""                    # Verbatim span from response
+    concept: str = ""                     # Canonical, reusable concept (noun phrase)
+    concept_type: str = ""                # Discovered concept type (e.g., "recommendation")
+    concept_type_definition: str = ""     # High-level framing of concept_type in survey context
+    valence: str = ""                     # positive / negative / neutral_mixed
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -112,10 +114,11 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
-    idea_embedding: Optional[npt.NDArray[np.float32]] = None        # template_prefix + idea
-    node_embedding: Optional[npt.NDArray[np.float32]] = None        # node (canonical concept)
-    category_embedding: Optional[npt.NDArray[np.float32]] = None    # semantic_category
-    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None    # node → category_label → semantic_category → root
+    idea_embedding: Optional[npt.NDArray[np.float32]] = None        # idea (natural sentence incl. template_prefix)
+    concept_embedding: Optional[npt.NDArray[np.float32]] = None     # concept → concept_type_definition
+    concept_type_embedding: Optional[npt.NDArray[np.float32]] = None  # concept_type
+    ladder_embedding: Optional[npt.NDArray[np.float32]] = None      # instance → concept → concept_type → concept_type_definition
+    idea_concept_defined_embedding: Optional[npt.NDArray[np.float32]] = None  # idea → concept → concept_type_definition
 
 
 class EmbeddingsModel(IdeasExtractedModel):

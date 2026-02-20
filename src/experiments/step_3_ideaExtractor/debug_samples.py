@@ -50,7 +50,7 @@ def clean_idea(idea: str) -> str:
 
 
 def print_extraction_metadata(cache_manager, filename, variable_key):
-    """Load and print extraction metadata (taxonomy, context specifiers)."""
+    """Load and print extraction metadata (facet, concept types, context specifiers)."""
     metadata = cache_manager.load_metadata_from_cache(
         filename, "extracted_ideas", variable_key, models.ExtractionMetadata
     )
@@ -80,7 +80,6 @@ def print_extraction_metadata(cache_manager, filename, variable_key):
     # Primary Facet
     print("\n[Primary Facet]")
     print(f"  Facet:             {metadata.primary_facet or '(not set)'}")
-    print(f"  Actionable type:   {metadata.taxonomy_actionable_type or '(not set)'}")
     print(f"  Facet description: {metadata.primary_facet_description or '(not set)'}")
 
     # Concept Types
@@ -97,20 +96,12 @@ def print_idea_details(idea: models.IdeasExtractedSubmodel, indent: str = "  "):
     cleaned = clean_idea(idea.idea)
     print(f"{indent}Idea: {cleaned}")
 
-    # Taxonomy (flat fields)
-    tax_parts = [v for v in (idea.instance, idea.node, idea.concept_type) if v]
-    if tax_parts:
-        print(f"{indent}  taxonomy: {' → '.join(tax_parts)}")
-    # Secondary facets
-    sec = []
+    # Abstraction ladder (4 steps)
+    ladder_parts = [v for v in (idea.instance, idea.concept, idea.concept_type, idea.concept_type_definition) if v]
+    if ladder_parts:
+        print(f"{indent}  ladder: {' → '.join(ladder_parts)}")
     if idea.valence:
-        sec.append(f"valence={idea.valence}")
-    if idea.agency_focus:
-        sec.append(f"agency={idea.agency_focus}")
-    if idea.prescriptiveness:
-        sec.append(f"presc={idea.prescriptiveness}")
-    if sec:
-        print(f"{indent}  facets: {', '.join(sec)}")
+        print(f"{indent}  valence: {idea.valence}")
 
 
 def main():

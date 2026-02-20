@@ -1,8 +1,21 @@
 """
 Experimental Configuration for Step 4: Embedder
 
-Copied from production config_embedder.py — tweak settings here
-without affecting production runs.
+v5-aligned embedding formats and multi-pass specifications.
+
+Available single-pass formats (stored in idea_embedding):
+    "idea"            — idea text as-is (natural sentence incl. template_prefix)
+    "idea_bare"       — idea with template_prefix stripped
+    "concept"         — canonical concept noun phrase
+    "concept_type"    — discovered concept type
+    "concept_defined"      — concept → concept_type_definition
+    "concept_typed"        — concept (concept_type)
+    "idea_concept_defined" — idea → concept → concept_type_definition
+    "ladder"               — instance → concept → concept_type → concept_type_definition
+
+Available multi-pass formats (each pass stored in its own field):
+    "default"         — 4 passes: idea, ladder, concept_defined, idea_concept_defined
+    "all"             — 4 passes: idea, concept, concept_type, ladder
 
 Usage:
     Set USE_EXPERIMENTAL = True in run_experiment.py to use this config.
@@ -11,7 +24,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 EmbeddingTextFormat = Literal[
-    "idea", "node", "category", "taxonomy", "all"
+    # Single-pass (stored in idea_embedding)
+    "idea", "idea_bare", "concept", "concept_type",
+    "concept_defined", "concept_typed", "idea_concept_defined", "ladder",
+    # Multi-pass (each pass stored in its own field)
+    "default", "all",
 ]
 
 
@@ -28,39 +45,35 @@ class EmbeddingPass:
 
 
 MULTI_PASS_SPECS = {
+    "default": [
+        EmbeddingPass("idea",                 "idea_embedding",                  "idea (natural sentence)"),
+        EmbeddingPass("ladder",               "ladder_embedding",                "abstraction ladder (instance → concept → concept_type → concept_type_definition)"),
+        EmbeddingPass("concept_defined",      "concept_embedding",               "concept → concept_type_definition"),
+        EmbeddingPass("idea_concept_defined", "idea_concept_defined_embedding",  "idea → concept → concept_type_definition"),
+    ],
     "all": [
-        EmbeddingPass("idea",     "idea_embedding",     "idea text (template_prefix + idea)"),
-        EmbeddingPass("node",     "node_embedding",     "node (canonical concept)"),
-        EmbeddingPass("category", "category_embedding", "semantic_category"),
-        EmbeddingPass("taxonomy", "taxonomy_embedding", "taxonomy chain (node → category_label → semantic_category → root)"),
+        EmbeddingPass("idea",         "idea_embedding",         "idea (natural sentence)"),
+        EmbeddingPass("concept",      "concept_embedding",      "concept (canonical noun phrase)"),
+        EmbeddingPass("concept_type", "concept_type_embedding", "concept_type"),
+        EmbeddingPass("ladder",       "ladder_embedding",       "abstraction ladder"),
     ],
 }
 
 
+# =============================================================================
+# EXPERIMENTAL EMBEDDER CONFIGURATION
+# =============================================================================
+
 @dataclass
 class EmbedderConfigExp:
-    """Experimental embedder config — modify freely.
+    """Experimental embedder config — modify freely."""
 
-    Production defaults copied from config_embedder.py EmbedderConfig.
-    """
-    # Text format: "idea", "node", "category", "taxonomy", "all"
-    embedding_text_format: EmbeddingTextFormat = "all"
-    # Provider: "openai" or "gemini"
-    provider: str = "openai"
+    # Text format (see module docstring for options)
+    embedding_text_format: EmbeddingTextFormat = "default"
 
     # OpenAI batch settings
     openai_batch_size: int = 100
     openai_max_concurrent: int = 5
-
-    # Gemini batch settings
-    gemini_batch_size: int = 20
-    gemini_max_concurrent: int = 10
-
-    # Question-aware settings
-    use_question_aware: bool = False
-    response_weight: float = 0.6
-    question_weight: float = 0.3
-    domain_anchor_weight: float = 0.1
 
     # Analysis settings
     analyze_embeddings: bool = True

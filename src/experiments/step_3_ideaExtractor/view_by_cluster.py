@@ -2,7 +2,7 @@
 #
 """
 View Step 3 results organized by concept type.
-Displays all ideas grouped by concept_type, showing: idea, instance, node, valence.
+Displays all ideas grouped by concept_type, showing: idea, instance, concept, concept_type_definition, valence.
 
 Usage:
     cd src && python -m "experiments.step_3_ideaExtractor v4.view_by_cluster"
@@ -72,19 +72,15 @@ def main():
     # Display each group
     for ct in sorted(groups.keys()):
         ideas = groups[ct]
-        ideas.sort(key=lambda i: (i.node or "", i.valence or ""))
+        ideas.sort(key=lambda i: (i.concept or "", i.valence or ""))
 
         print("\n" + "=" * 60)
         print(f"{ct.upper()} ({len(ideas)} ideas)")
         print("=" * 60)
         for idea in ideas:
-            sec = []
-            if idea.valence:
-                sec.append(idea.valence)
-            if idea.agency_focus:
-                sec.append(idea.agency_focus)
-            sec_str = f" [{', '.join(sec)}]" if sec else ""
-            print(f"- {clean_idea(idea.idea)} | {idea.node}{sec_str}")
+            valence_str = f" [{idea.valence}]" if idea.valence else ""
+            ftd_str = f" ({idea.concept_type_definition})" if idea.concept_type_definition else ""
+            print(f"- {clean_idea(idea.idea)} | {idea.concept}{ftd_str}{valence_str}")
 
 
 if __name__ == "__main__":
