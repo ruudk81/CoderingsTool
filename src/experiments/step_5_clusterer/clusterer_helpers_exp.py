@@ -116,6 +116,8 @@ def extract_embeddings(
         template_prefix: The canonical phrasing prefix (if available)
         embedding_text_format: The text format used for embedding (if available)
     """
+    embedding_field = getattr(config, 'clustering_embedding_field', 'idea_embedding')
+
     embeddings_list = []
     idea_texts = []
     idea_indices = []
@@ -133,18 +135,19 @@ def extract_embeddings(
 
         if response.response_ideas:
             for idea_idx, idea in enumerate(response.response_ideas):
-                if idea.idea_embedding is not None:
-                    embeddings_list.append(idea.idea_embedding)
+                emb = getattr(idea, embedding_field, None)
+                if emb is not None:
+                    embeddings_list.append(emb)
                     idea_texts.append(idea.idea if hasattr(idea, 'idea') else str(idea))
                     idea_indices.append((resp_idx, idea_idx))
 
     if not embeddings_list:
-        raise ValueError("No embeddings found in input data")
+        raise ValueError(f"No embeddings found in input data (field: {embedding_field})")
 
     embeddings = np.vstack(embeddings_list)
 
     if config.verbose:
-        print(f"Extracted {len(embeddings)} embeddings with dimension {embeddings.shape[1]}")
+        print(f"Extracted {len(embeddings)} embeddings with dimension {embeddings.shape[1]} (field: {embedding_field})")
         if template_prefix:
             prefix_display = template_prefix[:50] + "..." if len(template_prefix) > 50 else template_prefix
             print(f"Template prefix: '{prefix_display}'")
@@ -2192,6 +2195,51 @@ def extract_text_for_format(
     return idea_text
 
 
+def format_ladder_text(idea) -> str:
+    """Format full ladder chain: instance -> concept -> concept_type -> concept_type_definition.
+
+    Falls back to idea.idea when all fields are empty.
+    """
+    parts = []
+    for field_name in ('instance', 'concept', 'concept_type', 'concept_type_definition'):
+        val = (getattr(idea, field_name, '') or '').strip()
+        if val:
+            parts.append(val)
+    return " -> ".join(parts) if parts else getattr(idea, 'idea', '')
+
+
+def _get_single_field_text(idea, field: str) -> str:
+    """Get text for a single field from an idea object."""
+    if field == "ladder":
+        return format_ladder_text(idea)
+    if field == "idea":
+        return idea.idea
+    return (getattr(idea, field, '') or '').strip()
+
+
+def get_idea_field_text(idea, field: str, separator: str = " | ") -> str:
+    """Get text for a field (or composite of fields) from an idea object.
+
+    Args:
+        idea: Idea object with concept/ladder fields
+        field: One of:
+            - Single field: "idea", "instance", "concept", "concept_type",
+              "concept_type_definition", "ladder"
+            - Composite: "idea+concept_type_definition", "concept+concept_type", etc.
+              Fields joined with `separator`.
+            "ladder" returns the full chain
+            "instance -> concept -> concept_type -> concept_type_definition"
+        separator: Join string for composite fields (default " | ").
+
+    Returns:
+        Text string (may be empty if all fields are not populated)
+    """
+    if "+" in field:
+        parts = [_get_single_field_text(idea, f.strip()) for f in field.split("+")]
+        return separator.join(p for p in parts if p)
+    return _get_single_field_text(idea, field)
+
+
 # =============================================================================
 # SECTION 6a: REPRESENTATION MODELS (inlined from representation/)
 # =============================================================================
@@ -3152,8 +3200,8 @@ Use to refine - but not override - the representative {sample_type}:
         taxonomy_description = None
         taxonomy_actionable_type = None
         if extraction_metadata:
-            taxonomy_axis = getattr(extraction_metadata, 'taxonomy_axis', None)
-            taxonomy_description = getattr(extraction_metadata, 'taxonomy_axis_description', None)
+            taxonomy_axis = getattr(extraction_metadata, 'primary_facet', None)
+            taxonomy_description = getattr(extraction_metadata, 'primary_facet_description', None)
             taxonomy_actionable_type = getattr(extraction_metadata, 'taxonomy_actionable_type', None)
 
         if verbose:

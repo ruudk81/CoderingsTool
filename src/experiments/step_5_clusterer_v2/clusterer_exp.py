@@ -1,16 +1,8 @@
 """
-Clusterer V2 - Theme Generation + MECE Topic Consolidation
+Clusterer - Unified Clustering Module - EXPERIMENTAL VERSION
 
-EXPERIMENTAL VERSION (step_5_clusterer_v2)
+This is an isolated copy for experimentation in step_5_clusterer.
 Changes here do NOT affect the production pipeline.
-
-Based on: src/experiments/step_5_clusterer/clusterer_exp.py (V1)
-
-V2 changes:
-- Phase 7: Theme Generation (replaces v1 LLM label generation)
-  Generates per-cluster topics with inclusion definitions
-- Phase 8: MECE Topic Consolidation (NEW)
-  Merges overlapping themes into a MECE topic set
 
 Original: src/utils/clusterer.py
 
@@ -20,7 +12,7 @@ A comprehensive clustering module with:
 - Agglomerative/K-means fallback for uniform density data
 - Post-processing (cluster merging, BERTopic-style noise reduction)
 - c-TF-IDF keyword extraction with spaCy lemmatization
-- LLM-generated cluster themes + MECE topic consolidation
+- LLM-generated cluster labels
 
 Pipeline Integration:
 - Input: List[EmbeddingsModel] from step 4 (embeddings)
@@ -41,41 +33,62 @@ Usage (experimental):
 
     cluster_results = clusterer.to_cluster_model()
     keywords = clusterer.get_cluster_keywords()
-    themes = clusterer.get_cluster_themes()
-    mece_topics = clusterer.get_mece_topics()
+    labels = clusterer.get_cluster_labels()
 """
 
-import re
 import warnings
 from typing import List, Dict, Tuple, Optional, Any
 from collections import Counter
-from pathlib import Path
 
 import numpy as np
-from sklearn.cluster import AgglomerativeClustering, KMeans
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.metrics.pairwise import cosine_similarity
 import hdbscan
 import umap
 
 from experiments import models_exp as models
-from .config_clusterer_exp import ClustererConfig, resolve_embedding_source
-from .clusterer_helpers_exp import (
-    # Preprocessing
-    preprocess_embeddings, l2_normalize,
-    # Algorithm Selection
-    AlgorithmSelector, AlgorithmRecommendation,
-    # Parameter Optimization
-    ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid, ms_grid,
-    # Quality Metrics
-    ClusterQualityMetrics, ClusteringMetrics, calculate_coherence_score,
-    # Post-Processing
-    merge_similar_clusters, recluster_noise, reduce_noise_by_embedding_similarity,
-    # Representation
-    RepresentationEngine,
-    # Theme Generation (V2)
-    ThemeGenerator, ClusterTheme
-)
+
+try:
+    from .config_clusterer_exp import ClustererConfig
+    from .clusterer_helpers_exp import (
+        # Preprocessing
+        preprocess_embeddings, l2_normalize,
+        # Algorithm Selection
+        AlgorithmSelector, AlgorithmRecommendation,
+        # Parameter Optimization
+        ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid_sqrt,
+        # Quality Metrics
+        ClusterQualityMetrics, ClusteringMetrics,
+        # Post-Processing
+        merge_similar_clusters, reduce_noise_by_embedding_similarity,
+        # Representation
+        RepresentationEngine, extract_text_for_format,
+        # Label Generation
+        LabelGenerator, ClusterLabel,
+        # Text field access
+        get_idea_field_text,
+    )
+except ImportError:
+    from config_clusterer_exp import ClustererConfig
+    from clusterer_helpers_exp import (
+        # Preprocessing
+        preprocess_embeddings, l2_normalize,
+        # Algorithm Selection
+        AlgorithmSelector, AlgorithmRecommendation,
+        # Parameter Optimization
+        ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid_sqrt,
+        # Quality Metrics
+        ClusterQualityMetrics, ClusteringMetrics,
+        # Post-Processing
+        merge_similar_clusters, reduce_noise_by_embedding_similarity,
+        # Representation
+        RepresentationEngine, extract_text_for_format,
+        # Label Generation
+        LabelGenerator, ClusterLabel,
+        # Text field access
+        get_idea_field_text,
+    )
 
 # Suppress common warnings
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
@@ -115,10 +128,7 @@ class Clusterer:
         self,
         input_list: List[models.EmbeddingsModel],
         config: Optional[ClustererConfig] = None,
-        extraction_metadata: Optional[models.ExtractionMetadata] = None,
-        theme_generator: Optional['ThemeGenerator'] = None,
-        mece_prompt_template=None,
-        mece_response_model=None,
+        extraction_metadata: Optional[models.ExtractionMetadata] = None
     ):
         """
         Initialize Clusterer.
@@ -127,26 +137,19 @@ class Clusterer:
             input_list: List of EmbeddingsModel with idea_embedding populated
             config: Configuration (uses defaults if None)
             extraction_metadata: Optional ExtractionMetadata for taxonomy context in LLM labels
-            theme_generator: Optional override ThemeGenerator (for object discovery)
-            mece_prompt_template: Optional override MECE prompt template
-            mece_response_model: Optional override MECE response model
         """
         self.config = config or ClustererConfig()
         self._input_list = input_list
         self._extraction_metadata = extraction_metadata
         self._verbose = self.config.verbose
-        self._mece_prompt_template = mece_prompt_template
-        self._mece_response_model = mece_response_model
 
         # Will be populated during run()
         self._embeddings_original: Optional[np.ndarray] = None
         self._embeddings_processed: Optional[np.ndarray] = None
         self._idea_texts: Optional[List[str]] = None
-        self._ontology_texts: Optional[List[str]] = None
         self._idea_indices: Optional[List[Tuple[int, int]]] = None
         self._template_prefix: Optional[str] = None
-        self._embedding_text_format: Optional[str] = None  # Text format used for embedding (cached from step 4)
-        self._keyword_text_format: Optional[str] = None   # Canonical format for keyword/label text (derived from embedding_source)
+        self._embedding_text_format: Optional[str] = None  # Text format used for embedding
         self._labels: Optional[np.ndarray] = None
         self._umap_embeddings: Optional[np.ndarray] = None
         self._hdbscan_model: Optional[hdbscan.HDBSCAN] = None
@@ -154,17 +157,15 @@ class Clusterer:
         self._metrics: Optional[ClusteringMetrics] = None
         # Keywords stored as {"ctfidf": {...}, "mmr": {...}, "tfidf": {...}}
         self._cluster_keywords: Optional[Dict[str, Dict[int, List[Tuple[str, float]]]]] = None
-        self._cluster_themes: Optional[Dict[int, ClusterTheme]] = None  # Phase B output
-        self._mece_topics = None  # Phase C output (MECETopicSet)
+        self._cluster_labels: Optional[Dict[int, ClusterLabel]] = None
         self._algorithm_used: str = ""
         self._algorithm_params: Dict[str, Any] = {}
-        self._optimizer: Optional[ParameterOptimizer] = None  # Store for visualization access
 
         # Components
         self._selector = AlgorithmSelector(self.config)
         self._metrics_calculator = ClusterQualityMetrics(self.config)
         self._representation_engine = RepresentationEngine(self.config)
-        self._theme_generator = theme_generator or ThemeGenerator(self.config)
+        self._label_generator = LabelGenerator(self.config)
 
     def run(self) -> 'Clusterer':
         """
@@ -200,8 +201,6 @@ class Clusterer:
                 self._run_hdbscan_optimized()
             elif algorithm == "agglomerative":
                 self._run_agglomerative()
-            elif algorithm == "kmeans":
-                self._run_kmeans()
             else:
                 raise ValueError(f"Unknown algorithm: {algorithm}")
 
@@ -215,13 +214,9 @@ class Clusterer:
         if self.config.generate_ctfidf:
             self._run_representation()
 
-        # Phase 7: Theme Generation (optional, replaces v1 LLM Labels)
+        # Phase 7: LLM Labels (optional)
         if self.config.generate_llm_labels:
-            self._run_theme_generation()
-
-        # Phase 8: MECE Topic Consolidation (optional)
-        if self.config.generate_mece_topics:
-            self._run_mece_consolidation()
+            self._run_llm_labels()
 
         return self
 
@@ -234,7 +229,6 @@ class Clusterer:
             self._embeddings_original,
             self._embeddings_processed,
             self._idea_texts,
-            self._ontology_texts,
             self._idea_indices,
             _,
             self._template_prefix,
@@ -243,23 +237,8 @@ class Clusterer:
 
         self._N = len(self._embeddings_original)
 
-        # Derive keyword text format from embedding source config (not cached format name).
-        # This decouples keyword/label text from the embedder's format naming.
-        _SOURCE_TO_KEYWORD_FORMAT = {
-            "idea_embedding": "idea",
-            "node_embedding": "taxonomy",
-            "category_embedding": "taxonomy",
-            "taxonomy_embedding": "taxonomy",
-        }
-        resolved_source = resolve_embedding_source(
-            self._embedding_text_format or "idea", self.config.embedding_source
-        )
-        self._keyword_text_format = _SOURCE_TO_KEYWORD_FORMAT.get(resolved_source, "idea")
-
         if self._verbose:
             print(f"  Loaded {self._N} embeddings")
-            if self._keyword_text_format != self._embedding_text_format:
-                print(f"  Keyword text: '{self._keyword_text_format}' (from embedding_source='{self.config.embedding_source}')")
 
     def _run_algorithm_selection(self):
         """Phase 2: Compute DVC, knee detection, and recommendation."""
@@ -289,9 +268,9 @@ class Clusterer:
             }
         else:
             # Run trial UMAP for knee detection
+            # Use middle of n_neighbors grid
             n_neighbors_list = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)
-            nn_idx = len(n_neighbors_list) // 2 if self.config.trial_umap_nn_index == -1 else self.config.trial_umap_nn_index
-            trial_n_neighbors = n_neighbors_list[nn_idx]
+            trial_n_neighbors = n_neighbors_list[len(n_neighbors_list) // 2]
 
             # Use first n_components from grid for trial UMAP
             trial_n_components = self.config.umap_n_components_grid[0]
@@ -321,12 +300,12 @@ class Clusterer:
 
     def _map_recommendation_to_algorithm(self) -> str:
         """Map combined recommendation to algorithm name."""
-        if self.config.force_hdbscan:
-            return "hdbscan"
         rec = self._recommendation.combined_recommendation
         if "HDBSCAN" in rec:
             return "hdbscan"
         elif rec == "AGGLOMERATIVE_OR_KMEANS":
+            # Use DVC to decide between agglomerative and kmeans
+            # (both work similarly on uniform density data)
             return "agglomerative"
         else:
             return "agglomerative"
@@ -336,14 +315,14 @@ class Clusterer:
         if self._verbose:
             print("\n[Phase 3] HDBSCAN Optimization (Optuna)")
 
-        self._optimizer = ParameterOptimizer(
+        optimizer = ParameterOptimizer(
             self.config,
             self._embeddings_processed,
             self._embeddings_original,
             verbose=self._verbose
         )
 
-        result = self._optimizer.optimize()
+        result = optimizer.optimize()
 
         self._labels = result.best_labels.copy()
         self._umap_embeddings = result.umap_embeddings
@@ -362,8 +341,8 @@ class Clusterer:
         if self._verbose:
             print("\n[Phase 3] Agglomerative Clustering")
 
-        # Single UMAP reduction
-        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[self.config.agglomerative_nn_index]
+        # Single UMAP reduction - use first n_components from grid
+        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[1]  # Second value
         n_components = self.config.umap_n_components_grid[0]
 
         if self._verbose:
@@ -388,14 +367,10 @@ class Clusterer:
         if self._verbose:
             print(f"  K grid: {k_grid}")
 
-        # Find best K by coherence (mean intra-cluster cosine similarity on original embeddings)
+        # Find best K by silhouette score
         best_k = k_grid[0]
-        best_coherence = -1.0
+        best_sil = -1.0
         best_labels = None
-
-        if self._verbose:
-            print(f"  {'k':>3} | {'coherence':>9} | {'silhouette':>10}")
-            print(f"  {'-'*3}-+-{'-'*9}-+-{'-'*10}")
 
         for k in k_grid:
             if k >= len(self._umap_embeddings):
@@ -409,12 +384,11 @@ class Clusterer:
             labels = clusterer.fit_predict(self._umap_embeddings)
 
             if len(set(labels)) > 1:
-                coherence = calculate_coherence_score(labels, self._embeddings_original)
                 sil = silhouette_score(self._umap_embeddings, labels)
                 if self._verbose:
-                    print(f"  {k:>3} | {coherence:>9.3f} | {sil:>10.3f}")
-                if coherence > best_coherence:
-                    best_coherence = coherence
+                    print(f"    k={k}: silhouette={sil:.3f}")
+                if sil > best_sil:
+                    best_sil = sil
                     best_k = k
                     best_labels = labels.copy()
 
@@ -429,7 +403,7 @@ class Clusterer:
         self._algorithm_params = {'n_clusters': best_k, 'linkage': self.config.agglomerative_linkage}
 
         if self._verbose:
-            print(f"  Best: k={best_k}, coherence={best_coherence:.3f}")
+            print(f"  Best: k={best_k}, silhouette={best_sil:.3f}")
 
     def _run_agglomerative_small(self):
         """
@@ -558,8 +532,8 @@ class Clusterer:
         all_labels = {r[0]: r[1] for r in results}  # k -> labels mapping
 
         # Bootstrap parameters
-        n_bootstrap = self.config.agglomerative_bootstrap_iterations
-        confidence_level = self.config.agglomerative_bootstrap_confidence
+        n_bootstrap = 100  # Number of bootstrap iterations
+        confidence_level = 0.95
         alpha = 1 - confidence_level
 
         # Compute bootstrap CIs for each K
@@ -636,70 +610,6 @@ class Clusterer:
 
         return selected_k, selected_labels, reason
 
-    def _run_kmeans(self):
-        """Phase 3c: Run K-means clustering."""
-        if self._verbose:
-            print("\n[Phase 3] K-means Clustering")
-
-        # Single UMAP reduction
-        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[self.config.kmeans_nn_index]
-        n_components = self.config.umap_n_components_grid[0]
-
-        if self._verbose:
-            print(f"  UMAP: n_neighbors={n_neighbors}, n_components={n_components}")
-
-        self._umap_embeddings = run_umap(
-            self._embeddings_processed,
-            n_neighbors,
-            n_components,
-            self.config.umap_min_dist,
-            self.config.umap_random_state
-        )
-        self._umap_embeddings = l2_normalize(self._umap_embeddings)
-
-        # K grid
-        sqrt_n = int(np.sqrt(self._N))
-        k_grid = sorted(set([
-            max(2, int(m * sqrt_n))
-            for m in self.config.k_grid_multipliers
-        ]))
-
-        if self._verbose:
-            print(f"  K grid: {k_grid}")
-
-        # Find best K by silhouette score
-        best_k = k_grid[0]
-        best_sil = -1.0
-        best_labels = None
-
-        for k in k_grid:
-            if k >= len(self._umap_embeddings):
-                continue
-
-            clusterer = KMeans(n_clusters=k, random_state=self.config.kmeans_random_state, n_init=self.config.kmeans_n_init)
-            labels = clusterer.fit_predict(self._umap_embeddings)
-
-            if len(set(labels)) > 1:
-                sil = silhouette_score(self._umap_embeddings, labels)
-                if self._verbose:
-                    print(f"    k={k}: silhouette={sil:.3f}")
-                if sil > best_sil:
-                    best_sil = sil
-                    best_k = k
-                    best_labels = labels.copy()
-
-        if best_labels is None:
-            clusterer = KMeans(n_clusters=k_grid[0], random_state=self.config.kmeans_random_state, n_init=self.config.kmeans_n_init)
-            best_labels = clusterer.fit_predict(self._umap_embeddings)
-            best_k = k_grid[0]
-
-        self._labels = best_labels
-        self._algorithm_used = "K-means"
-        self._algorithm_params = {'n_clusters': best_k}
-
-        if self._verbose:
-            print(f"  Best: k={best_k}, silhouette={best_sil:.3f}")
-
     def _run_post_processing(self):
         """Phase 4: Cluster merging and noise reduction."""
         if self._verbose:
@@ -718,23 +628,13 @@ class Clusterer:
         if self._algorithm_used == "HDBSCAN":
             strategy = self.config.noise_reduction_strategy
 
-            if strategy == "embeddings":
-                # BERTopic-style: assign noise by embedding similarity
-                self._labels, noise_stats = reduce_noise_by_embedding_similarity(
-                    self._labels,
-                    self._embeddings_original,
-                    threshold=self.config.noise_reduction_threshold,
-                    verbose=self._verbose
-                )
-            elif strategy == "hdbscan" and self.config.enable_noise_reclustering:
-                # Legacy: re-run HDBSCAN on noise points
-                self._labels = recluster_noise(
-                    self._labels,
-                    self._umap_embeddings,
-                    self._embeddings_original,
-                    self.config,
-                    verbose=self._verbose
-                )
+            # BERTopic-style: assign noise by embedding similarity
+            self._labels, noise_stats = reduce_noise_by_embedding_similarity(
+                self._labels,
+                self._embeddings_original,
+                threshold=self.config.noise_reduction_threshold,
+                verbose=self._verbose
+            )
 
     def _compute_final_metrics(self):
         """Phase 5: Calculate final quality metrics."""
@@ -779,11 +679,18 @@ class Clusterer:
             if self._verbose:
                 print(f"  Using core cluster members (probability > {min_probability}) for keywords and LLM samples")
 
+        keyword_texts = (
+            [self._get_idea_text(i, self.config.keyword_text_source) for i in range(len(self._labels))]
+            if self.config.keyword_text_source != "idea"
+            else self._idea_texts
+        )
+        if self._verbose and self.config.keyword_text_source != "idea":
+            print(f"  Keyword text source: {self.config.keyword_text_source}")
+
         self._cluster_keywords = self._representation_engine.extract_all_keywords_from_labels(
             self._labels,
-            self._idea_texts,
-            ontology_texts=self._ontology_texts,
-            embedding_text_format=self._keyword_text_format,
+            keyword_texts,
+            embedding_text_format=self._embedding_text_format,
             probabilities=probabilities,
             min_probability=min_probability,
             verbose=self._verbose
@@ -793,28 +700,60 @@ class Clusterer:
             for method, keywords in self._cluster_keywords.items():
                 print(f"  {method}: extracted keywords for {len(keywords)} clusters")
 
-    def _run_theme_generation(self):
-        """Phase 7: Generate per-cluster themes with inclusion definitions (V2)."""
-        if self._verbose:
-            print("\n[Phase 7] Theme Generation (V2)")
+    def _compute_cluster_metadata_distributions(self, cluster_id: int) -> Dict[str, Dict[str, float]]:
+        """
+        Compute concept_type distribution for a cluster.
 
-        # Build cluster_texts dict — always use full idea text (template_prefix + instance)
-        # for the LLM prompt samples (keywords handle node-level terms separately)
-        self._cluster_texts = {}
+        Args:
+            cluster_id: The cluster to analyze
+
+        Returns:
+            Dict with keys: 'concept_type'
+            Each value is a dict of {value: percentage}
+        """
+        cluster_mask = self._labels == cluster_id
+        cluster_indices = np.where(cluster_mask)[0]
+
+        categories = []
+
+        for global_idx in cluster_indices:
+            resp_idx, idea_idx = self._idea_indices[global_idx]
+            idea = self._input_list[resp_idx].response_ideas[idea_idx]
+            if hasattr(idea, 'concept_type') and idea.concept_type:
+                categories.append(idea.concept_type)
+
+        def to_distribution(items: List[str]) -> Dict[str, float]:
+            if not items:
+                return {}
+            counts = Counter(items)
+            total = len(items)
+            return {k: round(v/total, 2) for k, v in counts.most_common()}
+
+        return {
+            'concept_type': to_distribution(categories),
+        }
+
+    def _run_llm_labels(self):
+        """Phase 7: Generate LLM-based cluster labels."""
+        if self._verbose:
+            print("\n[Phase 7] LLM Cluster Label Generation")
+
+        # Build cluster_texts dict using configured label text source
+        cluster_texts = {}
         for i, label in enumerate(self._labels):
             if label >= 0:
-                if label not in self._cluster_texts:
-                    self._cluster_texts[label] = []
-                self._cluster_texts[label].append(self._idea_texts[i])
+                if label not in cluster_texts:
+                    cluster_texts[label] = []
+                cluster_texts[label].append(self._get_idea_text(i, self.config.label_text_source))
 
         # Extract survey question from metadata (var_lab field)
-        self._survey_question = ""
+        survey_question = ""
         if self._extraction_metadata and hasattr(self._extraction_metadata, 'var_lab'):
-            self._survey_question = self._extraction_metadata.var_lab or ""
+            survey_question = self._extraction_metadata.var_lab or ""
 
         # Compute representative samples for each cluster
         representative_samples = {}
-        for cluster_id in self._cluster_texts.keys():
+        for cluster_id in cluster_texts.keys():
             representative_samples[cluster_id] = self.get_representative_ideas(
                 cluster_id,
                 n=self.config.llm_max_ideas_per_cluster
@@ -829,11 +768,18 @@ class Clusterer:
             )
             method_name = "cluster probability" if use_dense_region else "centroid similarity"
             print(f"  Selected {self.config.llm_max_ideas_per_cluster} representative samples per cluster ({method_name})")
+            if self.config.label_text_source != "idea":
+                print(f"  Label text source: {self.config.label_text_source}")
+
+        # Compute per-cluster metadata distributions
+        cluster_distributions = {}
+        for cluster_id in cluster_texts.keys():
+            cluster_distributions[cluster_id] = self._compute_cluster_metadata_distributions(cluster_id)
 
         # Extract dataset context from extraction_metadata
-        self._dataset_context = None
+        dataset_context = None
         if self._extraction_metadata:
-            self._dataset_context = {
+            dataset_context = {
                 'domain': getattr(self._extraction_metadata, 'domain', '') or '',
                 'topic': getattr(self._extraction_metadata, 'topic', '') or '',
                 'entity': getattr(self._extraction_metadata, 'entity', '') or '',
@@ -841,61 +787,26 @@ class Clusterer:
                 'intent': getattr(self._extraction_metadata, 'intent', '') or '',
             }
 
-        # Generate themes with taxonomy context if available
-        # Use MMR keywords (primary) for LLM, fallback to c-TF-IDF
-        self._keywords_for_llm = (
+        # Generate labels with taxonomy context if available
+        # Use MMR keywords (primary) for LLM label generation, fallback to c-TF-IDF
+        keywords_for_llm = (
             self._cluster_keywords.get("mmr") or self._cluster_keywords.get("ctfidf")
         ) if self._cluster_keywords else None
-        self._cluster_themes = self._theme_generator.generate_all_themes(
-            cluster_texts=self._cluster_texts,
-            cluster_keywords=self._keywords_for_llm,
+        self._cluster_labels = self._label_generator.generate_all_labels(
+            cluster_texts=cluster_texts,
+            cluster_keywords=keywords_for_llm,
             representative_samples=representative_samples,
             extraction_metadata=self._extraction_metadata,
-            embedding_text_format="idea",  # samples shown to LLM are always full idea text
-            survey_question=self._survey_question,
+            embedding_text_format=self._embedding_text_format,
+            survey_question=survey_question,
             language="Dutch",
-            dataset_context=self._dataset_context,
+            dataset_context=dataset_context,
+            cluster_distributions=cluster_distributions,
             verbose=self._verbose
         )
 
         if self._verbose:
-            print(f"  Generated themes for {len(self._cluster_themes)} clusters")
-
-    def _run_mece_consolidation(self):
-        """Phase 8: Consolidate candidate themes into MECE topics."""
-        if self._cluster_themes is None or len(self._cluster_themes) == 0:
-            if self._verbose:
-                print("\n[Phase 8] MECE Consolidation — skipped (no themes from Phase 7)")
-            return
-
-        if self._verbose:
-            print("\n[Phase 8] MECE Topic Consolidation")
-
-        from .mece_consolidator import MECEConsolidator
-
-        consolidator = MECEConsolidator(
-            self.config,
-            prompt_template=self._mece_prompt_template,
-            response_model=self._mece_response_model,
-        )
-
-        # Extract taxonomy context
-        taxonomy_axis = None
-        taxonomy_description = None
-        if self._extraction_metadata:
-            taxonomy_axis = getattr(self._extraction_metadata, 'taxonomy_axis', None)
-            taxonomy_description = getattr(self._extraction_metadata, 'taxonomy_axis_description', None)
-
-        self._mece_topics = consolidator.consolidate(
-            candidate_themes=self._cluster_themes,
-            cluster_keywords=self._keywords_for_llm,
-            survey_question=self._survey_question,
-            language="Dutch",
-            dataset_context=self._dataset_context,
-            taxonomy_axis=taxonomy_axis,
-            taxonomy_description=taxonomy_description,
-            verbose=self._verbose,
-        )
+            print(f"  Generated labels for {len(self._cluster_labels)} clusters")
 
     def to_cluster_model(self) -> List[models.ClusterModel]:
         """
@@ -968,10 +879,24 @@ class Clusterer:
         """
         return self._cluster_keywords
 
+    def _get_idea_text(self, flat_idx: int, source: str) -> str:
+        """Get text for an idea by flat index and configurable field source.
+
+        Args:
+            flat_idx: Index into the flat arrays (idea_texts, labels, etc.)
+            source: Field name - "idea", "ladder", "instance", "concept",
+                    "concept_type", "concept_type_definition",
+                    or composite: "idea+concept_type_definition"
+        """
+        resp_idx, idea_idx = self._idea_indices[flat_idx]
+        idea = self._input_list[resp_idx].response_ideas[idea_idx]
+        return get_idea_field_text(idea, source, separator=self.config.text_separator)
+
     def get_representative_ideas(
         self,
         cluster_id: int,
-        n: int = 5
+        n: int = 5,
+        text_source: Optional[str] = None
     ) -> List[Tuple[str, float]]:
         """
         Get most representative ideas for a cluster.
@@ -994,6 +919,9 @@ class Clusterer:
         Args:
             cluster_id: The cluster ID to get representatives for
             n: Number of representative ideas to return (default 5)
+            text_source: Field source for idea text (default: config.label_text_source).
+                Supports single fields ("idea", "concept_type_definition") and
+                composites ("idea+concept_type_definition").
 
         Returns:
             List of (idea_text, score) tuples. For dense_region method, score is
@@ -1002,6 +930,8 @@ class Clusterer:
         """
         if self._labels is None or self._embeddings_original is None:
             raise RuntimeError("Must call run() before get_representative_ideas()")
+
+        source = text_source or self.config.label_text_source
 
         # Get indices of ideas in this cluster
         cluster_mask = self._labels == cluster_id
@@ -1023,8 +953,7 @@ class Clusterer:
         text_to_best = {}  # text -> (global_idx, local_idx, score)
 
         for local_idx, global_idx in enumerate(cluster_indices):
-            # Always use full idea text (template_prefix + instance) for representative samples
-            cleaned_text = self._idea_texts[global_idx]
+            text = self._get_idea_text(global_idx, source)
 
             if use_dense_region:
                 prob = float(self._hdbscan_model.probabilities_[global_idx])
@@ -1032,12 +961,12 @@ class Clusterer:
                 if prob <= self.config.representative_min_probability:
                     continue
                 # Higher probability = stronger cluster member = better
-                if cleaned_text not in text_to_best or prob > text_to_best[cleaned_text][2]:
-                    text_to_best[cleaned_text] = (global_idx, local_idx, prob)
+                if text not in text_to_best or prob > text_to_best[text][2]:
+                    text_to_best[text] = (global_idx, local_idx, prob)
             else:
                 # Centroid method: just keep first occurrence (score computed later)
-                if cleaned_text not in text_to_best:
-                    text_to_best[cleaned_text] = (global_idx, local_idx, None)
+                if text not in text_to_best:
+                    text_to_best[text] = (global_idx, local_idx, None)
 
         # Step 2: Select top N based on method
         if use_dense_region:
@@ -1060,54 +989,6 @@ class Clusterer:
             sorted_items = sorted(text_to_best.items(), key=lambda x: x[1][2], reverse=True)
             n_to_select = min(n, len(sorted_items))
             return [(text, score) for text, (_, _, score) in sorted_items[:n_to_select]]
-
-    def get_low_probability_ideas(
-        self,
-        cluster_id: int,
-        n: int = 5
-    ) -> List[Tuple[str, float]]:
-        """
-        Get low-probability ideas for a cluster (inverse of get_representative_ideas).
-
-        Returns ideas with probability <= representative_min_probability, sorted by
-        probability descending (highest among the low-prob set first). Deduplicates
-        by text, keeping the instance with highest probability.
-
-        Args:
-            cluster_id: The cluster ID to get low-prob ideas for
-            n: Maximum number of ideas to return
-
-        Returns:
-            List of (idea_text, probability) tuples.
-        """
-        if self._labels is None or self._embeddings_original is None:
-            raise RuntimeError("Must call run() before get_low_probability_ideas()")
-
-        if self._hdbscan_model is None or not hasattr(self._hdbscan_model, 'probabilities_'):
-            return []
-
-        cluster_mask = self._labels == cluster_id
-        cluster_indices = np.where(cluster_mask)[0]
-
-        if len(cluster_indices) == 0:
-            return []
-
-        threshold = self.config.representative_min_probability
-
-        # Build text -> best index mapping (dedup: keep highest prob per unique text)
-        text_to_best = {}  # text -> (global_idx, prob)
-        for global_idx in cluster_indices:
-            prob = float(self._hdbscan_model.probabilities_[global_idx])
-            if prob > threshold:
-                continue  # Skip high-probability members
-            cleaned_text = self._idea_texts[global_idx]
-            if cleaned_text not in text_to_best or prob > text_to_best[cleaned_text][1]:
-                text_to_best[cleaned_text] = (global_idx, prob)
-
-        # Sort by probability descending (highest among low-prob first)
-        sorted_items = sorted(text_to_best.items(), key=lambda x: x[1][1], reverse=True)
-        n_to_select = min(n, len(sorted_items))
-        return [(text, prob) for text, (_, prob) in sorted_items[:n_to_select]]
 
     def get_metrics(self) -> ClusteringMetrics:
         """
@@ -1151,84 +1032,15 @@ class Clusterer:
             raise RuntimeError("Must call run() before accessing noise_rate_")
         return (self._labels == -1).sum() / len(self._labels)
 
-    def get_cluster_themes(self) -> Optional[Dict[int, ClusterTheme]]:
+    def get_cluster_labels(self) -> Optional[Dict[int, ClusterLabel]]:
         """
-        Get LLM-generated themes for each cluster (Phase B output).
+        Get LLM-generated labels for each cluster.
 
         Returns:
-            Dict mapping cluster_id to ClusterTheme,
-            or None if theme generation not enabled
+            Dict mapping cluster_id to ClusterLabel,
+            or None if LLM labels not enabled
         """
-        return self._cluster_themes
-
-    def get_mece_topics(self):
-        """
-        Get MECE topic set (Phase C output).
-
-        Returns:
-            MECETopicSet or None if MECE consolidation not enabled/run
-        """
-        return self._mece_topics
-
-    def visualize_elbow(self, output_dir: Optional[Path] = None, filename_prefix: str = "elbow_analysis") -> Optional[Path]:
-        """
-        Generate and save the elbow analysis visualization.
-
-        This creates a 2x2 panel plot showing:
-        - Score vs K
-        - Log(Score) vs K
-        - Δlog/Δk vs K (the elbow curve)
-        - Selection summary
-
-        Args:
-            output_dir: Directory for output (defaults to exports/)
-            filename_prefix: Prefix for output filename
-
-        Returns:
-            Path to saved PNG file, or None if visualization not available
-            (e.g., if HDBSCAN optimization was not used)
-        """
-        if self._optimizer is None:
-            if self._verbose:
-                print("[Elbow Visualization] Not available - HDBSCAN optimization was not used")
-            return None
-
-        return self._optimizer.visualize_elbow_analysis(
-            output_dir=output_dir,
-            filename_prefix=filename_prefix
-        )
-
-    def visualize_metrics(self, output_dir: Optional[Path] = None, filename_prefix: str = "metric_comparison") -> Optional[Path]:
-        """
-        Generate metric comparison visualization to find best elbow candidate.
-
-        This creates a 2x3 panel plot comparing different metrics vs K:
-        - relative_validity (DBCV)
-        - mean_probability (cluster membership confidence)
-        - coherence (intra-cluster similarity)
-        - composite_score
-        - noise_rate
-        - low_prob_ratio
-
-        Use this to determine which metric has the best elbow shape for
-        parsimony-based K selection.
-
-        Args:
-            output_dir: Directory for output (defaults to exports/)
-            filename_prefix: Prefix for output filename
-
-        Returns:
-            Path to saved PNG file, or None if visualization not available
-        """
-        if self._optimizer is None:
-            if self._verbose:
-                print("[Metric Comparison] Not available - HDBSCAN optimization was not used")
-            return None
-
-        return self._optimizer.visualize_metric_comparison(
-            output_dir=output_dir,
-            filename_prefix=filename_prefix
-        )
+        return self._cluster_labels
 
     def print_all_clusters(self, n_samples: int = 5):
         """
@@ -1242,21 +1054,22 @@ class Clusterer:
 
         import random
 
-        # Build cluster texts dict
+        # Build cluster_texts dict using configured verbose text source
         cluster_texts = {}
         for i, label in enumerate(self._labels):
             if label >= 0:
                 if label not in cluster_texts:
                     cluster_texts[label] = []
-                cluster_texts[label].append(self._idea_texts[i])
+                cluster_texts[label].append(self._get_idea_text(i, self.config.verbose_text_source))
 
         print(f"\n{'='*80}")
         print(f"ALL CLUSTERS ({len(cluster_texts)} clusters)")
+        if self.config.verbose_text_source != "idea":
+            print(f"  Text source: {self.config.verbose_text_source}")
         print(f"{'='*80}")
 
         # Build per-cluster probability lookup if HDBSCAN was used
         per_cluster_prob = {}
-        per_cluster_probs_array = {}  # Store full probability arrays for histogram
         if self._hdbscan_model is not None and hasattr(self._hdbscan_model, 'probabilities_'):
             probs = self._hdbscan_model.probabilities_
             for cluster_id_tmp in sorted(cluster_texts.keys()):
@@ -1265,7 +1078,6 @@ class Clusterer:
                 mean_prob = float(np.mean(cluster_probs)) if len(cluster_probs) > 0 else 0.0
                 low_ratio = float((cluster_probs < self.config.low_probability_threshold).sum() / len(cluster_probs)) if len(cluster_probs) > 0 else 0.0
                 per_cluster_prob[cluster_id_tmp] = (mean_prob, low_ratio)
-                per_cluster_probs_array[cluster_id_tmp] = cluster_probs
 
         for cluster_id in sorted(cluster_texts.keys()):
             texts = cluster_texts[cluster_id]
@@ -1280,33 +1092,13 @@ class Clusterer:
                 print(f"CLUSTER {cluster_id} (n={n_ideas})")
             print(f"{'─'*80}")
 
-            # Show probability distribution histogram (10 bins) with visual bars
-            if cluster_id in per_cluster_probs_array:
-                cluster_probs = per_cluster_probs_array[cluster_id]
-                if len(cluster_probs) > 0:
-                    bins = np.linspace(0, 1, 11)
-                    hist, _ = np.histogram(cluster_probs, bins=bins)
-                    max_count = max(hist) if max(hist) > 0 else 1
-                    # Visual histogram with block characters
-                    bar_chars = "▁▂▃▄▅▆▇█"
-                    bars = []
-                    for count in hist:
-                        if count == 0:
-                            bars.append(" ")
-                        else:
-                            # Scale to bar character (1-8)
-                            level = min(7, int((count / max_count) * 7.99))
-                            bars.append(bar_chars[level])
-                    # Format: show bars with bin labels below
-                    print(f"\nProb dist: [{''.join(bars)}]  (0%→100%, n={len(cluster_probs)})")
-
-            # Show theme if available (Phase B)
-            if self._cluster_themes and cluster_id in self._cluster_themes:
-                theme = self._cluster_themes[cluster_id]
-                print(f"\nTopic: {theme.theme}")
-                print(f"Inclusion: {theme.inclusion_definition}")
-                if theme.key_concepts:
-                    print(f"Key concepts: {', '.join(theme.key_concepts)}")
+            # Show LLM label if available
+            if self._cluster_labels and cluster_id in self._cluster_labels:
+                label = self._cluster_labels[cluster_id]
+                print(f"\nTheme: {label.theme}")
+                print(f"Description: {label.description}")
+                if label.key_concepts:
+                    print(f"Key concepts: {', '.join(label.key_concepts)}")
 
             # Show MMR keywords if available
             if self._cluster_keywords:
@@ -1316,8 +1108,10 @@ class Clusterer:
                     kw_str = ", ".join([f"{kw} ({score:.3f})" for kw, score in keywords[:8]])
                     print(f"\nKeywords: {kw_str}")
 
-            # Show representative ideas (same as LLM gets)
-            representative = self.get_representative_ideas(cluster_id, n=n_samples)
+            # Show representative ideas using verbose text source
+            representative = self.get_representative_ideas(
+                cluster_id, n=n_samples, text_source=self.config.verbose_text_source
+            )
 
             # Deduplicate (preserve order, keep first occurrence) - same as label_generator
             seen = set()
@@ -1333,137 +1127,6 @@ class Clusterer:
                 if len(idea_text) > 100:
                     idea_text = idea_text[:97] + "..."
                 print(f"  {i}. {idea_text} (score={score:.3f})")
-
-        print(f"\n{'='*80}\n")
-
-    def print_low_probability_clusters(self, n_samples: int = 5):
-        """
-        Print low-probability (<= threshold) cluster members with keywords.
-
-        For each cluster, shows the fringe members that scored below the
-        representative_min_probability threshold, along with keywords generated
-        from only those low-probability members. No LLM labels.
-
-        Args:
-            n_samples: Number of sample ideas to show per cluster
-        """
-        if self._labels is None:
-            raise RuntimeError("Must call run() before print_low_probability_clusters()")
-
-        if self._hdbscan_model is None or not hasattr(self._hdbscan_model, 'probabilities_'):
-            print("\n[Low-prob clusters] Skipped: no HDBSCAN probabilities available")
-            return
-
-        threshold = self.config.representative_min_probability
-        probs = self._hdbscan_model.probabilities_
-
-        # Build cluster_texts with only low-prob members (for keyword generation)
-        cluster_texts_low = {}  # cluster_id -> list of idea texts
-        cluster_ontology_low = {}
-        cluster_total = {}  # cluster_id -> total members
-
-        for i, label in enumerate(self._labels):
-            if label < 0:
-                continue
-            cluster_total[label] = cluster_total.get(label, 0) + 1
-            if probs[i] > threshold:
-                continue  # Skip high-prob members
-            if label not in cluster_texts_low:
-                cluster_texts_low[label] = []
-                cluster_ontology_low[label] = []
-            cluster_texts_low[label].append(self._idea_texts[i])
-            ontology = self._ontology_texts[i] if self._ontology_texts and i < len(self._ontology_texts) else ""
-            cluster_ontology_low[label].append(ontology)
-
-        if not cluster_texts_low:
-            print("\n[Low-prob clusters] No clusters have members below threshold")
-            return
-
-        # Generate keywords from low-prob members only
-        print(f"\n{'='*80}")
-        print(f"LOW-PROBABILITY MEMBERS (prob <= {threshold}) — {len(cluster_texts_low)} clusters with low-prob members")
-        print(f"{'='*80}")
-
-        low_prob_keywords = self._representation_engine.extract_all_keywords(
-            cluster_texts_low,
-            cluster_ontology_texts=cluster_ontology_low,
-            embedding_text_format=self._keyword_text_format,
-            verbose=False
-        )
-
-        for cluster_id in sorted(cluster_texts_low.keys()):
-            n_low = len(cluster_texts_low[cluster_id])
-            n_total = cluster_total.get(cluster_id, 0)
-
-            print(f"\n{'─'*80}")
-            print(f"CLUSTER {cluster_id} — low-prob members: {n_low} of {n_total}")
-            print(f"{'─'*80}")
-
-            # Show keywords from low-prob members
-            mmr_keywords = low_prob_keywords.get("mmr", {})
-            if cluster_id in mmr_keywords:
-                keywords = mmr_keywords[cluster_id]
-                kw_str = ", ".join([f"{kw} ({score:.3f})" for kw, score in keywords[:8]])
-                print(f"\nKeywords: {kw_str}")
-
-            # Show sample low-prob ideas
-            low_ideas = self.get_low_probability_ideas(cluster_id, n=n_samples)
-
-            # Deduplicate
-            seen = set()
-            unique_ideas = []
-            for idea_text, score in low_ideas:
-                if idea_text not in seen:
-                    seen.add(idea_text)
-                    unique_ideas.append((idea_text, score))
-
-            print(f"\nLow-prob ideas ({len(unique_ideas)} of {n_low}):")
-            for i, (idea_text, score) in enumerate(unique_ideas, 1):
-                if len(idea_text) > 100:
-                    idea_text = idea_text[:97] + "..."
-                print(f"  {i}. {idea_text} (prob={score:.3f})")
-
-        print(f"\n{'='*80}\n")
-
-    def print_mece_topics(self):
-        """Print the MECE topic set (Phase C output)."""
-        if self._mece_topics is None:
-            print("\n[MECE Topics] Not available (Phase C not run)")
-            return
-
-        topics = self._mece_topics.topics
-        print(f"\n{'='*80}")
-        print(f"MECE TOPICS ({len(topics)} topics)")
-        print(f"{'='*80}")
-
-        for topic in topics:
-            cluster_str = ", ".join(str(c) for c in topic.source_cluster_ids)
-            n_clusters = len(topic.source_cluster_ids)
-
-            # Count total ideas across source clusters
-            total_ideas = 0
-            if self._cluster_themes:
-                for cid in topic.source_cluster_ids:
-                    if cid in self._cluster_themes:
-                        total_ideas += self._cluster_themes[cid].n_ideas
-
-            print(f"\n{'─'*80}")
-            print(f"TOPIC: {topic.topic_label}")
-            print(f"{'─'*80}")
-            print(f"  Source clusters ({n_clusters}): [{cluster_str}]")
-            if total_ideas > 0:
-                print(f"  Total ideas: {total_ideas}")
-            print(f"  Inclusion: {topic.inclusion_definition}")
-            print(f"  Exclusion: {topic.exclusion_definition}")
-            print(f"  Rationale: {topic.merge_rationale}")
-
-            # Show the candidate themes that were merged
-            if self._cluster_themes:
-                print(f"  Candidate themes merged:")
-                for cid in topic.source_cluster_ids:
-                    if cid in self._cluster_themes:
-                        ct = self._cluster_themes[cid]
-                        print(f"    - Cluster {cid} (n={ct.n_ideas}): '{ct.theme}'")
 
         print(f"\n{'='*80}\n")
 
@@ -1488,6 +1151,37 @@ class Clusterer:
                     return coh
         return None
 
+    def _get_cluster_distributions(self, cluster_id: int) -> Optional[Dict[str, Dict[str, float]]]:
+        """
+        Compute concept_type distribution for a cluster (for metadata caching).
+
+        Returns:
+            Dict with 'concept_type' distribution, e.g.:
+            {'concept_type': {'recommendation': 0.5, 'attribute': 0.3, 'opinion': 0.2}}
+        """
+        cluster_indices = np.where(self._labels == cluster_id)[0]
+        if len(cluster_indices) == 0:
+            return None
+
+        category_counts = Counter()
+
+        for idx in cluster_indices:
+            resp_idx, idea_idx = self._idea_indices[idx]
+            response = self._input_list[resp_idx]
+            if response.response_ideas and idea_idx < len(response.response_ideas):
+                idea = response.response_ideas[idea_idx]
+                cat = getattr(idea, 'concept_type', '')
+                if cat:
+                    category_counts[cat] += 1
+
+        if not category_counts:
+            return None
+
+        total = sum(category_counts.values())
+        return {
+            'concept_type': {k: v/total for k, v in category_counts.items()},
+        }
+
     def to_metadata_model(self) -> models.ClusteringMetadataModel:
         """
         Export clustering metadata for caching (Layer 2).
@@ -1496,6 +1190,7 @@ class Clusterer:
         - Representative samples that were given to the LLM
         - Keywords (c-TF-IDF, MMR, TF-IDF)
         - LLM-generated labels
+        - Cluster distributions
         - Global LLM context (survey question, taxonomy, etc.)
         - Quality metrics
 
@@ -1522,11 +1217,14 @@ class Clusterer:
             kw_mmr = self._cluster_keywords.get('mmr', {}).get(cluster_id, []) if self._cluster_keywords else []
             kw_tfidf = self._cluster_keywords.get('tfidf', {}).get(cluster_id, []) if self._cluster_keywords else []
 
-            # Get theme if available (Phase B)
-            theme = self._cluster_themes.get(cluster_id) if self._cluster_themes else None
+            # Get LLM label if available
+            label = self._cluster_labels.get(cluster_id) if self._cluster_labels else None
 
             # Cluster size
             size = int(np.sum(self._labels == cluster_id))
+
+            # Get cluster distributions
+            distributions = self._get_cluster_distributions(cluster_id)
 
             clusters[cluster_id] = models.ClusterRepresentationCacheModel(
                 cluster_id=cluster_id,
@@ -1535,9 +1233,9 @@ class Clusterer:
                 keywords_ctfidf=kw_ctfidf,
                 keywords_mmr=kw_mmr,
                 keywords_tfidf=kw_tfidf,
-                label_theme=theme.theme if theme else None,
-                label_description=theme.inclusion_definition if theme else None,
-                label_key_concepts=theme.key_concepts if theme else None,
+                label_theme=label.theme if label else None,
+                label_description=label.description if label else None,
+                label_key_concepts=label.key_concepts if label else None,
                 mean_probability=self._get_cluster_mean_probability(cluster_id),
                 coherence=self._get_cluster_coherence(cluster_id),
             )
@@ -1565,8 +1263,8 @@ class Clusterer:
                 topic=meta.topic or None,
                 perspective=meta.perspective or None,
                 intent=meta.intent or None,
-                taxonomy_axis=meta.taxonomy_axis or None,
-                taxonomy_description=meta.taxonomy_axis_description or None,
+                taxonomy_axis=meta.primary_facet or None,
+                taxonomy_description=meta.primary_facet_description or None,
                 taxonomy_actionable_type=meta.taxonomy_actionable_type or None,
             )
 
@@ -1578,118 +1276,3 @@ class Clusterer:
             algorithm_params=self._algorithm_params,
             timestamp=datetime.now().isoformat(),
         )
-
-    def get_hdbscan_artifacts(self) -> Dict[str, Any]:
-        """
-        Return HDBSCAN tree structures for external caching and hierarchy analysis.
-
-        These artifacts enable post-hoc analysis of:
-        - Cluster hierarchy (condensed_tree, single_linkage_tree)
-        - Cluster stability (cluster_persistence)
-        - Point outlier scores
-        - Membership probabilities
-
-        Returns:
-            Dict containing HDBSCAN artifacts, or empty dict if HDBSCAN not used.
-            Keys: probabilities, labels, single_linkage_tree, condensed_tree,
-                  cluster_persistence, outlier_scores
-        """
-        if self._hdbscan_model is None:
-            return {}
-
-        return {
-            "probabilities": self._hdbscan_model.probabilities_,
-            "labels": self._hdbscan_model.labels_,
-            "single_linkage_tree": self._hdbscan_model.single_linkage_tree_,
-            "condensed_tree": self._hdbscan_model.condensed_tree_,
-            "cluster_persistence": getattr(self._hdbscan_model, 'cluster_persistence_', None),
-            "outlier_scores": getattr(self._hdbscan_model, 'outlier_scores_', None),
-        }
-
-    def get_umap_embeddings(self) -> Optional[np.ndarray]:
-        """
-        Return UMAP-reduced embeddings for caching.
-
-        These embeddings can be reused for Layer 2 experiments (e.g., running
-        HDBSCAN with different cluster_selection_method) without recomputing UMAP.
-
-        Returns:
-            UMAP-reduced embeddings array, or None if not available.
-        """
-        return self._umap_embeddings
-
-    def get_hdbscan_params(self) -> Dict[str, Any]:
-        """
-        Return the winning HDBSCAN parameters from optimization.
-
-        These parameters can be reused in Layer 2 experiments to ensure
-        consistent clustering configuration.
-
-        Returns:
-            Dict with keys: min_cluster_size, min_samples, n_neighbors,
-            n_components, min_dist, cluster_selection_method
-        """
-        params = dict(self._algorithm_params) if self._algorithm_params else {}
-        # Ensure cluster_selection_method is included
-        if 'cluster_selection_method' not in params:
-            params['cluster_selection_method'] = self.config.hdbscan_cluster_selection_method
-        return params
-
-
-def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[models.ClusterModel]:
-    """Clean cluster idea texts by removing bracketed annotations and normalizing whitespace.
-
-    Args:
-        cluster_results: List of ClusterModel objects with idea texts to clean
-
-    Returns:
-        List of ClusterModel objects with cleaned idea texts
-    """
-    cleaned_results = []
-
-    for result in cluster_results:
-        cleaned_response_ideas = []
-
-        if result.response_ideas:
-            for idea_submodel in result.response_ideas:
-                # Extract and clean idea text
-                cleaned_idea = idea_submodel.idea
-                cleaned_idea = re.sub(r"\[.*?\]", "", cleaned_idea)
-                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
-
-                # Create new ClusterSubmodel with cleaned text, preserving all fields
-                cleaned_submodel = models.ClusterSubmodel(
-                    # From IdeasExtractedSubmodel
-                    idea_id=idea_submodel.idea_id,
-                    idea=cleaned_idea,
-                    instance=getattr(idea_submodel, 'instance', ''),
-                    node=getattr(idea_submodel, 'node', ''),
-                    semantic_category=getattr(idea_submodel, 'semantic_category', ''),
-                    category_label=getattr(idea_submodel, 'category_label', ''),
-                    root=getattr(idea_submodel, 'root', ''),
-                    # From EmbeddingsSubmodel
-                    idea_embedding=idea_submodel.idea_embedding,
-                    node_embedding=getattr(idea_submodel, 'node_embedding', None),
-                    category_embedding=getattr(idea_submodel, 'category_embedding', None),
-                    taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
-                    # From ClusterSubmodel
-                    initial_cluster=idea_submodel.initial_cluster,
-                    cluster_probability=idea_submodel.cluster_probability,
-                    expanded_cluster=idea_submodel.expanded_cluster,
-                    cluster_theme=idea_submodel.cluster_theme
-                )
-                cleaned_response_ideas.append(cleaned_submodel)
-
-        # Create new ClusterModel with cleaned ideas
-        cleaned_result = models.ClusterModel(
-            respondent_id=result.respondent_id,
-            response=result.response,
-            response_type=result.response_type,
-            quality_filter=result.quality_filter,
-            quality_filter_code=result.quality_filter_code,
-            response_ideas=cleaned_response_ideas,
-            idea_count=len(cleaned_response_ideas)
-        )
-        cleaned_results.append(cleaned_result)
-
-    return cleaned_results

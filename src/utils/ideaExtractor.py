@@ -643,7 +643,7 @@ class IdeaExtractor:
         self.encoding = get_tiktoken_encoding(self.model)
 
         # Initialize OpenAI client with instructor (supports OpenAI and Azure)
-        self.client = create_client(self.model, async_mode=True)
+        self.client = create_client(self.model, async_mode=True, azure_deployment=self.model)
 
         # Rate limiting setup - use fallback values for initial setup
         self.rate_limits = RateLimits(
@@ -1799,12 +1799,13 @@ class IdeaExtractor:
         from config import API_PROVIDER, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
 
         if API_PROVIDER == "azure":
+            deployment = self.model
             client = AsyncOpenAI(
                 api_key=AZURE_OPENAI_API_KEY,
-                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/",
                 default_query={"api-version": "2024-10-21"},
             )
-            model = AZURE_OPENAI_DEPLOYMENT_NAME
+            model = deployment
         else:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             model = self.model

@@ -1,11 +1,11 @@
 """
-IdeaExtractor  - Facet-based idea extraction with optimal rate limiting
+IdeaExtractor  - Facet-based idea extraction with optimal rate limiting (v5)
 
 Extracts structured ideas from survey responses using LLM with:
-- Primary facet selection (6 knowledge-type facets, per-dataset)
+- Primary facet selection (10 MECE facets via decision tree, per-dataset)
 - Data-driven concept type discovery (5-15 types per facet)
 - 4-layer hierarchy: Instance → Concept → Concept Type → Primary Facet
-- Secondary facets: valence, agency_focus, prescriptiveness
+- Secondary facet: valence
 - PID-controlled rate limiting for zero 429 errors
 - Template prefix enforcement for normalized idea phrasing
 
@@ -55,7 +55,7 @@ try:
         build_context_specifier_group2_prompt,
         build_consolidate_specifiers_group1_prompt,
         build_consolidate_specifiers_group2_prompt,
-        build_primary_facet_scoring_prompt,
+        build_primary_facet_decision_tree_prompt,
         build_primary_facet_consolidation_prompt,
         build_concept_type_discovery_prompt,
         build_concept_type_consolidation_prompt,
@@ -78,7 +78,7 @@ except ImportError:
         build_context_specifier_group2_prompt,
         build_consolidate_specifiers_group1_prompt,
         build_consolidate_specifiers_group2_prompt,
-        build_primary_facet_scoring_prompt,
+        build_primary_facet_decision_tree_prompt,
         build_primary_facet_consolidation_prompt,
         build_concept_type_discovery_prompt,
         build_concept_type_consolidation_prompt,
@@ -98,9 +98,9 @@ except ImportError:
 
 # === FACET DATA ===================================================================================================
 try:
-    from .facet_data import get_facet, FacetDefinition
+    from .facet_data import get_facet, FacetDefinition, CONCEPT_TYPE_FALLBACK_TABLE, CONCEPT_TYPE_FALLBACK_PRIORITY_RULES
 except ImportError:
-    from facet_data import get_facet, FacetDefinition
+    from facet_data import get_facet, FacetDefinition, CONCEPT_TYPE_FALLBACK_TABLE, CONCEPT_TYPE_FALLBACK_PRIORITY_RULES
 
 # === STEP-SPECIFIC CONFIG =============================================================================================
 from config_ideaExtractor import (
@@ -558,15 +558,13 @@ class IdeaExtractor:
         # Generic specifiers (must be initialized before _calculate_avg_tokens)
         self.generic_specifiers = {}
 
-        # Taxonomy axis (must be initialized before _calculate_avg_tokens)
+        # Taxonomy facet (must be initialized before _calculate_avg_tokens)
         self.primary_facet = None
         self.primary_facet_rationale = None
         self.primary_facet_description = None  # Dynamic context-specific description
+        self.decision_tree_stop_position = 0   # Which decision tree step triggered selection
         # Template prefix for embedding (V3: restored for normalized clustering)
         self.template_prefix = None
-
-        # Taxonomy actionable type (V3: chosen narrow dimension for MECE enforcement)
-        self.taxonomy_actionable_type = None
 
         # Phase 3 toggle: True = discover concept types upfront; False = on-the-fly
         self.discover_concept_types = discover_concept_types
@@ -632,7 +630,7 @@ class IdeaExtractor:
         original_generic_specifiers = self.generic_specifiers
 
         # Set placeholder values for token estimation
-        self.primary_facet = "COMPOSITION_ATTRIBUTES"
+        self.primary_facet = "ATTRIBUTES_ASSOCIATIONS"
         self.primary_facet_description = "general concepts and ideas"
         self.generic_specifiers = {
             "lang": "nl-NL",
@@ -723,8 +721,9 @@ class IdeaExtractor:
                 )
                 self._captured_consolidate2 = True
 
+        est_tokens = self._estimate_preprocessed_tokens(prompt)
         async with self.semaphore:
-            await self.tpm_bucket.acquire(2000)
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
             await self.rate_limiter.acquire()
 
             response = await llm_create_async(
@@ -779,9 +778,10 @@ class IdeaExtractor:
             # Format evidence snippets
             evidence_text = "\n".join([f'    - "{e}"' for e in chunk_response.evidence])
 
-            # Build full chunk summary (without dimension scores)
+            # Build full chunk summary with decision tree position
+            stop_pos = getattr(chunk_response, 'decision_tree_stop_position', 0)
             chunk_text = f"""Chunk {idx + 1}:
-  Primary dimension: {chunk_response.primary_facet}
+  Primary facet: {chunk_response.primary_facet} (decision tree step {stop_pos})
   Evidence:
 {evidence_text}
   Clarification: {chunk_response.clarification}"""
@@ -810,8 +810,9 @@ class IdeaExtractor:
             )
             self._captured_taxonomy_consolidation = True
 
+        est_tokens = self._estimate_preprocessed_tokens(prompt)
         async with self.semaphore:
-            await self.tpm_bucket.acquire(2000)
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
             await self.rate_limiter.acquire()
 
             response = await llm_create_async(
@@ -866,8 +867,9 @@ class IdeaExtractor:
             )
             self._captured_concept_type_consolidation = True
 
+        est_tokens = self._estimate_preprocessed_tokens(prompt)
         async with self.semaphore:
-            await self.tpm_bucket.acquire(2000)
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
             await self.rate_limiter.acquire()
 
             response = await llm_create_async(
@@ -1000,14 +1002,15 @@ class IdeaExtractor:
             self.verbose_reporter.stat_line(f"  Phase 2 chunk-level results:")
             for r in taxonomy_results:
                 chunk_resp = r['response']
+                stop_pos = getattr(chunk_resp, 'decision_tree_stop_position', '?')
                 self.verbose_reporter.stat_line(
-                    f"    Chunk {r['chunk_idx']+1} (Taxonomy): Dim={chunk_resp.primary_facet}"
+                    f"    Chunk {r['chunk_idx']+1} (Taxonomy): Facet={chunk_resp.primary_facet} (tree step {stop_pos})"
                 )
 
         # Consolidate Taxonomy — hard failure if no results
         if not taxonomy_results:
             raise RuntimeError(
-                "Primary facet scoring produced no results from any chunk. "
+                "Primary facet selection produced no results from any chunk. "
                 "Check LLM connectivity, rate limits, and model availability."
             )
         taxonomy_consolidated = await self._consolidate_primary_facet(taxonomy_results, context_specifiers)
@@ -1018,6 +1021,12 @@ class IdeaExtractor:
         # Set primary facet early so Phase 3 concept type discovery can use it
         self.primary_facet = taxonomy_consolidated.primary_facet
         self.primary_facet_description = taxonomy_consolidated.primary_facet_description
+        # Capture the most common decision tree stop position from chunks
+        stop_positions = [
+            getattr(r['response'], 'decision_tree_stop_position', 0)
+            for r in taxonomy_results
+        ]
+        self.decision_tree_stop_position = max(set(stop_positions), key=stop_positions.count) if stop_positions else 0
 
         # === PHASE 3: Concept type discovery (optional) ===
         if self.discover_concept_types:
@@ -1100,105 +1109,107 @@ class IdeaExtractor:
                         f"semaphore={self.semaphore}, rate_limiter={self.rate_limiter}"
                     )
 
+                # === Build prompt BEFORE acquiring rate limit resources ===
+                # Prompts are pure string construction — no I/O, no semaphore needed.
+                if task['group'] == 1:
+                    # Group 1: lang/perspective/intent
+                    prompt = build_context_specifier_group1_prompt(
+                        language=self.language,
+                        survey_question=self.var_lab,
+                        chunk_responses=task['chunk_text'],
+                        chunk_size=task['chunk_size'],
+                    )
+                    response_model = GenericSpecifierGroup1Response
+                    if self.prompt_printer and not self._captured_context_specifier1:
+                        self.prompt_printer.capture_prompt(
+                            step_name="idea_extraction_context_specifiers",
+                            utility_name="IdeaExtractor",
+                            prompt_content=prompt,
+                            prompt_type="context_specifier_group1",
+                            metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
+                        )
+                        self._captured_context_specifier1 = True
+                elif task['group'] == 2:
+                    # Group 2: domain/topic/entity
+                    prompt = build_context_specifier_group2_prompt(
+                        language=self.language,
+                        survey_question=self.var_lab,
+                        chunk_responses=task['chunk_text'],
+                        chunk_size=task['chunk_size'],
+                    )
+                    response_model = GenericSpecifierGroup2Response
+                    if self.prompt_printer and not self._captured_context_specifier2:
+                        self.prompt_printer.capture_prompt(
+                            step_name="idea_extraction_context_specifiers",
+                            utility_name="IdeaExtractor",
+                            prompt_content=prompt,
+                            prompt_type="context_specifier_group2",
+                            metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
+                        )
+                        self._captured_context_specifier2 = True
+                elif task['group'] == 3:
+                    # Group 3: Taxonomy facet selection (decision tree, context-aware)
+                    ctx = task['context_specifiers']
+                    prompt = build_primary_facet_decision_tree_prompt(
+                        language=self.language,
+                        survey_question=self.var_lab,
+                        chunk_responses=task['chunk_text'],
+                        chunk_size=task['chunk_size'],
+                        perspective=ctx['perspective'],
+                        intent=ctx['intent'],
+                        domain=ctx['domain'],
+                        entity=ctx['entity'],
+                        topic=ctx['topic'],
+                    )
+                    response_model = PrimaryFacetChunkResponse
+                    if self.prompt_printer and not self._captured_taxonomy_chunk:
+                        self.prompt_printer.capture_prompt(
+                            step_name="idea_extraction_taxonomy_chunk",
+                            utility_name="IdeaExtractor",
+                            prompt_content=prompt,
+                            prompt_type="taxonomy_chunk_decision_tree",
+                            metadata={
+                                "model": self.model,
+                                "survey_question": self.var_lab,
+                                "language": self.language,
+                                "perspective": ctx['perspective'],
+                                "intent": ctx['intent'],
+                            }
+                        )
+                        self._captured_taxonomy_chunk = True
+                else:  # group == 4: Concept type discovery
+                    ctx = task['context_specifiers']
+
+                    prompt = build_concept_type_discovery_prompt(
+                        language=self.language,
+                        survey_question=self.var_lab,
+                        chunk_responses=task['chunk_text'],
+                        chunk_size=task['chunk_size'],
+                        perspective=ctx['perspective'],
+                        intent=ctx['intent'],
+                        domain=ctx['domain'],
+                        entity=ctx['entity'],
+                        topic=ctx['topic'],
+                        primary_facet=self.primary_facet,
+                        primary_facet_description=self.primary_facet_description,
+                    )
+                    response_model = ConceptTypeChunkResponse
+                    if self.prompt_printer and not self._captured_concept_type_chunk:
+                        self.prompt_printer.capture_prompt(
+                            step_name="idea_extraction_concept_types",
+                            utility_name="IdeaExtractor",
+                            prompt_content=prompt,
+                            prompt_type="concept_type_chunk",
+                            metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
+                        )
+                        self._captured_concept_type_chunk = True
+
+                # === Count tokens from actual prompt, then acquire ===
+                est_tokens = self._estimate_preprocessed_tokens(prompt)
+
                 async with self.semaphore:
-                    await self.tpm_bucket.acquire(DEFAULT_AVG_TOKENS)
+                    await self.tpm_bucket.wait_and_acquire(est_tokens)
                     await self.rate_limiter.acquire()
-
-                    if task['group'] == 1:
-                        # Group 1: lang/perspective/intent
-                        prompt = build_context_specifier_group1_prompt(
-                            language=self.language,
-                            survey_question=self.var_lab,
-                            chunk_responses=task['chunk_text'],
-                            chunk_size=task['chunk_size'],
-                        )
-                        response_model = GenericSpecifierGroup1Response
-                        if self.prompt_printer and not self._captured_context_specifier1:
-                            self.prompt_printer.capture_prompt(
-                                step_name="idea_extraction_context_specifiers",
-                                utility_name="IdeaExtractor",
-                                prompt_content=prompt,
-                                prompt_type="context_specifier_group1",
-                                metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
-                            )
-                            self._captured_context_specifier1 = True
-                    elif task['group'] == 2:
-                        # Group 2: domain/topic/entity
-                        prompt = build_context_specifier_group2_prompt(
-                            language=self.language,
-                            survey_question=self.var_lab,
-                            chunk_responses=task['chunk_text'],
-                            chunk_size=task['chunk_size'],
-                        )
-                        response_model = GenericSpecifierGroup2Response
-                        if self.prompt_printer and not self._captured_context_specifier2:
-                            self.prompt_printer.capture_prompt(
-                                step_name="idea_extraction_context_specifiers",
-                                utility_name="IdeaExtractor",
-                                prompt_content=prompt,
-                                prompt_type="context_specifier_group2",
-                                metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
-                            )
-                            self._captured_context_specifier2 = True
-                    elif task['group'] == 3:
-                        # Group 3: Taxonomy axis scoring (context-aware)
-                        ctx = task['context_specifiers']
-                        prompt = build_primary_facet_scoring_prompt(
-                            language=self.language,
-                            survey_question=self.var_lab,
-                            chunk_responses=task['chunk_text'],
-                            chunk_size=task['chunk_size'],
-                            perspective=ctx['perspective'],
-                            intent=ctx['intent'],
-                            domain=ctx['domain'],
-                            entity=ctx['entity'],
-                            topic=ctx['topic'],
-                        )
-                        response_model = PrimaryFacetChunkResponse
-                        if self.prompt_printer and not self._captured_taxonomy_chunk:
-                            self.prompt_printer.capture_prompt(
-                                step_name="idea_extraction_taxonomy_chunk",
-                                utility_name="IdeaExtractor",
-                                prompt_content=prompt,
-                                prompt_type="taxonomy_chunk_scoring",
-                                metadata={
-                                    "model": self.model,
-                                    "survey_question": self.var_lab,
-                                    "language": self.language,
-                                    "perspective": ctx['perspective'],
-                                    "intent": ctx['intent'],
-                                }
-                            )
-                            self._captured_taxonomy_chunk = True
-                    else:  # group == 4: Concept type discovery
-                        ctx = task['context_specifiers']
-                        facet = get_facet(self.primary_facet)
-                        seed_examples_str = ", ".join(facet.seed_examples)
-
-                        prompt = build_concept_type_discovery_prompt(
-                            language=self.language,
-                            survey_question=self.var_lab,
-                            chunk_responses=task['chunk_text'],
-                            chunk_size=task['chunk_size'],
-                            perspective=ctx['perspective'],
-                            intent=ctx['intent'],
-                            domain=ctx['domain'],
-                            entity=ctx['entity'],
-                            topic=ctx['topic'],
-                            primary_facet=self.primary_facet,
-                            primary_facet_description=self.primary_facet_description,
-                            seed_examples=seed_examples_str,
-                        )
-                        response_model = ConceptTypeChunkResponse
-                        if self.prompt_printer and not self._captured_concept_type_chunk:
-                            self.prompt_printer.capture_prompt(
-                                step_name="idea_extraction_concept_types",
-                                utility_name="IdeaExtractor",
-                                prompt_content=prompt,
-                                prompt_type="concept_type_chunk",
-                                metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
-                            )
-                            self._captured_concept_type_chunk = True
 
                     response = await llm_create_async(
                         client=self.client,
@@ -1235,7 +1246,7 @@ class IdeaExtractor:
 
         Args:
             survey_question: The original survey question
-            primary_facet: Primary facet (DEFINITION_IDENTITY, COMPOSITION_ATTRIBUTES, etc.)
+            primary_facet: Primary facet (PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS, EVALUATION_PRIORITIZATION, etc.)
 
         Returns:
             SubjectExtractionResponse with facet-aware canonical_phrasing
@@ -1265,6 +1276,11 @@ class IdeaExtractor:
 
             # Create facet-specific response model (no ClassVar mutation — baked in)
             AxisSubjectModel = create_subject_model(facet=facet)
+
+            # Rate limit the subject extraction call
+            est_tokens = self._estimate_preprocessed_tokens(prompt)
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
+            await self.rate_limiter.acquire()
 
             response = await llm_create_async(
                 client=self.client,
@@ -1314,31 +1330,24 @@ class IdeaExtractor:
         assert self.primary_facet is not None, "primary_facet must be set before building extraction prompt"
         facet = get_facet(self.primary_facet)
 
-        # Build concept type table from discovered types
+        # Build concept type table from discovered thematic domains
         discovered_types = getattr(self, 'concept_types', None)
         if discovered_types:
-            concept_type_table = "\n".join(
-                f"  {c.key} = \"{c.definition}\"" for c in discovered_types
+            concept_type_table = (
+                "Classify each concept into the single most specific thematic domain.\n"
+                + "\n".join(
+                    f"  {c.key} = \"{c.definition}\"" for c in discovered_types
+                )
+                + '\n  Other = "Does not fit any of the above thematic domains"'
             )
             priority_rules = (
-                "Classify each idea into the single most specific concept type. "
-                "When an idea could fit multiple types, choose the one that best captures "
-                "the primary *semantic role* of the idea within the facet, not its topic."
+                "Classify each concept into the single most specific thematic domain. "
+                "When an concept could fit multiple domains, choose the one that best captures "
+                "the primary domain of the entity that the idea relates to."
             )
         else:
-            concept_type_table = (
-                "Assign a concept type (semantic role) that captures HOW this idea relates to the "
-                f"{self.primary_facet} facet. Use a short, reusable snake_case label.\n"
-                "Examples of good concept types: quality_measure, functional_feature, moral_attribute, "
-                "emotional_association, symbolic_element, societal_attribute, distinguishing_feature.\n"
-                "The concept type must describe the ROLE of the idea (what kind of attribute/feature/judgment "
-                "it is), NOT its topic content."
-            )
-            priority_rules = (
-                "1. Concept type = semantic ROLE, not topic. 'duurzaamheid' is a moral_attribute, not a 'sustainability' type.\n"
-                "2. Prefer reusable types that could apply to other ideas in the dataset.\n"
-                "3. Use snake_case, keep labels short (1-3 words)."
-            )
+            concept_type_table = CONCEPT_TYPE_FALLBACK_TABLE.format(language=self.language)
+            priority_rules = CONCEPT_TYPE_FALLBACK_PRIORITY_RULES
 
         return build_taxonomy_enriched_extraction_prompt(
             language=self.language,
@@ -1409,6 +1418,15 @@ class IdeaExtractor:
         estimated_output = min(self.config.max_tokens, estimated_output)
 
         return estimated_input + estimated_output
+
+    def _estimate_preprocessed_tokens(self, prompt: str) -> int:
+        """Simple token estimate for pre-processing calls (non-adaptive).
+
+        Used for context extraction, facet selection, consolidation, and subject
+        extraction — calls that do not feed into the PID learning loop.
+        """
+        tiktoken_count = len(self.encoding.encode(prompt))
+        return int((tiktoken_count + TIKTOKEN_API_OFFSET_DEFAULT) * (1 + DEFAULT_OUTPUT_RATIO))
 
     def get_token_estimation_stats(self) -> dict:
         """Get token estimation accuracy statistics including learned ratio."""
@@ -1539,7 +1557,6 @@ class IdeaExtractor:
             )
             subject = subject_response.canonical_term
             phrasing_template = subject_response.canonical_phrasing
-            taxonomy_actionable_type = subject_response.taxonomy_actionable_type or "concepts"
 
             # Extract template prefix (everything before the dimension marker)
             facet = get_facet(self.primary_facet)
@@ -1547,10 +1564,6 @@ class IdeaExtractor:
             template_prefix = phrasing_template.split(dim_marker)[0].strip() if dim_marker in phrasing_template else phrasing_template
             if self.template_prefix is None:
                 self.template_prefix = template_prefix
-
-            # Store actionable type for consistent use across all extractions
-            if self.taxonomy_actionable_type is None:
-                self.taxonomy_actionable_type = taxonomy_actionable_type
 
             # V3: Build prompt with subject and phrasing template
             prompt = self._build_taxonomy_enriched_prompt(
@@ -1573,8 +1586,7 @@ class IdeaExtractor:
                         "respondent_id": task['respondent_id'],
                         "primary_facet": self.primary_facet,
                         "template_prefix": template_prefix,
-                        "primary_facet_description": self.primary_facet_description,
-                        "taxonomy_actionable_type": self.taxonomy_actionable_type
+                        "primary_facet_description": self.primary_facet_description
                     }
                 )
                 self._captured_prompt = True
@@ -1656,7 +1668,7 @@ class IdeaExtractor:
                         normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                         if normalized and normalized not in ["", "NA", "N/A"]:
                             # Extract taxonomy fields (flat)
-                            taxonomy_resp = getattr(idea_response, 'taxonomy', None)
+                            taxonomy_resp = getattr(idea_response, 'abstraction_ladder', None)
 
                             # Clean idea text
                             idea_text = self._format_idea_text(normalized)
@@ -1665,11 +1677,10 @@ class IdeaExtractor:
                                 idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                 idea=idea_text,
                                 instance=taxonomy_resp.instance if taxonomy_resp else "",
-                                node=taxonomy_resp.node if taxonomy_resp else "",
+                                concept=taxonomy_resp.concept if taxonomy_resp else "",
                                 concept_type=taxonomy_resp.concept_type if taxonomy_resp else "",
-                                valence=taxonomy_resp.valence if taxonomy_resp else "",
-                                agency_focus=taxonomy_resp.agency_focus if taxonomy_resp else "",
-                                prescriptiveness=taxonomy_resp.prescriptiveness if taxonomy_resp else "",
+                                concept_type_definition=taxonomy_resp.concept_type_definition if taxonomy_resp else "",
+                                valence=getattr(idea_response, 'valence', "") or "",
                             ))
 
                     if ideas:
@@ -1687,6 +1698,7 @@ class IdeaExtractor:
                         # Empty ideas: retry up to 2 more times before falling back
                         logger.warning(f"Task {task['respondent_id']}: LLM returned empty ideas, retrying...")
                         for empty_retry in range(2):
+                            await self.tpm_bucket.wait_and_acquire(est_tokens)
                             retry_response = await asyncio.wait_for(
                                 llm_create_async(
                                     client=self.client,
@@ -1703,18 +1715,17 @@ class IdeaExtractor:
                             for i, idea_response in enumerate(retry_response):
                                 normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                                 if normalized and normalized not in ["", "NA", "N/A"]:
-                                    taxonomy_resp = getattr(idea_response, 'taxonomy', None)
+                                    taxonomy_resp = getattr(idea_response, 'abstraction_ladder', None)
                                     idea_text = self._format_idea_text(normalized)
                                     response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
                                     retry_ideas.append(models.IdeasExtractedSubmodel(
                                         idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                         idea=idea_text,
                                         instance=taxonomy_resp.instance if taxonomy_resp else "",
-                                        node=taxonomy_resp.node if taxonomy_resp else "",
+                                        concept=taxonomy_resp.concept if taxonomy_resp else "",
                                         concept_type=taxonomy_resp.concept_type if taxonomy_resp else "",
-                                        valence=taxonomy_resp.valence if taxonomy_resp else "",
-                                        agency_focus=taxonomy_resp.agency_focus if taxonomy_resp else "",
-                                        prescriptiveness=taxonomy_resp.prescriptiveness if taxonomy_resp else "",
+                                        concept_type_definition=taxonomy_resp.concept_type_definition if taxonomy_resp else "",
+                                        valence=getattr(idea_response, 'valence', "") or "",
                                     ))
                             if retry_ideas:
                                 logger.info(f"Task {task['respondent_id']}: empty-ideas retry {empty_retry+1} succeeded ({len(retry_ideas)} ideas)")
@@ -1829,7 +1840,7 @@ class IdeaExtractor:
     def _format_idea_text(self, normalized_text: str) -> str:
         """Return clean idea text.
 
-        Taxonomy fields (instance, node, concept_type, valence, agency_focus, prescriptiveness)
+        Taxonomy fields (instance, concept, concept_type, valence)
         are stored as separate fields on IdeasExtractedSubmodel.
 
         Args:
@@ -1873,8 +1884,7 @@ class IdeaExtractor:
             # Taxonomy (these should always be set by the time metadata is built)
             primary_facet=self.primary_facet or '',
             primary_facet_description=self.primary_facet_description or '',
-            taxonomy_actionable_type=self.taxonomy_actionable_type or '',
-
+            decision_tree_stop_position=self.decision_tree_stop_position,
             # Concept types
             concept_types=[
                 {"key": c.key, "label": c.label, "definition": c.definition}
@@ -2172,8 +2182,6 @@ class IdeaExtractor:
             self.verbose_reporter.stat_line(f"\nTaxonomy axis selected: {self.primary_facet}")
             if self.primary_facet_description:
                 self.verbose_reporter.stat_line(f"Description: {self.primary_facet_description}")
-            if self.taxonomy_actionable_type:
-                self.verbose_reporter.stat_line(f"Actionable type: {self.taxonomy_actionable_type}")
             if self.concept_types:
                 self.verbose_reporter.stat_line(f"Concept types: {[c.key for c in self.concept_types]}")
             else:
@@ -2466,11 +2474,10 @@ class IdeaExtractor:
                         valid_ideas.append({
                             'idea': idea.idea,
                             'instance': idea.instance,
-                            'node': idea.node,
+                            'concept': idea.concept,
                             'concept_type': idea.concept_type,
+                            'concept_type_definition': idea.concept_type_definition,
                             'valence': idea.valence,
-                            'agency_focus': idea.agency_focus,
-                            'prescriptiveness': idea.prescriptiveness,
                         })
 
                 if valid_ideas and len(response_examples) < self.config.max_code_examples:
@@ -2506,20 +2513,12 @@ class IdeaExtractor:
                     cleaned_idea = re.sub(r"\[.*?\]", "", idea_info['idea'])
                     cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
                     print(f'    → "{cleaned_idea}"')
-                    # Show taxonomy if available
-                    tax_parts = [idea_info[f] for f in ('instance', 'node', 'concept_type') if idea_info.get(f)]
-                    if tax_parts:
-                        print(f'      taxonomy: {" → ".join(tax_parts)}')
-                    # Show secondary facets if present
-                    sec_parts = []
+                    # Show abstraction ladder if available
+                    ladder_parts = [idea_info[f] for f in ('instance', 'concept', 'concept_type', 'concept_type_definition') if idea_info.get(f)]
+                    if ladder_parts:
+                        print(f'      ladder: {" → ".join(ladder_parts)}')
                     if idea_info.get('valence'):
-                        sec_parts.append(f"valence={idea_info['valence']}")
-                    if idea_info.get('agency_focus'):
-                        sec_parts.append(f"agency={idea_info['agency_focus']}")
-                    if idea_info.get('prescriptiveness'):
-                        sec_parts.append(f"presc={idea_info['prescriptiveness']}")
-                    if sec_parts:
-                        print(f'      facets: {", ".join(sec_parts)}')
+                        print(f'      valence: {idea_info["valence"]}')
                 if example != response_examples[-1]:
                     print()
 

@@ -1,12 +1,12 @@
 #%% 
 
 """
-Step 3: Idea Extractor Experiment Runner (v4 — Primary Facets)
+Step 3: Idea Extractor Experiment Runner (v5 — MECE Decision Tree Facets)
 
 Runs the idea extraction step in isolation for experimentation.
 Loads Step 2 (quality_filter) results from cache and runs idea extraction.
 
-v4 taxonomy: Primary Facets + Concept Types + Secondary Facets (valence, agency, prescriptiveness)
+v5 taxonomy: 10 MECE Facets (decision tree) + Concept Types + valence
 
 Usage:
     cd src && python -m "experiments.step_3_ideaExtractor v4.run_experiment"
@@ -18,7 +18,7 @@ Toggle:
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
-EXPERIMENT_N  = 20  # n or None
+EXPERIMENT_N  = None  # n or None
 DISCOVER_CONCEPT_TYPES = True  # True = Phase 3 discovers types upfront; False = on-the-fly
 
 import sys
@@ -302,45 +302,34 @@ if __name__ == "__main__":
             print(f"Ideas ({sample.idea_count}):")
             for idea in sample.response_ideas:
                 print(f"  - {idea.idea}")
-                tax_parts = [v for v in (idea.instance, idea.node, idea.concept_type) if v]
-                if tax_parts:
-                    print(f"    taxonomy: {' → '.join(tax_parts)}")
-                sec = []
+                ladder_parts = [v for v in (idea.instance, idea.concept, idea.concept_type, idea.concept_type_definition) if v]
+                if ladder_parts:
+                    print(f"    ladder: {' → '.join(ladder_parts)}")
                 if idea.valence:
-                    sec.append(f"valence={idea.valence}")
-                if idea.agency_focus:
-                    sec.append(f"agency={idea.agency_focus}")
-                if idea.prescriptiveness:
-                    sec.append(f"presc={idea.prescriptiveness}")
-                if sec:
-                    print(f"    facets: {', '.join(sec)}")
+                    print(f"    valence: {idea.valence}")
             print("=" * 70)
 
         # Print all taxonomies
         if results:
             print("\n" + "=" * 70)
-            print("ALL TAXONOMIES  (instance → node → concept_type | valence, agency, prescriptiveness)")
+            print("ALL ABSTRACTION LADDERS  (instance → concept → concept_type → concept_type_definition | valence)")
             print("=" * 70)
             tax_count = 0
             for item in results:
                 if not item.response_ideas:
                     continue
                 for idea in item.response_ideas:
-                    chain_parts = [v for v in (idea.instance, idea.node, idea.concept_type) if v]
+                    chain_parts = [v for v in (idea.instance, idea.concept, idea.concept_type, idea.concept_type_definition) if v]
                     sec_parts = []
                     if idea.valence:
                         sec_parts.append(idea.valence)
-                    if idea.agency_focus:
-                        sec_parts.append(idea.agency_focus)
-                    if idea.prescriptiveness:
-                        sec_parts.append(idea.prescriptiveness)
                     chain = " → ".join(chain_parts)
                     if sec_parts:
                         chain += f" | {', '.join(sec_parts)}"
                     if chain:
                         tax_count += 1
                         print(f"  {tax_count:3d}. {chain}")
-            print(f"\nTotal: {tax_count} taxonomies")
+            print(f"\nTotal: {tax_count} abstraction ladders")
             print("=" * 70)
 
         # Print token usage

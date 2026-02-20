@@ -314,7 +314,7 @@ class ModelConfig:
     
     # Quality filtering and segmentation models  
     quality_filter_model: str = DEFAULT_MODEL      
-    segmentation_model: str = DEFAULT_MODEL        
+    segmentation_model: str = "gpt-4.1-mini"
     description_model: str = DEFAULT_MODEL         
     
     # Embedding model
@@ -960,6 +960,15 @@ class ExportConfig:
         return os.path.join(base_data_dir, "exports")
 
 
+@dataclass
+class ExportCleanupConfig:
+    """Configuration for automatic cleanup of exports/ subdirectories."""
+    enabled: bool = True               # Set False to disable auto-cleanup
+    max_age_days: int = 30             # Delete files older than this
+    keep_latest_n: int = 3             # Always keep N newest per group key
+    silent: bool = True                # Suppress console output when auto-running
+
+
 # =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
@@ -982,5 +991,6 @@ DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()
 DEFAULT_CODEDESIGNER_CONFIG = CodeDesignerConfig()
+DEFAULT_EXPORT_CLEANUP_CONFIG = ExportCleanupConfig()
 
 

@@ -1,11 +1,14 @@
 """
-Local Pipeline Models for step_3_ideaExtractor v4.
+Local Pipeline Models for step_3_ideaExtractor v5.
+
+v5 overhaul: 10 MECE facets with decision-tree ordering.
+Prescriptiveness secondary facet removed (captured at primary level by PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS).
 
 Differences from shared models_exp.py:
-- ExtractionMetadata: taxonomy_axis → primary_facet, topical_categories → concept_types
+- ExtractionMetadata: taxonomy_axis → primary_facet + decision_tree_stop_position, topical_categories → concept_types
 - IdeasExtractedSubmodel: dropped root/category_label, semantic_category → concept_type,
-  added valence/agency_focus/prescriptiveness
-- EmbeddingsSubmodel: category_embedding → concept_type_embedding
+  added valence (prescriptiveness and agency_focus removed in v5)
+- EmbeddingsSubmodel: category_embedding → concept_type_embedding, taxonomy_embedding → ladder_embedding
 
 Keeps shared models_exp.py untouched so v2 remains runnable.
 """
@@ -67,10 +70,9 @@ class ExtractionMetadata(BaseModel):
     intent: str = ""                      # e.g., "evaluate"
 
     # Primary facet (replaces taxonomy_axis)
-    primary_facet: str = ""               # e.g., "EVALUATION_JUDGMENT"
+    primary_facet: str = ""               # e.g., "EVALUATION_PRIORITIZATION"
     primary_facet_description: str = ""   # Context-specific description of the facet
-    taxonomy_actionable_type: str = ""    # e.g., "attributes", "features", "concepts"
-
+    decision_tree_stop_position: int = 0  # 1-10, which decision tree step triggered facet selection
     # Concept types (data-driven, replaces topical_categories)
     concept_types: List[Dict[str, str]] = Field(
         default_factory=list,
@@ -83,19 +85,18 @@ class ExtractionMetadata(BaseModel):
 # === v3 PIPELINE MODELS =======================================================================
 
 class IdeasExtractedSubmodel(BaseModel):
-    """Per-idea data from step 3 v3 extraction.
+    """Per-idea data from step 3 v5 extraction.
 
-    Hierarchy: instance → node → concept_type → primary_facet (dataset-level)
-    Secondary facets: valence, agency_focus, prescriptiveness
+    Hierarchy: instance → concept → concept_type → primary_facet (dataset-level)
+    Secondary facets: valence
     """
     idea_id: str                          # Format: {respondent_id}_{sequence_number}
     idea: str                             # Clean text (starts with template prefix)
     instance: str = ""                    # Verbatim span from response
-    node: str = ""                        # Canonical, reusable concept (noun phrase)
+    concept: str = ""                     # Canonical, reusable concept (noun phrase)
     concept_type: str = ""                # Discovered concept type (e.g., "recommendation")
+    concept_type_definition: str = ""       # High-level framing of concept_type in survey context
     valence: str = ""                     # positive / negative / neutral_mixed
-    agency_focus: str = ""                # system_entity / stakeholder_actor / respondent
-    prescriptiveness: str = ""            # descriptive / prescriptive
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -106,10 +107,10 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
-    idea_embedding: Optional[npt.NDArray[np.float32]] = None        # template_prefix + idea
-    node_embedding: Optional[npt.NDArray[np.float32]] = None        # node (canonical concept)
+    idea_embedding: Optional[npt.NDArray[np.float32]] = None        # idea (natural sentence incl. template_prefix)
+    concept_embedding: Optional[npt.NDArray[np.float32]] = None      # concept → concept_type_definition
     concept_type_embedding: Optional[npt.NDArray[np.float32]] = None  # concept_type
-    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None    # node → concept_type → primary_facet
+    ladder_embedding: Optional[npt.NDArray[np.float32]] = None      # instance → concept → concept_type → concept_type_definition
 
 
 class EmbeddingsModel(IdeasExtractedModel):

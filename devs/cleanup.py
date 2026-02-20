@@ -28,6 +28,8 @@ BACKUP_DIRS_INDIVIDUAL = [
     PROJECT_ROOT / "src" / "utils" / "backup",
 ]
 FILE_AGE_THRESHOLD_DAYS = 30
+EXPORTS_DIR = PROJECT_ROOT / "exports"
+EXPORT_KEEP_LATEST_N = 3
 
 # ─── Terminal Colors ──────────────────────────────────────────────────────────
 
@@ -399,12 +401,101 @@ def stage_old_files(dry_run: bool, age_days: int = FILE_AGE_THRESHOLD_DAYS):
                 print(f"  {C.DIM}Skipped — no files deleted.{C.RESET}")
 
 
+# ─── Stage 4: Export Files ───────────────────────────────────────────────────
+
+def _show_exports_summary():
+    """Print current sizes of all exports/ subdirectories."""
+    if not EXPORTS_DIR.exists():
+        return
+    print()
+    for subdir in sorted(EXPORTS_DIR.iterdir()):
+        if subdir.is_dir():
+            size = dir_size(subdir)
+            count = dir_file_count(subdir)
+            rel = subdir.relative_to(PROJECT_ROOT)
+            print(f"  {str(rel) + '/':.<45} {count:>4} files  {fmt_size(size):>10}")
+
+
+def stage_exports(dry_run: bool, age_days: int = FILE_AGE_THRESHOLD_DAYS):
+    header(f"Stage 4: Export Files Older Than {age_days} Days")
+
+    if not EXPORTS_DIR.exists():
+        print(f"  {C.GREEN}No exports/ directory found. Nothing to do.{C.RESET}")
+        return
+
+    # Import the cleanup module from src/utils/
+    src_path = str(PROJECT_ROOT / "src")
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+
+    from utils.exportCleaner import collect_expired
+
+    expired = collect_expired(
+        exports_dir=EXPORTS_DIR,
+        max_age_days=age_days,
+        keep_latest_n=EXPORT_KEEP_LATEST_N,
+    )
+
+    if not expired:
+        print(f"  {C.GREEN}No export files to clean up. Clean!{C.RESET}")
+        _show_exports_summary()
+        return
+
+    # Group display by subdirectory
+    from collections import defaultdict
+    by_dir = defaultdict(list)
+    for ef in expired:
+        by_dir[ef.path.parent.name].append(ef)
+
+    total_size = sum(ef.size for ef in expired)
+    print(f"  Found {C.BOLD}{len(expired)}{C.RESET} files to delete, "
+          f"totaling {C.BOLD}{fmt_size(total_size)}{C.RESET}:\n")
+
+    for subdir_name, files in sorted(by_dir.items()):
+        print(f"\n  {C.CYAN}exports/{subdir_name}/{C.RESET}")
+        for ef in sorted(files, key=lambda e: -e.age_days):
+            age_color = C.RED if ef.age_days > 90 else C.YELLOW
+            print(f"    {ef.path.name}")
+            print(f"         {fmt_size(ef.size):>8}  |  "
+                  f"{age_color}{fmt_age(ef.age_days)}{C.RESET}")
+
+    print()
+    if dry_run:
+        print(f"  {C.DIM}[dry-run] Would delete these {len(expired)} files.{C.RESET}")
+        _show_exports_summary()
+        return
+
+    if ask_yn(f"Delete all {len(expired)} files ({fmt_size(total_size)})?"):
+        freed = 0
+        for ef in expired:
+            ef.path.unlink()
+            freed += ef.size
+        print(f"  {C.GREEN}Deleted {len(expired)} files, freed {fmt_size(freed)}.{C.RESET}")
+    else:
+        if ask_yn("Select individual files to delete instead?"):
+            options = [ef.path.name for ef in expired]
+            selected = ask_choice("Which files should we delete?", options)
+            if selected:
+                freed = 0
+                for idx in selected:
+                    ef = expired[idx]
+                    ef.path.unlink()
+                    freed += ef.size
+                print(f"  {C.GREEN}Deleted {len(selected)} files, freed {fmt_size(freed)}.{C.RESET}")
+            else:
+                print(f"  {C.DIM}Skipped — no files deleted.{C.RESET}")
+        else:
+            print(f"  {C.DIM}Skipped.{C.RESET}")
+
+    _show_exports_summary()
+
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 def show_summary():
     header("Summary")
     total = 0
-    for d in BACKUP_DIRS_FULL_SNAPSHOTS + BACKUP_DIRS_INDIVIDUAL:
+    for d in BACKUP_DIRS_FULL_SNAPSHOTS + BACKUP_DIRS_INDIVIDUAL + [EXPORTS_DIR]:
         if d.exists():
             size = dir_size(d)
             total += size
@@ -436,6 +527,7 @@ def main():
             stage_git_status(args.dry_run)
         stage_full_snapshots(args.dry_run)
         stage_old_files(args.dry_run, age_threshold)
+        stage_exports(args.dry_run, age_threshold)
         show_summary()
     except KeyboardInterrupt:
         print(f"\n\n  {C.DIM}Interrupted. No further changes.{C.RESET}")

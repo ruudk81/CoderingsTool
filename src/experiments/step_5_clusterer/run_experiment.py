@@ -159,7 +159,18 @@ def run_experiment(config: ExperimentConfig = None):
     start_time = time.time()
 
     # Initialize clusterer with config
-    clusterer_config = ClustererConfig(verbose=config.verbose)
+    clusterer_config = ClustererConfig(
+        verbose=config.verbose,
+        # Embedding to cluster on: "idea_embedding", "concept_embedding",
+        #   "concept_type_embedding", "ladder_embedding"
+        clustering_embedding_field="idea_concept_defined_embedding",
+        # Text sources: single field or composite with "+" (e.g., "idea+concept_type_definition")
+        # Supported: "idea", "instance", "concept", "concept_type", "concept_type_definition", "ladder"
+        keyword_text_source="idea",                         # text for c-TF-IDF / MMR keyword extraction
+        label_text_source="idea+concept+concept_type_definition",   # text for representative samples in LLM prompt
+        verbose_text_source="idea+concept+concept_type_definition", # text for print_all_clusters() display
+        text_separator=" → ",                               # separator for composite "+" fields
+    )
     verbose_reporter.stat_line(f"Algorithm mode: {clusterer_config.algorithm_mode}")
 
     clusterer = Clusterer(embedded_text, config=clusterer_config, extraction_metadata=extraction_metadata)

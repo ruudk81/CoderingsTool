@@ -40,6 +40,10 @@ class ClustererConfig:
     # ALGORITHM SELECTION
     # ==========================================================================
 
+    # Which embedding field to cluster on:
+    # "idea_embedding", "concept_embedding", "concept_type_embedding", "ladder_embedding"
+    clustering_embedding_field: str = "ladder_embedding"
+
     # Mode: "auto", "hdbscan", "agglomerative", "kmeans"
     algorithm_mode: str = "auto"
 
@@ -224,6 +228,14 @@ class ClustererConfig:
     # ==========================================================================
 
     verbose: bool = True
+
+    # Text sources — single field or composite with "+" (e.g., "idea+concept_type_definition")
+    # Supported fields: "idea", "instance", "concept", "concept_type",
+    #                   "concept_type_definition", "ladder"
+    keyword_text_source: str = "idea"           # text for c-TF-IDF / MMR keyword extraction
+    label_text_source: str = "idea"             # text for representative samples in LLM prompt
+    verbose_text_source: str = "idea"           # text for print_all_clusters() display
+    text_separator: str = " | "                 # separator for composite "+" fields
 
 
 # =============================================================================
