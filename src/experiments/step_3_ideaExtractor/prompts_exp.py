@@ -647,9 +647,9 @@ Consolidate these chunk-level thematic domain lists into a single set of 5-15 mu
 
 1. **Merge semantically equivalent domains** — if multiple chunks produced similar domains (e.g. "access and logistics" and "service accessibility"), merge them into one
 2. **Preserve distinctions that appear across chunks** — if a domain appears consistently across chunks, it reflects a real pattern in the data
-3. **Drop domains that only appeared in one chunk** and seem idiosyncratic
+3. **Absorb, never drop** — if a domain appeared in only one chunk, either keep it (if it represents a genuine aspect of {entity}) or explicitly merge it into the most semantically related broader domain. Never silently discard a domain — every domain from every chunk must be accounted for in the final set (kept, merged, or split).
 4. **Ensure MECE** — the final set must be mutually exclusive and collectively exhaustive
-5. **Prefer broader, more stable domains** over narrow ones — the goal is a robust partition that works across all responses
+5. **Prefer precision over breadth** — create domains that are specific enough to be analytically useful. Only broaden a domain when two chunk-level domains genuinely describe the same aspect.
 6. **Domains must organize ASPECTS of the entity**, not be linguistic role labels — verify each consolidated domain describes a thematic aspect, not a semantic role like "moral attribute" or "functional trait"
 
 All output values (labels, definitions) must be in {language}.
@@ -799,8 +799,8 @@ def create_subject_model(
                 )
             return v
 
-    FacetSubjectModel.__name__ = f"SubjectExtractionResponse_{facet.key}"
-    FacetSubjectModel.__qualname__ = f"SubjectExtractionResponse_{facet.key}"
+    FacetSubjectModel.__name__ = f"SubjExtr_{facet.key}"
+    FacetSubjectModel.__qualname__ = f"SubjExtr_{facet.key}"
     return FacetSubjectModel
 
 
@@ -869,8 +869,6 @@ Response: {response}
 
 ----
 
-----
-
 ## TASK OVERVIEW (READ CAREFULLY)
 
 You must convert the survey response into a structured list of ATOMIC ideas.
@@ -934,12 +932,15 @@ For each idea, provide an abstraction ladder with the following fields (all in {
    - NOT a spelling fix, nominalization, or synonym of the instance
 
 3. CONCEPT TYPE (thematic domain)
-   - A thematic domain should describe a structural domain in which {entity} is situated, affected, evaluated, or understood
-   - Ask yourself: Which distinct domain of relevance, impact, or meaning for {entity} does the concept identified in step 2 belong to?
-   - Must be a high-level thematic category suitable for organizing a codebook
-   - Should be reusable across many different concepts that relate to the same aspect
-   - Think of thematic domains as **section headers in a research report about {entity}**, not as topics, sentiments, or response types.
-{concept_type_table}
+   - Classify each concept into the single most specific thematic domain
+   - Classification guidance:
+        - A thematic domain should describe a structural domain in which {entity} is situated, affected, evaluated, or understood
+        - Think of thematic domains as **section headers in a research report about {entity}**, not as topics, sentiments, or response types
+        - Ask yourself: Which distinct domain of relevance, impact, or meaning for {entity} does the concept identified in step 2 belong to?
+        - Must be a high-level thematic category suitable for organizing a codebook
+        - Should be reusable across many different concepts that relate to the same aspect
+        - All labels must be in {language}
+    - {concept_type_table}
 
 4. CONCEPT TYPE DEFINITION (contextual framing)
     - One short phrase (2–5 words) explaining what this thematic domain REPRESENTS for {entity} in this survey context
@@ -979,7 +980,22 @@ KEY PRINCIPLE: Each level answers a different question:
   - CONCEPT TYPE DEFINITION: What does this aspect REPRESENT in this survey context?
 
 5. VALENCE 
-  - positive / negative / neutral_mixed  
+
+For each idea, assign directional valence relative to the CONCEPT, as framed by its CONCEPT TYPE.
+Valence indicates the directional effect the idea has on the concept — not sentiment, opinion, or overall evaluation of the entity.
+
+Use exactly one of the following values:
+- "+" = the idea strengthens, increases, or reinforces the concept
+- "-" = the idea weakens, decreases, or undermines the concept
+- "0" = the idea is non-directional with respect to the concept
+
+Rules (STRICT):
+Assign valence only after the CONCEPT and CONCEPT TYPE are determined
+Valence must be evaluated within the evaluative frame defined by the CONCEPT TYPE
+Do not infer sentiment, desirability, or respondent intent
+If the idea describes a fact, condition, or attribute without directional effect → assign 0
+If an idea contains multiple directional effects → it must have been split earlier into separate ideas
+
 
 ---
 
@@ -1047,11 +1063,10 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
         default=None,
         description="Abstraction ladder: instance (verbatim) -> concept (interpretive meaning) -> concept_type (thematic domain) -> concept_type_definition (contextual framing)"
     )
-    valence: Literal["positive", "negative", "neutral_mixed"] = Field(
-        default="neutral_mixed",
-        description="Evaluative direction: positive (favorable), negative (unfavorable), neutral_mixed (factual/balanced/ambiguous)"
+    valence: Literal["+", "-", "0"] = Field(
+        default="0",
+        description="directional valence of idea relative to the CONCEPT: the idea strengthens, increases, or reinforces the concept (+), the idea weakens, decreases, or undermines the concept (-),  the idea is non-directional with respect to the concept (0)"
     )
-
 
 def create_extraction_model(
     *,
@@ -1077,12 +1092,14 @@ def create_extraction_model(
 
     # Build concept_type field (thematic domain)
     if concept_types:
+        allowed_keys = tuple(c.key for c in concept_types) + ("Other",)
         concept_type_field = (
-            Literal[tuple(c.key for c in concept_types)],
+            Literal[allowed_keys],
             Field(
                 description=(
                     "Thematic domain — which aspect of the entity does this concept belong to? One of: " +
-                    ", ".join(f"{c.key} ({c.definition})" for c in concept_types)
+                    ", ".join(f"{c.key} ({c.definition})" for c in concept_types) +
+                    ", Other (does not fit any of the above)"
                 ),
                 examples=[c.key for c in concept_types[:3]]
             )
@@ -1100,9 +1117,9 @@ def create_extraction_model(
             )
         )
 
-    # Create facet-specific SemanticTaxonomyResponse
-    FacetTaxonomy = create_model(
-        f"SemanticTaxonomyResponse_{facet_key}",
+    # Create base facet-specific SemanticTaxonomyResponse
+    _BaseFacetTaxonomy = create_model(
+        f"SemTax_{facet_key}_b",
         __base__=SemanticTaxonomyResponse,
         instance=(str, Field(
             description=prompt_rules.instance_instruction,
@@ -1120,6 +1137,33 @@ def create_extraction_model(
             ),
         )),
     )
+
+    # Add fuzzy-match validator for concept_type (runs before Literal validation)
+    # Captures allowed_keys from enclosing scope via closure
+    _key_map = {k.lower(): k for k in allowed_keys} if concept_types else {}
+    # Also map underscore variants so "products_and_services" → "products and services"
+    if concept_types:
+        _key_map.update({k.lower().replace(' ', '_'): k for k in allowed_keys})
+
+    class FacetTaxonomy(_BaseFacetTaxonomy):
+        @field_validator('concept_type', mode='before')
+        @classmethod
+        def normalize_concept_type(cls, v: object) -> str:
+            if not isinstance(v, str) or not _key_map:
+                return v
+            stripped = v.strip()
+            # Exact match (case-insensitive)
+            if stripped.lower() in _key_map:
+                return _key_map[stripped.lower()]
+            # Normalize: _ → space, & → and, collapse whitespace, strip trailing punctuation
+            normalized = stripped.lower().replace('_', ' ').replace('&', 'and').replace('  ', ' ').rstrip('.,;:')
+            if normalized in _key_map:
+                return _key_map[normalized]
+            # No match — pass through unchanged, Literal validator will reject
+            return stripped
+
+    FacetTaxonomy.__name__ = f"SemTax_{facet_key}"
+    FacetTaxonomy.__qualname__ = f"SemTax_{facet_key}"
 
     # Create facet-specific extraction model with strict validators
     class FacetExtractionModel(TaxonomyEnrichedIdeaResponse):
@@ -1157,6 +1201,6 @@ def create_extraction_model(
                 )
             return v
 
-    FacetExtractionModel.__name__ = f"TaxonomyEnrichedIdeaResponse_{facet_key}"
-    FacetExtractionModel.__qualname__ = f"TaxonomyEnrichedIdeaResponse_{facet_key}"
+    FacetExtractionModel.__name__ = f"IdeaExtr_{facet_key}"
+    FacetExtractionModel.__qualname__ = f"IdeaExtr_{facet_key}"
     return FacetExtractionModel

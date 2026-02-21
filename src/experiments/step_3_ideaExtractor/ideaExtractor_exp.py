@@ -1334,9 +1334,9 @@ class IdeaExtractor:
         discovered_types = getattr(self, 'concept_types', None)
         if discovered_types:
             concept_type_table = (
-                "Classify each concept into the single most specific thematic domain.\n"
+                "- Choose the most specific applicable domain from this predefined set; otherwise select Other:\n"
                 + "\n".join(
-                    f"  {c.key} = \"{c.definition}\"" for c in discovered_types
+                    f"  • {c.key} = \"{c.definition}\"" for c in discovered_types
                 )
                 + '\n  Other = "Does not fit any of the above thematic domains"'
             )
@@ -1486,7 +1486,6 @@ class IdeaExtractor:
             APIConnectionError,
             APITimeoutError,
             InternalServerError,
-            InstructorRetryException,
             asyncio.TimeoutError
         )),
         wait=wait_exponential_jitter(initial=2, max=60),
@@ -1537,7 +1536,6 @@ class IdeaExtractor:
             APIConnectionError,
             APITimeoutError,
             InternalServerError,
-            InstructorRetryException,
             asyncio.TimeoutError
         )),
         wait=wait_exponential_jitter(initial=2, max=60),

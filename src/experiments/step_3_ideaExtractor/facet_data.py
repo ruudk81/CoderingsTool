@@ -670,21 +670,19 @@ FACETS: Dict[str, FacetDefinition] = {
 
 
 CONCEPT_TYPE_FALLBACK_TABLE = (
-    "Use a short, reusable label (1-4 words) that could organize many different concepts.\n\n"
-    "GOOD concept types (from other surveys, for illustration):\n"
-    "  appointment scheduling → access and logistics\n"
-    "  schedule reliability → operations and planning\n"
-    "  warmth of service → hospitality and interaction\n\n"
-    "BAD concept types:\n"
-    "  × Linguistic role labels: 'functional trait', 'moral attribute', 'quality measure'\n"
-    "  × Paraphrases of the concept: 'scheduling issue' for 'appointment scheduling'\n"
-    "  × Generic catch-alls: 'characteristics', 'properties', 'features'\n\n"
-    "All labels must be in {language}."
+    "EXAMPLES (from other surveys, for illustration):\n"
+    "    - GOOD concept types:\n"
+    "       • appointment scheduling → access and logistics\n"
+    "       • schedule reliability → operations and planning\n"
+    "       • warmth of service → hospitality and interaction\n\n"
+    "   - BAD concept types:\n"
+    "       × Linguistic role labels: 'functional trait', 'moral attribute', 'quality measure'\n"
+    "       × Paraphrases of the concept: 'scheduling issue' for 'appointment scheduling'\n"
+    "       × Generic catch-alls: 'characteristics', 'properties', 'features'\n\n"
 )
 
 CONCEPT_TYPE_FALLBACK_PRIORITY_RULES = (
-    "1. Each ladder level answers a DIFFERENT question — instance (what they said), "
-    "concept (what they mean), concept type (which aspect), definition (what it represents).\n"
+    "1. Each ladder level answers a DIFFERENT question — instance (what they said), concept (what they mean), concept type (which aspect), definition (what it represents).\n"
     "2. Never repeat, nominalize, synonymize, or paraphrase the level below.\n"
     "3. Concept types must be reusable thematic domains, not per-concept labels.\n"
     "4. Stay in one language throughout the ladder.\n"
