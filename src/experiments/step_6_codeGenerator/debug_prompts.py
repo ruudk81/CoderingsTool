@@ -18,15 +18,16 @@ sys.path.insert(0, str(src_dir))
 import random
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from utils.codeGenerator import CodeGeneratorReasoningResults
-from utils.codegenPromptTester import SimplePromptTester
+from experiments.step_6_codeGenerator.codeGenerator_exp import CodeGeneratorReasoningResults
+from experiments.step_6_codeGenerator.codegenPromptTester_exp import SimplePromptTester
 from utils.codegenResults import display_cluster_analysis
 from utils import dataLoader
+from experiments.test_data import TEST_DATA
 
-# Configuration
-FILENAME = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-VAR_NAME = "Q20"
-SAMPLE_SIZE = 500
+# Configuration — uses centralized test_data.py (same dataset as run_experiment.py)
+FILENAME = TEST_DATA.filename
+VAR_NAME = TEST_DATA.var_name
+SAMPLE_SIZE = TEST_DATA.sample_size
 
 # Optional: specify cluster ID, or None for random
 CLUSTER_ID = None
@@ -70,7 +71,7 @@ def main():
     print("=" * 70)
 
     # Test all prompts
-    tester = SimplePromptTester(cluster_id=cluster_id, var_lab=var_lab)
+    tester = SimplePromptTester(codebook_reasoning=codebook_reasoning, cluster_id=cluster_id, var_lab=var_lab)
 
     print("\n--- PROMPT 1 ---")
     tester.test_prompt_1()
