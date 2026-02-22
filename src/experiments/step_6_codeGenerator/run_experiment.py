@@ -14,6 +14,9 @@ Toggle:
     USE_EXPERIMENTAL = False -> Uses production codeGenerator from utils/
 """
 
+EXPERIMENT_N = None  # n or None — limit response models for faster experiments
+
+
 import pickle
 import sys
 import time
@@ -56,7 +59,6 @@ except ImportError:
 # =============================================================================
 # EXPERIMENT CONFIGURATION
 # =============================================================================
-EXPERIMENT_N = None  # n or None — limit response models for faster experiments
 
 @dataclass
 class ExperimentConfig:
