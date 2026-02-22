@@ -79,7 +79,7 @@ except ImportError:
 # Import prompts and response models from experimental prompts_exp
 try:
     from .prompts_exp import (
-        CLUSTER_SUMMARY_PROMPT, CLUSTER_SUMMARY_PROMPT_MECE, CATEGORY_SUMMARY_PROMPT,
+        CLUSTER_SUMMARY_PROMPT,
         CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
         HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
         VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
@@ -95,7 +95,7 @@ try:
     )
 except ImportError:
     from prompts_exp import (
-        CLUSTER_SUMMARY_PROMPT, CLUSTER_SUMMARY_PROMPT_MECE, CATEGORY_SUMMARY_PROMPT,
+        CLUSTER_SUMMARY_PROMPT,
         CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
         HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
         VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
@@ -1554,6 +1554,46 @@ class InductiveCodeGenerator:
             'facet_invalid_labels': "",
         }
 
+    # -----------------------------------------------------------------
+    # Route-specific prompt params for the unified CLUSTER_SUMMARY_PROMPT
+    # -----------------------------------------------------------------
+
+    CLUSTER_PROMPT_PARAMS: Dict[str, str] = {
+        'data_unit': 'cluster',
+        'evidence_source': 'the provided key expressions',
+        'data_description': (
+            "Each topic in the cluster includes:\n"
+            "- A topic label\n"
+            "- An inclusion definition\n"
+            "- Key expressions from original responses\n\n"
+            "Use these as your ONLY evidence base. Do not introduce concepts not present in this data."
+        ),
+        'analysis_step_2': 'Explain whether you kept, split, or merged topics -- and why',
+        'analysis_step_3': 'Note any themes you discarded due to weak grounding in the data',
+    }
+
+    CATEGORY_PROMPT_PARAMS: Dict[str, str] = {
+        'data_unit': 'category',
+        'evidence_source': 'the assigned ideas',
+        'data_description': (
+            "The category data above contains two sections:\n\n"
+            "**Category metadata** -- the structured MECE category definition including:\n"
+            "- Category label and inclusion definition (what belongs here)\n"
+            "- Boundary test (a yes/no question for membership)\n"
+            "- Diagnostic signals (trigger words/phrases)\n"
+            "- Key expressions (representative labels from the data)\n"
+            "- Tiebreaker rules (how to resolve ambiguous cases with other categories)\n\n"
+            "**Assigned ideas** -- actual survey response ideas assigned to this category, grouped by assignment confidence:\n"
+            "- Inner members: high confidence assignments (0.6-0.8)\n"
+            "- Border members: medium confidence (0.4-0.6)\n"
+            "- Fringe members: low confidence (0.0-0.4)\n\n"
+            "Use the category metadata to understand the intended scope and boundaries. "
+            "Use the assigned ideas as your evidence base for theme identification."
+        ),
+        'analysis_step_2': "Explain how the category's boundary test and diagnostic signals informed your theme identification",
+        'analysis_step_3': 'Note any sub-themes you identified, split, or merged -- and why',
+    }
+
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
         """Make a minimal API call to fetch rate limits from response headers."""
         from openai import AsyncOpenAI
@@ -1743,7 +1783,8 @@ class InductiveCodeGenerator:
                 survey_question=self.var_lab or "sample question",
                 language=DEFAULT_LANGUAGE,
                 cluster_text=ideas_text,
-                **self._get_context_specifier_params()  # Add context specifiers
+                **self.CLUSTER_PROMPT_PARAMS,
+                **self._get_context_specifier_params()
             )
             total_tokens += len(self.encoding.encode(sample_prompt))
         
@@ -1871,7 +1912,8 @@ class InductiveCodeGenerator:
             survey_question=self.var_lab,
             language=DEFAULT_LANGUAGE,
             cluster_text=ideas_text,
-            **self._get_context_specifier_params()  # Add context specifiers
+            **self.CLUSTER_PROMPT_PARAMS,
+            **self._get_context_specifier_params()
         )
         
         # Use EXACT same adaptive timeout as production
@@ -1995,12 +2037,14 @@ class InductiveCodeGenerator:
         return "No theme description"
 
     def _get_abstraction_level(self, theme_data) -> str:
-        """Extract abstraction level from theme data"""
+        """Extract abstraction level from theme data.
+        Returns Literal values matching ClusterThemeItem.abstraction_level:
+        'concrete-experiential' or 'interpretive-pattern'."""
         if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
             theme = theme_data.extracted_themes[0]
             if hasattr(theme, 'abstraction_level'):
                 return theme.abstraction_level
-        return "Unknown"
+        return "concrete-experiential"
 
     def _get_inclusion_examples(self, theme_data) -> str:
         """Extract and format inclusion examples from theme data"""
@@ -3121,9 +3165,9 @@ class InductiveCodeGenerator:
 
         theme = ClusterThemeItem(
             theme_id=1,  # Single theme for pure-core cluster
-            theme_label=starter_code['code'][:100],  # Max 100 chars
-            theme_clarification=starter_code.get('definition', starter_code['code'])[:300],
-            abstraction_level="Attribute/What",  # Default to attribute level
+            theme_label=starter_code['code'][:60],  # Max 60 chars
+            theme_clarification=starter_code.get('definition', starter_code['code'])[:250],
+            abstraction_level="concrete-experiential",  # Default for starter codes
             assignment_examples=AssignmentExamples(
                 inclusion=idea_texts[:3],
                 exclusion=["(not applicable - pure core cluster)"],
@@ -3452,7 +3496,6 @@ class InductiveCodeGenerator:
         ideas_text = f"{category_metadata_text}\n\n--- Assigned Ideas ---\n\n{ideas_section}"
 
         input_source_label = "mece_categories"
-        prompt_template = CATEGORY_SUMMARY_PROMPT
 
         # --- Common path: prompt construction + LLM call ---
         language = (self._extraction_metadata.lang
@@ -3464,10 +3507,11 @@ class InductiveCodeGenerator:
             'survey_question': self.var_lab,
             'language': language,
             'cluster_text': ideas_text,
+            **self.CATEGORY_PROMPT_PARAMS,
             **self._get_context_specifier_params()
         }
 
-        prompt = prompt_template.format(**params)
+        prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
 
         # Capture prompt parameters (keyed by str for expand_multi_theme_clusters compat)
         params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
@@ -3561,12 +3605,10 @@ class InductiveCodeGenerator:
             if mece_data and mece_data.get('topics'):
                 use_mece = True
                 ideas_text = self._format_mece_topics_as_cluster_text(mece_data)
-                prompt_template = CLUSTER_SUMMARY_PROMPT_MECE
                 input_source_label = "mece_topics"
 
         # --- Standard ideas input path ---
         if not use_mece:
-            prompt_template = CLUSTER_SUMMARY_PROMPT
             input_source_label = "ideas"
 
             # Build ClusterData with idea texts (template prefix stripped)
@@ -3617,16 +3659,17 @@ class InductiveCodeGenerator:
         # Determine language
         language = self._extraction_metadata.lang if self._extraction_metadata and self._extraction_metadata.lang else DEFAULT_LANGUAGE
 
-        # Build prompt with context specifiers
+        # Build prompt with context specifiers + route params
         params = {
             'cluster_id': str(cluster_id),
             'survey_question': self.var_lab,
             'language': language,
             'cluster_text': ideas_text,
+            **self.CLUSTER_PROMPT_PARAMS,
             **self._get_context_specifier_params()
         }
 
-        prompt = prompt_template.format(**params)
+        prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
 
         # Capture prompt parameters
         params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
