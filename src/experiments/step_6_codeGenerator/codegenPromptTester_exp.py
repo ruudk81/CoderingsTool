@@ -12,7 +12,7 @@ from typing import Optional, Union
 
 from config import DEFAULT_LANGUAGE
 from experiments.step_6_codeGenerator.prompts_exp import (
-    CLUSTER_SUMMARY_PROMPT, CATEGORY_SUMMARY_PROMPT, CODING_DECISION_PROMPT,
+    CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT,
     CODING_MODIFICATION_PROMPT, CODE_CREATION_PROMPT, VALIDATION_PROMPT
 )
 from experiments.step_6_codeGenerator.codeGenerator_exp import CodeGeneratorReasoningResults
@@ -93,18 +93,11 @@ class SimplePromptTester:
             ideas = cluster_text.split('\n')
             print(f"  Cluster Ideas: {len(ideas)} ideas, {len(cluster_text)} characters")
 
-        # Detect which Step 1 template was used by the pipeline:
-        # CATEGORY_SUMMARY_PROMPT for mece_categories (contains "Inclusion definition:")
-        # CLUSTER_SUMMARY_PROMPT for raw ideas
-        if "Inclusion definition:" in cluster_text:
-            prompt_template = CATEGORY_SUMMARY_PROMPT
-            template_name = "CATEGORY_SUMMARY_PROMPT"
-        else:
-            prompt_template = CLUSTER_SUMMARY_PROMPT
-            template_name = "CLUSTER_SUMMARY_PROMPT"
-        print(f"  Template: {template_name}")
+        # Detect which route was used based on captured params
+        data_unit = step1_input.get('data_unit', 'cluster')
+        print(f"  Route: {data_unit}")
 
-        prompt = prompt_template.format(**step1_input)
+        prompt = CLUSTER_SUMMARY_PROMPT.format(**step1_input)
         print(f"\n{'-'*60}\nFORMATTED PROMPT:\n{'-'*60}\n")
         print(prompt)
 
