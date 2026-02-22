@@ -103,7 +103,7 @@ class IdeasExtractedSubmodel(BaseModel):
     concept: str = ""                     # Canonical, reusable concept (noun phrase)
     concept_type: str = ""                # Discovered concept type (e.g., "recommendation")
     concept_type_definition: str = ""     # High-level framing of concept_type in survey context
-    valence: str = ""                     # positive / negative / neutral_mixed
+    valence: str = ""                     # + / - / 0
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -129,6 +129,7 @@ class EmbeddingsModel(IdeasExtractedModel):
 class ClusterSubmodel(EmbeddingsSubmodel):
     initial_cluster: Optional[Union[int, str]] = None
     cluster_probability: Optional[float] = None
+    iteration_assigned: Optional[int] = None
     expanded_cluster: Optional[str] = None
     cluster_theme: Optional[str] = None
 
@@ -146,4 +147,61 @@ class AssignedIdeaSubmodel(ClusterSubmodel):
 
 class CodeAssignedModel(ClusterModel):
     response_ideas: Optional[List[AssignedIdeaSubmodel]] = None
+    assignment_metadata: Optional[Dict[str, Any]] = None
+
+
+# === MECE CACHE MODELS (step 5 categories) ========================================================
+
+from experiments.step_5_categories.prompts_exp import (
+    PartitionSet, MECECategory, MECEVerification,
+)
+
+
+class PartitionMECEResultModel(BaseModel):
+    """Pydantic-serializable version of PartitionMECEResult for caching."""
+    partition_name: str
+    n_labels: int
+    n_batches: int
+    reduce_skipped: bool
+    categories: List[MECECategory] = Field(default_factory=list)
+    mece_verifications: List[MECEVerification] = Field(default_factory=list)
+
+
+class MECEResultsCache(BaseModel):
+    """Top-level cache wrapper for all MECE results.
+
+    Stores the complete output of the MAP/REDUCE/MECE pipeline:
+    partition definitions, MECE category sets, and label counts.
+    Designed for save_metadata_to_cache() (single model).
+    """
+    partition_set: PartitionSet
+    partition_results: Dict[str, PartitionMECEResultModel]
+    label_counts: Dict[str, int] = Field(default_factory=dict)
+    processing_mode: str = ""
+    label_source: str = ""
+    total_categories: int = 0
+
+
+# === CATEGORY ASSIGNMENT MODELS (parallel branch from EmbeddingsSubmodel) ==========================
+
+class CategoryAssignedSubmodel(EmbeddingsSubmodel):
+    """Per-idea data with MECE category assignment.
+
+    Extends EmbeddingsSubmodel (not ClusterSubmodel) since category
+    assignment operates on ideas partitioned by concept_type, independent
+    of clustering.
+    """
+    assigned_category: Optional[str] = None        # MECECategory.category_label
+    category_confidence: Optional[float] = None    # 0.0 - 1.0
+    category_rationale: Optional[str] = None       # LLM reasoning
+    partition_name: Optional[str] = None           # concept_type partition
+    # Bridge fields for step 6 codeGenerator compatibility (set at runtime)
+    initial_cluster: Optional[Union[int, str]] = None
+    expanded_cluster: Optional[str] = None
+    cluster_theme: Optional[str] = None
+
+
+class CategoryAssignedModel(EmbeddingsModel):
+    """Response-level model with category-assigned ideas."""
+    response_ideas: Optional[List[CategoryAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None
