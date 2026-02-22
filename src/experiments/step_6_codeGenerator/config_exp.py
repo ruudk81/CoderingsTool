@@ -29,9 +29,12 @@ EXTRA_VERBOSE = False
 # Stage 1 text source: "idea" (full response text)
 STAGE1_TEXT_SOURCE: Literal["idea"] = "idea"
 
-# Stage 1 input source: "ideas" (sample raw ideas from clusters) or "mece_topics" (use MECE Phase A output)
-# When "mece_topics", pass mece_topics= to InductiveCodeGenerator; STAGE1_TEXT_SOURCE is ignored.
-STAGE1_INPUT_SOURCE: Literal["ideas", "mece_topics"] = "mece_topics"
+# Stage 1 input source:
+#   "ideas"           — sample raw ideas from clusters (uses STAGE1_TEXT_SOURCE)
+#   "mece_topics"     — use old MECE Phase A pickle output (legacy)
+#   "mece_categories" — use step_5_categories cache: MECEResultsCache + CategoryAssignedModel
+# When "mece_topics" or "mece_categories", STAGE1_TEXT_SOURCE is ignored.
+STAGE1_INPUT_SOURCE: Literal["ideas", "mece_topics", "mece_categories"] = "mece_categories"
 
 # Timeout and latency
 DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data

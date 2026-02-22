@@ -1,3 +1,5 @@
+#%%
+
 """
 Debug script for Step 6: Code Generator - Prompt Testing
 Tests prompt generation for specific clusters.

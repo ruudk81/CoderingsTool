@@ -70,6 +70,13 @@ class ExperimentConfig:
     verbose_detailed: bool = False
     prompt_printer_enabled: bool = False
     force_recalc: bool = True
+    # Embedding format for step 6 internal sampling/redistribution
+    # Uses cached step 4 embedding if available, else computes on-the-fly.
+    # "cached" = use idea_embedding as-is | "ladder" = ladder_embedding (default)
+    # "concept_defined" | "idea_concept_defined" | "concept" | "concept_type"
+    # Composite: "concept+concept_type_definition", "idea+concept", etc.
+    step6_embedding_format: str = "ladder"
+    step6_embedding_separator: str = " → "
 
 
 EXPERIMENT_CONFIG = ExperimentConfig()
@@ -98,27 +105,40 @@ else:
 # =============================================================================
 # CACHE OPERATIONS
 # =============================================================================
-def load_step5_cache(config: ExperimentConfig):
+def _get_variable_key_and_cache(config: ExperimentConfig):
+    """Return (variable_key, cache_manager) — always available, no step 5 dependency."""
     variable_key = generate_enhanced_variable_key(
         selected_variables=[config.var_name],
         is_merged=False,
         sample_size=config.sample_size
     )
     cache_manager = CacheManager(CacheConfig())
+    return variable_key, cache_manager
 
-    step_name = "initial_clusters"
 
-    if not cache_manager.is_cache_valid(config.filename, step_name, variable_key):
-        raise FileNotFoundError(
-            f"Cache not found: {step_name}/{variable_key}\n"
-            f"Run pipeline.py with RUN_UNTIL_STEP=5 first."
+def load_extraction_metadata(config: ExperimentConfig, variable_key: str, cache_manager: CacheManager):
+    """Load step 3 extraction metadata (primary_facet, domain, topic, etc.)."""
+    try:
+        return cache_manager.load_metadata_from_cache(
+            config.filename, "extracted_ideas", variable_key, models.ExtractionMetadata
         )
+    except Exception:
+        return None
+
+
+def load_step5_clusterer_cache(config: ExperimentConfig, variable_key: str, cache_manager: CacheManager):
+    """Load step 5 clusterer results (initial_clusters + clustering_metadata).
+
+    Returns (cluster_results, clustering_metadata) or (None, None) if not cached.
+    """
+    step_name = "initial_clusters"
+    if not cache_manager.is_cache_valid(config.filename, step_name, variable_key):
+        return None, None
 
     data = cache_manager.load_from_cache(
         config.filename, step_name, variable_key, models.ClusterModel
     )
 
-    # Load clustering metadata for starter codes
     clustering_metadata = None
     try:
         metadata_list = cache_manager.load_from_cache(
@@ -126,19 +146,10 @@ def load_step5_cache(config: ExperimentConfig):
         )
         if metadata_list:
             clustering_metadata = metadata_list[0]
-    except:
+    except Exception:
         pass
 
-    # Load extraction metadata
-    extraction_metadata = None
-    try:
-        extraction_metadata = cache_manager.load_metadata_from_cache(
-            config.filename, "extracted_ideas", variable_key, models.ExtractionMetadata
-        )
-    except:
-        pass
-
-    return data, variable_key, cache_manager, clustering_metadata, extraction_metadata
+    return data, clustering_metadata
 
 
 def get_var_lab(config: ExperimentConfig) -> str:
@@ -147,7 +158,7 @@ def get_var_lab(config: ExperimentConfig) -> str:
 
 
 def load_mece_topics(config: ExperimentConfig, variable_key: str):
-    """Load MECE Phase A topics from cache if available."""
+    """Load MECE Phase A topics from cache if available (legacy pickle format)."""
     base_name = Path(config.filename).stem
     cache_dir = project_root / "data" / "cache"
     cache_path = cache_dir / f"mece_phase_a_{base_name}_{variable_key}.pkl"
@@ -161,6 +172,49 @@ def load_mece_topics(config: ExperimentConfig, variable_key: str):
         return None
 
 
+def load_mece_categories(config: ExperimentConfig, variable_key: str):
+    """Load MECE category data from step_5_categories cache.
+
+    Returns:
+        (mece_results_cache, category_assigned_data) tuple.
+        Either or both may be None if cache is not available.
+    """
+    cache_manager = CacheManager(CacheConfig())
+
+    # Load MECEResultsCache (metadata cache)
+    mece_results_cache = None
+    try:
+        mece_results_cache = cache_manager.load_metadata_from_cache(
+            config.filename, "mece_categories", variable_key, models.MECEResultsCache
+        )
+    except Exception as e:
+        print(f"  WARNING: Failed to load MECE categories metadata: {e}")
+
+    if not mece_results_cache:
+        print("  WARNING: MECE categories cache not found — falling back")
+        return None, None
+
+    # Load CategoryAssignedModel list (list cache)
+    category_assigned = None
+    try:
+        category_assigned = cache_manager.load_from_cache(
+            config.filename, "category_assignment", variable_key, models.CategoryAssignedModel
+        )
+    except Exception as e:
+        print(f"  WARNING: Failed to load category assignments: {e}")
+
+    if not category_assigned:
+        print("  WARNING: Category assignment cache not found — falling back")
+        return mece_results_cache, None
+
+    total_cats = mece_results_cache.total_categories
+    n_partitions = len(mece_results_cache.partition_results)
+    print(f"  Loaded MECE categories: {total_cats} categories across {n_partitions} partitions")
+    print(f"  Loaded category assignments: {len(category_assigned)} response models")
+
+    return mece_results_cache, category_assigned
+
+
 # =============================================================================
 # MAIN EXPERIMENT RUNNER
 # =============================================================================
@@ -168,8 +222,9 @@ def run_experiment(config: ExperimentConfig = None):
     if config is None:
         config = EXPERIMENT_CONFIG
 
-    initial_cluster_results, variable_key, cache_manager, clustering_metadata, extraction_metadata = load_step5_cache(config)
+    variable_key, cache_manager = _get_variable_key_and_cache(config)
     var_lab = get_var_lab(config)
+    extraction_metadata = load_extraction_metadata(config, variable_key, cache_manager)
 
     model_config = ModelConfig()
     verbose_reporter = VerboseReporter(config.verbose)
@@ -178,11 +233,44 @@ def run_experiment(config: ExperimentConfig = None):
     verbose_reporter.section_header("CODEBOOK GENERATION EXPERIMENT")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
     verbose_reporter.stat_line(f"Using experimental: {USE_EXPERIMENTAL}")
-    verbose_reporter.stat_line(f"Input: {len(initial_cluster_results)} cluster results")
 
     start_time = time.time()
 
-    # Get starter codes from clustering metadata
+    # Load input source data based on STAGE1_INPUT_SOURCE config
+    mece_topics = None
+    mece_results_cache = None
+    category_assigned_data = None
+    initial_cluster_results = None
+    clustering_metadata = None
+
+    if USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "mece_categories":
+        verbose_reporter.stat_line(f"Input source: MECE categories (STAGE1_INPUT_SOURCE={STAGE1_INPUT_SOURCE!r})")
+        mece_results_cache, category_assigned_data = load_mece_categories(config, variable_key)
+        if not mece_results_cache or not category_assigned_data:
+            verbose_reporter.stat_line("  Falling back to mece_topics or idea sampling")
+
+    if USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "mece_topics" or (
+        STAGE1_INPUT_SOURCE == "mece_categories" and not category_assigned_data
+    ):
+        if STAGE1_INPUT_SOURCE == "mece_topics":
+            verbose_reporter.stat_line(f"Input source: MECE topics (STAGE1_INPUT_SOURCE={STAGE1_INPUT_SOURCE!r})")
+        mece_topics = load_mece_topics(config, variable_key)
+
+    # Load step 5 clusterer cache (optional — needed for cluster-based paths and starter codes)
+    initial_cluster_results, clustering_metadata = load_step5_clusterer_cache(config, variable_key, cache_manager)
+
+    if initial_cluster_results:
+        verbose_reporter.stat_line(f"Loaded {len(initial_cluster_results)} cluster results from step 5 clusterer")
+    elif not category_assigned_data:
+        # No categories AND no clusters — can't proceed
+        raise FileNotFoundError(
+            f"No data source available: neither step_5_categories nor step_5_clusterer cache found.\n"
+            f"Run step_5_categories or pipeline.py with RUN_UNTIL_STEP=5 first."
+        )
+    else:
+        verbose_reporter.stat_line("Step 5 clusterer cache not found (not needed for mece_categories path)")
+
+    # Get starter codes from clustering metadata (if available)
     starter_codes = []
     if config.use_speculative_starter_codes and clustering_metadata:
         for cluster_id, cluster_data in clustering_metadata.clusters.items():
@@ -195,15 +283,10 @@ def run_experiment(config: ExperimentConfig = None):
         if starter_codes:
             verbose_reporter.stat_line(f"Loaded {len(starter_codes)} starter codes from cluster labels")
 
-    # Clean ideas
-    cleaned_cluster_results = clusterer_utils.clean_cluster_ideas(initial_cluster_results)
+    # Clean ideas (if cluster results available)
+    cleaned_cluster_results = clusterer_utils.clean_cluster_ideas(initial_cluster_results) if initial_cluster_results else []
 
-    # Load MECE topics if configured
-    mece_topics = None
-    if USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "mece_topics":
-        verbose_reporter.stat_line(f"Input source: MECE topics (STAGE1_INPUT_SOURCE={STAGE1_INPUT_SOURCE!r})")
-        mece_topics = load_mece_topics(config, variable_key)
-    else:
+    if not USE_EXPERIMENTAL or STAGE1_INPUT_SOURCE == "ideas":
         verbose_reporter.stat_line(f"Input source: idea sampling (STAGE1_INPUT_SOURCE={'ideas'!r})")
 
     # Generate codebook
@@ -216,6 +299,10 @@ def run_experiment(config: ExperimentConfig = None):
         prompt_printer=prompt_printer,
         extraction_metadata=extraction_metadata,
         mece_topics=mece_topics,
+        mece_results_cache=mece_results_cache,
+        category_assigned_data=category_assigned_data,
+        embedding_text_format=config.step6_embedding_format,
+        embedding_separator=config.step6_embedding_separator,
     )
     codebook_reasoning = generator.generate()
 
@@ -262,6 +349,7 @@ if __name__ == "__main__":
     print(f"Speculative starter codes: {config.use_speculative_starter_codes}")
     if USE_EXPERIMENTAL:
         print(f"Stage 1 input source: {STAGE1_INPUT_SOURCE}")
+    print(f"Embedding format: {config.step6_embedding_format}")
     print("=" * 70)
 
     try:
