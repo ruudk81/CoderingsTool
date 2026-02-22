@@ -19,467 +19,106 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 1. CLUSTER_SUMMARY_PROMPT
+# 1. CLUSTER_SUMMARY_PROMPT  (unified -- works for all Stage 1 input routes)
+#
+# Dynamic placeholders filled by the caller:
+#   {data_unit}        -- "cluster" or "category"
+#   {evidence_source}  -- "the provided key expressions" or "the assigned ideas"
+#   {data_description} -- paragraph(s) explaining the data block structure
+#   {analysis_step_2}  -- route-specific reasoning instruction
+#   {analysis_step_3}  -- route-specific reasoning instruction
 # -----------------------------------------------------------------------------
 
 CLUSTER_SUMMARY_PROMPT = """
-You are a qualitative researcher tasked with refining pre-extracted MECE (Mutually Exclusive, Collectively Exhaustive) topics from survey responses. 
-Your goal is to produce two outputs:
+You are a qualitative researcher identifying meaning-based codes from survey response data for a codebook. Your work is interpretive but strictly data-bound: you may organize and name patterns, but you must not introduce concepts absent from the provided data.
 
-1. **Cluster-level Central Organizing Concepts (COCs)** — analytic syntheses that explain what unifies the cluster as a whole
-2. **Atomic, grounded themes** — operational coding categories that function as stand-alone codes within a specified taxonomy axis
+THEME PRINCIPLE (Braun & Clarke, 2006)
+A code is a meaning-based organizing concept, not a topic label. It captures WHAT UNIFIES a set of responses -- the shared interpretive thread that explains WHY these expressions belong together. If a candidate can be expressed as a single everyday word (e.g., "price"), it is likely a topic, not a theme. A well-formed code names the specific meaning pattern respondents express.
 
-Your work is interpretive but strictly data-bound: you may organize and name patterns, but you must not introduce concepts absent from the provided topics and key expressions.
-
-## Survey Context
-
-First, here is the context for the survey data you'll be analyzing:
+## Research Context
 
 <survey_context>
-- Survey question asked: "{survey_question}"
-- Language of responses: {language}
-- Domain (subject area): {domain}
-- Topic (specific focus): {topic}
-- Perspective (whose viewpoint): {perspective}
-- Intent (purpose of responses): {intent}
-- Entity (what/who is being discussed): {entity}
-</survey_context>
-
-## Taxonomy 
-
-All themes you identify must adhere to these taxonomy rules
-
-<taxonomy_rules>
-- Themes must describe only the dimension defined by {facet_name}.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
-</taxonomy_rules>
-
-
-## Key Definitions
-
-**Central Organizing Concept (COC):** A short analytic statement (not a code label) that captures what ties the cluster together as a whole. COCs are interpretive and describe shared patterns across multiple topics. They are NOT used as coding labels.
-
-**Atomic theme:** A single, separable idea that could function as a stand-alone code in a codebook. It must have exactly one semantic nucleus and cannot bundle multiple distinct ideas together.
-
-**MECE:** Mutually Exclusive, Collectively Exhaustive — themes should not overlap in meaning, and together should cover all relevant concepts in the data.
-
-## Cluster Data to Analyze
-
-Here is the pre-extracted cluster data containing topics and key expressions from survey responses:
-
-<cluster_data>
-<cluster_id>
-{cluster_id}
-</cluster_id>
-
-<cluster_text>
-{cluster_text}
-</cluster_text>
-</cluster_data>
-
-Each topic in the cluster includes:
-- A topic label
-- An inclusion definition
-- Key expressions from original responses
-
-Use these as your ONLY evidence base. Do not introduce concepts not present in this data.
-
-## Cluster Analysis (COCs)
-
-Identify 1–2 Central Organizing Concepts that explain what unifies this cluster of responses.
-
-COCs should:
-- Be analytic and interpretive, not literal labels from the data
-- Describe a shared pattern across multiple topics in the cluster
-- NOT be used as coding labels themselves
-- Capture the conceptual thread that ties the cluster together
-
-## Theme Identification Rules
-
-Each theme you identify must satisfy ALL of these criteria:
-
-1. **Atomicity:** Express exactly ONE COC with one semantic nucleus
-2. **Boundary compliance:** Fall strictly within the specified taxonomy axis
-3. **Grounding:** Be directly supported by the provided key expressions
-4. **Specificity:** Avoid repeating the perspective, domain, topic, or entity from the survey context in the label
-5. **Operationality:** Be precise enough to function as a real code in a codebook
-
-## Theme Label Constraints
-
-Theme labels must:
-- Be a noun phrase of 1–4 words (maximum 10 words if absolutely necessary)
-- Contain one semantic head (modifiers are allowed)
-- Avoid "and/or," slashes, commas, or lists
-- Name only the relevant concept within the taxonomy axis
-- Be precise enough to distinguish from other themes
-
-## Theme Definition Constraints
-
-Each theme definition must:
-- Be 30 words or fewer
-- Describe observable assignment cues (what respondents say or describe)
-- Avoid discussing causes, motives, conditions, or outcomes
-- Avoid repeating the perspective, domain, topic, or entity from the survey context
-- Be concrete enough to guide consistent coding decisions
-
-## Assignment Examples Requirements
-
-For each theme, you must provide:
-
-**Inclusion examples (2–3):** Observable cues for what counts as this theme
-- Start with action verbs (e.g., "Describes…," "Mentions…," "Reports…")
-- Be concrete and traceable to the provided key expressions
-- Show what should be coded to this theme
-
-**Exclusion examples (1–2):** Boundary cases that should NOT be coded here
-- Start with action verbs
-- Clarify what might be confused with this theme but doesn't belong
-- Help distinguish from similar themes
-
-**Near neighbor:** The closest potentially confusable theme
-- Identify the label of the most similar theme
-- Provide one sentence explaining how to tell them apart
-- If no meaningful neighbor exists, write "Unknown"
-
-## Required Analysis Steps
-
-Before providing your final output, document your reasoning in the analysis field:
-
-1. State the 1–2 cluster-level COCs you identified
-2. Explain whether you kept, split, or merged topics — and why
-3. Note any themes you discarded due to weak grounding in the data
-4. Justify why you have one theme versus multiple themes
-
-## Output Requirements
-
-1. Write all output in the same language as the survey responses
-2. Follow the response schema exactly
-3. For each valid atomic theme, include:
-   - theme_id (sequential starting at 1)
-   - theme_label (1-4 word noun phrase)
-   - theme_clarification (≤30 words)
-   - abstraction_level ("L1-topic" or "L2-action-mechanism")
-   - assignment_examples (inclusion, exclusion, near_neighbor)
-4. In the analysis field, document your COCs and refinement decisions
-5. Output valid JSON that matches the response schema structure
-
-Begin your analysis now. Think carefully through the cluster data, identify the unifying COCs, refine the topics into atomic themes, and provide your output in valid JSON format.
-"""
-
-# -----------------------------------------------------------------------------
-# CLUSTER_SUMMARY_PROMPT_MECE: variant that takes pre-extracted MECE topics
-# instead of raw sampled ideas. Same atomicity/taxonomy/label/output rules.
-# -----------------------------------------------------------------------------
-
-CLUSTER_SUMMARY_PROMPT_MECE = """
-You are a qualitative researcher tasked with refining pre-extracted MECE (Mutually Exclusive, Collectively Exhaustive) topics from survey responses. 
-Your goal is to produce two outputs:
-
-1. **Cluster-level Central Organizing Concepts (COCs)** — analytic syntheses that explain what unifies the cluster as a whole
-2. **Atomic, grounded themes** — operational coding categories that function as stand-alone codes within a specified taxonomy axis
-
-Your work is interpretive but strictly data-bound: you may organize and name patterns, but you must not introduce concepts absent from the provided topics and key expressions.
-
-## Survey Context
-
-First, here is the context for the survey data you'll be analyzing:
-
-<survey_context>
-- Survey question asked: "{survey_question}"
-- Language of responses: {language}
-- Domain (subject area): {domain}
-- Topic (specific focus): {topic}
-- Perspective (whose viewpoint): {perspective}
-- Intent (purpose of responses): {intent}
-- Entity (what/who is being discussed): {entity}
-</survey_context>
-
-## Taxonomy 
-
-All themes you identify must adhere to these taxonomy rules
-
-<taxonomy_rules>
-- Themes must describe only the dimension defined by {facet_name}.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
-</taxonomy_rules>
-
-
-## Key Definitions
-
-**Central Organizing Concept (COC):** A short analytic statement (not a code label) that captures what ties the cluster together as a whole. COCs are interpretive and describe shared patterns across multiple topics. They are NOT used as coding labels.
-
-**Atomic theme:** A single, separable idea that could function as a stand-alone code in a codebook. It must have exactly one semantic nucleus and cannot bundle multiple distinct ideas together.
-
-**MECE:** Mutually Exclusive, Collectively Exhaustive — themes should not overlap in meaning, and together should cover all relevant concepts in the data.
-
-## Cluster Data to Analyze
-
-Here is the pre-extracted cluster data containing topics and key expressions from survey responses:
-
-<cluster_data>
-<cluster_id>
-{cluster_id}
-</cluster_id>
-
-<cluster_text>
-{cluster_text}
-</cluster_text>
-</cluster_data>
-
-Each topic in the cluster includes:
-- A topic label
-- An inclusion definition
-- Key expressions from original responses
-
-Use these as your ONLY evidence base. Do not introduce concepts not present in this data.
-
-## Cluster Analysis (COCs)
-
-Identify 1–2 Central Organizing Concepts that explain what unifies this cluster of responses.
-
-COCs should:
-- Be analytic and interpretive, not literal labels from the data
-- Describe a shared pattern across multiple topics in the cluster
-- NOT be used as coding labels themselves
-- Capture the conceptual thread that ties the cluster together
-
-## Theme Identification Rules
-
-Each theme you identify must satisfy ALL of these criteria:
-
-1. **Atomicity:** Express exactly ONE COC with one semantic nucleus
-2. **Boundary compliance:** Fall strictly within the specified taxonomy axis
-3. **Grounding:** Be directly supported by the provided key expressions
-4. **Specificity:** Avoid repeating the perspective, domain, topic, or entity from the survey context in the label
-5. **Operationality:** Be precise enough to function as a real code in a codebook
-
-## Theme Label Constraints
-
-Theme labels must:
-- Be a noun phrase of 1–4 words (maximum 10 words if absolutely necessary)
-- Contain one semantic head (modifiers are allowed)
-- Avoid "and/or," slashes, commas, or lists
-- Name only the relevant concept within the taxonomy axis
-- Be precise enough to distinguish from other themes
-
-## Theme Definition Constraints
-
-Each theme definition must:
-- Be 30 words or fewer
-- Describe observable assignment cues (what respondents say or describe)
-- Avoid discussing causes, motives, conditions, or outcomes
-- Avoid repeating the perspective, domain, topic, or entity from the survey context
-- Be concrete enough to guide consistent coding decisions
-
-
-## Assignment Examples Requirements
-
-For each theme, you must provide:
-
-**Inclusion examples (2–3):** Observable cues for what counts as this theme
-- Start with action verbs (e.g., "Describes…," "Mentions…," "Reports…")
-- Be concrete and traceable to the provided key expressions
-- Show what should be coded to this theme
-
-**Exclusion examples (1–2):** Boundary cases that should NOT be coded here
-- Start with action verbs
-- Clarify what might be confused with this theme but doesn't belong
-- Help distinguish from similar themes
-
-**Near neighbor:** The closest potentially confusable theme
-- Identify the label of the most similar theme
-- Provide one sentence explaining how to tell them apart
-- If no meaningful neighbor exists, write "Unknown"
-
-## Required Analysis Steps
-
-Before providing your final output, document your reasoning in the analysis field:
-
-1. State the 1–2 cluster-level COCs you identified
-2. Explain whether you kept, split, or merged topics — and why
-3. Note any themes you discarded due to weak grounding in the data
-4. Justify why you have one theme versus multiple themes
-
-## Output Requirements
-
-1. Write all output in the same language as the survey responses
-2. Follow the response schema exactly
-3. For each valid atomic theme, include:
-   - theme_id (sequential starting at 1)
-   - theme_label (1-4 word noun phrase)
-   - theme_clarification (≤30 words)
-   - abstraction_level ("L1-topic" or "L2-action-mechanism")
-   - assignment_examples (inclusion, exclusion, near_neighbor)
-4. In the analysis field, document your COCs and refinement decisions
-5. Output valid JSON that matches the response schema structure
-
-Begin your analysis now. Think carefully through the cluster data, identify the unifying COCs, refine the topics into atomic themes, and provide your output in valid JSON format.
-"""
-
-# -----------------------------------------------------------------------------
-# 1c. CATEGORY_SUMMARY_PROMPT: variant for step_5_categories MECE categories
-#     with full category metadata + confidence-band sampled ideas
-# -----------------------------------------------------------------------------
-
-CATEGORY_SUMMARY_PROMPT = """
-You are a qualitative researcher tasked with refining a pre-defined MECE (Mutually Exclusive, Collectively Exhaustive) coding category into atomic, grounded themes for a codebook.
-
-You are given:
-1. **A structured MECE category definition** — with inclusion criteria, boundary test, diagnostic signals, key expressions, and tiebreaker rules
-2. **Representative survey response ideas** — actual ideas assigned to this category, sampled across confidence levels
-
-Your goal is to produce:
-1. **Category-level Central Organizing Concepts (COCs)** — analytic syntheses that explain what unifies the ideas within this category
-2. **Atomic, grounded themes** — operational coding categories that function as stand-alone codes within a specified taxonomy axis
-
-Your work is interpretive but strictly data-bound: the category definition anchors the scope, and the assigned ideas provide evidence. You must not introduce concepts absent from either source.
-
-## Survey Context
-
-First, here is the context for the survey data you'll be analyzing:
-
-<survey_context>
-- Survey question asked: "{survey_question}"
-- Language of responses: {language}
-- Domain (subject area): {domain}
-- Topic (specific focus): {topic}
-- Perspective (whose viewpoint): {perspective}
-- Intent (purpose of responses): {intent}
-- Entity (what/who is being discussed): {entity}
+Respondents were asked: "{survey_question}"
+Reframe as: What meanings do {perspective}s actually express about {entity} regarding {topic}?
+Your codes must capture these expressed meanings, not just the surface topics mentioned.
+
+- Language: {language}
+- Domain: {domain}
+- Perspective: {perspective}
+- Intent: {intent}
+- Entity: {entity}
 </survey_context>
 
 ## Taxonomy
 
-All themes you identify must adhere to these taxonomy rules
-
 <taxonomy_rules>
-- Themes must describe only the dimension defined by {facet_name}.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
+This codebook covers the {facet_name} dimension.
+Scope check: codes must capture concepts of type {facet_valid_labels}.
+Out of scope: {facet_invalid_labels}.
+Note: these concept types define what BELONGS here, not how to WORD labels.
 </taxonomy_rules>
 
+## {data_unit} Data to Analyze
 
-## Key Definitions
-
-**Central Organizing Concept (COC):** A short analytic statement (not a code label) that captures what ties the category's ideas together. COCs are interpretive and describe shared patterns. They are NOT used as coding labels.
-
-**Atomic theme:** A single, separable idea that could function as a stand-alone code in a codebook. It must have exactly one semantic nucleus and cannot bundle multiple distinct ideas together.
-
-**MECE:** Mutually Exclusive, Collectively Exhaustive — themes should not overlap in meaning, and together should cover all relevant concepts in the data.
-
-## Category Data to Analyze
-
-<category_data>
-<category_id>
+<{data_unit}_data>
+<{data_unit}_id>
 {cluster_id}
-</category_id>
+</{data_unit}_id>
 
-<category_definition>
+<{data_unit}_content>
 {cluster_text}
-</category_definition>
-</category_data>
+</{data_unit}_content>
+</{data_unit}_data>
 
-The category data above contains two sections:
+{data_description}
 
-**Category metadata** — the structured MECE category definition including:
-- Category label and inclusion definition (what belongs here)
-- Boundary test (a yes/no question for membership)
-- Diagnostic signals (trigger words/phrases)
-- Key expressions (representative labels from the data)
-- Tiebreaker rules (how to resolve ambiguous cases with other categories)
+## Analysis Instructions
 
-**Assigned ideas** — actual survey response ideas assigned to this category, grouped by assignment confidence:
-- Inner members: high confidence assignments (0.6-0.8)
-- Border members: medium confidence (0.4-0.6)
-- Fringe members: low confidence (0.0-0.4)
+First, identify 1-2 Central Organizing Concepts (COCs) -- analytic statements that capture what ties this {data_unit}'s data together. COCs describe shared patterns across {evidence_source}. They are NOT code labels.
 
-Use the category metadata to understand the intended scope and boundaries. Use the assigned ideas as your evidence base for theme identification.
+Then derive atomic themes from the data. Each theme must satisfy ALL criteria:
 
-## Category Analysis (COCs)
+THEME CRITERIA
+1. Atomic: one semantic nucleus, unsplittable into independently meaningful parts.
+2. Within-facet: falls within the {facet_name} scope.
+3. Grounded: directly supported by {evidence_source}.
+4. Operational: precise enough to serve as a codebook entry.
+5. Meaning-based: captures a shared meaning pattern, not just a topic.
+6. Metadata-coherent: consistent with any structured metadata provided (inclusion definitions, boundary tests).
 
-Identify 1-2 Central Organizing Concepts that explain what unifies the ideas within this category.
+LABEL RULES
+- Concise noun phrase, 1-5 words (maximum 8 if necessary).
+- One semantic head noun; modifiers allowed.
+- No conjunctions (and/or), slashes, commas, or multi-concept bundles.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
+- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
+- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
 
-COCs should:
-- Be analytic and interpretive, not literal labels from the data
-- Describe a shared pattern across the assigned ideas
-- NOT be used as coding labels themselves
-- Capture the conceptual thread that ties the category together
-- Be consistent with the category's inclusion definition and boundary test
+DEFINITION RULES
+- 30 words or fewer.
+- Describe observable assignment cues (what respondents say/describe).
+- No causes, motives, conditions, or outcomes.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Patterns: "References to...", "Mentions of...", "Expressions of..."
 
-## Theme Identification Rules
+ASSIGNMENT EXAMPLES
+For each theme provide:
+- inclusion (2-3): Observable cues starting with verbs ("Describes...", "Mentions..."), traceable to {evidence_source}.
+- exclusion (1-2): Boundary cases that should NOT be coded here.
+- near_neighbor: Closest confusable theme label + one sentence distinguishing them. Use "Unknown" if none.
 
-Each theme you identify must satisfy ALL of these criteria:
+## Required Analysis
 
-1. **Atomicity:** Express exactly ONE concept with one semantic nucleus
-2. **Boundary compliance:** Fall strictly within the specified taxonomy axis
-3. **Grounding:** Be directly supported by the assigned ideas
-4. **Specificity:** Avoid repeating the perspective, domain, topic, or entity from the survey context in the label
-5. **Operationality:** Be precise enough to function as a real code in a codebook
-6. **Category coherence:** Be consistent with the category's inclusion definition and boundary test
+Document your reasoning in the analysis field:
+1. State 1-2 {data_unit}-level COCs
+2. {analysis_step_2}
+3. {analysis_step_3}
+4. Justify single vs multiple themes
 
-## Theme Label Constraints
-
-Theme labels must:
-- Be a noun phrase of 1-4 words (maximum 10 words if absolutely necessary)
-- Contain one semantic head (modifiers are allowed)
-- Avoid "and/or," slashes, commas, or lists
-- Name only the relevant concept within the taxonomy axis
-- Be precise enough to distinguish from other themes
-
-## Theme Definition Constraints
-
-Each theme definition must:
-- Be 30 words or fewer
-- Describe observable assignment cues (what respondents say or describe)
-- Avoid discussing causes, motives, conditions, or outcomes
-- Avoid repeating the perspective, domain, topic, or entity from the survey context
-- Be concrete enough to guide consistent coding decisions
-
-## Assignment Examples Requirements
-
-For each theme, you must provide:
-
-**Inclusion examples (2-3):** Observable cues for what counts as this theme
-- Start with action verbs (e.g., "Describes...," "Mentions...," "Reports...")
-- Be concrete and traceable to the assigned ideas
-- Show what should be coded to this theme
-
-**Exclusion examples (1-2):** Boundary cases that should NOT be coded here
-- Start with action verbs
-- Clarify what might be confused with this theme but doesn't belong
-- Help distinguish from similar themes
-
-**Near neighbor:** The closest potentially confusable theme
-- Identify the label of the most similar theme
-- Provide one sentence explaining how to tell them apart
-- If no meaningful neighbor exists, write "Unknown"
-
-## Required Analysis Steps
-
-Before providing your final output, document your reasoning in the analysis field:
-
-1. State the 1-2 category-level COCs you identified
-2. Explain how the category's boundary test and diagnostic signals informed your theme identification
-3. Note any sub-themes you identified, split, or merged — and why
-4. Justify why you have one theme versus multiple themes
-
-## Output Requirements
-
-1. Write all output in the same language as the survey responses
-2. Follow the response schema exactly
-3. For each valid atomic theme, include:
-   - theme_id (sequential starting at 1)
-   - theme_label (1-4 word noun phrase)
-   - theme_clarification (<=30 words)
-   - abstraction_level ("L1-topic" or "L2-action-mechanism")
-   - assignment_examples (inclusion, exclusion, near_neighbor)
-4. In the analysis field, document your COCs and refinement decisions
-5. Output valid JSON that matches the response schema structure
-
-Begin your analysis now. Think carefully through the category definition and assigned ideas, identify the unifying COCs, derive atomic themes, and provide your output in valid JSON format.
+Write all output in {language}. Provide your output as valid JSON following the response schema provided.
 """
+
 
 class NearNeighbor(BaseModel):
     label: str = Field(
@@ -526,20 +165,20 @@ class ClusterThemeItem(BaseModel):
     )
     theme_label: str = Field(
         ...,
-        max_length=100,
-        description="1-3 word atomic noun phrase theme label",
+        max_length=60,
+        description="1-5 word meaning-based noun phrase theme label",
         examples=["Waiting Time", "Product Quality", "Staff Friendliness"]
     )
     theme_clarification: str = Field(
         ...,
-        max_length=300,
+        max_length=250,
         description="<=30-word grounded definition describing what belongs in this theme",
         examples=["Responses mentioning the duration of waiting for service or products"]
     )
-    abstraction_level: str = Field(
+    abstraction_level: Literal["concrete-experiential", "interpretive-pattern"] = Field(
         ...,
-        description="Abstraction level indicator",
-        examples=["L2 -action-mechanism theme", "L1 -topic theme"]
+        description="'concrete-experiential' = directly observable in responses; 'interpretive-pattern' = inferred shared meaning pattern",
+        examples=["concrete-experiential", "interpretive-pattern"]
     )
     assignment_examples: AssignmentExamples = Field(
         ...,
@@ -557,7 +196,15 @@ class ClusterThemeItem(BaseModel):
     def validate_label_length(cls, v):
         word_count = len(v.split())
         if word_count > 10:
-            raise ValueError(f"theme_label must be ≤10 words, got {word_count}")
+            raise ValueError(f"theme_label must be <=10 words, got {word_count}")
+        return v
+
+    @field_validator('theme_clarification')
+    @classmethod
+    def validate_clarification_length(cls, v):
+        word_count = len(v.split())
+        if word_count > 36:
+            raise ValueError(f"theme_clarification must be <=36 words, got {word_count}")
         return v
 
 
@@ -569,7 +216,7 @@ class ClusterSummaryOutput(BaseModel):
     )
     analysis: str = Field(
         ...,
-        description="Document analysis: state COCs identified/retained, justify single vs multiple themes",
+        description="1-3 sentence analysis: COCs identified, splits/merges made, rationale for single vs multiple themes",
         examples=["Identified 2 COCs: 'speed' and 'accuracy'. Retained both as distinct atomic concepts."]
     )
     extracted_themes: List[ClusterThemeItem] = Field(
@@ -580,170 +227,95 @@ class ClusterSummaryOutput(BaseModel):
 
 
 # -----------------------------------------------------------------------------
-# 2. CCODING_DECISION_PROMPT
+# 2. CODING_DECISION_PROMPT
 # -----------------------------------------------------------------------------
 
 CODING_DECISION_PROMPT = """
-You are a qualitative research assistant responsible for maintaining a parsimonious and structured codebook for thematic analysis following Braun & Clarke (2006) methodology.
-Your task is to classify a newly identified theme within the {facet_name} facet and decide whether to USE an existing code, MODIFY an existing code, or CREATE a new code.
-You must ensure the codebook remains MECE (Mutually Exclusive, Collectively Exhaustive) by strictly adhering to the specified taxonomy structure.
+You are a qualitative research assistant maintaining a parsimonious codebook following Braun & Clarke (2006) methodology. Your task: classify a newly identified theme within the {facet_name} facet and decide whether to USE, MODIFY, or CREATE a code.
+
+THEME PRINCIPLE (Braun & Clarke, 2006)
+A code is a meaning-based organizing concept, not a topic label. It captures WHAT UNIFIES responses -- the shared interpretive thread that explains WHY expressions belong together. The codebook must remain MECE (Mutually Exclusive, Collectively Exhaustive).
 
 ---
 
-CODEBOOK PARAMETERS
-
-<language>
-{language}
-</language>
+PARAMETERS
 
 <context>
-- Domain: {domain}
-- Topic: {topic}
-- Perspective: {perspective}
-- Entity: {entity}
-Survey Question: "{survey_question}"
+Respondents were asked: "{survey_question}"
+Reframe as: What meanings do {perspective}s actually express about {entity} regarding {topic}?
+Language: {language}
+Domain: {domain} | Entity: {entity}
 </context>
 
-<taxonomy_parameters>
-Facet: {facet_name}
-Facet description: {facet_description}
-</taxonomy_parameters>
+<taxonomy>
+This codebook covers the {facet_name} dimension.
+Scope check: codes must capture concepts of type {facet_valid_labels}.
+Out of scope: {facet_invalid_labels}.
+Note: these concept types define what BELONGS here, not how to WORD labels.
+Facet instruction: {facet_description}
+</taxonomy>
 
 <new_theme>
-New Theme to Classify:
 - name: "{theme_name}"
 - description: "{theme_description}"
-- what's included:
+- included expressions:
     {inclusion}
 </new_theme>
 
 <existing_codes>
-Existing Codes:
 {code_text}
 </existing_codes>
 
 ---
 
-FACET RULES
-
-Theme labels must describe only the dimension defined by {facet_name}.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
-
----
-
 DECISION OPTIONS
 
-You must choose one of the following actions:
+- **USE** -- Existing code fully captures the new theme's meaning; use as-is.
+- **MODIFY_HORIZONTAL** -- Existing code needs broader scope at the same abstraction level.
+- **MODIFY_VERTICAL** -- Same conceptual family but different abstraction level; create/reference a parent code.
+- **CREATE** -- Theme represents a distinct concept not covered by existing codes.
 
-- **USE** - An existing code fully captures the new theme's meaning; use it as-is without modification
-- **MODIFY_HORIZONTAL** - An existing code needs broader definition and inclusion rules to cover the new theme, but remains at the same abstraction level within the {facet_name} facet
-- **MODIFY_VERTICAL** - The existing code and new theme belong to the same conceptual family but differ in abstraction level; create or reference a parent code for both
-- **CREATE** - Add a new code because the theme represents a distinct concept not covered by existing codes
+If the codebook is empty, CREATE is the only valid decision.
 
 ---
 
 ANALYSIS FRAMEWORK
 
-Follow these steps systematically:
-
-**STEP 0: Initial Matching**
-- Review the new theme and all existing codes
-- Identify the best matching existing code(s) based on core meaning and practical relevance in light of the research question, taxonomy axis, and primary coding dimension
-
-**STEP 1: Conceptual Family Test**
-Ask: Do the new theme and the best matching existing code belong to the same conceptual family, given the research question and the {facet_name} facet?
-- If the new theme and best matching existing code share the same core concept and have the same practical relevance -> SAME FAMILY
-- Otherwise -> DIFFERENT FAMILY
-
-**STEP 2: Abstraction Level Test**
-Ask: Are the new theme and the best matching existing code at the same abstraction level on the taxonomy axis/coding dimension?
-- If the level of generality/specificity is similar -> SAME ABSTRACTION LEVEL
-- Otherwise -> DIFFERENT ABSTRACTION LEVEL
-
-**STEP 3: Decision Logic**
-Apply the following decision rules:
-
-- If the new theme is fully covered in meaning and scope by an existing code -> USE existing code.
-- If the new theme is not fully covered by an existing code:
-  - If it belongs to the same code family and is at the same abstraction level -> MODIFY_HORIZONTAL
-      - Broaden the existing code's definition and inclusion rules to incorporate the new expression, ensuring the original core meaning remains intact.
-  - If it belongs to the same code family but at a different abstraction level -> MODIFY_VERTICAL
-      - Introduce or reference a higher-level parent code, treating the existing code and new theme as related sub-codes.
-  - If it belongs to a different code family -> CREATE a new code for the distinct concept.
-
-**STEP 4: Multi-Concept Theme Check**
-If the new theme contains multiple distinct concepts (e.g., "salt reduction AND mild spices"):
-- Identify which concept(s) semantically match the existing code
-- If only ONE concept matches and MODIFY would require changing the existing code's core meaning to accommodate the other: Decision = **CREATE**
-- A MODIFY should never replace an existing code's central meaning with a different concept
-- Preserve the existing code unchanged and create a new code for the theme
+1. **MATCH**: Identify best-matching existing code(s) by core meaning and practical relevance.
+2. **FAMILY TEST**: Do the theme and best match share the same conceptual family (same core concept, same practical relevance given the research question)?
+3. **LEVEL TEST**: Are they at the same abstraction level on the {facet_name} axis?
+4. **DECIDE**:
+   - Fully covered in meaning and scope -> USE
+   - Same family + same level + not fully covered -> MODIFY_HORIZONTAL
+   - Same family + different level -> MODIFY_VERTICAL
+   - Different family -> CREATE
+   - Multi-concept theme where MODIFY would replace core meaning -> CREATE
 
 ---
 
-ASSIGNMENT EXAMPLE UPDATE RULES
+LABEL RULES
+- Concise noun phrase, 1-5 words (maximum 8 if necessary).
+- One semantic head noun; modifiers allowed.
+- No conjunctions (and/or), slashes, commas, or multi-concept bundles.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
+- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
+- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
 
-Based on your decision, update the assignment examples as follows:
-
-If decision is **USE**:
-- Preserve all original assignment_examples unchanged
-
-If decision is **MODIFY_VERTICAL** or **MODIFY_HORIZONTAL**:
-- inclusion: Combine original inclusion examples + new expressions from the theme
-- exclusion: Combine original exclusion examples + new boundary clarifications if needed
-- near_neighbor: Update the label if boundaries shifted due to modification
-- tell_apart_rule: Update if the distinction from neighbor changed
-
-If decision is **CREATE**:
-- Use assignment_examples from the new theme as-is
-
----
-
-LABEL CONSTRAINTS
-
-When creating theme labels, follow these strict rules:
-- Use a noun phrase of 1-10 words.
-- Exactly one semantic nucleus; modifiers allowed.
-- No coordination (and/or), no lists, no multi-concept bundles.
-- Name only the core concept present.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
-- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
+DEFINITION RULES
+- 30 words or fewer.
+- Describe observable assignment cues (what respondents say/describe).
+- No causes, motives, conditions, or outcomes.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Patterns: "References to...", "Mentions of...", "Expressions of..."
 
 ---
 
-DEFINITION CONSTRAINTS
+OUTPUT INSTRUCTIONS
 
-When creating theme definitions, follow these strict rules:
-- Use 30 words or fewer.
-- Describe what belongs in this code (not why it happens).
-- Use observable assignment cues (behaviors, expressions, practices).
-- Avoid causes, conditions, interpretations, or outcomes.
-- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
+Reason through the analysis framework before producing your answer. In your justification, reference: (a) matched code(s), (b) family test result, (c) level test result. Reference cosine similarity scores if provided.
 
----
-
-REQUIRED ANALYSIS STEPS
-
-Before providing your final answer, use <scratchpad> tags to work through your analysis systematically:
-
-1. Identify the top candidate code(s) based on semantic similarity to the theme's core concept.
-2. Note any cosine similarity scores for top candidates (if provided).
-3. Apply the Conceptual Family Test (STEP 1): Do they share the same core concept?
-4. Apply the Abstraction Level Test (STEP 2): Same specificity level within the {facet_name} facet?
-5. Apply the Decision Logic (STEP 3): USE, MODIFY_HORIZONTAL, MODIFY_VERTICAL, or CREATE.
-6. Check for multi-concept themes (STEP 4): Does the theme contain multiple distinct concepts?
-7. Verify label compliance: Ensure the facet rules are satisfied (VALID/INVALID criteria).
-8. Determine your final decision with justification referencing conceptual family and abstraction level analysis.
-9. Plan what updates are needed to assignment examples based on your decision.
-
-After completing your analysis in the scratchpad, provide your final answer as valid JSON following the response schema provided.
-
-**Output Requirements:**
-- Keep field names in English; write values in {language}
-- Include conceptual family and abstraction level comparison explicitly in justification
-- Ensure all updates maintain MECE principles and code atomicity
-- Reference any cosine similarity scores (if provided) in your justification
+Write field names in English, values in {language}. Provide your output as valid JSON following the response schema provided.
 """
 
 
@@ -774,10 +346,16 @@ class MatchedCandidate(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
+# NOTE on modify_instruction values: Due to legacy naming, the Literal values
+# are confusingly inverted relative to the decision names:
+#   "vertical_broaden_same_level"       -> used for MODIFY_HORIZONTAL (broaden at same level)
+#   "hierarchical_parent_diff_level"    -> used for MODIFY_VERTICAL (create parent)
+# These values are checked in codeGenerator_exp.py lines ~5744-5748.
+# Do NOT rename without updating the caller.
 class ModifyParameters(BaseModel):
     modify_instruction: Literal["vertical_broaden_same_level", "hierarchical_parent_diff_level", "none"] = Field(
         ...,
-        description="Type of modification to apply",
+        description="Type of modification: 'vertical_broaden_same_level' = broaden at same level (HORIZONTAL), 'hierarchical_parent_diff_level' = create parent (VERTICAL), 'none' = no modification",
         examples=["vertical_broaden_same_level", "hierarchical_parent_diff_level", "none"]
     )
     conceptual_family: Literal["same", "different", "none"] = Field(
@@ -836,7 +414,7 @@ class CodingDecision(BaseModel):
     )
     matched_candidates: List[MatchedCandidate] = Field(
         ...,
-        description="Best matching existing codes from codebook",
+        description="Best matching existing codes from codebook (for traceability)",
         examples=[[{"code": "Service Speed", "definition": "References to speed of service"}]]
     )
     decision: Literal["USE", "MODIFY_VERTICAL", "MODIFY_HORIZONTAL", "CREATE"] = Field(
@@ -851,25 +429,19 @@ class CodingDecision(BaseModel):
     )
     modify_parameters: ModifyParameters = Field(
         ...,
-        description="Parameters for modification (populate even if not modifying)"
+        description="Parameters for modification. Set all fields to 'none'/null for USE and CREATE decisions."
     )
     justification: str = Field(
         ...,
         description="Decision explanation referencing conceptual family and abstraction level comparison",
         examples=["Theme belongs to same family (service timing) at same abstraction level - MODIFY_HORIZONTAL to broaden scope"]
     )
-    updated_assignment_examples: Optional[AssignmentExamples] = Field(
-        default=None,
-        description="Updated assignment examples reflecting the decision",
-        examples=[{
-            "inclusion": ["Updated inclusion example 1", "Updated inclusion example 2"],
-            "exclusion": ["Updated boundary case to exclude"],
-            "near_neighbor": {"label": "Related Code", "tell_apart_rule": "This code focuses on X, neighbor focuses on Y"}
-        }]
-    )
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
+# NOTE: validation_alias="coding_devision" is a workaround for LLM outputs
+# that occasionally misspell "decision" as "devision". populate_by_name=True
+# allows both the canonical field name and the alias to be accepted.
 class CodingDecisionOutput(BaseModel):
     coding_decision: CodingDecision = Field(
         ...,
@@ -880,109 +452,68 @@ class CodingDecisionOutput(BaseModel):
 
 
 # -----------------------------------------------------------------------------
-# 3a. CCODE_CREATION_PROMPT
+# 3a. CODE_CREATION_PROMPT
 # -----------------------------------------------------------------------------
 
 
 CODE_CREATION_PROMPT = """
-You are a {language} qualitative research assistant.
-Your task is to CREATE a new code that captures the meaning of a newly identified atomic theme within the {facet_name} facet from survey responses, using the specified taxonomy framework.
+You are a {language} qualitative research assistant. Your task: CREATE a new code for a newly identified theme within the {facet_name} facet.
+
+THEME PRINCIPLE (Braun & Clarke, 2006)
+A code is a meaning-based organizing concept, not a topic label. It captures WHAT UNIFIES responses -- the shared interpretive thread. The code must be atomic (one semantic nucleus) and within the {facet_name} dimension.
 
 ---
 
-ATOMICITY RULES (must all be satisfied)
-
-A code must be:
-- ATOMIC: It expresses exactly ONE semantic nucleus - one indivisible concept.
-- SINGLE-HEADED: The code label contains exactly ONE head noun.
-- NO COORDINATION: The label must NOT contain "and", "or", "/", commas, or multiple content nouns.
-- UNSPLITTABLE: If a label could be split into two meaningful labels, it is NOT atomic.
-- ACTIONABLE: Can be clearly identified and address the survey question directly and explicitly.
-
----
-
-FACET RULES
-
-Codes must describe only the dimension defined by {facet_name}.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
-
----
-
-CODEBOOK PARAMETERS
-
-<language>
-{language}
-</language>
+PARAMETERS
 
 <context>
-- Domain: {domain}
-- Topic: {topic}
-- Perspective: {perspective}
-- Entity: {entity}
-Survey Question: "{survey_question}"
+Respondents were asked: "{survey_question}"
+Reframe as: What meanings do {perspective}s actually express about {entity} regarding {topic}?
+Language: {language}
+Domain: {domain} | Entity: {entity}
 </context>
 
 <new_theme>
-New theme:
 - name: "{theme_name}"
 - description: "{theme_description}"
-- Included expressions (these SHOULD be covered by the code):
+- Included expressions (must be covered):
   {inclusion}
 </new_theme>
 
-<taxonomy_parameters>
-Facet: {facet_name}
-Facet description: {facet_description}
-</taxonomy_parameters>
+<taxonomy>
+This codebook covers the {facet_name} dimension.
+Scope check: codes must capture concepts of type {facet_valid_labels}.
+Out of scope: {facet_invalid_labels}.
+Note: these concept types define what BELONGS here, not how to WORD labels.
+Facet instruction: {facet_description}
+</taxonomy>
 
 ---
 
-LABEL CONSTRAINTS
+LABEL RULES
+- Concise noun phrase, 1-5 words (maximum 8 if necessary).
+- One semantic head noun; modifiers allowed.
+- No conjunctions (and/or), slashes, commas, or multi-concept bundles.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
+- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
+- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
 
-- Use a noun phrase of 1-10 words.
-- Exactly one semantic nucleus; modifiers allowed.
-- No coordination (and/or), no lists, no multi-concept bundles.
-- Name only the core concept present.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
-- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
-
----
-
-DEFINITION CONSTRAINTS
-
-- Use 30 words or fewer.
-- Describe what belongs in this code (not why it happens).
-- Use observable assignment cues (behaviors, expressions, practices).
-- Avoid causes, conditions, interpretations, or outcomes.
-- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
-
-GOOD DEFINITION PATTERNS:
-- "References to..."
-- "Mentions of..."
-- "Expressions of..."
-- "Concerns about..."
-
-AVOID:
-- Broad summaries (e.g., "general dissatisfaction").
-- Multi-part or layered meaning.
-- Psychological interpretation not grounded in wording.
-
----
+DEFINITION RULES
+- 30 words or fewer.
+- Describe observable assignment cues (what respondents say/describe).
+- No causes, motives, conditions, or outcomes.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Patterns: "References to...", "Mentions of...", "Expressions of..."
 
 ASSIGNMENT EXAMPLES
-
-- Provide concrete, actionable assignment examples to guide future code assignment.
-- inclusion: 2-3 short examples of expressions that SHOULD be coded here.
-- exclusion: 1-2 short examples of what should NOT be included.
-- near_neighbor: Identify closest confusable concept and how to tell them apart.
+- inclusion: 2-3 expressions that SHOULD be coded here.
+- exclusion: 1-2 boundary cases that should NOT.
+- near_neighbor: closest confusable theme + one distinguishing sentence.
 
 ---
 
-FINAL OUTPUT
-
-Provide valid JSON following the response schema. Use theme_number and theme_name exactly as provided. Set source_code to null for new codes. Write all values in {language}.
+Use theme_number and theme_name exactly as provided. Set source_code to null. Write all values in {language}. Provide your output as valid JSON following the response schema provided.
 """
 
 # -----------------------------------------------------------------------------
@@ -990,90 +521,55 @@ Provide valid JSON following the response schema. Use theme_number and theme_nam
 # -----------------------------------------------------------------------------
 
 HORIZONTAL_INSTRUCTIONS = """
-   - Keep the abstraction level of the original code.
-   - Create a **single atomic shared concept** that:
-        (a) captures the meaning of both original code and new theme,
-        (b) is grounded in the shared conceptual family and abstraction level,
-        (c) remains expressible as **one idea** in the label.
-   - The modified label must:
-        * reflect the broadened meaning,
-        * NOT introduce multiple aspects or abstraction levels,
-        * NOT be more abstract than necessary.
-   - The modified definition must:
-        * describe the **shared meaning space**,
-        * reflect: original inclusions + inclusion_update,
-        * exclude: original exclusions + exclusion_update.
-   - Do **not** modify assignment rules here."""
+- Keep the original code's abstraction level.
+- Find the single atomic shared concept that covers both the original code
+  and the new theme within their shared conceptual family.
+- The modified label must reflect the broadened meaning without introducing
+  multiple aspects or becoming more abstract than necessary.
+- The modified definition must describe the shared meaning space,
+  incorporating original inclusions + inclusion_update and
+  original exclusions + exclusion_update."""
 
 VERTICAL_INSTRUCTIONS = """
-   - Shared conceptual family but different abstraction levels -> create hierarchical structure.
-   - Original code and new theme remain **atomic child codes**.
-   - Parent code represents the shared **conceptual family**.
+- Same conceptual family but different abstraction levels: create hierarchical structure.
+- Original code and new theme remain atomic child codes.
+- Parent code represents the shared conceptual family.
 
-   Parent label:
-        - parent theme = {parent_theme_label}
-        - If parent theme is not None or Null -> use it as-is.
-        - If null -> generate a label at a higher abstraction level (Driver/Why level).
-        - Must:
-            * express shared conceptual family,
-            * NOT describe behaviors/outcomes,
-            * NOT blend child labels,
-            * be broader, not vaguer.
+Parent label:
+  - If {parent_theme_label} is provided, use it as-is.
+  - Otherwise, generate a label at a higher abstraction level.
+  - Must express shared conceptual family, not blend child labels.
+  - Must be broader, not vaguer.
 
-   Structure:
-       - Parent = conceptual anchor (higher abstraction level),
-       - Children = distinct manifestations (different abstraction levels),
-       - Child meanings **do not change**."""
+Structure: Parent = conceptual anchor (broader), Children = distinct manifestations (narrower).
+Child meanings do not change."""
 
 
 CODING_MODIFICATION_PROMPT = """
-You are a {language} qualitative research assistant updating a codebook.
-Your task is to MODIFY an existing code so that it fully and correctly includes a new theme within the {facet_name} facet, while preserving **atomic meaning** and **clear conceptual boundaries**.
+You are a {language} qualitative research assistant. Your task: MODIFY an existing code to include a new theme within the {facet_name} facet, preserving atomic meaning and clear boundaries.
+
+THEME PRINCIPLE (Braun & Clarke, 2006)
+A code is a meaning-based organizing concept, not a topic label. The modified code must remain atomic (one semantic nucleus) and within the {facet_name} dimension.
 
 ---
 
-ATOMICITY RULES (must all be satisfied post-modification)
-
-The modified code must remain:
-- ATOMIC: It expresses exactly ONE semantic nucleus - one indivisible concept.
-- SINGLE-HEADED: The code label contains exactly ONE head noun.
-- NO COORDINATION: The label must NOT contain "and", "or", "/", commas, or multiple content nouns.
-- UNSPLITTABLE: If a label could be split into two meaningful labels, the modification is INVALID.
-
----
-
-FACET RULES
-
-Modified codes must describe only the dimension defined by {facet_name}.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
-
----
-
-CODEBOOK PARAMETERS
-
-<language>
-{language}
-</language>
+PARAMETERS
 
 <context>
-- Domain: {domain}
-- Topic: {topic}
-- Perspective: {perspective}
-- Entity: {entity}
-Survey Question: "{survey_question}"
+Respondents were asked: "{survey_question}"
+Reframe as: What meanings do {perspective}s actually express about {entity} regarding {topic}?
+Language: {language}
+Domain: {domain} | Entity: {entity}
 </context>
 
 <new_theme>
-New theme to integrate:
 - name: "{theme_name}"
 - description: "{theme_description}"
-- Included expressions (these SHOULD be covered by the code):
+- Included expressions (must be covered):
   {inclusion}
 </new_theme>
 
 <original_code>
-Original code (to be modified):
 - code_label: {source_code}
 - code_definition: {source_definition}
 </original_code>
@@ -1084,70 +580,49 @@ Current inclusion examples:
 </current_assignment_examples>
 
 <required_modifications>
-- inclusion_update (new expressions that must now be included in-scope):
-  {inclusion_update}
-- exclusion_update (boundaries to clarify so scope does not overextend):
-  {exclusion_update}
+- inclusion_update: {inclusion_update}
+- exclusion_update: {exclusion_update}
 </required_modifications>
 
-<taxonomy_parameters>
-Facet: {facet_name}
-Facet description: {facet_description}
-</taxonomy_parameters>
+<taxonomy>
+This codebook covers the {facet_name} dimension.
+Scope check: codes must capture concepts of type {facet_valid_labels}.
+Out of scope: {facet_invalid_labels}.
+Note: these concept types define what BELONGS here, not how to WORD labels.
+Facet instruction: {facet_description}
+</taxonomy>
 
 ---
 
 MODIFICATION INSTRUCTIONS
-
-Follow these instructions exactly and in order. Do not skip or reorder any instruction.
-
 {modification_instructions}
 
 ---
 
-LABEL CONSTRAINTS
+LABEL RULES
+- Concise noun phrase, 1-5 words (maximum 8 if necessary).
+- One semantic head noun; modifiers allowed.
+- No conjunctions (and/or), slashes, commas, or multi-concept bundles.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
+- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
+- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
 
-- Use a noun phrase of 1-10 words.
-- Exactly one semantic nucleus; modifiers allowed.
-- No coordination (and/or), no lists, no multi-concept bundles.
-- Name only the core concept present.
-- Labels naming {facet_valid_labels} are VALID.
-- Labels describing {facet_invalid_labels} are INVALID.
-- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
-
----
-
-DEFINITION CONSTRAINTS
-
-- Use 30 words or fewer.
-- Describe what belongs in this code (not why it happens).
-- Use observable assignment cues (behaviors, expressions, practices).
-- Avoid causes, conditions, interpretations, or outcomes.
-- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
-
-GOOD DEFINITION PATTERNS:
-- "References to..."
-- "Mentions of..."
-- "Expressions of..."
-- "Concerns about..."
-
-AVOID:
-- Broad summaries (e.g., "general dissatisfaction").
-- Multi-part or layered meaning.
-- Psychological interpretation not grounded in wording.
-
----
+DEFINITION RULES
+- 30 words or fewer.
+- Describe observable assignment cues (what respondents say/describe).
+- No causes, motives, conditions, or outcomes.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Patterns: "References to...", "Mentions of...", "Expressions of..."
 
 ASSIGNMENT EXAMPLES
-
-- Provide concrete, actionable assignment examples to guide future code assignment.
 - inclusion: Combine original + new expressions from inclusion_update.
 - exclusion: Combine original + new boundaries from exclusion_update.
-- near_neighbor: Update label/rule if boundaries changed due to modification. Identify closest confusable concept.
+- near_neighbor: Update if boundaries changed. Identify closest confusable concept.
 
-FINAL OUTPUT
+---
 
-Provide valid JSON following the response schema. Use theme_number, theme_name, and source_code exactly as provided. Write all values in {language}. If hierarchical_parent_diff_level, ensure parent label is conceptual, not descriptive.
+Use theme_number, theme_name, and source_code exactly as provided. Write all values in {language}. Provide your output as valid JSON following the response schema provided.
 """
 
 
@@ -1159,7 +634,7 @@ class GeneratedCode(BaseModel):
     )
     theme_name: str = Field(
         ...,
-        description="Theme name (cluster_summary) as provided",
+        description="Theme name as provided",
         examples=["Waiting Time", "Product Quality"]
     )
     source_code: Optional[str] = Field(
@@ -1169,14 +644,14 @@ class GeneratedCode(BaseModel):
     )
     code_label: str = Field(
         ...,
-        max_length=100,
-        description="New or modified code label (1-10 word noun phrase)",
+        max_length=60,
+        description="New or modified code label (1-5 word meaning-based noun phrase)",
         examples=["Waiting Time", "Service Response"]
     )
     code_definition: str = Field(
         ...,
-        max_length=200,
-        description="<=25-word operational definition describing what belongs in this code",
+        max_length=250,
+        description="<=30-word operational definition describing what belongs in this code",
         examples=["References to duration of waiting for service or products"]
     )
     assignment_examples: Optional[AssignmentExamples] = Field(
@@ -1189,6 +664,22 @@ class GeneratedCode(BaseModel):
         }]
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator('code_label')
+    @classmethod
+    def validate_label_length(cls, v):
+        word_count = len(v.split())
+        if word_count > 10:
+            raise ValueError(f"code_label must be <=10 words, got {word_count}")
+        return v
+
+    @field_validator('code_definition')
+    @classmethod
+    def validate_definition_length(cls, v):
+        word_count = len(v.split())
+        if word_count > 36:
+            raise ValueError(f"code_definition must be <=36 words, got {word_count}")
+        return v
 
 
 class CodeGenerationOutput(BaseModel):
@@ -1206,214 +697,150 @@ class CodeGenerationOutput(BaseModel):
 USE_VALIDATION_INSTRUCTIONS = """
 **Scenario: USE existing code**
 
-Your task is to validate the proposal that an existing code already captures this theme's meaning.
-You must APPROVE or REJECT this proposal. If rejected, provide a corrected final decision.
+Validate that the existing code fully captures this theme's meaning.
+- Does the code's definition cover all expressions in the new theme?
+- Would assigning this theme lose any meaningful distinctions?
+- Are there uncovered expressions?
 
-Scenario-specific validation questions:
-- Does the existing code's definition fully cover the expressions in the new theme?
-- Would assigning this theme to the existing code lose any meaningful distinctions?
-- Are there any expressions in the new theme that the existing code would NOT capture?
-
-General coding validation question:
-- Does the existing code align with these critical rules? A code must be:
-  * TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
-  * ATOMIC: Express one indivisible concept; cannot be split into separate concepts that are practically meaningful for explaining responses to the survey question
-  * SINGLE-VALUED: Represent one clear concept without blending distinct concepts from different conceptual families
-  * ACTIONABLE: Be clearly identifiable and address the survey question directly and explicitly
-- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-
-If validation FAILS (the existing code does not fully capture the theme):
--> Recommend MODIFY (horizontal or vertical refinement) or CREATE (if substantially different)
+If FAILS: recommend MODIFY (horizontal or vertical) or CREATE.
 """
 
 
 MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS = """
 **Scenario: MODIFY_HORIZONTAL (broaden at same abstraction level)**
-Your task is to validate the coding proposal that the modification BROADENS the code while PRESERVING its semantic core.
-You need to APPROVE or REJECT this proposal, and if rejected, provide a corrected final decision.
 
-Scenario-specific validation questions:
+Validate that the modification broadens scope while preserving the semantic core.
 - Does the new label preserve the original code's central meaning?
-- Is the modification genuinely broadening scope, not replacing the concept?
-- Do BOTH the original expressions AND new expressions fit under the unified meaning?
-- Would a coder still recognize this as the same code with expanded coverage?
+- Do BOTH original and new expressions fit under the unified meaning?
+- Is this genuinely broadening, not replacing the concept?
 
-General coding validation question:
-- Does the existing code align with these critical rules? A code must be:
-  * TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
-  * ATOMIC: Express one indivisible concept; cannot be split into separate concepts that are practically meaningful for explaining responses to the survey question
-  * SINGLE-VALUED: Represent one clear concept without blending distinct concepts from different conceptual families
-  * ACTIONABLE: Be clearly identifiable and address the survey question directly and explicitly
-- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-
-CRITICAL: If the new label shifts or replaces the core concept rather than extending it:
--> REJECT and recommend CREATE instead (preserve original code, create new one)
+CRITICAL: If the label shifts the core concept -> REJECT, recommend CREATE.
 """
 
 MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS = """
-**Scenario:  MODIFY_VERTICAL (create parent at higher abstraction level)**
-Your task is to validate the coding proposal that the modification propely forms hierarchical structure.
-You need to APPROVE or REJECT this proposal, and if rejected, provide a corrected final decision.
+**Scenario: MODIFY_VERTICAL (create parent at higher abstraction level)**
 
-Scenario-specific validation questions:
-- Is the parent code abstract enough to encompass both child codes?
-- Does the parent represent the shared conceptual family, not just a blend of labels?
-- Do the child codes remain atomic and distinct at their abstraction levels?
-- Is there a genuine abstraction-level difference (not just wording variation)?
+Validate that the hierarchical structure is well-formed.
+- Is the parent abstract enough to encompass both children?
+- Does the parent represent the shared family, not a label blend?
+- Do children remain atomic and distinct?
+- Is the abstraction difference genuine, not just wording variation?
 
-General coding validation question:
-- Does the existing code align with these critical rules? A code must be:
-  * TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
-  * ATOMIC: Express one indivisible concept; cannot be split into separate concepts that are practically meaningful for explaining responses to the survey question
-  * SINGLE-VALUED: Represent one clear concept without blending distinct concepts from different conceptual families
-  * ACTIONABLE: Be clearly identifiable and address the survey question directly and explicitly
-- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-
-If validation FAILS:
--> Recommend MODIFY_VERTICAL (if same level) or CREATE (if unrelated)
+If FAILS: recommend MODIFY_HORIZONTAL or CREATE.
 """
 
 CREATE_VALIDATION_INSTRUCTIONS = """
 **Scenario: CREATE new code**
-Your task is to validate the coding propoal that this theme represents a genuinely novel concept, requiring a new code.
-You need to APPROVE or REJECT this proposal, and if rejected, provide a corrected final decision.
 
-Scenario-specific validation questions:
-- Is there truly NO existing code that partially or fully covers this theme?
-- Does this fill a real gap in the codebook (not just a wording preference)?
-- Would adding this code improve the codebook's ability to capture distinct meanings?
+Validate that this theme represents a genuinely novel concept.
+- Is there truly no existing code that covers this theme?
+- Does this fill a real gap, not just a wording preference?
 - Is the new code sufficiently different from ALL existing codes?
 
-General coding validation question:
-- Does the existing code align with these critical rules? A code must be:
-  * TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
-  * ATOMIC: Express one indivisible concept; cannot be split into separate concepts that are practically meaningful for explaining responses to the survey question
-  * SINGLE-VALUED: Represent one clear concept without blending distinct concepts from different conceptual families
-  * ACTIONABLE: Be clearly identifiable and address the survey question directly and explicitly
-- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-
-If validation FAILS (an existing code could cover this):
--> Recommend USE (if fully covered) or MODIFY (if partial overlap)
+If FAILS: recommend USE or MODIFY.
 """
 
 VALIDATION_PROMPT = """
-You are a codebook curator for thematic analysis following Braun & Clarke (2006) methodology.
-Your role is to maintain parsimonious codebooks with non-overlapping and non-redundant codes by reviewing and making final decisions on coding proposals.
+You are a codebook curator for thematic analysis following Braun & Clarke (2006) methodology. Your role: maintain a parsimonious codebook with non-overlapping, non-redundant codes by reviewing coding proposals.
 
-Here is the codebook context you will be working with:
+THEME PRINCIPLE (Braun & Clarke, 2006)
+A code is a meaning-based organizing concept, not a topic label. It captures WHAT UNIFIES responses -- the shared interpretive thread that explains WHY expressions belong together.
+
+---
+
+CONTEXT
 
 <codebook_context>
-- Domain: {domain}
-- Topic: {topic}
+Respondents were asked: "{survey_question}"
+Reframe as: What meanings do {perspective}s actually express about {entity} regarding {topic}?
+Domain: {domain} | Topic: {topic}
 
 Existing codes in codebook:
 {code_text}
 </codebook_context>
 
-Here is the coding proposal you need to evaluate:
-
 <coding_proposal>
-A new theme emerged from analyzing responses to this survey question:
-"{survey_question}"
-
-This is a new theme to be evaluated:
+Theme to evaluate:
 - name: "{theme_name}"
 - description: "{theme_description}"
 
-The proposal to review:
+Proposal to review:
 {step3_recommendation}
 
-Further information about the new code:
-- The new code should cover these expressions:
+Expressions the code should cover:
   {inclusion_examples}
 </coding_proposal>
 
-Here is the taxonomy framework guiding your analysis:
-- Facet: {facet_name}
-- Facet description: {facet_description}
+<taxonomy>
+This codebook covers the {facet_name} dimension.
+Scope check: codes must capture concepts of type {facet_valid_labels}.
+Out of scope: {facet_invalid_labels}.
+Note: these concept types define what BELONGS here, not how to WORD labels.
+Facet instruction: {facet_description}
+</taxonomy>
 
-Here are the scenario-specific validation instructions for this decision type:
+---
 
-<scenario_instructions>
+SCENARIO-SPECIFIC VALIDATION
+
 {validation_instructions}
-</scenario_instructions>
 
-<scratchpad>
-Work through your evaluation systematically:
+---
 
-**Apply Scenario-Specific Validation**
-- Review the scenario instructions in <scenario_instructions> above
-- Apply the scenario-specific validation questions for this decision type (USE / MODIFY_HORIZONTAL / MODIFY_VERTICAL / CREATE)
-- Document whether the proposal passes or fails each criterion
-- If the scenario instructions recommend a different action than the proposal, the proposal fails validation
-
-**Provide a correct final decision for the codebook, if proposal is rejected**
-- If the proposal is APPROVED -> final decision = original recommendation
-- If the proposal is REJECTED -> final decision = USE, MODIFY_HORIZONTAL, MODIFY_VERTICAL, or CREATE based on your analysis
-
-**Determine final decision components**
-- validated_decision: Final decision (USE, MODIFY_HORIZONTAL, MODIFY_VERTICAL, or CREATE)
-- source_code:
-   - If USE -> exact code from proposal
-   - If MODIFY_HORIZONTAL or MODIFY_VERTICAL -> exact existing code being modified
-   - If CREATE -> null
-- validated_code: Final compliant label, definition, and assignment examples
-- decision_rationale: Brief explanation of why the proposal was approved or rejected
-
-**Generate final decision codes, labels and descriptions, if proposal is rejected****
-
-CODING RULES:
+CODE QUALITY RULES (apply to all scenarios)
 A code must be:
-- TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
-- ATOMIC: Expresses one indivisible concept; cannot be split into separate concepts that are practically meaningful for explaining responses to the survey question
-- SINGLE-VALUED: Represents one clear concept without blending distinct concepts from different conceptual families
-- ACTIONABLE: Can be clearly identified and address the survey question directly and explicity
+- TAXONOMIC: falls within the {facet_name} scope.
+- ATOMIC: one indivisible concept; unsplittable into independently meaningful parts.
+- SINGLE-VALUED: one clear concept, no blending from different families.
+- ACTIONABLE: directly identifiable and relevant to the research intent.
+No conjunctions, slashes, or compound constructions in labels.
 
-LABEL RULES:
-- Use a short noun phrase of 10 words or fewer
-- Make the semantic core of the theme the head of the noun phrase
-- The label must describe an ATOMIC theme in light of the research question, taxonomy axis, and coding dimension
-- All naming and labeling of ATOMIC THEMES must be single-valued
-- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-- DO NOT repeat the actor, domain, topic, or entity in the label (do not repeat: {perspective}, {domain}, {topic} and {entity})
+---
 
-DEFINITION RULES:
-- Use 30 words or fewer
-- Ground the definition in the cluster data
-- Describe **what belongs in this code**, not why it happens
-- Align directly with the survey question, taxonomy axis, and coding dimension
-- Use a clear, observable assignment cue (e.g., behaviors, expressions, judgments)
-- Do NOT explain causes, conditions, or interpretations
-- DO NOT repeat the actor, domain, topic, or entity in the description (do not repeat: {perspective}, {domain}, {topic} and {entity})
+VALIDATION STEPS
 
-GOOD DEFINITION PATTERNS FOR FINAL DECISION::
-- "References to..."
-- "Mentions of..."
-- "Expressions of..."
-- "Concerns about..."
-</scratchpad>
+1. Apply the scenario-specific validation questions above.
+2. If the proposal fails any criterion, determine the correct decision (USE / MODIFY_HORIZONTAL / MODIFY_VERTICAL / CREATE).
+3. Produce a final code (label + definition + assignment examples) per the rules below.
 
-Now provide your final evaluation as valid JSON following the response schema.
+LABEL RULES
+- Concise noun phrase, 1-5 words (maximum 8 if necessary).
+- One semantic head noun; modifiers allowed.
+- No conjunctions (and/or), slashes, commas, or multi-concept bundles.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
+- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
+- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
 
-**Output Requirements:**
-- Use theme_number and theme_name exactly as provided in the coding proposal
-- For source_code: If USE, use exact code from proposal; If MODIFY, use exact existing code being modified; If CREATE, use null
-- Write all values in {language}
-- Ensure all labels and definitions strictly follow the rules above
+DEFINITION RULES
+- 30 words or fewer.
+- Describe observable assignment cues (what respondents say/describe).
+- No causes, motives, conditions, or outcomes.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Patterns: "References to...", "Mentions of...", "Expressions of..."
+
+---
+
+OUTPUT INSTRUCTIONS
+
+- Use theme_number and theme_name exactly as provided in the proposal.
+- source_code: USE = exact code from proposal; MODIFY = exact existing code; CREATE = null.
+- Write all values in {language}.
+- Provide your output as valid JSON following the response schema provided.
 """
 
 
 class ValidatedCode(BaseModel):
     code: str = Field(
         ...,
-        max_length=100,
-        description="Final validated code label (<=10 words, rule-compliant)",
+        max_length=60,
+        description="Final validated code label (<=8 words, rule-compliant)",
         examples=["Waiting Time", "Service Response"]
     )
     definition: str = Field(
         ...,
-        max_length=200,
-        description="Final validated definition (<=25 words, operational, grounded)",
+        max_length=250,
+        description="Final validated definition (<=30 words, operational, grounded)",
         examples=["References to duration of waiting for service or products"]
     )
     assignment_examples: Optional[AssignmentExamples] = Field(
@@ -1426,6 +853,22 @@ class ValidatedCode(BaseModel):
         }]
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator('code')
+    @classmethod
+    def validate_label_length(cls, v):
+        word_count = len(v.split())
+        if word_count > 10:
+            raise ValueError(f"code label must be <=10 words, got {word_count}")
+        return v
+
+    @field_validator('definition')
+    @classmethod
+    def validate_definition_length(cls, v):
+        word_count = len(v.split())
+        if word_count > 36:
+            raise ValueError(f"definition must be <=36 words, got {word_count}")
+        return v
 
 
 class OriginalRecommendation(BaseModel):
