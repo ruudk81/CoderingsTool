@@ -192,6 +192,7 @@ class CodeGeneratorReasoningResults(BaseModel):
     cluster_data: Dict[Union[int, str], Dict[str, Any]]   
     validation_details: Optional[Dict[Union[int, str], Any]] = None
     redistribution_stats: Optional[Dict[str, Any]] = None  # Statistics from idea redistribution
+    multi_theme_mapping: Optional[Dict[int, List[str]]] = None  # {original_id: [sub_id_1, ...]}
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
@@ -501,12 +502,17 @@ def _sync_responses_create(model: str, prompt: str, response_model=None, reasoni
     Note: reasoning_effort and text_verbosity are only used for OpenAI GPT-5 reasoning models.
     Azure uses chat completion without reasoning features.
     """
+    # For Azure: the module-level client is locked to one deployment (gpt-4.1-mini).
+    # Override model to match the client's deployment to avoid DeploymentNotFound.
+    # For OpenAI: per-stage model selection works as-is (model param in body determines routing).
+    effective_model = DEFAULT_CODEDESIGNER_CONFIG.model if API_PROVIDER == "azure" else model
+
     try:
         # Use llm_create_sync which handles OpenAI vs Azure differences
         # Instructor with TOOLS mode validates response against the Pydantic model
         return llm_create_sync(
             client=client,
-            model=model,
+            model=effective_model,
             prompt=prompt,
             response_model=response_model,  # Instructor handles validation and retries
             temperature=0.0,  # Use deterministic output for code generation
@@ -1490,6 +1496,10 @@ class InductiveCodeGenerator:
             'clusters_redistributed': [],
             'redistribution_details': {}
         }
+
+        # Multi-theme mapping: {original_id: [sub_id_1, sub_id_2, ...]}
+        # Stored for downstream use (step 8 family codes)
+        self._multi_theme_mapping: Dict[int, List[str]] = {}
 
         # Category ID mapping (populated by extract_category_data)
         self._category_id_map: Dict[int, str] = {}  # numeric_id → composite_key
@@ -2692,7 +2702,7 @@ class InductiveCodeGenerator:
         
         self.verbose_reporter.stat_line(f"Expanded {len(themes)} clusters into {len(expanded_themes)} processing units")
         if multi_theme_mapping:
-            self.verbose_reporter.stat_line(f"Found {len(multi_theme_mapping)} multi-theme clusters for later redistribution")
+            self.verbose_reporter.stat_line(f"Found {len(multi_theme_mapping)} multi-theme clusters (mapping stored for step 8)")
         self.verbose_reporter.step_complete("Multi-Theme Cluster Expansion")
         
         return expanded_themes, expanded_clusters, multi_theme_mapping
@@ -3682,23 +3692,21 @@ class InductiveCodeGenerator:
     async def _measure_code_generation_tokens(self, clusters: Dict[int, Dict[str, Any]], themes: Dict[int, ClusterSummaryOutput]) -> Dict[str, float]:
         """Measure real token usage for all 3 code generation steps (like qualityFilter approach)"""
         self.verbose_reporter.step_start("Code Generation Token Measurement")
-        
-        # Sample first 5-10 clusters for measurement (balance accuracy vs speed)
-        sample_size = min(8, len(clusters))
-        sample_items = list(clusters.items())[:sample_size]
-        
+
+        # Sample first 5-10 themes for measurement (balance accuracy vs speed)
+        sample_size = min(8, len(themes))
+        sample_theme_ids = list(themes.keys())[:sample_size]
+
         token_measurements = {
             'candidate_selection': [],
-            'code_generation': [], 
+            'code_generation': [],
             'validation': []
         }
-        
+
         # Get current codebook state for realistic measurements
         current_codes, version = await self.shared_codebook.get_current_snapshot()
-        
-        for cluster_id, cluster_data in sample_items:
-            if cluster_id not in themes:
-                continue
+
+        for cluster_id in sample_theme_ids:
                 
             theme_data = themes[cluster_id]
             #ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
@@ -4113,12 +4121,12 @@ class InductiveCodeGenerator:
                         self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - missing original result data")
                         return None
                     
-                    # Get cluster and theme data
+                    # Get theme data (cluster_data used only for reporting, not required)
                     cluster_data = clusters.get(cluster_id, {})
                     theme_data = themes.get(cluster_id)
-                    
-                    if not cluster_data or not theme_data:
-                        self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - missing cluster or theme data")
+
+                    if not theme_data:
+                        self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - missing theme data")
                         return None
                     
                     if self.verbose_detailed:
@@ -4230,8 +4238,7 @@ class InductiveCodeGenerator:
             async with semaphore, limiter:
                 # Build composite prompt for token estimation (3-prompt chain)
                 # Note: For Stage 2, we estimate based on the most token-heavy prompt (typically candidate selection)
-                if cluster_id in clusters and cluster_id in themes:
-                    #cluster_data = clusters[cluster_id]
+                if cluster_id in themes:
                     theme_data = themes[cluster_id]
                     
                     # Estimate using candidate selection prompt as representative
@@ -4627,68 +4634,32 @@ class InductiveCodeGenerator:
 
                 self._processing_stats['stage_times']['theme_extraction'] = time.time() - stage_start
             
-            # Store original clusters before expansion for later redistribution
-            original_clusters = clusters.copy()
-            
             # Stage 1.5: Expand multi-theme clusters into sub-clusters
             themes, clusters, multi_theme_mapping = self.expand_multi_theme_clusters(themes, clusters)
-            
+
+            # Store multi-theme mapping for downstream use (step 8 family codes)
+            self._multi_theme_mapping = multi_theme_mapping
+
             # Early return for theme extraction only mode
             if self.stages_to_run == 'theme_extraction_only':
                 self.verbose_reporter.info("Theme extraction only mode - returning themes without further processing")
                 return self._format_theme_only_results(themes)
-            
+
             # Stage 2: Theme Embedding with fallback handling
             stage_start = time.time()
             try:
                 theme_embeddings = await self.similarity_engine.embed_themes(themes)
                 self._processing_stats['themes_embedded'] = len(theme_embeddings)
-                
+
                 if not theme_embeddings:
                     self.verbose_reporter.warning("No theme embeddings generated - check embedding API")
                     return []
-                    
+
             except Exception as e:
                 self.verbose_reporter.error(f"Critical failure in theme embedding: {e}")
                 return []
-                
+
             self._processing_stats['stage_times']['theme_embedding'] = time.time() - stage_start
-            
-            # Stage 2.5: Redistribute ideas for multi-theme clusters based on embeddings
-            if multi_theme_mapping:
-                stage_start = time.time()
-                self.verbose_reporter.step_start("Idea Redistribution for Multi-Theme Clusters")
-                
-                # Update ClusterModel objects with expanded_cluster assignments
-                await self._update_cluster_models_with_redistribution(
-                    multi_theme_mapping, 
-                    original_clusters, 
-                    themes, 
-                    theme_embeddings
-                )
-                
-                # Re-extract cluster data now that models have been updated
-                # Works for both paths: _idea_source provides the right models,
-                # and expanded_cluster has been stamped by redistribution
-                clusters = self.extract_cluster_data()
-
-                # Detect sub-clusters that received 0 ideas during redistribution
-                empty_sub_clusters = [tid for tid in themes if tid not in clusters]
-                if empty_sub_clusters:
-                    for tid in empty_sub_clusters:
-                        theme_label = ""
-                        if themes[tid].extracted_themes:
-                            theme_label = themes[tid].extracted_themes[0].theme_label
-                        self.verbose_reporter.warning(
-                            f"Sub-cluster {tid} ('{theme_label}') received 0 ideas "
-                            f"during redistribution — removing from processing"
-                        )
-                        del themes[tid]
-                        if tid in theme_embeddings:
-                            del theme_embeddings[tid]
-
-                self.verbose_reporter.step_complete("Idea Redistribution")
-                self._processing_stats['stage_times']['idea_redistribution'] = time.time() - stage_start
             
             # Stage 3: Similarity-Based Batching with validation
             stage_start = time.time()
@@ -4947,7 +4918,8 @@ class InductiveCodeGenerator:
             codebook=final_codes,  # Codebook built from cluster_results with ALL cluster mappings
             cluster_data=cluster_data,  # Raw cluster data for stats calculations
             validation_details=self.step4_validations,  # Detailed validation results
-            redistribution_stats=self._redistribution_stats if self._redistribution_stats['clusters_redistributed'] else None
+            redistribution_stats=self._redistribution_stats if self._redistribution_stats['clusters_redistributed'] else None,
+            multi_theme_mapping=self._multi_theme_mapping if self._multi_theme_mapping else None
         )
     
     def get_results(self) -> List[Dict[str, Any]]:
@@ -4986,12 +4958,15 @@ class InductiveCodeGenerator:
     
 
     async def _process_single_cluster(self, cluster_id: str, clusters: Dict, themes: Dict, codebook_snapshot: List[Dict], base_version: int) -> Optional[Dict[str, Any]]:
-        """Process single cluster with unlimited concurrency - no artificial limits (Phase 3)"""
-        
-        if cluster_id not in themes or cluster_id not in clusters:
+        """Process single cluster/theme through the 3-prompt chain.
+
+        The chain operates on theme metadata only (label, clarification, examples).
+        clusters is used only for ideas_count reporting — not required.
+        """
+        if cluster_id not in themes:
             return None
-        
-        cluster_data = clusters[cluster_id]
+
+        cluster_data = clusters.get(cluster_id, {})
         theme_data = themes[cluster_id]
         
         try:
@@ -5051,7 +5026,7 @@ class InductiveCodeGenerator:
                     'cluster_id': cluster_id,
                     'theme_name': self._get_theme_name(theme_data),
                     'theme_description': self._get_theme_statement(theme_data),
-                    'ideas_count': len(cluster_data['ideas']),
+                    'ideas_count': len(cluster_data.get('ideas', [])),
                     'candidate_selection': candidate_selection,
                     'code_generation': None,  # Skipped for USE decisions
                     'validation': None,       # Skipped for USE decisions
@@ -5093,7 +5068,7 @@ class InductiveCodeGenerator:
                 'cluster_id': cluster_id,
                 'theme_name': self._get_theme_name(theme_data),
                 'theme_description': self._get_theme_statement(theme_data),
-                'ideas_count': len(cluster_data['ideas']),
+                'ideas_count': len(cluster_data.get('ideas', [])),
                 'candidate_selection': candidate_selection,
                 'code_generation': code_generation,
                 'validation': validation,
@@ -5262,11 +5237,15 @@ class InductiveCodeGenerator:
             
             if code_validation.validated_code and generated_code and decision_info:
                 validated_code = code_validation.validated_code
-                
+
+                # Enforce first-letter capitalization (Dutch compounds use hyphens, so .title() is wrong)
+                if validated_code.code:
+                    validated_code.code = validated_code.code[0].upper() + validated_code.code[1:]
+
                 # Log both decisions for transparency
                 if final_decision != decision:
                     self.verbose_reporter.stat_line(f"C{cluster_id}: Prompt 4 overrode Prompt 2: {decision.upper()} → {final_decision.upper()}")
-                
+
                 if final_decision == "create":
                     create_codes.append({
                         'code': validated_code.code,
@@ -5276,17 +5255,53 @@ class InductiveCodeGenerator:
                     })
                     decision_stats['create'] += 1
                     self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL CREATE decision - will add '{validated_code.code}'")
-                
+
                 elif final_decision in ("modify", "modify_vertical", "modify_horizontal") and final_source_code:
-                    modify_operations.append({
-                        'original_code': final_source_code,
-                        'new_code': validated_code.code,
-                        'new_definition': validated_code.definition,
-                        'cluster_id': cluster_id,
-                        'full_result': result  # Store complete result for potential recovery
-                    })
-                    decision_stats['modify'] += 1
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL MODIFY decision - will replace '{final_source_code}' with '{validated_code.code}'")
+                    label_unchanged = validated_code.code.strip().lower() == final_source_code.strip().lower()
+
+                    if label_unchanged:
+                        # Label identical — check if definition changed
+                        current_codes, _ = await self.shared_codebook.get_current_snapshot()
+                        existing_def = next(
+                            (c['definition'] for c in current_codes
+                             if c['code'].lower() == final_source_code.strip().lower()),
+                            None
+                        )
+                        definition_unchanged = (
+                            existing_def is not None and
+                            validated_code.definition.strip().lower() == existing_def.strip().lower()
+                        )
+
+                        if definition_unchanged:
+                            # Nothing changed — convert to USE
+                            decision_stats['use'] += 1
+                            self.verbose_reporter.stat_line(
+                                f"C{cluster_id}: MODIFY→USE (label and definition unchanged: '{final_source_code}')"
+                            )
+                        else:
+                            # Definition broadened — keep MODIFY for the definition update
+                            modify_operations.append({
+                                'original_code': final_source_code,
+                                'new_code': validated_code.code,
+                                'new_definition': validated_code.definition,
+                                'cluster_id': cluster_id,
+                                'full_result': result
+                            })
+                            decision_stats['modify'] += 1
+                            self.verbose_reporter.stat_line(
+                                f"C{cluster_id}: FINAL MODIFY decision (definition update) - '{final_source_code}'"
+                            )
+                    else:
+                        # Normal MODIFY — label changed
+                        modify_operations.append({
+                            'original_code': final_source_code,
+                            'new_code': validated_code.code,
+                            'new_definition': validated_code.definition,
+                            'cluster_id': cluster_id,
+                            'full_result': result
+                        })
+                        decision_stats['modify'] += 1
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL MODIFY decision - will replace '{final_source_code}' with '{validated_code.code}'")
                 
                 elif final_decision == "use":
                     # Validate USE decision - check if source_code actually exists in SharedCodebook

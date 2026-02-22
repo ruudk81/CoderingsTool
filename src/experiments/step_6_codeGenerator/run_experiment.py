@@ -56,6 +56,8 @@ except ImportError:
 # =============================================================================
 # EXPERIMENT CONFIGURATION
 # =============================================================================
+EXPERIMENT_N = None  # n or None — limit response models for faster experiments
+
 @dataclass
 class ExperimentConfig:
     # Data config from centralized test_data.py
@@ -77,6 +79,7 @@ class ExperimentConfig:
     # Composite: "concept+concept_type_definition", "idea+concept", etc.
     step6_embedding_format: str = "ladder"
     step6_embedding_separator: str = " → "
+    experiment_n: Optional[int] = EXPERIMENT_N  # Limit response models for experiment (None = all)
 
 
 EXPERIMENT_CONFIG = ExperimentConfig()
@@ -248,6 +251,10 @@ def run_experiment(config: ExperimentConfig = None):
         mece_results_cache, category_assigned_data = load_mece_categories(config, variable_key)
         if not mece_results_cache or not category_assigned_data:
             verbose_reporter.stat_line("  Falling back to mece_topics or idea sampling")
+        elif config.experiment_n is not None and config.experiment_n < len(category_assigned_data):
+            full_count = len(category_assigned_data)
+            category_assigned_data = category_assigned_data[:config.experiment_n]
+            verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} of {full_count} response models")
 
     if USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "mece_topics" or (
         STAGE1_INPUT_SOURCE == "mece_categories" and not category_assigned_data
@@ -285,6 +292,12 @@ def run_experiment(config: ExperimentConfig = None):
 
     # Clean ideas (if cluster results available)
     cleaned_cluster_results = clusterer_utils.clean_cluster_ideas(initial_cluster_results) if initial_cluster_results else []
+
+    # Optionally limit cluster results for faster experiments
+    if cleaned_cluster_results and config.experiment_n is not None and config.experiment_n < len(cleaned_cluster_results):
+        full_count = len(cleaned_cluster_results)
+        cleaned_cluster_results = cleaned_cluster_results[:config.experiment_n]
+        verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} of {full_count} cluster results")
 
     if not USE_EXPERIMENTAL or STAGE1_INPUT_SOURCE == "ideas":
         verbose_reporter.stat_line(f"Input source: idea sampling (STAGE1_INPUT_SOURCE={'ideas'!r})")
@@ -350,6 +363,7 @@ if __name__ == "__main__":
     if USE_EXPERIMENTAL:
         print(f"Stage 1 input source: {STAGE1_INPUT_SOURCE}")
     print(f"Embedding format: {config.step6_embedding_format}")
+    print(f"Experiment N: {config.experiment_n or 'all'}")
     print("=" * 70)
 
     try:
