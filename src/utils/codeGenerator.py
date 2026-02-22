@@ -1686,15 +1686,15 @@ class InductiveCodeGenerator:
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
         """Make a minimal API call to fetch rate limits from response headers."""
         from openai import AsyncOpenAI
-        from config import AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+        from config import AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY
 
         if API_PROVIDER == "azure":
             client = AsyncOpenAI(
                 api_key=AZURE_OPENAI_API_KEY,
-                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER}/",
                 default_query={"api-version": "2024-10-21"},
             )
-            model = AZURE_OPENAI_DEPLOYMENT_NAME
+            model = AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER
         else:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             model = self.config.model
