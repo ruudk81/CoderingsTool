@@ -126,8 +126,8 @@ AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
 AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING", "text-embedding-3-large")
 # Deployment for codeGenerator (uses chat completion without reasoning)
-# Defaults to same deployment as main model if not specified
-AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER", AZURE_OPENAI_DEPLOYMENT_NAME)
+# Defaults to DEFAULT_MODEL (gpt-4.1-mini) to match CodeDesignerConfig.model
+AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER", DEFAULT_MODEL)
 
 # Azure ARM access (for dynamic limit fetching - optional)
 AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
@@ -531,7 +531,9 @@ class CacheConfig:
         "codebook_generation": "007",
         "codebook_refinement": "008",
         "code_assignment": "009",
-        "export": "010"
+        "export": "010",
+        "mece_categories": "005",
+        "category_assignment": "005",
         })
     
     # Cache validity settings
