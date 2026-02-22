@@ -23,7 +23,8 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 <instruction>The theme label must read as a natural-language answer category to the survey question.</instruction>
-{taxonomy_context}
+{facet_context}
+{concept_types_section}
 <cluster_evidence>
 Cluster ID: {cluster_id}
 Number of {sample_type}: {num_ideas}
@@ -40,13 +41,13 @@ These {sample_type} are representative of the cluster:
 2. Use the statistical keywords to sharpen what makes this cluster distinct.
 3. Identify the common atomic theme expressed directly in the data.
 4. Do not introduce concepts not supported by the {sample_type} or keywords.
-5. Ensure the theme stays strictly within the taxonomy dimension{taxonomy_task_guidance}.
+5. Ensure the theme stays strictly within the primary coding facet{facet_task_guidance}.
 6. Ensure the theme reads as a short, noun-phrased natural-language answer to the survey question. Use the essence as the head noun, avoid generic language, clutter and verbs.
 </task>
 
 <output_format>
 Provide your analysis in {language}:
-- theme: Short noun-phrased label{taxonomy_output_constraint} (3-10 words)
+- theme: Short noun-phrased label{facet_output_constraint} (3-10 words)
 - description: 1-2 sentence explanation of what respondents associate with the entity
 - key_concepts: 3-5 concrete concepts grounded in data (from keywords or representative samples)
 </output_format>"""

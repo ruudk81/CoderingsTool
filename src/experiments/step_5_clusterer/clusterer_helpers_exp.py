@@ -9,7 +9,7 @@ Original: src/utils/clusterer_helpers.py
 Consolidates all helper classes and functions for clustering:
 - Section 1: Preprocessing (L2 normalization, PCA, embedding extraction)
 - Section 2: Algorithm Selection (DVC, knee detection)
-- Section 3: Parameter Optimization (Optuna HDBSCAN)
+- Section 3: Parameter Optimization (Grid Search + Pareto Selection)
 - Section 4: Quality Metrics (coherence, DBCV, silhouette)
 - Section 5: Post-Processing (merging, noise reduction)
 - Section 6: Representation (c-TF-IDF, MMR, TF-IDF)
@@ -39,8 +39,6 @@ from sklearn.utils import check_array
 from kneed import KneeLocator
 import hdbscan
 import umap
-import optuna
-from optuna.samplers import GridSampler
 from joblib import Parallel, delayed
 from tqdm.auto import tqdm
 from pydantic import BaseModel, Field
@@ -51,9 +49,11 @@ from utils.llm import llm_create_sync, create_client
 try:
     from .config_clusterer_exp import ClustererConfig
     from .prompts_exp import CLUSTER_DESCRIPTION_PROMPT, ClusterDescription
+    from .placeholder_lookup import DatasetPlaceholders, build_cluster_placeholders
 except ImportError:
     from config_clusterer_exp import ClustererConfig
     from prompts_exp import CLUSTER_DESCRIPTION_PROMPT, ClusterDescription
+    from placeholder_lookup import DatasetPlaceholders, build_cluster_placeholders
 
 # Suppress warnings during optimization
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
@@ -101,7 +101,7 @@ def apply_pca(
 def extract_embeddings(
     input_list: List[models.EmbeddingsModel],
     config: ClustererConfig
-) -> Tuple[np.ndarray, List[str], List[Tuple[int, int]], Optional[str], Optional[str]]:
+) -> Tuple[np.ndarray, List[str], List[Tuple[int, int]], List[str], Optional[str], Optional[str]]:
     """
     Extract embeddings from EmbeddingsModel list.
 
@@ -113,6 +113,7 @@ def extract_embeddings(
         embeddings: Array of shape (n_ideas, embedding_dim)
         idea_texts: List of idea text strings (idea.idea)
         idea_indices: List of (response_idx, idea_idx) tuples for result mapping
+        concept_types: List of concept_type strings per idea
         template_prefix: The canonical phrasing prefix (if available)
         embedding_text_format: The text format used for embedding (if available)
     """
@@ -121,6 +122,7 @@ def extract_embeddings(
     embeddings_list = []
     idea_texts = []
     idea_indices = []
+    concept_types = []
     template_prefix = None
     embedding_text_format = None
 
@@ -140,6 +142,7 @@ def extract_embeddings(
                     embeddings_list.append(emb)
                     idea_texts.append(idea.idea if hasattr(idea, 'idea') else str(idea))
                     idea_indices.append((resp_idx, idea_idx))
+                    concept_types.append(getattr(idea, 'concept_type', '') or '')
 
     if not embeddings_list:
         raise ValueError(f"No embeddings found in input data (field: {embedding_field})")
@@ -154,38 +157,39 @@ def extract_embeddings(
         if embedding_text_format:
             print(f"Embedding text format: {embedding_text_format}")
 
-    return embeddings, idea_texts, idea_indices, template_prefix, embedding_text_format
+    return embeddings, idea_texts, idea_indices, concept_types, template_prefix, embedding_text_format
 
 
 def preprocess_embeddings(
     input_list: List[models.EmbeddingsModel],
     config: ClustererConfig
-) -> Tuple[np.ndarray, np.ndarray, List[str], List[Tuple[int, int]], Optional[PCA], Optional[str], Optional[str]]:
+) -> Tuple[np.ndarray, np.ndarray, List[str], List[Tuple[int, int]], List[str], Optional[PCA], Optional[str], Optional[str]]:
     """
-    Full preprocessing pipeline: extract, normalize, optionally PCA.
+    Full preprocessing pipeline: extract, optionally PCA.
+
+    No L2 normalization is applied. OpenAI/Azure embeddings are already unit
+    vectors, and UMAP uses metric='cosine' which handles raw embeddings natively.
 
     Args:
         input_list: List of EmbeddingsModel instances
         config: ClustererConfig
 
     Returns:
-        embeddings_normalized: L2-normalized original embeddings
-        embeddings_processed: Processed embeddings (may be PCA-reduced)
+        embeddings_original: Raw embeddings (no normalization)
+        embeddings_processed: Processed embeddings (may be PCA-reduced, not normalized)
         idea_texts: List of idea text strings (idea.idea)
         idea_indices: List of (response_idx, idea_idx) tuples
+        concept_types: List of concept_type strings per idea
         pca_model: Fitted PCA model (or None if not applied)
         template_prefix: The canonical phrasing prefix (if available)
         embedding_text_format: The text format used for embedding (if available)
     """
     # Extract embeddings
-    embeddings, idea_texts, idea_indices, template_prefix, embedding_text_format = extract_embeddings(input_list, config)
+    embeddings, idea_texts, idea_indices, concept_types, template_prefix, embedding_text_format = extract_embeddings(input_list, config)
     n_samples = len(embeddings)
 
-    # L2 normalize
-    embeddings_normalized = l2_normalize(embeddings)
-
     if config.verbose:
-        print(f"L2-normalized {n_samples} embeddings")
+        print(f"Extracted {n_samples} embeddings (no normalization — UMAP uses cosine metric)")
 
     # Apply PCA for large datasets
     pca_model = None
@@ -193,18 +197,16 @@ def preprocess_embeddings(
         if config.verbose:
             print(f"Applying PCA (n > {config.pca_threshold})...")
         embeddings_processed, pca_model = apply_pca(
-            embeddings_normalized,
+            embeddings,
             n_components=config.pca_variance_retained,
             random_state=config.umap_random_state
         )
-        # Re-normalize after PCA
-        embeddings_processed = l2_normalize(embeddings_processed)
         if config.verbose:
             print(f"PCA reduced to {embeddings_processed.shape[1]} components")
     else:
-        embeddings_processed = embeddings_normalized
+        embeddings_processed = embeddings
 
-    return embeddings_normalized, embeddings_processed, idea_texts, idea_indices, pca_model, template_prefix, embedding_text_format
+    return embeddings, embeddings_processed, idea_texts, idea_indices, concept_types, pca_model, template_prefix, embedding_text_format
 
 
 # =============================================================================
@@ -563,15 +565,31 @@ class AlgorithmSelector:
 # =============================================================================
 
 @dataclass
-class OptunaResult:
-    """Result container for Optuna optimization."""
+class TrialResult:
+    """Metrics from a single grid search trial."""
+    params: Dict[str, Any]       # {n_neighbors, n_components, min_dist, min_samples, min_cluster_size}
+    n_clusters: int
+    noise_rate: float
+    max_cluster_ratio: float     # largest cluster / non-noise points
+    validity: float              # relative_validity_
+    coherence: float             # mean pairwise cosine within clusters
+    mean_persistence: float
+    weighted_persistence: float
+    mean_probability: float
+    low_prob_ratio: float
+    mean_outlier_score: float
+    high_outlier_ratio: float
+
+
+@dataclass
+class GridSearchResult:
+    """Result from exhaustive grid search with Pareto front."""
+    all_trials: List[TrialResult]
+    pareto_indices: List[int]    # Indices into all_trials on the Pareto front
+    selected_idx: int            # Index of selected trial
     best_params: Dict[str, Any]
-    best_value: float
     best_labels: np.ndarray
     best_model: hdbscan.HDBSCAN
-    n_trials_completed: int
-    n_trials_pruned: int
-    study: optuna.Study
     umap_embeddings: np.ndarray
     search_space: Dict[str, List]
     persistence_metrics: Dict[str, float]
@@ -600,88 +618,72 @@ def log_spaced_ints(low: int, high: int, k: int = 4) -> List[int]:
 def n_neighbors_grid(
     N: int,
     k: int = 3,
-    low_mult: float = 0.5,
-    high_mult: float = 1.5,
-    nn_min: int = 5,
-    nn_max: int = 50
+    high_min: int = 10
 ) -> List[int]:
     """
-    Generate n_neighbors grid based on dataset size.
+    Generate UMAP n_neighbors grid based on dataset size.
 
-    Formula: 0.5*sqrt(n) to 1.5*sqrt(n), log-spaced with k points.
-    Clamped to [nn_min, nn_max] and [1, N-1].
+    Formula: ceil(sqrt(N)/2) to max(ceil(sqrt(N)), high_min), log-spaced.
+    All values have a floor of 1 and are capped at N-1.
 
     Args:
         N: Dataset size
-        k: Number of grid points (default 3)
-        low_mult: Low bound multiplier for sqrt(N) (default 0.5)
-        high_mult: High bound multiplier for sqrt(N) (default 1.5)
-        nn_min: Absolute minimum n_neighbors (default 5)
-        nn_max: Absolute maximum n_neighbors (default 50)
+        k: Number of log-spaced grid points (default 3)
+        high_min: Floor for high bound (default 10)
 
     Returns:
         Log-spaced list of n_neighbors values
     """
     sqrt_n = math.sqrt(N)
-    low = max(nn_min, int(round(low_mult * sqrt_n)))
-    high = min(nn_max, int(round(high_mult * sqrt_n)))
+    low = max(1, math.ceil(sqrt_n / 2))
+    high = max(math.ceil(sqrt_n), high_min)
 
-    # Safety: ensure bounds are valid
+    # Safety: cap at N-1
     high = min(high, N - 1)
     low = min(low, high)
 
     return log_spaced_ints(low, high, k=k)
 
 
-def mcs_bounds_sqrt(
-    N: int,
-    low_mult: float = 0.1,
-    high_mult: float = 0.5,
-    mcs_min: int = 3
-) -> Tuple[int, int]:
+def ms_grid(N: int, k: int = 3) -> List[int]:
     """
-    Compute min_cluster_size bounds based on sqrt(N).
+    Generate HDBSCAN min_samples grid based on dataset size.
 
-    Formula:
-        low = max(mcs_min, 0.1 * sqrt(N))
-        high = 0.5 * sqrt(N)
+    Formula: ceil(ln(N)) to ceil(2*ln(N)), log-spaced.
+    All values have a floor of 1.
 
     Args:
         N: Dataset size
-        low_mult: Low bound multiplier for sqrt(N) (default 0.1)
-        high_mult: High bound multiplier for sqrt(N) (default 0.5)
-        mcs_min: Absolute minimum MCS (default 3)
+        k: Number of log-spaced grid points (default 3)
 
     Returns:
-        (low, high) bounds for min_cluster_size
+        Log-spaced list of min_samples values
     """
-    sqrt_n = math.sqrt(N)
-    low = max(mcs_min, int(round(low_mult * sqrt_n)))
-    high = max(low, int(round(high_mult * sqrt_n)))
-    return low, high
+    ln_n = math.log(N)
+    low = max(1, math.ceil(ln_n))
+    high = max(low, math.ceil(2 * ln_n))
+    return log_spaced_ints(low, high, k=k)
 
 
-def mcs_grid_sqrt(
-    N: int,
-    k: int = 3,
-    low_mult: float = 0.1,
-    high_mult: float = 0.5,
-    mcs_min: int = 3
-) -> List[int]:
+def mcs_grid(N: int, k: int = 3, ms_multiplier: float = 2.0) -> List[int]:
     """
-    Generate min_cluster_size grid for dataset of size N.
+    Generate HDBSCAN min_cluster_size grid based on dataset size.
+
+    Formula: ceil(ms_multiplier * ln(N)) to ceil(ms_multiplier * 2*ln(N)), log-spaced.
+    Derived as ms_multiplier × the ms bounds.
+    All values have a floor of 1.
 
     Args:
         N: Dataset size
-        k: Number of grid points (default 3)
-        low_mult: Low bound multiplier for sqrt(N) (default 0.1)
-        high_mult: High bound multiplier for sqrt(N) (default 0.5)
-        mcs_min: Absolute minimum MCS (default 3)
+        k: Number of log-spaced grid points (default 3)
+        ms_multiplier: MCS = this × MS (default 2.0)
 
     Returns:
         Log-spaced list of min_cluster_size values
     """
-    low, high = mcs_bounds_sqrt(N, low_mult, high_mult, mcs_min)
+    ln_n = math.log(N)
+    low = max(1, math.ceil(ms_multiplier * ln_n))
+    high = max(low, math.ceil(ms_multiplier * 2 * ln_n))
     return log_spaced_ints(low, high, k=k)
 
 
@@ -689,31 +691,27 @@ def create_search_space(N: int, config: ClustererConfig) -> Dict[str, List]:
     """
     Create Optuna search space dict for GridSampler using config values.
 
+    Grid dimensions:
+    - n_neighbors: ceil(sqrt(N)/2) to max(ceil(sqrt(N)), high_min), log-spaced
+    - n_components: explicit grid from config
+    - min_dist: explicit grid from config
+    - min_samples: ceil(ln(N)) to ceil(2*ln(N)), log-spaced
+    - min_cluster_size: 2×ms bounds, log-spaced
+
     Args:
         N: Dataset size
         config: ClustererConfig with grid parameters
 
     Returns:
-        Dict with 'n_neighbors', 'n_components', 'min_dist', and 'min_cluster_size' grids
+        Dict with 'n_neighbors', 'n_components', 'min_dist', 'min_samples',
+        and 'min_cluster_size' grids
     """
     return {
-        'n_neighbors': n_neighbors_grid(
-            N,
-            k=config.n_neighbors_grid_k,
-            low_mult=config.n_neighbors_low_mult,
-            high_mult=config.n_neighbors_high_mult,
-            nn_min=config.n_neighbors_min,
-            nn_max=config.n_neighbors_max
-        ),
+        'n_neighbors': n_neighbors_grid(N, k=config.n_neighbors_grid_k, high_min=config.n_neighbors_high_min),
         'n_components': list(config.umap_n_components_grid),
         'min_dist': list(config.umap_min_dist_grid),
-        'min_cluster_size': mcs_grid_sqrt(
-            N,
-            k=config.min_cluster_size_grid_k,
-            low_mult=config.mcs_low_mult,
-            high_mult=config.mcs_high_mult,
-            mcs_min=config.mcs_min
-        ),
+        'min_samples': ms_grid(N, k=config.ms_grid_k),
+        'min_cluster_size': mcs_grid(N, k=config.mcs_grid_k, ms_multiplier=config.mcs_ms_multiplier),
     }
 
 
@@ -725,24 +723,24 @@ def run_umap(
     random_state: int = 42
 ) -> np.ndarray:
     """
-    Run UMAP dimensionality reduction.
+    Run UMAP dimensionality reduction with cosine metric.
 
     Args:
-        embeddings: L2-normalized embeddings
+        embeddings: Raw embeddings (not normalized — cosine metric handles this)
         n_neighbors: UMAP n_neighbors
         n_components: Target dimensionality
         min_dist: UMAP min_dist
         random_state: Random seed
 
     Returns:
-        UMAP-reduced embeddings
+        UMAP-reduced embeddings (not normalized)
     """
     warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
     reducer = umap.UMAP(
         n_neighbors=n_neighbors,
         n_components=n_components,
         min_dist=min_dist,
-        metric='euclidean',
+        metric='cosine',
         random_state=random_state
     )
     return reducer.fit_transform(embeddings)
@@ -789,9 +787,9 @@ class ParameterOptimizer:
         # Will be populated
         self._search_space: Dict[str, List] = {}
         self._umap_cache: Dict[Tuple[int, int, float], np.ndarray] = {}
-        self._study: Optional[optuna.Study] = None
-        self._best_result: Optional[Dict[str, Any]] = None
+        self._best_result: Optional['GridSearchResult'] = None
         self._selector = AlgorithmSelector(config)
+        self._metrics_calc = ClusterQualityMetrics(config)
 
     def precompute_umap_reductions(
         self,
@@ -808,7 +806,7 @@ class ParameterOptimizer:
             min_dist_list: List of min_dist values
 
         Returns:
-            Dict mapping (n_neighbors, n_components, min_dist) -> L2-normalized reduced embeddings
+            Dict mapping (n_neighbors, n_components, min_dist) -> raw UMAP-reduced embeddings
         """
         # Generate all combinations
         combinations = [
@@ -819,15 +817,14 @@ class ParameterOptimizer:
         ]
 
         def compute_single_umap(n_neighbors: int, n_components: int, min_dist: float) -> Tuple[Tuple[int, int, float], np.ndarray]:
-            reduced = run_umap(
+            umap_reduced = run_umap(
                 self._embeddings,
                 n_neighbors,
                 n_components,
                 min_dist,
                 self.config.umap_random_state
             )
-            reduced_normalized = l2_normalize(reduced)
-            return (n_neighbors, n_components, min_dist), reduced_normalized
+            return (n_neighbors, n_components, min_dist), umap_reduced
 
         # Run UMAP computations in parallel with progress bar
         n_jobs = self.config.n_jobs if self.config.n_jobs > 0 else -1
@@ -846,28 +843,18 @@ class ParameterOptimizer:
 
         return {key: reduced for key, reduced in results}
 
-    def _objective(self, trial: optuna.Trial) -> float:
+    def _run_trial(
+        self,
+        umap_reduced: np.ndarray,
+        umap_key: Tuple[int, int, float],
+        min_samples: int,
+        min_cluster_size: int
+    ) -> Optional[TrialResult]:
         """
-        Optuna objective function maximizing composite score.
+        Run single HDBSCAN trial and collect all metrics.
 
-        Args:
-            trial: Optuna trial
-
-        Returns:
-            Composite score (higher is better)
-            Raises TrialPruned if constraints violated
+        Returns TrialResult or None if HDBSCAN produces < 2 clusters.
         """
-        # Get grid parameters
-        n_neighbors = trial.suggest_categorical('n_neighbors', self._search_space['n_neighbors'])
-        n_components = trial.suggest_categorical('n_components', self._search_space['n_components'])
-        min_dist = trial.suggest_categorical('min_dist', self._search_space['min_dist'])
-        min_cluster_size = trial.suggest_categorical('min_cluster_size', self._search_space['min_cluster_size'])
-        min_samples = max(1, min_cluster_size // 2)
-
-        # Look up pre-computed UMAP reduction
-        reduced_normalized = self._umap_cache[(n_neighbors, n_components, min_dist)]
-
-        # Run HDBSCAN
         clusterer = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
@@ -875,100 +862,62 @@ class ParameterOptimizer:
             cluster_selection_method='eom',
             gen_min_span_tree=True,
         )
-        labels = clusterer.fit_predict(reduced_normalized)
+        labels = clusterer.fit_predict(umap_reduced)
 
-        # Calculate metrics
         n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-        noise_rate = (labels == -1).sum() / len(labels)
+        if n_clusters < 2:
+            return None
 
-        # Check constraints (prune if violated)
-        if n_clusters < self.config.min_clusters:
-            raise optuna.TrialPruned(f"Too few clusters: {n_clusters}")
+        n_total = len(labels)
+        noise_rate = float((labels == -1).sum() / n_total)
 
-        if noise_rate > self.config.max_noise_rate:
-            raise optuna.TrialPruned(f"Noise too high: {noise_rate:.1%}")
+        # Max cluster ratio: largest cluster as fraction of non-noise points
+        non_noise_count = (labels >= 0).sum()
+        if non_noise_count > 0:
+            cluster_counts = np.bincount(labels[labels >= 0])
+            max_cluster_ratio = float(cluster_counts.max() / non_noise_count)
+        else:
+            max_cluster_ratio = 1.0
 
-        # Get relative_validity_
+        # DBCV / relative validity
         try:
-            relative_validity = clusterer.relative_validity_
+            validity = clusterer.relative_validity_
         except AttributeError:
-            relative_validity = self._compute_dbcv(labels, reduced_normalized)
+            validity = self._metrics_calc.compute_dbcv(labels, umap_reduced)
 
-        # Extract persistence metrics
+        # Coherence (on original high-dimensional embeddings)
+        coherence = self._metrics_calc.calculate_coherence(labels, self._original_embeddings)[0]
+
+        # Persistence
         persistence_metrics = self._selector.extract_persistence_metrics(clusterer, labels)
 
-        # Calculate coherence (on original embeddings)
-        coherence = self._calculate_coherence(labels, self._original_embeddings)
-
-        # Extract probability metrics
+        # Probability metrics
         prob_metrics = self._compute_probability_metrics(clusterer.probabilities_, labels)
 
-        # Extract outlier metrics
-        outlier_metrics = self._compute_outlier_metrics(clusterer.outlier_scores_)
+        # Outlier metrics
+        outlier_metrics = self._metrics_calc.compute_outlier_metrics(clusterer.outlier_scores_, labels)
 
-        # Compute composite score
-        composite_score, score_breakdown = self._compute_composite_score(
-            relative_validity,
-            prob_metrics['low_prob_ratio'],
-            prob_metrics['fuzzy_cluster_ratio'],
-            prob_metrics['n_fuzzy_clusters'],
-            n_clusters
+        nn, nc, md = umap_key
+        return TrialResult(
+            params={
+                'n_neighbors': nn,
+                'n_components': nc,
+                'min_dist': md,
+                'min_samples': min_samples,
+                'min_cluster_size': min_cluster_size,
+            },
+            n_clusters=n_clusters,
+            noise_rate=noise_rate,
+            max_cluster_ratio=max_cluster_ratio,
+            validity=validity,
+            coherence=coherence,
+            mean_persistence=persistence_metrics.get('mean_persistence', np.nan),
+            weighted_persistence=persistence_metrics.get('weighted_persistence', np.nan),
+            mean_probability=prob_metrics['mean_probability'],
+            low_prob_ratio=prob_metrics['low_prob_ratio'],
+            mean_outlier_score=outlier_metrics['mean_outlier_score'],
+            high_outlier_ratio=outlier_metrics['high_outlier_ratio'],
         )
-
-        # Log user attributes
-        trial.set_user_attr('n_clusters', n_clusters)
-        trial.set_user_attr('noise_rate', noise_rate)
-        trial.set_user_attr('coherence', coherence)
-        trial.set_user_attr('min_samples', min_samples)
-        trial.set_user_attr('relative_validity', relative_validity)
-        trial.set_user_attr('mean_persistence', persistence_metrics.get('mean_persistence', np.nan))
-        trial.set_user_attr('weighted_persistence', persistence_metrics.get('weighted_persistence', np.nan))
-        trial.set_user_attr('mean_probability', prob_metrics['mean_probability'])
-        trial.set_user_attr('low_prob_ratio', prob_metrics['low_prob_ratio'])
-        trial.set_user_attr('fuzzy_cluster_ratio', prob_metrics['fuzzy_cluster_ratio'])
-        trial.set_user_attr('n_fuzzy_clusters', prob_metrics['n_fuzzy_clusters'])
-        trial.set_user_attr('mean_outlier_score', outlier_metrics['mean_outlier_score'])
-        trial.set_user_attr('high_outlier_ratio', outlier_metrics['high_outlier_ratio'])
-        trial.set_user_attr('composite_score', composite_score)
-
-        return composite_score
-
-    def _compute_dbcv(self, labels: np.ndarray, embeddings: np.ndarray) -> float:
-        """Compute DBCV score as fallback for relative_validity_."""
-        try:
-            from hdbscan import validity
-            mask = labels >= 0
-            if mask.sum() < 2:
-                return -1.0
-            embeddings_f64 = embeddings[mask].astype(np.float64)
-            labels_filtered = labels[mask]
-            score = validity.validity_index(embeddings_f64, labels_filtered)
-            return float(score)
-        except Exception:
-            return -1.0
-
-    def _calculate_coherence(self, labels: np.ndarray, embeddings: np.ndarray) -> float:
-        """Calculate mean intra-cluster cosine similarity."""
-        unique_labels = [l for l in set(labels) if l >= 0]
-        if not unique_labels:
-            return 0.0
-
-        coherences = []
-        for label in unique_labels:
-            mask = labels == label
-            cluster_embeddings = embeddings[mask]
-
-            if len(cluster_embeddings) < 2:
-                coherences.append(1.0)
-                continue
-
-            similarities = cluster_embeddings @ cluster_embeddings.T
-            n = len(cluster_embeddings)
-            upper_tri_indices = np.triu_indices(n, k=1)
-            pairwise_sims = similarities[upper_tri_indices]
-            coherences.append(np.mean(pairwise_sims))
-
-        return np.mean(coherences)
 
     def _compute_probability_metrics(
         self,
@@ -978,112 +927,236 @@ class ParameterOptimizer:
         """Extract metrics from HDBSCAN probabilities_."""
         mask = labels >= 0
         probs = probabilities[mask]
-        labels_clustered = labels[mask]
 
         if len(probs) == 0:
-            return {
-                'mean_probability': 0.0,
-                'low_prob_ratio': 0.0,
-                'fuzzy_cluster_ratio': 0.0,
-                'n_fuzzy_clusters': 0
-            }
+            return {'mean_probability': 0.0, 'low_prob_ratio': 0.0}
 
         mean_prob = float(np.mean(probs))
         low_prob_ratio = float((probs < self.config.low_probability_threshold).sum() / len(probs))
 
-        # Compute per-cluster fuzzy ratio
-        fuzzy_threshold = self.config.fuzzy_cluster_threshold
-        points_in_fuzzy = 0
-        n_fuzzy = 0
-
-        for label in set(labels_clustered):
-            cluster_mask = labels == label
-            cluster_probs = probabilities[cluster_mask]
-            cluster_low_ratio = (cluster_probs < self.config.low_probability_threshold).sum() / len(cluster_probs)
-
-            if cluster_low_ratio > fuzzy_threshold:
-                points_in_fuzzy += len(cluster_probs)
-                n_fuzzy += 1
-
-        fuzzy_cluster_ratio = points_in_fuzzy / len(probs) if len(probs) > 0 else 0.0
-
         return {
             'mean_probability': mean_prob,
             'low_prob_ratio': low_prob_ratio,
-            'fuzzy_cluster_ratio': float(fuzzy_cluster_ratio),
-            'n_fuzzy_clusters': n_fuzzy
         }
 
-    def _compute_outlier_metrics(
-        self,
-        outlier_scores: np.ndarray
-    ) -> Dict[str, float]:
-        """Extract metrics from HDBSCAN outlier_scores_ (GLOSH)."""
-        if len(outlier_scores) == 0:
-            return {'mean_outlier_score': 0.0, 'high_outlier_ratio': 0.0}
+    # ── Stage 1: Hard constraint filtering ──────────────────────────────
 
-        mean_score = float(np.mean(outlier_scores))
-        high_ratio = float((outlier_scores > self.config.high_outlier_threshold).sum() / len(outlier_scores))
+    def _filter_candidates(self, trials: List[TrialResult]) -> List[int]:
+        """
+        Filter trials by hard constraints with progressive fallback.
 
-        return {
-            'mean_outlier_score': mean_score,
-            'high_outlier_ratio': high_ratio
-        }
+        Returns indices into trials list.
 
-    def _compute_composite_score(
-        self,
-        relative_validity: float,
-        low_prob_ratio: float,
-        fuzzy_cluster_ratio: float,
-        n_fuzzy_clusters: int,
-        n_clusters: int
-    ) -> Tuple[float, Dict[str, float]]:
-        """Compute soft threshold composite score."""
-        w_validity = self.config.weight_validity
-        tau = self.config.tau_low_prob
-        lam_low_prob = self.config.lambda_low_prob
-        lam_fuzzy = self.config.lambda_fuzzy
-        lam_fuzzy_count = self.config.lambda_fuzzy_count
+        Fallback chain:
+        1. Full constraints (DBCV, k range, noise, max_cluster_ratio)
+        2. Drop DBCV
+        3. Drop noise + max_cluster_ratio (k range only)
+        4. All trials
+        """
+        cfg = self.config
+        sqrt_n = math.sqrt(self._N)
+        k_low = max(2, math.ceil(cfg.pareto_min_k_sqrt_mult * sqrt_n))
+        k_high = math.ceil(cfg.pareto_max_k_sqrt_mult * sqrt_n)
 
-        validity_term = w_validity * relative_validity
-        excess_low_prob = max(0.0, low_prob_ratio - tau)
-        penalty_low_prob = lam_low_prob * excess_low_prob
-        penalty_fuzzy = lam_fuzzy * fuzzy_cluster_ratio
-        fuzzy_cluster_fraction = n_fuzzy_clusters / n_clusters if n_clusters > 0 else 0.0
-        penalty_fuzzy_count = lam_fuzzy_count * fuzzy_cluster_fraction
+        def passes_k_range(t: TrialResult) -> bool:
+            return k_low <= t.n_clusters <= k_high
 
-        total_penalty = penalty_low_prob + penalty_fuzzy + penalty_fuzzy_count
-        composite = validity_term - total_penalty
+        # Full constraints
+        full = [i for i, t in enumerate(trials)
+                if t.validity > cfg.pareto_min_dbcv
+                and passes_k_range(t)
+                and t.noise_rate <= cfg.pareto_max_noise_rate
+                and t.max_cluster_ratio <= cfg.pareto_max_cluster_ratio]
+        if full:
+            if self._verbose:
+                print(f"  Stage 1: {len(full)} candidates pass full constraints "
+                      f"(k in [{k_low},{k_high}])")
+            return full
 
-        breakdown = {
-            'validity_term': validity_term,
-            'penalty_low_prob': penalty_low_prob,
-            'penalty_fuzzy': penalty_fuzzy,
-            'penalty_fuzzy_count': penalty_fuzzy_count,
-            'total_penalty': total_penalty,
-            'excess_low_prob': excess_low_prob,
-            'fuzzy_cluster_ratio': fuzzy_cluster_ratio,
-            'fuzzy_cluster_fraction': fuzzy_cluster_fraction,
-        }
+        # Fallback 1: drop DBCV
+        fb1 = [i for i, t in enumerate(trials)
+               if passes_k_range(t)
+               and t.noise_rate <= cfg.pareto_max_noise_rate
+               and t.max_cluster_ratio <= cfg.pareto_max_cluster_ratio]
+        if fb1:
+            if self._verbose:
+                print(f"  Stage 1: {len(fb1)} candidates (fallback 1: dropped DBCV)")
+            return fb1
 
-        return composite, breakdown
+        # Fallback 2: k range only
+        fb2 = [i for i, t in enumerate(trials) if passes_k_range(t)]
+        if fb2:
+            if self._verbose:
+                print(f"  Stage 1: {len(fb2)} candidates (fallback 2: k range only)")
+            return fb2
 
-    def optimize(self) -> OptunaResult:
-        """Run Optuna grid search optimization."""
+        # Fallback 3: all trials
         if self._verbose:
-            print(f"\n[Optuna] Starting HDBSCAN optimization (N={self._N})")
+            print(f"  Stage 1: using all {len(trials)} trials (no constraints met)")
+        return list(range(len(trials)))
+
+    # ── Stage 2: Pareto front ───────────────────────────────────────────
+
+    @staticmethod
+    def _compute_pareto_front(
+        trials: List[TrialResult],
+        candidate_indices: List[int]
+    ) -> List[int]:
+        """
+        Compute Pareto front over 4 objectives.
+
+        Objectives (all converted to maximize):
+        - DBCV (maximize)
+        - n_clusters (minimize → negate)
+        - low_prob_ratio (minimize → negate)
+        - max_cluster_ratio (minimize → negate)
+
+        Returns positions within candidate_indices that are non-dominated.
+        """
+        if len(candidate_indices) <= 1:
+            return list(range(len(candidate_indices)))
+
+        # Build objective matrix: all directions = maximize
+        obj_values = []
+        for idx in candidate_indices:
+            t = trials[idx]
+            obj_values.append([
+                t.validity,             # maximize
+                -t.n_clusters,          # minimize → negate
+                -t.low_prob_ratio,      # minimize → negate
+                -t.max_cluster_ratio,   # minimize → negate
+            ])
+
+        def dominates(a, b):
+            """True if a dominates b (a >= b on all, a > b on at least one)."""
+            at_least_as_good = all(ai >= bi for ai, bi in zip(a, b))
+            strictly_better = any(ai > bi for ai, bi in zip(a, b))
+            return at_least_as_good and strictly_better
+
+        n = len(obj_values)
+        pareto_mask = [True] * n
+        for i in range(n):
+            if not pareto_mask[i]:
+                continue
+            for j in range(n):
+                if i == j or not pareto_mask[j]:
+                    continue
+                if dominates(obj_values[j], obj_values[i]):
+                    pareto_mask[i] = False
+                    break
+
+        return [i for i, on_front in enumerate(pareto_mask) if on_front]
+
+    # ── Stage 3: Ideal-point selection ──────────────────────────────────
+
+    def _select_from_pareto(
+        self,
+        trials: List[TrialResult],
+        candidate_indices: List[int],
+        pareto_positions: List[int]
+    ) -> int:
+        """
+        Select from Pareto front using weighted Euclidean distance to ideal point.
+
+        Uses percentile normalization (p5/p95) from ALL candidates for robustness,
+        then picks the Pareto-optimal trial closest to [1,1,1,1].
+
+        Returns position within pareto_positions.
+        """
+        cfg = self.config
+
+        # Collect raw objectives from all candidates (for normalization bounds)
+        all_dbcv = [trials[candidate_indices[i]].validity for i in range(len(candidate_indices))]
+        all_k = [trials[candidate_indices[i]].n_clusters for i in range(len(candidate_indices))]
+        all_lp = [trials[candidate_indices[i]].low_prob_ratio for i in range(len(candidate_indices))]
+        all_mcr = [trials[candidate_indices[i]].max_cluster_ratio for i in range(len(candidate_indices))]
+
+        p_lo = cfg.pareto_norm_percentile_low
+        p_hi = cfg.pareto_norm_percentile_high
+
+        def percentile_bounds(values):
+            lo = float(np.percentile(values, p_lo))
+            hi = float(np.percentile(values, p_hi))
+            return lo, hi
+
+        bounds = [
+            percentile_bounds(all_dbcv),
+            percentile_bounds(all_k),
+            percentile_bounds(all_lp),
+            percentile_bounds(all_mcr),
+        ]
+
+        # Direction: True = maximize (higher is closer to ideal), False = minimize
+        directions = [True, False, False, False]  # DBCV↑, k↓, low_prob↓, max_cluster↓
+
+        weights = np.array([
+            cfg.pareto_weight_dbcv,
+            cfg.pareto_weight_k,
+            cfg.pareto_weight_low_prob_ratio,
+            cfg.pareto_weight_max_cluster_ratio,
+        ])
+
+        best_pos = pareto_positions[0]
+        best_dist = float('inf')
+
+        for pos in pareto_positions:
+            cand_idx = candidate_indices[pos]
+            t = trials[cand_idx]
+            raw = [t.validity, t.n_clusters, t.low_prob_ratio, t.max_cluster_ratio]
+
+            normalized = []
+            for val, (lo, hi), is_max in zip(raw, bounds, directions):
+                if hi - lo > 1e-12:
+                    norm = (val - lo) / (hi - lo)
+                else:
+                    norm = 0.5
+                norm = max(0.0, min(1.0, norm))
+                if not is_max:
+                    norm = 1.0 - norm
+                normalized.append(norm)
+
+            # Weighted Euclidean distance to ideal [1,1,1,1]
+            diff = np.array([1.0 - n for n in normalized])
+            dist = float(np.sqrt(np.sum(weights * diff ** 2)))
+
+            if dist < best_dist:
+                best_dist = dist
+                best_pos = pos
+
+        return best_pos
+
+    # ── Main optimize ───────────────────────────────────────────────────
+
+    def optimize(self) -> GridSearchResult:
+        """
+        Run exhaustive grid search with 3-stage Pareto selection.
+
+        1. Enumerate all UMAP × HDBSCAN parameter combos
+        2. Filter candidates by hard constraints (with fallback)
+        3. Compute Pareto front on (DBCV↑, k↓, low_prob↓, max_cluster↓)
+        4. Select from front via weighted ideal-point distance
+        5. Reconstruct selected HDBSCAN model
+        """
+        if self._verbose:
+            print(f"\n[Grid Search] Starting HDBSCAN optimization (N={self._N})")
 
         self._search_space = create_search_space(self._N, self.config)
-        n_trials = (
+
+        n_umap_combos = (
             len(self._search_space['n_neighbors']) *
             len(self._search_space['n_components']) *
-            len(self._search_space['min_dist']) *
+            len(self._search_space['min_dist'])
+        )
+        n_hdbscan_combos = (
+            len(self._search_space['min_samples']) *
             len(self._search_space['min_cluster_size'])
         )
+        n_trials = n_umap_combos * n_hdbscan_combos
 
         if self._verbose:
             self._print_search_space_table(n_trials)
 
+        # Precompute UMAP reductions
         if self.config.precompute_umap:
             self._umap_cache = self.precompute_umap_reductions(
                 self._search_space['n_neighbors'],
@@ -1091,83 +1164,82 @@ class ParameterOptimizer:
                 self._search_space['min_dist']
             )
 
-        sampler = GridSampler(self._search_space)
-        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        # Exhaustive grid search
+        all_trials: List[TrialResult] = []
+        n_skipped = 0
 
-        self._study = optuna.create_study(
-            study_name=f"clusterer_v3_{id(self)}",
-            direction='maximize',
-            sampler=sampler,
-        )
+        pbar = tqdm(total=n_trials, desc="Grid search", disable=not self._verbose)
 
-        self._progress_best_score = 0.0
-        self._progress_best_k = 0
+        for nn in self._search_space['n_neighbors']:
+            for nc in self._search_space['n_components']:
+                for md in self._search_space['min_dist']:
+                    umap_key = (nn, nc, md)
+                    umap_reduced = self._umap_cache[umap_key]
 
-        pbar = tqdm(total=n_trials, desc="Optimizing", disable=not self._verbose)
+                    for ms in self._search_space['min_samples']:
+                        for mcs in self._search_space['min_cluster_size']:
+                            result = self._run_trial(umap_reduced, umap_key, ms, mcs)
+                            if result is not None:
+                                all_trials.append(result)
+                            else:
+                                n_skipped += 1
+                            pbar.update(1)
 
-        def progress_callback(study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
-            if trial.state == optuna.trial.TrialState.COMPLETE:
-                best = study.best_trial
-                best_score = best.value
-                best_k = best.user_attrs.get('n_clusters', 0)
-                pbar.set_postfix({'best': f'{best_score:.3f}', 'k': best_k})
-            pbar.update(1)
-
-        self._study.optimize(self._objective, n_trials=None, callbacks=[progress_callback])
         pbar.close()
 
-        best = self._study.best_trial
-        n_neighbors = best.params['n_neighbors']
-        n_components = best.params['n_components']
-        min_dist = best.params['min_dist']
-        min_cluster_size = best.params['min_cluster_size']
-        min_samples = max(1, min_cluster_size // 2)
+        if self._verbose:
+            print(f"  {len(all_trials)} valid trials, {n_skipped} skipped (<2 clusters)")
 
-        reduced_normalized = self._umap_cache[(n_neighbors, n_components, min_dist)]
+        if not all_trials:
+            raise RuntimeError("No valid clustering found across entire grid")
+
+        # Stage 1: Hard constraint filtering
+        if self._verbose:
+            print("\n[Pareto Selection]")
+        candidate_indices = self._filter_candidates(all_trials)
+
+        # Stage 2: Pareto front
+        pareto_positions = self._compute_pareto_front(all_trials, candidate_indices)
+        if self._verbose:
+            print(f"  Stage 2: {len(pareto_positions)} solutions on Pareto front")
+
+        # Stage 3: Ideal-point selection
+        selected_pos = self._select_from_pareto(all_trials, candidate_indices, pareto_positions)
+        selected_idx = candidate_indices[selected_pos]
+        selected = all_trials[selected_idx]
+
+        if self._verbose:
+            self._print_results_table(all_trials, candidate_indices, pareto_positions, selected_pos)
+
+        # Reconstruct HDBSCAN model for selected trial
+        p = selected.params
+        umap_key = (p['n_neighbors'], p['n_components'], p['min_dist'])
+        umap_reduced = self._umap_cache[umap_key]
 
         best_clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=min_cluster_size,
-            min_samples=min_samples,
+            min_cluster_size=p['min_cluster_size'],
+            min_samples=p['min_samples'],
             metric='euclidean',
             cluster_selection_method='eom',
             gen_min_span_tree=True,
         )
-        best_labels = best_clusterer.fit_predict(reduced_normalized)
-
+        best_labels = best_clusterer.fit_predict(umap_reduced)
         persistence_metrics = self._selector.extract_persistence_metrics(best_clusterer, best_labels)
 
-        completed = len([t for t in self._study.trials if t.state == optuna.trial.TrialState.COMPLETE])
-        pruned = len([t for t in self._study.trials if t.state == optuna.trial.TrialState.PRUNED])
-
-        if self._verbose:
-            self._print_results_table()
-            self._print_best_result_details(best)
-
-        result = OptunaResult(
-            best_params={
-                'n_neighbors': n_neighbors,
-                'n_components': n_components,
-                'min_dist': min_dist,
-                'min_cluster_size': min_cluster_size,
-                'min_samples': min_samples,
-            },
-            best_value=best.value,
+        self._best_result = GridSearchResult(
+            all_trials=all_trials,
+            pareto_indices=[candidate_indices[pos] for pos in pareto_positions],
+            selected_idx=selected_idx,
+            best_params=selected.params,
             best_labels=best_labels,
             best_model=best_clusterer,
-            n_trials_completed=completed,
-            n_trials_pruned=pruned,
-            study=self._study,
-            umap_embeddings=reduced_normalized,
+            umap_embeddings=umap_reduced,
             search_space=self._search_space,
-            persistence_metrics=persistence_metrics
+            persistence_metrics=persistence_metrics,
         )
+        return self._best_result
 
-        result = self._check_quality_and_research(result)
-
-        self._best_result = result
-        return result
-
-    def get_best_result(self) -> Optional[OptunaResult]:
+    def get_best_result(self) -> Optional[GridSearchResult]:
         """Get the best result from optimization (None if not run yet)."""
         return self._best_result
 
@@ -1176,266 +1248,43 @@ class ParameterOptimizer:
         print(f"  n_neighbors:      {self._search_space['n_neighbors']}")
         print(f"  n_components:     {self._search_space['n_components']}")
         print(f"  min_dist:         {self._search_space['min_dist']}")
+        print(f"  min_samples:      {self._search_space['min_samples']}")
         print(f"  min_cluster_size: {self._search_space['min_cluster_size']}")
         print(f"  Total trials:     {n_trials}")
 
-    def _print_results_table(self, top_n: int = 5) -> None:
-        """Print top N results as a formatted table."""
-        completed = [t for t in self._study.trials if t.state == optuna.trial.TrialState.COMPLETE]
-        pruned_count = len([t for t in self._study.trials if t.state == optuna.trial.TrialState.PRUNED])
+    def _print_results_table(
+        self,
+        trials: List[TrialResult],
+        candidate_indices: List[int],
+        pareto_positions: List[int],
+        selected_pos: int,
+    ) -> None:
+        """Print Pareto front results as a formatted table."""
+        selected = trials[candidate_indices[selected_pos]]
 
-        if not completed:
-            print("  No completed trials")
-            return
+        print(f"\n  Pareto Front ({len(pareto_positions)} solutions):")
+        print(f"  {'':>1} {'nn':>4} {'nc':>4} {'md':>5} {'ms':>3} {'mcs':>4} "
+              f"{'k':>4} {'noise':>6} {'dbcv':>6} {'coh':>5} {'lp':>5} {'mcr':>5}")
+        print(f"  {'-'*1} {'-'*4} {'-'*4} {'-'*5} {'-'*3} {'-'*4} "
+              f"{'-'*4} {'-'*6} {'-'*6} {'-'*5} {'-'*5} {'-'*5}")
 
-        sorted_trials = sorted(completed, key=lambda t: t.value, reverse=True)[:top_n]
+        for pos in sorted(pareto_positions, key=lambda p: trials[candidate_indices[p]].validity, reverse=True):
+            t = trials[candidate_indices[pos]]
+            marker = "*" if pos == selected_pos else " "
+            print(f"  {marker} {t.params['n_neighbors']:>4} "
+                  f"{t.params['n_components']:>4} "
+                  f"{t.params['min_dist']:>5} "
+                  f"{t.params['min_samples']:>3} "
+                  f"{t.params['min_cluster_size']:>4} "
+                  f"{t.n_clusters:>4} "
+                  f"{t.noise_rate:>5.0%} "
+                  f"{t.validity:>6.3f} "
+                  f"{t.coherence:>5.3f} "
+                  f"{t.low_prob_ratio:>5.2f} "
+                  f"{t.max_cluster_ratio:>5.2f}")
 
-        print(f"\n  Top {min(top_n, len(sorted_trials))} Results:")
-        print(f"  {'nn':>4} {'nc':>4} {'md':>5} {'mcs':>4} {'k':>5} {'noise':>6} {'score':>7}")
-        print(f"  {'-'*4} {'-'*4} {'-'*5} {'-'*4} {'-'*5} {'-'*6} {'-'*7}")
-
-        for i, trial in enumerate(sorted_trials):
-            marker = "*" if i == 0 else " "
-            noise_rate = trial.user_attrs.get('noise_rate', 0)
-            print(f"{marker} {trial.params.get('n_neighbors', '?'):>4} "
-                  f"{trial.params.get('n_components', '?'):>4} "
-                  f"{trial.params.get('min_dist', '?'):>5} "
-                  f"{trial.params.get('min_cluster_size', '?'):>4} "
-                  f"{trial.user_attrs.get('n_clusters', '?'):>5} "
-                  f"{noise_rate:>5.0%} "
-                  f"{trial.value:>7.3f}")
-
-        print(f"  {len(completed)} completed, {pruned_count} pruned")
-
-    def _print_best_result_details(self, best_trial: optuna.trial.FrozenTrial) -> None:
-        """Print detailed metrics for the best configuration."""
-        rel_val = best_trial.user_attrs.get('relative_validity', 0)
-        low_prob = best_trial.user_attrs.get('low_prob_ratio', 0)
-        n_fuzzy = best_trial.user_attrs.get('n_fuzzy_clusters', 0)
-        n_clusters = best_trial.user_attrs.get('n_clusters', 0)
-        mean_outlier = best_trial.user_attrs.get('mean_outlier_score', 0)
-
-        fuzzy_frac = n_fuzzy / n_clusters if n_clusters > 0 else 0.0
-
-        print(f"\n  Best config: rel_validity={rel_val:.4f}, low_prob={low_prob:.1%}, "
-              f"fuzzy={n_fuzzy}/{n_clusters} ({fuzzy_frac:.0%}), outlier={mean_outlier:.2f}")
-
-    def _check_quality_and_research(self, result: OptunaResult) -> OptunaResult:
-        """Check quality of optimization result and trigger re-search if needed."""
-        if not self.config.enable_research:
-            return result
-
-        best_trial = self._study.best_trial
-        n_clusters = best_trial.user_attrs.get('n_clusters', 0)
-        noise_rate = best_trial.user_attrs.get('noise_rate', 0.0)
-        relative_validity = best_trial.user_attrs.get('relative_validity', result.best_value)
-
-        sqrt_n = math.sqrt(self._N)
-        max_noise = self.config.research_max_noise_rate
-        min_validity = self.config.research_min_validity
-        cluster_deviation_threshold = self.config.research_cluster_deviation_threshold
-
-        cluster_deviation = abs(n_clusters - sqrt_n) / sqrt_n if sqrt_n > 0 else 0.0
-
-        needs_research = False
-        reasons = []
-
-        if noise_rate > max_noise and relative_validity < min_validity:
-            needs_research = True
-            reasons.append(f"noise={noise_rate:.1%}>{max_noise:.0%} AND rel_validity={relative_validity:.3f}<{min_validity}")
-
-        if cluster_deviation > cluster_deviation_threshold:
-            needs_research = True
-            reasons.append(f"cluster_deviation={cluster_deviation:.1%}>{cluster_deviation_threshold:.0%} (k={n_clusters}, expected~{sqrt_n:.0f})")
-
-        if not needs_research:
-            if self._verbose:
-                print(f"  Quality check PASSED: k={n_clusters} (expected~{sqrt_n:.0f})")
-            return result
-
-        if self._verbose:
-            print(f"\n[Research] Quality check failed: {', '.join(reasons)}")
-            print(f"  Triggering extended search...")
-
-        return self._run_extended_search(result)
-
-    def _run_extended_search(self, initial_result: OptunaResult) -> OptunaResult:
-        """Run extended search with expanded parameters using Optuna GridSampler."""
-        best_n_neighbors = initial_result.best_params['n_neighbors']
-        best_n_components = initial_result.best_params.get('n_components', self.config.umap_n_components_grid[0])
-        best_min_dist = initial_result.best_params.get('min_dist', self.config.umap_min_dist_grid[0])
-        best_mcs = initial_result.best_params['min_cluster_size']
-        best_ms = initial_result.best_params.get('min_samples', best_mcs // 2)
-        reduced_normalized = self._umap_cache[(best_n_neighbors, best_n_components, best_min_dist)]
-
-        mcs_multipliers = self.config.research_mcs_multipliers
-        mcs_options = sorted(set(
-            max(3, int(round(best_mcs * mult)))
-            for mult in mcs_multipliers
-        ))
-
-        ms_low_mult, ms_high_mult = self.config.research_ms_range_multipliers
-        ms_low = max(1, int(round(best_ms * ms_low_mult)))
-        ms_high = max(ms_low, int(round(best_ms * ms_high_mult)))
-        ms_options = log_spaced_ints(ms_low, ms_high, k=self.config.research_ms_grid_k)
-
-        selection_methods = list(self.config.research_selection_methods)
-
-        max_mcs = max(mcs_options)
-        ms_options = [ms for ms in ms_options if ms <= max_mcs]
-
-        extended_search_space = {
-            'min_cluster_size': mcs_options,
-            'min_samples': ms_options,
-            'cluster_selection_method': selection_methods,
-        }
-
-        n_trials_total = len(mcs_options) * len(ms_options) * len(selection_methods)
-
-        if self._verbose:
-            print(f"\n[Extended Search] Based on best: nn={best_n_neighbors}, mcs={best_mcs}")
-            print(f"  MCS grid:      {mcs_options}")
-            print(f"  MS grid:       {ms_options}")
-            print(f"  Methods:       {selection_methods}")
-            print(f"  Total trials:  {n_trials_total}")
-
-        def extended_objective(trial: optuna.Trial) -> float:
-            mcs = trial.suggest_categorical('min_cluster_size', extended_search_space['min_cluster_size'])
-            ms = trial.suggest_categorical('min_samples', extended_search_space['min_samples'])
-            method = trial.suggest_categorical('cluster_selection_method', extended_search_space['cluster_selection_method'])
-
-            if ms > mcs:
-                raise optuna.TrialPruned(f"Invalid: ms={ms} > mcs={mcs}")
-
-            clusterer = hdbscan.HDBSCAN(
-                min_cluster_size=mcs,
-                min_samples=ms,
-                metric='euclidean',
-                cluster_selection_method=method,
-                gen_min_span_tree=True,
-            )
-            labels = clusterer.fit_predict(reduced_normalized)
-
-            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            noise_rate = (labels == -1).sum() / len(labels)
-
-            if n_clusters < self.config.min_clusters:
-                raise optuna.TrialPruned(f"Too few clusters: {n_clusters}")
-
-            if noise_rate > self.config.max_noise_rate:
-                raise optuna.TrialPruned(f"Noise too high: {noise_rate:.1%}")
-
-            try:
-                validity = clusterer.relative_validity_
-            except AttributeError:
-                validity = self._compute_dbcv(labels, reduced_normalized)
-
-            coherence = self._calculate_coherence(labels, self._original_embeddings)
-            persistence_metrics = self._selector.extract_persistence_metrics(clusterer, labels)
-            prob_metrics = self._compute_probability_metrics(clusterer.probabilities_, labels)
-            outlier_metrics = self._compute_outlier_metrics(clusterer.outlier_scores_)
-
-            composite_score, _ = self._compute_composite_score(
-                validity,
-                prob_metrics['low_prob_ratio'],
-                prob_metrics['fuzzy_cluster_ratio'],
-                prob_metrics['n_fuzzy_clusters'],
-                n_clusters
-            )
-
-            trial.set_user_attr('n_clusters', n_clusters)
-            trial.set_user_attr('noise_rate', noise_rate)
-            trial.set_user_attr('coherence', coherence)
-            trial.set_user_attr('labels', labels.tolist())
-            trial.set_user_attr('relative_validity', validity)
-            trial.set_user_attr('weighted_persistence', persistence_metrics.get('weighted_persistence', 0.0))
-            trial.set_user_attr('mean_probability', prob_metrics['mean_probability'])
-            trial.set_user_attr('low_prob_ratio', prob_metrics['low_prob_ratio'])
-            trial.set_user_attr('fuzzy_cluster_ratio', prob_metrics['fuzzy_cluster_ratio'])
-            trial.set_user_attr('n_fuzzy_clusters', prob_metrics['n_fuzzy_clusters'])
-            trial.set_user_attr('mean_outlier_score', outlier_metrics['mean_outlier_score'])
-            trial.set_user_attr('high_outlier_ratio', outlier_metrics['high_outlier_ratio'])
-            trial.set_user_attr('composite_score', composite_score)
-
-            return composite_score
-
-        extended_sampler = GridSampler(extended_search_space)
-        extended_study = optuna.create_study(
-            study_name=f"clusterer_v3_extended_{id(self)}",
-            direction='maximize',
-            sampler=extended_sampler,
-        )
-
-        ext_best_score = initial_result.best_value
-        pbar = tqdm(total=n_trials_total, desc="Extended search", disable=not self._verbose)
-
-        def ext_progress_callback(study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
-            nonlocal ext_best_score
-            if trial.state == optuna.trial.TrialState.COMPLETE:
-                if study.best_trial.value > ext_best_score:
-                    ext_best_score = study.best_trial.value
-                    pbar.set_postfix({'best': f'{ext_best_score:.3f}'})
-            pbar.update(1)
-
-        extended_study.optimize(extended_objective, n_trials=None, callbacks=[ext_progress_callback])
-        pbar.close()
-
-        completed = len([t for t in extended_study.trials if t.state == optuna.trial.TrialState.COMPLETE])
-        pruned = len([t for t in extended_study.trials if t.state == optuna.trial.TrialState.PRUNED])
-
-        if self._verbose:
-            print(f"  {completed} completed, {pruned} pruned")
-
-        if completed == 0:
-            if self._verbose:
-                print(f"  No valid trials found, keeping initial result")
-            return initial_result
-
-        best_extended = extended_study.best_trial
-
-        if best_extended.value <= initial_result.best_value:
-            if self._verbose:
-                print(f"  No improvement (extended: {best_extended.value:.4f} <= initial: {initial_result.best_value:.4f})")
-            return initial_result
-
-        mcs = best_extended.params['min_cluster_size']
-        ms = best_extended.params['min_samples']
-        method = best_extended.params['cluster_selection_method']
-
-        best_clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=mcs,
-            min_samples=ms,
-            metric='euclidean',
-            cluster_selection_method=method,
-            gen_min_span_tree=True,
-        )
-        best_labels = best_clusterer.fit_predict(reduced_normalized)
-
-        persistence_metrics = self._selector.extract_persistence_metrics(best_clusterer, best_labels)
-
-        if self._verbose:
-            improvement = best_extended.value - initial_result.best_value
-            print(f"  Found better: {method}, mcs={mcs}, ms={ms}, "
-                  f"score={best_extended.value:.4f} (+{improvement:.4f})")
-
-        return OptunaResult(
-            best_params={
-                'n_neighbors': best_n_neighbors,
-                'n_components': best_n_components,
-                'min_cluster_size': mcs,
-                'min_samples': ms,
-                'cluster_selection_method': method,
-            },
-            best_value=best_extended.value,
-            best_labels=best_labels,
-            best_model=best_clusterer,
-            n_trials_completed=initial_result.n_trials_completed + completed,
-            n_trials_pruned=initial_result.n_trials_pruned + pruned,
-            study=self._study,
-            umap_embeddings=reduced_normalized,
-            search_space=self._search_space,
-            persistence_metrics=persistence_metrics
-        )
+        print(f"\n  Selected: k={selected.n_clusters}, dbcv={selected.validity:.3f}, "
+              f"noise={selected.noise_rate:.1%}, coherence={selected.coherence:.3f}")
 
 
 # =============================================================================
@@ -1691,6 +1540,7 @@ class ClusterQualityMetrics:
         embeddings_reduced: np.ndarray,
         embeddings_original: np.ndarray,
         hdbscan_model: Optional[hdbscan.HDBSCAN] = None,
+        probabilities: Optional[np.ndarray] = None,
         algorithm_used: str = "",
         algorithm_params: Optional[Dict[str, Any]] = None
     ) -> ClusteringMetrics:
@@ -1737,6 +1587,10 @@ class ClusterQualityMetrics:
 
             if hasattr(hdbscan_model, 'outlier_scores_') and hdbscan_model.outlier_scores_ is not None:
                 outlier_metrics = self.compute_outlier_metrics(hdbscan_model.outlier_scores_, labels)
+
+        # Explicit probabilities array overrides model-based extraction
+        if probabilities is not None and not prob_metrics:
+            prob_metrics = self.compute_probability_metrics(probabilities, labels)
 
         return ClusteringMetrics(
             n_clusters=n_clusters,
@@ -2015,111 +1869,6 @@ def merge_similar_clusters(
     return labels_final
 
 
-def assess_noise_cluster_quality(
-    embeddings: np.ndarray,
-    labels: np.ndarray,
-    cohesion_threshold: float
-) -> List[int]:
-    """Assess quality of noise-derived clusters and return valid ones."""
-    valid_clusters = []
-    unique_labels = [l for l in set(labels) if l >= 0]
-
-    for label in unique_labels:
-        mask = labels == label
-        cluster_embeddings = embeddings[mask]
-
-        if len(cluster_embeddings) < 2:
-            valid_clusters.append(label)
-            continue
-
-        similarities = cluster_embeddings @ cluster_embeddings.T
-        n = len(cluster_embeddings)
-        upper_tri = np.triu_indices(n, k=1)
-        mean_sim = float(np.mean(similarities[upper_tri]))
-
-        if mean_sim >= cohesion_threshold:
-            valid_clusters.append(label)
-
-    return valid_clusters
-
-
-def recluster_noise(
-    labels: np.ndarray,
-    umap_embeddings: np.ndarray,
-    original_embeddings: np.ndarray,
-    config: ClustererConfig,
-    verbose: bool = True
-) -> np.ndarray:
-    """Two-pass clustering: Attempt to find viable clusters among noise points."""
-    if not config.enable_noise_reclustering:
-        return labels
-
-    noise_mask = labels == -1
-    n_total_noise = noise_mask.sum()
-
-    min_total = 10
-    if n_total_noise < min_total:
-        if verbose:
-            print(f"  Skipping noise reclustering: only {n_total_noise} noise points (minimum: {min_total})")
-        return labels
-
-    if verbose:
-        print(f"\n[Noise Reclustering]")
-        print(f"  Total noise points: {n_total_noise}")
-
-    noise_mcs = max(3, config.noise_min_cluster_size)
-    noise_ms = max(1, noise_mcs // 2)
-
-    if verbose:
-        print(f"  Parameters: min_cluster_size={noise_mcs}, min_samples={noise_ms}")
-
-    U_noise = umap_embeddings[noise_mask]
-
-    noise_hdbscan = hdbscan.HDBSCAN(
-        min_cluster_size=noise_mcs,
-        min_samples=noise_ms,
-        metric='euclidean',
-        cluster_selection_method='leaf',
-        gen_min_span_tree=True
-    )
-    noise_labels = noise_hdbscan.fit_predict(U_noise)
-
-    original_noise = original_embeddings[noise_mask]
-    valid_noise_clusters = assess_noise_cluster_quality(
-        original_noise, noise_labels, config.noise_cohesion_threshold
-    )
-
-    if len(valid_noise_clusters) == 0:
-        if verbose:
-            print(f"  No viable clusters found in noise")
-        return labels
-
-    labels_updated = labels.copy()
-    max_main_cluster = labels[labels >= 0].max() if np.any(labels >= 0) else -1
-    next_cluster_id = max_main_cluster + 1
-
-    noise_indices = np.where(noise_mask)[0]
-    n_recovered = 0
-
-    for old_noise_cluster_id in valid_noise_clusters:
-        cluster_mask_in_noise = noise_labels == old_noise_cluster_id
-        global_indices = noise_indices[cluster_mask_in_noise]
-        labels_updated[global_indices] = next_cluster_id
-        n_recovered += len(global_indices)
-        next_cluster_id += 1
-
-    n_noise_clusters = len(valid_noise_clusters)
-    recovery_rate = n_recovered / n_total_noise if n_total_noise > 0 else 0.0
-    final_noise = (labels_updated == -1).sum()
-
-    if verbose:
-        print(f"  Viable clusters discovered: {n_noise_clusters}")
-        print(f"  Points recovered: {n_recovered} ({recovery_rate:.1%})")
-        print(f"  Residual noise: {final_noise} ({final_noise/len(labels):.1%})")
-
-    return labels_updated
-
-
 # =============================================================================
 # SECTION 6: REPRESENTATION
 # =============================================================================
@@ -2147,52 +1896,46 @@ def extract_noun_phrases_lemmatized(
     nlp=None,
     model_name: str = "nl_core_news_lg"
 ) -> List[str]:
-    """Extract lemmatized content words: ADJ, NOUN, PROPN (standalone or in phrases)."""
+    """Extract POS-aware keyword tokens: standalone NOUN/PROPN lemmas + ADJ*+NOUN compounds.
+
+    Uses a forward-buffer algorithm:
+    - ADJ tokens accumulate in a buffer
+    - When NOUN/PROPN is encountered: emit standalone noun AND compound if ADJs preceded it
+    - Any other POS / punctuation clears the ADJ buffer
+
+    Compounds are underscore-joined internally (e.g., "groot_blauw_auto") so that
+    CountVectorizer treats them as single tokens. Underscores are replaced with
+    spaces at display time by RepresentationEngine._denormalize_keywords().
+    """
     if nlp is None:
         nlp = get_spacy_nlp(model_name)
 
     processed = []
 
     for doc in nlp.pipe(texts, batch_size=100):
-        phrases = []
-        current_phrase = []
+        tokens_out = []
+        adj_buffer = []
 
         for token in doc:
             if token.is_punct or token.is_space:
-                if current_phrase:
-                    phrases.append(' '.join(current_phrase))
-                current_phrase = []
+                adj_buffer = []
                 continue
 
-            if token.pos_ in ('ADJ', 'NOUN', 'PROPN'):
-                current_phrase.append(token.lemma_.lower())
+            if token.pos_ == 'ADJ':
+                adj_buffer.append(token.lemma_.lower())
+            elif token.pos_ in ('NOUN', 'PROPN'):
+                noun_lemma = token.lemma_.lower()
+                tokens_out.append(noun_lemma)
+                if adj_buffer:
+                    compound = "_".join(adj_buffer + [noun_lemma])
+                    tokens_out.append(compound)
+                adj_buffer = []
             else:
-                if current_phrase:
-                    phrases.append(' '.join(current_phrase))
-                current_phrase = []
+                adj_buffer = []
 
-        if current_phrase:
-            phrases.append(' '.join(current_phrase))
-
-        processed.append(' '.join(phrases))
+        processed.append(" ".join(tokens_out))
 
     return processed
-
-
-def extract_text_for_display(idea_text: str, template_prefix: Optional[str] = None) -> str:
-    """Extract clean text for display (strip template prefix if present)."""
-    if template_prefix and idea_text.startswith(template_prefix):
-        unique_content = idea_text[len(template_prefix):].strip()
-        return unique_content if unique_content else idea_text
-    return idea_text
-
-
-def extract_text_for_format(
-    idea_text: str,
-    embedding_text_format: Optional[str] = None
-) -> str:
-    """Extract text matching what was actually embedded based on embedding_text_format."""
-    return idea_text
 
 
 def format_ladder_text(idea) -> str:
@@ -2440,20 +2183,6 @@ class CTfidfRepresentation(BaseRepresentation):
             if ctfidf_scores[i] > 0
         ]
         return keywords
-
-    def get_cluster_summary(
-        self,
-        cluster_id: int,
-        keywords: List[Tuple[str, float]],
-        max_keywords: int = None
-    ) -> str:
-        """Generate a text summary of cluster keywords."""
-        if max_keywords:
-            keywords = keywords[:max_keywords]
-        summary_parts = [f"Cluster {cluster_id} c-TF-IDF keywords:"]
-        for i, (keyword, score) in enumerate(keywords, 1):
-            summary_parts.append(f"  {i}. {keyword:<30} ({score:.4f})")
-        return "\n".join(summary_parts)
 
 
 class MMRRepresentation(BaseRepresentation):
@@ -2755,85 +2484,6 @@ class RepresentationEngine:
                 min_df=self.config.ctfidf_min_df
             )
 
-    def extract_keywords(
-        self,
-        cluster_texts: Dict[int, List[str]],
-        embedding_text_format: Optional[str] = None,
-        verbose: bool = False
-    ) -> Dict[int, List[Tuple[str, float]]]:
-        """Extract top keywords for each cluster using c-TF-IDF."""
-        if not self.config.generate_ctfidf:
-            return {}
-
-        self._ensure_ctfidf()
-
-        cleaned_clusters = dict(cluster_texts)
-
-        if verbose:
-            format_display = embedding_text_format or "idea (default)"
-            print(f"  Text format: {format_display}")
-
-        if self.config.ctfidf_use_lemmatization:
-            if verbose:
-                print("  Applying spaCy lemmatization (ADJ | NOUN | PROPN)...")
-
-            all_texts = []
-            cluster_offsets = {}
-            offset = 0
-            for cluster_id, texts in cleaned_clusters.items():
-                cluster_offsets[cluster_id] = (offset, offset + len(texts))
-                all_texts.extend(texts)
-                offset += len(texts)
-
-            lemmatized_all = extract_noun_phrases_lemmatized(
-                all_texts,
-                model_name=self.config.ctfidf_spacy_model
-            )
-
-            lemmatized_clusters = {}
-            for cluster_id, (start, end) in cluster_offsets.items():
-                lemmatized_clusters[cluster_id] = lemmatized_all[start:end]
-
-            cleaned_clusters = lemmatized_clusters
-
-        keywords = self._ctfidf.extract_keywords(cleaned_clusters, verbose=verbose)
-
-        return keywords
-
-    def extract_keywords_from_labels(
-        self,
-        labels: np.ndarray,
-        idea_texts: List[str],
-        embedding_text_format: Optional[str] = None,
-        verbose: bool = False
-    ) -> Dict[int, List[Tuple[str, float]]]:
-        """Extract keywords given cluster labels and idea texts."""
-        cluster_texts = {}
-        for i, label in enumerate(labels):
-            if label >= 0:
-                if label not in cluster_texts:
-                    cluster_texts[label] = []
-                cluster_texts[label].append(idea_texts[i])
-
-        return self.extract_keywords(
-            cluster_texts,
-            embedding_text_format=embedding_text_format,
-            verbose=verbose
-        )
-
-    def get_cluster_summary(
-        self,
-        cluster_id: int,
-        keywords: List[Tuple[str, float]],
-        max_keywords: int = 10
-    ) -> str:
-        """Generate formatted text summary for a cluster."""
-        if not keywords:
-            return f"Cluster {cluster_id}: (no keywords)"
-
-        kw_strs = [f"{kw} ({score:.3f})" for kw, score in keywords[:max_keywords]]
-        return f"Cluster {cluster_id}: {', '.join(kw_strs)}"
-
     def extract_all_keywords(
         self,
         cluster_texts: Dict[int, List[str]],
@@ -2876,7 +2526,20 @@ class RepresentationEngine:
                 print("\n[TF-IDF] Extracting keywords (per-cluster)...")
             results["tfidf"] = self._tfidf.extract_keywords(cleaned_clusters, verbose=verbose)
 
-        return results
+        return self._denormalize_keywords(results)
+
+    @staticmethod
+    def _denormalize_keywords(
+        results: Dict[str, Dict[int, List[Tuple[str, float]]]]
+    ) -> Dict[str, Dict[int, List[Tuple[str, float]]]]:
+        """Replace underscore-joined compound tokens with space-separated for display."""
+        return {
+            method: {
+                cid: [(kw.replace("_", " "), score) for kw, score in kws]
+                for cid, kws in cluster_kws.items()
+            }
+            for method, cluster_kws in results.items()
+        }
 
     def _preprocess_texts(
         self,
@@ -2893,7 +2556,7 @@ class RepresentationEngine:
 
         if self.config.ctfidf_use_lemmatization:
             if verbose:
-                print("  Applying spaCy lemmatization (ADJ | NOUN | PROPN)...")
+                print("  Applying spaCy lemmatization (NOUN/PROPN + ADJ+NOUN compounds)...")
 
             all_texts = []
             cluster_offsets = {}
@@ -3031,49 +2694,13 @@ class LabelGenerator:
         self._model = config.llm_labels_model
         self._max_ideas = config.llm_max_ideas_per_cluster
 
-    def _get_sample_terminology(
-        self,
-        embedding_text_format: Optional[str]
-    ) -> Tuple[str, str]:
-        """Get terminology for samples based on embedding text format."""
-        return ("response_ideas", "response ideas")
-
-    def _build_dataset_context_section(self, dataset_context: Optional[Dict[str, str]]) -> str:
-        """Build dataset context section for prompt."""
-        if not dataset_context:
-            return ""
-        parts = []
-        if dataset_context.get('domain'):
-            parts.append(f"Domain: {dataset_context['domain']}")
-        if dataset_context.get('entity'):
-            parts.append(f"Entity: {dataset_context['entity']}")
-        if dataset_context.get('topic'):
-            parts.append(f"Topic: {dataset_context['topic']}")
-        if dataset_context.get('perspective'):
-            parts.append(f"Perspective: {dataset_context['perspective']}")
-        if dataset_context.get('intent'):
-            parts.append(f"Intent: {dataset_context['intent']}")
-        if not parts:
-            return ""
-        return "\n" + "\n".join(parts)
-
-    def _build_cluster_profile_section(self, distributions: Optional[Dict[str, Dict[str, float]]]) -> str:
-        """Build cluster profile section from distributions (currently unused)."""
-        return ""
-
     def generate_label(
         self,
         cluster_id: int,
         ideas: List[str],
+        dataset_placeholders: "DatasetPlaceholders",
         representative_samples: Optional[List[Tuple[str, float]]] = None,
         keywords: Optional[List[Tuple[str, float]]] = None,
-        taxonomy_axis: Optional[str] = None,
-        taxonomy_description: Optional[str] = None,
-        taxonomy_actionable_type: Optional[str] = None,
-        embedding_text_format: Optional[str] = None,
-        survey_question: str = "",
-        language: str = "Dutch",
-        dataset_context: Optional[Dict[str, str]] = None,
         cluster_distributions: Optional[Dict[str, Dict[str, float]]] = None,
         verbose: bool = False,
         return_prompt: bool = False
@@ -3094,57 +2721,15 @@ class LabelGenerator:
                 unique_samples.append(idea)
         sample_ideas = unique_samples
 
-        samples_tag, sample_type = self._get_sample_terminology(embedding_text_format)
-        ideas_formatted = "\n".join(f"{i+1}. {idea}" for i, idea in enumerate(sample_ideas))
-
-        if taxonomy_axis:
-            actionable_type = taxonomy_actionable_type or "concepts"
-            taxonomy_context = f"""
-<taxonomy_context>
-Primary coding dimension: {taxonomy_axis}
-Definition: {taxonomy_description or 'Not specified'}
-Actionable type: {actionable_type}
-Labels MUST describe content within this dimension ONLY.
-Do NOT include sentiment, evaluation, tone, or respondent intent in the label.
-</taxonomy_context>
-"""
-            taxonomy_task_guidance = f" ({taxonomy_axis}: {actionable_type})"
-            taxonomy_output_constraint = f" within the {taxonomy_axis} dimension"
-        else:
-            taxonomy_context = ""
-            taxonomy_task_guidance = ""
-            taxonomy_output_constraint = ""
-
-        if keywords:
-            kw_formatted = "\n".join(f"{i+1}. {kw}" for i, (kw, score) in enumerate(keywords[:10]))
-            keywords_section = f"""
-<statistical_keywords>
-These terms statistically differentiate this cluster from others (c-TF-IDF).
-Use to refine - but not override - the representative {sample_type}:
-{kw_formatted}
-</statistical_keywords>
-"""
-        else:
-            keywords_section = ""
-
-        dataset_context_section = self._build_dataset_context_section(dataset_context)
-        cluster_profile_section = self._build_cluster_profile_section(cluster_distributions)
-
-        prompt = CLUSTER_DESCRIPTION_PROMPT.format(
-            language=language,
-            survey_question=survey_question,
+        placeholders = build_cluster_placeholders(
+            dataset_placeholders,
             cluster_id=cluster_id,
             num_ideas=len(ideas),
-            samples_tag=samples_tag,
-            sample_type=sample_type,
-            taxonomy_context=taxonomy_context,
-            taxonomy_task_guidance=taxonomy_task_guidance,
-            taxonomy_output_constraint=taxonomy_output_constraint,
-            keywords_section=keywords_section,
-            dataset_context_section=dataset_context_section,
-            cluster_profile_section=cluster_profile_section,
-            ideas_list=ideas_formatted
+            sample_ideas=tuple(sample_ideas),
+            keywords=tuple(keywords) if keywords else (),
+            distributions=cluster_distributions,
         )
+        prompt = CLUSTER_DESCRIPTION_PROMPT.format(**placeholders)
 
         try:
             client = create_client(model=self._model, async_mode=False)
@@ -3182,13 +2767,9 @@ Use to refine - but not override - the representative {sample_type}:
     def generate_all_labels(
         self,
         cluster_texts: Dict[int, List[str]],
+        dataset_placeholders: "DatasetPlaceholders",
         cluster_keywords: Optional[Dict[int, List[Tuple[str, float]]]] = None,
         representative_samples: Optional[Dict[int, List[Tuple[str, float]]]] = None,
-        extraction_metadata=None,
-        embedding_text_format: Optional[str] = None,
-        survey_question: str = "",
-        language: str = "Dutch",
-        dataset_context: Optional[Dict[str, str]] = None,
         cluster_distributions: Optional[Dict[int, Dict[str, Dict[str, float]]]] = None,
         verbose: bool = False
     ) -> Dict[int, ClusterLabel]:
@@ -3196,26 +2777,15 @@ Use to refine - but not override - the representative {sample_type}:
         if not self.config.generate_llm_labels:
             return {}
 
-        taxonomy_axis = None
-        taxonomy_description = None
-        taxonomy_actionable_type = None
-        if extraction_metadata:
-            taxonomy_axis = getattr(extraction_metadata, 'primary_facet', None)
-            taxonomy_description = getattr(extraction_metadata, 'primary_facet_description', None)
-            taxonomy_actionable_type = getattr(extraction_metadata, 'taxonomy_actionable_type', None)
-
         if verbose:
             print(f"\n[LLM Label Generation]")
             print(f"  Model: {self._model}")
             print(f"  Clusters to label: {len(cluster_texts)}")
-            if taxonomy_axis:
-                print(f"  Taxonomy axis: {taxonomy_axis}")
-            if dataset_context:
-                context_parts = [f"{k}={v}" for k, v in dataset_context.items() if v]
-                if context_parts:
-                    print(f"  Dataset context: {', '.join(context_parts)}")
-            if cluster_distributions:
-                print(f"  Including cluster profiles")
+            print(f"  Language: {dataset_placeholders.language}")
+            if dataset_placeholders.facet_context:
+                print(f"  Primary facet context: present")
+            if dataset_placeholders.concept_types_section:
+                print(f"  Concept types: present")
 
         labels = {}
         sample_prompt = None
@@ -3233,15 +2803,9 @@ Use to refine - but not override - the representative {sample_type}:
             result = self.generate_label(
                 cluster_id=cluster_id,
                 ideas=ideas,
+                dataset_placeholders=dataset_placeholders,
                 representative_samples=samples,
                 keywords=keywords,
-                taxonomy_axis=taxonomy_axis,
-                taxonomy_description=taxonomy_description,
-                taxonomy_actionable_type=taxonomy_actionable_type,
-                embedding_text_format=embedding_text_format,
-                survey_question=survey_question,
-                language=language,
-                dataset_context=dataset_context,
                 cluster_distributions=distributions,
                 verbose=verbose,
                 return_prompt=is_first

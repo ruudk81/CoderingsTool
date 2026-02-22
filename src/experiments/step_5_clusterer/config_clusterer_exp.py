@@ -7,17 +7,16 @@ Changes here do NOT affect the production pipeline.
 Original: src/config_clusterer.py
 
 These settings control:
-- Algorithm selection (auto, HDBSCAN, Agglomerative, K-means)
+- Algorithm selection (auto, HDBSCAN, Agglomerative)
 - UMAP dimensionality reduction
-- HDBSCAN/Optuna optimization
+- HDBSCAN grid search with Pareto selection
 - Post-processing (merging, noise reduction)
 - Keyword extraction (c-TF-IDF, MMR, TF-IDF)
 - LLM cluster label generation
 """
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 
 @dataclass
@@ -70,60 +69,74 @@ class ClustererConfig:
     # UMAP CONFIGURATION
     # ==========================================================================
 
-    # UMAP parameters - optimized for euclidean HDBSCAN
+    # UMAP parameters
     umap_n_components_grid: Tuple[int, ...] = (5, 10)
     umap_min_dist_grid: Tuple[float, ...] = (0.0, 0.1)
     umap_min_dist: float = 0.0  # Default for non-grid-search paths
-    umap_metric: str = "euclidean"
     umap_random_state: int = 42
 
-    # UMAP precomputation for Optuna grid search
+    # UMAP precomputation for grid search
     precompute_umap: bool = True
 
-    # n_neighbors: 0.5*sqrt(n) to 1.5*sqrt(n), log-spaced
+    # n_neighbors: ceil(sqrt(N)/2) to max(ceil(sqrt(N)), 10), log-spaced
     n_neighbors_grid_k: int = 3
-    n_neighbors_low_mult: float = 0.5
-    n_neighbors_high_mult: float = 1.5
-    n_neighbors_min: int = 5
-    n_neighbors_max: int = 50
+    n_neighbors_high_min: int = 10  # Floor for high bound: high = max(ceil(sqrt(N)), this)
 
     # ==========================================================================
-    # HDBSCAN / OPTUNA OPTIMIZATION
+    # HDBSCAN GRID SEARCH
     # ==========================================================================
 
-    # Enable Optuna-based grid search
-    use_optuna: bool = True
+    # min_samples: ceil(ln(N)) to ceil(2*ln(N)), log-spaced
+    ms_grid_k: int = 3
 
-    # MCS (min_cluster_size) grid
-    min_cluster_size_grid_k: int = 3
-    mcs_low_mult: float = 0.1
-    mcs_high_mult: float = 0.5
-    mcs_min: int = 3
-
-    # MS (min_samples) strategy
-    min_samples_strategy: str = "half_mcs"
-
-    # Constraints for Optuna pruning
-    max_noise_rate: float = 0.20
-    min_clusters: int = 3
-
-    # Quality thresholds for conditional re-search
-    enable_research: bool = True
-    research_max_noise_rate: float = 0.10
-    research_min_validity: float = 0.70
-    research_cluster_deviation_threshold: float = 0.15
-
-    # Extended search grid configuration
-    research_mcs_multipliers: Tuple[float, ...] = (0.5, 1.0, 1.5)
-    research_ms_range_multipliers: Tuple[float, float] = (0.5, 2.0)
-    research_ms_grid_k: int = 4
-    research_selection_methods: Tuple[str, ...] = ('eom', 'leaf')
+    # min_cluster_size: 2 × ms bounds, log-spaced
+    mcs_grid_k: int = 3
+    mcs_ms_multiplier: float = 2.0  # mcs = this × ms
 
     # ==========================================================================
-    # AGGLOMERATIVE / KMEANS PARAMETERS
+    # PARETO SELECTION (3-stage pipeline)
     # ==========================================================================
 
-    k_selection_strategy: str = "sqrt"
+    # Stage 1: Hard constraint filtering (progressive fallback)
+    pareto_min_dbcv: float = 0.30
+    pareto_min_k_sqrt_mult: float = 0.5       # k >= 0.5 * sqrt(N)
+    pareto_k_small_n_threshold: int = 3000     # N threshold for k range constraint
+    pareto_max_k_sqrt_mult: float = 0.8        # k <= 0.8 * sqrt(N)
+    pareto_max_noise_rate: float = 0.15
+    pareto_max_cluster_ratio: float = 0.40     # no single cluster > 40%
+
+    # Stage 3: Pareto objective weights (all equal by default)
+    pareto_weight_dbcv: float = 1.0
+    pareto_weight_k: float = 1.0
+    pareto_weight_low_prob_ratio: float = 1.0
+    pareto_weight_max_cluster_ratio: float = 1.0
+
+    # Percentile normalization bounds (outlier-robust)
+    pareto_norm_percentile_low: float = 5.0    # p5
+    pareto_norm_percentile_high: float = 95.0  # p95
+
+    # ==========================================================================
+    # ITERATIVE RESIDUAL CLUSTERING
+    # ==========================================================================
+
+    enable_iterative: bool = True
+    iterative_accept_probability: float = 0.7   # points need prob >= this to be accepted
+    iterative_max_iterations: int = 10
+    iterative_residual_ratio_stop: float = 0.10  # stop when residual ≤ 10% of group N
+    iterative_min_residual_size: int = 10         # stop when residual < this
+
+    # ==========================================================================
+    # CONCEPT_TYPE GROUPING
+    # ==========================================================================
+
+    enable_concept_type_grouping: bool = False
+    concept_type_min_group_size: int = 20         # smaller groups pooled into fallback
+    concept_type_fallback: str = "_other"
+
+    # ==========================================================================
+    # AGGLOMERATIVE PARAMETERS
+    # ==========================================================================
+
     k_grid_multipliers: Tuple[float, ...] = (0.5, 1.0, 2.0)
     agglomerative_linkage: str = "ward"
 
@@ -143,17 +156,6 @@ class ClustererConfig:
     high_outlier_threshold: float = 0.7
 
     # ==========================================================================
-    # COMPOSITE SCORING
-    # ==========================================================================
-
-    weight_validity: float = 0.5
-    tau_low_prob: float = 0.15
-    lambda_low_prob: float = 1.0
-    fuzzy_cluster_threshold: float = 0.30
-    lambda_fuzzy: float = 0.5
-    lambda_fuzzy_count: float = 0.3
-
-    # ==========================================================================
     # POST-PROCESSING
     # ==========================================================================
 
@@ -162,15 +164,8 @@ class ClustererConfig:
     merge_centroid_threshold: float = 0.95
     merge_pairwise_threshold: float = 0.98
 
-    # Noise reduction strategy
-    noise_reduction_strategy: str = "embeddings"
+    # Noise reduction: assign noise points to nearest cluster by embedding similarity
     noise_reduction_threshold: float = 0.5
-
-    # Legacy noise reclustering settings
-    enable_noise_reclustering: bool = True
-    noise_parameter_strategy: str = "adaptive"
-    noise_min_cluster_size: int = 3
-    noise_cohesion_threshold: float = 0.70
 
     # ==========================================================================
     # REPRESENTATION (c-TF-IDF) - Enabled by default
@@ -178,7 +173,7 @@ class ClustererConfig:
 
     generate_ctfidf: bool = True
     ctfidf_top_k: int = 10
-    ctfidf_ngram_range: Tuple[int, int] = (1, 2)
+    ctfidf_ngram_range: Tuple[int, int] = (1, 1)  # (1,1) since ADJ+NOUN compounds are pre-built
     ctfidf_min_df: int = 1
     ctfidf_bm25_weighting: bool = True
     ctfidf_reduce_frequent_words: bool = True
@@ -186,8 +181,6 @@ class ClustererConfig:
     # Lemmatization with spaCy
     ctfidf_use_lemmatization: bool = True
     ctfidf_spacy_model: str = "nl_core_news_lg"
-    ctfidf_pos_pattern: str = "ADJ*_NOUN+"
-
     # ==========================================================================
     # ADDITIONAL REPRESENTATIONS - Enabled by default
     # ==========================================================================
@@ -207,13 +200,6 @@ class ClustererConfig:
     llm_max_ideas_per_cluster: int = 10
     representative_selection_method: str = "dense_region"
     representative_min_probability: float = 0.8  # Only use ideas with cluster probability > this threshold
-
-    # ==========================================================================
-    # VISUALIZATION (OPTIONAL)
-    # ==========================================================================
-
-    generate_plots: bool = False
-    plots_output_dir: Optional[Path] = None
 
     # ==========================================================================
     # PERFORMANCE
@@ -243,31 +229,3 @@ class ClustererConfig:
 # =============================================================================
 
 DEFAULT_CLUSTERER_CONFIG = ClustererConfig()
-
-
-# =============================================================================
-# PRESET CONFIGURATIONS
-# =============================================================================
-
-# Configuration for HDBSCAN-only mode (skip algorithm selection)
-HDBSCAN_ONLY_CONFIG = ClustererConfig(
-    algorithm_mode="hdbscan",
-)
-
-# Configuration for Agglomerative-only mode
-AGGLOMERATIVE_ONLY_CONFIG = ClustererConfig(
-    algorithm_mode="agglomerative",
-)
-
-# Configuration for fast mode (no LLM labels, no keywords)
-FAST_CLUSTERING_CONFIG = ClustererConfig(
-    generate_ctfidf=False,
-    generate_mmr_keywords=False,
-    generate_tfidf_keywords=False,
-    generate_llm_labels=False,
-)
-
-# Configuration with small dataset optimization enabled
-SMALL_DATASET_CONFIG = ClustererConfig(
-    small_dataset_threshold=250,
-)

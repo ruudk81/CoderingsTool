@@ -8,7 +8,7 @@ Original: src/utils/clusterer.py
 
 A comprehensive clustering module with:
 - Automatic algorithm selection (DVC + kNN knee detection)
-- Optuna-based HDBSCAN optimization with GridSampler
+- Grid search HDBSCAN optimization with Pareto selection
 - Agglomerative/K-means fallback for uniform density data
 - Post-processing (cluster merging, BERTopic-style noise reduction)
 - c-TF-IDF keyword extraction with spaCy lemmatization
@@ -36,17 +36,15 @@ Usage (experimental):
     labels = clusterer.get_cluster_labels()
 """
 
-import re
 import warnings
 from typing import List, Dict, Tuple, Optional, Any
 from collections import Counter
 
 import numpy as np
-from sklearn.cluster import AgglomerativeClustering, KMeans
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.metrics.pairwise import cosine_similarity
 import hdbscan
-import umap
 
 from experiments import models_exp as models
 
@@ -58,18 +56,19 @@ try:
         # Algorithm Selection
         AlgorithmSelector, AlgorithmRecommendation,
         # Parameter Optimization
-        ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid_sqrt,
+        ParameterOptimizer, run_umap, n_neighbors_grid,
         # Quality Metrics
         ClusterQualityMetrics, ClusteringMetrics,
         # Post-Processing
-        merge_similar_clusters, recluster_noise, reduce_noise_by_embedding_similarity,
+        merge_similar_clusters, reduce_noise_by_embedding_similarity,
         # Representation
-        RepresentationEngine, extract_text_for_format,
+        RepresentationEngine,
         # Label Generation
         LabelGenerator, ClusterLabel,
         # Text field access
         get_idea_field_text,
     )
+    from .placeholder_lookup import build_dataset_placeholders
 except ImportError:
     from config_clusterer_exp import ClustererConfig
     from clusterer_helpers_exp import (
@@ -78,18 +77,19 @@ except ImportError:
         # Algorithm Selection
         AlgorithmSelector, AlgorithmRecommendation,
         # Parameter Optimization
-        ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid_sqrt,
+        ParameterOptimizer, run_umap, n_neighbors_grid,
         # Quality Metrics
         ClusterQualityMetrics, ClusteringMetrics,
         # Post-Processing
-        merge_similar_clusters, recluster_noise, reduce_noise_by_embedding_similarity,
+        merge_similar_clusters, reduce_noise_by_embedding_similarity,
         # Representation
-        RepresentationEngine, extract_text_for_format,
+        RepresentationEngine,
         # Label Generation
         LabelGenerator, ClusterLabel,
         # Text field access
         get_idea_field_text,
     )
+    from placeholder_lookup import build_dataset_placeholders
 
 # Suppress common warnings
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
@@ -137,7 +137,7 @@ class Clusterer:
         Args:
             input_list: List of EmbeddingsModel with idea_embedding populated
             config: Configuration (uses defaults if None)
-            extraction_metadata: Optional ExtractionMetadata for taxonomy context in LLM labels
+            extraction_metadata: Optional ExtractionMetadata for facet context in LLM labels
         """
         self.config = config or ClustererConfig()
         self._input_list = input_list
@@ -151,7 +151,10 @@ class Clusterer:
         self._idea_indices: Optional[List[Tuple[int, int]]] = None
         self._template_prefix: Optional[str] = None
         self._embedding_text_format: Optional[str] = None  # Text format used for embedding
+        self._concept_types: Optional[List[str]] = None
         self._labels: Optional[np.ndarray] = None
+        self._probabilities: Optional[np.ndarray] = None
+        self._iteration_assigned: Optional[np.ndarray] = None
         self._umap_embeddings: Optional[np.ndarray] = None
         self._hdbscan_model: Optional[hdbscan.HDBSCAN] = None
         self._recommendation: Optional[AlgorithmRecommendation] = None
@@ -188,22 +191,39 @@ class Clusterer:
             if self._verbose:
                 print(f"\n[Phase 2] Skipping algorithm selection (n={self._N} <= {self.config.small_dataset_threshold})")
             self._run_agglomerative_small()
+        elif self.config.enable_concept_type_grouping:
+            # Grouped + optionally iterative clustering
+            self._run_grouped_clustering()
         else:
-            # Phase 2: Algorithm Selection (always compute for diagnostics)
+            # Ungrouped path (all ideas together)
             self._run_algorithm_selection()
 
-            # Phase 3: Clustering
             if self.config.algorithm_mode == "auto":
                 algorithm = self._map_recommendation_to_algorithm()
             else:
                 algorithm = self.config.algorithm_mode
 
             if algorithm == "hdbscan":
-                self._run_hdbscan_optimized()
+                if self.config.enable_iterative:
+                    # Iterative residual clustering on all points at once
+                    if self._verbose:
+                        print(f"\n[Phase 3] Iterative HDBSCAN (no concept_type grouping)")
+                    all_indices = np.arange(self._N)
+                    self._run_iterative_hdbscan(all_indices)
+                    # Global UMAP for visualization
+                    n_neighbors_mid = n_neighbors_grid(
+                        self._N, k=self.config.n_neighbors_grid_k,
+                        high_min=self.config.n_neighbors_high_min
+                    )[1]
+                    n_components = self.config.umap_n_components_grid[0]
+                    self._umap_embeddings = run_umap(
+                        self._embeddings_processed, n_neighbors_mid, n_components,
+                        self.config.umap_min_dist, self.config.umap_random_state
+                    )
+                else:
+                    self._run_hdbscan_optimized()
             elif algorithm == "agglomerative":
                 self._run_agglomerative()
-            elif algorithm == "kmeans":
-                self._run_kmeans()
             else:
                 raise ValueError(f"Unknown algorithm: {algorithm}")
 
@@ -224,7 +244,7 @@ class Clusterer:
         return self
 
     def _run_preprocessing(self):
-        """Phase 1: Extract, normalize, and optionally PCA embeddings."""
+        """Phase 1: Extract embeddings, optionally PCA. No normalization."""
         if self._verbose:
             print("\n[Phase 1] Preprocessing")
 
@@ -233,12 +253,18 @@ class Clusterer:
             self._embeddings_processed,
             self._idea_texts,
             self._idea_indices,
+            self._concept_types,
             _,
             self._template_prefix,
             self._embedding_text_format
         ) = preprocess_embeddings(self._input_list, self.config)
 
         self._N = len(self._embeddings_original)
+
+        # Pre-allocate tracking arrays
+        self._labels = np.full(self._N, -1, dtype=int)
+        self._probabilities = np.full(self._N, 0.0, dtype=float)
+        self._iteration_assigned = np.full(self._N, -1, dtype=int)
 
         if self._verbose:
             print(f"  Loaded {self._N} embeddings")
@@ -272,7 +298,7 @@ class Clusterer:
         else:
             # Run trial UMAP for knee detection
             # Use middle of n_neighbors grid
-            n_neighbors_list = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)
+            n_neighbors_list = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k, high_min=self.config.n_neighbors_high_min)
             trial_n_neighbors = n_neighbors_list[len(n_neighbors_list) // 2]
 
             # Use first n_components from grid for trial UMAP
@@ -284,10 +310,9 @@ class Clusterer:
                 self.config.umap_min_dist,
                 self.config.umap_random_state
             )
-            trial_umap_normalized = l2_normalize(trial_umap)
 
-            # Detect knee
-            knee_result = self._selector.detect_knee(trial_umap_normalized)
+            # Detect knee on raw UMAP output
+            knee_result = self._selector.detect_knee(trial_umap)
             if self._verbose:
                 k_str = f"K={knee_result['K']}" if knee_result['K'] else "No knee"
                 print(f"  Knee: {k_str}, y_diff={knee_result['y_difference']:.2f}, "
@@ -313,10 +338,122 @@ class Clusterer:
         else:
             return "agglomerative"
 
-    def _run_hdbscan_optimized(self):
-        """Phase 3a: Run Optuna-optimized HDBSCAN."""
+    def _run_grouped_clustering(self):
+        """Phase 2+3: Group ideas by concept_type, cluster each group independently."""
         if self._verbose:
-            print("\n[Phase 3] HDBSCAN Optimization (Optuna)")
+            print("\n[Phase 2+3] Grouped Clustering by concept_type")
+
+        # Build groups: {concept_type: [flat_indices]}
+        groups: Dict[str, List[int]] = {}
+        fallback = self.config.concept_type_fallback
+        for idx, ct in enumerate(self._concept_types):
+            key = ct if ct else fallback
+            groups.setdefault(key, []).append(idx)
+
+        # Pool small groups into fallback
+        pooled_groups: Dict[str, np.ndarray] = {}
+        other_indices = list(groups.get(fallback, []))
+        for key, indices in groups.items():
+            if key == fallback:
+                continue
+            if len(indices) < self.config.concept_type_min_group_size:
+                other_indices.extend(indices)
+            else:
+                pooled_groups[key] = np.array(indices)
+        if other_indices:
+            pooled_groups[fallback] = np.array(other_indices)
+
+        if self._verbose:
+            print(f"  {len(pooled_groups)} concept_type groups:")
+            for key in sorted(pooled_groups, key=lambda k: -len(pooled_groups[k])):
+                print(f"    {key}: {len(pooled_groups[key])} ideas")
+
+        # Cluster each group, largest first
+        cluster_offset = 0
+        self._algorithm_used = "HDBSCAN"  # default, may be overridden per-group
+
+        for group_name in sorted(pooled_groups, key=lambda k: -len(pooled_groups[k])):
+            group_indices = pooled_groups[group_name]
+            group_size = len(group_indices)
+
+            if self._verbose:
+                print(f"\n{'='*60}")
+                print(f"  Group '{group_name}' ({group_size} ideas)")
+                print(f"{'='*60}")
+
+            # Algorithm selection for this group
+            group_emb_original = self._embeddings_original[group_indices]
+            dvc_result = self._selector.compute_dvc(group_emb_original)
+            if self._verbose:
+                dvc_val = dvc_result['dvc']
+                if not np.isnan(dvc_val):
+                    print(f"  DVC = {dvc_val:.3f} → {dvc_result['recommendation']}")
+
+            # Choose algorithm based on DVC
+            force_threshold = getattr(self.config, 'force_agglomerative_below_dvc', 0.25)
+            use_agglomerative = (
+                self.config.enable_agglomerative_fallback
+                and not np.isnan(dvc_result['dvc'])
+                and dvc_result['dvc'] < force_threshold
+            )
+
+            if use_agglomerative:
+                if self._verbose:
+                    print(f"  Algorithm: Agglomerative (DVC < {force_threshold})")
+                group_stats = self._run_agglomerative_on_subset(group_indices)
+            else:
+                if self._verbose:
+                    print(f"  Algorithm: HDBSCAN (iterative={self.config.enable_iterative})")
+                if self.config.enable_iterative:
+                    group_stats = self._run_iterative_hdbscan(group_indices)
+                else:
+                    # Single-shot: run optimizer once on the group
+                    optimizer = ParameterOptimizer(
+                        self.config,
+                        self._embeddings_processed[group_indices],
+                        self._embeddings_original[group_indices],
+                        verbose=self._verbose
+                    )
+                    result = optimizer.optimize()
+                    for local_idx, global_idx in enumerate(group_indices):
+                        self._labels[global_idx] = int(result.best_labels[local_idx])
+                        self._probabilities[global_idx] = float(result.best_model.probabilities_[local_idx])
+                        self._iteration_assigned[global_idx] = 0
+                    group_stats = {'n_clusters': len(set(result.best_labels) - {-1})}
+
+            # Offset non-noise labels to be globally unique
+            n_group_clusters = group_stats.get('n_clusters', 0)
+            if cluster_offset > 0:
+                for global_idx in group_indices:
+                    if self._labels[global_idx] >= 0:
+                        self._labels[global_idx] += cluster_offset
+            cluster_offset += n_group_clusters
+
+            if self._verbose:
+                n_assigned = int((self._labels[group_indices] >= 0).sum())
+                print(f"  Group result: {n_group_clusters} clusters, "
+                      f"{n_assigned}/{group_size} assigned ({n_assigned/group_size:.1%})")
+
+        # Global UMAP for visualization (on all points, using mid-range params)
+        n_neighbors_mid = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k,
+                                           high_min=self.config.n_neighbors_high_min)[1]
+        n_components = self.config.umap_n_components_grid[0]
+        self._umap_embeddings = run_umap(
+            self._embeddings_processed, n_neighbors_mid, n_components,
+            self.config.umap_min_dist, self.config.umap_random_state
+        )
+
+        if self._verbose:
+            total_assigned = int((self._labels >= 0).sum())
+            total_clusters = len(set(self._labels.tolist()) - {-1})
+            print(f"\n  Total: {total_clusters} clusters, "
+                  f"{total_assigned}/{self._N} assigned ({total_assigned/self._N:.1%}), "
+                  f"{self._N - total_assigned} residual")
+
+    def _run_hdbscan_optimized(self):
+        """Phase 3a: Run single-shot grid search HDBSCAN with Pareto selection."""
+        if self._verbose:
+            print("\n[Phase 3] HDBSCAN Grid Search + Pareto Selection")
 
         optimizer = ParameterOptimizer(
             self.config,
@@ -333,11 +470,196 @@ class Clusterer:
         self._algorithm_used = "HDBSCAN"
         self._algorithm_params = result.best_params
 
+        # Populate tracking arrays for unified access
+        self._probabilities = result.best_model.probabilities_.copy()
+        self._iteration_assigned = np.zeros(len(self._labels), dtype=int)  # all iteration 0
+
         if self._verbose:
             dvc_reduced = self._selector.compute_dvc(result.umap_embeddings)
             dvc_val = dvc_reduced['dvc']
             if not np.isnan(dvc_val):
                 print(f"  DVC (UMAP-reduced) = {dvc_val:.3f} (mean_dk={dvc_reduced['mean_dk']:.4f}, std_dk={dvc_reduced['std_dk']:.4f})")
+
+    def _run_iterative_hdbscan(self, group_indices: np.ndarray) -> Dict[str, Any]:
+        """
+        Iterative residual clustering for a concept_type group.
+
+        Each iteration runs grid search + Pareto selection on the residual points,
+        accepts confident members (non-noise AND probability >= threshold), and
+        continues on the remainder.
+
+        Writes directly into self._labels, self._probabilities, self._iteration_assigned
+        at the positions specified by group_indices.
+
+        Args:
+            group_indices: Flat indices into the full N-length arrays.
+
+        Returns:
+            Dict with stats: {n_iterations, n_clusters, accepted_per_iter, ...}
+        """
+        group_size = len(group_indices)
+        residual_mask = np.ones(group_size, dtype=bool)
+        next_cluster_id = 0
+        stats = {'accepted_per_iter': [], 'clusters_per_iter': []}
+
+        for iteration in range(self.config.iterative_max_iterations):
+            residual_positions = np.where(residual_mask)[0]
+            n_residual = len(residual_positions)
+
+            # Stopping: residual ratio
+            if n_residual / group_size <= self.config.iterative_residual_ratio_stop:
+                if self._verbose:
+                    print(f"    Stopping: residual {n_residual}/{group_size} "
+                          f"({n_residual/group_size:.1%}) <= {self.config.iterative_residual_ratio_stop:.0%}")
+                break
+
+            # Stopping: too few points
+            if n_residual < self.config.iterative_min_residual_size:
+                if self._verbose:
+                    print(f"    Stopping: residual {n_residual} < min_residual_size {self.config.iterative_min_residual_size}")
+                break
+
+            # Extract subset embeddings for this residual
+            residual_global_indices = group_indices[residual_positions]
+            residual_emb_processed = self._embeddings_processed[residual_global_indices]
+            residual_emb_original = self._embeddings_original[residual_global_indices]
+
+            if self._verbose:
+                print(f"\n    --- Iteration {iteration} ({n_residual} points) ---")
+
+            # Run grid search + Pareto on residual
+            try:
+                optimizer = ParameterOptimizer(
+                    self.config,
+                    residual_emb_processed,
+                    residual_emb_original,
+                    verbose=self._verbose
+                )
+                result = optimizer.optimize()
+            except (RuntimeError, ValueError) as e:
+                if self._verbose:
+                    print(f"    Stopping: optimizer failed ({e})")
+                break
+
+            # Determine accepted points: non-noise AND probability >= threshold
+            iter_labels = result.best_labels
+            iter_probs = result.best_model.probabilities_
+            accepted_mask = (iter_labels >= 0) & (iter_probs >= self.config.iterative_accept_probability)
+            n_accepted = int(accepted_mask.sum())
+
+            # Stopping: no progress
+            if n_accepted == 0:
+                if self._verbose:
+                    print(f"    Stopping: no points accepted (0 with prob >= {self.config.iterative_accept_probability})")
+                break
+
+            # Remap local cluster IDs to group-local IDs
+            unique_local_clusters = sorted(set(iter_labels[accepted_mask].tolist()))
+            local_to_group = {}
+            for local_id in unique_local_clusters:
+                if local_id >= 0:
+                    local_to_group[local_id] = next_cluster_id
+                    next_cluster_id += 1
+
+            # Write accepted points into global arrays
+            for pos_in_residual in range(n_residual):
+                if accepted_mask[pos_in_residual]:
+                    global_idx = residual_global_indices[pos_in_residual]
+                    local_cluster = int(iter_labels[pos_in_residual])
+                    self._labels[global_idx] = local_to_group[local_cluster]
+                    self._probabilities[global_idx] = float(iter_probs[pos_in_residual])
+                    self._iteration_assigned[global_idx] = iteration
+
+            # Update residual mask
+            for pos_in_residual in range(n_residual):
+                if accepted_mask[pos_in_residual]:
+                    residual_mask[residual_positions[pos_in_residual]] = False
+
+            n_new_clusters = len(local_to_group)
+            stats['accepted_per_iter'].append(n_accepted)
+            stats['clusters_per_iter'].append(n_new_clusters)
+
+            if self._verbose:
+                remaining = int(residual_mask.sum())
+                print(f"    Accepted {n_accepted}/{n_residual} points, "
+                      f"{n_new_clusters} new clusters, "
+                      f"residual: {remaining}/{group_size} ({remaining/group_size:.1%})")
+
+        stats['n_iterations'] = len(stats['accepted_per_iter'])
+        stats['n_clusters'] = next_cluster_id
+        stats['final_residual'] = int(residual_mask.sum())
+        return stats
+
+    def _run_agglomerative_on_subset(self, group_indices: np.ndarray) -> Dict[str, Any]:
+        """
+        Run Agglomerative clustering on a subset. No iterative loop needed
+        since Agglomerative assigns all points (no noise concept).
+
+        Writes into self._labels, self._probabilities, self._iteration_assigned
+        at the positions specified by group_indices.
+
+        Returns:
+            Dict with stats: {n_clusters, ...}
+        """
+        group_emb_original = self._embeddings_original[group_indices]
+        group_size = len(group_indices)
+
+        # Single UMAP reduction
+        n_neighbors = n_neighbors_grid(group_size, k=self.config.n_neighbors_grid_k,
+                                       high_min=self.config.n_neighbors_high_min)[1]
+        n_components = self.config.umap_n_components_grid[0]
+        umap_reduced = run_umap(
+            self._embeddings_processed[group_indices],
+            n_neighbors, n_components,
+            self.config.umap_min_dist,
+            self.config.umap_random_state
+        )
+
+        # Normalize for ward linkage (ward + euclidean on L2-normalized ≈ cosine-based ward)
+        umap_reduced_norm = l2_normalize(umap_reduced)
+
+        # K grid based on sqrt(n)
+        sqrt_n = int(np.sqrt(group_size))
+        k_grid = sorted(set([
+            max(2, int(m * sqrt_n))
+            for m in self.config.k_grid_multipliers
+        ]))
+
+        if self._verbose:
+            print(f"    Agglomerative: K grid {k_grid}, n_neighbors={n_neighbors}, n_components={n_components}")
+
+        # Find best K by silhouette score
+        best_k = k_grid[0]
+        best_sil = -1.0
+        best_labels = None
+
+        for k in k_grid:
+            if k >= group_size:
+                continue
+            clusterer = AgglomerativeClustering(
+                n_clusters=k, metric='euclidean',
+                linkage=self.config.agglomerative_linkage
+            )
+            labels = clusterer.fit_predict(umap_reduced_norm)
+            try:
+                sil = silhouette_score(umap_reduced_norm, labels)
+            except ValueError:
+                continue
+            if sil > best_sil:
+                best_sil = sil
+                best_k = k
+                best_labels = labels
+
+        if best_labels is None:
+            best_labels = np.zeros(group_size, dtype=int)
+
+        # Write to global arrays — all assigned, prob=1.0, iteration=0
+        for local_idx, global_idx in enumerate(group_indices):
+            self._labels[global_idx] = int(best_labels[local_idx])
+            self._probabilities[global_idx] = 1.0
+            self._iteration_assigned[global_idx] = 0
+
+        return {'n_clusters': len(set(best_labels)), 'best_k': best_k, 'silhouette': best_sil}
 
     def _run_agglomerative(self):
         """Phase 3b: Run Agglomerative clustering."""
@@ -345,7 +667,7 @@ class Clusterer:
             print("\n[Phase 3] Agglomerative Clustering")
 
         # Single UMAP reduction - use first n_components from grid
-        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[1]  # Second value
+        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k, high_min=self.config.n_neighbors_high_min)[1]  # Second value
         n_components = self.config.umap_n_components_grid[0]
 
         if self._verbose:
@@ -358,7 +680,6 @@ class Clusterer:
             self.config.umap_min_dist,
             self.config.umap_random_state
         )
-        self._umap_embeddings = l2_normalize(self._umap_embeddings)
 
         # K grid based on sqrt(n)
         sqrt_n = int(np.sqrt(self._N))
@@ -613,70 +934,6 @@ class Clusterer:
 
         return selected_k, selected_labels, reason
 
-    def _run_kmeans(self):
-        """Phase 3c: Run K-means clustering."""
-        if self._verbose:
-            print("\n[Phase 3] K-means Clustering")
-
-        # Single UMAP reduction - use first n_components from grid
-        n_neighbors = n_neighbors_grid(self._N, k=self.config.n_neighbors_grid_k)[1]
-        n_components = self.config.umap_n_components_grid[0]
-
-        if self._verbose:
-            print(f"  UMAP: n_neighbors={n_neighbors}, n_components={n_components}")
-
-        self._umap_embeddings = run_umap(
-            self._embeddings_processed,
-            n_neighbors,
-            n_components,
-            self.config.umap_min_dist,
-            self.config.umap_random_state
-        )
-        self._umap_embeddings = l2_normalize(self._umap_embeddings)
-
-        # K grid
-        sqrt_n = int(np.sqrt(self._N))
-        k_grid = sorted(set([
-            max(2, int(m * sqrt_n))
-            for m in self.config.k_grid_multipliers
-        ]))
-
-        if self._verbose:
-            print(f"  K grid: {k_grid}")
-
-        # Find best K by silhouette score
-        best_k = k_grid[0]
-        best_sil = -1.0
-        best_labels = None
-
-        for k in k_grid:
-            if k >= len(self._umap_embeddings):
-                continue
-
-            clusterer = KMeans(n_clusters=k, random_state=42, n_init=10)
-            labels = clusterer.fit_predict(self._umap_embeddings)
-
-            if len(set(labels)) > 1:
-                sil = silhouette_score(self._umap_embeddings, labels)
-                if self._verbose:
-                    print(f"    k={k}: silhouette={sil:.3f}")
-                if sil > best_sil:
-                    best_sil = sil
-                    best_k = k
-                    best_labels = labels.copy()
-
-        if best_labels is None:
-            clusterer = KMeans(n_clusters=k_grid[0], random_state=42, n_init=10)
-            best_labels = clusterer.fit_predict(self._umap_embeddings)
-            best_k = k_grid[0]
-
-        self._labels = best_labels
-        self._algorithm_used = "K-means"
-        self._algorithm_params = {'n_clusters': best_k}
-
-        if self._verbose:
-            print(f"  Best: k={best_k}, silhouette={best_sil:.3f}")
-
     def _run_post_processing(self):
         """Phase 4: Cluster merging and noise reduction."""
         if self._verbose:
@@ -691,27 +948,14 @@ class Clusterer:
                 verbose=self._verbose
             )
 
-        # Noise reduction (only for HDBSCAN)
+        # Noise reduction (only for HDBSCAN): assign noise by embedding similarity
         if self._algorithm_used == "HDBSCAN":
-            strategy = self.config.noise_reduction_strategy
-
-            if strategy == "embeddings":
-                # BERTopic-style: assign noise by embedding similarity
-                self._labels, noise_stats = reduce_noise_by_embedding_similarity(
-                    self._labels,
-                    self._embeddings_original,
-                    threshold=self.config.noise_reduction_threshold,
-                    verbose=self._verbose
-                )
-            elif strategy == "hdbscan" and self.config.enable_noise_reclustering:
-                # Legacy: re-run HDBSCAN on noise points
-                self._labels = recluster_noise(
-                    self._labels,
-                    self._umap_embeddings,
-                    self._embeddings_original,
-                    self.config,
-                    verbose=self._verbose
-                )
+            self._labels, noise_stats = reduce_noise_by_embedding_similarity(
+                self._labels,
+                self._embeddings_original,
+                threshold=self.config.noise_reduction_threshold,
+                verbose=self._verbose
+            )
 
     def _compute_final_metrics(self):
         """Phase 5: Calculate final quality metrics."""
@@ -723,6 +967,7 @@ class Clusterer:
             self._umap_embeddings,
             self._embeddings_original,
             hdbscan_model=self._hdbscan_model if self._algorithm_used == "HDBSCAN" else None,
+            probabilities=self._probabilities,
             algorithm_used=self._algorithm_used,
             algorithm_params=self._algorithm_params
         )
@@ -747,11 +992,11 @@ class Clusterer:
                 methods.append("TF-IDF")
             print(f"  Methods: {', '.join(methods)}")
 
-        # Get probabilities for filtering if HDBSCAN was used
+        # Get probabilities for filtering
         probabilities = None
         min_probability = None
-        if self._hdbscan_model is not None and hasattr(self._hdbscan_model, 'probabilities_'):
-            probabilities = self._hdbscan_model.probabilities_
+        if self._probabilities is not None and self._probabilities.any():
+            probabilities = self._probabilities
             min_probability = self.config.representative_min_probability
             if self._verbose:
                 print(f"  Using core cluster members (probability > {min_probability}) for keywords and LLM samples")
@@ -815,6 +1060,10 @@ class Clusterer:
         if self._verbose:
             print("\n[Phase 7] LLM Cluster Label Generation")
 
+        # Build dataset-level placeholders once (from extraction metadata)
+        metadata = self._extraction_metadata or models.ExtractionMetadata()
+        dataset_placeholders = build_dataset_placeholders(metadata)
+
         # Build cluster_texts dict using configured label text source
         cluster_texts = {}
         for i, label in enumerate(self._labels):
@@ -822,11 +1071,6 @@ class Clusterer:
                 if label not in cluster_texts:
                     cluster_texts[label] = []
                 cluster_texts[label].append(self._get_idea_text(i, self.config.label_text_source))
-
-        # Extract survey question from metadata (var_lab field)
-        survey_question = ""
-        if self._extraction_metadata and hasattr(self._extraction_metadata, 'var_lab'):
-            survey_question = self._extraction_metadata.var_lab or ""
 
         # Compute representative samples for each cluster
         representative_samples = {}
@@ -837,11 +1081,10 @@ class Clusterer:
             )
 
         if self._verbose:
-            # Report which method was used
             use_dense_region = (
                 self.config.representative_selection_method == "dense_region"
-                and self._hdbscan_model is not None
-                and hasattr(self._hdbscan_model, 'probabilities_')
+                and self._probabilities is not None
+                and self._probabilities.any()
             )
             method_name = "cluster probability" if use_dense_region else "centroid similarity"
             print(f"  Selected {self.config.llm_max_ideas_per_cluster} representative samples per cluster ({method_name})")
@@ -853,31 +1096,16 @@ class Clusterer:
         for cluster_id in cluster_texts.keys():
             cluster_distributions[cluster_id] = self._compute_cluster_metadata_distributions(cluster_id)
 
-        # Extract dataset context from extraction_metadata
-        dataset_context = None
-        if self._extraction_metadata:
-            dataset_context = {
-                'domain': getattr(self._extraction_metadata, 'domain', '') or '',
-                'topic': getattr(self._extraction_metadata, 'topic', '') or '',
-                'entity': getattr(self._extraction_metadata, 'entity', '') or '',
-                'perspective': getattr(self._extraction_metadata, 'perspective', '') or '',
-                'intent': getattr(self._extraction_metadata, 'intent', '') or '',
-            }
-
-        # Generate labels with taxonomy context if available
         # Use MMR keywords (primary) for LLM label generation, fallback to c-TF-IDF
         keywords_for_llm = (
             self._cluster_keywords.get("mmr") or self._cluster_keywords.get("ctfidf")
         ) if self._cluster_keywords else None
+
         self._cluster_labels = self._label_generator.generate_all_labels(
             cluster_texts=cluster_texts,
+            dataset_placeholders=dataset_placeholders,
             cluster_keywords=keywords_for_llm,
             representative_samples=representative_samples,
-            extraction_metadata=self._extraction_metadata,
-            embedding_text_format=self._embedding_text_format,
-            survey_question=survey_question,
-            language="Dutch",
-            dataset_context=dataset_context,
             cluster_distributions=cluster_distributions,
             verbose=self._verbose
         )
@@ -902,12 +1130,15 @@ class Clusterer:
                 response_results[resp_idx] = {}
 
             cluster_id = int(self._labels[idx])
-            # Get probability if HDBSCAN model available and not noise
+            # Get probability and iteration from tracking arrays
             probability = None
-            if self._hdbscan_model is not None and cluster_id != -1:
-                probability = float(self._hdbscan_model.probabilities_[idx])
+            if self._probabilities is not None and cluster_id != -1:
+                probability = float(self._probabilities[idx])
+            iteration = None
+            if self._iteration_assigned is not None and self._iteration_assigned[idx] >= 0:
+                iteration = int(self._iteration_assigned[idx])
 
-            response_results[resp_idx][idea_idx] = (cluster_id, probability)
+            response_results[resp_idx][idea_idx] = (cluster_id, probability, iteration)
 
         # Build output list
         output_list = []
@@ -919,12 +1150,14 @@ class Clusterer:
             if cluster_data.get('response_ideas'):
                 for idea_idx, idea in enumerate(cluster_data['response_ideas']):
                     if resp_idx in response_results and idea_idx in response_results[resp_idx]:
-                        cluster_id, probability = response_results[resp_idx][idea_idx]
+                        cluster_id, probability, iteration = response_results[resp_idx][idea_idx]
                         idea['initial_cluster'] = cluster_id
                         idea['cluster_probability'] = probability
+                        idea['iteration_assigned'] = iteration
                     else:
                         idea['initial_cluster'] = -1  # Noise or missing
                         idea['cluster_probability'] = None
+                        idea['iteration_assigned'] = None
 
             output_list.append(models.ClusterModel.model_validate(cluster_data))
 
@@ -1020,8 +1253,8 @@ class Clusterer:
         # Determine which method to use
         use_dense_region = (
             self.config.representative_selection_method == "dense_region"
-            and self._hdbscan_model is not None
-            and hasattr(self._hdbscan_model, 'probabilities_')
+            and self._probabilities is not None
+            and self._probabilities.any()
         )
 
         # Step 1: Build text -> best index mapping (deduplication)
@@ -1033,7 +1266,7 @@ class Clusterer:
             text = self._get_idea_text(global_idx, source)
 
             if use_dense_region:
-                prob = float(self._hdbscan_model.probabilities_[global_idx])
+                prob = float(self._probabilities[global_idx])
                 # Filter by minimum probability threshold
                 if prob <= self.config.representative_min_probability:
                     continue
@@ -1145,10 +1378,10 @@ class Clusterer:
             print(f"  Text source: {self.config.verbose_text_source}")
         print(f"{'='*80}")
 
-        # Build per-cluster probability lookup if HDBSCAN was used
+        # Build per-cluster probability lookup
         per_cluster_prob = {}
-        if self._hdbscan_model is not None and hasattr(self._hdbscan_model, 'probabilities_'):
-            probs = self._hdbscan_model.probabilities_
+        if self._probabilities is not None and self._probabilities.any():
+            probs = self._probabilities
             for cluster_id_tmp in sorted(cluster_texts.keys()):
                 mask = self._labels == cluster_id_tmp
                 cluster_probs = probs[mask]
@@ -1213,12 +1446,12 @@ class Clusterer:
 
     def _get_cluster_mean_probability(self, cluster_id: int) -> Optional[float]:
         """Get mean probability for a cluster."""
-        if self._hdbscan_model is None:
+        if self._probabilities is None:
             return None
         mask = self._labels == cluster_id
         if not np.any(mask):
             return None
-        return float(np.mean(self._hdbscan_model.probabilities_[mask]))
+        return float(np.mean(self._probabilities[mask]))
 
     def _get_cluster_coherence(self, cluster_id: int) -> Optional[float]:
         """Get coherence for a specific cluster."""
@@ -1268,7 +1501,7 @@ class Clusterer:
         - Keywords (c-TF-IDF, MMR, TF-IDF)
         - LLM-generated labels
         - Cluster distributions
-        - Global LLM context (survey question, taxonomy, etc.)
+        - Global LLM context (survey question, facet, etc.)
         - Quality metrics
 
         Returns:
@@ -1340,9 +1573,10 @@ class Clusterer:
                 topic=meta.topic or None,
                 perspective=meta.perspective or None,
                 intent=meta.intent or None,
+                # LLMContextModel uses legacy field names; mapped from new ExtractionMetadata
                 taxonomy_axis=meta.primary_facet or None,
                 taxonomy_description=meta.primary_facet_description or None,
-                taxonomy_actionable_type=meta.taxonomy_actionable_type or None,
+                taxonomy_actionable_type=None,  # dead field, never populated
             )
 
         return models.ClusteringMetadataModel(
@@ -1353,62 +1587,3 @@ class Clusterer:
             algorithm_params=self._algorithm_params,
             timestamp=datetime.now().isoformat(),
         )
-
-
-def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[models.ClusterModel]:
-    """Clean cluster idea texts by removing bracketed annotations and normalizing whitespace.
-
-    Args:
-        cluster_results: List of ClusterModel objects with idea texts to clean
-
-    Returns:
-        List of ClusterModel objects with cleaned idea texts
-    """
-    cleaned_results = []
-
-    for result in cluster_results:
-        cleaned_response_ideas = []
-
-        if result.response_ideas:
-            for idea_submodel in result.response_ideas:
-                # Extract and clean idea text
-                cleaned_idea = idea_submodel.idea
-                cleaned_idea = re.sub(r"\[.*?\]", "", cleaned_idea)
-                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
-
-                # Create new ClusterSubmodel with cleaned text, preserving all fields
-                cleaned_submodel = models.ClusterSubmodel(
-                    # From IdeasExtractedSubmodel
-                    idea_id=idea_submodel.idea_id,
-                    idea=cleaned_idea,
-                    instance=idea_submodel.instance,
-                    concept=idea_submodel.concept,
-                    concept_type=idea_submodel.concept_type,
-                    concept_type_definition=idea_submodel.concept_type_definition,
-                    valence=idea_submodel.valence,
-                    # From EmbeddingsSubmodel
-                    idea_embedding=idea_submodel.idea_embedding,
-                    concept_embedding=getattr(idea_submodel, 'concept_embedding', None),
-                    concept_type_embedding=getattr(idea_submodel, 'concept_type_embedding', None),
-                    ladder_embedding=getattr(idea_submodel, 'ladder_embedding', None),
-                    # From ClusterSubmodel
-                    initial_cluster=idea_submodel.initial_cluster,
-                    cluster_probability=idea_submodel.cluster_probability,
-                    expanded_cluster=idea_submodel.expanded_cluster,
-                    cluster_theme=idea_submodel.cluster_theme
-                )
-                cleaned_response_ideas.append(cleaned_submodel)
-
-        # Create new ClusterModel with cleaned ideas
-        cleaned_result = models.ClusterModel(
-            respondent_id=result.respondent_id,
-            response=result.response,
-            response_type=result.response_type,
-            quality_filter=result.quality_filter,
-            quality_filter_code=result.quality_filter_code,
-            response_ideas=cleaned_response_ideas,
-            idea_count=len(cleaned_response_ideas)
-        )
-        cleaned_results.append(cleaned_result)
-
-    return cleaned_results
