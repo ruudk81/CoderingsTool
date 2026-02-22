@@ -238,7 +238,7 @@ def run_experiment(config: ExperimentConfig = None):
             }
         )
         cache_manager.save_to_cache(
-            representations_model.model_dump(), config.filename,
+            [representations_model], config.filename,
             "cluster_representations", variable_key, elapsed_time, var_lab=var_lab
         )
 
