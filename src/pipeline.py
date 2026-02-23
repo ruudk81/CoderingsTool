@@ -65,7 +65,7 @@ STEP_NAMES = {
     2: "quality_filter",
     3: "extracted_ideas",
     4: "embeddings",
-    5: "initial_clusters",
+    5: "category_assignment",
     6: "codebook_generation",
     7: "codebook_refinement",
     8: "code_assignment_direct",

@@ -4,7 +4,7 @@
 
 from config_steps.config_preprocess import *
 from config_steps.config_qualityFilter import *
-from config_steps.config_clusterer import *
+from config_steps.config_categories import *
 from config_steps.config_embedder import *
 from config_steps.config_ideaExtractor import *
 from config_steps.config_codeAssigner import *
