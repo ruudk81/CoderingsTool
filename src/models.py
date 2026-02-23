@@ -90,23 +90,26 @@ class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
     embedding_text_format: str = "idea"  # "idea", "concept", "ladder", "default", "all", etc.
 
-class ClusterSubmodel(EmbeddingsSubmodel):
+class CategoryAssignedSubmodel(EmbeddingsSubmodel):
+    """Per-idea data with MECE category assignment.
+
+    Extends EmbeddingsSubmodel (not ClusterSubmodel) since category
+    assignment operates on ideas partitioned by concept_type, independent
+    of clustering.
+    """
+    assigned_category: Optional[str] = None        # MECECategory.category_label
+    category_confidence: Optional[float] = None    # 0.0 - 1.0
+    category_rationale: Optional[str] = None       # LLM reasoning
+    partition_name: Optional[str] = None           # concept_type partition
+    # Bridge fields for step 6 codeGenerator compatibility (set at runtime)
     initial_cluster: Optional[Union[int, str]] = None
-    cluster_probability: Optional[float] = None  # HDBSCAN membership probability (0-1)
     expanded_cluster: Optional[str] = None
-    cluster_theme: Optional[str] = None  # Theme name from Step 6 Chain 1
-    
-class ClusterModel(EmbeddingsModel):
-    response_ideas: Optional[List[ClusterSubmodel]] = None  
+    cluster_theme: Optional[str] = None
 
-class AssignedIdeaSubmodel(ClusterSubmodel):
-    assigned_codes: Optional[List[str]] = None
-    assigned_themes: Optional[List[str]] = None
-    assignment_confidence: Optional[float] = None
-    assignment_rationale: Optional[str] = None
 
-class CodeAssignedModel(ClusterModel):
-    response_ideas: Optional[List[AssignedIdeaSubmodel]] = None
+class CategoryAssignedModel(EmbeddingsModel):
+    """Response-level model with category-assigned ideas."""
+    response_ideas: Optional[List[CategoryAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None
 
 
@@ -215,103 +218,36 @@ class ThemeEnrichedCodebookModel(CodebookModel):
     theme_methodology: Optional[str] = None
 
 
-# === CLUSTER REPRESENTATION MODELS ========================================================================================================
+# === MECE CACHE MODELS (step 5 categories) ========================================================================================================
 
-class ClusterLabelModel(BaseModel):
-    cluster_id: int
-    theme: str                    # Short atomic label (≤10 words)
-    description: str              # 1-2 sentence description
-    key_concepts: List[str]       # 3-5 key concepts
-    n_ideas: int                  # Number of ideas in cluster
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class ClusterRepresentationModel(BaseModel):
-    cluster_id: int
-    keywords: List[Tuple[str, float]]           # c-TF-IDF keywords [(word, score), ...]
-    llm_label: Optional[ClusterLabelModel] = None  # LLM-generated label (if enabled)
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class ClusterRepresentationsModel(BaseModel):
-    representations: List[ClusterRepresentationModel]
-    generation_metadata: Optional[Dict[str, Any]] = None  # Algorithm, config, timestamps
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+from prompts import (
+    PartitionSet, MECECategory, MECEVerification,
+)
 
 
-# === CLUSTERING METADATA CACHE MODELS ========================================================================================================
-
-class ClusterRepresentationCacheModel(BaseModel):
-    cluster_id: int
-    size: int
-
-    # What was given to LLM (audit trail)
-    representative_samples: List[Tuple[str, float]]  # (text, probability/score)
-    keywords_ctfidf: List[Tuple[str, float]]
-    keywords_mmr: List[Tuple[str, float]]
-    keywords_tfidf: List[Tuple[str, float]]
-
-    # Cluster distributions (also given to LLM)
-    sentiment_distribution: Optional[Dict[str, float]] = None  # e.g., {"positive": 0.3, "neutral": 0.6}
-    sense_distribution: Optional[Dict[str, float]] = None      # e.g., {"factual": 0.7, "evaluative": 0.3}
-
-    # LLM output
-    label_theme: Optional[str] = None
-    label_description: Optional[str] = None
-    label_key_concepts: Optional[List[str]] = None
-
-    # Cluster-level metrics
-    mean_probability: Optional[float] = None
-    coherence: Optional[float] = None
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+class PartitionMECEResultModel(BaseModel):
+    """Pydantic-serializable version of PartitionMECEResult for caching."""
+    partition_name: str
+    n_labels: int
+    n_batches: int
+    reduce_skipped: bool
+    categories: List[MECECategory] = Field(default_factory=list)
+    mece_verifications: List[MECEVerification] = Field(default_factory=list)
 
 
-class ClusteringMetricsModel(BaseModel):
-    n_clusters: int
-    noise_rate: float
-    noise_count: int
-    mean_coherence: float
-    coherence_breakdown: str
-    silhouette: Optional[float] = None
-    dbcv: Optional[float] = None
+class MECEResultsCache(BaseModel):
+    """Top-level cache wrapper for all MECE results.
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-class LLMContextModel(BaseModel):
-    survey_question: str
-    language: str
-
-    # Dataset context
-    domain: Optional[str] = None
-    entity: Optional[str] = None
-    topic: Optional[str] = None
-    perspective: Optional[str] = None
-    intent: Optional[str] = None
-
-    # Taxonomy context
-    taxonomy_axis: Optional[str] = None
-    taxonomy_description: Optional[str] = None
-    taxonomy_actionable_type: Optional[str] = None
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-class ClusteringMetadataModel(BaseModel):
-    # Per-cluster data
-    clusters: Dict[int, ClusterRepresentationCacheModel]
-
-    # Global LLM context (shared across all clusters)
-    llm_context: Optional[LLMContextModel] = None
-
-    # Global metrics
-    metrics: ClusteringMetricsModel
-
-    # Provenance
-    algorithm_used: str
-    algorithm_params: Dict[str, Any]
-    timestamp: str
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    Stores the complete output of the MAP/REDUCE/MECE pipeline:
+    partition definitions, MECE category sets, and label counts.
+    Designed for save_metadata_to_cache() (single model).
+    """
+    partition_set: PartitionSet
+    partition_results: Dict[str, PartitionMECEResultModel]
+    label_counts: Dict[str, int] = Field(default_factory=dict)
+    processing_mode: str = ""
+    label_source: str = ""
+    total_categories: int = 0
 
 
 
