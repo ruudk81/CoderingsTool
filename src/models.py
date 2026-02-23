@@ -1,5 +1,5 @@
 from typing import List, Any, Optional, Type, Union, Dict, Tuple
-from pydantic import BaseModel, ConfigDict #, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field
 import numpy as np
 import numpy.typing as npt
 
@@ -22,13 +22,15 @@ class ExtractionMetadata(BaseModel):
     entity: str = ""                      # e.g., "merk_x"
     intent: str = ""                      # e.g., "evaluate"
 
-    # Taxonomy axis info
-    taxonomy_primary_axis: str = ""       # e.g., "WHAT"
-    taxonomy_secondary_axis: Optional[str] = None
-    taxonomy_rationale: str = ""          # Why this axis was chosen
-    taxonomy_axis_description: str = ""   # Context-specific description
-    taxonomy_sample_phrases: List[str] = []  # 2-6 example phrases
-    taxonomy_actionable_type: str = ""        # e.g., "attributes", "features", "concepts"
+    # Primary facet (v5: 10 MECE facets with decision-tree ordering)
+    primary_facet: str = ""               # e.g., "EVALUATION_PRIORITIZATION"
+    primary_facet_description: str = ""   # Context-specific description of the facet
+    decision_tree_stop_position: int = 0  # 1-10, which decision tree step triggered facet selection
+    # Concept types (data-driven)
+    concept_types: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Data-driven concept types [{key, label, definition}, ...]"
+    )
 
     # Timestamp
     extraction_timestamp: Optional[str] = None
@@ -58,16 +60,18 @@ class QualityFilteredModel(PreprocessedModel):
 # QualityFilterLLMResponse moved to prompts.py (co-located with GRADER_INSTRUCTIONS)
 
 class IdeasExtractedSubmodel(BaseModel):
-    idea_id: str  # Format: {respondent_id}_{sequence_number}
-    idea: str     # Clean text (no embedded specifiers in new format)
-    instance: str = ""          # Verbatim span from response
-    node: str = ""              # Canonical, reusable concept (noun phrase)
-    semantic_category: str = "" # One of: identity, attribute, function, state, evaluation, relation
-    category_label: str = ""    # Concise descriptive label within the category
-    root: str = ""              # Top-level domain framing
-    taxonomy_phrase: str = ""         # (legacy, kept for downstream compat)
-    sentiment: str = "neutral"        # (legacy, kept for downstream compat)
-    sense: str = "factual"            # (legacy, kept for downstream compat)
+    """Per-idea data from step 3 extraction.
+
+    Hierarchy: instance → concept → concept_type → primary_facet (dataset-level)
+    Secondary facets: valence
+    """
+    idea_id: str                          # Format: {respondent_id}_{sequence_number}
+    idea: str                             # Clean text (starts with template prefix)
+    instance: str = ""                    # Verbatim span from response
+    concept: str = ""                     # Canonical, reusable concept (noun phrase)
+    concept_type: str = ""                # Discovered concept type (e.g., "recommendation")
+    concept_type_definition: str = ""     # High-level framing of concept_type in survey context
+    valence: str = ""                     # positive / negative / neutral_mixed
     model_config = ConfigDict(arbitrary_types_allowed=True)   
     
 class IdeasExtractedModel(QualityFilteredModel):
@@ -76,10 +80,10 @@ class IdeasExtractedModel(QualityFilteredModel):
     template_prefix: Optional[str] = None  # Canonical phrasing prefix for embedding text extraction
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
-    idea_embedding: Optional[npt.NDArray[np.float32]] = None
-    node_embedding: Optional[npt.NDArray[np.float32]] = None      # Embedding of node (canonical ontology concept)
-    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None  # (deprecated, kept for cache compat)
-    ontology_embedding: Optional[npt.NDArray[np.float32]] = None  # Embedding of "instance → node → semantic_category (category_label) → root"
+    idea_embedding: Optional[npt.NDArray[np.float32]] = None        # idea (natural sentence incl. template_prefix)
+    concept_embedding: Optional[npt.NDArray[np.float32]] = None      # concept → concept_type_definition
+    concept_type_embedding: Optional[npt.NDArray[np.float32]] = None  # concept_type
+    ladder_embedding: Optional[npt.NDArray[np.float32]] = None      # instance → concept → concept_type → concept_type_definition
 
 class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
