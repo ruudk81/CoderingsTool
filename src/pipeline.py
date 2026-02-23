@@ -52,7 +52,7 @@ id_column = "DLNMID"
 var_name = "Q10"
 sample_size = 50
 
-RUN_UNTIL_STEP = 3
+RUN_UNTIL_STEP = 4
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -739,7 +739,7 @@ def step_4_generate_embeddings(
             if verbose:
                 print(f"   Note: Could not load extraction metadata: {e}")
 
-        # Initialize embedder with v2 config (defaults: both mode, analysis enabled)
+        # Initialize embedder with v5 config (defaults: 4-pass default mode, analysis enabled)
         embedder_config = EmbedderConfig(verbose=verbose)
         get_embeddings = Embedder(
             config=embedder_config,
@@ -750,10 +750,8 @@ def step_4_generate_embeddings(
         # Print configuration summary (matching experiment runner output)
         if verbose:
             print(f"\n📋 Embedder Configuration:")
-            print(f"   Provider: {embedder_config.provider}")
             print(f"   Embedding model: {get_embeddings.embedding_model}")
             print(f"   Text format: {embedder_config.embedding_text_format}")
-            print(f"   Question-aware: {embedder_config.use_question_aware}")
             print(f"   Analyze embeddings: {embedder_config.analyze_embeddings}")
             print(f"   Compute similarity stats: {embedder_config.compute_similarity_stats}")
 
@@ -782,17 +780,17 @@ def step_4_generate_embeddings(
             for idea in resp.response_ideas
             if idea.idea_embedding is not None
         )
-        taxonomy_count = sum(
+        ladder_count = sum(
             1 for resp in embedded_text
             if resp.response_ideas
             for idea in resp.response_ideas
-            if getattr(idea, 'taxonomy_embedding', None) is not None
+            if getattr(idea, 'ladder_embedding', None) is not None
         )
-        ontology_count = sum(
+        concept_count = sum(
             1 for resp in embedded_text
             if resp.response_ideas
             for idea in resp.response_ideas
-            if getattr(idea, 'ontology_embedding', None) is not None
+            if getattr(idea, 'concept_embedding', None) is not None
         )
 
         # Print final statistics (matching experiment runner output)
@@ -800,10 +798,10 @@ def step_4_generate_embeddings(
             print(f"\n📊 Embedding Statistics:")
             print(f"   Responses processed: {len(embedded_text)}")
             print(f"   Idea embeddings generated: {embeddings_count}")
-            if taxonomy_count > 0:
-                print(f"   Taxonomy embeddings generated: {taxonomy_count}")
-            if ontology_count > 0:
-                print(f"   Ontology embeddings generated: {ontology_count}")
+            if ladder_count > 0:
+                print(f"   Ladder embeddings generated: {ladder_count}")
+            if concept_count > 0:
+                print(f"   Concept embeddings generated: {concept_count}")
             print(f"   Elapsed time: {elapsed_time:.2f}s")
             print(f"   Rate: {embeddings_count / elapsed_time:.1f} embeddings/sec" if elapsed_time > 0 else "   Rate: N/A")
 

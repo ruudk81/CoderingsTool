@@ -84,10 +84,11 @@ class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     concept_embedding: Optional[npt.NDArray[np.float32]] = None      # concept → concept_type_definition
     concept_type_embedding: Optional[npt.NDArray[np.float32]] = None  # concept_type
     ladder_embedding: Optional[npt.NDArray[np.float32]] = None      # instance → concept → concept_type → concept_type_definition
+    idea_concept_defined_embedding: Optional[npt.NDArray[np.float32]] = None  # idea → concept → concept_type_definition
 
 class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
-    embedding_text_format: str = "idea"  # "idea", "node", "ontology", "idea_node", "idea_ontology", "all"
+    embedding_text_format: str = "idea"  # "idea", "concept", "ladder", "default", "all", etc.
 
 class ClusterSubmodel(EmbeddingsSubmodel):
     initial_cluster: Optional[Union[int, str]] = None
