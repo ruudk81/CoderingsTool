@@ -2,6 +2,30 @@ import random
 from typing import Optional, List, Union, Dict, Any
 
 
+def _extract_ideas_from_cluster_text(cluster_text: str) -> list:
+    """Extract idea lines from cluster_text, stripping category metadata prefix.
+
+    In the MECE category pathway, cluster_text has the format:
+        Partition (concept type): ...
+        Category: ...
+        ... (metadata lines)
+        --- Assigned Ideas ---
+        - idea 1
+        - idea 2
+        ...
+
+    For the old cluster pathway, cluster_text is just ideas directly.
+    """
+    SEPARATOR = "--- Assigned Ideas ---"
+    if SEPARATOR in cluster_text:
+        ideas_section = cluster_text.split(SEPARATOR, 1)[1]
+    else:
+        ideas_section = cluster_text
+
+    ideas = [idea.strip() for idea in ideas_section.split('\n') if idea.strip()]
+    return [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]
+
+
 def get_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str]] = None) -> Dict[str, Any]:
     """Extract cluster analysis data and return as structured dictionary.
 
@@ -52,8 +76,7 @@ def get_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str
     if step1_inputs and cluster_id in step1_inputs:
         cluster_text = step1_inputs[cluster_id].get('cluster_text', '')
         if cluster_text:
-            ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
-            clean_ideas = [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]
+            clean_ideas = _extract_ideas_from_cluster_text(cluster_text)
             result['ideas']['count'] = len(clean_ideas)
             result['ideas']['ideas_list'] = clean_ideas
 
@@ -173,12 +196,11 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
 
     main_cluster_id = cluster_id.split('-')[0] 
     
-    # 1. CLUSTER IDEAS 
+    # 1. CLUSTER IDEAS
     if step1_inputs and cluster_id in step1_inputs:
-        cluster_text = step1_inputs[cluster_id].get('cluster_text', '')  
+        cluster_text = step1_inputs[cluster_id].get('cluster_text', '')
         if cluster_text:
-            ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
-            clean_ideas = [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]
+            clean_ideas = _extract_ideas_from_cluster_text(cluster_text)
             print(f"\n💡 CLUSTER {main_cluster_id} IDEAS ({len(clean_ideas)} responses):")
             for i, idea in enumerate(clean_ideas, 1):  
                 print(f"   {i}. {idea}")
