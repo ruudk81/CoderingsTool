@@ -76,6 +76,9 @@ LOW_TOKEN_THRESHOLD_PCT = 0.2         # Low token threshold (20% of capacity)
 PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
 DIAGNOSTIC_REPORT_INTERVAL = 30       # Seconds between diagnostic reports
 
+# Valence / "other" code handling
+MIN_GROUP_SIZE_FOR_THEME_EXTRACTION: int = 3  # Groups below this → partition "other" code
+
 
 # =============================================================================
 # EXPERIMENTAL CODEDESIGNER CONFIG (copy from production for modification)
@@ -111,7 +114,7 @@ class CodeDesignerConfigExp:
     enable_performance_monitoring: bool = True  # Monitor processing performance
 
     # Idea sampling settings
-    max_ideas_per_cluster: int = 30  # Maximum ideas to include per cluster for LLM processing
+    max_ideas_per_cluster: int = 50  # Maximum ideas to include per cluster for LLM processing
 
     # SharedCodebook settings
     enable_version_tracking: bool = True  # Track codebook versions
@@ -124,7 +127,7 @@ class CodeDesignerConfigExp:
 
     # Theme extraction probability band settings
     probability_threshold: float = 0.8  # Only include ideas with cluster_probability < this value
-    total_sample_budget: int = 30  # Total ideas to sample across all probability bands
+    total_sample_budget: int = 50  # Total ideas to sample across all probability bands
     probability_bands: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
         'inner':  (0.6, 0.8),   # High-ish probability: 0.6 <= prob < 0.8
         'border': (0.4, 0.6),   # Medium probability: 0.4 <= prob < 0.6

@@ -7,7 +7,7 @@ Modify these prompts to experiment with different codebook refinement approaches
 Original source: src/prompts.py (STEP 7: THEME ORGANIZATION section)
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -51,7 +51,7 @@ Step 3 — DECIDE:
 Guidelines:
 - Ignore the partition name — it is a legacy label and may be misleading. Analyze the CODES.
 - Different facets of the same domain are ONE domain, not multiple. A domain about "facilities" can include food, seating, and power outlets.
-- Different valence (positive vs negative) about the same topic is ONE domain.
+- Codes about the same topic but with opposite valence (e.g., "Short wait times (+)" vs "Long wait times (-)") belong to the SAME structural domain.
 - The domain_name should clearly express the organizing concept. Do NOT simply reuse the partition name if a better name exists.
 
 Example: Codes about cars, trains, and bicycles → ONE domain (domain_name: "transportation modes"). Codes about cars AND cooking recipes → TWO domains (transportation ≠ cooking).
@@ -60,8 +60,9 @@ CRITICAL RULES:
 1. When splitting: every code ID must appear in exactly one sub-partition (no dropping, no duplicating)
 2. When splitting: each sub-partition should have at least 2 codes when possible
 3. All domain names must be concise noun phrases
+4. All output text (domain names, descriptions, analysis) MUST be in {language}
 
-Provide output as valid JSON following the response schema provided.
+Write all output in {language}. Provide output as valid JSON following the response schema provided.
 </task>
 """
 
@@ -163,14 +164,14 @@ You have {n_codes} codes within "{partition_name}". Your tasks:
 </task>
 
 <design_rules>
-- VALENCE-NEUTRAL: name what people talk about, not how they feel
+- VALENCE-AWARE: code labels should reflect the valence direction indicated by their (+) or (-) suffix. Preserve these suffixes when relabeling.
 - POSITIVE CRITERIA: define codes by what they ARE, not by what they're NOT
 - INDEPENDENT: each boundary_test must work without knowing other codes exist
 - PRESERVE: output should have approximately {n_codes} codes (merging should be rare)
-- All output in {language}
+- All output text (labels, definitions, examples, signals, descriptions) MUST be in {language}
 </design_rules>
 
-Provide output as valid JSON following the response schema provided.
+Write all output in {language}. Provide output as valid JSON following the response schema provided.
 """
 
 
@@ -188,17 +189,20 @@ Language: {language}
 <task>
 Review the {total_codes} codes across {n_partitions} structural domains above. Your task:
 
-1. Identify any code PAIRS from DIFFERENT domains where a respondent's answer could plausibly be assigned to either code.
+1. Identify any code PAIRS from DIFFERENT partitions where a respondent's answer could plausibly be assigned to either code.
 2. For each conflict found, specify:
-   - Which two codes overlap and from which domains
+   - Which two codes overlap and from which partitions
    - What kind of respondent answer would be ambiguous
    - Which code should "win" the ambiguous case and why
    - Whether this is minor (rare edge case) or major (systematic overlap)
 3. Provide an overall assessment of the codebook's cross-partition MECE compliance.
 
+IMPORTANT: When specifying partition names in partition_a and partition_b, use the EXACT partition key
+from the "=== Partition: <key> ===" headers — not the theme label.
+
 Focus on ACTIONABLE conflicts only — do not flag codes that are merely topically related but clearly distinguishable.
 
-Provide output as valid JSON following the response schema provided.
+Write all output in {language}. Provide output as valid JSON following the response schema provided.
 </task>
 """
 
@@ -310,7 +314,7 @@ class CrossPartitionConflict(BaseModel):
     )
     partition_a: str = Field(
         ...,
-        description="Domain/partition of code A"
+        description="Partition key of code A — use the exact partition key from the '=== Partition: ... ===' header"
     )
     code_b: str = Field(
         ...,
@@ -318,7 +322,7 @@ class CrossPartitionConflict(BaseModel):
     )
     partition_b: str = Field(
         ...,
-        description="Domain/partition of code B"
+        description="Partition key of code B — use the exact partition key from the '=== Partition: ... ===' header"
     )
     overlap_description: str = Field(
         ...,
@@ -348,6 +352,115 @@ class CrossPartitionJudgeResult(BaseModel):
         ...,
         description="Whether the codebook passes cross-partition MECE verification"
     )
+
+
+# =============================================================================
+# CROSS-PARTITION CONFLICT RESOLUTION
+# =============================================================================
+
+class ConflictResolutionAction(BaseModel):
+    """Resolution for a single cross-partition conflict."""
+    conflict_index: int = Field(
+        ...,
+        description="0-based index of the conflict being resolved"
+    )
+    action: str = Field(
+        ...,
+        description="'merge' for major overlaps (drop one code), 'sharpen' for minor overlaps (update boundaries)"
+    )
+    # For 'merge': which code survives
+    surviving_code: Optional[str] = Field(
+        None,
+        description="Code label to keep (merge only)"
+    )
+    surviving_partition: Optional[str] = Field(
+        None,
+        description="Partition key of surviving code (merge only) — use exact partition key from conflict"
+    )
+    dropped_code: Optional[str] = Field(
+        None,
+        description="Code label to remove (merge only)"
+    )
+    dropped_partition: Optional[str] = Field(
+        None,
+        description="Partition key of dropped code (merge only) — use exact partition key from conflict"
+    )
+    merge_rationale: Optional[str] = Field(
+        None,
+        description="Why the surviving code wins (merge only)"
+    )
+    # For 'sharpen': updated fields on both codes
+    code_a_updates: Optional[Dict[str, str]] = Field(
+        None,
+        description="Updated fields for code_a: boundary_test, tell_apart_rule (sharpen only)"
+    )
+    code_a_new_exclusions: Optional[List[str]] = Field(
+        None,
+        description="1-2 new exclusion examples to append to code_a (sharpen only)"
+    )
+    code_b_updates: Optional[Dict[str, str]] = Field(
+        None,
+        description="Updated fields for code_b: boundary_test, tell_apart_rule (sharpen only)"
+    )
+    code_b_new_exclusions: Optional[List[str]] = Field(
+        None,
+        description="1-2 new exclusion examples to append to code_b (sharpen only)"
+    )
+    sharpen_rationale: Optional[str] = Field(
+        None,
+        description="How the boundaries were clarified (sharpen only)"
+    )
+
+
+class ConflictResolutionResult(BaseModel):
+    """Result of resolving all cross-partition conflicts."""
+    resolutions: List[ConflictResolutionAction] = Field(
+        ...,
+        description="One resolution per conflict"
+    )
+    summary: str = Field(
+        ...,
+        description="Summary of all resolutions applied"
+    )
+
+
+CROSS_PARTITION_RESOLVE_PROMPT = """You are a codebook quality engineer resolving cross-partition overlaps in a qualitative survey codebook.
+
+<context>
+Survey question: "{survey_question}"
+Language: {language}
+</context>
+
+The cross-partition MECE judge found {n_conflicts} conflicts between codes in different partitions. Your task is to resolve each one.
+
+<conflicts>
+{conflicts_formatted}
+</conflicts>
+
+<task>
+For each conflict, choose one resolution strategy:
+
+**MERGE** (for major overlaps / duplicates):
+- Choose which code survives and which is dropped
+- The surviving code's partition keeps it; the dropped code is removed entirely
+- Use merge when both codes cover essentially the same concept
+
+**SHARPEN** (for minor overlaps / fuzzy boundaries):
+- Update boundary_test on BOTH codes to explicitly exclude the other's domain
+- Add 1-2 concrete exclusion_examples to each code referencing the other's typical cases
+- Update tell_apart_rule on both codes to reference the cross-partition neighbor
+
+Rules:
+- Major severity conflicts should typically use MERGE
+- Minor severity conflicts should typically use SHARPEN
+- All updated text must be in {language}
+- boundary_test must remain a self-contained yes/no question
+- exclusion_examples should be concrete respondent-like phrases (as if a survey respondent said them)
+- tell_apart_rule should clearly state which partition handles which aspect
+
+Provide output as valid JSON following the response schema provided.
+</task>
+"""
 
 
 # =============================================================================
@@ -410,6 +523,7 @@ Guidelines:
 **Code Labels**
 - Keep original code labels unless they violate naming rules
 - <= 10 words, specific and atomic
+- Preserve the valence indicator (+) or (-) at the end of each code label
 
 **Code Descriptions**
 - <= 20 words
@@ -440,9 +554,9 @@ Think through the organization, then provide JSON:
 Notes:
 - The number of codes in output should be close to the number of input codes (merging should be rare)
 - No commentary before or after JSON
-- All text in the specified output language
+- All text (theme labels, code labels, descriptions, analysis) MUST be in {language}
 
-Begin organizing the codebook.
+Write all output in {language}. Begin organizing the codebook.
 """
 
 
@@ -500,7 +614,7 @@ Guidelines:
 
 # Label Rules
 - Theme labels: <=10 words, noun phrases, no conjunctions/slashes
-- Code labels: Keep original labels, <=10 words
+- Code labels: Keep original labels, <=10 words. Preserve the valence indicator (+) or (-) at the end of each code label.
 - Descriptions: <=30 words, define when to use the code
 
 # Output Format
@@ -524,7 +638,7 @@ Guidelines:
 
 IMPORTANT: The total number of unique codes in your output should be close to the total unique codes across all input codebooks. Significant reduction indicates over-merging.
 
-Begin consolidating the codebooks.
+Write all output in {language}. Begin consolidating the codebooks.
 """
 
 
@@ -573,7 +687,7 @@ CRITICAL DESIGN RULE: Define each code using POSITIVE, INDEPENDENT criteria.
    - DIAGNOSTIC SIGNALS: 3-5 concrete words/phrases that trigger assignment to this code
    - NEAR NEIGHBOR: the most similar other code that a coder might confuse with this one
    - TELL APART RULE: how to distinguish this code from its near neighbor
-3. Codes are VALENCE-NEUTRAL: name what people talk about, not how they feel.
+3. Codes are VALENCE-AWARE: code labels reflect the direction of ideas (positive/reinforcing vs negative/undermining). Preserve the (+) or (-) suffix on code labels.
 4. Every input code must appear in the output (no dropping codes).
 </principles>
 
@@ -595,7 +709,7 @@ All output (labels, definitions, examples, signals) MUST be in {language}.
    - If you cannot decide using your criteria alone, your codes are NOT MECE — flag this.
 5. Report any MECE issues found.
 
-Provide output as valid JSON following the response schema provided.
+Write all output in {language}. Provide output as valid JSON following the response schema provided.
 </task>
 """
 

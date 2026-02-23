@@ -40,15 +40,6 @@ from models import (
     Codebook,
     ThemeEnrichedCodebookEntry,
     ThemeEnrichedCodebookModel,
-
-    # Cluster representation models (unchanged)
-    ClusterLabelModel,
-    ClusterRepresentationModel,
-    ClusterRepresentationsModel,
-    ClusterRepresentationCacheModel,
-    ClusteringMetricsModel,
-    LLMContextModel,
-    ClusteringMetadataModel,
 )
 
 

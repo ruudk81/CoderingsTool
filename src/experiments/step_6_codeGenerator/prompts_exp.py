@@ -44,6 +44,7 @@ Your codes must capture these expressed meanings, not just the surface topics me
 
 - Language: {language}
 - Domain: {domain}
+- Topic: {topic}
 - Perspective: {perspective}
 - Intent: {intent}
 - Entity: {entity}
@@ -92,8 +93,8 @@ LABEL RULES
 - No conjunctions (and/or), slashes, commas, or multi-concept bundles.
 - Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
 - Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
-- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
-- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
+- WRONG: "Experience of travel delays", "Perception of vehicle cleanliness", "Feeling of personal safety"
+- RIGHT: "Travel delays", "Vehicle cleanliness", "Personal safety"
 
 DEFINITION RULES
 - 30 words or fewer.
@@ -299,8 +300,8 @@ LABEL RULES
 - No conjunctions (and/or), slashes, commas, or multi-concept bundles.
 - Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
 - Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
-- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
-- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
+- WRONG: "Experience of travel delays", "Perception of vehicle cleanliness", "Feeling of personal safety"
+- RIGHT: "Travel delays", "Vehicle cleanliness", "Personal safety"
 
 DEFINITION RULES
 - 30 words or fewer.
@@ -496,8 +497,12 @@ LABEL RULES
 - No conjunctions (and/or), slashes, commas, or multi-concept bundles.
 - Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
 - Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
-- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
-- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
+- WRONG: "Experience of travel delays", "Perception of vehicle cleanliness", "Feeling of personal safety"
+- RIGHT: "Travel delays", "Vehicle cleanliness", "Personal safety"
+- VALENCE-SENSITIVE: The label should reflect the valence direction of the theme.
+  If the theme covers positive/reinforcing ideas, the label should convey that direction (e.g., "Short wait times", "Good accessibility").
+  If the theme covers negative/undermining ideas, use wording that reflects absence, insufficiency, or negation (e.g., "Long wait times", "Poor accessibility").
+  A valence indicator will be appended automatically — focus on making the label semantically directional.
 
 DEFINITION RULES
 - 30 words or fewer.
@@ -605,8 +610,12 @@ LABEL RULES
 - No conjunctions (and/or), slashes, commas, or multi-concept bundles.
 - Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
 - Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
-- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
-- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
+- WRONG: "Experience of travel delays", "Perception of vehicle cleanliness", "Feeling of personal safety"
+- RIGHT: "Travel delays", "Vehicle cleanliness", "Personal safety"
+- VALENCE-SENSITIVE: The label should reflect the valence direction of the theme.
+  If the theme covers positive/reinforcing ideas, the label should convey that direction (e.g., "Short wait times", "Good accessibility").
+  If the theme covers negative/undermining ideas, use wording that reflects absence, insufficiency, or negation (e.g., "Long wait times", "Poor accessibility").
+  A valence indicator will be appended automatically — focus on making the label semantically directional.
 
 DEFINITION RULES
 - 30 words or fewer.
@@ -809,8 +818,9 @@ LABEL RULES
 - No conjunctions (and/or), slashes, commas, or multi-concept bundles.
 - Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
 - Name the SPECIFIC content, not the facet dimension. The taxonomy already establishes that codes are about {facet_name}. Labels name WHAT was experienced/perceived/suggested — not THAT it was experienced/perceived/suggested.
-- WRONG: "Experience of musical enjoyment", "Perception of atmosphere", "Feeling of togetherness"
-- RIGHT: "Musical enjoyment", "Festival atmosphere", "Togetherness"
+- WRONG: "Experience of travel delays", "Perception of vehicle cleanliness", "Feeling of personal safety"
+- RIGHT: "Travel delays", "Vehicle cleanliness", "Personal safety"
+- VALENCE-SENSITIVE: The code label should reflect the valence direction of its source ideas. Do not neutralize directional labels.
 
 DEFINITION RULES
 - 30 words or fewer.
