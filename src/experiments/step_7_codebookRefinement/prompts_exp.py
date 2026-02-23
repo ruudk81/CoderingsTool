@@ -164,7 +164,7 @@ You have {n_codes} codes within "{partition_name}". Your tasks:
 </task>
 
 <design_rules>
-- VALENCE-AWARE: code labels should reflect the valence direction indicated by their (+) or (-) suffix. Preserve these suffixes when relabeling.
+- VALENCE-AWARE: code labels end with a valence suffix: (+) for positive, (-) for negative, or (0) for neutral/mixed. Preserve these suffixes exactly when relabeling. Never combine suffixes like (+,-).
 - POSITIVE CRITERIA: define codes by what they ARE, not by what they're NOT
 - INDEPENDENT: each boundary_test must work without knowing other codes exist
 - PRESERVE: output should have approximately {n_codes} codes (merging should be rare)
@@ -523,7 +523,7 @@ Guidelines:
 **Code Labels**
 - Keep original code labels unless they violate naming rules
 - <= 10 words, specific and atomic
-- Preserve the valence indicator (+) or (-) at the end of each code label
+- Preserve the valence indicator (+), (-), or (0) at the end of each code label. Never combine like (+,-)
 
 **Code Descriptions**
 - <= 20 words
@@ -614,7 +614,7 @@ Guidelines:
 
 # Label Rules
 - Theme labels: <=10 words, noun phrases, no conjunctions/slashes
-- Code labels: Keep original labels, <=10 words. Preserve the valence indicator (+) or (-) at the end of each code label.
+- Code labels: Keep original labels, <=10 words. Preserve the valence indicator (+), (-), or (0) at the end of each code label. Never combine like (+,-).
 - Descriptions: <=30 words, define when to use the code
 
 # Output Format
@@ -687,7 +687,7 @@ CRITICAL DESIGN RULE: Define each code using POSITIVE, INDEPENDENT criteria.
    - DIAGNOSTIC SIGNALS: 3-5 concrete words/phrases that trigger assignment to this code
    - NEAR NEIGHBOR: the most similar other code that a coder might confuse with this one
    - TELL APART RULE: how to distinguish this code from its near neighbor
-3. Codes are VALENCE-AWARE: code labels reflect the direction of ideas (positive/reinforcing vs negative/undermining). Preserve the (+) or (-) suffix on code labels.
+3. Codes are VALENCE-AWARE: code labels reflect the direction of ideas — (+) positive, (-) negative, (0) neutral/mixed. Preserve these suffixes exactly. Never combine like (+,-).
 4. Every input code must appear in the output (no dropping codes).
 </principles>
 

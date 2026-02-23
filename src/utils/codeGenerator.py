@@ -25,7 +25,7 @@ from sklearn.preprocessing import normalize
 from sklearn.metrics.pairwise import cosine_similarity
 
 # === CONFIG & MODELS ========================================================================================================
-from models import ClusterModel
+from models import CategoryAssignedModel, CategoryAssignedSubmodel
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM
 # Import prompts from production
 from prompts import (
@@ -33,7 +33,6 @@ from prompts import (
     HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
     VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
     MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
-    AXIS_LABEL_CONTRACT
 )
 from utils.verboseReporter import VerboseReporter
 from utils.llm import create_client, llm_create_sync, RateLimits, extract_rate_limits_from_response
@@ -64,10 +63,9 @@ else:
 # =============================================================================
 # STAGE 1 CONFIGURATION
 # =============================================================================
-# Toggle between "idea" (full response ideas) and "taxonomy_phrase" (2-4 word categorization)
-# for cluster_text in Stage 1 theme extraction (CLUSTER_SUMMARY_PROMPT only).
+# Text source for Stage 1 theme extraction (CLUSTER_SUMMARY_PROMPT only).
 # Other stages continue to use idea.idea regardless of this setting.
-STAGE1_TEXT_SOURCE: Literal["idea", "taxonomy_phrase"] = "taxonomy_phrase"    
+STAGE1_TEXT_SOURCE: Literal["idea"] = "idea"
     
 
 import warnings
@@ -1484,7 +1482,7 @@ class InductiveCodeGenerator:
     
     def __init__(
         self,
-        cluster_results: List[ClusterModel],
+        cluster_results: List[CategoryAssignedModel],
         starter_codes: List[Dict[str, str]],
         var_lab: str,
         verbose: bool = False,
@@ -1639,7 +1637,7 @@ class InductiveCodeGenerator:
         }
 
     def _get_context_specifier_params(self) -> Dict[str, str]:
-        """Extract context specifier params from extraction_metadata for prompt formatting.
+        """Build prompt-variable dict from extraction metadata + facet_data lookup.
 
         Returns a dict with all context specifier fields that can be merged into
         prompt params dicts. If extraction_metadata is not available, returns
@@ -1648,25 +1646,24 @@ class InductiveCodeGenerator:
         Used by: CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
                  CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
 
-        Axis contract fields (axis_must_be, axis_must_not_be) are auto-looked up
-        from AXIS_LABEL_CONTRACT based on taxonomy_axis.
+        Facet fields (facet_valid_labels, facet_invalid_labels) are looked up
+        from facet_data.py using meta.primary_facet as the key.
         """
+        from facet_data import get_facet
         if self._extraction_metadata:
-            taxonomy_axis = self._extraction_metadata.taxonomy_primary_axis or ""
-            axis_contract = AXIS_LABEL_CONTRACT.get(taxonomy_axis, {})
+            meta = self._extraction_metadata
+            facet = get_facet(meta.primary_facet) if meta.primary_facet else None
             return {
-                'lang': self._extraction_metadata.lang or "",
-                'domain': self._extraction_metadata.domain or "",
-                'topic': self._extraction_metadata.topic or "",
-                'perspective': self._extraction_metadata.perspective or "",
-                'entity': self._extraction_metadata.entity or "",
-                'intent': self._extraction_metadata.intent or "",
-                'taxonomy_axis': taxonomy_axis,
-                'taxonomy_axis_description': self._extraction_metadata.taxonomy_axis_description or "",
-                'taxonomy_actionable_type': self._extraction_metadata.taxonomy_actionable_type or "",
-                'theme_head': axis_contract.get('theme_head', ""),
-                'must_be': axis_contract.get('must_be', ""),
-                'must_not_be': axis_contract.get('must_not_be', ""),
+                'lang': meta.lang or "",
+                'domain': meta.domain or "",
+                'topic': meta.topic or "",
+                'perspective': meta.perspective or "",
+                'entity': meta.entity or "",
+                'intent': meta.intent or "",
+                'facet_name': facet.noun_phrase_descriptor if facet else "",
+                'facet_description': facet.dimension_description if facet else (getattr(meta, 'primary_facet_description', None) or ""),
+                'facet_valid_labels': ", ".join(facet.allowed_concepts) if facet else "",
+                'facet_invalid_labels': "; ".join(facet.exclusions) if facet else "",
             }
         return {
             'lang': "",
@@ -1675,12 +1672,10 @@ class InductiveCodeGenerator:
             'perspective': "",
             'entity': "",
             'intent': "",
-            'taxonomy_axis': "",
-            'taxonomy_axis_description': "",
-            'taxonomy_actionable_type': "",
-            'theme_head': "",
-            'must_be': "",
-            'must_not_be': "",
+            'facet_name': "",
+            'facet_description': "",
+            'facet_valid_labels': "",
+            'facet_invalid_labels': "",
         }
 
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
@@ -2244,7 +2239,7 @@ class InductiveCodeGenerator:
 
 
     def extract_cluster_data(self) -> Dict[Union[int, str], Dict[str, Any]]:
-        """Extract cluster data from ClusterModel objects using expanded_cluster when available"""
+        """Extract cluster data from CategoryAssignedModel objects using expanded_cluster when available"""
         clusters = {}
         
         for result in self.cluster_results:
@@ -2681,7 +2676,7 @@ class InductiveCodeGenerator:
         return redistributed_clusters
     
     async def _update_cluster_models_with_redistribution(self, multi_theme_mapping: Dict[int, List[str]], original_clusters: Dict, themes: Dict[str, ClusterSummaryOutput],theme_embeddings: Dict[str, np.ndarray]):
-        """Update ClusterModel objects with expanded_cluster and cluster_theme assignments based on similarity"""
+        """Update CategoryAssignedModel objects with expanded_cluster and cluster_theme assignments based on similarity"""
 
         # Create expanded_cluster → theme_label mapping
         expanded_cluster_to_theme = self._create_expanded_cluster_to_theme_mapping()
@@ -2710,7 +2705,7 @@ class InductiveCodeGenerator:
                     idea_to_expanded_cluster[respondent_id] = sub_id
             
             
-            # Update ClusterModel objects
+            # Update CategoryAssignedModel objects
             updated_ideas_count = 0
             #sample_idea_ids = []
             total_ideas_checked = 0
@@ -2928,17 +2923,10 @@ class InductiveCodeGenerator:
         return text
 
     def _get_stage1_idea_text(self, idea) -> str:
-        """Get idea text for Stage 1 based on STAGE1_TEXT_SOURCE config.
+        """Get idea text for Stage 1 with template prefix stripping.
 
-        Returns taxonomy_phrase if configured and available, otherwise falls back to idea.
-        When falling back to idea text, applies template prefix stripping.
         Only affects Stage 1 (theme extraction with CLUSTER_SUMMARY_PROMPT).
         """
-        if STAGE1_TEXT_SOURCE == "taxonomy_phrase":
-            taxonomy_phrase = getattr(idea, 'taxonomy_phrase', '') or ''
-            if taxonomy_phrase:
-                return taxonomy_phrase
-        # Fallback to idea text (with template prefix stripping)
         idea_text = getattr(idea, 'idea', '') or str(idea)
         return self._strip_template_prefix(idea_text)
 
@@ -4189,7 +4177,7 @@ class InductiveCodeGenerator:
                 stage_start = time.time()
                 self.verbose_reporter.step_start("Idea Redistribution for Multi-Theme Clusters")
                 
-                # Update ClusterModel objects with expanded_cluster assignments
+                # Update CategoryAssignedModel objects with expanded_cluster assignments
                 await self._update_cluster_models_with_redistribution(
                     multi_theme_mapping, 
                     original_clusters, 

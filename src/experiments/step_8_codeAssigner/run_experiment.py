@@ -190,24 +190,20 @@ def run_experiment(config: ExperimentConfig = None):
         diagnostic_signals=getattr(entry, 'diagnostic_signals', None),
     ) for entry in theme_enriched_codebook.codes]
 
-    # Remap codebook concept_types for split partitions.
-    # partition_remap maps new_split_name → original_partition_name.
-    # Ideas carry the original concept_type from step 3, so codebook entries
-    # from split partitions need to use the old name for routing to match.
+    # Pass partition_remap to CodeAssigner for two-level routing.
+    # partition_remap maps refined_name → original_name (from step 7 splits/renames).
+    # CodeAssigner builds a reverse map (original → [refined_1, refined_2, ...])
+    # to route ideas (which carry original concept_types from step 3) to the
+    # correct refined sub-partitions and their codes.
     partition_remap = getattr(theme_enriched_codebook, 'partition_remap', None) or {}
     if partition_remap:
-        remapped = 0
-        for entry in codebook:
-            if entry.concept_type in partition_remap:
-                entry.concept_type = partition_remap[entry.concept_type]
-                remapped += 1
-        if remapped:
-            verbose_reporter.stat_line(f"Partition remap: {remapped} codebook entries remapped for {len(partition_remap)} split partitions")
+        verbose_reporter.stat_line(f"Partition remap: {len(partition_remap)} refined partitions mapped to originals")
 
     # Run code assignment
     code_assigner = CodeAssigner(
         response_models=response_data,
         codebook=codebook,
+        partition_remap=partition_remap,
         var_lab=var_lab,
         code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
         model_config=model_config,
