@@ -1054,14 +1054,13 @@ def step_5_categories(
 
 
 def step_6_generate_codebook(
-    initial_cluster_results,
+    category_results,
     filename,
     var_name,
     var_lab,
     variable_key=None,              # Auto-generate if None
     cache_manager=None,             # Use global if None
     model_config=None,              # Use global if None
-    use_speculative_starter_codes=False,
     force_recalc=False,
     verbose=True,
     verbose_detailed=False,
@@ -1069,17 +1068,16 @@ def step_6_generate_codebook(
     cache_reasoning=True,
     streamlit_container=None        # Optional progress updates
 ):
-    """Step 6: Generate codebook from clusters using inductive coding
+    """Step 6: Generate codebook from MECE categories using inductive coding
 
     Args:
-        initial_cluster_results: List of ClusterModel instances from step 5
+        category_results: List of CategoryAssignedModel instances from step 5
         filename: SPSS filename for caching
         var_name: Variable name for metadata
         var_lab: Variable label for context
         variable_key: Cache key (auto-generated if None)
         cache_manager: CacheManager instance (uses global if None)
         model_config: ModelConfig instance for LLM calls (uses global if None)
-        use_speculative_starter_codes: Whether to use speculative starter codes
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         verbose_detailed: Enable detailed verbose output
@@ -1090,14 +1088,14 @@ def step_6_generate_codebook(
     Returns:
         CodeGeneratorReasoningResults: Complete reasoning results with codebook and tracking data
     """
-    from utils import speculativeStarterCodes, codeGenerator, clusterer, verboseReporter, promptPrinter
-    
+    from utils import codeGenerator, verboseReporter, promptPrinter
+
     step_name = "codebook_generation"
     variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
 
     # Optional Streamlit progress
     if streamlit_container:
-        streamlit_container.text("🔄 Generating codebook from clusters...")
+        streamlit_container.text("Generating codebook from categories...")
     verbose_reporter = verboseReporter.VerboseReporter(verbose)
     # Always capture prompts when verbose, but only print realtime if prompt_printer_enabled
     prompt_printer = promptPrinter.PromptPrinter(
@@ -1121,7 +1119,7 @@ def step_6_generate_codebook(
 
             # Optional Streamlit success message
             if streamlit_container:
-                streamlit_container.success(f"✅ Codebook generation completed (from cache): {num_codes} codes")
+                streamlit_container.success(f"Codebook generation completed (from cache): {num_codes} codes")
 
             print("[OK] Loaded codebook reasoning from cache")
         else:
@@ -1131,169 +1129,86 @@ def step_6_generate_codebook(
         verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
         start_time = time.time()
 
-        # Phase 1: Generate starter codes (optional)
-        if use_speculative_starter_codes:
-            # First, try to load LLM cluster labels from step 5 clustering_metadata cache
-            starter_codes = []
-            metadata_step_name = "clustering_metadata"
+        # Load MECE results cache from step 5 (for partition/category structure)
+        mece_results_cache = cache_manager.load_metadata_from_cache(
+            filename=filename,
+            step="mece_categories",
+            variable_key=variable_key,
+            model_cls=models.MECEResultsCache,
+        )
+        if mece_results_cache and verbose:
+            total_cats = mece_results_cache.total_categories
+            n_partitions = len(mece_results_cache.partition_results)
+            print(f"[INFO] Loaded MECE categories: {total_cats} categories across {n_partitions} partitions")
 
-            if cache_manager.is_cache_valid(filename, metadata_step_name, variable_key):
-                try:
-                    # Load ClusteringMetadataModel from cache
-                    metadata_results = cache_manager.load_from_cache(
-                        filename, metadata_step_name, variable_key,
-                        model_cls=models.ClusteringMetadataModel
-                    )
-                    if metadata_results and len(metadata_results) > 0:
-                        metadata = metadata_results[0]
-                        # Extract starter codes from cluster labels (matches run_experiment.py)
-                        for cluster_id, cluster_data in metadata.clusters.items():
-                            if cluster_data.label_theme:
-                                starter_codes.append({
-                                    'code': cluster_data.label_theme,
-                                    'definition': cluster_data.label_description or '',
-                                    'cluster_id': cluster_id
-                                })
-                        if starter_codes:
-                            print(f"Loaded {len(starter_codes)} starter codes from Clusterer LLM labels")
-                except Exception as e:
-                    print(f"Failed to load clustering_metadata: {e}")
-                    starter_codes = []
+        # Load extraction_metadata for theme extraction
+        extraction_metadata = cache_manager.load_metadata_from_cache(
+            filename=filename,
+            step="extracted_ideas",
+            variable_key=variable_key,
+            model_cls=models.ExtractionMetadata,
+        )
+        if extraction_metadata and verbose:
+            print(f"[INFO] Loaded extraction metadata for theme extraction")
 
-            # Fall back to speculative starter codes generator if no LLM labels
-            if not starter_codes:
-                starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
-                    var_lab=var_lab,
-                    verbose=verbose,
-                    prompt_printer=prompt_printer
-                )
-                starter_codes = starter_generator.generate()
-        else:
-            # Use empty starter codes when speculative generation is disabled
-            starter_codes = []
-            print("Speculative starter codes disabled - proceeding with empty starter codes")
+        # Inductive code generation (MECE category route — no starter codes)
+        generator = codeGenerator.InductiveCodeGenerator(
+            cluster_results=[],  # Empty — MECE route uses category_assigned_data
+            starter_codes=[],
+            var_lab=var_lab,
+            verbose=verbose,
+            verbose_detailed=verbose_detailed,
+            prompt_printer=prompt_printer,
+            extraction_metadata=extraction_metadata,
+            mece_results_cache=mece_results_cache,
+            category_assigned_data=category_results,
+            embedding_text_format="ladder",
+        )
+        results = generator.generate()
 
-        if not starter_codes and use_speculative_starter_codes:
-            print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
-            codebook_reasoning = None
-        else:
-            # Clean ideas before code generation (remove brackets, normalize whitespace)
-            if verbose:
-                print("\nCleaning ideas for code generation...")
+        if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
+            codebook_reasoning = results
+            final_codebook = results.codebook if results.codebook else []
 
-            cleaned_cluster_results = clusterer.clean_cluster_ideas(initial_cluster_results) #removal of meta data/context specifiers from idea text
+            # Display final codebook summary
+            if verbose and final_codebook:
+                verbose_reporter.empty_line()
+                print("[STATS] FINAL CODEBOOK SUMMARY")
+                verbose_reporter.stat_line(f"Total codes: {len(final_codebook)}")
 
-            # Load extraction_metadata for theme extraction
-            extraction_metadata = cache_manager.load_metadata_from_cache(
-                filename=filename,
-                step="extracted_ideas",
-                variable_key=variable_key,
-                model_cls=models.ExtractionMetadata
-            )
-            if extraction_metadata and verbose:
-                print(f"[INFO] Loaded extraction metadata for theme extraction")
-
-            # Phase 2: Inductive code generation
-            generator = codeGenerator.InductiveCodeGenerator(
-                cluster_results=cleaned_cluster_results,  # Use cleaned version
-                starter_codes=starter_codes,
-                var_lab=var_lab,
-                verbose=True,
-                verbose_detailed=verbose_detailed,
-                prompt_printer=prompt_printer,
-                extraction_metadata=extraction_metadata
-            )
-            results = generator.generate()
-
-            if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
-                # Use the codebook from results directly - it already has assignment_examples
-                final_codebook = results.codebook if results.codebook else []
-
-                # Display final codebook summary
-                if verbose and final_codebook:
-                    verbose_reporter.empty_line()
-                    print("[STATS] FINAL CODEBOOK SUMMARY")
-                    verbose_reporter.stat_line(f"Total codes: {len(final_codebook)}")
-                    total_clusters_mapped = sum(len(item['source_cluster_id'].split(',')) for item in final_codebook)
-                    verbose_reporter.stat_line(f"Total clusters mapped: {total_clusters_mapped}")
-
-                    # Show sample codes
-                    verbose_reporter.empty_line()
-                    print("[LIST] Complete codebook:")
-
-                idx = 1
-                # Display the extracted final codebook
-                for item in final_codebook:
-                    if verbose:
-                        definition = item['definition']
-                        if len(definition) > 100:
-                            definition = definition[:97] + "..."
-                        cluster_count = len(item['source_cluster_id'].split(','))
-                        cluster_info = f" (→ {cluster_count} clusters)" if cluster_count > 1 else ""
-                        print(f"  {idx}. {item['code']}{cluster_info}")
-                    idx += 1
-
-                # Validation: Ensure all clusters are mapped
-                if results and hasattr(results, 'cluster_results'):
-                    total_clusters = len(results.cluster_results)
-
-                    # Extract all cluster IDs from results
-                    all_cluster_ids = {str(cr.get('cluster_id', '')) for cr in results.cluster_results}
-
-                    # Extract mapped cluster IDs from final_codebook
-                    mapped_cluster_ids = set()
-                    for item in final_codebook:
-                        cluster_ids = item['source_cluster_id'].split(',')
-                        mapped_cluster_ids.update(cluster_ids)
-                    mapped_clusters = len(mapped_cluster_ids)
-
-                    # Calculate missing
-                    missing = all_cluster_ids - mapped_cluster_ids
-
-                    if verbose:
-                        verbose_reporter.empty_line()
-                        verbose_reporter.stat_line("[VALIDATION] Step 6 cluster mapping:")
-                        verbose_reporter.stat_line(f"  Total clusters processed: {total_clusters}")
-                        verbose_reporter.stat_line(f"  Clusters mapped to codes: {mapped_clusters}")
-
-                    if mapped_clusters != total_clusters:
-                        verbose_reporter.warning(f"  WARNING: {total_clusters - mapped_clusters} clusters not mapped to codes!")
-                        verbose_reporter.warning(f"  Missing cluster IDs: {sorted(missing)}")
-                    else:
-                        verbose_reporter.stat_line("  ✓ All clusters successfully mapped")
+                verbose_reporter.empty_line()
+                print("[LIST] Complete codebook:")
+                for idx, item in enumerate(final_codebook, 1):
+                    definition = item['definition']
+                    if len(definition) > 100:
+                        definition = definition[:97] + "..."
+                    source = item.get('source_cluster_id', '')
+                    cluster_count = len(source.split(',')) if source else 0
+                    cluster_info = f" ({cluster_count} categories)" if cluster_count > 1 else ""
+                    print(f"  {idx}. {item['code']}{cluster_info}")
 
         end_time = time.time()
         elapsed_time = end_time - start_time
 
-        # Pass reasoning results if available (either from cache or newly generated)
-        reasoning_for_display = None
-        if 'codebook_reasoning' in locals():
-            reasoning_for_display = codebook_reasoning
-        elif 'results' in locals():
-            reasoning_for_display = results
-
-        # Always cache codebook reasoning if available for consistent exports
-        if 'results' in locals() and results:
+        # Cache codebook reasoning if available
+        if codebook_reasoning:
             try:
-                codebook_reasoning = results
-                cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", variable_key, elapsed_time, var_lab=var_lab)
+                cache_manager.save_to_cache(
+                    [codebook_reasoning], filename, f"{step_name}_reasoning",
+                    variable_key, elapsed_time, var_lab=var_lab,
+                )
                 print("Cached codebook reasoning for export consistency")
             except Exception as e:
                 print(f"WARNING: Failed to cache reasoning results: {e}")
-                print("   Export will fall back to basic format without reasoning columns")
         else:
             print("WARNING: No reasoning results generated to cache")
-            print("   Export will fall back to basic format without reasoning columns")
 
         # Cache the enriched cluster results with expanded_cluster field
         cache_manager.save_to_cache(
-            generator.cluster_results,  # Use updated objects with expanded_cluster populated
-            filename,
-            "expanded_clusters",
-            variable_key,
-            elapsed_time,
-            var_lab=var_lab)
-
+            generator.cluster_results,
+            filename, "expanded_clusters", variable_key,
+            elapsed_time, var_lab=var_lab,
+        )
         print("Cached enriched clusters with expanded_cluster field")
 
         print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
@@ -1301,7 +1216,7 @@ def step_6_generate_codebook(
         # Optional Streamlit success message
         if streamlit_container:
             num_codes = len(codebook_reasoning.codebook) if codebook_reasoning and codebook_reasoning.codebook else 0
-            streamlit_container.success(f"✅ Codebook generation completed in {elapsed_time:.2f}s: {num_codes} codes")
+            streamlit_container.success(f"Codebook generation completed in {elapsed_time:.2f}s: {num_codes} codes")
 
     # Display sample prompts (first of each stage) when verbose - matches run_experiment.py
     if verbose and prompt_printer.prompts:
@@ -1904,7 +1819,6 @@ if __name__ == '__main__':
     else:
         FORCE_STEP = ""
     
-    USE_SPECULATIVE_STARTER_CODES = False  # Uses LLM labels from Clusterer (step 5) if available
     data_loader = dataLoader.DataLoader(verbose=False)
     var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
@@ -1929,7 +1843,6 @@ if __name__ == '__main__':
     print(f"Sample size: {sample_size if sample_size else 'All responses'}")
     print(f"Run until step: {RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 'All (0-9)'}")
     print(f"Force recalculate: {'ALL STEPS' if FORCE_RECALCULATE_ALL else (f'Step {RUN_UNTIL_STEP} ({FORCE_STEP})' if FORCE_STEP else 'None')}")
-    print(f"Speculative starter codes: {USE_SPECULATIVE_STARTER_CODES}")
     print(f"Verbose mode: {VERBOSE}")
     print(f"Prompt printer: {PROMPT_PRINTER}")
     print("=" * 80)
@@ -2049,8 +1962,7 @@ if __name__ == '__main__':
     """Generate codes"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_generation"
     codebook_reasoning = step_6_generate_codebook(
-        initial_cluster_results, filename, var_name, var_lab, variable_key, cache_manager, model_config,
-        use_speculative_starter_codes=USE_SPECULATIVE_STARTER_CODES,
+        category_results, filename, var_name, var_lab, variable_key, cache_manager, model_config,
         force_recalc=force_recalc, verbose=VERBOSE, verbose_detailed=False,
         prompt_printer_enabled=PROMPT_PRINTER, cache_reasoning=True
     )
