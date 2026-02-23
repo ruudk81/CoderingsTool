@@ -232,6 +232,13 @@ def run_experiment(config: ExperimentConfig = None):
     if config.verbose:
         code_assigner.print_assignment_stats()
 
+    # Print code frequency summary (theme-grouped, idea + respondent level)
+    try:
+        from .summary import print_code_summary
+    except ImportError:
+        from summary import print_code_summary
+    print_code_summary(config)
+
     # Calculate summary
     total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
     total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
