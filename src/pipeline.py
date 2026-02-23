@@ -52,7 +52,7 @@ id_column = "DLNMID"
 var_name = "Q10"
 sample_size = 50
 
-RUN_UNTIL_STEP = 4
+RUN_UNTIL_STEP = 5
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -827,7 +827,7 @@ def step_4_generate_embeddings(
     return embedded_text
 
 
-def step_5_cluster(
+def step_5_categories(
     embedded_text,
     filename,
     var_lab,
@@ -837,13 +837,16 @@ def step_5_cluster(
     verbose=True,
     streamlit_container=None        # Optional progress updates
 ):
-    """Step 5: Perform dimensionality reduction and clustering
+    """Step 5: Category Discovery & Assignment
 
-    Uses Clusterer with:
-    - Automatic algorithm selection (DVC + knee detection)
-    - Optuna-based HDBSCAN optimization
-    - c-TF-IDF keyword extraction
-    - LLM cluster label generation
+    Partitions ideas by concept_type, discovers MECE coding categories per
+    partition via MAP/REDUCE/MECE, then assigns each idea to exactly one
+    category.
+
+    Three stages:
+      1. Partition Discovery: group by concept_type, collect unique labels
+      2. Map-Reduce MECE: discover categories per partition (concurrent)
+      3. Category Assignment: assign ideas to categories (concurrent)
 
     Args:
         embedded_text: List of EmbeddingsModel instances from step 4
@@ -856,254 +859,198 @@ def step_5_cluster(
         streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
-        List[models.ClusterModel]: List of models with cluster assignments
+        List[models.CategoryAssignedModel]: Ideas with category assignments
     """
-    from utils.clusterer import Clusterer
-    from config_steps.config_clusterer import ClustererConfig
+    from config_steps.config_categories import CategoriesConfig, AssignmentConfig
+    from utils.partition_discoverer import PartitionDiscoverer
+    from utils.map_reduce_mece import MapReduceMECE
+    from utils.category_assignment import CategoryAssigner
     from utils.verboseReporter import VerboseReporter
 
-    step_name = "initial_clusters"
-    representations_step_name = "cluster_representations"
+    step_name = "category_assignment"
+    mece_step_name = "mece_categories"
     variable_key, cache_manager, _ = _resolve_step_defaults(variable_key, cache_manager)
 
-    # Optional Streamlit progress
     if streamlit_container:
-        streamlit_container.text("🔄 Clustering ideas (auto algorithm selection)...")
+        streamlit_container.text("Discovering MECE categories and assigning ideas...")
     verbose_reporter = VerboseReporter(verbose)
 
+    # ─── Cache check ────────────────────────────────────────────────────
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-        initial_cluster_results = cache_manager.load_from_cache(filename, step_name, variable_key, models.ClusterModel)
-        cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None])
-        num_initial_clusters = len(cluster_ids)
-        total_segments = sum(len(resp.response_ideas) for resp in initial_cluster_results if resp.response_ideas)
-        verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {
+        category_results = cache_manager.load_from_cache(
+            filename, step_name, variable_key, models.CategoryAssignedModel
+        )
+        total_ideas = sum(
+            len(resp.response_ideas)
+            for resp in category_results if resp.response_ideas
+        )
+        assigned_count = sum(
+            1 for resp in category_results if resp.response_ideas
+            for idea in resp.response_ideas
+            if idea.assigned_category
+        )
+        verbose_reporter.summary("CATEGORY ASSIGNMENT FROM CACHE", {
             "Input": f"{len(embedded_text)} responses",
-            "Total segments": f"{total_segments}",
-            "Initial clusters": f"{num_initial_clusters}"
+            "Total ideas": f"{total_ideas}",
+            "Assigned": f"{assigned_count}",
         })
-
-        # Optional Streamlit success message
         if streamlit_container:
-            streamlit_container.success(f"✅ Clustering completed (from cache): {num_initial_clusters} clusters")
-    else:
-        verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
-        start_time = time.time()
-
-        # Load extraction metadata for taxonomy context
-        extraction_metadata = None
-        try:
-            extraction_metadata = cache_manager.load_metadata_from_cache(
-                filename=filename,
-                step="extracted_ideas",
-                variable_key=variable_key,
-                model_cls=models.ExtractionMetadata
+            streamlit_container.success(
+                f"Category assignment completed (from cache): {assigned_count} ideas assigned"
             )
-            if extraction_metadata and verbose:
-                prefix_display = extraction_metadata.template_prefix[:40] + "..." if extraction_metadata.template_prefix and len(extraction_metadata.template_prefix) > 40 else extraction_metadata.template_prefix or "(none)"
-                print(f"   Loaded extraction metadata (template_prefix: '{prefix_display}')")
-        except Exception as e:
-            if verbose:
-                print(f"   Note: Could not load extraction metadata: {e}")
+        return category_results
 
-        # Configure Clusterer
-        config = ClustererConfig(
-            # Algorithm selection: auto (DVC + knee detection)
-            algorithm_mode="auto",
+    # ─── Fresh computation ──────────────────────────────────────────────
+    verbose_reporter.section_header("CATEGORY DISCOVERY & ASSIGNMENT")
+    start_time = time.time()
 
-            # DVC thresholds
-            dvc_high_threshold=0.45,
-            dvc_low_threshold=0.25,
-            force_agglomerative_below_dvc=0.25,
-
-            # Knee detection
-            knee_y_diff_threshold=0.6,
-
-            # Optuna optimization
-            use_optuna=True,
-            max_noise_rate=0.20,
-            min_clusters=3,
-
-            # Quality-triggered re-search
-            enable_research=True,
-            research_max_noise_rate=0.10,
-            research_min_validity=0.70,
-            research_cluster_deviation_threshold=0.15,
-
-            # Post-processing
-            enable_merging=True,
-            merge_centroid_threshold=0.95,
-            merge_pairwise_threshold=0.98,
-
-            # Noise reduction (BERTopic-style)
-            noise_reduction_strategy="embeddings",
-            noise_reduction_threshold=0.5,
-
-            # c-TF-IDF keyword extraction
-            generate_ctfidf=True,
-            ctfidf_top_k=10,
-            ctfidf_use_lemmatization=True,
-
-            # LLM cluster labels (for speculative codes)
-            generate_llm_labels=True,
-
-            # Output
-            verbose=verbose,
+    # Load extraction metadata
+    extraction_metadata = None
+    try:
+        extraction_metadata = cache_manager.load_metadata_from_cache(
+            filename=filename,
+            step="extracted_ideas",
+            variable_key=variable_key,
+            model_cls=models.ExtractionMetadata
         )
-
-        # Run clustering
-        clusterer = Clusterer(embedded_text, config=config, extraction_metadata=extraction_metadata)
-        clusterer.run()
-        initial_cluster_results = clusterer.to_cluster_model()
-
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-
-        # Cache cluster results (primary output)
-        cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
-
-        # Cache clustering metadata (Layer 2: keywords, labels, distributions, metrics)
-        clustering_metadata = clusterer.to_metadata_model()
-        cache_manager.save_to_cache(
-            [clustering_metadata],
-            filename,
-            "clustering_metadata",
-            variable_key,
-            elapsed_time,
-            var_lab=var_lab
-        )
-
-        # Cache cluster representations separately (for speculative codes in step 6)
-        keywords = clusterer.get_cluster_keywords() or {}
-        labels = clusterer.get_cluster_labels() or {}
-
-        if keywords or labels:
-            representations = []
-            all_cluster_ids = set(keywords.keys()) | set(labels.keys())
-
-            for cluster_id in sorted(all_cluster_ids):
-                # Build LLM label model if available
-                llm_label = None
-                if cluster_id in labels:
-                    label = labels[cluster_id]
-                    llm_label = models.ClusterLabelModel(
-                        cluster_id=label.cluster_id,
-                        theme=label.theme,
-                        description=label.description,
-                        key_concepts=label.key_concepts,
-                        n_ideas=label.n_ideas
-                    )
-
-                rep = models.ClusterRepresentationModel(
-                    cluster_id=cluster_id,
-                    keywords=keywords.get(cluster_id, []),
-                    llm_label=llm_label
-                )
-                representations.append(rep)
-
-            # Get algorithm info for metadata
-            algorithm_rec = clusterer.get_algorithm_recommendation()
-            metrics = clusterer.get_metrics()
-
-            representations_model = models.ClusterRepresentationsModel(
-                representations=representations,
-                generation_metadata={
-                    "algorithm": algorithm_rec.recommended_algorithm if algorithm_rec else "unknown",
-                    "dvc_value": algorithm_rec.dvc_value if algorithm_rec else None,
-                    "n_clusters": metrics.n_clusters if metrics else len(all_cluster_ids),
-                    "noise_rate": metrics.noise_rate if metrics else None,
-                    "mean_coherence": metrics.mean_coherence if metrics else None,
-                }
-            )
-
-            # Cache representations (for step 6 speculative codes)
-            cache_manager.save_to_cache(
-                representations_model.model_dump(),
-                filename,
-                representations_step_name,
-                variable_key,
-                elapsed_time,
-                var_lab=var_lab
-            )
-
-        print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
-
-        # Print detailed summary (matching experiment version output)
+        if extraction_metadata and verbose:
+            print(f"   Loaded extraction metadata "
+                  f"(primary_facet: {extraction_metadata.primary_facet})")
+    except Exception as e:
         if verbose:
-            print("\n" + "=" * 70)
-            print("CLUSTERING SUMMARY")
-            print("=" * 70)
+            print(f"   Note: Could not load extraction metadata: {e}")
 
-            # Algorithm recommendation details
-            if algorithm_rec:
-                print(f"\nAlgorithm Recommendation:")
-                print(f"  Recommended: {algorithm_rec.recommended_algorithm} ({algorithm_rec.confidence} confidence)")
-                print(f"  DVC: {algorithm_rec.dvc_value:.3f} → {algorithm_rec.dvc_recommendation}")
-                print(f"  Knee: y_diff={algorithm_rec.y_difference:.2f}, sharp={algorithm_rec.has_sharp_knee}")
-                if algorithm_rec.is_forced:
-                    print(f"  FORCED: Algorithm selection was forced by hard DVC rule")
-                print(f"  Reasoning: {algorithm_rec.reasoning}")
+    # Configuration
+    categories_config = CategoriesConfig()
+    assignment_config = AssignmentConfig()
 
-            # Clustering metrics
-            if metrics:
-                print(f"\nClustering Metrics:")
-                print(f"  Clusters: {metrics.n_clusters}")
-                print(f"  Noise: {metrics.noise_count} ({metrics.noise_rate:.1%})")
-                print(f"  Coherence: {metrics.mean_coherence:.3f} ({metrics.coherence_breakdown})")
-                if metrics.dbcv is not None:
-                    print(f"  DBCV: {metrics.dbcv:.3f}")
-                if metrics.silhouette is not None and not np.isnan(metrics.silhouette):
-                    print(f"  Silhouette: {metrics.silhouette:.3f}")
-                if metrics.mean_persistence is not None:
-                    print(f"  Persistence: mean={metrics.mean_persistence:.3f}, weighted={metrics.weighted_persistence:.3f}")
-                if metrics.mean_probability is not None:
-                    print(f"  Probability: mean={metrics.mean_probability:.3f}, low_ratio={metrics.low_prob_ratio:.1%}")
-                if metrics.mean_outlier_score is not None:
-                    print(f"  Outliers: mean_score={metrics.mean_outlier_score:.3f}, high_ratio={metrics.high_outlier_ratio:.1%}")
-                print(f"  Cluster sizes: min={metrics.min_cluster_size}, median={metrics.median_cluster_size}, max={metrics.max_cluster_size}")
+    # ═══ Stage 1: Partition Discovery ═══════════════════════════════════
+    discoverer = PartitionDiscoverer(categories_config, extraction_metadata)
+    partition_set, label_mappings, precluster_results = discoverer.discover(
+        embedded_text
+    )
+    grouping_instructions = discoverer.get_grouping_instructions()
 
-            # Template prefix
-            template_prefix = clusterer._template_prefix
-            if template_prefix:
-                prefix_display = template_prefix[:60] + "..." if len(template_prefix) > 60 else template_prefix
-                print(f"\nTemplate prefix: '{prefix_display}'")
-            else:
-                print(f"\nTemplate prefix: (none)")
+    if verbose:
+        print(f"\n   Partitions discovered: {len(label_mappings)}")
+        for name, mapping in label_mappings.items():
+            print(f"     {name}: {mapping.label_count} unique labels")
 
-            # c-TF-IDF Keywords summary
-            if keywords:
-                print(f"\nc-TF-IDF Keywords ({len(keywords)} clusters):")
-                for cluster_id in sorted(keywords.keys()):
-                    kw_list = keywords[cluster_id]
-                    kw_str = ", ".join([kw for kw, _ in kw_list[:5]])
-                    print(f"  Cluster {cluster_id}: {kw_str}")
+    # ═══ Stage 2: Map-Reduce MECE ══════════════════════════════════════
+    # Build context from extraction metadata
+    survey_question = var_lab or ""
+    language = "Dutch"
+    dataset_context = None
+    primary_facet = None
+    facet_description = None
 
-            # MMR and TF-IDF Keywords (additional methods from experimental version)
-            all_keywords = clusterer.get_all_cluster_keywords()
-            if all_keywords:
-                for method_name in ["mmr", "tfidf"]:
-                    method_keywords = all_keywords.get(method_name)
-                    if method_keywords:
-                        method_label = {"mmr": "MMR", "tfidf": "TF-IDF"}.get(method_name, method_name)
-                        print(f"\n{method_label} Keywords ({len(method_keywords)} clusters):")
-                        for cluster_id in sorted(method_keywords.keys()):
-                            kw_list = method_keywords[cluster_id]
-                            kw_str = ", ".join([kw for kw, _ in kw_list[:5]])
-                            print(f"  Cluster {cluster_id}: {kw_str}")
+    if extraction_metadata:
+        meta = extraction_metadata
+        if getattr(meta, 'var_lab', ''):
+            survey_question = meta.var_lab
+        language = getattr(meta, 'lang', 'Dutch') or 'Dutch'
+        dataset_context = {}
+        for f in ('domain', 'entity', 'topic', 'perspective', 'intent'):
+            val = getattr(meta, f, None)
+            if val:
+                dataset_context[f] = val
+        primary_facet = getattr(meta, 'primary_facet', None)
+        facet_description = getattr(meta, 'primary_facet_description', None)
 
-            # Print all clusters with samples (key feature from experiment version)
-            clusterer.print_all_clusters(n_samples=10)
+    processor = MapReduceMECE(categories_config)
+    mece_results = processor.process_all_partitions(
+        label_mappings=label_mappings,
+        partition_set=partition_set,
+        survey_question=survey_question,
+        language=language,
+        dataset_context=dataset_context,
+        primary_facet=primary_facet,
+        facet_description=facet_description,
+        grouping_instructions=grouping_instructions,
+        precluster_results=precluster_results,
+        verbose=verbose,
+    )
 
-            # Cache confirmation (at end for visibility)
-            print(f"\n{'='*70}")
-            print(f"CACHED: {len(initial_cluster_results)} results to 'initial_clusters' (variable_key: {variable_key})")
-            print(f"CACHED: {len(clustering_metadata.clusters)} clusters to 'clustering_metadata'")
+    # ═══ Cache MECE results (metadata) ═════════════════════════════════
+    pydantic_results = {}
+    for name, result in mece_results.items():
+        pydantic_results[name] = models.PartitionMECEResultModel(
+            partition_name=result.partition_name,
+            n_labels=result.n_labels,
+            n_batches=result.n_batches,
+            reduce_skipped=result.reduce_skipped,
+            categories=result.categories,
+            mece_verifications=result.mece_verifications,
+        )
 
-        # Optional Streamlit success message
-        if streamlit_container:
-            num_clusters = len(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None]))
-            streamlit_container.success(f"✅ Clustering completed in {elapsed_time:.2f}s: {num_clusters} clusters")
+    mece_cache = models.MECEResultsCache(
+        partition_set=partition_set,
+        partition_results=pydantic_results,
+        label_counts={
+            name: m.label_count for name, m in label_mappings.items()
+        },
+        processing_mode=categories_config.processing_mode,
+        label_source=categories_config.label_source,
+        total_categories=sum(
+            len(r.categories) for r in mece_results.values()
+        ),
+    )
+    cache_manager.save_metadata_to_cache(
+        metadata=mece_cache,
+        filename=filename,
+        step=mece_step_name,
+        variable_key=variable_key,
+    )
+    if verbose:
+        print(f"\n   MECE results cached "
+              f"({mece_cache.total_categories} categories across "
+              f"{len(pydantic_results)} partitions)")
 
-    return initial_cluster_results
+    # ═══ Stage 3: Category Assignment ══════════════════════════════════
+    assigner = CategoryAssigner(
+        config=assignment_config,
+        embeddings_models=embedded_text,
+        mece_results=pydantic_results,
+        partition_set=partition_set,
+        extraction_metadata=extraction_metadata,
+    )
+    category_results = assigner.assign_all()
+
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+
+    # ═══ Cache assignment results (primary output) ═════════════════════
+    cache_manager.save_to_cache(
+        category_results, filename, step_name, variable_key,
+        elapsed_time, var_lab=var_lab
+    )
+
+    # ═══ Summary ═══════════════════════════════════════════════════════
+    total_ideas = sum(
+        len(resp.response_ideas)
+        for resp in category_results if resp.response_ideas
+    )
+    assigned_count = sum(
+        1 for resp in category_results if resp.response_ideas
+        for idea in resp.response_ideas
+        if idea.assigned_category
+    )
+
+    if verbose:
+        print(f"\n   Category discovery & assignment completed in "
+              f"{elapsed_time:.2f} seconds.")
+        print(f"   Total ideas: {total_ideas}")
+        print(f"   Assigned: {assigned_count}")
+        print(f"   Partitions: {len(mece_results)}")
+        print(f"   MECE categories: {mece_cache.total_categories}")
+
+    if streamlit_container:
+        streamlit_container.success(
+            f"Category assignment completed in {elapsed_time:.2f}s: "
+            f"{assigned_count}/{total_ideas} ideas assigned"
+        )
+
+    return category_results
 
 
 def step_6_generate_codebook(
@@ -2086,16 +2033,15 @@ if __name__ == '__main__':
     )
     check_execution_stop(4)
 
-    # === STEP 5 ==== 
-    """Reduce data/get clusters"""
-    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "initial_clusters"
-    initial_cluster_results = step_5_cluster(
-        embedded_text, filename,
+    # === STEP 5 ====
+    """Category Discovery & Assignment"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "category_assignment"
+    category_results = step_5_categories(
+        embedded_text, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
         force_recalc=force_recalc,
         verbose=VERBOSE,
-        var_lab = var_lab
     )
     check_execution_stop(5)
 
