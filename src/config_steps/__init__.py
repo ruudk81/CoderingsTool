@@ -8,3 +8,4 @@ from config_steps.config_categories import *
 from config_steps.config_embedder import *
 from config_steps.config_ideaExtractor import *
 from config_steps.config_codeAssigner import *
+from config_steps.config_codeGenerator import *

@@ -24,7 +24,8 @@ sys.path.append(str(project_root / "src"))
 sys.path.append(str(project_root / "src" / "utils"))
 
 import models
-from config import CacheConfig, ModelConfig, CodeDesignerConfig, CodeAssignmentConfig
+from config import CacheConfig, ModelConfig, CodeAssignmentConfig
+from config_steps.config_codeGenerator import CodeDesignerConfig
 from config_steps.config_preprocess import SpellCheckConfig
 from config_steps.config_qualityFilter import QualityFilterConfig
 from config_steps.config_ideaExtractor import SegmentationConfig

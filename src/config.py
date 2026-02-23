@@ -492,67 +492,7 @@ class CacheConfig:
 
 # QualityFilterConfig moved to config_steps/config_qualityFilter.py
 
-# =============================================================================
-# CODEDESIGNER CONFIGURATION
-# =============================================================================
-
-@dataclass
-class CodeDesignerConfig:
-    """Configuration for the new CodeGenerator system"""
-    
-    # Model configuration
-    embedding_model: str = DEFAULT_EMBEDDING_MODEL
-    model: str = DEFAULT_MODEL
-    temperature: float = 0.1
-    max_tokens: int = 4000
-    seed: Optional[int] = 42
-    
-    # Theme-based similarity batching
-    similarity_threshold: float = 0.7  # Cosine similarity threshold for dissimilarity batching
-    max_sub_batch_size: int = 10  # Maximum clusters per sub-batch
-    
-    # Rate limiting and performance
-    batch_size: int = 20  # Base batch size for API calls
-    max_concurrent_requests: int = 15  # Maximum concurrent API requests
-    async_concurrency_limit: int = 16  # Async concurrency limit for codeGenerator
-    enable_aggressive_parallelism: bool = True  # Enable concurrent processing within batches
-    
-    # Processing strategy
-    enable_sequential_batch_processing: bool = True  # Process dissimilarity batches sequentially
-    enable_sub_batch_processing: bool = True  # Split large batches into sub-batches
-    
-    # Monitoring and reporting
-    enable_similarity_distribution_analysis: bool = True  # Report similarity statistics
-    enable_batch_analytics: bool = True  # Report batch formation statistics
-    enable_performance_monitoring: bool = True  # Monitor processing performance
-    
-    # Idea sampling settings
-    max_ideas_per_cluster: int = 30  # Maximum ideas to include per cluster for LLM processing
-
-    # SharedCodebook settings
-    enable_version_tracking: bool = True  # Track codebook versions
-    enable_embedding_cache: bool = True  # Cache code embeddings per version
-    max_cached_versions: int = 5  # Maximum cached codebook versions
-
-    # Modification leak recovery settings
-    enable_concurrent_leak_recovery: bool = True  # Use concurrent batch processing for modification leak recovery
-    modification_leak_batch_size: int = 10  # Batch size for concurrent leak recovery
-
-    # Theme extraction probability band settings
-    probability_threshold: float = 0.8  # Only include ideas with cluster_probability < this value
-    total_sample_budget: int = 30  # Total ideas to sample across all probability bands
-    probability_bands: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-        'inner':  (0.6, 0.8),   # High-ish probability: 0.6 <= prob < 0.8
-        'border': (0.4, 0.6),   # Medium probability: 0.4 <= prob < 0.6
-        'fringe': (0.0, 0.4),   # Low probability: prob < 0.4
-    })
-    band_labels: Dict[str, str] = field(default_factory=lambda: {
-        'inner':  'inner members',
-        'border': 'border members',
-        'fringe': 'fringe members',
-    })
-
-
+# CodeDesignerConfig moved to config_steps/config_codeGenerator.py
 
 # =============================================================================
 # CODE ASSIGNMENT CONFIGURATION
@@ -603,7 +543,6 @@ DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
 
 # Step-specific configurations (SpellCheckConfig → config_preprocess.py, QualityFilterConfig → config_qualityFilter.py)
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
-DEFAULT_CODEDESIGNER_CONFIG = CodeDesignerConfig()
 DEFAULT_EXPORT_CLEANUP_CONFIG = ExportCleanupConfig()
 
 
