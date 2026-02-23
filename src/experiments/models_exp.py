@@ -25,7 +25,6 @@ from models import (
     ResponseModel,
     PreprocessedModel,
     QualityFilteredModel,
-    QualityFilterLLMResponse,
 
     # Codebook models (unchanged)
     CodebookEntry,
@@ -51,6 +50,13 @@ from models import (
     LLMContextModel,
     ClusteringMetadataModel,
 )
+
+
+class CodebookExp(Codebook):
+    """Extended Codebook with concept_type for partition-based code assignment."""
+    concept_type: Optional[str] = None
+    boundary_test: Optional[str] = None
+    diagnostic_signals: Optional[List[str]] = None
 
 
 # === CLEANED METADATA MODEL ========================================================================
@@ -205,3 +211,30 @@ class CategoryAssignedModel(EmbeddingsModel):
     """Response-level model with category-assigned ideas."""
     response_ideas: Optional[List[CategoryAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None
+
+
+# === STEP 7: MECE-ENRICHED CODEBOOK MODELS ========================================================
+
+class ThemeEnrichedCodebookEntryExp(ThemeEnrichedCodebookEntry):
+    """Extended codebook entry with MECE-verified assignment instructions.
+
+    Replaces step 6's stale inclusion/exclusion examples with fresh MECE-verified
+    versions and adds boundary_test + diagnostic_signals for downstream code assignment.
+    """
+    boundary_test: Optional[str] = None               # Yes/no question for independent assignment
+    diagnostic_signals: Optional[List[str]] = None     # 3-5 trigger words/phrases
+    concept_type: Optional[str] = None                 # Source concept_type from step 3
+    mece_verified: bool = False                        # Whether MECE enforcement was applied
+
+
+class ThemeEnrichedCodebookModelExp(CodebookModel):
+    """Extended codebook model with MECE-enriched entries."""
+    codes: List[ThemeEnrichedCodebookEntryExp]
+    themes_summary: Optional[List[Dict[str, Any]]] = None
+    code_to_theme_mapping: Optional[Dict[str, str]] = None
+    theme_methodology: Optional[str] = None
+    source_variable: Optional[str] = None
+    mece_partition_results: Optional[Dict[str, Any]] = None   # Raw MECE results per partition
+    concept_type_mapping: Optional[Dict[str, str]] = None     # source_cluster -> concept_type
+    cross_partition_results: Optional[Dict[str, Any]] = None  # Cross-partition judge results
+    partition_remap: Optional[Dict[str, str]] = None          # old_partition -> new_partition (for split partitions)
