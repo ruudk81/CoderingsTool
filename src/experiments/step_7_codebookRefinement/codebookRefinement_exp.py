@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import numpy as np
+from collections import Counter
 from datetime import datetime
 from typing import List, Optional, Any, Dict, Tuple
 from dataclasses import dataclass
@@ -17,7 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field
 OPENAI_EMBEDDING_DIMENSION = 1536     # OpenAI embedding vector size
 
 from config import ModelConfig, DEFAULT_MODEL_CONFIG, DEFAULT_LANGUAGE, OPENAI_API_KEY, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER
-from utils.llm import create_client, llm_create_sync
+import asyncio
+import nest_asyncio
+nest_asyncio.apply()
+
+from aiolimiter import AsyncLimiter
+from utils.llm import create_client, llm_create_sync, llm_create_async
 
 
 # =============================================================================
@@ -45,12 +51,25 @@ class LLMRefinementResponse(BaseModel):
     refined_codebook: List[LLMThemeItem] = Field(..., description="Refined codebook with themes and codes")
     model_config = ConfigDict(arbitrary_types_allowed=True)
 try:
-    from .prompts_exp import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
+    from .prompts_exp import (
+        CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT,
+        CODEBOOK_MECE_ENFORCEMENT_PROMPT, MECEPartitionResult,
+        PARTITION_REFINEMENT_PROMPT, CROSS_PARTITION_JUDGE_PROMPT,
+        PartitionRefinementResult, CrossPartitionJudgeResult,
+        PARTITION_REVIEW_PROMPT, PartitionReviewResult,
+    )
 except ImportError:
-    from prompts_exp import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
+    from prompts_exp import (
+        CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT,
+        CODEBOOK_MECE_ENFORCEMENT_PROMPT, MECEPartitionResult,
+        PARTITION_REFINEMENT_PROMPT, CROSS_PARTITION_JUDGE_PROMPT,
+        PartitionRefinementResult, CrossPartitionJudgeResult,
+        PARTITION_REVIEW_PROMPT, PartitionReviewResult,
+    )
 from experiments.models_exp import (
     RefinedCodebookModel, CodeRefinementResults, RefinedSubcode, RefinedCodebookCategory,
-    CodeTransformation, BatchTransformationRecord, RefinementLineage
+    CodeTransformation, BatchTransformationRecord, RefinementLineage,
+    ThemeEnrichedCodebookEntryExp, ThemeEnrichedCodebookModelExp,
 )
 from utils.codeGenerator import CodeGeneratorReasoningResults
 from utils.verboseReporter import VerboseReporter
@@ -1188,6 +1207,842 @@ class CodebookRefinementProcessor:
             lineage=lineage
         )
 
+    # =========================================================================
+    # MECE ENFORCEMENT (post-refinement)
+    # =========================================================================
+
+    @staticmethod
+    def _base_cluster_id(cluster_id: str) -> str:
+        """Extract the base cluster ID from a sub-cluster ID.
+
+        Step 6 generates sub-cluster IDs like "9-3", "17-2" from base clusters
+        "9", "17". This method strips the sub-cluster suffix.
+        """
+        return cluster_id.split('-')[0] if '-' in cluster_id else cluster_id
+
+    def _extract_concept_type_mapping(self, reasoning_results: CodeGeneratorReasoningResults) -> Dict[str, str]:
+        """Map source_cluster_id -> concept_type (partition_name) from cluster_data.
+
+        Reads cluster_data -> ideas -> partition_name to determine the concept_type
+        for each source cluster. Uses majority vote for robustness.
+
+        Handles sub-cluster IDs (e.g., "9-3") by looking up the base cluster ID ("9")
+        in cluster_data, then mapping both the base and sub-cluster IDs.
+
+        Returns:
+            Dict mapping source_cluster_id to concept_type name.
+            Includes both base cluster IDs ("9") and sub-cluster IDs ("9-3").
+            Empty dict if concept_type data is not available (graceful fallback).
+        """
+        # First pass: build base_cluster_id -> concept_type from cluster_data
+        base_cluster_to_concept_type = {}
+
+        if not hasattr(reasoning_results, 'cluster_data') or not reasoning_results.cluster_data:
+            return {}
+
+        for cluster_id, data in reasoning_results.cluster_data.items():
+            ideas = data.get('ideas', [])
+            if not ideas:
+                continue
+
+            # Extract partition_name (= concept_type) from ideas
+            concept_types = []
+            for idea in ideas:
+                partition_name = None
+                if isinstance(idea, dict):
+                    partition_name = idea.get('partition_name') or idea.get('concept_type')
+                elif hasattr(idea, 'partition_name') and idea.partition_name:
+                    partition_name = idea.partition_name
+                elif hasattr(idea, 'concept_type') and idea.concept_type:
+                    partition_name = idea.concept_type
+
+                if partition_name:
+                    concept_types.append(partition_name)
+
+            if concept_types:
+                base_cluster_to_concept_type[str(cluster_id)] = Counter(concept_types).most_common(1)[0][0]
+
+        if not base_cluster_to_concept_type:
+            return {}
+
+        # Second pass: also map sub-cluster IDs from codebook entries
+        cluster_to_concept_type = dict(base_cluster_to_concept_type)
+
+        if hasattr(reasoning_results, 'codebook') and reasoning_results.codebook:
+            for entry in reasoning_results.codebook:
+                src = entry.get('source_cluster_id', '')
+                if not src:
+                    continue
+                for cid in src.split(','):
+                    cid = cid.strip()
+                    if cid and cid not in cluster_to_concept_type:
+                        base = self._base_cluster_id(cid)
+                        if base in base_cluster_to_concept_type:
+                            cluster_to_concept_type[cid] = base_cluster_to_concept_type[base]
+
+        return cluster_to_concept_type
+
+    def _group_codes_by_concept_type(
+        self,
+        refined_model: RefinedCodebookModel,
+        concept_type_map: Dict[str, str]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Group refined codes by their source concept_type.
+
+        Args:
+            refined_model: The refined codebook with themes and subcodes.
+            concept_type_map: Mapping from source_cluster_id to concept_type.
+
+        Returns:
+            Dict mapping concept_type name to list of code dicts
+            (each with 'code', 'description', 'theme', 'source_cluster').
+            Codes with unknown concept_type go into "Other".
+        """
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+
+        for theme in refined_model.refined_codebook:
+            for subcode in theme.subcodes:
+                # Determine concept_type from source_cluster
+                concept_type = "Other"
+                if subcode.source_cluster:
+                    # Take first cluster for merged codes
+                    first_cluster = subcode.source_cluster.split(',')[0].strip()
+                    concept_type = concept_type_map.get(first_cluster, "Other")
+
+                code_entry = {
+                    'code': subcode.code,
+                    'description': subcode.description,
+                    'theme': theme.category,
+                    'source_cluster': subcode.source_cluster or '',
+                    'category': subcode.category or '',
+                }
+
+                if concept_type not in groups:
+                    groups[concept_type] = []
+                groups[concept_type].append(code_entry)
+
+        return groups
+
+    def _format_codes_for_mece(self, codes: List[Dict[str, Any]]) -> str:
+        """Format codes for the MECE enforcement prompt."""
+        lines = []
+        for code in codes:
+            lines.append(f"- Code: {code['code']}")
+            lines.append(f"  Description: {code['description']}")
+            lines.append(f"  Theme: {code['theme']}")
+            if code.get('category'):
+                lines.append(f"  Category: {code['category']}")
+            lines.append("")
+        return '\n'.join(lines)
+
+    def enforce_mece(
+        self,
+        survey_question: str,
+        refined_model: RefinedCodebookModel,
+        reasoning_results: CodeGeneratorReasoningResults
+    ) -> Dict[str, MECEPartitionResult]:
+        """Run MECE enforcement per concept_type partition.
+
+        1. Extracts concept_type mapping from step 6 data
+        2. Groups refined codes by concept_type
+        3. Calls LLM per partition with CODEBOOK_MECE_ENFORCEMENT_PROMPT
+        4. Falls back to single global partition if no concept_types available
+
+        Args:
+            survey_question: The survey question text
+            refined_model: The refined codebook from the refinement step
+            reasoning_results: Step 6 results (for concept_type extraction)
+
+        Returns:
+            Dict mapping partition_name to MECEPartitionResult.
+            Also stores concept_type_map on self for downstream use.
+        """
+        # Extract concept_type mapping
+        self.concept_type_map = self._extract_concept_type_mapping(reasoning_results)
+
+        if self.concept_type_map:
+            self.reporter.stat_line(f"Concept types found: {len(set(self.concept_type_map.values()))} types across {len(self.concept_type_map)} clusters")
+            for ct in sorted(set(self.concept_type_map.values())):
+                count = sum(1 for v in self.concept_type_map.values() if v == ct)
+                self.reporter.stat_line(f"  - {ct}: {count} clusters")
+        else:
+            self.reporter.stat_line("No concept_type data available — using global MECE enforcement")
+
+        # Group codes by concept_type
+        code_groups = self._group_codes_by_concept_type(refined_model, self.concept_type_map)
+
+        if not code_groups:
+            # Fallback: all codes in one group
+            all_codes = []
+            for theme in refined_model.refined_codebook:
+                for subcode in theme.subcodes:
+                    all_codes.append({
+                        'code': subcode.code,
+                        'description': subcode.description,
+                        'theme': theme.category,
+                        'source_cluster': subcode.source_cluster or '',
+                        'category': subcode.category or '',
+                    })
+            code_groups = {"All codes": all_codes}
+
+        self.reporter.stat_line(f"MECE enforcement: {len(code_groups)} partitions")
+
+        # Run MECE enforcement per partition
+        all_partition_names = sorted(code_groups.keys())
+        mece_results: Dict[str, MECEPartitionResult] = {}
+
+        for partition_name in all_partition_names:
+            codes = code_groups[partition_name]
+            self.reporter.stat_line(f"\n  Partition '{partition_name}': {len(codes)} codes")
+
+            # Build peer partitions list
+            peer_partitions = [p for p in all_partition_names if p != partition_name]
+            peer_list = '\n'.join([f"- {p}" for p in peer_partitions]) if peer_partitions else "None"
+
+            # Build partition description
+            partition_desc = ""
+            if self.concept_type_map:
+                partition_desc = f"Concept type: {partition_name}"
+
+            # Format codes
+            codes_list = self._format_codes_for_mece(codes)
+
+            # Build prompt
+            prompt = CODEBOOK_MECE_ENFORCEMENT_PROMPT.format(
+                survey_question=survey_question,
+                language=self.config.language,
+                partition_name=partition_name,
+                partition_description=partition_desc,
+                peer_partitions_list=peer_list,
+                n_codes=len(codes),
+                codes_list=codes_list,
+            )
+
+            # Capture prompt if enabled
+            if self.prompt_printer:
+                self.prompt_printer.capture_prompt(
+                    step_name=f"step_7_mece_{partition_name}",
+                    utility_name="codebookRefinement_MECE",
+                    prompt_content=prompt,
+                    prompt_type="mece_enforcement",
+                    metadata={
+                        'partition_name': partition_name,
+                        'code_count': len(codes),
+                        'model': self.model_config.codebook_refinement_model,
+                    }
+                )
+
+            try:
+                model_name = self.model_config.codebook_refinement_model
+                model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
+                temperature = self.model_config.get_temperature_for_stage('refinement') if model_type == "chat" else 0.0
+
+                response = llm_create_sync(
+                    client=self.client,
+                    model=model_name,
+                    prompt=prompt,
+                    response_model=MECEPartitionResult,
+                    temperature=temperature,
+                    max_tokens=self.model_config.default_max_tokens,
+                    track_usage=True,
+                )
+
+                mece_results[partition_name] = response
+
+                # Report results
+                self.reporter.stat_line(f"    -> {len(response.codes)} codes processed, {len(response.verifications)} pair verifications")
+                if response.mece_issues:
+                    for issue in response.mece_issues:
+                        self.reporter.warning(f"    MECE issue: {issue}")
+
+            except Exception as e:
+                self.reporter.error(f"    MECE enforcement failed for '{partition_name}': {str(e)}")
+                logger.error(f"MECE enforcement error for {partition_name}: {str(e)}", exc_info=True)
+
+        return mece_results
+
+    # =========================================================================
+    # PRE-MECE PARTITION REVIEW (evaluates partition coherence)
+    # =========================================================================
+
+    def _format_codes_for_partition_review(self, codes: List[dict]) -> str:
+        """Format codes for the partition review prompt."""
+        lines = []
+        for code in codes:
+            lines.append(f"Code ID: {code['id']}")
+            lines.append(f"  Label: {code['code']}")
+            lines.append(f"  Definition: {code.get('definition', '')}")
+            lines.append("")
+        return '\n'.join(lines)
+
+    async def _review_partition_async(
+        self,
+        partition_name: str,
+        codes: List[dict],
+        peer_partitions: List[str],
+        survey_question: str,
+        async_client: Any,
+        semaphore: asyncio.Semaphore,
+        rate_limiter: AsyncLimiter,
+    ) -> PartitionReviewResult:
+        """Review one partition for conceptual coherence (async)."""
+
+        codes_list = self._format_codes_for_partition_review(codes)
+        peer_list = '\n'.join(f"- {p}" for p in peer_partitions) if peer_partitions else "None"
+
+        prompt = PARTITION_REVIEW_PROMPT.format(
+            survey_question=survey_question,
+            language=self.config.language,
+            partition_name=partition_name,
+            n_codes=len(codes),
+            codes_list=codes_list,
+            peer_partitions_list=peer_list,
+        )
+
+        if self.prompt_printer:
+            self.prompt_printer.capture_prompt(
+                step_name=f"step_7_partition_review_{partition_name}",
+                utility_name="codebookRefinement_partition_review",
+                prompt_content=prompt,
+                prompt_type="partition_review",
+                metadata={
+                    'partition_name': partition_name,
+                    'code_count': len(codes),
+                    'model': self.model_config.codebook_refinement_model,
+                }
+            )
+
+        model_name = self.model_config.codebook_refinement_model
+        model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
+        temperature = 0.0  # Review should be deterministic
+
+        async with semaphore:
+            async with rate_limiter:
+                response = await llm_create_async(
+                    client=async_client,
+                    model=model_name,
+                    prompt=prompt,
+                    response_model=PartitionReviewResult,
+                    temperature=temperature,
+                    max_tokens=self.model_config.default_max_tokens,
+                )
+
+        return response
+
+    async def _review_all_partitions(
+        self,
+        survey_question: str,
+        code_groups: Dict[str, List[dict]],
+        async_client: Any,
+    ) -> Dict[str, PartitionReviewResult]:
+        """Review all partitions for coherence concurrently.
+
+        Partitions with <=2 codes are auto-kept (too small to split meaningfully).
+        """
+        semaphore = asyncio.Semaphore(min(len(code_groups), 10))
+        rate_limiter = AsyncLimiter(5, time_period=1.0)
+
+        all_partition_names = sorted(code_groups.keys())
+
+        tasks = {}
+        auto_kept = {}
+        for name in all_partition_names:
+            if len(code_groups[name]) <= 2:
+                # Auto-keep small partitions
+                auto_kept[name] = PartitionReviewResult(
+                    partition_name=name,
+                    action="keep",
+                    domain_name=name,
+                    domain_description="",
+                    splits=[],
+                    review_rationale=f"Auto-kept: partition has only {len(code_groups[name])} code(s), too small to split"
+                )
+                continue
+
+            peer_partitions = [p for p in all_partition_names if p != name]
+            tasks[name] = self._review_partition_async(
+                partition_name=name,
+                codes=code_groups[name],
+                peer_partitions=peer_partitions,
+                survey_question=survey_question,
+                async_client=async_client,
+                semaphore=semaphore,
+                rate_limiter=rate_limiter,
+            )
+
+        results = dict(auto_kept)
+
+        if tasks:
+            results_list = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            for name, result in zip(tasks.keys(), results_list):
+                if isinstance(result, Exception):
+                    self.reporter.error(f"Partition review '{name}' FAILED: {type(result).__name__}: {result}")
+                else:
+                    results[name] = result
+
+        return results
+
+    def _apply_partition_reorganization(
+        self,
+        code_groups: Dict[str, List[dict]],
+        review_results: Dict[str, PartitionReviewResult],
+        concept_type_map: Dict[str, str],
+    ) -> Tuple[Dict[str, List[dict]], Dict[str, str], Dict[str, str]]:
+        """Apply partition splits based on review results.
+
+        Returns:
+            (new_code_groups, partition_remap, updated_concept_type_map) where:
+            - new_code_groups: reorganized code groups
+            - partition_remap: {old_partition_name: new_partition_name} for split partitions
+            - updated_concept_type_map: {source_cluster_id: new_partition_name}
+        """
+        new_code_groups: Dict[str, List[dict]] = {}
+        partition_remap: Dict[str, str] = {}
+        updated_concept_type_map = dict(concept_type_map)
+
+        for partition_name, codes in code_groups.items():
+            review = review_results.get(partition_name)
+
+            if not review or review.action == "keep":
+                # Keep as-is
+                new_code_groups[partition_name] = codes
+                continue
+
+            # Split: reorganize codes into new sub-partitions
+            # Build code_id -> code lookup
+            code_by_id = {code['id']: code for code in codes}
+            assigned_ids = set()
+
+            for split_group in review.splits:
+                new_name = split_group.new_partition_name
+                new_codes = []
+                for code_id in split_group.code_ids:
+                    if code_id in code_by_id:
+                        new_codes.append(code_by_id[code_id])
+                        assigned_ids.add(code_id)
+
+                        # Update concept_type_map for this code's source clusters
+                        src = code_by_id[code_id].get('source_cluster_id', '')
+                        if src:
+                            for cid in src.split(','):
+                                cid = cid.strip()
+                                if cid:
+                                    updated_concept_type_map[cid] = new_name
+                                    # Also update base cluster ID
+                                    base = self._base_cluster_id(cid)
+                                    if base != cid:
+                                        updated_concept_type_map[base] = new_name
+                    else:
+                        self.reporter.warning(
+                            f"Partition review: code ID '{code_id}' not found in '{partition_name}'"
+                        )
+
+                if new_codes:
+                    new_code_groups[new_name] = new_codes
+
+            # Safety: any codes not assigned by the split go into a fallback
+            unassigned = [code for code in codes if code['id'] not in assigned_ids]
+            if unassigned:
+                self.reporter.warning(
+                    f"Partition '{partition_name}': {len(unassigned)} codes not assigned by split, "
+                    f"keeping in original partition"
+                )
+                new_code_groups.setdefault(partition_name, []).extend(unassigned)
+
+            # Build remap: new split name → original partition name
+            # (step 8 uses this to remap codebook concept_types back to match ideas)
+            for split_group in review.splits:
+                partition_remap[split_group.new_partition_name] = partition_name
+
+        # Also remap concept_type_map entries for kept partitions (no change needed, they stay the same)
+
+        return new_code_groups, partition_remap, updated_concept_type_map
+
+    # =========================================================================
+    # PARTITION-FIRST REFINEMENT (replaces MAP-REDUCE + separate MECE)
+    # =========================================================================
+
+    def _group_raw_codes_by_concept_type(
+        self,
+        reasoning_results: CodeGeneratorReasoningResults
+    ) -> Tuple[Dict[str, List[dict]], Dict[str, str]]:
+        """Group raw step 6 codes by concept_type partition.
+
+        Returns:
+            (code_groups, concept_type_map) where:
+            - code_groups: {concept_type_name: [raw_code_dicts]}
+            - concept_type_map: {source_cluster_id: concept_type_name}
+        """
+        raw_codes = self._extract_raw_codes(reasoning_results)
+        concept_type_map = self._extract_concept_type_mapping(reasoning_results)
+
+        groups: Dict[str, List[dict]] = {}
+        for code in raw_codes:
+            src = code.get('source_cluster_id', '')
+            first_cluster = src.split(',')[0].strip() if src else ''
+            concept_type = concept_type_map.get(first_cluster, "other")
+            groups.setdefault(concept_type, []).append(code)
+
+        return groups, concept_type_map
+
+    def _format_codes_with_step6_context(self, codes: List[dict]) -> str:
+        """Format codes with their step 6 context for the partition refinement prompt."""
+        lines = []
+        for code in codes:
+            lines.append(f"Code ID: {code['id']}")
+            lines.append(f"  Label: {code['code']}")
+            lines.append(f"  Definition: {code.get('definition', '')}")
+            lines.append(f"  Source cluster: {code.get('source_cluster_id', '')}")
+            if code.get('inclusion_examples'):
+                examples = code['inclusion_examples']
+                if isinstance(examples, list):
+                    lines.append(f"  Existing inclusion examples: {'; '.join(str(e) for e in examples)}")
+                else:
+                    lines.append(f"  Existing inclusion examples: {examples}")
+            if code.get('exclusion_examples'):
+                examples = code['exclusion_examples']
+                if isinstance(examples, list):
+                    lines.append(f"  Existing exclusion examples: {'; '.join(str(e) for e in examples)}")
+                else:
+                    lines.append(f"  Existing exclusion examples: {examples}")
+            if code.get('near_neighbor_label'):
+                lines.append(f"  Existing near neighbor: {code['near_neighbor_label']}")
+            if code.get('tell_apart_rule'):
+                lines.append(f"  Existing tell-apart rule: {code['tell_apart_rule']}")
+            lines.append("")
+        return '\n'.join(lines)
+
+    def _build_cross_partition_summary(self, partition_results: Dict[str, PartitionRefinementResult]) -> str:
+        """Build condensed summary for cross-partition judge prompt."""
+        lines = []
+        for partition_name, result in sorted(partition_results.items()):
+            lines.append(f"=== Domain: {result.theme_label} ({partition_name}) ===")
+            lines.append(f"Description: {result.theme_description}")
+            for code in result.codes:
+                lines.append(f"  - {code.code}: {code.definition}")
+                lines.append(f"    Boundary test: {code.boundary_test}")
+            lines.append("")
+        return '\n'.join(lines)
+
+    async def _refine_partition_async(
+        self,
+        partition_name: str,
+        codes: List[dict],
+        peer_partitions: List[str],
+        survey_question: str,
+        async_client: Any,
+        semaphore: asyncio.Semaphore,
+        rate_limiter: AsyncLimiter,
+        display_name: Optional[str] = None,
+    ) -> PartitionRefinementResult:
+        """Refine + MECE-enforce one partition (async)."""
+
+        effective_name = display_name or partition_name
+        codes_with_context = self._format_codes_with_step6_context(codes)
+        peer_list = '\n'.join(f"- {p}" for p in peer_partitions) if peer_partitions else "None"
+
+        prompt = PARTITION_REFINEMENT_PROMPT.format(
+            survey_question=survey_question,
+            language=self.config.language,
+            partition_name=effective_name,
+            n_codes=len(codes),
+            peer_partitions_list=peer_list,
+            codes_with_context=codes_with_context,
+        )
+
+        if self.prompt_printer:
+            self.prompt_printer.capture_prompt(
+                step_name=f"step_7_partition_{partition_name}",
+                utility_name="codebookRefinement_partition",
+                prompt_content=prompt,
+                prompt_type="partition_refinement",
+                metadata={
+                    'partition_name': partition_name,
+                    'code_count': len(codes),
+                    'model': self.model_config.codebook_refinement_model,
+                }
+            )
+
+        model_name = self.model_config.codebook_refinement_model
+        model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
+        temperature = self.model_config.get_temperature_for_stage('refinement') if model_type == "chat" else 0.0
+
+        async with semaphore:
+            async with rate_limiter:
+                response = await llm_create_async(
+                    client=async_client,
+                    model=model_name,
+                    prompt=prompt,
+                    response_model=PartitionRefinementResult,
+                    temperature=temperature,
+                    max_tokens=self.model_config.default_max_tokens,
+                )
+
+        return response
+
+    async def _cross_partition_judge_async(
+        self,
+        survey_question: str,
+        partition_results: Dict[str, PartitionRefinementResult],
+        async_client: Any,
+    ) -> CrossPartitionJudgeResult:
+        """Cross-partition MECE judge (single LLM call)."""
+
+        codebook_summary = self._build_cross_partition_summary(partition_results)
+        total_codes = sum(len(r.codes) for r in partition_results.values())
+
+        prompt = CROSS_PARTITION_JUDGE_PROMPT.format(
+            survey_question=survey_question,
+            language=self.config.language,
+            codebook_summary=codebook_summary,
+            total_codes=total_codes,
+            n_partitions=len(partition_results),
+        )
+
+        if self.prompt_printer:
+            self.prompt_printer.capture_prompt(
+                step_name="step_7_cross_partition_judge",
+                utility_name="codebookRefinement_judge",
+                prompt_content=prompt,
+                prompt_type="cross_partition_judge",
+                metadata={
+                    'total_codes': total_codes,
+                    'n_partitions': len(partition_results),
+                    'model': self.model_config.codebook_refinement_model,
+                }
+            )
+
+        model_name = self.model_config.codebook_refinement_model
+        model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
+        temperature = 0.0  # Judge should be deterministic
+
+        response = await llm_create_async(
+            client=async_client,
+            model=model_name,
+            prompt=prompt,
+            response_model=CrossPartitionJudgeResult,
+            temperature=temperature,
+            max_tokens=self.model_config.default_max_tokens,
+        )
+
+        return response
+
+    async def _run_all_partitions(
+        self,
+        survey_question: str,
+        code_groups: Dict[str, List[dict]],
+        async_client: Any,
+        domain_names: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, PartitionRefinementResult]:
+        """Run all partition refinements concurrently."""
+        semaphore = asyncio.Semaphore(min(len(code_groups), 10))
+        rate_limiter = AsyncLimiter(5, time_period=1.0)  # 5 requests/sec
+
+        all_partition_names = sorted(code_groups.keys())
+
+        tasks = {}
+        for name in all_partition_names:
+            peer_partitions = [p for p in all_partition_names if p != name]
+            display_name = domain_names.get(name, name) if domain_names else name
+            tasks[name] = self._refine_partition_async(
+                partition_name=name,
+                codes=code_groups[name],
+                peer_partitions=peer_partitions,
+                survey_question=survey_question,
+                async_client=async_client,
+                semaphore=semaphore,
+                rate_limiter=rate_limiter,
+                display_name=display_name,
+            )
+
+        results_list = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+        results = {}
+        for name, result in zip(tasks.keys(), results_list):
+            if isinstance(result, Exception):
+                self.reporter.error(f"Partition '{name}' FAILED: {type(result).__name__}: {result}")
+            else:
+                self.reporter.stat_line(
+                    f"  Partition '{name}': {len(code_groups[name])} codes → "
+                    f"{len(result.codes)} refined, {len(result.verifications)} verifications"
+                )
+                if result.mece_issues:
+                    for issue in result.mece_issues:
+                        self.reporter.warning(f"    MECE issue ({name}): {issue}")
+                results[name] = result
+
+        return results
+
+    def refine_codebook_partitioned(
+        self,
+        survey_question: str,
+        reasoning_results: CodeGeneratorReasoningResults,
+    ) -> Tuple[Dict[str, PartitionRefinementResult], Optional[CrossPartitionJudgeResult], Dict[str, str], Dict[str, str]]:
+        """Main entry point: partition review + refinement + MECE + cross-partition judge.
+
+        Returns:
+            (partition_results, judge_result, concept_type_map, partition_remap)
+        """
+        # 1. Group raw codes by concept_type
+        code_groups, concept_type_map = self._group_raw_codes_by_concept_type(reasoning_results)
+
+        total_codes = sum(len(g) for g in code_groups.values())
+        self.reporter.stat_line(f"Partitioned {total_codes} codes into {len(code_groups)} concept-type groups")
+        for name, codes in sorted(code_groups.items()):
+            self.reporter.stat_line(f"  - {name}: {len(codes)} codes")
+
+        if not code_groups:
+            self.reporter.warning("No code groups found — cannot proceed with partition refinement")
+            return {}, None, concept_type_map, {}
+
+        # 2. Create async client
+        async_client = create_client(
+            model=self.model_config.codebook_refinement_model,
+            async_mode=True,
+            azure_deployment=AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER if API_PROVIDER == "azure" else None
+        )
+
+        # 3. PARTITION REVIEW: evaluate coherence of each partition
+        partition_remap: Dict[str, str] = {}
+        self.reporter.section_header("PARTITION REVIEW")
+        loop = asyncio.get_event_loop()
+        review_results = loop.run_until_complete(
+            self._review_all_partitions(survey_question, code_groups, async_client)
+        )
+
+        # Report review results
+        splits_found = 0
+        for name, review in sorted(review_results.items()):
+            if review.action == "keep":
+                rename = f" → '{review.domain_name}'" if review.domain_name and review.domain_name != name else ""
+                self.reporter.stat_line(f"  KEEP '{name}'{rename}: {review.review_rationale[:80]}")
+            else:
+                splits_found += 1
+                split_names = [s.new_partition_name for s in review.splits]
+                self.reporter.stat_line(
+                    f"  SPLIT '{name}' -> {split_names}: {review.review_rationale[:80]}"
+                )
+
+        # Apply reorganization if any splits
+        if splits_found > 0:
+            code_groups, partition_remap, concept_type_map = self._apply_partition_reorganization(
+                code_groups, review_results, concept_type_map
+            )
+            total_codes_after = sum(len(g) for g in code_groups.values())
+            self.reporter.stat_line(
+                f"\nPartition review: {splits_found} split(s) applied. "
+                f"{total_codes_after} codes across {len(code_groups)} partitions"
+            )
+            for name, codes in sorted(code_groups.items()):
+                self.reporter.stat_line(f"  - {name}: {len(codes)} codes")
+        else:
+            self.reporter.stat_line(f"\nPartition review: all {len(code_groups)} partitions coherent, no splits needed")
+
+        # Build domain_names: partition_key → reviewed domain name for refinement prompt
+        domain_names: Dict[str, str] = {}
+        for name, review in review_results.items():
+            if review.action == "keep":
+                domain_names[name] = review.domain_name if review.domain_name else name
+            # For split partitions, new partition names are already domain names
+        for name in code_groups:
+            if name not in domain_names:
+                domain_names[name] = name  # fallback for split-created partitions
+
+        # 4. Run all partitions concurrently (MECE refinement)
+        self.reporter.section_header("PARTITION REFINEMENT")
+        partition_results = loop.run_until_complete(
+            self._run_all_partitions(survey_question, code_groups, async_client, domain_names=domain_names)
+        )
+
+        refined_count = sum(len(r.codes) for r in partition_results.values())
+        self.reporter.stat_line(f"\nPartition refinement complete: {refined_count} codes across {len(partition_results)} partitions")
+
+        # 5. Cross-partition judge
+        judge_result = None
+        if len(partition_results) > 1:
+            self.reporter.section_header("CROSS-PARTITION MECE JUDGE")
+            try:
+                judge_result = loop.run_until_complete(
+                    self._cross_partition_judge_async(survey_question, partition_results, async_client)
+                )
+
+                if judge_result.conflicts:
+                    for conflict in judge_result.conflicts:
+                        self.reporter.warning(
+                            f"Cross-partition overlap: '{conflict.code_a}' ({conflict.partition_a}) "
+                            f"vs '{conflict.code_b}' ({conflict.partition_b}) — {conflict.severity}"
+                        )
+                self.reporter.stat_line(
+                    f"Cross-partition judge: {'MECE compliant' if judge_result.is_mece_compliant else 'issues found'} "
+                    f"({len(judge_result.conflicts)} conflicts)"
+                )
+            except Exception as e:
+                self.reporter.error(f"Cross-partition judge failed: {type(e).__name__}: {e}")
+                logger.error(f"Cross-partition judge error: {e}", exc_info=True)
+
+        return partition_results, judge_result, concept_type_map, partition_remap
+
+    def build_theme_enriched_codebook(
+        self,
+        partition_results: Dict[str, PartitionRefinementResult],
+        judge_result: Optional[CrossPartitionJudgeResult],
+        concept_type_map: Dict[str, str],
+        source_variable: str,
+        partition_remap: Optional[Dict[str, str]] = None,
+    ) -> ThemeEnrichedCodebookModelExp:
+        """Build the final enriched codebook model from partition results."""
+        enriched_entries = []
+        themes_summary = []
+        code_to_theme_mapping = {}
+
+        for partition_name, result in sorted(partition_results.items()):
+            themes_summary.append({
+                'theme_name': result.theme_label,
+                'theme_description': result.theme_description,
+                'code_count': len(result.codes),
+            })
+
+            for code in result.codes:
+                entry = ThemeEnrichedCodebookEntryExp(
+                    code=code.code,
+                    definition=code.definition,
+                    theme=result.theme_label,
+                    theme_description=result.theme_description,
+                    category="",
+                    category_description="",
+                    source_cluster=code.source_code_ids,
+                    inclusion_examples=code.inclusion_examples,
+                    exclusion_examples=code.exclusion_examples,
+                    near_neighbor_label=code.near_neighbor_label,
+                    tell_apart_rule=code.tell_apart_rule,
+                    boundary_test=code.boundary_test,
+                    diagnostic_signals=code.diagnostic_signals,
+                    concept_type=partition_name,
+                    mece_verified=True,
+                )
+                enriched_entries.append(entry)
+                code_to_theme_mapping[code.code] = result.theme_label
+
+        # Serialize judge results
+        cross_partition_data = None
+        if judge_result:
+            cross_partition_data = judge_result.model_dump()
+
+        return ThemeEnrichedCodebookModelExp(
+            codes=enriched_entries,
+            themes_summary=themes_summary,
+            code_to_theme_mapping=code_to_theme_mapping,
+            theme_methodology="Partition-first refinement with partition review + cross-partition MECE judge",
+            source_variable=source_variable,
+            concept_type_mapping=concept_type_map,
+            cross_partition_results=cross_partition_data,
+            partition_remap=partition_remap if partition_remap else None,
+        )
+
+    # =========================================================================
+    # LEGACY METHODS (below)
+    # =========================================================================
+
     def _create_empty_results(self, reasoning_results: CodeGeneratorReasoningResults, start_time: datetime) -> CodeRefinementResults:
         """Create empty results when no codes found"""
         return CodeRefinementResults(
@@ -1250,6 +2105,44 @@ def refine_codebook(
     
     processor = CodebookRefinementProcessor(config)
     return processor.refine_codebook(survey_question, reasoning_results)
+
+def enforce_mece(
+    survey_question: str,
+    refined_model: RefinedCodebookModel,
+    reasoning_results: CodeGeneratorReasoningResults,
+    model_config: Optional[ModelConfig] = None,
+    language: str = DEFAULT_LANGUAGE,
+    verbose: bool = True,
+    prompt_printer: Optional[Any] = None
+) -> Dict[str, 'MECEPartitionResult']:
+    """Run MECE enforcement on a refined codebook, partitioned by concept_type.
+
+    Args:
+        survey_question: The survey question text for context
+        refined_model: The refined codebook from refine_codebook()
+        reasoning_results: Step 6 CodeGeneratorReasoningResults (for concept_type tracing)
+        model_config: Model configuration (uses default if None)
+        language: Output language code
+        verbose: Enable verbose progress reporting
+        prompt_printer: Optional prompt capture utility
+
+    Returns:
+        Dict mapping partition_name to MECEPartitionResult.
+    """
+    if model_config is None:
+        model_config = DEFAULT_MODEL_CONFIG
+
+    config = CodebookRefinementConfig(
+        model_config=model_config,
+        language=language,
+        verbose=verbose,
+        prompt_printer=prompt_printer
+    )
+
+    processor = CodebookRefinementProcessor(config)
+    processor.reasoning_results = reasoning_results
+    return processor.enforce_mece(survey_question, refined_model, reasoning_results)
+
 
 def get_refinement_report(results: CodeRefinementResults) -> dict:
     """Get refinement results as a structured dict for display in Streamlit

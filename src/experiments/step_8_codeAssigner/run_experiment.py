@@ -1,10 +1,11 @@
 #%%
- 
+
 """
-Step 8: Code Assigner Experiment Runner
+Step 8: Code Assigner Experiment Runner (Partition-Based)
 
 Runs the code assignment step in isolation for experimentation.
-Loads expanded_clusters and theme_enriched_codebook from cache and assigns codes.
+Loads embeddings (step 4) and theme_enriched_codebook (step 7) from cache
+and assigns codes using concept_type partition routing.
 
 Usage:
     cd src && python -m experiments.step_8_codeAssigner.run_experiment
@@ -13,6 +14,8 @@ Toggle:
     USE_EXPERIMENTAL = True  -> Uses experimental codeAssigner from this folder
     USE_EXPERIMENTAL = False -> Uses production codeAssigner from utils/
 """
+
+EXPERIMENT_N = 20  # Limit number of responses to process (None = all)
 
 import sys
 import time
@@ -63,11 +66,12 @@ class ExperimentConfig:
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
     # Experiment-specific settings
-    use_experimental: bool = False
+    use_experimental: bool = True
     verbose: bool = True
     verbose_detailed: bool = False
     prompt_printer_enabled: bool = False
     force_recalc: bool = True
+    experiment_n: Optional[int] = EXPERIMENT_N  # Limit responses for experiment (None = use all)
 
 
 EXPERIMENT_CONFIG = ExperimentConfig()
@@ -94,7 +98,14 @@ else:
 # =============================================================================
 # CACHE OPERATIONS
 # =============================================================================
-def load_step7_cache(config: ExperimentConfig):
+def load_experiment_cache(config: ExperimentConfig):
+    """Load response data (step 4 embeddings) and codebook (step 7) from cache.
+
+    Step 8 needs:
+    - Response data with ladder fields (instance, concept, concept_type) → from step 4
+    - Codebook with assignment instructions → from step 7
+    No cluster IDs or embeddings needed for partition-based routing.
+    """
     variable_key = generate_enhanced_variable_key(
         selected_variables=[config.var_name],
         is_merged=False,
@@ -102,30 +113,32 @@ def load_step7_cache(config: ExperimentConfig):
     )
     cache_manager = CacheManager(CacheConfig())
 
-    # Load expanded clusters from step 6
-    if not cache_manager.is_cache_valid(config.filename, "expanded_clusters", variable_key):
+    # Load response data from step 4 (has ladder fields from step 3)
+    if not cache_manager.is_cache_valid(config.filename, "embeddings", variable_key):
         raise FileNotFoundError(
-            f"Cache not found: expanded_clusters/{variable_key}\n"
-            f"Run pipeline.py with RUN_UNTIL_STEP=6 first."
+            f"Cache not found: embeddings/{variable_key}\n"
+            f"Run step 4 embedder experiment first:\n"
+            f"  cd src && python -m experiments.step_4_embedder.run_experiment"
         )
 
-    initial_cluster_results = cache_manager.load_from_cache(
-        config.filename, "expanded_clusters", variable_key, models.ClusterModel
+    response_data = cache_manager.load_from_cache(
+        config.filename, "embeddings", variable_key, models.EmbeddingsModel
     )
 
     # Load theme enriched codebook from step 7
     if not cache_manager.is_cache_valid(config.filename, "codebook_refinement_enriched", variable_key):
         raise FileNotFoundError(
             f"Cache not found: codebook_refinement_enriched/{variable_key}\n"
-            f"Run pipeline.py with RUN_UNTIL_STEP=7 first."
+            f"Run step 7 codebookRefinement experiment first:\n"
+            f"  cd src && python -m experiments.step_7_codebookRefinement.run_experiment"
         )
 
     codebook_list = cache_manager.load_from_cache(
-        config.filename, "codebook_refinement_enriched", variable_key, models.ThemeEnrichedCodebookModel
+        config.filename, "codebook_refinement_enriched", variable_key, models.ThemeEnrichedCodebookModelExp
     )
     theme_enriched_codebook = codebook_list[0] if codebook_list else None
 
-    return initial_cluster_results, theme_enriched_codebook, variable_key, cache_manager
+    return response_data, theme_enriched_codebook, variable_key, cache_manager
 
 
 def get_var_lab(config: ExperimentConfig) -> str:
@@ -140,7 +153,7 @@ def run_experiment(config: ExperimentConfig = None):
     if config is None:
         config = EXPERIMENT_CONFIG
 
-    initial_cluster_results, theme_enriched_codebook, variable_key, cache_manager = load_step7_cache(config)
+    response_data, theme_enriched_codebook, variable_key, cache_manager = load_experiment_cache(config)
     var_lab = get_var_lab(config)
 
     model_config = ModelConfig()
@@ -150,13 +163,19 @@ def run_experiment(config: ExperimentConfig = None):
     verbose_reporter.section_header("CODE ASSIGNMENT EXPERIMENT")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
     verbose_reporter.stat_line(f"Using experimental: {USE_EXPERIMENTAL}")
-    verbose_reporter.stat_line(f"Input: {len(initial_cluster_results)} cluster results")
-    verbose_reporter.stat_line(f"Codebook: {len(theme_enriched_codebook.codes)} codes")
+    verbose_reporter.stat_line(f"Input: {len(response_data)} responses (source: step 4 embeddings)")
+
+    # Optionally limit to experiment_n responses
+    if config.experiment_n is not None and config.experiment_n < len(response_data):
+        response_data = response_data[:config.experiment_n]
+        verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} responses")
+    n_partitions = len(set(getattr(e, 'concept_type', None) or '_unpartitioned' for e in theme_enriched_codebook.codes))
+    verbose_reporter.stat_line(f"Codebook: {len(theme_enriched_codebook.codes)} codes across {n_partitions} partitions")
 
     start_time = time.time()
 
-    # Create codebook entries
-    codebook = [models.Codebook(
+    # Create codebook entries with full MECE instructions
+    codebook = [models.CodebookExp(
         code=entry.code,
         definition=entry.definition,
         theme=entry.theme,
@@ -165,12 +184,29 @@ def run_experiment(config: ExperimentConfig = None):
         inclusion_examples=entry.inclusion_examples,
         exclusion_examples=entry.exclusion_examples,
         near_neighbor_label=entry.near_neighbor_label,
-        tell_apart_rule=entry.tell_apart_rule
+        tell_apart_rule=entry.tell_apart_rule,
+        concept_type=getattr(entry, 'concept_type', None),
+        boundary_test=getattr(entry, 'boundary_test', None),
+        diagnostic_signals=getattr(entry, 'diagnostic_signals', None),
     ) for entry in theme_enriched_codebook.codes]
+
+    # Remap codebook concept_types for split partitions.
+    # partition_remap maps new_split_name → original_partition_name.
+    # Ideas carry the original concept_type from step 3, so codebook entries
+    # from split partitions need to use the old name for routing to match.
+    partition_remap = getattr(theme_enriched_codebook, 'partition_remap', None) or {}
+    if partition_remap:
+        remapped = 0
+        for entry in codebook:
+            if entry.concept_type in partition_remap:
+                entry.concept_type = partition_remap[entry.concept_type]
+                remapped += 1
+        if remapped:
+            verbose_reporter.stat_line(f"Partition remap: {remapped} codebook entries remapped for {len(partition_remap)} split partitions")
 
     # Run code assignment
     code_assigner = CodeAssigner(
-        cluster_models=initial_cluster_results,
+        response_models=response_data,
         codebook=codebook,
         var_lab=var_lab,
         code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
@@ -189,8 +225,9 @@ def run_experiment(config: ExperimentConfig = None):
             result.assignment_metadata = {}
         result.assignment_metadata.update({
             "codebook_used": f"{len(theme_enriched_codebook.codes)} codes",
-            "assignment_method": "direct_llm_processing",
-            "experiment": True
+            "assignment_method": "partition_based_ladder",
+            "experiment": True,
+            "partitions": n_partitions
         })
 
     cache_manager.save_to_cache(code_assigned_results, config.filename, "code_assignment_direct", variable_key, elapsed_time, var_lab=var_lab)
@@ -233,6 +270,7 @@ if __name__ == "__main__":
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
     print(f"Using experimental: {USE_EXPERIMENTAL}")
+    print(f"Experiment N: {config.experiment_n or 'all'}")
     print("=" * 70)
 
     try:
@@ -247,7 +285,9 @@ if __name__ == "__main__":
                 print("\n" + "=" * 70)
                 print("SAMPLE ASSIGNMENT")
                 print("=" * 70)
-                print(f"Idea: {idea.idea}")
+                print(f"Instance: {idea.instance}")
+                print(f"Concept: {idea.concept}")
+                print(f"Concept Type: {idea.concept_type}")
                 print(f"Codes: {idea.assigned_codes}")
                 print(f"Themes: {idea.assigned_themes}")
                 print("=" * 70)

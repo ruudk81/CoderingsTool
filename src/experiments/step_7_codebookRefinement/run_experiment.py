@@ -78,12 +78,12 @@ USE_EXPERIMENTAL = EXPERIMENT_CONFIG.use_experimental
 
 if USE_EXPERIMENTAL:
     try:
-        from .codebookRefinement_exp import refine_codebook, print_refinement_report, get_refinement_report
+        from .codebookRefinement_exp import CodebookRefinementProcessor, CodebookRefinementConfig
     except ImportError:
         exp_dir = Path(__file__).parent
         if str(exp_dir) not in sys.path:
             sys.path.insert(0, str(exp_dir))
-        from codebookRefinement_exp import refine_codebook, print_refinement_report, get_refinement_report
+        from codebookRefinement_exp import CodebookRefinementProcessor, CodebookRefinementConfig
     print("[EXPERIMENTAL] Using codebookRefinement_exp.py from experiments folder")
 else:
     from utils.codebookRefinement import refine_codebook, print_refinement_report, get_refinement_report
@@ -147,94 +147,105 @@ def run_experiment(config: ExperimentConfig = None):
 
     start_time = time.time()
 
-    # Run refinement
-    refinement_results = refine_codebook(
-        survey_question=var_lab,
-        reasoning_results=codebook_reasoning,
-        model_config=model_config,
-        language=config.language,
-        verbose=config.verbose,
-        prompt_printer=prompt_printer
-    )
+    if USE_EXPERIMENTAL:
+        # ── Partition-first refinement ────────────────────────────────────
+        refinement_config = CodebookRefinementConfig(
+            model_config=model_config,
+            language=config.language,
+            verbose=config.verbose,
+            prompt_printer=prompt_printer,
+        )
+        processor = CodebookRefinementProcessor(refinement_config)
 
-    elapsed_time = time.time() - start_time
-
-    # Cache results
-    cache_manager.save_to_cache([refinement_results], config.filename, "codebook_refinement", variable_key, elapsed_time, var_lab=var_lab)
-
-    # Create theme enriched codebook
-    theme_enriched_codebook = None
-    if refinement_results and refinement_results.refined_codebook.refined_codebook:
-        import json
-        enriched_entries = []
-        code_to_theme_mapping = {}
-        themes_summary = []
-
-        # Build cluster to examples mapping
-        cluster_to_assignment_examples = {}
-        if codebook_reasoning and hasattr(codebook_reasoning, 'codebook'):
-            for entry in codebook_reasoning.codebook:
-                inclusion = entry.get('inclusion_examples')
-                exclusion = entry.get('exclusion_examples')
-                examples_data = {
-                    'inclusion_examples': json.loads(inclusion) if inclusion and isinstance(inclusion, str) else inclusion,
-                    'exclusion_examples': json.loads(exclusion) if exclusion and isinstance(exclusion, str) else exclusion,
-                    'near_neighbor_label': entry.get('near_neighbor_label'),
-                    'tell_apart_rule': entry.get('tell_apart_rule')
-                }
-                source_clusters = entry.get('source_cluster_id', '').split(',')
-                for cluster_id in source_clusters:
-                    cluster_id = cluster_id.strip()
-                    if cluster_id:
-                        cluster_to_assignment_examples[cluster_id] = examples_data
-
-        for category in refinement_results.refined_codebook.refined_codebook:
-            theme_name = category.category
-            themes_summary.append({
-                'theme_name': theme_name,
-                'theme_description': theme_name,
-                'code_count': len(category.subcodes)
-            })
-
-            for subcode in category.subcodes:
-                source_clusters = subcode.source_cluster.split(',') if subcode.source_cluster else []
-                first_cluster = source_clusters[0].strip() if source_clusters else None
-                examples = cluster_to_assignment_examples.get(first_cluster, {}) if first_cluster else {}
-
-                enriched_entry = models.ThemeEnrichedCodebookEntry(
-                    code=subcode.code,
-                    definition=subcode.description,
-                    theme=theme_name,
-                    theme_description=theme_name,
-                    category=subcode.category,
-                    category_description=subcode.category if subcode.category else "",
-                    source_cluster=subcode.source_cluster,
-                    inclusion_examples=examples.get('inclusion_examples'),
-                    exclusion_examples=examples.get('exclusion_examples'),
-                    near_neighbor_label=examples.get('near_neighbor_label'),
-                    tell_apart_rule=examples.get('tell_apart_rule')
-                )
-                enriched_entries.append(enriched_entry)
-                code_to_theme_mapping[subcode.code] = theme_name
-
-        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-            codes=enriched_entries,
-            themes_summary=themes_summary,
-            code_to_theme_mapping=code_to_theme_mapping,
-            theme_methodology="Codebook refinement experiment",
-            source_variable=config.var_name
+        # Single call: partition review → refine → MECE → cross-partition judge
+        partition_results, judge_result, concept_type_map, partition_remap = processor.refine_codebook_partitioned(
+            survey_question=var_lab,
+            reasoning_results=codebook_reasoning,
         )
 
-        cache_manager.save_to_cache([theme_enriched_codebook], config.filename, "codebook_refinement_enriched", variable_key, elapsed_time, var_lab=var_lab)
+        # Build enriched codebook
+        theme_enriched_codebook = processor.build_theme_enriched_codebook(
+            partition_results=partition_results,
+            judge_result=judge_result,
+            concept_type_map=concept_type_map,
+            source_variable=config.var_name,
+            partition_remap=partition_remap,
+        )
 
-    # Print report
-    if config.verbose and refinement_results:
-        print_refinement_report(refinement_results)
+        elapsed = time.time() - start_time
 
-    verbose_reporter.stat_line(f"Output: {len(enriched_entries) if theme_enriched_codebook else 0} refined codes")
-    print(f"\n'Codebook refinement experiment' completed in {elapsed_time:.2f} seconds.\n")
+        # Cache enriched codebook
+        cache_manager.save_to_cache(
+            [theme_enriched_codebook], config.filename,
+            "codebook_refinement_enriched", variable_key, elapsed, var_lab=var_lab
+        )
 
-    return refinement_results, theme_enriched_codebook, prompt_printer
+        # ── Report: Codebook Hierarchy ────────────────────────────────────
+        total_codes = len(theme_enriched_codebook.codes)
+        mece_verified = sum(1 for c in theme_enriched_codebook.codes if c.mece_verified)
+        n_conflicts = len(judge_result.conflicts) if judge_result else 0
+
+        if config.verbose:
+            print(f"\n{'='*60}")
+            print("REFINED CODEBOOK")
+            print(f"{'='*60}")
+            for i, (pname, result) in enumerate(sorted(partition_results.items()), 1):
+                print(f"\n{i}. Theme: {result.theme_label} ({len(result.codes)} codes)")
+                print(f"   {result.theme_description}")
+                for code in result.codes:
+                    print(f"   - {code.code}: {code.definition}")
+            print(f"{'='*60}")
+
+            # ── Report: Assignment Instructions ───────────────────────────────
+            print(f"\n{'='*60}")
+            print("MECE ASSIGNMENT INSTRUCTIONS")
+            print(f"{'='*60}")
+            for pname, result in sorted(partition_results.items()):
+                print(f"\n--- {result.theme_label} ({pname}) ---")
+                for code in result.codes:
+                    print(f"\n  Code: {code.code}")
+                    print(f"  Definition: {code.definition}")
+                    print(f"  Boundary test: {code.boundary_test}")
+                    if code.diagnostic_signals:
+                        print(f"  Diagnostic signals: {', '.join(code.diagnostic_signals)}")
+                    if code.inclusion_examples:
+                        print(f"  Inclusion examples:")
+                        for ex in code.inclusion_examples:
+                            print(f"    + {ex}")
+                    if code.exclusion_examples:
+                        print(f"  Exclusion examples:")
+                        for ex in code.exclusion_examples:
+                            print(f"    - {ex}")
+                    print(f"  Near neighbor: {code.near_neighbor_label}")
+                    print(f"  Tell-apart rule: {code.tell_apart_rule}")
+            print(f"\n{'='*60}")
+
+        verbose_reporter.stat_line(f"\nOutput: {total_codes} refined codes across {len(partition_results)} themes")
+        verbose_reporter.stat_line(f"MECE: {mece_verified}/{total_codes} codes verified")
+        if judge_result:
+            verbose_reporter.stat_line(f"Cross-partition: {n_conflicts} conflicts, MECE={'yes' if judge_result.is_mece_compliant else 'no'}")
+
+    else:
+        # ── Production path (legacy) ─────────────────────────────────────
+        refinement_results = refine_codebook(
+            survey_question=var_lab,
+            reasoning_results=codebook_reasoning,
+            model_config=model_config,
+            language=config.language,
+            verbose=config.verbose,
+            prompt_printer=prompt_printer
+        )
+        elapsed = time.time() - start_time
+        cache_manager.save_to_cache([refinement_results], config.filename, "codebook_refinement", variable_key, elapsed, var_lab=var_lab)
+
+        if config.verbose and refinement_results:
+            print_refinement_report(refinement_results)
+
+        theme_enriched_codebook = None
+
+    print(f"\n'Codebook refinement experiment' completed in {elapsed:.2f} seconds.\n")
+
+    return theme_enriched_codebook, prompt_printer
 
 
 # =============================================================================
@@ -264,7 +275,7 @@ if __name__ == "__main__":
     print("=" * 70)
 
     try:
-        refinement_results, theme_enriched_codebook, prompt_printer = run_experiment(config)
+        theme_enriched_codebook, prompt_printer = run_experiment(config)
 
         if token_tracker.call_count > 0:
             print(token_tracker.get_summary())
