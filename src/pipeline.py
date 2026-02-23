@@ -27,12 +27,32 @@ model_config = ModelConfig()
 
 #  ===  STANDALONE ========================================================================================================
 
-filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
-id_column = "DLNMID"
-var_name = "Q15"
-sample_size = 2000
+#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+#id_column = "DLNMID"
+#var_name = "Q20"
+#sample_size = 500
 
-RUN_UNTIL_STEP = 1
+#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+#id_column = "DLNMID"
+#var_name = "Q20"
+#sample_size = 500
+
+#filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
+#id_column = "DLNMID"
+#var_name = "Qd1_combined"
+#sample_size = 2000 
+
+#filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+#d_column = "DLNMID"
+#var_name = "Q15"
+#sample_size = 2000
+
+filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
+id_column = "DLNMID"
+var_name = "Q10"
+sample_size = 50
+
+RUN_UNTIL_STEP = 3
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -638,7 +658,7 @@ def step_3_extract_ideas(
                 var_lab=var_lab
             )
             if verbose:
-                verbose_reporter.stat_line(f"Cached extraction metadata: taxonomy={extraction_metadata.taxonomy_primary_axis}, template='{extraction_metadata.template_prefix}'")
+                verbose_reporter.stat_line(f"Cached extraction metadata: facet={extraction_metadata.primary_facet}, template='{extraction_metadata.template_prefix}'")
 
         print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
 
