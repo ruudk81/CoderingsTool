@@ -28,63 +28,6 @@ _load_dotenv()
 # File handling (only keep what's used)
 ALLOWED_EXTENSIONS = ['.sav']
 
-# =============================================================================
-# HUNSPELL CONFIGURATION (Cross-platform)
-# =============================================================================
-import platform
-import shutil
-
-def _get_hunspell_paths() -> Tuple[str, str]:
-    """
-    Get Hunspell executable and dictionary directory paths.
-    Supports Windows (bundled .exe) and macOS/Linux (system install via brew/apt).
-
-    Returns:
-        Tuple of (hunspell_executable_path, hunspell_dict_directory)
-    """
-    # Determine project root from this file's location (src/config.py -> project root)
-    # This is stable regardless of where the script is run from
-    config_file_dir = Path(__file__).parent  # src/
-    project_root = config_file_dir.parent     # project root
-    hunspell_dir = str(project_root / "hunspell")
-
-    system = platform.system()
-
-    if system == "Windows":
-        # Use bundled Windows executable
-        hunspell_exe = os.path.join(hunspell_dir, "hunspell.exe")
-    else:
-        # macOS or Linux: try system-installed hunspell
-        # Check common locations in order of preference
-        system_hunspell = shutil.which("hunspell")
-
-        if system_hunspell:
-            hunspell_exe = system_hunspell
-        elif system == "Darwin":  # macOS
-            # Homebrew paths (Apple Silicon and Intel)
-            brew_paths = [
-                "/opt/homebrew/bin/hunspell",  # Apple Silicon
-                "/usr/local/bin/hunspell",      # Intel Mac
-            ]
-            hunspell_exe = next((p for p in brew_paths if os.path.exists(p)), None)
-            if not hunspell_exe:
-                # Fallback to bundled (won't work but provides clear error)
-                hunspell_exe = os.path.join(hunspell_dir, "hunspell")
-        else:  # Linux
-            linux_paths = [
-                "/usr/bin/hunspell",
-                "/usr/local/bin/hunspell",
-            ]
-            hunspell_exe = next((p for p in linux_paths if os.path.exists(p)), None)
-            if not hunspell_exe:
-                hunspell_exe = os.path.join(hunspell_dir, "hunspell")
-
-    return hunspell_exe, hunspell_dir
-
-# Initialize cross-platform paths
-HUNSPELL_PATH, _hunspell_dir = _get_hunspell_paths()
-DUTCH_DICT_PATH = os.path.join(_hunspell_dir, "dict", "nl_NL")
-ENGLISH_DICT_PATH = os.path.join(_hunspell_dir, "dict", "en_GB")
 DEFAULT_LANGUAGE = "Dutch"
 
 # Language-specific labels for miscellaneous/catch-all code
@@ -309,37 +252,27 @@ class ModelConfig:
     
     # Text preprocessing models
     spell_check_model: str = DEFAULT_MODEL
-    token_model: str = "gpt-4o-mini"
-    tiktoken_spellChecker: str = "gpt-4o-mini"  # 
-    
-    # Quality filtering and segmentation models  
-    quality_filter_model: str = DEFAULT_MODEL      
+
+    # Quality filtering and segmentation models
+    quality_filter_model: str = DEFAULT_MODEL
     segmentation_model: str = "gpt-4.1-mini"
-    description_model: str = DEFAULT_MODEL         
-    
+
     # Embedding model
     embedding_model: str = "text-embedding-3-large"
-    #embedding_model: str = "gemini-embedding-001"
-   
-    speculative_codes_model: str = DEFAULT_MODEL  
+
+    speculative_codes_model: str = DEFAULT_MODEL
 
     # Codebook generation
-    token_codebook_generation_model: str = "gpt-4o-mini"
-    thematic_summary_model: str = "gpt-5-chat-latest"      
-    candidate_selection_model: str = "gpt-5-chat-latest"           
-    code_generation_model: str ="gpt-5-chat-latest"               
+    thematic_summary_model: str = "gpt-5-chat-latest"
+    candidate_selection_model: str = "gpt-5-chat-latest"
+    code_generation_model: str ="gpt-5-chat-latest"
     validation_model: str = "gpt-5-chat-latest"
-    
-    # Codebook refinement
-    codebook_refinement_model: str = "gpt-5-mini" 
 
-    # # theme identification
-    # thematic_organizer_model : str = "gpt-5-mini"   
-    # theme_extraction_reasoning_effort: str = "low"       
-    # theme_extraction_text_verbosity: str = "medium"      
+    # Codebook refinement
+    codebook_refinement_model: str = "gpt-5-mini"
 
     # Code assignment
-    code_assignment_model: str = DEFAULT_MODEL  # Uses gpt-4.1-mini (works for both Azure and OpenAI)
+    code_assignment_model: str = DEFAULT_MODEL
   
 
     # =============================================================================
@@ -396,11 +329,8 @@ class ModelConfig:
             'spell_check': self.spell_check_model,
             'quality_filter': self.quality_filter_model,
             'segmentation': self.segmentation_model,
-            'description': self.description_model,
             'embedding': self.embedding_model,
             'speculative_codes': self.speculative_codes_model,
-            'tiktoken': self.token_codebook_generation_model,
-            'tiktoken_spellChecker': self.tiktoken_spellChecker,
             'theme_extraction': self.thematic_summary_model,
             'candidate_selection': self.candidate_selection_model,
             'code_recommendation': self.code_generation_model,
@@ -453,25 +383,7 @@ class ModelConfig:
         }
         return stage_verbosities.get(stage, self.gpt5_text_verbosity)
     
-    def get_langchain_config_for_stage(self, stage: str) -> Dict[str, Any]:
-        """Get complete LangChain configuration for a stage."""
-        model_name = self.get_model_for_stage(stage)
-        model_type = self.MODEL_TYPES.get(model_name, "chat")
-    
-        temperature = (
-            0.0 if model_type == "chat"
-            else self.refinement_temperature if model_name == "gpt-5-chat-latest"
-            else 1.0
-        )
-    
-        return {
-            "api_key": OPENAI_API_KEY,
-            "model": model_name,
-            "temperature": temperature,
-        }
-    
-  
-    
+
 # =============================================================================
 # PROCESSING CONFIGURATION
 # =============================================================================
@@ -578,222 +490,7 @@ class CacheConfig:
         cache_filename = self.get_cache_filename(original_filename, step_name)
         return self.cache_dir / cache_filename
 
-# =============================================================================
-# PREPROCESS CONFIGURATION
-# =============================================================================
-
-@dataclass
-class SpellCheckConfig:
-    """Configuration for spell checking step"""
-    batch_size: int = 20
-    temperature: float = 0.0
-    max_tokens: int = 4000
-    retries: int = 3
-    retry_delay: int = 2
-    max_batch_size: int = 5
-    completion_reserve: int = 1000
-    cache_size: int = 10000
-    spacy_batch_size: int = 64  # Increased for better performance
-    repeated_char_threshold: int = 5  # Characters repeated 5+ times
-    max_correction_examples: int = 10  # For verbose output
-    seed: int = 42
-    context_chars: int = 20  # Characters of context for spell checking
-    max_concurrent_requests: int = 5  # For API rate limiting
-    
-    # Performance optimization settings
-    max_words_to_check: int = 100000  # Skip spell checking if more words than this
-    enable_word_frequency_cache: bool = True  # Cache common words
-    progress_report_interval: int = 10000  # Report progress every N words
-    max_unique_oov_words: int = 5000  # Limit unique OOV words to process
-    enable_early_termination: bool = True  # Allow early termination for large datasets
-    
-    # Aggressive parallel processing settings for suggestion generation
-    max_concurrent_suggestion_chunks: int = 20  # Number of concurrent chunks for OOV processing (increased for better parallelism)
-    max_words_per_chunk: int = 1200  # Maximum words per chunk
-    enable_adaptive_chunking: bool = True  # Dynamic chunk sizing based on performance
-    chunk_progress_reporting: bool = True  # Show progress per chunk
-    suggestion_processing_semaphore_limit: int = 100  # Limit concurrent Hunspell processes (increased for aggressive parallelism)
-    
-    # Timeout configuration for API calls
-    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
-    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
-    
-    # New optimization parameters
-    hunspell_concurrent_sessions: int = 20  # Number of concurrent Hunspell sessions for OOV detection (increased from 5)
-    hunspell_batch_size: int = 1000  # Words per Hunspell batch (reduced from 1000 for better distribution)
-    enable_streaming_oov_detection: bool = True  # Enable producer-consumer pattern for OOV detection
-    oov_detection_queue_size: int = 10000  # Size of queue for streaming OOV detection
-    
-    # Rate limiting optimization parameters
-    rate_limit_safety_factor: float = 0.95  # Use 95% of theoretical maximum (was 0.85)
-    rate_limit_utilization: float = 0.98  # Use 98% of actual rate limits (was 0.95)
-    concurrent_burst_multiplier: float = 3.0  # Burst capacity multiplier (was 2.0)
-    
-    # Suggestion validation parameters
-    enable_suggestion_pre_validation: bool = True  # Pre-validate suggestions before LLM calls
-    disable_pre_validation_above_oov_words: int = 2000  # Auto-disable pre-validation for very large datasets
-    enable_suggestion_caching: bool = True  # Cache validated suggestions
-    
-    # Performance optimization parameters
-    hunspell_pool_size: int = 20  # Number of persistent Hunspell processes in pool
-    ultra_batch_threshold: int = 1000  # Use ultra-optimized batch processing above this many OOV words
-    ultra_batch_size: int = 10000  # Batch size for ultra-optimized processing (increased for better performance)
-
-# =============================================================================
-# SEGMENT CONFIGURATION
-# =============================================================================
-
-@dataclass
-class QualityFilterConfig:
-    """Configuration for quality filtering step"""
-    batch_size: int = 20
-    temperature: float = 0.0
-    max_tokens: int = 4000
-    retries: int = 3
-    instructor_retries: int = 3
-    high_quality_threshold: float = 0.7
-    medium_quality_threshold: float = 0.4
-    max_filter_examples: int = 5  # For verbose output
-    # Model configuration - will be overridden by ModelConfig
-    model: str = DEFAULT_MODEL  # Fallback model
-    max_concurrent_requests: int = 5  # For API rate limiting
-    # Timeout configuration for API calls
-    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
-    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
-   
-
-# SegmentationConfig moved to config_ideaExtractor.py (ideaExtractor-only)
-from config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG  # noqa: F401 - re-export for backward compat
-
-# =============================================================================
-# EMBEDDING CONFIGURATION
-# =============================================================================
-
-# Embedding text format: controls what text is embedded
-# - "with_context": Full text including all specifier lines (original behavior)
-# - "unique_only": Strip specifiers and template prefix, embed only unique content
-# - "taxonomy_with_context": domain + topic + intent + taxonomy_phrase (space-concatenated)
-# - "taxonomy_unique_only": Just the taxonomy_phrase value
-# Note: taxonomy modes require experimental ideaExtractor_v2 output (which generates taxonomy_phrase)
-EMBEDDING_TEXT_FORMAT = "unique_only"
-
-@dataclass
-class EmbeddingConfig:
-    """Configuration for embedding generation step"""
-    batch_size: int = 100
-    max_concurrent_requests: int = 5
-    embedding_model: str = "text-embedding-3-large"  # Fallback model
-    max_sample_responses: int = 3  # For verbose output
-    
-    # Provider-specific optimizations
-    gemini_batch_size: int = 20  # Smaller batches for Gemini (individual API calls)
-    gemini_max_concurrent: int = 10  # Optimized concurrency for Gemini - works well in practice
-    openai_batch_size: int = 100  # Large batches for OpenAI (true batch API)
-    openai_max_concurrent: int = 5  # OpenAI handles higher concurrency
-    
-    # Question-aware embedding configuration
-    use_question_aware: bool = False  # Enable question-aware embeddings
-    response_weight: float = 0.6  # Weight for response embeddings
-    question_weight: float = 0.3  # Weight for question embeddings
-    domain_anchor_weight: float = 0.1  # Weight for domain-relative positioning
-
-
-# =============================================================================
-# CLUSTERING CONFIGURATION
-# =============================================================================
-
-@dataclass
-class ClusteringConfig:
-    """Configuration for the complete clustering pipeline"""
-
-    # PCA configuration
-    pca_components: int = .99   # keep 99% of variance
-    pca_random_state: int = 42  # random state for re-calc
-
-    # Metrics
-    enable_dbcv       = True
-    enable_meanp      = True
-    centroid_distance = True
-
-    # Calc Metrics
-    CLUSTER_METRIC = "euclidean"
-    DBCV_D = 1  # safe for DBCV (avoid overflow)
-    similarity_analysis_thresholds: list = field(default_factory=lambda: [0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95])     # Similarity analysis thresholds
-    default_merge_threshold: float = 0.95     # Default merge threshold for similarity-based merging
-    grid_search_max_workers: Optional[int] = None  # None=auto, -1=all cores
-    grid_search_timeout_seconds: float = 300.0
-    ctfidf_top_k: int = 15
-    ctfidf_min_df: int = 2
-    ctfidf_ngram_range: Tuple[int,int] = (1,2)
-
-    # Post-clustering merge configuration
-    merge_similar_clusters: bool = True  # Enable automatic merging of similar clusters
-    merge_centroid_threshold: float = 0.95  # Centroid similarity threshold for candidate screening
-    merge_pairwise_threshold: float = 0.98  # Pairwise similarity threshold for merge decision. .98 = "Essentially duplicates or rephrasings"
-    merge_quantiles: Tuple[float, float, float] = (0.25, 0.50, 0.75)  # Quantiles for similarity evaluation
-
-    # Noise assessment configuration
-    noise_assignability_threshold: float = 0.95  # Similarity threshold for classifying noise as soft (assignable) vs hard (true outliers)
-
-    # Noise reclustering configuration (two-pass clustering)
-    enable_noise_reclustering: bool = True  # Enable second clustering pass on noise points
-    noise_parameter_strategy: str = "adaptive"  # Parameter strategy: "adaptive", "aggressive", "fixed"
-    noise_min_cluster_size: int = 3  # Minimum points for viable noise-derived cluster
-    noise_min_total_points: int = 10  # Skip noise reclustering if fewer noise points
-    noise_cluster_cohesion_threshold: float = 0.70  # Internal similarity threshold for quality filtering
-    noise_min_clusters: int = 1  # Minimum viable clusters to accept reclustering result
-
-    # Parameter strategy settings
-    noise_mcs_divisor: int = 3  # For "aggressive": main_mcs // divisor
-    noise_ms_divisor: int = 2  # For "aggressive": main_ms // divisor
-    noise_fixed_mcs: int = 5  # For "fixed": fixed min_cluster_size
-    noise_fixed_ms: int = 3  # For "fixed": fixed min_samples
-
-@dataclass
-class UMAPConfig:
-    """Configuration for UMAP dimensionality reduction"""
-    n_neighbors: int = 10  # default is 15, but 10 provides more detail, could be a better sweet spot in compination with clustering method "leaf"
-    n_components: int = 10    # More dimensions to preserve semantic nuances
-    min_dist: float = 0.1  # Slight separation for better cluster distinction
-    metric: str = "cosine"  # Consistent with HDBSCAN for semantic similarity
-    random_state: int = 42
-    n_jobs: int = 1
-    low_memory: bool = True
-    transform_seed: int = 42
-    
-    # Parallel processing configuration
-    n_epochs = 200
-    use_parallel_umap: bool = False  # False = reproducible (single-threaded), True = faster (parallel)
-    parallel_jobs: int = -1  # Number of cores to use when parallel enabled (-1 = all cores)
-
-
-@dataclass
-class HDBSCANConfig:
-    """Configuration for HDBSCAN clustering"""
-    min_cluster_size: Optional[int] = 5  # Smaller clusters for better semantic coherence
-    min_samples: Optional[int] = None # if none, fallback is min_cluster_size
-    cluster_selection_epsilon: Optional[float] = 0.0
-    alpha: Optional[float] = 1.0  # Default stability weighting as requested
-    metric: str = "euclidean"  # Better for semantic embeddings than euclidean
-    cluster_selection_method: str = "leaf"  #good for semantic purity & granularity; eom good for broad themes
-    prediction_data: bool = True
-    approx_min_span_tree: bool = False
-    gen_min_span_tree: bool = True
-    
-    # Cluster merging configuration
-    merge_similar_clusters: bool = True
-    merge_similarity_threshold: float = 0.95  # Cosine similarity threshold for merging
-
-
-@dataclass
-class VectorizerConfig:
-    """Configuration for CountVectorizer"""
-    ngram_range: Tuple[int, int] = (1, 1)
-    min_df: int = 1
-    max_df: float = 1.0
-    max_features: Optional[int] = None
-    use_language_stop_words: bool = True  # Use spacy stop words based on DEFAULT_LANGUAGE
-
+# QualityFilterConfig moved to config_steps/config_qualityFilter.py
 
 # =============================================================================
 # CODEDESIGNER CONFIGURATION
@@ -858,39 +555,6 @@ class CodeDesignerConfig:
 
 
 # =============================================================================
-# LABELLING CONFIGURATION
-# =============================================================================
-
-@dataclass
-class LabellerConfig:
-    """Configuration for hierarchical labelling"""
-    # Model settings - will be overridden by ModelConfig
-    model: str = "gpt-4o-mini"  # Fallback base model
-    temperature: float = 0.0  # Lower for more consistent output
-    max_tokens: int = 16000  # Increased for gpt-4o's higher capacity
-    seed: int = 42  # For reproducibility
-    api_key: Optional[str] = None  # Will use env var if not provided
-    
-    # Language and localization
-    language: str = DEFAULT_LANGUAGE
-    
-    # Processing parameters
-    top_k_representatives: int = 3  # Representative examples per cluster
-    map_reduce_threshold: int = 100  # Use MapReduce if more clusters
-    batch_size: int = 10  # Clusters per batch in MapReduce
-    assignment_threshold: float = 0.5  # Minimum probability for assignment (lowered for better coverage)
-    
-    # Retry and concurrency settings
-    max_retries: int = 3
-    concurrent_requests: int = 10  # Increased for better performance
-    retry_delay: int = 2  # Seconds between retries
-    
-    # Confidence scoring settings
-    use_confidence_scoring: bool = True  # Enable confidence-based assignment
-    confidence_threshold: float = 0.49  # Minimum confidence for assignment
-    confidence_batch_size: int = 10  # Clusters to process per confidence scoring batch
-
-# =============================================================================
 # CODE ASSIGNMENT CONFIGURATION
 # =============================================================================
 
@@ -915,52 +579,8 @@ class CodeAssignmentConfig:
   
 
 # =============================================================================
-# EXPORT CONFIGURATION
+# EXPORT CLEANUP CONFIGURATION
 # =============================================================================
-
-@dataclass
-class ExportConfig:
-    """Configuration for results export functionality"""
-    
-    # Output directory settings
-    export_dir: Optional[str] = None  # Will use data dir if None
-    create_subdirs: bool = True  # Create subdirectories by survey variable
-    
-    # File naming patterns
-    spss_suffix: str = "_codes"  # Suffix for SPSS file with codes
-    excel_suffix: str = "_results"  # Suffix for Excel results file
-    
-    # Excel export settings
-    enable_codebook_tab: bool = True
-    enable_dendrogram_tab: bool = True
-    enable_frequency_tab: bool = True
-    enable_wordcloud_tab: bool = True
-    
-    # Visualization settings
-    chart_width: int = 12
-    chart_height: int = 8
-    wordcloud_width: int = 800
-    wordcloud_height: int = 600
-    max_wordcloud_words: int = 100
-    
-    # Data formatting
-    include_descriptions: bool = True
-    include_frequencies: bool = True
-    include_percentages: bool = True
-    
-    # Quality settings
-    min_frequency_for_chart: int = 1  # Minimum frequency to include in charts
-    max_categories_in_chart: int = 50  # Maximum categories to show in frequency charts
-    
-    # Output verbosity
-    verbose: bool = True
-    
-    def get_export_dir(self, base_data_dir: str) -> str:
-        """Get the export directory path"""
-        if self.export_dir:
-            return self.export_dir
-        return os.path.join(base_data_dir, "exports")
-
 
 @dataclass
 class ExportCleanupConfig:
@@ -981,17 +601,8 @@ DEFAULT_MODEL_CONFIG = ModelConfig()
 # Processing configuration
 DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
 
-# Step-specific configurations
-DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
-DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
-# DEFAULT_SEGMENTATION_CONFIG is imported from config_ideaExtractor above
-DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
-DEFAULT_UMAP_CONFIG = UMAPConfig()
-DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
-DEFAULT_HDBSCAN_CONFIG = HDBSCANConfig()
-DEFAULT_LABELLER_CONFIG = LabellerConfig()
+# Step-specific configurations (SpellCheckConfig → config_preprocess.py, QualityFilterConfig → config_qualityFilter.py)
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
-DEFAULT_EXPORT_CONFIG = ExportConfig()
 DEFAULT_CODEDESIGNER_CONFIG = CodeDesignerConfig()
 DEFAULT_EXPORT_CLEANUP_CONFIG = ExportCleanupConfig()
 

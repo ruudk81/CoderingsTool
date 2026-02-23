@@ -38,7 +38,7 @@ except ImportError:
     pass
 
 # === STEP-SPECIFIC CONFIG =============================================================================================
-from config_codeAssigner import (
+from config_steps.config_codeAssigner import (
     DEFAULT_TOKEN_HISTORY_CONFIG,
     DEFAULT_TIKTOKEN_OFFSET_CONFIG,
     DEFAULT_TIMEOUT_CONFIG,

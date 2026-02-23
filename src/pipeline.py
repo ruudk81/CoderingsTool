@@ -1,5 +1,9 @@
 #%%
-import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+import os, sys
+# Ensure src/ is on sys.path so imports work regardless of cwd
+_src_dir = os.path.dirname(os.path.abspath(__file__))
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
 
 # ===  IMPORTS ========================================================================================================
 import time
@@ -21,34 +25,14 @@ cache_config = CacheConfig()
 cache_manager = CacheManager(cache_config)
 model_config = ModelConfig()
 
-#  ===  STANDALONE ======================================================================================================== 
-
-#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-#id_column = "DLNMID"
-#var_name = "Q20"
-#sample_size = 50
-
-#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-#id_column = "DLNMID"
-#var_name = "Q20"
-#sample_size = 500
-
-#filename = "M000000 Associatiemonitor Merk X net databestand.sav"
-#id_column = "DLNMID"
-#var_name = "Qd1_combined"
-#sample_size = 2000 
+#  ===  STANDALONE ========================================================================================================
 
 filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 id_column = "DLNMID"
 var_name = "Q15"
 sample_size = 2000
 
-# filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
-# id_column = "DLNMID"
-# var_name = "Q10"
-# sample_size = 50
-
-RUN_UNTIL_STEP = 0
+RUN_UNTIL_STEP = 1
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -67,6 +51,47 @@ STEP_NAMES = {
     8: "code_assignment_direct",
     9: "export"
 }
+
+# ===================================================================================================================
+# HELPERS
+# ===================================================================================================================
+
+def _resolve_step_defaults(variable_key=None, cache_manager=None, model_config=None):
+    """Resolve default values for step function parameters.
+
+    Each parameter is resolved only if passed as None:
+    - variable_key: generated from module-level globals (selected_variables, etc.)
+    - cache_manager: falls back to module-level global, then creates default
+    - model_config: falls back to module-level global, then creates default
+
+    Returns: (variable_key, cache_manager, model_config)
+    """
+    if variable_key is None:
+        from utils.cacheManager import generate_enhanced_variable_key
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        _sample_size = globals().get('sample_size', None)
+        _merge_config = globals().get('merge_config', None)
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged, sample_size=_sample_size, merge_config=_merge_config
+        )
+
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    if model_config is None:
+        model_config = globals().get('model_config')
+        if model_config is None:
+            from config import ModelConfig
+            model_config = ModelConfig()
+
+    return variable_key, cache_manager, model_config
+
 
 # ===================================================================================================================
 # PROCESSING STEPS
@@ -269,40 +294,10 @@ def step_1_preprocess(
         List[models.PreprocessedModel]: List of preprocessed response models
     """
     from utils import textNormalizer, spellChecker, textFinalizer, verboseReporter, promptPrinter
-    from config import SpellCheckConfig
+    from config_steps.config_preprocess import SpellCheckConfig
 
     step_name = "preprocessed"
-
-    # Auto-generate variable_key if not provided
-    if variable_key is None:
-        # Try to infer from context
-        selected_variables = globals().get('selected_variables', [])
-        is_merged = globals().get('is_merged', False)
-        sample_size = globals().get('sample_size', None)
-        merge_config = globals().get('merge_config', None)
-
-        from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(
-            selected_variables if selected_variables else ["unknown"],
-            is_merged,
-            sample_size=sample_size,
-            merge_config=merge_config
-        )
-
-    # Use global cache_manager if not provided
-    if cache_manager is None:
-        cache_manager = globals().get('cache_manager')
-        if cache_manager is None:
-            from utils.cacheManager import CacheManager
-            from config import CacheConfig
-            cache_manager = CacheManager(CacheConfig())
-
-    # Use global model_config if not provided
-    if model_config is None:
-        model_config = globals().get('model_config')
-        if model_config is None:
-            from config import ModelConfig
-            model_config = ModelConfig()
+    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -497,36 +492,7 @@ def step_2_quality_filter(
     from utils import qualityFilter, verboseReporter, promptPrinter
 
     step_name = "quality_filter"
-
-    # Auto-generate variable_key if not provided
-    if variable_key is None:
-        selected_variables = globals().get('selected_variables', [])
-        is_merged = globals().get('is_merged', False)
-        sample_size = globals().get('sample_size', None)
-        merge_config = globals().get('merge_config', None)
-
-        from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(
-            selected_variables if selected_variables else ["unknown"],
-            is_merged,
-            sample_size=sample_size,
-            merge_config=merge_config
-        )
-
-    # Use global cache_manager if not provided
-    if cache_manager is None:
-        cache_manager = globals().get('cache_manager')
-        if cache_manager is None:
-            from utils.cacheManager import CacheManager
-            from config import CacheConfig
-            cache_manager = CacheManager(CacheConfig())
-
-    # Use global model_config if not provided
-    if model_config is None:
-        model_config = globals().get('model_config')
-        if model_config is None:
-            from config import ModelConfig
-            model_config = ModelConfig()
+    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -623,36 +589,7 @@ def step_3_extract_ideas(
     from utils import ideaExtractor, verboseReporter, promptPrinter
 
     step_name = "extracted_ideas"
-
-    # Auto-generate variable_key if not provided
-    if variable_key is None:
-        selected_variables = globals().get('selected_variables', [])
-        is_merged = globals().get('is_merged', False)
-        sample_size = globals().get('sample_size', None)
-        merge_config = globals().get('merge_config', None)
-
-        from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(
-            selected_variables if selected_variables else ["unknown"],
-            is_merged,
-            sample_size=sample_size,
-            merge_config=merge_config
-        )
-
-    # Use global cache_manager if not provided
-    if cache_manager is None:
-        cache_manager = globals().get('cache_manager')
-        if cache_manager is None:
-            from utils.cacheManager import CacheManager
-            from config import CacheConfig
-            cache_manager = CacheManager(CacheConfig())
-
-    # Use global model_config if not provided
-    if model_config is None:
-        model_config = globals().get('model_config')
-        if model_config is None:
-            from config import ModelConfig
-            model_config = ModelConfig()
+    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -739,41 +676,12 @@ def step_4_generate_embeddings(
     Returns:
         List[models.EmbeddingsModel]: List of models with embeddings
     """
-    from config_embedder import EmbedderConfig
+    from config_steps.config_embedder import EmbedderConfig
     from utils.embedder import Embedder
     from utils.verboseReporter import VerboseReporter
 
     step_name = "embeddings"
-
-    # Auto-generate variable_key if not provided
-    if variable_key is None:
-        selected_variables = globals().get('selected_variables', [])
-        is_merged = globals().get('is_merged', False)
-        sample_size = globals().get('sample_size', None)
-        merge_config = globals().get('merge_config', None)
-
-        from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(
-            selected_variables if selected_variables else ["unknown"],
-            is_merged,
-            sample_size=sample_size,
-            merge_config=merge_config
-        )
-
-    # Use global cache_manager if not provided
-    if cache_manager is None:
-        cache_manager = globals().get('cache_manager')
-        if cache_manager is None:
-            from utils.cacheManager import CacheManager
-            from config import CacheConfig
-            cache_manager = CacheManager(CacheConfig())
-
-    # Use global model_config if not provided
-    if model_config is None:
-        model_config = globals().get('model_config')
-        if model_config is None:
-            from config import ModelConfig
-            model_config = ModelConfig()
+    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -933,34 +841,12 @@ def step_5_cluster(
         List[models.ClusterModel]: List of models with cluster assignments
     """
     from utils.clusterer import Clusterer
-    from config_clusterer import ClustererConfig
+    from config_steps.config_clusterer import ClustererConfig
     from utils.verboseReporter import VerboseReporter
 
     step_name = "initial_clusters"
     representations_step_name = "cluster_representations"
-
-    # Auto-generate variable_key if not provided
-    if variable_key is None:
-        selected_variables = globals().get('selected_variables', [])
-        is_merged = globals().get('is_merged', False)
-        sample_size = globals().get('sample_size', None)
-        merge_config = globals().get('merge_config', None)
-
-        from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(
-            selected_variables if selected_variables else ["unknown"],
-            is_merged,
-            sample_size=sample_size,
-            merge_config=merge_config
-        )
-
-    # Use global cache_manager if not provided
-    if cache_manager is None:
-        cache_manager = globals().get('cache_manager')
-        if cache_manager is None:
-            from utils.cacheManager import CacheManager
-            from config import CacheConfig
-            cache_manager = CacheManager(CacheConfig())
+    variable_key, cache_manager, _ = _resolve_step_defaults(variable_key, cache_manager)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -1242,36 +1128,7 @@ def step_6_generate_codebook(
     from utils import speculativeStarterCodes, codeGenerator, clusterer, verboseReporter, promptPrinter
     
     step_name = "codebook_generation"
-
-    # Auto-generate variable_key if not provided
-    if variable_key is None:
-        selected_variables = globals().get('selected_variables', [])
-        is_merged = globals().get('is_merged', False)
-        sample_size = globals().get('sample_size', None)
-        merge_config = globals().get('merge_config', None)
-
-        from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(
-            selected_variables if selected_variables else ["unknown"],
-            is_merged,
-            sample_size=sample_size,
-            merge_config=merge_config
-        )
-
-    # Use global cache_manager if not provided
-    if cache_manager is None:
-        cache_manager = globals().get('cache_manager')
-        if cache_manager is None:
-            from utils.cacheManager import CacheManager
-            from config import CacheConfig
-            cache_manager = CacheManager(CacheConfig())
-
-    # Use global model_config if not provided
-    if model_config is None:
-        model_config = globals().get('model_config')
-        if model_config is None:
-            from config import ModelConfig
-            model_config = ModelConfig()
+    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -1471,56 +1328,6 @@ def step_6_generate_codebook(
             variable_key,
             elapsed_time,
             var_lab=var_lab)
-        
-        if False:
-            enriched_clusters = cache_manager.load_from_cache( filename, "expanded_clusters",   variable_key, models.ClusterModel)
-            
-            from collections import defaultdict
-            
-            print(f"Loaded {len(enriched_clusters)} cluster results")
-            
-            # Collect cluster mappings and counts
-            cluster_mapping = defaultdict(set)  # initial_cluster -> set of expanded_clusters
-            idea_counts = defaultdict(int)  # expanded_cluster -> count of ideas
-            
-            for result in enriched_clusters:
-                if result.response_ideas:
-                    for idea in result.response_ideas:
-                        initial = idea.initial_cluster
-                        expanded = idea.expanded_cluster
-            
-                        if expanded:
-                            cluster_mapping[initial].add(expanded)
-                            idea_counts[expanded] += 1
-            
-            # Print initial → expanded cluster mappings
-            print("\nCluster Expansion Summary:")
-            print(f"{'Initial Cluster':<15} | Expanded Clusters")
-            print("-" * 60)
-            
-            for initial_cluster in sorted(cluster_mapping.keys(), key=lambda x: (isinstance(x, str), x)):
-                expanded_list = sorted(cluster_mapping[initial_cluster])
-            
-                if len(expanded_list) == 1 and str(expanded_list[0]) == str(initial_cluster):
-                    # Single-theme cluster (not expanded)
-                    print(f"{initial_cluster:<15} | {expanded_list[0]} (single-theme, {idea_counts[expanded_list[0]]} ideas)")
-                else:
-                    # Multi-theme cluster (expanded)
-                    print(f"{initial_cluster:<15} | {', '.join(expanded_list)} (multi-theme)")
-                    for exp in expanded_list:
-                        print(f"{'':15} |   └─ {exp}: {idea_counts[exp]} ideas")
-            
-            # Summary statistics
-            total_initial = len(cluster_mapping)
-            total_expanded = len(idea_counts)
-            multi_theme = sum(1 for v in cluster_mapping.values() if len(v) > 1)
-            
-            print("\nSummary:")
-            print(f"  Initial clusters: {total_initial}")
-            print(f"  Expanded clusters: {total_expanded}")
-            print(f"  Multi-theme clusters: {multi_theme}")
-            print(f"  Single-theme clusters: {total_initial - multi_theme}")
-
 
         print("Cached enriched clusters with expanded_cluster field")
 
@@ -1578,36 +1385,7 @@ def step_7_refine_codebook(
     from utils import verboseReporter, promptPrinter
 
     step_name = "codebook_refinement"
-
-    # Auto-generate variable_key if not provided
-    if variable_key is None:
-        selected_variables = globals().get('selected_variables', [])
-        is_merged = globals().get('is_merged', False)
-        sample_size = globals().get('sample_size', None)
-        merge_config = globals().get('merge_config', None)
-
-        from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(
-            selected_variables if selected_variables else ["unknown"],
-            is_merged,
-            sample_size=sample_size,
-            merge_config=merge_config
-        )
-
-    # Use global cache_manager if not provided
-    if cache_manager is None:
-        cache_manager = globals().get('cache_manager')
-        if cache_manager is None:
-            from utils.cacheManager import CacheManager
-            from config import CacheConfig
-            cache_manager = CacheManager(CacheConfig())
-
-    # Use global model_config if not provided
-    if model_config is None:
-        model_config = globals().get('model_config')
-        if model_config is None:
-            from config import ModelConfig
-            model_config = ModelConfig()
+    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
 
     # Use DEFAULT_LANGUAGE if not provided
     if default_language is None:

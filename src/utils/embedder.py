@@ -34,7 +34,7 @@ from config import OPENAI_API_KEY, GEMINI_API_KEY, ModelConfig, get_embedding_di
 from utils.llm import create_embedding_client
 
 # === STEP-SPECIFIC CONFIG ==========================================================================================
-from config_embedder import (
+from config_steps.config_embedder import (
     EmbedderConfig,
     DEFAULT_EMBEDDER_CONFIG,
     BOTH_MODE_IDEA_FORMAT,

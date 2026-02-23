@@ -16,7 +16,7 @@ Pipeline Integration:
 
 Usage:
     from utils.clusterer import Clusterer
-    from config_clusterer import ClustererConfig
+    from config_steps.config_clusterer import ClustererConfig
 
     config = ClustererConfig(
         algorithm_mode="auto",
@@ -44,7 +44,7 @@ import hdbscan
 import umap
 
 import models
-from config_clusterer import ClustererConfig
+from config_steps.config_clusterer import ClustererConfig
 from utils.clusterer_helpers import (
     # Preprocessing
     preprocess_embeddings, l2_normalize,

@@ -29,7 +29,7 @@ from config import ModelConfig, get_embedding_dimensions
 from utils.llm import create_embedding_client
 
 # === STEP-SPECIFIC CONFIG ==========================================================================================
-from config_embedder import (
+from config_steps.config_embedder import (
     EmbedderConfig,
     DEFAULT_EMBEDDER_CONFIG,
 )

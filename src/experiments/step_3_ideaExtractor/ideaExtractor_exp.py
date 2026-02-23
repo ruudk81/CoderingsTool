@@ -103,7 +103,7 @@ except ImportError:
     from facet_data import get_facet, FacetDefinition, CONCEPT_TYPE_FALLBACK_TABLE, CONCEPT_TYPE_FALLBACK_PRIORITY_RULES
 
 # === STEP-SPECIFIC CONFIG =============================================================================================
-from config_ideaExtractor import (
+from config_steps.config_ideaExtractor import (
     DEFAULT_TOKEN_HISTORY_CONFIG,
     DEFAULT_TIKTOKEN_OFFSET_CONFIG,
     DEFAULT_TIMEOUT_CONFIG,

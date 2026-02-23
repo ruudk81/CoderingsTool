@@ -89,7 +89,7 @@ if USE_EXPERIMENTAL:
     print("[EXPERIMENTAL] Using clusterer_exp.py from experiments folder")
 else:
     from utils.clusterer import Clusterer
-    from config_clusterer import ClustererConfig
+    from config_steps.config_clusterer import ClustererConfig
     print("[PRODUCTION] Using clusterer.py from utils/")
 
 
