@@ -4,7 +4,7 @@
 Step 6: Code Generator Experiment Runner
 
 Runs the codebook generation step in isolation for experimentation.
-Loads Step 5 (initial_clusters) results from cache and generates codebook.
+Loads Step 5 (MECE categories) results from cache and generates codebook.
 
 Usage:
     cd src && python -m experiments.step_6_codeGenerator.run_experiment
@@ -45,7 +45,7 @@ from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
-from utils import dataLoader, clusterer as clusterer_utils
+from utils import dataLoader
 
 # Import centralized test data config
 try:
@@ -69,7 +69,6 @@ class ExperimentConfig:
     sample_size: Optional[int] = TEST_DATA.sample_size
     # Experiment-specific settings
     use_experimental: bool = True
-    use_speculative_starter_codes: bool = True
     verbose: bool = True
     verbose_detailed: bool = False
     prompt_printer_enabled: bool = False
@@ -129,32 +128,6 @@ def load_extraction_metadata(config: ExperimentConfig, variable_key: str, cache_
         )
     except Exception:
         return None
-
-
-def load_step5_clusterer_cache(config: ExperimentConfig, variable_key: str, cache_manager: CacheManager):
-    """Load step 5 clusterer results (initial_clusters + clustering_metadata).
-
-    Returns (cluster_results, clustering_metadata) or (None, None) if not cached.
-    """
-    step_name = "initial_clusters"
-    if not cache_manager.is_cache_valid(config.filename, step_name, variable_key):
-        return None, None
-
-    data = cache_manager.load_from_cache(
-        config.filename, step_name, variable_key, models.ClusterModel
-    )
-
-    clustering_metadata = None
-    try:
-        metadata_list = cache_manager.load_from_cache(
-            config.filename, "clustering_metadata", variable_key, models.ClusteringMetadataModel
-        )
-        if metadata_list:
-            clustering_metadata = metadata_list[0]
-    except Exception:
-        pass
-
-    return data, clustering_metadata
 
 
 def get_var_lab(config: ExperimentConfig) -> str:
@@ -245,8 +218,6 @@ def run_experiment(config: ExperimentConfig = None):
     mece_topics = None
     mece_results_cache = None
     category_assigned_data = None
-    initial_cluster_results = None
-    clustering_metadata = None
 
     if USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "mece_categories":
         verbose_reporter.stat_line(f"Input source: MECE categories (STAGE1_INPUT_SOURCE={STAGE1_INPUT_SOURCE!r})")
@@ -265,49 +236,13 @@ def run_experiment(config: ExperimentConfig = None):
             verbose_reporter.stat_line(f"Input source: MECE topics (STAGE1_INPUT_SOURCE={STAGE1_INPUT_SOURCE!r})")
         mece_topics = load_mece_topics(config, variable_key)
 
-    # Load step 5 clusterer cache (optional — needed for cluster-based paths and starter codes)
-    initial_cluster_results, clustering_metadata = load_step5_clusterer_cache(config, variable_key, cache_manager)
-
-    if initial_cluster_results:
-        verbose_reporter.stat_line(f"Loaded {len(initial_cluster_results)} cluster results from step 5 clusterer")
-    elif not category_assigned_data:
-        # No categories AND no clusters — can't proceed
-        raise FileNotFoundError(
-            f"No data source available: neither step_5_categories nor step_5_clusterer cache found.\n"
-            f"Run step_5_categories or pipeline.py with RUN_UNTIL_STEP=5 first."
-        )
-    else:
-        verbose_reporter.stat_line("Step 5 clusterer cache not found (not needed for mece_categories path)")
-
-    # Get starter codes from clustering metadata (if available)
-    starter_codes = []
-    if config.use_speculative_starter_codes and clustering_metadata:
-        for cluster_id, cluster_data in clustering_metadata.clusters.items():
-            if cluster_data.label_theme:
-                starter_codes.append({
-                    'code': cluster_data.label_theme,
-                    'definition': cluster_data.label_description or '',
-                    'cluster_id': cluster_id
-                })
-        if starter_codes:
-            verbose_reporter.stat_line(f"Loaded {len(starter_codes)} starter codes from cluster labels")
-
-    # Clean ideas (if cluster results available)
-    cleaned_cluster_results = clusterer_utils.clean_cluster_ideas(initial_cluster_results) if initial_cluster_results else []
-
-    # Optionally limit cluster results for faster experiments
-    if cleaned_cluster_results and config.experiment_n is not None and config.experiment_n < len(cleaned_cluster_results):
-        full_count = len(cleaned_cluster_results)
-        cleaned_cluster_results = cleaned_cluster_results[:config.experiment_n]
-        verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} of {full_count} cluster results")
-
     if not USE_EXPERIMENTAL or STAGE1_INPUT_SOURCE == "ideas":
         verbose_reporter.stat_line(f"Input source: idea sampling (STAGE1_INPUT_SOURCE={'ideas'!r})")
 
-    # Generate codebook
+    # Generate codebook (clean slate — no starter codes)
     generator = InductiveCodeGenerator(
-        cluster_results=cleaned_cluster_results,
-        starter_codes=starter_codes,
+        cluster_results=[],
+        starter_codes=[],
         var_lab=var_lab,
         verbose=config.verbose,
         verbose_detailed=config.verbose_detailed,
@@ -361,7 +296,6 @@ if __name__ == "__main__":
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
     print(f"Using experimental: {USE_EXPERIMENTAL}")
-    print(f"Speculative starter codes: {config.use_speculative_starter_codes}")
     if USE_EXPERIMENTAL:
         print(f"Stage 1 input source: {STAGE1_INPUT_SOURCE}")
     print(f"Embedding format: {config.step6_embedding_format}")

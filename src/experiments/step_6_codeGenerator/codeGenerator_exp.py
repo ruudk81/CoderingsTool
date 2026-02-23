@@ -30,6 +30,7 @@ from experiments.models_exp import (
     PartitionMECEResultModel,
 )
 from experiments.step_5_categories.prompts_exp import MECECategory
+from experiments.step_5_categories.config_categories_exp import get_other_category_label
 from experiments.step_4_embedder.config_exp import format_idea_text
 from experiments.step_3_ideaExtractor.facet_data import get_facet
 # Import from experimental config_exp (re-exports production config + experimental overrides)
@@ -54,7 +55,8 @@ try:
         INPUT_TOKEN_ESTIMATE_MARGIN, OUTPUT_ESTIMATE_PCT_OF_INPUT,
         FIRST_PROMPT_ALLOCATION_PCT, ASSUMED_LATENCY_PER_REQUEST,
         BUCKET_STATUS_RECENT_SAMPLES, LOW_TOKEN_THRESHOLD_PCT,
-        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_REPORT_INTERVAL
+        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_REPORT_INTERVAL,
+        MIN_GROUP_SIZE_FOR_THEME_EXTRACTION
     )
 except ImportError:
     from config_exp import (
@@ -74,7 +76,8 @@ except ImportError:
         INPUT_TOKEN_ESTIMATE_MARGIN, OUTPUT_ESTIMATE_PCT_OF_INPUT,
         FIRST_PROMPT_ALLOCATION_PCT, ASSUMED_LATENCY_PER_REQUEST,
         BUCKET_STATUS_RECENT_SAMPLES, LOW_TOKEN_THRESHOLD_PCT,
-        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_REPORT_INTERVAL
+        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_REPORT_INTERVAL,
+        MIN_GROUP_SIZE_FOR_THEME_EXTRACTION
     )
 # Import prompts and response models from experimental prompts_exp
 try:
@@ -1582,15 +1585,19 @@ class InductiveCodeGenerator:
             "- Boundary test (a yes/no question for membership)\n"
             "- Diagnostic signals (trigger words/phrases)\n"
             "- Key expressions (representative labels from the data)\n"
-            "- Tiebreaker rules (how to resolve ambiguous cases with other categories)\n\n"
-            "**Assigned ideas** -- actual survey response ideas assigned to this category, grouped by assignment confidence:\n"
-            "- Inner members: high confidence assignments (0.6-0.8)\n"
-            "- Border members: medium confidence (0.4-0.6)\n"
-            "- Fringe members: low confidence (0.0-0.4)\n\n"
+            "- Tiebreaker rules (how to resolve ambiguous cases with other categories)\n"
+            "- Directional scope (if present): whether this group contains only reinforcing/"
+            "neutral ideas or only undermining ideas — respect this scope strictly\n\n"
+            "**Assigned ideas** -- actual survey response ideas assigned to this category, "
+            "sampled for diversity.\n\n"
             "Use the category metadata to understand the intended scope and boundaries. "
             "Use the assigned ideas as your evidence base for theme identification."
         ),
-        'analysis_step_2': "Explain how the category's boundary test and diagnostic signals informed your theme identification",
+        'analysis_step_2': (
+            "Explain how the category's boundary test and diagnostic signals informed your "
+            "theme identification; if a directional scope is stated, confirm that your themes "
+            "reflect only that direction"
+        ),
         'analysis_step_3': 'Note any sub-themes you identified, split, or merged -- and why',
     }
 
@@ -2269,17 +2276,25 @@ class InductiveCodeGenerator:
         return {cid: cdata for cid, cdata in clusters.items() if len(cdata['embeddings']) > 0}
 
     def extract_category_data(self) -> Dict[int, Dict[str, Any]]:
-        """Extract data organized by MECE category with sequential numeric IDs.
+        """Extract data organized by MECE category with sequential numeric IDs,
+        split by individual valence direction (+, -, 0).
 
-        Assigns integer IDs (1, 2, 3...) to each unique category so downstream
-        expansion/redistribution/re-extraction works identically to the cluster path.
-        Sets idea.initial_cluster on every idea for extract_cluster_data() compat.
+        Every (base_key, valence) combination with at least 1 idea gets its own
+        numeric ID.  No folding, no threshold filtering — the caller decides
+        which groups go through theme extraction vs direct "other" assignment.
+
+        Ideas whose (partition_name, assigned_category) is not in the MECE
+        results cache (e.g. "overig/anders" catch-all) are included with
+        category=None so the caller can route them to the "other" path.
+
+        Sets idea.initial_cluster on every idea for downstream compat.
 
         Returns dict: numeric_id -> {
-            'cluster_id': int,                # sequential numeric ID
-            'category_key': str,              # "{partition}::{label}" for logging/prompts
+            'cluster_id': int,
+            'category_key': str,              # "{partition}::{label} [+]" / "[-]" / "[0]"
             'partition_name': str,
-            'category': MECECategory,         # Full MECE category metadata
+            'category': MECECategory | None,  # None for overig/anders ideas
+            'valence_sign': str,              # raw valence: "+", "-", or "0"
             'ideas': List[CategoryAssignedSubmodel],
             'embeddings': List[ndarray],
             'idea_texts': List[str],
@@ -2289,36 +2304,52 @@ class InductiveCodeGenerator:
         if not self._mece_results_cache or not self._category_assigned_data:
             return {}
 
-        # Build lookup: (partition_name, category_label) -> MECECategory
+        # --- Pass 1: build MECECategory lookup ---
         category_lookup: Dict[tuple, 'MECECategory'] = {}
         for part_name, part_result in self._mece_results_cache.partition_results.items():
             for cat in part_result.categories:
                 category_lookup[(part_name, cat.category_label)] = cat
 
-        # First pass: discover unique categories and assign sequential IDs
-        cat_key_to_id: Dict[str, int] = {}
-        next_id = 1
+        # --- Pass 2: count ideas per (base_key, valence) and assign IDs ---
+        # Three-way split: "+", "-", "0" — each gets its own group.
+        cat_val_counts: Dict[str, Dict[str, int]] = {}
         for resp in self._category_assigned_data:
             for idea in (resp.response_ideas or []):
                 if not idea.assigned_category or not idea.partition_name:
                     continue
-                cat_key = f"{idea.partition_name}::{idea.assigned_category}"
-                if cat_key not in cat_key_to_id:
-                    cat_key_to_id[cat_key] = next_id
+                base_key = f"{idea.partition_name}::{idea.assigned_category}"
+                val = getattr(idea, 'valence', '') or "+"
+                if val not in ("+", "-", "0"):
+                    val = "+"
+                cat_val_counts.setdefault(base_key, {"+": 0, "-": 0, "0": 0})
+                cat_val_counts[base_key][val] += 1
+
+        # Assign sequential numeric IDs for every non-empty (base_key, valence)
+        cat_val_to_id: Dict[tuple, int] = {}
+        next_id = 1
+        for base_key, counts in cat_val_counts.items():
+            for val_sign in ("+", "-", "0"):
+                if counts[val_sign] > 0:
+                    cat_val_to_id[(base_key, val_sign)] = next_id
                     next_id += 1
 
-        # Store mapping for logging (numeric → composite key)
-        self._category_id_map = {v: k for k, v in cat_key_to_id.items()}
+        # Store inverse for logging
+        self._category_id_map = {v: k for k, v in cat_val_to_id.items()}
 
-        # Second pass: group ideas by numeric ID, stamp initial_cluster
+        # --- Pass 3: group ideas by numeric ID, stamp initial_cluster ---
         categories: Dict[int, Dict[str, Any]] = {}
+
         for resp in self._category_assigned_data:
             for idea in (resp.response_ideas or []):
                 if not idea.assigned_category or not idea.partition_name:
                     continue
 
-                cat_key = f"{idea.partition_name}::{idea.assigned_category}"
-                numeric_id = cat_key_to_id[cat_key]
+                base_key = f"{idea.partition_name}::{idea.assigned_category}"
+                val = getattr(idea, 'valence', '') or "+"
+                if val not in ("+", "-", "0"):
+                    val = "+"
+
+                numeric_id = cat_val_to_id[(base_key, val)]
 
                 # Stamp bridge field for downstream compat
                 idea.initial_cluster = numeric_id
@@ -2329,9 +2360,10 @@ class InductiveCodeGenerator:
                     )
                     categories[numeric_id] = {
                         'cluster_id': numeric_id,
-                        'category_key': cat_key,
+                        'category_key': f"{base_key} [{val}]",
                         'partition_name': idea.partition_name,
-                        'category': mece_cat,  # None for "Other"
+                        'category': mece_cat,
+                        'valence_sign': val,
                         'ideas': [],
                         'embeddings': [],
                         'idea_texts': [],
@@ -2346,18 +2378,202 @@ class InductiveCodeGenerator:
                 if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
                     categories[numeric_id]['embeddings'].append(idea.idea_embedding)
 
-        # Filter: require at least 1 idea and a valid MECECategory
-        valid = {k: v for k, v in categories.items()
-                 if v['ideas'] and v['category'] is not None}
-
+        # --- Verbose logging ---
         if self.verbose_reporter.enabled:
-            excluded = len(categories) - len(valid)
-            if excluded > 0:
+            n_plus = sum(1 for v in categories.values() if v['valence_sign'] == "+")
+            n_minus = sum(1 for v in categories.values() if v['valence_sign'] == "-")
+            n_zero = sum(1 for v in categories.values() if v['valence_sign'] == "0")
+            n_no_mece = sum(1 for v in categories.values() if v['category'] is None)
+            total_ideas = sum(len(v['ideas']) for v in categories.values())
+            self.verbose_reporter.stat_line(
+                f"  Valence groups: {n_plus} [+], {n_minus} [\u2212], {n_zero} [0] "
+                f"({len(categories)} total, {total_ideas} ideas)"
+            )
+            if n_no_mece > 0:
+                n_no_mece_ideas = sum(
+                    len(v['ideas']) for v in categories.values() if v['category'] is None
+                )
                 self.verbose_reporter.stat_line(
-                    f"  Excluded {excluded} category groups (no MECECategory or no ideas)"
+                    f"  {n_no_mece} groups ({n_no_mece_ideas} ideas) have no MECE category "
+                    f"(overig/anders \u2192 direct 'other' code)"
                 )
 
-        return valid
+        return categories
+
+    def _separate_other_groups(
+        self,
+        categories: Dict[int, Dict[str, Any]],
+        min_size: int = 3
+    ) -> tuple:
+        """Split category groups into normal (theme extraction) and other (direct code).
+
+        A group goes to 'other' if:
+          - category is None (overig/anders — no MECE metadata), OR
+          - len(ideas) < min_size (too few for meaningful theme extraction)
+
+        For normal groups, + and 0 valence groups from the same
+        (partition, category) are merged into a single 'pos' group for theme
+        extraction.  '-' groups stay separate as 'neg'.
+
+        Returns (normal_groups, other_groups) — both are dicts keyed by
+        numeric ID with the same structure as the input.  normal_groups
+        entries gain a 'valence_group' field ("pos" or "neg") used by the
+        existing theme extraction + prompt formatting code.
+        """
+        other_groups: Dict[int, Dict[str, Any]] = {}
+        mergeable: Dict[int, Dict[str, Any]] = {}  # candidates for +/0 merge
+
+        for num_id, entry in categories.items():
+            if entry['category'] is None or len(entry['ideas']) < min_size:
+                other_groups[num_id] = entry
+            else:
+                mergeable[num_id] = entry
+
+        # --- Merge + and 0 groups from the same (partition, category) ---
+        # Build lookup: (partition, category_label) → list of group entries
+        merge_key_to_groups: Dict[tuple, list] = {}
+        neg_groups: Dict[int, Dict[str, Any]] = {}
+
+        for num_id, entry in mergeable.items():
+            if entry['valence_sign'] == "-":
+                # Negative groups stay as-is
+                entry['valence_group'] = "neg"
+                neg_groups[num_id] = entry
+            else:
+                # + and 0 groups — collect for merging
+                cat_label = entry['category'].category_label if entry['category'] else ""
+                merge_key = (entry['partition_name'], cat_label)
+                merge_key_to_groups.setdefault(merge_key, []).append((num_id, entry))
+
+        # Build merged pos groups with fresh sequential IDs
+        normal_groups: Dict[int, Dict[str, Any]] = {}
+        next_merged_id = max(categories.keys(), default=0) + 1
+
+        for merge_key, group_list in merge_key_to_groups.items():
+            if len(group_list) == 1:
+                # Only one group (either + or 0) — use as-is
+                num_id, entry = group_list[0]
+                entry['valence_group'] = "pos"
+                # Re-stamp display key
+                base_key = f"{entry['partition_name']}::{entry['category'].category_label}"
+                entry['category_key'] = f"{base_key} [+/0]"
+                normal_groups[num_id] = entry
+            else:
+                # Merge + and 0 groups into one pos group
+                merged_id = next_merged_id
+                next_merged_id += 1
+                first_entry = group_list[0][1]
+                base_key = f"{first_entry['partition_name']}::{first_entry['category'].category_label}"
+
+                merged = {
+                    'cluster_id': merged_id,
+                    'category_key': f"{base_key} [+/0]",
+                    'partition_name': first_entry['partition_name'],
+                    'category': first_entry['category'],
+                    'valence_group': "pos",
+                    'valence_sign': "+",  # representative sign for the merged group
+                    'ideas': [],
+                    'embeddings': [],
+                    'idea_texts': [],
+                    'respondent_ids': [],
+                }
+                for _, entry in group_list:
+                    merged['ideas'].extend(entry['ideas'])
+                    merged['embeddings'].extend(entry['embeddings'])
+                    merged['idea_texts'].extend(entry['idea_texts'])
+                    merged['respondent_ids'].extend(entry['respondent_ids'])
+
+                # Re-stamp initial_cluster on merged ideas
+                for idea in merged['ideas']:
+                    idea.initial_cluster = merged_id
+
+                normal_groups[merged_id] = merged
+
+        # Add negative groups
+        for num_id, entry in neg_groups.items():
+            base_key = f"{entry['partition_name']}::{entry['category'].category_label}"
+            entry['category_key'] = f"{base_key} [\u2212]"
+            normal_groups[num_id] = entry
+
+        if self.verbose_reporter.enabled:
+            n_other_ideas = sum(len(v['ideas']) for v in other_groups.values())
+            n_normal_ideas = sum(len(v['ideas']) for v in normal_groups.values())
+            self.verbose_reporter.stat_line(
+                f"  Separated: {len(normal_groups)} groups ({n_normal_ideas} ideas) "
+                f"\u2192 theme extraction, {len(other_groups)} groups ({n_other_ideas} ideas) "
+                f"\u2192 partition 'other' code"
+            )
+
+        return normal_groups, other_groups
+
+    async def _assign_partition_other_codes(
+        self,
+        other_groups: Dict[int, Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Assign partition-level 'other' codes to ideas in small/unassigned groups.
+
+        Creates one code per unique (partition_name, valence_sign) combination:
+            "{partition_name} — overig/anders (+)"   (Dutch)
+            "{partition_name} — other/miscellaneous (-)"  (English)
+            etc.
+
+        Sets expanded_cluster and cluster_theme on each idea.
+        Returns result dicts compatible with generate_async() codebook assembly.
+        """
+        # Resolve language-specific "other" label
+        language = (
+            self._extraction_metadata.lang
+            if self._extraction_metadata and self._extraction_metadata.lang
+            else DEFAULT_LANGUAGE
+        )
+        other_label = get_other_category_label(language)
+
+        # Group ideas by (partition_name, valence_sign)
+        pv_buckets: Dict[tuple, list] = {}  # (partition, valence) → list of ideas
+        for entry in other_groups.values():
+            pv_key = (entry['partition_name'], entry['valence_sign'])
+            pv_buckets.setdefault(pv_key, []).extend(entry['ideas'])
+
+        results = []
+        codes_created = 0
+        total_ideas = 0
+
+        for (partition, val_sign), ideas in pv_buckets.items():
+            code_label = f"{partition} \u2014 {other_label} ({val_sign})"
+            code_definition = (
+                f"Ideas within the '{partition}' partition that could not be "
+                f"assigned a specific code (valence: {val_sign})."
+            )
+            cluster_key = f"other_{partition}_{val_sign}"
+
+            # NOT added to SharedCodebook — "other" codes are excluded from
+            # the 4-chain process so Prompt 2 never sees them as USE/MODIFY
+            # candidates. They are injected into all_results after batch
+            # processing for final codebook assembly only.
+            codes_created += 1
+
+            # Stamp idea attributes for downstream compat (step 8 routing)
+            for idea in ideas:
+                idea.expanded_cluster = cluster_key
+                idea.cluster_theme = code_label
+            total_ideas += len(ideas)
+
+            # Result dict for codebook assembly in generate_async()
+            results.append({
+                'cluster_id': cluster_key,
+                'final_code': code_label,
+                'final_definition': code_definition,
+                'decision': 'DIRECT_OTHER',
+                'ideas_count': len(ideas),
+            })
+
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(
+                f"  Partition 'other' codes: {codes_created} codes created, "
+                f"{total_ideas} ideas assigned"
+            )
+
+        return results
 
     def _format_theme_only_results(self, themes: Dict[int, ClusterSummaryOutput]) -> List[Dict[str, Any]]:
         """Format theme extraction results for early return without 4-prompt chain processing"""
@@ -3010,7 +3226,7 @@ class InductiveCodeGenerator:
         n = len(idea_texts)
     
         # Early exit: small clusters — keep existing behaviour (no clustering/noise filtering)
-        if n <= max_ideas or n <= 30:
+        if n <= max_ideas or n <= 50:
             self.sampling_stats['clusters_sampled'] += 1
             self.sampling_stats['total_sampled_ideas'] += n
             if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
@@ -3069,23 +3285,35 @@ class InductiveCodeGenerator:
                 )
             return picked
     
-        # Allocation ∝ cluster size (stable rounding; may allocate 0 if there are more clusters than budget)
+        # Equal allocation: every sub-cluster gets the same base share.
+        # Small clusters that can't fill their share release residual budget,
+        # which is redistributed proportionally among clusters with surplus ideas.
         budget = min(max_ideas, total_non_noise)
-    
+
         sizes = {cid: len(idxs) for cid, idxs in clusters.items()}
-        total = float(total_non_noise)
-    
-        # base quota + fractional remainder for stable rounding
-        raw = {cid: (sizes[cid] / total) * budget for cid in sizes}
-        base = {cid: int(np.floor(raw[cid])) for cid in sizes}
-        remainder = budget - sum(base.values())
-    
-        if remainder > 0:
-            order = sorted(sizes.keys(), key=lambda c: (raw[c] - base[c], sizes[c]), reverse=True)
-            for cid in order[:remainder]:
-                base[cid] += 1
-    
-        allocation = base  # final per-cluster k
+        n_clusters = len(sizes)
+
+        # Round 1: equal share, capped at actual cluster size
+        equal_share = budget // n_clusters
+        allocation = {cid: min(equal_share, sizes[cid]) for cid in sizes}
+        residual = budget - sum(allocation.values())
+
+        # Round 2+: distribute residual proportionally among clusters with surplus
+        while residual > 0:
+            surplus = {cid: sizes[cid] - allocation[cid]
+                       for cid in sizes if sizes[cid] > allocation[cid]}
+            if not surplus:
+                break  # all clusters fully allocated
+            total_surplus = sum(surplus.values())
+            distributed = 0
+            for cid in sorted(surplus, key=lambda c: surplus[c], reverse=True):
+                extra = max(1, round(residual * surplus[cid] / total_surplus))
+                extra = min(extra, surplus[cid], residual - distributed)
+                allocation[cid] += extra
+                distributed += extra
+                if distributed >= residual:
+                    break
+            residual -= distributed
     
         # Sample within each cluster
         sampled_indices: List[int] = []
@@ -3414,12 +3642,18 @@ class InductiveCodeGenerator:
 
         return "\n".join(sections)
 
-    def _format_category_metadata_as_text(self, category: 'MECECategory', partition_name: str = "") -> str:
+    def _format_category_metadata_as_text(
+        self,
+        category: 'MECECategory',
+        partition_name: str = "",
+        valence_group: str = ""
+    ) -> str:
         """Format full MECE category metadata as structured text for the prompt.
 
         Args:
             category: MECECategory object from step_5_categories
             partition_name: Name of the concept_type partition this category belongs to
+            valence_group: "pos", "neg", or "" — controls directional scope note
         """
         sections = []
 
@@ -3441,6 +3675,20 @@ class InductiveCodeGenerator:
         if category.tiebreaker_rules:
             rules = "\n  ".join(category.tiebreaker_rules)
             sections.append(f"Tiebreaker rules:\n  {rules}")
+
+        if valence_group == "pos":
+            sections.append(
+                "Directional scope: This group contains REINFORCING and NEUTRAL ideas "
+                "only (valence '+' or '0'). Ideas that undermine or negate the concept "
+                "are excluded. Codes derived from this data must not reflect negation "
+                "or insufficiency."
+            )
+        elif valence_group == "neg":
+            sections.append(
+                "Directional scope: This group contains UNDERMINING ideas only "
+                "(valence '\u2212'). Codes derived from this data should reflect "
+                "negation, absence, or insufficiency of the concept."
+            )
 
         return "\n".join(sections)
 
@@ -3468,29 +3716,25 @@ class InductiveCodeGenerator:
         embeddings = category_data['embeddings']
         idea_texts = category_data['idea_texts']
         partition_name = category_data['partition_name']
+        valence_group = category_data.get('valence_group', '')
 
         if not ideas:
             self.verbose_reporter.error(f"No ideas in category {category_key}")
             return None
 
-        # Format category metadata
+        # Format category metadata (includes directional scope note if valence-split)
         category_metadata_text = self._format_category_metadata_as_text(
-            category, partition_name=partition_name
+            category, partition_name=partition_name, valence_group=valence_group
         )
 
-        # Sample ideas by confidence band
-        sampled_bands = self._sample_ideas_by_confidence_band(
-            ideas, idea_texts, embeddings
+        # Sample ideas using UMAP+HDBSCAN diversity sampling (no confidence bands —
+        # category_confidence is LLM self-reported and concentrates in the 0.8-1.0 range,
+        # making band-based stratification ineffective for the mece_categories path)
+        sampled = self._sample_representative_ideas(
+            idea_texts, self.config.total_sample_budget,
+            provided_embeddings=embeddings
         )
-
-        if sampled_bands and sum(len(v) for v in sampled_bands.values()) > 0:
-            ideas_section = self._format_cluster_text_by_bands(sampled_bands)
-        else:
-            # All ideas are high-confidence (>= 0.8) — use random sample
-            import random
-            k = min(self.config.max_ideas_per_cluster, len(idea_texts))
-            sampled = random.sample(idea_texts, k) if len(idea_texts) > k else idea_texts
-            ideas_section = "\n".join([f"- {t}" for t in sampled])
+        ideas_section = "\n".join([f"- {t}" for t in sampled])
 
         # Combine category metadata + sampled ideas into cluster_text
         ideas_text = f"{category_metadata_text}\n\n--- Assigned Ideas ---\n\n{ideas_section}"
@@ -3529,6 +3773,7 @@ class InductiveCodeGenerator:
                     "category_key": category_key,
                     "partition_name": partition_name,
                     "category_label": category.category_label,
+                    "valence_group": valence_group,
                     "model": self.config.model,
                     "ideas_count": len(ideas),
                     "input_source": input_source_label,
@@ -4409,7 +4654,8 @@ class InductiveCodeGenerator:
                     'candidate_selection': candidate_selection,
                     'optimization': 'use_early_return',
                     'final_code': final_code,
-                    'final_definition': final_definition  # May be None for USE, but that's OK
+                    'final_definition': final_definition,  # May be None for USE, but that's OK
+                    'valence_group': cluster_data.get('valence_group', ''),
                 }
             
             # Step 3: Code generation for CREATE/MODIFY decisions
@@ -4463,7 +4709,8 @@ class InductiveCodeGenerator:
                 'code_generation': code_generation,
                 'validation': validation,
                 'final_code': final_code,
-                'final_definition': final_definition
+                'final_definition': final_definition,
+                'valence_group': cluster_data.get('valence_group', ''),
             }
             
         except Exception as e:
@@ -4607,20 +4854,31 @@ class InductiveCodeGenerator:
                 and self._category_assigned_data is not None
             )
 
+            other_results = []  # populated only by _using_categories path
+
             if _using_categories:
                 # --- MECE categories path (step_5_categories) ---
                 stage_start = time.time()
                 try:
-                    clusters = self.extract_category_data()
-                    self._processing_stats['clusters_found'] = len(clusters)
+                    all_categories = self.extract_category_data()
                     self.verbose_reporter.stat_line(
-                        f"Extracted data from {len(clusters)} MECE categories"
+                        f"Extracted data from {len(all_categories)} valence groups"
                     )
-                    if not clusters:
+                    if not all_categories:
                         self.verbose_reporter.warning(
                             "No valid MECE categories found - check step_5_categories cache"
                         )
                         return []
+
+                    # Separate small/unassigned groups for direct "other" code
+                    clusters, other_groups = self._separate_other_groups(
+                        all_categories,
+                        min_size=MIN_GROUP_SIZE_FOR_THEME_EXTRACTION
+                    )
+                    if other_groups:
+                        other_results = await self._assign_partition_other_codes(other_groups)
+
+                    self._processing_stats['clusters_found'] = len(clusters)
                 except Exception as e:
                     self.verbose_reporter.error(f"Failed to extract category data: {e}")
                     return []
@@ -4747,7 +5005,11 @@ class InductiveCodeGenerator:
                 all_results = []
                 
             self._processing_stats['stage_times']['batch_processing'] = time.time() - stage_start
-            
+
+            # Merge partition "other" results (from _assign_partition_other_codes)
+            if _using_categories and other_results:
+                all_results.extend(other_results)
+
             # Final statistics and validation
             processing_time = time.time() - start_time
             self._processing_stats['total_time'] = processing_time
@@ -4853,6 +5115,7 @@ class InductiveCodeGenerator:
         code_to_clusters = {}
         code_to_definition = {}
         code_to_assignment_examples = {}  # NEW: Track assignment_examples
+        code_to_valence = {}  # Track valence_group per code for indicator appending
 
         for cluster_result in results:
             cluster_id = str(cluster_result.get('cluster_id', ''))
@@ -4897,6 +5160,14 @@ class InductiveCodeGenerator:
                         }
 
                 code_to_clusters[final_code].append(cluster_id)
+
+                # Track valence for this code
+                vg = cluster_result.get('valence_group', '')
+                if final_code not in code_to_valence:
+                    code_to_valence[final_code] = set()
+                if vg:
+                    code_to_valence[final_code].add(vg)
+
             elif cluster_id and not final_code:
                 # Defensive logging: cluster has ID but no final_code
                 self.verbose_reporter.warning(f"C{cluster_id}: Has cluster_id but missing final_code - not mapped to codebook")
@@ -4914,8 +5185,23 @@ class InductiveCodeGenerator:
         # Build final codebook with complete cluster mappings
         final_codes = []
         for code_text, cluster_ids in code_to_clusters.items():
+            # Append valence indicator programmatically
+            # Skip codes that already have a valence indicator (e.g., "other" codes)
+            display_code = code_text
+            if not any(code_text.endswith(f'({s})') for s in ('+', '-', '0')):
+                valence_set = code_to_valence.get(code_text, set())
+                if valence_set:
+                    # Map valence_group to indicator: "pos" → "+", "neg" → "-"
+                    indicators = sorted(
+                        '-' if v == 'neg' else '+' for v in valence_set
+                    )
+                    display_code = f"{code_text} ({','.join(indicators)})"
+                else:
+                    # No valence tracked → neutral
+                    display_code = f"{code_text} (0)"
+
             code_entry = {
-                'code': code_text,
+                'code': display_code,
                 'definition': code_to_definition[code_text] or "",  # Ensure definition is never None
                 'source_cluster_id': ','.join(cluster_ids)  # Preserve ALL cluster IDs
             }
@@ -5070,6 +5356,7 @@ class InductiveCodeGenerator:
                     'theme_name': self._get_theme_name(theme_data),
                     'theme_description': self._get_theme_statement(theme_data),
                     'ideas_count': len(cluster_data.get('ideas', [])),
+                    'valence_group': cluster_data.get('valence_group', ''),
                     'candidate_selection': candidate_selection,
                     'code_generation': None,  # Skipped for USE decisions
                     'validation': None,       # Skipped for USE decisions
@@ -5112,6 +5399,7 @@ class InductiveCodeGenerator:
                 'theme_name': self._get_theme_name(theme_data),
                 'theme_description': self._get_theme_statement(theme_data),
                 'ideas_count': len(cluster_data.get('ideas', [])),
+                'valence_group': cluster_data.get('valence_group', ''),
                 'candidate_selection': candidate_selection,
                 'code_generation': code_generation,
                 'validation': validation,

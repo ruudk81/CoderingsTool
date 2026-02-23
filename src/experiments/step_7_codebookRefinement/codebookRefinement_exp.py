@@ -57,6 +57,7 @@ try:
         PARTITION_REFINEMENT_PROMPT, CROSS_PARTITION_JUDGE_PROMPT,
         PartitionRefinementResult, CrossPartitionJudgeResult,
         PARTITION_REVIEW_PROMPT, PartitionReviewResult,
+        CROSS_PARTITION_RESOLVE_PROMPT, ConflictResolutionResult,
     )
 except ImportError:
     from prompts_exp import (
@@ -65,13 +66,14 @@ except ImportError:
         PARTITION_REFINEMENT_PROMPT, CROSS_PARTITION_JUDGE_PROMPT,
         PartitionRefinementResult, CrossPartitionJudgeResult,
         PARTITION_REVIEW_PROMPT, PartitionReviewResult,
+        CROSS_PARTITION_RESOLVE_PROMPT, ConflictResolutionResult,
     )
 from experiments.models_exp import (
     RefinedCodebookModel, CodeRefinementResults, RefinedSubcode, RefinedCodebookCategory,
     CodeTransformation, BatchTransformationRecord, RefinementLineage,
     ThemeEnrichedCodebookEntryExp, ThemeEnrichedCodebookModelExp,
 )
-from utils.codeGenerator import CodeGeneratorReasoningResults
+from experiments.step_6_codeGenerator.codeGenerator_exp import CodeGeneratorReasoningResults
 from utils.verboseReporter import VerboseReporter
 
 # Setup logging
@@ -1716,7 +1718,7 @@ class CodebookRefinementProcessor:
         """Build condensed summary for cross-partition judge prompt."""
         lines = []
         for partition_name, result in sorted(partition_results.items()):
-            lines.append(f"=== Domain: {result.theme_label} ({partition_name}) ===")
+            lines.append(f"=== Partition: {partition_name} (theme: {result.theme_label}) ===")
             lines.append(f"Description: {result.theme_description}")
             for code in result.codes:
                 lines.append(f"  - {code.code}: {code.definition}")
@@ -1826,6 +1828,158 @@ class CodebookRefinementProcessor:
         )
 
         return response
+
+    def _find_code_in_partition(self, code_name: str, partition_name: str,
+                                partition_results: Dict[str, PartitionRefinementResult]):
+        """Find a code object by name within a specific partition."""
+        if partition_name in partition_results:
+            for code in partition_results[partition_name].codes:
+                if code.code == code_name:
+                    return code
+        return None
+
+    def _format_code_details(self, code) -> str:
+        """Format a single code's full details for the resolution prompt."""
+        signals = ", ".join(code.diagnostic_signals) if code.diagnostic_signals else "(none)"
+        inclusions = "\n    ".join(f"+ {ex}" for ex in (code.inclusion_examples or []))
+        exclusions = "\n    ".join(f"- {ex}" for ex in (code.exclusion_examples or []))
+        return (
+            f"  Definition: {code.definition}\n"
+            f"  Boundary test: {code.boundary_test}\n"
+            f"  Diagnostic signals: {signals}\n"
+            f"  Inclusion examples:\n    {inclusions}\n"
+            f"  Exclusion examples:\n    {exclusions}\n"
+            f"  Near neighbor: {code.near_neighbor_label or 'N/A'}\n"
+            f"  Tell-apart rule: {code.tell_apart_rule or 'N/A'}"
+        )
+
+    def _format_conflicts_for_resolution(
+        self,
+        judge_result: CrossPartitionJudgeResult,
+        partition_results: Dict[str, PartitionRefinementResult],
+    ) -> str:
+        """Build formatted conflict details for the resolution prompt."""
+        sections = []
+        for i, conflict in enumerate(judge_result.conflicts):
+            code_a = self._find_code_in_partition(conflict.code_a, conflict.partition_a, partition_results)
+            code_b = self._find_code_in_partition(conflict.code_b, conflict.partition_b, partition_results)
+
+            section = f"--- Conflict {i} ({conflict.severity}) ---\n"
+            section += f'Code A: "{conflict.code_a}" [partition: {conflict.partition_a}]\n'
+            if code_a:
+                section += self._format_code_details(code_a) + "\n\n"
+            else:
+                section += "  (code details not found)\n\n"
+
+            section += f'Code B: "{conflict.code_b}" [partition: {conflict.partition_b}]\n'
+            if code_b:
+                section += self._format_code_details(code_b) + "\n\n"
+            else:
+                section += "  (code details not found)\n\n"
+
+            section += f"Overlap: {conflict.overlap_description}\n"
+            section += f"Judge's suggestion: {conflict.resolution}"
+            sections.append(section)
+
+        return "\n\n".join(sections)
+
+    async def _resolve_cross_partition_conflicts_async(
+        self,
+        judge_result: CrossPartitionJudgeResult,
+        partition_results: Dict[str, PartitionRefinementResult],
+        survey_question: str,
+        async_client: Any,
+    ) -> ConflictResolutionResult:
+        """Resolve cross-partition conflicts by merging duplicates or sharpening boundaries."""
+
+        conflicts_formatted = self._format_conflicts_for_resolution(judge_result, partition_results)
+
+        prompt = CROSS_PARTITION_RESOLVE_PROMPT.format(
+            survey_question=survey_question,
+            language=self.config.language,
+            n_conflicts=len(judge_result.conflicts),
+            conflicts_formatted=conflicts_formatted,
+        )
+
+        if self.prompt_printer:
+            self.prompt_printer.capture_prompt(
+                step_name="step_7_cross_partition_resolve",
+                utility_name="codebookRefinement_resolve",
+                prompt_content=prompt,
+                prompt_type="cross_partition_resolve",
+                metadata={
+                    'n_conflicts': len(judge_result.conflicts),
+                    'model': self.model_config.codebook_refinement_model,
+                }
+            )
+
+        model_name = self.model_config.codebook_refinement_model
+        temperature = 0.0  # Resolution should be deterministic
+
+        resolution_result = await llm_create_async(
+            client=async_client,
+            model=model_name,
+            prompt=prompt,
+            response_model=ConflictResolutionResult,
+            temperature=temperature,
+            max_tokens=self.model_config.default_max_tokens,
+        )
+
+        # Apply resolutions to partition_results
+        # Track codes dropped by earlier merges so later conflicts can skip them
+        dropped_codes: set = set()  # (code_name, partition_key) tuples
+
+        for res in resolution_result.resolutions:
+            if res.conflict_index >= len(judge_result.conflicts):
+                continue
+            conflict = judge_result.conflicts[res.conflict_index]
+
+            # Skip conflicts that reference a code already dropped by an earlier merge
+            conflict_codes = {
+                (conflict.code_a, conflict.partition_a),
+                (conflict.code_b, conflict.partition_b),
+            }
+            if conflict_codes & dropped_codes:
+                logger.info(
+                    f"Skipping conflict {res.conflict_index}: references already-dropped code"
+                )
+                continue
+
+            if res.action == "merge" and res.dropped_code and res.dropped_partition:
+                # Remove dropped code from its partition
+                if res.dropped_partition in partition_results:
+                    codes = partition_results[res.dropped_partition].codes
+                    partition_results[res.dropped_partition].codes = [
+                        c for c in codes if c.code != res.dropped_code
+                    ]
+                    dropped_codes.add((res.dropped_code, res.dropped_partition))
+
+            elif res.action == "sharpen":
+                # Update code_a
+                code_a = self._find_code_in_partition(conflict.code_a, conflict.partition_a, partition_results)
+                if code_a and res.code_a_updates:
+                    if 'boundary_test' in res.code_a_updates:
+                        code_a.boundary_test = res.code_a_updates['boundary_test']
+                    if 'tell_apart_rule' in res.code_a_updates:
+                        code_a.tell_apart_rule = res.code_a_updates['tell_apart_rule']
+                if code_a and res.code_a_new_exclusions:
+                    if code_a.exclusion_examples is None:
+                        code_a.exclusion_examples = []
+                    code_a.exclusion_examples.extend(res.code_a_new_exclusions)
+
+                # Update code_b
+                code_b = self._find_code_in_partition(conflict.code_b, conflict.partition_b, partition_results)
+                if code_b and res.code_b_updates:
+                    if 'boundary_test' in res.code_b_updates:
+                        code_b.boundary_test = res.code_b_updates['boundary_test']
+                    if 'tell_apart_rule' in res.code_b_updates:
+                        code_b.tell_apart_rule = res.code_b_updates['tell_apart_rule']
+                if code_b and res.code_b_new_exclusions:
+                    if code_b.exclusion_examples is None:
+                        code_b.exclusion_examples = []
+                    code_b.exclusion_examples.extend(res.code_b_new_exclusions)
+
+        return resolution_result
 
     async def _run_all_partitions(
         self,
@@ -1979,6 +2133,40 @@ class CodebookRefinementProcessor:
             except Exception as e:
                 self.reporter.error(f"Cross-partition judge failed: {type(e).__name__}: {e}")
                 logger.error(f"Cross-partition judge error: {e}", exc_info=True)
+
+        # 6. Resolve cross-partition conflicts
+        if judge_result and judge_result.conflicts:
+            self.reporter.section_header("CROSS-PARTITION CONFLICT RESOLUTION")
+            try:
+                resolution_result = loop.run_until_complete(
+                    self._resolve_cross_partition_conflicts_async(
+                        judge_result, partition_results, survey_question, async_client
+                    )
+                )
+                merges = 0
+                sharpens = 0
+                for res in resolution_result.resolutions:
+                    if res.action == "merge":
+                        merges += 1
+                        self.reporter.stat_line(
+                            f"MERGED: dropped '{res.dropped_code}' from '{res.dropped_partition}', "
+                            f"kept '{res.surviving_code}' in '{res.surviving_partition}'"
+                        )
+                    elif res.action == "sharpen":
+                        conflict = judge_result.conflicts[res.conflict_index]
+                        sharpens += 1
+                        self.reporter.stat_line(
+                            f"SHARPENED: '{conflict.code_a}' ({conflict.partition_a}) "
+                            f"↔ '{conflict.code_b}' ({conflict.partition_b})"
+                        )
+                resolved_count = sum(len(r.codes) for r in partition_results.values())
+                self.reporter.stat_line(
+                    f"Resolution complete: {merges} merged, {sharpens} sharpened "
+                    f"→ {resolved_count} codes across {len(partition_results)} partitions"
+                )
+            except Exception as e:
+                self.reporter.error(f"Conflict resolution failed: {type(e).__name__}: {e}")
+                logger.error(f"Conflict resolution error: {e}", exc_info=True)
 
         return partition_results, judge_result, concept_type_map, partition_remap
 

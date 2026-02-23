@@ -40,7 +40,8 @@ from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
-from utils import dataLoader, codeGenerator
+from utils import dataLoader
+from experiments.step_6_codeGenerator.codeGenerator_exp import CodeGeneratorReasoningResults
 
 # Import centralized test data config
 try:
@@ -110,7 +111,7 @@ def load_step6_cache(config: ExperimentConfig):
         )
 
     reasoning_models = cache_manager.load_from_cache(
-        config.filename, step_name, variable_key, codeGenerator.CodeGeneratorReasoningResults
+        config.filename, step_name, variable_key, CodeGeneratorReasoningResults
     )
 
     codebook_reasoning = reasoning_models[0] if reasoning_models else None
