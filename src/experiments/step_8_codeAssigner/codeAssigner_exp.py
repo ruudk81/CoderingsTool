@@ -468,6 +468,7 @@ class CodeAssigner:
         response_models: List[models.EmbeddingsModel],
         codebook: List[models.CodebookExp],
         var_lab: str,
+        partition_remap: Optional[Dict[str, str]] = None,
         code_to_theme_mapping: Optional[Dict[str, str]] = None,
         config: Optional[CodeAssignmentConfig] = None,
         model_config: Optional[ModelConfig] = None,
@@ -579,8 +580,21 @@ class CodeAssigner:
         self.verbose = verbose
 
         # === PARTITION ROUTING ===
+        # partition_remap: refined_name → original_name (from step 7 splits/renames)
+        self.partition_remap = partition_remap or {}
+        # reverse_remap: original_name → [refined_name_1, refined_name_2, ...]
+        self.reverse_remap: Dict[str, List[str]] = defaultdict(list)
+        for refined_name, original_name in self.partition_remap.items():
+            self.reverse_remap[original_name].append(refined_name)
+
+        # Build partition codebooks using REFINED concept_types (no collapse)
         self.partition_codebooks = self._partition_codebook_by_concept_type()
         self.partition_stats: Dict[str, Dict] = {}
+
+        if self.reverse_remap and self.verbose:
+            self.verbose_reporter.stat_line(f"Reverse remap: {len(self.reverse_remap)} original partitions → {sum(len(v) for v in self.reverse_remap.values())} refined sub-partitions")
+            for orig, refined_list in sorted(self.reverse_remap.items()):
+                self.verbose_reporter.stat_line(f"  '{orig}' → {refined_list}")
 
         self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {self.rate_limits.requests_per_minute} RPM, {self.rate_limits.tokens_per_minute:,} TPM")
@@ -601,6 +615,45 @@ class CodeAssigner:
                 self.verbose_reporter.stat_line(f"  {name}: {len(codes)} codes")
 
         return partition_dict
+
+    def _get_codes_for_idea(self, concept_type: str) -> Tuple[List[models.CodebookExp], Dict[str, List[models.CodebookExp]]]:
+        """Get codes for an idea, handling refined partition routing.
+
+        Returns:
+            (flat_codes, grouped_codes)
+            - flat_codes: all matching codes in a flat list
+            - grouped_codes: {refined_partition_name: [codes]} for prompt grouping.
+              Empty dict if direct match (no sub-partitions).
+        """
+        # Direct match: concept_type exists as-is in partition_codebooks
+        # (unsplit partition where name didn't change)
+        if concept_type in self.partition_codebooks:
+            codes = self.partition_codebooks[concept_type]
+            return codes, {}
+
+        # Reverse remap: concept_type was split/renamed into refined sub-partitions
+        if concept_type in self.reverse_remap:
+            refined_names = self.reverse_remap[concept_type]
+            grouped = {}
+            all_codes = []
+            for rname in sorted(refined_names):
+                sub_codes = self.partition_codebooks.get(rname, [])
+                if sub_codes:
+                    grouped[rname] = sub_codes
+                    all_codes.extend(sub_codes)
+            return all_codes, grouped
+
+        # No match at all
+        return [], {}
+
+    def _format_grouped_partition_codes(self, grouped_codes: Dict[str, List[models.CodebookExp]]) -> str:
+        """Format codes grouped by refined sub-partition for the LLM prompt."""
+        sections = []
+        for partition_name, codes in grouped_codes.items():
+            header = f"=== Sub-partition: {partition_name} ({len(codes)} codes) ==="
+            code_blocks = self._format_partition_codes(codes)
+            sections.append(f"{header}\n{code_blocks}")
+        return "\n\n".join(sections)
 
     # === TOKEN ESTIMATION & HELPERS ========================================================================================================
 
@@ -828,15 +881,21 @@ class CodeAssigner:
         self.partition_eval_calls += 1
         return response, prompt
 
-    async def evaluate_partition_codes(self, idea_id, idea_text, instance, concept, concept_type, codes):
+    async def evaluate_partition_codes(self, idea_id, idea_text, instance, concept, concept_type, codes, grouped_codes=None):
         """Evaluate all codes from a partition against an idea's abstraction ladder."""
+        # Use grouped formatting when refined sub-partitions exist
+        if grouped_codes:
+            codes_formatted = self._format_grouped_partition_codes(grouped_codes)
+        else:
+            codes_formatted = self._format_partition_codes(codes)
+
         prompt = PARTITION_EVALUATION_PROMPT.format(
             language=self.language, var_lab=self.var_lab,
             idea_id=idea_id,
             instance=instance or idea_text,
             concept=concept or idea_text,
             concept_type=concept_type,
-            partition_codes_formatted=self._format_partition_codes(codes)
+            partition_codes_formatted=codes_formatted
         )
 
         self.last_prompt = prompt
@@ -906,8 +965,8 @@ class CodeAssigner:
             unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
             prompt_used = ""
 
-            # Get ALL codes from this idea's partition
-            partition_codes = self.partition_codebooks.get(concept_type, [])
+            # Two-level partition routing: handles refined sub-partitions from step 7
+            partition_codes, grouped_codes = self._get_codes_for_idea(concept_type)
 
             if not partition_codes:
                 # No codes in this partition → unknown
@@ -941,9 +1000,10 @@ class CodeAssigner:
                     self.unknown_count += 1
 
             else:
-                # Multiple codes → LLM evaluates all codes from partition
+                # Multiple codes → LLM evaluates all codes (grouped by refined sub-partition if applicable)
                 eval_result, prompt_used = await self.evaluate_partition_codes(
-                    idea_id, idea_text, instance, concept, concept_type, partition_codes
+                    idea_id, idea_text, instance, concept, concept_type,
+                    partition_codes, grouped_codes
                 )
                 best_confidence = eval_result.best_match.confidence
                 self.confidence_tracker.record(best_confidence)

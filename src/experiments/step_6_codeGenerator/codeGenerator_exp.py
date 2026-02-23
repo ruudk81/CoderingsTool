@@ -5195,7 +5195,11 @@ class InductiveCodeGenerator:
                     indicators = sorted(
                         '-' if v == 'neg' else '+' for v in valence_set
                     )
-                    display_code = f"{code_text} ({','.join(indicators)})"
+                    if len(indicators) > 1:
+                        # Code covers both positive and negative → mixed/neutral
+                        display_code = f"{code_text} (0)"
+                    else:
+                        display_code = f"{code_text} ({indicators[0]})"
                 else:
                     # No valence tracked → neutral
                     display_code = f"{code_text} (0)"

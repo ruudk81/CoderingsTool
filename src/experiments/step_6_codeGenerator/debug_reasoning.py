@@ -1,3 +1,5 @@
+#%%
+
 """
 Debug script for Step 6: Code Generator - Reasoning Display
 Loads codebook reasoning from cache and displays cluster analysis.
@@ -13,13 +15,14 @@ sys.path.insert(0, str(src_dir))
 
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from utils.codeGenerator import CodeGeneratorReasoningResults
+from experiments.step_6_codeGenerator.codeGenerator_exp import CodeGeneratorReasoningResults
 from utils.codegenResults import display_cluster_analysis
+from experiments.test_data import TEST_DATA
 
-# Configuration
-FILENAME = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-VAR_NAME = "Q20"
-SAMPLE_SIZE = 500
+# Configuration — uses centralized test_data.py (same dataset as run_experiment.py)
+FILENAME = TEST_DATA.filename
+VAR_NAME = TEST_DATA.var_name
+SAMPLE_SIZE = TEST_DATA.sample_size
 
 # Optional: specify cluster ID to focus on, or None for all
 CLUSTER_ID = None

@@ -133,7 +133,7 @@ Concept: {concept}
 Concept Type: {concept_type}
 </response>
 
-Here are all codes available for this concept type partition. Evaluate EACH code against the response:
+Here are all codes available for this concept type. Codes may be organized into sub-partitions for clarity. Evaluate EACH code against the response:
 <partition_codes>
 {partition_codes_formatted}
 </partition_codes>
