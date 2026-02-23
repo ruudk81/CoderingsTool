@@ -42,7 +42,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
-from config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
+from config_steps.config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
 
 # === PROMPTS ========================================================================================================
@@ -55,7 +55,7 @@ from prompts import (
 )
 
 # === STEP-SPECIFIC CONFIG =============================================================================================
-from config_ideaExtractor import (
+from config_steps.config_ideaExtractor import (
     DEFAULT_TOKEN_HISTORY_CONFIG,
     DEFAULT_TIKTOKEN_OFFSET_CONFIG,
     DEFAULT_TIMEOUT_CONFIG,

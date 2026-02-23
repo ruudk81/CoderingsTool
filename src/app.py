@@ -24,8 +24,10 @@ sys.path.append(str(project_root / "src"))
 sys.path.append(str(project_root / "src" / "utils"))
 
 import models
-from config import CacheConfig, ModelConfig, SpellCheckConfig, QualityFilterConfig, EmbeddingConfig, HDBSCANConfig, CodeDesignerConfig, CodeAssignmentConfig
-from config_ideaExtractor import SegmentationConfig
+from config import CacheConfig, ModelConfig, CodeDesignerConfig, CodeAssignmentConfig
+from config_steps.config_preprocess import SpellCheckConfig
+from config_steps.config_qualityFilter import QualityFilterConfig
+from config_steps.config_ideaExtractor import SegmentationConfig
 
 from utils.dataLoader import DataLoader
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -387,10 +389,6 @@ if 'quality_filter_config' not in st.session_state:
     st.session_state.quality_filter_config = QualityFilterConfig()
 if 'segmentation_config' not in st.session_state:
     st.session_state.segmentation_config = SegmentationConfig()
-if 'embedding_config' not in st.session_state:
-    st.session_state.embedding_config = EmbeddingConfig()
-if 'hdbscan_config' not in st.session_state:
-    st.session_state.hdbscan_config = HDBSCANConfig()
 if 'code_designer_config' not in st.session_state:
     st.session_state.code_designer_config = CodeDesignerConfig()
 if 'code_assignment_config' not in st.session_state:
@@ -791,8 +789,6 @@ def show_advanced_settings(current_step=0):
             st.session_state.spellcheck_config = SpellCheckConfig()
             st.session_state.quality_filter_config = QualityFilterConfig()
             st.session_state.segmentation_config = SegmentationConfig()
-            st.session_state.embedding_config = EmbeddingConfig()
-            st.session_state.hdbscan_config = HDBSCANConfig()
             st.session_state.code_designer_config = CodeDesignerConfig()
             st.session_state.code_assignment_config = CodeAssignmentConfig()
             st.rerun()

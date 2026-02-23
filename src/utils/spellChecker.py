@@ -17,24 +17,29 @@ from pydantic import BaseModel
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from aiolimiter import AsyncLimiter
 
-# === CONSTANTS (extracted magic numbers) ========================================================================================================
-MAX_HUNSPELL_PROCESSES = 20          # Max parallel Hunspell processes to prevent resource exhaustion
-MAX_SAFE_BATCH_SIZE = 1000           # Maximum batch size for Hunspell word checking
-SUGGESTION_BATCH_SIZE = 50           # Words per batch for suggestion generation
-MAX_CONCURRENT_SUGGESTION_BATCHES = 6  # Concurrent batches for suggestion processing
-# Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS now come from ProcessingConfig
-OUTPUT_TOKEN_RATIO = 0.15            # Estimated output/input token ratio for spell correction
-SPACY_VECTOR_NORM_THRESHOLD = 5      # Minimum vector norm for valid SpaCy tokens
-
-
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
 from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
-
-# === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, API_PROVIDER
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
-from prompts import SPELLCHECK_INSTRUCTIONS
+
+# === CONFIG — generic/universal ========================================================================================================
+from config import (
+    OPENAI_API_KEY, DEFAULT_LANGUAGE,
+    ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+    FALLBACK_TPM, FALLBACK_RPM, API_PROVIDER,
+)
+
+# === CONFIG — step-specific ========================================================================================================
+from config_steps.config_preprocess import (
+    HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH,
+    SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG,
+    MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,
+    SUGGESTION_BATCH_SIZE, MAX_CONCURRENT_SUGGESTION_BATCHES,
+    OUTPUT_TOKEN_RATIO, SPACY_VECTOR_NORM_THRESHOLD,
+)
+
+# === PROMPTS + RESPONSE MODELS ========================================================================================================
+from prompts import SPELLCHECK_INSTRUCTIONS, CorrectionItem, LLMCorrectionResponse
 
 logger = logging.getLogger(__name__)
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
@@ -54,13 +59,9 @@ class SpellCheckModel(BaseModel):
     original_response: str
     corrected_response: Optional[str] = None
 
-class CorrectionItem(BaseModel):
-    respondent_id: Any 
-    corrected_response: str 
+# Note: CorrectionItem and LLMCorrectionResponse imported from prompts.py
+# (co-located with prompts following instructor schema pattern)
 
-class LLMCorrectionResponse(BaseModel):
-    corrections: List[CorrectionItem] 
-    
 # === RATE LIMITING HELPER CLASSES ========================================================================================================
 class TokenBucket:
     """Simple token bucket for TPM limiting (from qualityFilter.py)"""
@@ -945,7 +946,14 @@ Suggested corrections: {task['suggestions']}
                 repeated_char_pattern.match(task['response']) or
                 repeated_char_pattern.match(task['oov_words']) or
                 (single_word_pattern.fullmatch(task['response']) and 'OOV' in task['suggestions'])) ]
-        
+
+        # Log filtered task counts
+        filtered_by_repeated_char = [t for t in tasks if repeated_char_pattern.match(t['response']) or repeated_char_pattern.match(t['oov_words'])]
+        filtered_by_single_word_oov = [t for t in tasks if single_word_pattern.fullmatch(t['response']) and 'OOV' in t['suggestions']]
+
+        if filtered_by_repeated_char or filtered_by_single_word_oov:
+            print(f"  • Tasks filtered: {len(filtered_by_repeated_char)} repeated chars, {len(filtered_by_single_word_oov)} single-word without suggestions")
+
         # Track task creation and filtering stats
         self.stats['responses_with_tasks'] = len(tasks)
         self.stats['tasks_filtered_out'] = len(tasks) - len(filtered_tasks)
@@ -1388,6 +1396,14 @@ Suggested corrections: {task_dict['suggestions']}
                 # Parse structured response with validation (only if response exists)
                 if response and response.corrections and len(response.corrections) > 0:
                     correction = response.corrections[0]  # Single task = single correction
+
+                    # AUDIT: Log if LLM returned different ID (drift detection)
+                    if str(correction.respondent_id) != str(task_dict['respondent_id']):
+                        logger.warning(
+                            f"ID drift detected: LLM returned '{correction.respondent_id}' "
+                            f"but input was '{task_dict['respondent_id']}'"
+                        )
+
                     corrected_text = correction.corrected_response
 
         return {task_dict['response']: corrected_text}
@@ -1443,28 +1459,54 @@ Suggested corrections: {task_dict['suggestions']}
         docs_with_oov = 0
         
         print("  • Extracting and batching words for OOV analysis...")
-        
+
         # Extract all words first for efficient batching
         all_words_to_check = []
         word_to_responses = defaultdict(list)  # Track which responses contain each word
-        
+
+        # DIAGNOSTIC: Track what's being filtered at word identification level
+        diag_total_tokens = 0
+        diag_skipped_not_alpha = 0
+        diag_skipped_named_entity = 0
+        diag_skipped_too_short = 0
+
         for response_idx, doc in enumerate(self.get_nlp().pipe(sentences_list, batch_size=self.config.spacy_batch_size)):
             for token in doc:
-                if token.is_alpha and token.ent_type_ == "" and len(token.text) > 2:
-                    word_normalized = token.text.lower()
-                    word_original = token.text
-                    
-                    # Check cache first
-                    if word_frequency_cache is not None and word_normalized in word_frequency_cache:
-                        is_oov = word_frequency_cache[word_normalized] 
-                        if is_oov:
-                            oov_words.append(word_original)
-                            self.stats['oov_words_found'] += 1
-                            word_to_responses[word_original].append(response_idx)
-                    else:
-                        # Add to batch for Hunspell checking
-                        all_words_to_check.append((word_normalized, word_original, response_idx))
-        
+                diag_total_tokens += 1
+
+                if not token.is_alpha:
+                    diag_skipped_not_alpha += 1
+                    continue
+
+                # Named entity filter REMOVED - was catching typos like "merkiglo", "merr"
+                # Just track count for reporting
+                if token.ent_type_ != "":
+                    diag_skipped_named_entity += 1
+
+                if len(token.text) <= 2:
+                    diag_skipped_too_short += 1
+                    continue
+
+                # Word passed filters (is_alpha and len > 2)
+                word_normalized = token.text.lower()
+                word_original = token.text
+
+                # Check cache first
+                if word_frequency_cache is not None and word_normalized in word_frequency_cache:
+                    is_oov = word_frequency_cache[word_normalized]
+                    if is_oov:
+                        oov_words.append(word_original)
+                        self.stats['oov_words_found'] += 1
+                        word_to_responses[word_original].append(response_idx)
+                else:
+                    # Add to batch for Hunspell checking
+                    all_words_to_check.append((word_normalized, word_original, response_idx))
+
+        # DIAGNOSTIC: Print word identification filter stats
+        # Note: Named entities are now INCLUDED (not skipped) - only tracking for info
+        diag_passed_filters = diag_total_tokens - diag_skipped_not_alpha - diag_skipped_too_short
+        print(f"  • Word filters: {diag_total_tokens:,} tokens → {diag_passed_filters:,} passed ({diag_passed_filters/max(diag_total_tokens,1)*100:.1f}%)")
+        print(f"    (skipped: {diag_skipped_not_alpha:,} non-alpha, {diag_skipped_too_short:,} too short; {diag_skipped_named_entity:,} named entities now included)")
         print(f"  • Cached words processed, {len(all_words_to_check):,} words need Hunspell verification")
         
         if all_words_to_check:
@@ -1483,7 +1525,13 @@ Suggested corrections: {task_dict['suggestions']}
             
             # Process all words in efficient batches using HunspellPool
             batch_outputs = await self.hunspell_pool.check_words_batch(words_only, batch_size)
-            
+
+            # Count Hunspell results
+            diag_oov_count = sum(1 for output in batch_outputs if output and output.startswith(('&', '#')))
+            diag_correct_count = len(batch_outputs) - diag_oov_count
+
+            print(f"\n  • Hunspell: {diag_correct_count:,} correct, {diag_oov_count:,} OOV (dictionary: {self.dict_path})")
+
             # Process results and update cache
             response_flagged = set()
             for i, (word_normalized, word_original, response_idx) in enumerate(all_words_to_check):
@@ -1595,29 +1643,31 @@ Suggested corrections: {task_dict['suggestions']}
                 logger.info(f"[COMPARISON DEBUG] No change detected for: '{response.original_response[:50]}...'")
                 
 
-        # Reset corrections stats to use dictionary-based logic
+        # IMPORTANT: Store response-level count BEFORE dictionary-based counting
+        # corrections_made = how many actual responses were modified (the meaningful metric)
+        self.stats['responses_corrected'] = corrections_made
+
+        # Dictionary-based counting (for unique corrections)
         self.stats['corrections_attempted'] = 0
-        self.stats['corrections_applied'] = 0  
+        self.stats['corrections_applied'] = 0
         self.stats['corrections_rejected_validation'] = 0
         self.stats['corrections_no_response'] = 0
-        
+
         for original_response, candidate_correction in corrected_sentences_dict.items():
             self.stats['corrections_attempted'] += 1
-            
+
             # Check for "[NO RESPONSE]" cases or no change
             if candidate_correction == "[NO RESPONSE]" or candidate_correction == original_response:
                 self.stats['corrections_no_response'] += 1
-                #print(f"  -> NO CHANGE (total no-change: {self.stats['corrections_no_response']})")
                 continue
-                
+
             self.stats['corrections_applied'] += 1
-        
-        # Verify math adds up
-        total_accounted = self.stats['corrections_applied'] + self.stats['corrections_rejected_validation'] + self.stats['corrections_no_response']
+
+        # Summary showing BOTH metrics for clarity
         print("\nSUMMARY:")
+        print(f"- Responses corrected: {self.stats['responses_corrected']} (actual responses modified)")
+        print(f"- Unique corrections: {self.stats['corrections_applied']} (distinct strings in dictionary)")
         print(f"- Corrections attempted: {self.stats['corrections_attempted']}")
-        print(f"- Corrections applied: {self.stats['corrections_applied']}")  
-        print(f"- Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
         print(f"- No correction/no change: {self.stats['corrections_no_response']}")
      
         stats.end_timing()
@@ -1643,7 +1693,7 @@ Suggested corrections: {task_dict['suggestions']}
             if self.suggestion_cache is not None and self.stats['suggestion_cache_hits'] > 0:
                 self.verbose_reporter.stat_line(f"Suggestion cache hits: {self.stats['suggestion_cache_hits']} ({self.stats['suggestion_cache_size']} cached)")
           
-        print(f"• Corrections applied: {self.stats['corrections_applied']}")
+        print(f"• Responses corrected: {self.stats['responses_corrected']} ({self.stats['corrections_applied']} unique)")
         
         # Store examples for end-of-phase summary (don't show here)
         self.correction_examples = correction_examples if correction_examples else []

@@ -38,7 +38,7 @@ from typing import Optional
 # =============================================================================
 from experiments import models_exp as models
 from config import CacheConfig, ModelConfig
-from config_embedder import EmbedderConfig
+from config_steps.config_embedder import EmbedderConfig
 
 # Import experimental config when enabled
 if USE_EXPERIMENTAL:

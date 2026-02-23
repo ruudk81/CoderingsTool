@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field
 
 import models
 from utils.llm import llm_create_sync, create_client
-from config_clusterer import ClustererConfig
+from config_steps.config_clusterer import ClustererConfig
 from prompts import CLUSTER_DESCRIPTION_PROMPT, ClusterDescription
 
 # Suppress warnings during optimization

@@ -2,8 +2,8 @@
 Prompts module - Contains all LLM prompt templates for the pipeline.
 """
 
-from typing import List
-from pydantic import BaseModel, Field
+from typing import Any, List, Optional, Union, Literal
+from pydantic import BaseModel, Field, model_validator
 
 
 # =============================================================================
@@ -36,103 +36,195 @@ Here are the correction tasks to process:
 {tasks}
 </correction_tasks>
 
-After processing all tasks, provide your output in the following JSON format:
-{{
-  "corrections": [
-    {{
-      "respondent_id": "ID_FROM_TASK",
-      "corrected_response": "The fully corrected response"
-    }},
-    ...
-  ]
-}}
-
-Ensure that your output is a valid JSON object with a single key "corrections", whose value is an array of objects. Each object in the "corrections" array must have exactly these fields:
-- "respondent_id": "ID_FROM_TASK"
-- "corrected_response": "The fully corrected response"
-
 Additional guidelines:
 - Pay close attention to the context and meaning of each response when making corrections.
 - Ensure that your corrections maintain the original intent of the respondent.
 - If a suggested correction doesn't fit the context, consider alternative corrections that preserve the meaning.
-- Double-check that your JSON output is properly formatted and includes all corrected responses.
 
-Begin processing the correction tasks now, and provide your output in the specified JSON format.
+Begin processing the correction tasks now and provide your output as valid JSON following the response schema provided.
 """
+
+
+class CorrectionItem(BaseModel):
+    """A single spell correction result."""
+    respondent_id: Any = Field(
+        description="The respondent ID from the correction task"
+    )
+    corrected_response: str = Field(
+        description="The fully corrected response with all spelling mistakes fixed"
+    )
+
+
+class LLMCorrectionResponse(BaseModel):
+    """Structured output for spell check corrections."""
+    corrections: List[CorrectionItem] = Field(
+        description="List of corrections, one for each task in the input"
+    )
 
 # =============================================================================
 # STEP 2: QUALITY FILTERING 
 # =============================================================================
 
 GRADER_INSTRUCTIONS = """
-You are a {language} language grader evaluating open-ended survey responses. 
-Your task is to determine whether each response is meaningless and assign appropriate quality filter codes.
+You are a {language} language grader evaluating open-ended survey responses.
+Your task is to determine whether each response provides **usable, on-topic content in relation to the specific survey question**, and assign appropriate quality filter codes.
 
-Task Description:
-Analyze each response and classify it based on the following criteria:
+You will classify each response into one of three practical outcomes:
 
-Decision Criteria:
-1. **Don't Know/Uncertainty (Code 99999997)**: Responses that express "don't know", "not applicable", or only express uncertainty
-   - Examples: "I don't know", "N/A", "Not applicable", "No idea", "?"
+==================================================
+OUTCOME A — Don't Know / Uncertainty
+CODE: 99999997 | quality_filter = true
+==================================================
 
-2. **Nonsensical/Gibberish (Code 99999999)**: Responses that are meaningless, gibberish, or simply repeat the question
-   - Examples: "asdfkj", "lorem ipsum", random characters, just repeating the question
+Use this code if the respondent explicitly expresses uncertainty, lack of knowledge, or non-applicability.
 
-3. **Meaningful Response (No Code)**: Responses that provide actual content, opinions, or information
-   - These should have quality_filter = false and quality_filter_code = null
+This includes any response whose clear meaning in {language} is equivalent to:
+- "I don't know"
+- "N/A"
+- "Not applicable"
+- "No idea"
+- "Unsure"
+- "Can't say"
+- "?"
 
-Input:
-You will be provided with a survey question and a list of responses to evaluate.
+If a response fits this pattern → set:
+quality_filter = true
+quality_filter_code = 99999997
 
-Survey question:
+==================================================
+OUTCOME B — Nonsensical/Gibberish OR completely Off-topic
+CODE: 99999999 | quality_filter = true
+==================================================
+
+Use this code for **two different kinds of unusable responses**:
+
+A) Pure gibberish / nonsensical
+   Examples:
+   - Random characters: "asdfkj", "jjjjj", "x!@#%"
+   - Placeholder text: "lorem ipsum", "test test"
+   - Verbatim repetition of the question with no added content
+   - Completely unintelligible text
+
+B) Intelligible but completely off-topic / totally irrelevant
+   The response is understandable {language} , BUT:
+   - It does NOT address the actual survey question ({var_lab}) even remotely, OR
+   - It obviously avoids the question.
+
+Illustractive examples in English (if the question is about public transport):
+- "Nothing"
+- "I love dogs."
+- "The weather is nice today."
+- "Pizza is better than pasta."
+- "I work in finance."
+- A personal story that has nothing to do with transportation.
+
+These are NOT "I don't know" — they are simply irrelevant to the question.
+
+If a response fits **either A or B** → set:
+quality_filter = true
+quality_filter_code = 99999999
+
+
+==================================================
+OUTCOME C — Meaningful / On-topic Response
+quality_filter = false | quality_filter_code = null
+==================================================
+
+A response is meaningful if:
+- It is understandable in {language}, AND
+- It engages with or relates to the survey question ({var_lab}), even if:
+  - It is very short
+  - It is vague
+  - It is opinionated
+  - It is critical
+  - It is poorly written
+  - It is partially incomplete
+
+Examples (if the question is about public transport):
+- "Buses are always late."
+- "Too crowded."
+- "Tickets are expensive."
+- "The metro is unreliable."
+
+For this category → set:
+quality_filter = false
+quality_filter_code = null
+
+==================================================
+SURVEY QUESTION
 <survey_question>
 {var_lab}
 </survey_question>
 
-Here are the responses you need to evaluate:
+RESPONSES TO EVALUATE
 <responses>
 {responses}
 </responses>
 
-Your output should be a JSON array. Each object in the array must contain exactly:
-- "respondent_id": (string or number) The respondent's ID
-- "response": (string) The exact response text
-- "quality_filter": (boolean) true if meaningless, false if meaningful
-- "quality_filter_code": (number or null) 99999997 for uncertainty, 99999999 for gibberish, null for meaningful
+==================================================
+DECISION RULE (FOLLOW EXACTLY)
 
-Follow these steps for each response:
-1. Read the response carefully.
-2. Determine if the response expresses uncertainty/don't know (code 99999997)
-3. If not uncertainty, determine if it's gibberish/nonsensical (code 99999999)
-4. If neither, it's meaningful (quality_filter = false, quality_filter_code = null)
-5. Create a JSON object with all required fields
+For each response, apply these steps in order:
 
-After processing all responses, return the complete JSON array.
+1. Does the response explicitly express uncertainty or "I don't know"?
+   - If YES → quality_filter = true, quality_filter_code = 99999997
+   - If NO → go to Step 2
 
-Remember to use the exact format specified. Here's an example of how entries in your output should look:
-[
-  {{
-    "respondent_id": "1",
-    "response": "I don't know",
-    "quality_filter": true,
-    "quality_filter_code": 99999997
-  }},
-  {{
-    "respondent_id": "2",
-    "response": "The product is easy to use and has great features.",
-    "quality_filter": false,
-    "quality_filter_code": null
-  }},
-  {{
-    "respondent_id": "3",
-    "response": "asdfghjkl",
-    "quality_filter": true,
-    "quality_filter_code": 99999999
-  }}
-]
+2. Ask:
+   "Does this response provide usable content that addresses the survey question, even remotely?"
 
-Ensure that your entire output is a valid JSON array containing all evaluated responses.
+   - If NO (because it is gibberish OR off-topic) →
+     quality_filter = true, quality_filter_code = 99999999
+
+   - If YES →
+     quality_filter = false, quality_filter_code = null
 """
+
+
+QualityCode = Optional[Literal[99999997, 99999999]]
+
+class QualityFilterLLMResponse(BaseModel):
+    """A single quality filter assessment result."""
+
+    respondent_id: Any = Field(
+        description="The respondent's ID from the input (preserve exact type and format)"
+    )
+
+    response: Union[str, float, int, None] = Field(
+        description="The exact response text being evaluated"
+    )
+
+    quality_filter: bool = Field(
+        description=(
+            "true if the response is unusable (don't know OR gibberish/off-topic), "
+            "false if the response is meaningful and addresses the question"
+        ),
+        examples=[True, False],
+    )
+
+    quality_filter_code: QualityCode = Field(
+        default=None,
+        description=(
+            "99999997 = uncertainty / don't know; "
+            "99999999 = gibberish OR completely off-topic; "
+            "null = meaningful response"
+        ),
+        examples=[99999997, 99999999, None],
+    )
+
+    @model_validator(mode="after")
+    def check_consistency(self):
+        if self.quality_filter and self.quality_filter_code is None:
+            raise ValueError(
+                "If quality_filter=true, quality_filter_code must be 99999997 or 99999999"
+            )
+        if not self.quality_filter and self.quality_filter_code is not None:
+            raise ValueError(
+                "If quality_filter=false, quality_filter_code must be null"
+            )
+
+        return self
+
 
 # =============================================================================
 # STEP 3: IDEA EXTRACTION  

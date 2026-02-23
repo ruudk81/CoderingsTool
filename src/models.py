@@ -55,20 +55,7 @@ class PreprocessedModel(ResponseModel):
 class QualityFilteredModel(PreprocessedModel):
     pass
 
-class QualityFilterLLMResponse(BaseModel):
-    respondent_id: Any
-    response: Union[str, float, int, None]
-    quality_filter: bool  # REQUIRED - instructor will enforce True/False
-    quality_filter_code: Optional[int] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class OntologySubmodel(BaseModel):
-    instance: str = ""          # Verbatim span from response
-    node: str = ""              # Canonical, reusable concept (noun phrase)
-    semantic_category: str = "" # One of: identity, attribute, function, state, evaluation, relation
-    category_label: str = ""    # Concise descriptive label within the category
-    root: str = ""              # Top-level domain framing
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+# QualityFilterLLMResponse moved to prompts.py (co-located with GRADER_INSTRUCTIONS)
 
 class IdeasExtractedSubmodel(BaseModel):
     idea_id: str  # Format: {respondent_id}_{sequence_number}
