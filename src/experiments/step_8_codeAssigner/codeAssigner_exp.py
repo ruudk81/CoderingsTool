@@ -5,11 +5,13 @@ import asyncio
 import time
 import logging
 import itertools
+import difflib
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from collections import deque, defaultdict
 import numpy as np
 
+from sklearn.metrics.pairwise import cosine_similarity
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from instructor.exceptions import InstructorRetryException
@@ -23,12 +25,14 @@ from experiments import models_exp as models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, MISCELLANEOUS_CODE_LABELS, API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM
-from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
+from utils.llm import create_client, llm_create_async, create_embedding_client, ProbeResponse, RateLimits, extract_rate_limits_from_response
+from experiments.step_8_codeAssigner.config_exp import SimilarityRoutingConfig
 
 # === PROMPTS (partition-based, ladder) ============================================================================
 from experiments.step_8_codeAssigner.prompts_exp import (
     SINGLE_CODE_EVALUATION_PROMPT,
     PARTITION_EVALUATION_PROMPT,
+    SIMILARITY_EVALUATION_PROMPT,
 )
 
 # === UTILS ========================================================================================================
@@ -431,6 +435,19 @@ class DefaultCodeEvaluationResponse(BaseModel):
         return float(v) if isinstance(v, str) else v
 
 
+class SimpleClassificationResponse(BaseModel):
+    """Simplified classification response — pick one code from candidates."""
+    idea_id: str
+    code: str
+    confidence: float
+    rationale: str
+
+    @field_validator('confidence', mode='before')
+    @classmethod
+    def coerce_confidence(cls, v):
+        return float(v) if isinstance(v, str) else v
+
+
 class CodeEvaluation(BaseModel):
     """Single code evaluation within multi-candidate evaluation"""
     code: str
@@ -470,6 +487,9 @@ class CodeAssigner:
         var_lab: str,
         partition_remap: Optional[Dict[str, str]] = None,
         code_to_theme_mapping: Optional[Dict[str, str]] = None,
+        dominance_axes: Optional[Dict[str, str]] = None,
+        other_idea_assignments: Optional[Dict[str, str]] = None,
+        similarity_config: Optional[SimilarityRoutingConfig] = None,
         config: Optional[CodeAssignmentConfig] = None,
         model_config: Optional[ModelConfig] = None,
         processing_config: Optional[ProcessingConfig] = None,
@@ -481,6 +501,8 @@ class CodeAssigner:
         self.response_models = response_models
         self.codebook = codebook
         self.var_lab = var_lab
+        self.other_idea_assignments = other_idea_assignments or {}
+        self.similarity_config = similarity_config or SimilarityRoutingConfig(routing_mode="partition")
         self.config = config or DEFAULT_CODE_ASSIGNMENT_CONFIG
         self.model_config = model_config or ModelConfig()
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
@@ -493,6 +515,9 @@ class CodeAssigner:
 
         # Theme mapping
         self.code_to_theme_mapping = code_to_theme_mapping or {}
+
+        # Dominance axes for partition-level routing dimensions
+        self.dominance_axes = dominance_axes or {}
 
         # Tokenizer (cached)
         self.encoding = get_tiktoken_encoding(self.model)
@@ -599,6 +624,16 @@ class CodeAssigner:
         self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {self.rate_limits.requests_per_minute} RPM, {self.rate_limits.tokens_per_minute:,} TPM")
 
+        # === SIMILARITY ROUTING (initialized lazily in assign_codes) ===
+        self._code_embeddings = None          # np.ndarray [n_codes, dims]
+        self._idea_embeddings_lookup = {}     # {idea_id: np.ndarray}
+        self._similarity_stats = {'codes_embedded': 0, 'embedding_time': 0.0}
+
+        if self.similarity_config.routing_mode != "partition":
+            self.verbose_reporter.stat_line(f"Routing mode: {self.similarity_config.routing_mode} (top_k={self.similarity_config.top_k})")
+        else:
+            self.verbose_reporter.stat_line(f"Routing mode: partition (classic)")
+
     # === PARTITION ROUTING ========================================================================================================
 
     def _partition_codebook_by_concept_type(self) -> Dict[str, List[models.CodebookExp]]:
@@ -655,6 +690,114 @@ class CodeAssigner:
             sections.append(f"{header}\n{code_blocks}")
         return "\n\n".join(sections)
 
+    # === SEMANTIC SIMILARITY ROUTING ========================================================================================================
+
+    def _build_code_embedding_text(self, code: models.CodebookExp) -> str:
+        """Compose text for embedding a code entry."""
+        if self.similarity_config.code_embedding_text == "simple":
+            return f"{code.code}: {code.definition}"
+        # "rich": include boundary test and diagnostic signals for discriminative power
+        boundary = getattr(code, 'boundary_test', '') or ''
+        signals = getattr(code, 'diagnostic_signals', None) or []
+        signals_str = ", ".join(signals) if signals else ""
+        parts = [f"{code.code}: {code.definition}"]
+        if boundary:
+            parts.append(f"Boundary: {boundary}")
+        if signals_str:
+            parts.append(f"Signals: {signals_str}")
+        return ". ".join(parts)
+
+    def _generate_code_embeddings(self) -> np.ndarray:
+        """Generate embeddings for all codebook entries. Single batch API call."""
+        embedding_client = create_embedding_client(async_mode=False)
+        embedding_model = self.model_config.embedding_model
+
+        code_texts = [self._build_code_embedding_text(code) for code in self.codebook]
+
+        t0 = time.perf_counter()
+        embeddings = []
+        for text in code_texts:
+            response = embedding_client.embeddings.create(
+                model=embedding_model,
+                input=text
+            )
+            embeddings.append(response.data[0].embedding)
+
+        elapsed = time.perf_counter() - t0
+        result = np.array(embeddings)
+        self._similarity_stats['codes_embedded'] = len(code_texts)
+        self._similarity_stats['embedding_time'] = elapsed
+        self.verbose_reporter.stat_line(
+            f"Code embeddings: {len(code_texts)} codes embedded in {elapsed:.1f}s "
+            f"(dims={result.shape[1]})"
+        )
+        return result
+
+    def _build_idea_embeddings_lookup(self):
+        """Build a lookup dict mapping idea_id → embedding vector from response models."""
+        field = self.similarity_config.idea_embedding_field + "_embedding"
+        count = 0
+        for model in self.response_models:
+            if not hasattr(model, 'response_ideas') or not model.response_ideas:
+                continue
+            for idea in model.response_ideas:
+                emb = getattr(idea, field, None)
+                if emb is None:
+                    emb = getattr(idea, 'idea_embedding', None)
+                if emb is not None:
+                    self._idea_embeddings_lookup[idea.idea_id] = emb
+                    count += 1
+        self.verbose_reporter.stat_line(f"Idea embeddings loaded: {count} ideas with '{field}'")
+
+    def _find_similar_codes(self, idea_embedding: np.ndarray, concept_type: str = None) -> List[models.CodebookExp]:
+        """Find top-K similar codes using cosine similarity.
+
+        Supports dropoff mode: include codes within dropoff_ratio of best similarity,
+        clamped between min_codes and max_codes.
+        """
+        cfg = self.similarity_config
+        similarities = cosine_similarity([idea_embedding], self._code_embeddings)[0]
+
+        # Hybrid mode: boost same-partition codes
+        if cfg.routing_mode == "hybrid" and concept_type:
+            for i, code in enumerate(self.codebook):
+                code_ct = getattr(code, 'concept_type', None) or ''
+                # Direct match or reverse-mapped match
+                if code_ct == concept_type or concept_type in self.reverse_remap and code_ct in self.reverse_remap[concept_type]:
+                    similarities[i] += cfg.partition_boost
+
+        sorted_indices = np.argsort(similarities)[::-1]
+        sorted_sims = similarities[sorted_indices]
+
+        # Apply dropoff from best
+        best_sim = sorted_sims[0] if len(sorted_sims) > 0 else 0.0
+        cutoff = best_sim * cfg.dropoff_ratio
+        cutoff = max(cutoff, cfg.similarity_floor)
+
+        count = sum(1 for s in sorted_sims if s >= cutoff)
+        count = max(count, cfg.min_codes)
+        count = min(count, cfg.max_codes, len(self.codebook))
+
+        selected = sorted_indices[:count]
+
+        # Store for diagnostics
+        self._last_similarity_scores = {
+            self.codebook[i].code: float(similarities[i])
+            for i in selected
+        }
+
+        return [self.codebook[i] for i in selected]
+
+    def _format_similarity_context(self, codes: List[models.CodebookExp]) -> str:
+        """Format similarity ranking scores for inclusion in the LLM prompt."""
+        if not hasattr(self, '_last_similarity_scores') or not self._last_similarity_scores:
+            return ""
+        lines = []
+        for code in codes:
+            score = self._last_similarity_scores.get(code.code, 0.0)
+            lines.append(f"  {code.code}: {score:.3f}")
+        return "\n".join(lines)
+
     # === TOKEN ESTIMATION & HELPERS ========================================================================================================
 
     def _calculate_avg_tokens(self) -> int:
@@ -674,7 +817,7 @@ class CodeAssigner:
                         prompt = self._create_probe_prompt(
                             idea.idea_id, idea.idea,
                             getattr(idea, 'instance', '') or '',
-                            getattr(idea, 'concept', '') or '',
+                            getattr(idea, 'rung_1', '') or '',
                             getattr(idea, 'concept_type', '') or '',
                         )
                         total_tokens += len(self.encoding.encode(prompt))
@@ -684,7 +827,7 @@ class CodeAssigner:
             return 1500
         return int((total_tokens / sample_count) * 1.15)
 
-    def _create_probe_prompt(self, idea_id, idea_text, instance, concept, concept_type) -> str:
+    def _create_probe_prompt(self, idea_id, idea_text, instance, rung_1, concept_type) -> str:
         """Create a representative prompt for bootstrap probe calls."""
         first_partition = next(iter(self.partition_codebooks), None)
         if not first_partition:
@@ -697,7 +840,7 @@ class CodeAssigner:
                 language=self.language, var_lab=self.var_lab,
                 idea_id=idea_id,
                 instance=instance or idea_text,
-                concept=concept or idea_text,
+                rung_1=rung_1 or idea_text,
                 concept_type=concept_type,
                 code=code.code, definition=code.definition,
                 boundary_test=getattr(code, 'boundary_test', 'N/A') or 'N/A',
@@ -712,8 +855,9 @@ class CodeAssigner:
                 language=self.language, var_lab=self.var_lab,
                 idea_id=idea_id,
                 instance=instance or idea_text,
-                concept=concept or idea_text,
+                rung_1=rung_1 or idea_text,
                 concept_type=concept_type,
+                dominance_axis_block="",
                 partition_codes_formatted=self._format_partition_codes(codes[:3])
             )
 
@@ -726,18 +870,80 @@ class CodeAssigner:
         signals = getattr(code, 'diagnostic_signals', None)
         return ", ".join(signals) if signals else "(none)"
 
+    _CATCHALL_MARKERS = {"overig/anders", "other/miscellaneous", "sonstiges", "autre", "otro"}
+
+    @staticmethod
+    def _is_catchall_code(code_label: str) -> bool:
+        """Detect partition-level catch-all codes (overig/anders, other/miscellaneous, etc.)."""
+        lower = code_label.lower()
+        return any(marker in lower for marker in CodeAssigner._CATCHALL_MARKERS)
+
+    @staticmethod
+    def _normalize_code_name(returned_code: str, candidate_codes: list) -> str:
+        """Match the LLM-returned code name to the closest candidate from the list.
+
+        Handles: slight string variants (spaces vs underscores), partition names
+        returned instead of code names, trailing artifacts like '(0)'.
+        Returns 'NONE' if no reasonable match is found.
+        """
+        if returned_code == "NONE":
+            return "NONE"
+
+        candidate_names = [c.code for c in candidate_codes]
+
+        # 1. Exact match
+        if returned_code in candidate_names:
+            return returned_code
+
+        # 2. Clean up common artifacts: strip (0), trailing whitespace
+        cleaned = returned_code.strip().rstrip("(0)").rstrip().rstrip("(").rstrip()
+        if cleaned in candidate_names:
+            return cleaned
+
+        # 3. Normalize: lowercase, replace underscores with spaces, collapse whitespace
+        def norm(s):
+            return " ".join(s.lower().replace("_", " ").split())
+
+        norm_returned = norm(cleaned)
+        for name in candidate_names:
+            if norm(name) == norm_returned:
+                return name
+
+        # 4. Substring match: if returned string contains a candidate name (or vice versa)
+        for name in candidate_names:
+            if norm(name) in norm_returned or norm_returned in norm(name):
+                return name
+
+        # 5. Fuzzy match: use difflib to find closest candidate (threshold 0.6)
+        norm_candidates = {norm(name): name for name in candidate_names}
+        matches = difflib.get_close_matches(norm_returned, norm_candidates.keys(), n=1, cutoff=0.6)
+        if matches:
+            return norm_candidates[matches[0]]
+
+        # No match — return original (will fall into unknown bucket)
+        return returned_code
+
     def _format_partition_codes(self, codes: List[models.CodebookExp]) -> str:
-        """Format all codes from a partition for the evaluation prompt."""
-        return "\n---\n".join([
-            f"Code: {code.code}\n"
-            f"Definition: {code.definition}\n"
-            f"Boundary test: {getattr(code, 'boundary_test', 'N/A') or 'N/A'}\n"
-            f"Diagnostic signals: {self._format_diagnostic_signals(code)}\n"
-            f"Inclusion Examples (valid references for this code):\n    {self._format_examples_list(code.inclusion_examples)}\n"
-            f"Exclusion Examples (invalid references for this code):\n    {self._format_examples_list(code.exclusion_examples)}\n"
-            f"Boundary: Differs from '{code.near_neighbor_label or 'N/A'}' - {code.tell_apart_rule or 'N/A'}"
-            for code in codes
-        ])
+        """Format all codes from a partition for the evaluation prompt.
+
+        Catch-all codes (overig/anders) are tagged as LAST RESORT so the LLM
+        deprioritizes them in favor of specific codes.
+        """
+        formatted = []
+        for code in codes:
+            is_catchall = self._is_catchall_code(code.code)
+            tag = " [LAST RESORT - only if no specific code fits]" if is_catchall else ""
+            entry = (
+                f"Code: {code.code}{tag}\n"
+                f"Definition: {code.definition}\n"
+                f"Boundary test (primary focus check): {getattr(code, 'boundary_test', 'N/A') or 'N/A'}\n"
+                f"Diagnostic signals: {self._format_diagnostic_signals(code)}\n"
+                f"Inclusion Examples (valid references for this code):\n    {self._format_examples_list(code.inclusion_examples)}\n"
+                f"Routing redirects (ideas that belong to a neighboring code instead):\n    {self._format_examples_list(code.exclusion_examples)}\n"
+                f"Routing rule: Differs from '{code.near_neighbor_label or 'N/A'}' - {code.tell_apart_rule or 'N/A'}"
+            )
+            formatted.append(entry)
+        return "\n---\n".join(formatted)
 
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
         from openai import AsyncOpenAI
@@ -754,9 +960,13 @@ class CodeAssigner:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             model = self.model
 
-        response = await client.chat.completions.with_raw_response.create(
-            model=model, messages=[{"role": "user", "content": "Hi"}], max_tokens=5
-        )
+        probe_kwargs = dict(model=model, messages=[{"role": "user", "content": "Hi"}])
+        model_type = ModelConfig.MODEL_TYPES.get(self.model, "chat")
+        if model_type == "reasoning":
+            probe_kwargs["max_completion_tokens"] = 5
+        else:
+            probe_kwargs["max_tokens"] = 5
+        response = await client.chat.completions.with_raw_response.create(**probe_kwargs)
         return extract_rate_limits_from_response(response)
 
     def estimate_tokens(self, prompt: str) -> int:
@@ -810,8 +1020,8 @@ class CodeAssigner:
                         idea.idea,
                         getattr(idea, 'concept_type', '') or '',
                         getattr(idea, 'instance', '') or '',
-                        getattr(idea, 'concept', '') or '',
-                        getattr(idea, 'concept_type_definition', '') or '',
+                        getattr(idea, 'rung_1', '') or '',
+                        getattr(idea, 'rung_2', '') or '',
                     ))
             else:
                 self.verbose_reporter.stat_line(f"Warning: No response_ideas for respondent {model.respondent_id}")
@@ -841,13 +1051,13 @@ class CodeAssigner:
                 tiktoken_input = len(self.encoding.encode(prompt))
                 self.tiktoken_offset_learner.record(tiktoken_input, actual_input)
 
-    async def evaluate_single_code(self, idea_id, idea_text, instance, concept, concept_type, code):
+    async def evaluate_single_code(self, idea_id, idea_text, instance, rung_1, concept_type, code):
         """Evaluate a single code against an idea's abstraction ladder."""
         prompt = SINGLE_CODE_EVALUATION_PROMPT.format(
             language=self.language, var_lab=self.var_lab,
             idea_id=idea_id,
             instance=instance or idea_text,
-            concept=concept or idea_text,
+            rung_1=rung_1 or idea_text,
             concept_type=concept_type,
             code=code.code, definition=code.definition,
             boundary_test=getattr(code, 'boundary_test', 'N/A') or 'N/A',
@@ -881,7 +1091,7 @@ class CodeAssigner:
         self.partition_eval_calls += 1
         return response, prompt
 
-    async def evaluate_partition_codes(self, idea_id, idea_text, instance, concept, concept_type, codes, grouped_codes=None):
+    async def evaluate_partition_codes(self, idea_id, idea_text, instance, rung_1, concept_type, codes, grouped_codes=None):
         """Evaluate all codes from a partition against an idea's abstraction ladder."""
         # Use grouped formatting when refined sub-partitions exist
         if grouped_codes:
@@ -889,12 +1099,27 @@ class CodeAssigner:
         else:
             codes_formatted = self._format_partition_codes(codes)
 
+        # Build dominance axis block for this partition — procedural gate
+        dominance_axis = self.dominance_axes.get(concept_type, "")
+        if dominance_axis:
+            dominance_axis_block = (
+                f"\n<routing_dimension>\n"
+                f"MANDATORY ROUTING GATE — Answer this question in Step 0(c) before evaluating any code:\n"
+                f"{dominance_axis}\n"
+                f"Your answer determines which code receives this idea. A code whose primary focus "
+                f"contradicts your answer here CANNOT be the best match.\n"
+                f"</routing_dimension>\n"
+            )
+        else:
+            dominance_axis_block = ""
+
         prompt = PARTITION_EVALUATION_PROMPT.format(
             language=self.language, var_lab=self.var_lab,
             idea_id=idea_id,
             instance=instance or idea_text,
-            concept=concept or idea_text,
+            rung_1=rung_1 or idea_text,
             concept_type=concept_type,
+            dominance_axis_block=dominance_axis_block,
             partition_codes_formatted=codes_formatted
         )
 
@@ -921,12 +1146,86 @@ class CodeAssigner:
         self.partition_eval_calls += 1
         return response, prompt
 
+    async def evaluate_similarity_codes(self, idea_id, idea_text, instance, rung_1, concept_type, codes, similarity_context, rung_2=None):
+        """Evaluate similarity-selected codes — simple classification prompt."""
+        codes_formatted = self._format_partition_codes(codes)
+
+        prompt = SIMILARITY_EVALUATION_PROMPT.format(
+            language=self.language, var_lab=self.var_lab,
+            idea_id=idea_id,
+            instance=instance or idea_text,
+            rung_1=rung_1 or idea_text,
+            rung_2=rung_2 or concept_type or '',
+            concept_type=concept_type,
+            candidate_codes_formatted=codes_formatted
+        )
+
+        self.last_prompt = prompt
+        est_tokens = self.estimate_tokens(prompt)
+        timeout = self.latency_tracker.get_timeout(est_tokens)
+
+        async with self.semaphore:
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
+            async with self.rate_limiter:
+                start_time = time.perf_counter()
+                response = await asyncio.wait_for(
+                    llm_create_async(
+                        client=self.client, model=self.model, prompt=prompt,
+                        response_model=SimpleClassificationResponse,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens, track_usage=True
+                    ),
+                    timeout=timeout
+                )
+                self.latency_tracker.add(time.perf_counter() - start_time)
+                await self._reconcile_tokens(response, prompt, est_tokens)
+
+        self.partition_eval_calls += 1
+        return response, prompt
+
+    async def _retry_with_correction(self, idea_id, idea_text, instance, rung_1, rung_2, concept_type, candidate_codes, invalid_code):
+        """Retry when the LLM returned a code not in the candidate list.
+
+        Sends a short correction prompt listing only the valid code names.
+        """
+        valid_names = [c.code for c in candidate_codes]
+        prompt = (
+            f"You previously returned \"{invalid_code}\" but that is not a valid code. "
+            f"Pick exactly one code from this list:\n"
+            f"{chr(10).join(f'- {name}' for name in valid_names)}\n"
+            f"- NONE\n\n"
+            f"Idea: \"{instance or idea_text}\"\n"
+            f"Respond with JSON: {{\"idea_id\": \"{idea_id}\", \"code\": \"PICK_ONE\", "
+            f"\"confidence\": 0.00, \"rationale\": \"brief\"}}"
+        )
+
+        est_tokens = self.estimate_tokens(prompt)
+        timeout = self.latency_tracker.get_timeout(est_tokens)
+
+        async with self.semaphore:
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
+            async with self.rate_limiter:
+                start_time = time.perf_counter()
+                response = await asyncio.wait_for(
+                    llm_create_async(
+                        client=self.client, model=self.model, prompt=prompt,
+                        response_model=SimpleClassificationResponse,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens, track_usage=True
+                    ),
+                    timeout=timeout
+                )
+                self.latency_tracker.add(time.perf_counter() - start_time)
+                await self._reconcile_tokens(response, prompt, est_tokens)
+
+        return response, prompt
+
     async def probe_call_no_structured(self, task_dict):
         """Probe call for bootstrap measurement."""
         idea_data = task_dict['idea_data']
-        respondent_id, idea_id, idea_text, concept_type, instance, concept, concept_type_def = idea_data
+        respondent_id, idea_id, idea_text, concept_type, instance, rung_1, rung_2 = idea_data
 
-        prompt = self._create_probe_prompt(idea_id, idea_text, instance, concept, concept_type)
+        prompt = self._create_probe_prompt(idea_id, idea_text, instance, rung_1, concept_type)
 
         resp = await llm_create_async(
             client=self.client, model=self.model, prompt=prompt,
@@ -957,30 +1256,39 @@ class CodeAssigner:
         reraise=True
     )
     async def process_task(self, task: Dict) -> CodeAssignmentResponse:
-        """Partition-based code assignment: get all codes in partition, evaluate, assign or unknown."""
+        """Code assignment: route via partition or semantic similarity, then LLM evaluation."""
         try:
             idea_data = task['idea_data']
-            respondent_id, idea_id, idea_text, concept_type, instance, concept, concept_type_def = idea_data
+            respondent_id, idea_id, idea_text, concept_type, instance, rung_1, rung_2 = idea_data
 
             unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
             prompt_used = ""
+            use_similarity = self.similarity_config.routing_mode != "partition"
 
-            # Two-level partition routing: handles refined sub-partitions from step 7
-            partition_codes, grouped_codes = self._get_codes_for_idea(concept_type)
+            # === CODE SELECTION: similarity or partition ===
+            if use_similarity:
+                idea_embedding = self._idea_embeddings_lookup.get(idea_id)
+                if idea_embedding is not None:
+                    candidate_codes = self._find_similar_codes(idea_embedding, concept_type)
+                    grouped_codes = None  # no sub-partition grouping in similarity mode
+                else:
+                    # Fallback to partition routing if no embedding
+                    candidate_codes, grouped_codes = self._get_codes_for_idea(concept_type)
+            else:
+                candidate_codes, grouped_codes = self._get_codes_for_idea(concept_type)
 
-            if not partition_codes:
-                # No codes in this partition → unknown
+            # === LLM EVALUATION ===
+            if not candidate_codes:
                 assigned_code = unknown_label
                 confidence = 0.0
-                rationale = f"EXCLUDE: No codes available in partition '{concept_type}'"
+                rationale = f"EXCLUDE: No codes available for idea '{idea_id}'"
                 self.unknown_count += 1
-                logger.info(f"Idea {idea_id}: no codes in partition '{concept_type}'")
+                logger.info(f"Idea {idea_id}: no candidate codes")
 
-            elif len(partition_codes) == 1:
-                # Single code → evaluate directly
-                code = partition_codes[0]
+            elif len(candidate_codes) == 1:
+                code = candidate_codes[0]
                 eval_result, prompt_used = await self.evaluate_single_code(
-                    idea_id, idea_text, instance, concept, concept_type, code
+                    idea_id, idea_text, instance, rung_1, concept_type, code
                 )
                 self.confidence_tracker.record(eval_result.confidence)
 
@@ -996,32 +1304,76 @@ class CodeAssigner:
                 else:
                     assigned_code = unknown_label
                     confidence = eval_result.confidence
-                    rationale = f"Below threshold ({threshold:.2f}) in partition '{concept_type}'. {eval_result.rationale}"
+                    rationale = f"Below threshold ({threshold:.2f}). {eval_result.rationale}"
                     self.unknown_count += 1
 
             else:
-                # Multiple codes → LLM evaluates all codes (grouped by refined sub-partition if applicable)
-                eval_result, prompt_used = await self.evaluate_partition_codes(
-                    idea_id, idea_text, instance, concept, concept_type,
-                    partition_codes, grouped_codes
-                )
-                best_confidence = eval_result.best_match.confidence
-                self.confidence_tracker.record(best_confidence)
+                # Multiple codes → LLM evaluates
+                if use_similarity and grouped_codes is None:
+                    # Similarity mode: simple classification prompt
+                    similarity_context = self._format_similarity_context(candidate_codes)
+                    eval_result, prompt_used = await self.evaluate_similarity_codes(
+                        idea_id, idea_text, instance, rung_1, concept_type,
+                        candidate_codes, similarity_context, rung_2=rung_2
+                    )
 
-                threshold = (self.confidence_tracker.get_adaptive_threshold(self.adaptive_threshold_config.fixed_threshold)
-                             if self.adaptive_threshold_config.use_adaptive
-                             else self.adaptive_threshold_config.fixed_threshold)
+                    # SimpleClassificationResponse: .code, .confidence, .rationale
+                    # Normalize LLM-returned code name against candidate list
+                    candidate_names = [c.code for c in candidate_codes]
+                    normalized = self._normalize_code_name(eval_result.code, candidate_codes)
 
-                if eval_result.best_match.code != "NONE" and best_confidence >= threshold:
-                    assigned_code = eval_result.best_match.code
-                    confidence = best_confidence
-                    rationale = eval_result.best_match.rationale
-                    self.partition_match_count += 1
+                    # If normalization didn't resolve to a valid code, retry with correction prompt
+                    if normalized != "NONE" and normalized not in candidate_names:
+                        logger.info(f"Idea {idea_id}: code '{eval_result.code}' not in candidates, retrying")
+                        retry_result, _ = await self._retry_with_correction(
+                            idea_id, idea_text, instance, rung_1, rung_2, concept_type,
+                            candidate_codes, eval_result.code
+                        )
+                        normalized = self._normalize_code_name(retry_result.code, candidate_codes)
+
+                    eval_result.code = normalized
+                    self.confidence_tracker.record(eval_result.confidence)
+
+                    threshold = (self.confidence_tracker.get_adaptive_threshold(self.adaptive_threshold_config.fixed_threshold)
+                                 if self.adaptive_threshold_config.use_adaptive
+                                 else self.adaptive_threshold_config.fixed_threshold)
+
+                    if eval_result.code != "NONE" and eval_result.confidence >= threshold:
+                        assigned_code = eval_result.code
+                        confidence = eval_result.confidence
+                        rationale = eval_result.rationale
+                        self.partition_match_count += 1
+                    else:
+                        assigned_code = unknown_label
+                        confidence = eval_result.confidence
+                        rationale = f"Below threshold ({threshold:.2f}). {eval_result.rationale}"
+                        self.unknown_count += 1
                 else:
-                    assigned_code = unknown_label
-                    confidence = best_confidence
-                    rationale = f"Below threshold ({threshold:.2f}) in partition '{concept_type}'. {eval_result.best_match.rationale}"
-                    self.unknown_count += 1
+                    # Partition mode: use partition evaluation (grouped by sub-partition)
+                    eval_result, prompt_used = await self.evaluate_partition_codes(
+                        idea_id, idea_text, instance, rung_1, concept_type,
+                        candidate_codes, grouped_codes
+                    )
+
+                    # Normalize LLM-returned code name against candidate list
+                    eval_result.best_match.code = self._normalize_code_name(eval_result.best_match.code, candidate_codes)
+                    best_confidence = eval_result.best_match.confidence
+                    self.confidence_tracker.record(best_confidence)
+
+                    threshold = (self.confidence_tracker.get_adaptive_threshold(self.adaptive_threshold_config.fixed_threshold)
+                                 if self.adaptive_threshold_config.use_adaptive
+                                 else self.adaptive_threshold_config.fixed_threshold)
+
+                    if eval_result.best_match.code != "NONE" and best_confidence >= threshold:
+                        assigned_code = eval_result.best_match.code
+                        confidence = best_confidence
+                        rationale = eval_result.best_match.rationale
+                        self.partition_match_count += 1
+                    else:
+                        assigned_code = unknown_label
+                        confidence = best_confidence
+                        rationale = f"Below threshold ({threshold:.2f}). {eval_result.best_match.rationale}"
+                        self.unknown_count += 1
 
             # Create response
             response = CodeAssignmentResponse(
@@ -1044,7 +1396,7 @@ class CodeAssigner:
                 self.prompt_responses.append({
                     'prompt': prompt_used, 'respondent_id': respondent_id,
                     'idea_id': idea_id, 'idea_text': idea_text,
-                    'instance': instance, 'concept': concept,
+                    'instance': instance, 'rung_1': rung_1,
                     'concept_type': concept_type,
                     'assigned_codes': [assigned_code],
                     'confidence': confidence, 'rationale': rationale,
@@ -1080,7 +1432,7 @@ class CodeAssigner:
     def create_fallback_response(self, task: Dict) -> CodeAssignmentResponse:
         """Create fallback response for failed tasks."""
         idea_data = task['idea_data']
-        respondent_id, idea_id, idea_text, concept_type, instance, concept, concept_type_def = idea_data
+        respondent_id, idea_id, idea_text, concept_type, instance, rung_1, rung_2 = idea_data
         unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
         return CodeAssignmentResponse(
             idea_id=idea_id, idea=idea_text,
@@ -1515,24 +1867,73 @@ class CodeAssigner:
     def _prepare_individual_tasks(self, all_ideas: List[tuple]) -> List[Dict]:
         return [{'idea_data': idea_data} for idea_data in all_ideas]
 
+    def _create_other_assignments(self, other_ideas: List[tuple]) -> List[CodeAssignmentResponse]:
+        """Create synthetic CodeAssignmentResponse for pre-assigned 'other' ideas.
+
+        These ideas were assigned DIRECT_OTHER codes in step 6 and should skip
+        LLM assignment. The code is looked up from self.other_idea_assignments.
+        """
+        results = []
+        for idea_data in other_ideas:
+            respondent_id, idea_id, idea_text, *_ = idea_data
+            code_label = self.other_idea_assignments.get(idea_id, "")
+            theme = self.code_to_theme_mapping.get(code_label, "")
+
+            results.append(CodeAssignmentResponse(
+                idea_id=idea_id,
+                idea=idea_text,
+                assigned_codes=[code_label],
+                assignment_confidence=1.0,
+                assignment_rationale="Pre-assigned: DIRECT_OTHER from step 6",
+                assigned_themes=[theme] if theme else [],
+            ))
+        return results
+
     async def assign_codes(self) -> List[models.CodeAssignedModel]:
-        """Main method: assign codes using partition-based routing on abstraction ladder."""
+        """Main method: assign codes using partition-based or similarity-based routing."""
         self._stats.start_timing()
 
-        all_ideas = self._extract_all_ideas()
-        total_ideas = len(all_ideas)
+        # Initialize similarity infrastructure if needed
+        if self.similarity_config.routing_mode != "partition":
+            self._code_embeddings = self._generate_code_embeddings()
+            self._build_idea_embeddings_lookup()
 
-        if total_ideas == 0:
+        all_ideas = self._extract_all_ideas()
+
+        # Separate pre-assigned "other" ideas from ideas needing LLM assignment
+        if self.other_idea_assignments:
+            other_idea_ids = set(self.other_idea_assignments.keys())
+            normal_ideas = [i for i in all_ideas if i[1] not in other_idea_ids]  # i[1] = idea_id
+            other_ideas = [i for i in all_ideas if i[1] in other_idea_ids]
+            self.verbose_reporter.stat_line(
+                f"Pre-assigned 'other' ideas: {len(other_ideas)} (skipping LLM) | "
+                f"Ideas for LLM assignment: {len(normal_ideas)}"
+            )
+        else:
+            normal_ideas = all_ideas
+            other_ideas = []
+
+        total_ideas = len(normal_ideas)
+
+        if total_ideas == 0 and not other_ideas:
             self.verbose_reporter.stat_line("No ideas found for code assignment")
             return []
 
         self.verbose_reporter.stat_line(f"Processing {total_ideas} ideas with {len(self.codebook)} codes across {len(self.partition_codebooks)} partitions")
 
-        tasks = self._prepare_individual_tasks(all_ideas)
+        if normal_ideas:
+            tasks = self._prepare_individual_tasks(normal_ideas)
 
-        if nest_asyncio:
-            nest_asyncio.apply()
-        all_results = await self.process_all_tasks_async(tasks)
+            if nest_asyncio:
+                nest_asyncio.apply()
+            all_results = await self.process_all_tasks_async(tasks)
+        else:
+            all_results = []
+
+        # Add synthetic results for pre-assigned "other" ideas
+        if other_ideas:
+            other_results = self._create_other_assignments(other_ideas)
+            all_results.extend(other_results)
 
         self._results = self._merge_results_into_models(all_results)
 

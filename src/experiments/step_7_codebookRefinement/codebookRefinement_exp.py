@@ -73,7 +73,7 @@ from experiments.models_exp import (
     CodeTransformation, BatchTransformationRecord, RefinementLineage,
     ThemeEnrichedCodebookEntryExp, ThemeEnrichedCodebookModelExp,
 )
-from experiments.step_6_codeGenerator.codeGenerator_exp import CodeGeneratorReasoningResults
+from experiments.step_6_codeGenerator.codeGenerator_exp import CodeGeneratorReasoningResults, is_other_cluster
 from utils.verboseReporter import VerboseReporter
 
 # Setup logging
@@ -1670,6 +1670,10 @@ class CodebookRefinementProcessor:
     ) -> Tuple[Dict[str, List[dict]], Dict[str, str]]:
         """Group raw step 6 codes by concept_type partition.
 
+        DIRECT_OTHER codes (source_cluster_id starting with "other_") are
+        excluded from partition refinement and stored on self._other_codes
+        for later injection as pass-through entries.
+
         Returns:
             (code_groups, concept_type_map) where:
             - code_groups: {concept_type_name: [raw_code_dicts]}
@@ -1678,8 +1682,23 @@ class CodebookRefinementProcessor:
         raw_codes = self._extract_raw_codes(reasoning_results)
         concept_type_map = self._extract_concept_type_mapping(reasoning_results)
 
-        groups: Dict[str, List[dict]] = {}
+        # Separate "other" codes that bypass refinement
+        normal_codes = []
+        self._other_codes = []
         for code in raw_codes:
+            if is_other_cluster(code.get('source_cluster_id', '')):
+                self._other_codes.append(code)
+            else:
+                normal_codes.append(code)
+
+        if self._other_codes:
+            self.reporter.stat_line(
+                f"Excluded {len(self._other_codes)} 'other' codes from partition refinement "
+                f"(will be re-injected as pass-through)"
+            )
+
+        groups: Dict[str, List[dict]] = {}
+        for code in normal_codes:
             src = code.get('source_cluster_id', '')
             first_cluster = src.split(',')[0].strip() if src else ''
             concept_type = concept_type_map.get(first_cluster, "other")
@@ -2177,18 +2196,31 @@ class CodebookRefinementProcessor:
         concept_type_map: Dict[str, str],
         source_variable: str,
         partition_remap: Optional[Dict[str, str]] = None,
+        reasoning_results: Optional[CodeGeneratorReasoningResults] = None,
     ) -> ThemeEnrichedCodebookModelExp:
-        """Build the final enriched codebook model from partition results."""
+        """Build the final enriched codebook model from partition results.
+
+        If reasoning_results is provided and DIRECT_OTHER codes were filtered
+        during refinement (stored on self._other_codes), they are injected as
+        pass-through codebook entries and an other_idea_assignments mapping
+        is built for step 8 to pre-assign those ideas.
+        """
         enriched_entries = []
         themes_summary = []
         code_to_theme_mapping = {}
 
+        dominance_axes = {}
         for partition_name, result in sorted(partition_results.items()):
             themes_summary.append({
                 'theme_name': result.theme_label,
                 'theme_description': result.theme_description,
                 'code_count': len(result.codes),
+                'dominance_axis': getattr(result, 'dominance_axis', ''),
             })
+            # Collect dominance axes for step 8 routing
+            axis = getattr(result, 'dominance_axis', '')
+            if axis:
+                dominance_axes[partition_name] = axis
 
             for code in result.codes:
                 entry = ThemeEnrichedCodebookEntryExp(
@@ -2211,6 +2243,57 @@ class CodebookRefinementProcessor:
                 enriched_entries.append(entry)
                 code_to_theme_mapping[code.code] = result.theme_label
 
+        # Inject DIRECT_OTHER codes as pass-through entries
+        other_idea_assignments: Optional[Dict[str, str]] = None
+        other_codes = getattr(self, '_other_codes', [])
+        if other_codes:
+            other_idea_assignments = {}
+
+            # Extract idea_id → code mapping from step 6 cluster_results
+            if reasoning_results and hasattr(reasoning_results, 'cluster_results'):
+                for cr in reasoning_results.cluster_results:
+                    if cr.get('decision') == 'DIRECT_OTHER' and 'idea_ids' in cr:
+                        code_label = cr.get('final_code', '')
+                        for idea_id in cr['idea_ids']:
+                            other_idea_assignments[idea_id] = code_label
+
+            # Inject each "other" code as a pass-through codebook entry
+            for other_code in other_codes:
+                src = other_code.get('source_cluster_id', '')
+                code_label = other_code.get('code', '')
+                definition = other_code.get('definition', '')
+
+                # Extract partition name from source_cluster_id: "other_{partition}_{valence}"
+                partition_name = src
+                if src.startswith("other_"):
+                    stripped = src[len("other_"):]
+                    last_underscore = stripped.rfind('_')
+                    partition_name = stripped[:last_underscore] if last_underscore >= 0 else stripped
+
+                # Use language-aware "other" label for theme
+                from experiments.step_5_categories.config_categories_exp import get_other_category_label
+                other_label = get_other_category_label(self.config.language)
+                theme_label = f"{partition_name} — {other_label}"
+
+                entry = ThemeEnrichedCodebookEntryExp(
+                    code=code_label,
+                    definition=definition,
+                    theme=theme_label,
+                    theme_description=f"Catch-all for ideas in '{partition_name}' not assigned a specific code",
+                    category="",
+                    category_description="",
+                    source_cluster=src,
+                    concept_type=partition_name,
+                    mece_verified=False,
+                )
+                enriched_entries.append(entry)
+                code_to_theme_mapping[code_label] = theme_label
+
+            self.reporter.stat_line(
+                f"Injected {len(other_codes)} 'other' codes as pass-through entries "
+                f"({len(other_idea_assignments)} ideas pre-assigned)"
+            )
+
         # Serialize judge results
         cross_partition_data = None
         if judge_result:
@@ -2225,6 +2308,8 @@ class CodebookRefinementProcessor:
             concept_type_mapping=concept_type_map,
             cross_partition_results=cross_partition_data,
             partition_remap=partition_remap if partition_remap else None,
+            dominance_axes=dominance_axes if dominance_axes else None,
+            other_idea_assignments=other_idea_assignments if other_idea_assignments else None,
         )
 
     # =========================================================================

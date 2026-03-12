@@ -56,7 +56,6 @@ from prompts import (
     build_primary_facet_consolidation_prompt,
     build_concept_type_discovery_prompt,
     build_concept_type_consolidation_prompt,
-    build_taxonomy_subject_prompt,
     build_taxonomy_enriched_extraction_prompt,
     GenericSpecifierGroup1Response,
     GenericSpecifierGroup2Response,
@@ -65,8 +64,6 @@ from prompts import (
     ConceptTypeItem,
     ConceptTypeChunkResponse,
     ConceptTypeConsolidatedResponse,
-    SubjectExtractionResponse,
-    create_subject_model,
     create_extraction_model,
 )
 
@@ -486,13 +483,12 @@ class IdeaExtractor:
         # Capture flags for each prompt type (only capture first instance)
         self._captured_context_specifier1 = False
         self._captured_context_specifier2 = False
-        self._captured_taxonomy_chunk = False
+        self._captured_primary_facet_chunk = False
         self._captured_consolidate1 = False
         self._captured_consolidate2 = False
-        self._captured_taxonomy_consolidation = False
+        self._captured_primary_facet_consolidation = False
         self._captured_concept_type_chunk = False
         self._captured_concept_type_consolidation = False
-        self._captured_taxonomy_subject = False
 
         # Initialize tokenizer for token estimation (cached)
         self.encoding = get_tiktoken_encoding(self.model)
@@ -521,10 +517,6 @@ class IdeaExtractor:
 
         # Latency tracking
         self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
-
-        # Cache for subject extraction (with async lock to prevent race conditions)
-        self._subject_cache = {}
-        self._subject_lock = asyncio.Lock()
 
         # Generic specifiers (must be initialized before _calculate_avg_tokens)
         self.generic_specifiers = {}
@@ -770,16 +762,16 @@ class IdeaExtractor:
             chunk_results="\n\n".join(formatted_results),
         )
 
-        # Capture first taxonomy consolidation prompt
-        if self.prompt_printer and not self._captured_taxonomy_consolidation:
+        # Capture first primary facet consolidation prompt
+        if self.prompt_printer and not self._captured_primary_facet_consolidation:
             self.prompt_printer.capture_prompt(
-                step_name="idea_extraction_taxonomy_consolidation",
+                step_name="idea_extraction_primary_facet_consolidation",
                 utility_name="IdeaExtractor",
                 prompt_content=prompt,
-                prompt_type="taxonomy_consolidation",
+                prompt_type="primary_facet_consolidation",
                 metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
             )
-            self._captured_taxonomy_consolidation = True
+            self._captured_primary_facet_consolidation = True
 
         est_tokens = self._estimate_preprocessed_tokens(prompt)
         async with self.semaphore:
@@ -795,7 +787,7 @@ class IdeaExtractor:
             )
 
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"  Taxonomy consolidated:")
+            self.verbose_reporter.stat_line(f"  Primary facet consolidated:")
             self.verbose_reporter.stat_line(f"    Primary: {response.primary_facet}")
             self.verbose_reporter.stat_line(f"    Rationale: {response.primary_facet_rationale[:100]}...")
 
@@ -861,9 +853,10 @@ class IdeaExtractor:
     async def _extract_generic_specifiers(self) -> Tuple[Dict[str, str], PrimaryFacetConsolidatedResponse, ConceptTypeConsolidatedResponse]:
         """Extract context specifiers first, then primary facet with context awareness, then concept types.
 
-        Two-phase extraction:
+        Three-phase extraction:
         - Phase 1: Extract context specifiers (Group 1 + Group 2) in parallel
-        - Phase 2: Extract taxonomy axis scoring with context specifiers available
+        - Phase 2: Select primary facet with context specifiers available
+        - Phase 3: Discover concept types (optional)
 
         Returns:
             Tuple of (context_specifiers dict, PrimaryFacetConsolidatedResponse)
@@ -875,7 +868,7 @@ class IdeaExtractor:
         chunks = [sample[i:i+chunk_size] for i in range(0, len(sample), chunk_size)]
         chunk_texts = ["\n".join([f"- {r.response}" for r in chunk]) for chunk in chunks]
 
-        self.verbose_reporter.stat_line(f"Context + Taxonomy: {len(sample)} samples, {len(chunks)} chunks")
+        self.verbose_reporter.stat_line(f"Context + Primary Facet: {len(sample)} samples, {len(chunks)} chunks")
 
         # === PHASE 1: Context specifiers (parallel) ===
         self.verbose_reporter.stat_line(f"  Phase 1: Extracting context specifiers...")
@@ -953,41 +946,41 @@ class IdeaExtractor:
         context_specifiers = {**group1_consolidated, **group2_consolidated}
         self.verbose_reporter.stat_line(f"  Phase 1 complete. Context specifiers: {context_specifiers}")
 
-        # === PHASE 2: Taxonomy scoring (with context awareness) ===
-        self.verbose_reporter.stat_line(f"  Phase 2: Scoring taxonomy axes with context (perspective={context_specifiers.get('perspective')}, intent={context_specifiers.get('intent')})...")
+        # === PHASE 2: Primary facet selection (with context awareness) ===
+        self.verbose_reporter.stat_line(f"  Phase 2: Selecting primary facet with context (perspective={context_specifiers.get('perspective')}, intent={context_specifiers.get('intent')})...")
 
-        taxonomy_tasks = []
+        facet_tasks = []
         for chunk_idx, chunk in enumerate(chunks):
-            taxonomy_tasks.append({
-                'task_id': f"taxonomy_chunk{chunk_idx}",
+            facet_tasks.append({
+                'task_id': f"primary_facet_chunk{chunk_idx}",
                 'group': 3,
                 'chunk_idx': chunk_idx,
                 'chunk_text': chunk_texts[chunk_idx],
                 'chunk_size': len(chunk),
-                'context_specifiers': context_specifiers  # Pass context to taxonomy scoring
+                'context_specifiers': context_specifiers
             })
 
-        taxonomy_results = await self._process_generic_specifier_tasks(taxonomy_tasks)
+        facet_results = await self._process_generic_specifier_tasks(facet_tasks)
 
-        if self.verbose_reporter.enabled and taxonomy_results:
+        if self.verbose_reporter.enabled and facet_results:
             self.verbose_reporter.stat_line(f"  Phase 2 chunk-level results:")
-            for r in taxonomy_results:
+            for r in facet_results:
                 chunk_resp = r['response']
                 stop_pos = getattr(chunk_resp, 'decision_tree_stop_position', '?')
                 self.verbose_reporter.stat_line(
-                    f"    Chunk {r['chunk_idx']+1} (Taxonomy): Facet={chunk_resp.primary_facet} (tree step {stop_pos})"
+                    f"    Chunk {r['chunk_idx']+1} (Primary Facet): Facet={chunk_resp.primary_facet} (tree step {stop_pos})"
                 )
 
-        # Consolidate Taxonomy — hard failure if no results
-        if not taxonomy_results:
+        # Consolidate primary facet — hard failure if no results
+        if not facet_results:
             raise RuntimeError(
                 "Primary facet selection produced no results from any chunk. "
                 "Check LLM connectivity, rate limits, and model availability."
             )
-        taxonomy_consolidated = await self._consolidate_primary_facet(taxonomy_results, context_specifiers)
+        taxonomy_consolidated = await self._consolidate_primary_facet(facet_results, context_specifiers)
 
         self.verbose_reporter.stat_line(f"  Context results: {context_specifiers}")
-        self.verbose_reporter.stat_line(f"  Taxonomy: primary={taxonomy_consolidated.primary_facet}")
+        self.verbose_reporter.stat_line(f"  Primary facet: {taxonomy_consolidated.primary_facet}")
 
         # Set primary facet early so Phase 3 concept type discovery can use it
         self.primary_facet = taxonomy_consolidated.primary_facet
@@ -995,7 +988,7 @@ class IdeaExtractor:
         # Capture the most common decision tree stop position from chunks
         stop_positions = [
             getattr(r['response'], 'decision_tree_stop_position', 0)
-            for r in taxonomy_results
+            for r in facet_results
         ]
         self.decision_tree_stop_position = max(set(stop_positions), key=stop_positions.count) if stop_positions else 0
 
@@ -1067,7 +1060,7 @@ class IdeaExtractor:
         return results
 
     async def _generic_specifier_worker(self, queue: asyncio.Queue, results: List):
-        """Worker for processing generic specifier AND taxonomy tasks."""
+        """Worker for processing generic specifier, primary facet, and concept type tasks."""
         while True:
             task = await queue.get()
             if task is None:
@@ -1119,7 +1112,7 @@ class IdeaExtractor:
                         )
                         self._captured_context_specifier2 = True
                 elif task['group'] == 3:
-                    # Group 3: Taxonomy facet selection (decision tree, context-aware)
+                    # Group 3: Primary facet selection (decision tree, context-aware)
                     ctx = task['context_specifiers']
                     prompt = build_primary_facet_decision_tree_prompt(
                         language=self.language,
@@ -1133,12 +1126,12 @@ class IdeaExtractor:
                         topic=ctx['topic'],
                     )
                     response_model = PrimaryFacetChunkResponse
-                    if self.prompt_printer and not self._captured_taxonomy_chunk:
+                    if self.prompt_printer and not self._captured_primary_facet_chunk:
                         self.prompt_printer.capture_prompt(
-                            step_name="idea_extraction_taxonomy_chunk",
+                            step_name="idea_extraction_primary_facet_chunk",
                             utility_name="IdeaExtractor",
                             prompt_content=prompt,
-                            prompt_type="taxonomy_chunk_decision_tree",
+                            prompt_type="primary_facet_chunk",
                             metadata={
                                 "model": self.model,
                                 "survey_question": self.var_lab,
@@ -1147,7 +1140,7 @@ class IdeaExtractor:
                                 "intent": ctx['intent'],
                             }
                         )
-                        self._captured_taxonomy_chunk = True
+                        self._captured_primary_facet_chunk = True
                 else:  # group == 4: Concept type discovery
                     ctx = task['context_specifiers']
 
@@ -1205,80 +1198,20 @@ class IdeaExtractor:
             finally:
                 queue.task_done()
 
-    async def _extract_taxonomy_aware_subject(
-        self,
-        survey_question: str,
-        primary_facet: str,
-    ) -> SubjectExtractionResponse:
-        """Extract canonical subject with facet-aware template generation.
+    def _build_canonical_phrasing(self, primary_facet: str) -> tuple[str, str]:
+        """Build canonical_term and canonical_phrasing programmatically.
 
-        This method generates a phrasing template that is shaped by the selected
-        primary facet, ensuring ideas are normalized along a consistent dimension.
-
-        Args:
-            survey_question: The original survey question
-            primary_facet: Primary facet (PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS, EVALUATION_PRIORITIZATION, etc.)
+        Replaces the LLM-based subject extraction — the anchor slot is always
+        the entity, so we just do a string substitution.
 
         Returns:
-            SubjectExtractionResponse with facet-aware canonical_phrasing
+            (canonical_term, canonical_phrasing)
         """
-        # Cache key includes primary facet
-        cache_key = f"{survey_question}_{primary_facet}"
-
-        # Use async lock to prevent race condition where multiple tasks
-        # check cache simultaneously and all bypass it
-        async with self._subject_lock:
-            # Double-check cache inside lock
-            if cache_key in self._subject_cache:
-                return self._subject_cache[cache_key]
-
-            facet = get_facet(primary_facet)
-
-            prompt = build_taxonomy_subject_prompt(
-                language=self.language,
-                survey_question=survey_question,
-                domain=self.generic_specifiers['domain'],
-                topic=self.generic_specifiers['topic'],
-                entity=self.generic_specifiers['entity'],
-                perspective=self.generic_specifiers['perspective'],
-                intent=self.generic_specifiers['intent'],
-                facet=facet,
-            )
-
-            # Create facet-specific response model (no ClassVar mutation — baked in)
-            AxisSubjectModel = create_subject_model(facet=facet)
-
-            # Rate limit the subject extraction call
-            est_tokens = self._estimate_preprocessed_tokens(prompt)
-            await self.tpm_bucket.wait_and_acquire(est_tokens)
-            await self.rate_limiter.acquire()
-
-            response = await llm_create_async(
-                client=self.client,
-                model=self.model,
-                response_model=AxisSubjectModel,
-                prompt=prompt,
-                temperature=0.0
-            )
-
-            # Capture first taxonomy subject prompt
-            if self.prompt_printer and not self._captured_taxonomy_subject:
-                self.prompt_printer.capture_prompt(
-                    step_name="idea_extraction_taxonomy_subject",
-                    utility_name="IdeaExtractor",
-                    prompt_content=prompt,
-                    prompt_type="taxonomy_aware_subject_extraction",
-                    metadata={
-                        "model": self.model,
-                        "survey_question": survey_question,
-                        "primary_facet": primary_facet,
-                        "language": self.language
-                    }
-                )
-                self._captured_taxonomy_subject = True
-
-            self._subject_cache[cache_key] = response
-            return response
+        facet = get_facet(primary_facet)
+        entity = self.generic_specifiers['entity']
+        canonical_term = entity.replace("_", " ").title()
+        canonical_phrasing = facet.pattern.replace("[ANCHOR_SUBJECT]", canonical_term)
+        return canonical_term, canonical_phrasing
 
     def _build_taxonomy_enriched_prompt(
         self,
@@ -1518,14 +1451,9 @@ class IdeaExtractor:
         task_start = time.perf_counter()
 
         try:
-            # Use taxonomy-aware subject extraction for template prefix
+            # Build canonical phrasing programmatically (no LLM call needed)
             assert self.primary_facet is not None, "primary_facet must be set before processing tasks"
-            subject_response = await self._extract_taxonomy_aware_subject(
-                self.var_lab,
-                self.primary_facet,
-            )
-            subject = subject_response.canonical_term
-            phrasing_template = subject_response.canonical_phrasing
+            subject, phrasing_template = self._build_canonical_phrasing(self.primary_facet)
 
             # Extract template prefix (everything before the dimension marker)
             facet = get_facet(self.primary_facet)
@@ -1547,7 +1475,7 @@ class IdeaExtractor:
                     step_name="idea_extraction",
                     utility_name="IdeaExtractor",
                     prompt_content=prompt,
-                    prompt_type="idea_extraction_v3",
+                    prompt_type="idea_extraction",
                     metadata={
                         "model": self.model,
                         "var_lab": self.var_lab,
@@ -2148,7 +2076,7 @@ class IdeaExtractor:
         self.concept_types = categories_result.concept_types or None
 
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"\nTaxonomy axis selected: {self.primary_facet}")
+            self.verbose_reporter.stat_line(f"\nPrimary facet selected: {self.primary_facet}")
             if self.primary_facet_description:
                 self.verbose_reporter.stat_line(f"Description: {self.primary_facet_description}")
             if self.concept_types:

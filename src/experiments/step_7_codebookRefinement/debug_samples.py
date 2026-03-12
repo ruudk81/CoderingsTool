@@ -1,3 +1,4 @@
+#%% 
 """
 Debug script for Step 7: Codebook Refinement
 Loads refined codebook from cache and displays structure.
@@ -12,13 +13,14 @@ src_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(src_dir))
 
 from experiments import models_exp as models
+from experiments.test_data import TEST_DATA
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
-# Configuration
-FILENAME = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-VAR_NAME = "Q20"
-SAMPLE_SIZE = 500
+# Configuration from centralized test_data.py
+FILENAME = TEST_DATA.filename
+VAR_NAME = TEST_DATA.var_name
+SAMPLE_SIZE = TEST_DATA.sample_size
 
 
 def main():

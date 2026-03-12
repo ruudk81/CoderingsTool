@@ -138,6 +138,22 @@ Peer domains (codes that exist elsewhere — do NOT overlap with these):
 {codes_with_context}
 </input_codes>
 
+<code_design_principles>
+## Code Quality Principles
+Every code must satisfy these six criteria:
+- Conceptual: captures underlying meaning, not surface-level wording
+- Clear: easy to understand and apply consistently across coders
+- Distinct: clearly different from every other code — no conceptual overlap
+- Relevant: contributes to answering the research question
+- Generalizable: applicable across the full range of ways respondents express this idea
+- Observable: identifiable from what respondents actually wrote
+
+Generalizability is critical: a code's boundary_test, diagnostic_signals, and examples
+must be broad enough to capture diverse phrasings of the same underlying concept.
+But generalizability must never compromise distinctiveness — two codes must never
+overlap in the concepts they capture.
+</code_design_principles>
+
 <task>
 You have {n_codes} codes within "{partition_name}". Your tasks:
 
@@ -150,13 +166,14 @@ You have {n_codes} codes within "{partition_name}". Your tasks:
    - Only MERGE codes that are TRUE DUPLICATES (identical meaning, not just related)
    - When in doubt: KEEP SEPARATE
 
-3. MECE ENFORCEMENT — for each code, define:
-   - inclusion_examples: 3-5 concrete respondent ideas that belong here
-   - exclusion_examples: 2-3 ideas that seem related but don't belong
+3. DOMINANCE-BASED ROUTING — for each code, define:
+   - inclusion_examples: 5-7 concrete respondent ideas where this code fits well. Include a mix: 3-4 clear prototypical cases AND 2-3 borderline cases where this code is the best fit even though the idea also touches another code. Borderline examples teach generalizability — they show the range of ideas this code should capture.
+   - exclusion_examples: 2-3 ideas where this code is NOT the best fit — each with a routing note naming the code that should get them instead (e.g., "slecht wifi → assign to Wifi kwaliteit (-)"). These are routing redirects, not dead ends.
    - near_neighbor_label: the most similar other code within this partition
-   - tell_apart_rule: how to distinguish from the near neighbor
-   - boundary_test: a self-contained yes/no question (no references to other codes)
-   - diagnostic_signals: 3-5 concrete words/phrases that trigger assignment
+   - tell_apart_rule: state the defining conceptual characteristic that justifies choosing THIS code over its nearest neighbor. Name the competing code: "Choose [this code] when the idea's core meaning is about X. Choose [neighbor] when the idea's core meaning is about Y." An idea may touch both codes — assign to the code whose underlying concept best captures the idea's meaning. Focus on conceptual distinction, not surface words. When the two codes form a cause-effect pair, explicitly state which captures the cause/driver and which captures the effect/outcome.
+   - boundary_test: a yes/no question asking whether this code's core concept is present in the idea. The question should be generalizable — answerable YES for any phrasing of the concept, not just specific keywords. Framed as a positive match question, self-contained (no references to other codes).
+   - diagnostic_signals: 5-8 words, phrases, or semantic categories that suggest this code is relevant. Include BOTH specific terms AND broader semantic indicators that capture the variety of ways respondents express this concept (e.g., not just "regen" but also "weer", "nat", "paraplu"). Signals should be generalizable across different phrasings while remaining observable in actual respondent language.
+   - dominance_axis (partition-level, returned once per partition): in one sentence, name the single dimension along which codes in this partition differ — this becomes the primary routing question for assignment (e.g., "What functional aspect is the primary concern?"). Leave empty if codes differ across multiple dimensions.
 
 4. PAIR VERIFICATION: For each pair of similar codes, construct one ambiguous example and show which code gets it and why.
 
@@ -167,6 +184,9 @@ You have {n_codes} codes within "{partition_name}". Your tasks:
 - VALENCE-AWARE: code labels end with a valence suffix: (+) for positive, (-) for negative, or (0) for neutral/mixed. Preserve these suffixes exactly when relabeling. Never combine suffixes like (+,-).
 - POSITIVE CRITERIA: define codes by what they ARE, not by what they're NOT
 - INDEPENDENT: each boundary_test must work without knowing other codes exist
+- ROUTING NOT BLOCKING: exclusion_examples must always redirect to a specific alternative code — they are routing guides, never dead ends. An idea touching two codes should receive the code whose underlying concept most centrally captures the idea's meaning. When the fit is ambiguous, prefer assignment to either code over leaving the idea uncodable. Codes must be generalizable enough that every relevant idea finds a home.
+- DOMINANCE OVER EXCLUSION: tell_apart_rule must describe when to CHOOSE this code (positive condition), not when to reject it. Frame as: "Choose X when... Choose Y when..."
+- CAUSAL HIERARCHY: When two near-neighbor codes form a cause-effect pair (e.g., facility vs comfort, music vs atmosphere), the tell_apart_rule MUST explicitly state which code captures the cause/driver and which captures the effect/outcome. This creates an asymmetric hierarchy that prevents assignment dead zones.
 - PRESERVE: output should have approximately {n_codes} codes (merging should be rare)
 - All output text (labels, definitions, examples, signals, descriptions) MUST be in {language}
 </design_rules>
@@ -212,7 +232,7 @@ Write all output in {language}. Provide output as valid JSON following the respo
 # =============================================================================
 
 class PartitionRefinementCodeEntry(BaseModel):
-    """A single refined code with MECE assignment instructions."""
+    """A single refined code with dominance-based routing instructions."""
     code: str = Field(
         ...,
         description="Code label — concise noun phrase (<=10 words)"
@@ -223,11 +243,17 @@ class PartitionRefinementCodeEntry(BaseModel):
     )
     inclusion_examples: List[str] = Field(
         ...,
-        description="3-5 concrete examples of ideas that belong to this code"
+        description=(
+            "5-7 concrete examples of ideas that belong to this code. "
+            "Mix of 3-4 prototypical cases and 2-3 borderline cases showing generalizability."
+        )
     )
     exclusion_examples: List[str] = Field(
         ...,
-        description="2-3 examples of ideas that do NOT belong but might seem like they do"
+        description=(
+            "2-3 ideas that initially seem like they fit but should be routed to a specific "
+            "neighboring code instead. Format each as: '[example idea] → assign to [neighbor code name]'"
+        )
     )
     near_neighbor_label: str = Field(
         ...,
@@ -235,18 +261,27 @@ class PartitionRefinementCodeEntry(BaseModel):
     )
     tell_apart_rule: str = Field(
         ...,
-        description="How to distinguish this code from its near neighbor"
+        description=(
+            "Conceptual routing rule: 'Choose THIS code when the idea's core meaning is about [X]. "
+            "Choose [near_neighbor_label] when the idea's core meaning is about [Y].' "
+            "Focus on conceptual distinction, not surface words. "
+            "For cause-effect pairs, state which code is the cause/driver and which is the effect/outcome."
+        )
     )
     boundary_test: str = Field(
         ...,
         description=(
-            "A yes/no question a human coder asks to determine if an idea belongs here. "
-            "Must be self-contained — no references to other codes."
+            "A yes/no question asking whether this code's core concept is present in the idea. "
+            "Must be generalizable (answerable YES for any phrasing of the concept) and "
+            "self-contained — no references to other codes."
         )
     )
     diagnostic_signals: List[str] = Field(
         ...,
-        description="3-5 concrete words, phrases, or framings that trigger assignment to this code"
+        description=(
+            "5-8 words, phrases, or semantic categories that suggest this code is relevant. "
+            "Include both specific terms and broader semantic indicators."
+        )
     )
     source_code_ids: str = Field(
         ...,
@@ -288,9 +323,17 @@ class PartitionRefinementResult(BaseModel):
         ...,
         description="What this domain covers (1-2 sentences)"
     )
+    dominance_axis: str = Field(
+        default="",
+        description=(
+            "The single dimension that differentiates codes in this partition, expressed as a "
+            "routing question (e.g., 'What functional aspect is the primary concern?'). "
+            "Empty if codes differ across multiple dimensions."
+        )
+    )
     codes: List[PartitionRefinementCodeEntry] = Field(
         ...,
-        description="Refined codes with MECE-verified assignment instructions"
+        description="Refined codes with dominance-based routing instructions"
     )
     verifications: List[PartitionPairVerification] = Field(
         ...,
@@ -396,7 +439,7 @@ class ConflictResolutionAction(BaseModel):
     )
     code_a_new_exclusions: Optional[List[str]] = Field(
         None,
-        description="1-2 new exclusion examples to append to code_a (sharpen only)"
+        description="1-2 routing redirects to append to code_a — format as '[example idea] → assign to [code_b name]' (sharpen only)"
     )
     code_b_updates: Optional[Dict[str, str]] = Field(
         None,
@@ -404,7 +447,7 @@ class ConflictResolutionAction(BaseModel):
     )
     code_b_new_exclusions: Optional[List[str]] = Field(
         None,
-        description="1-2 new exclusion examples to append to code_b (sharpen only)"
+        description="1-2 routing redirects to append to code_b — format as '[example idea] → assign to [code_a name]' (sharpen only)"
     )
     sharpen_rationale: Optional[str] = Field(
         None,
@@ -446,17 +489,17 @@ For each conflict, choose one resolution strategy:
 - Use merge when both codes cover essentially the same concept
 
 **SHARPEN** (for minor overlaps / fuzzy boundaries):
-- Update boundary_test on BOTH codes to explicitly exclude the other's domain
-- Add 1-2 concrete exclusion_examples to each code referencing the other's typical cases
-- Update tell_apart_rule on both codes to reference the cross-partition neighbor
+- Update boundary_test on BOTH codes to clarify the primary focus each code captures
+- Add 1-2 routing redirects to each code — format as "[example idea] → assign to [other code name in other partition]" so the assigner routes the idea rather than dropping it
+- Update tell_apart_rule on both codes using positive framing: "Choose [code_a] when [condition]. Choose [code_b] when [condition]."
 
 Rules:
 - Major severity conflicts should typically use MERGE
 - Minor severity conflicts should typically use SHARPEN
 - All updated text must be in {language}
-- boundary_test must remain a self-contained yes/no question
-- exclusion_examples should be concrete respondent-like phrases (as if a survey respondent said them)
-- tell_apart_rule should clearly state which partition handles which aspect
+- boundary_test must remain a self-contained yes/no question about the PRIMARY focus
+- routing redirects (exclusion_examples) must name the specific code that should receive the idea — never leave an idea unroutable
+- tell_apart_rule must use positive framing: "Choose X when... Choose Y when..." — not "Exclude if..."
 
 Provide output as valid JSON following the response schema provided.
 </task>

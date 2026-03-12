@@ -3,9 +3,9 @@ from typing import ClassVar, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, create_model
 
 try:
-    from .dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
+    from .facet_data import FacetDefinition, PromptRules, get_facets_in_decision_order
 except ImportError:
-    from experiments.step_3_ideaExtractor.dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
+    from experiments.step_3_ideaExtractor.facet_data import FacetDefinition, PromptRules, get_facets_in_decision_order
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -66,7 +66,7 @@ class GenericSpecifierGroup1Response(BaseModel):
     )
 
 
-# --- 1b. Group 2: Subject matter (sector / topic / entity) ---
+# --- 1b. Group 2: Subject matter (domain / topic / entity) ---
 
 def build_context_specifier_group2_prompt(
     *,
@@ -75,7 +75,7 @@ def build_context_specifier_group2_prompt(
     chunk_responses: str,
     chunk_size: int,
 ) -> str:
-    """Build the Group 2 context specifier prompt (sector/topic/entity)."""
+    """Build the Group 2 context specifier prompt (domain/topic/entity)."""
     return f"""You are analyzing survey responses to extract contextual metadata.
 
 Survey question: {survey_question}
@@ -85,7 +85,7 @@ Sample responses ({chunk_size} examples):
 
 Extract these GROUP 2 specifiers (subject matter):
 
-1. **sector**: Industry or sector
+1. **domain**: Industry or sector
    - What broad industry or sector does this survey belong to?
    - Use a high-level category (not a specific product or function)
    - If multiple industries apply, choose the dominant one
@@ -112,8 +112,8 @@ Begin processing now and provide your output as valid JSON following the respons
 
 class GenericSpecifierGroup2Response(BaseModel):
     """Group 2: Subject matter"""
-    sector: str = Field(
-        description="Industry/sector the survey concerns",
+    domain: str = Field(
+        description="Industry/sector domain the survey concerns",
         examples=["finance", "healthcare", "education", "retail"]
     )
     topic: str = Field(
@@ -180,7 +180,7 @@ Your task: Consolidate these into ONE canonical set of specifiers.
 
 Guidelines:
 - Resolve semantic variations (e.g., "financial services" vs "banking sector" -> choose most accurate)
-- For **sector**: Standardize to lowercase, single/hyphenated word
+- For **domain**: Standardize to lowercase, single/hyphenated word
 - For **topic**: Choose the most representative subject matter across all chunks
 - For **entity**: Standardize format (lowercase_with_underscores)
 
@@ -191,11 +191,11 @@ Return ONE consolidated set of GROUP 2 specifiers as valid JSON following the re
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# STAGE 3: Primary Dimension Selection (Decision Tree)
+# STAGE 3: Primary Facet Selection (Decision Tree)
 # ═══════════════════════════════════════════════════════════════════════
 
-# All 10 dimension keys for Literal type validation
-_ALL_DIMENSION_KEYS = (
+# All 10 facet keys for Literal type validation
+_ALL_FACET_KEYS = (
     "PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS", "IDENTITY_DEFINITION",
     "ACTORS_TARGETS", "CONTEXT_CONDITIONS", "MOTIVATIONS_DRIVERS",
     "EXPERIENCE_PERCEPTION", "EVALUATION_PRIORITIZATION",
@@ -204,34 +204,34 @@ _ALL_DIMENSION_KEYS = (
 
 
 def _build_decision_tree_block() -> str:
-
-    dimensions = get_dimensions_in_decision_order()
+    
+    facets = get_facets_in_decision_order()
     emoji_numbers = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     lines = []
-    for dimension, emoji in zip(dimensions, emoji_numbers):
-        signals = "\n".join(f"  • {s}" for s in dimension.criterion_signals)
-        exclusions = "\n".join(f"  ✗ {e}" for e in dimension.exclusions)
+    for facet, emoji in zip(facets, emoji_numbers):
+        signals = "\n".join(f"  • {s}" for s in facet.criterion_signals)
+        exclusions = "\n".join(f"  ✗ {e}" for e in facet.exclusions)
         block = (
-            f"{emoji} {dimension.key}\n"
-            f"  {dimension.criterion}\n"
+            f"{emoji} {facet.key}\n"
+            f"  {facet.criterion}\n"
             f"  **Criterion signals**\n"
             f"{signals}\n"
         )
-        if dimension.clarification:
-            clarification = "\n".join(f"  • {c}" for c in dimension.clarification)
+        if facet.clarification:
+            clarification = "\n".join(f"  • {c}" for c in facet.clarification)
             block += f"  **Clarification**\n{clarification}\n"
         block += (
             f"  **Exclusions**\n"
             f"{exclusions}\n"
-            f"  ➡ If YES → select {dimension.key}"
+            f"  ➡ If YES → select {facet.key}"
         )
         lines.append(block)
     return "\n\n".join(lines)
 
 
-# --- 3a. Per-chunk dimension selection (decision tree) ---
+# --- 3a. Per-chunk facet selection (decision tree) ---
 
-def build_primary_dimension_decision_tree_prompt(
+def build_primary_facet_decision_tree_prompt(
     *,
     language: str,
     survey_question: str,
@@ -239,14 +239,14 @@ def build_primary_dimension_decision_tree_prompt(
     chunk_size: int,
     perspective: str,
     intent: str,
-    sector: str,
+    domain: str,
     entity: str,
     topic: str,
 ) -> str:
-    """Build the primary dimension decision tree prompt for a single chunk."""
+    """Build the primary facet decision tree prompt for a single chunk."""
     decision_tree = _build_decision_tree_block()
 
-    return f"""You are selecting the SINGLE best primary dimension for organizing a set of open-ended responses.
+    return f"""You are selecting the SINGLE best primary facet for organizing a set of open-ended responses.
 Your task is not to summarize responses or label each one. Your task is to identify the main semantic axis along which the responses DIFFER.
 
 Here is the language you will be working in:
@@ -256,7 +256,7 @@ Here is the language you will be working in:
 
 Here is contextual information about the survey question:
 <context>
-- Sector: {sector}
+- Domain: {domain}
 - Entity of interest: {entity}
 - Topic: {topic}
 </context>
@@ -280,16 +280,16 @@ Here is a sample of SHORT, COARSE responses for you to analyze:
 HOW TO THINK ABOUT THE TASK
 ------------------------------
 Ask yourself:
-"If I had to organize these responses into groups, which dimension would best explain the biggest, most meaningful differences between them?"
+"If I had to organize these responses into groups, which facet would best explain the biggest, most meaningful differences between them?"
 
-Choose the dimension that:
+Choose the facet that:
 * Explains variation across most responses
 * Creates the clearest top-level separation
 * Would naturally be used as the first folder when organizing insights
 
-If multiple dimensions seem plausible:
-1. Choose the dimension that applies to a larger share of responses
-2. If still tied, choose the dimension earlier in the decision order
+If multiple facets seem plausible:
+1. Choose the facet that applies to a larger share of responses
+2. If still tied, choose the facet earlier in the decision order
 
 ------------------------------
 DECISION TREE (Apply in Order, Stop at First Fit)
@@ -298,25 +298,35 @@ DECISION TREE (Apply in Order, Stop at First Fit)
 {decision_tree}
 
 ------------------------------
-RULES
+RULES (Do Not Skip)
 ------------------------------
-* Select exactly one dimension.
+* Select exactly one facet.
 * Apply the decision tree steps in order (1 through 10). Stop at the FIRST step where the answer is clearly YES for the dominant variation.
 * Base your decision on dominant variation, not edge cases.
-* Dimensions are organizational lenses, not labels for individual responses.
-* Evidence snippets must be copied verbatim from <sample_responses>.
-* Clarification must contrast the chosen dimension with at least one plausible alternative in a single sentence.
-* Write a 1-2 sentence primary_dimension_description: describe the chosen dimension through the lens of the survey question. Don't give examples.
+* Facets are organizational lenses, not labels for individual responses.
 
+------------------------------
+ANALYSIS PROCESS (internal)
+------------------------------
+Do NOT output your step-by-step reasoning.
+You MUST still follow this process internally:
+1) Read through the sample responses and identify the dominant pattern of variation.
+2) Walk through the decision tree from step 1 to step 10.
+3) For each step, ask: "Do most responses mainly differ along THIS axis?" If clearly YES, stop and select that facet.
+4) Record which decision tree step triggered your selection.
+5) Extract 2-3 verbatim snippets from <sample_responses> that support the chosen facet.
 
 All string values (including evidence snippets) must be in {language}.
+Evidence snippets must be copied verbatim from <sample_responses>.
+If fewer than 3 distinct snippets exist, include as many as possible without inventing any.
+Clarification must explicitly contrast the chosen facet with at least one plausible alternative.
 
 Begin processing now and provide your output as valid JSON following the response schema provided."""
 
 
-class PrimaryDimensionChunkResponse(BaseModel):
-    """LLM response for single chunk primary dimension selection (decision tree)."""
-    primary_dimension: Literal[
+class PrimaryFacetChunkResponse(BaseModel):
+    """LLM response for single chunk primary facet selection (decision tree)."""
+    primary_facet: Literal[
         "PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS",
         "IDENTITY_DEFINITION",
         "ACTORS_TARGETS",
@@ -328,65 +338,53 @@ class PrimaryDimensionChunkResponse(BaseModel):
         "ATTRIBUTES_ASSOCIATIONS",
         "RELATIONS_DEPENDENCIES",
     ] = Field(
-        description="The single best primary dimension for organizing responses"
+        description="The single best primary facet for organizing responses"
     )
     decision_tree_stop_position: int = Field(
         description="Which decision tree step (1-10) triggered the selection",
         ge=1, le=10,
     )
     evidence: List[str] = Field(
-        description="2-3 verbatim snippets from sample_responses supporting the chosen dimension",
+        description="2-3 verbatim snippets from sample_responses supporting the chosen facet",
         examples=[["good service", "too expensive", "friendly staff"]]
     )
     clarification: str = Field(
-        description="One sentence: why this dimension over the most plausible alternative"
-    )
-    primary_dimension_description: str = Field(
-        description="1-2 sentence description of what this dimension means for organizing THESE responses, without giving examples"
+        description="1-2 sentences explaining why this facet is most appropriate, contrasting with at least one alternative"
     )
 
 
-# --- 3b. Dimension consolidation ---
+# --- 3b. Facet consolidation ---
 
-def build_primary_dimension_consolidation_prompt(
+def build_primary_facet_consolidation_prompt(
     *,
     language: str,
     survey_question: str,
-    sector: str,
+    domain: str,
     entity: str,
     topic: str,
     perspective: str,
     intent: str,
     chunk_results: str,
-    chunk_responses: str = "",
 ) -> str:
-    """Build the primary dimension consolidation prompt."""
-    dimension_keys_str = ", ".join(_ALL_DIMENSION_KEYS)
+    """Build the primary facet consolidation prompt."""
+    facet_keys_str = ", ".join(_ALL_FACET_KEYS)
 
-    sample_block = ""
-    if chunk_responses:
-        sample_block = f"""
-Here is a random sample of actual survey responses for grounding your decision:
-<sample_responses>
-{chunk_responses}
-</sample_responses>
-"""
-
-    return f"""You are consolidating multiple chunk-level primary dimension analyses into a single global primary dimension for a survey question.
+    return f"""You are a taxonomy consolidation specialist.
+Your task is to analyze multiple chunk-level primary facet analyses and consolidate them into a single, coherent global primary facet for a survey question.
 
 Here is the language the survey responses are written in:
 <language>
 {language}
 </language>
 
-Here is the survey question that was asked in {language}:
+Here is the survey question that was asked in {language}
 <survey_question>
 {survey_question}
 </survey_question>
 
 Here is contextual information from prior analysis:
 <context>
-- Sector: {sector}
+- Domain: {domain}
 - Entity of interest: {entity}
 - Topic: {topic}
 - Type of respondent: {perspective}
@@ -397,75 +395,69 @@ Here are the chunk-level analyses you need to consolidate:
 <chunk_level_analyses>
 {chunk_results}
 </chunk_level_analyses>
-{sample_block}
 
-------------------------------
-RULES
-------------------------------
-* Select the ONE dimension ({dimension_keys_str}) that provides the clearest partition boundaries for coding responses.
-* If chunks converge on the same dimension, follow the consensus.
-* If chunks diverge, consult <sample_responses> directly to determine which dimension best explains the dominant variation in the actual response data.
-* Write a primary_dimension_description that: describe the response domain throught the lese of the survey question, without giving examples. 
+## YOUR TASK
+
+You must consolidate these chunk-level analyses into a single global primary facet. Each chunk analysis used a 10-step decision tree and produced a primary facet with supporting evidence. Your job is to synthesize these into one coherent framework.
+
+## ANALYSIS STEPS
+
+Follow these steps in order:
+
+**Step 1: Review and consolidate chunk-level analyses**
+Examine all chunk-level analyses carefully. Note areas of convergence and divergence. Identify which facets appear across multiple chunks and assess the quality of evidence supporting each.
+
+**Step 2: Select the PRIMARY facet**
+Choose the ONE facet ({facet_keys_str}) that:
+- Shows strong and consistent support across chunks
+- Provides the clearest partition boundaries for coding responses
+- Offers the best interpretability and stability for downstream use
+
+Important: Do NOT select a facet solely because it appears most frequently. Favor partition clarity, boundary stability, and interpretability over raw frequency counts.
+
+**Step 3: Define the GLOBAL primary facet**
+Write a primary facet description that:
+- Is specific to THIS survey question and response domain
+- Clearly falls within the selected primary facet
+- Reconciles and generalizes the chunk-level analyses without introducing new organizing principles
+- Operates at a mid-level of abstraction (not too narrow, not too broad)
+- Defines the TYPE of content coders should extract, not examples of that content
+- Must generalize to unseen responses — no specific attributes, examples, or verbatim response content
+
+## DECISION RULES
+
+When consolidating:
+- If chunk analyses converge on the same facet, follow the consensus
+- If chunk analyses diverge, rely on MECE quality (mutually exclusive, collectively exhaustive) to determine which facet provides the clearest boundaries
+- When chunks are split, prefer the facet that appears earlier in the decision tree order (the tree is designed so earlier steps capture more common variation patterns)
+- Optimize for downstream coding usability and cross-coder consistency
+- Prefer clarity and stability over cleverness or novelty
 
 All output values must be in {language}.
 
 Begin processing now and provide your output as valid JSON following the response schema provided."""
 
 
-class PrimaryDimensionConsolidatedResponse(BaseModel):
-    """Consolidated primary dimension selection after merging all chunks."""
-    primary_dimension: str = Field(
-        description="The selected primary dimension",
-        examples=list(_ALL_DIMENSION_KEYS),
+class PrimaryFacetConsolidatedResponse(BaseModel):
+    """Consolidated primary facet selection after merging all chunks."""
+    primary_facet: str = Field(
+        description="The selected primary facet",
+        examples=list(_ALL_FACET_KEYS),
     )
-    primary_dimension_rationale: str = Field(
-        description="1-2 sentences: why this dimension is the dominant organizing principle"
+    primary_facet_rationale: str = Field(
+        description="2-4 sentence explanation of why this facet is the dominant organizing principle"
     )
-    primary_dimension_description: str = Field(
-        description="Clear definition of the primary dimension. Must NOT contain examples"
+    primary_facet_description: str = Field(
+        description="Clear definition of the primary facet at proper abstraction level, specific to this survey question. Must NOT contain specific examples or attribute names from responses."
     )
-
-
-def consolidate_primary_dimension_by_majority(
-    chunk_results: List[PrimaryDimensionChunkResponse],
-) -> Optional[PrimaryDimensionConsolidatedResponse]:
-    """Return consolidated result if clear majority (>50%), else None.
-
-    When a single dimension is selected by more than half the chunks, we skip
-    the LLM consolidation call and construct the result programmatically.
-    Returns None when there is no majority — the caller should then run
-    the consolidation LLM with actual response data for tie-breaking.
-    """
-    from collections import Counter
-
-    if not chunk_results:
-        return None
-
-    dimension_counts = Counter(r.primary_dimension for r in chunk_results)
-    total = len(chunk_results)
-    winner, winner_count = dimension_counts.most_common(1)[0]
-
-    if winner_count <= total / 2:
-        return None  # No majority — caller should run LLM consolidation
-
-    # Pick description from winning chunk with earliest decision tree stop position
-    winning_chunks = [r for r in chunk_results if r.primary_dimension == winner]
-    best_chunk = min(winning_chunks, key=lambda r: r.decision_tree_stop_position)
-
-    return PrimaryDimensionConsolidatedResponse(
-        primary_dimension=winner,
-        primary_dimension_rationale=f"{winner_count} out of {total} chunks selected {winner}.",
-        primary_dimension_description=best_chunk.primary_dimension_description,
-    )
-
 
 # ═══════════════════════════════════════════════════════════════════════
-# STAGE 4: Domain Discovery
+# STAGE 4: Concept Type Discovery
 # ═══════════════════════════════════════════════════════════════════════
 
 # --- 4a. Per-chunk discovery ---
 
-def build_domain_discovery_prompt(
+def build_concept_type_discovery_prompt(
     *,
     language: str,
     survey_question: str,
@@ -473,15 +465,14 @@ def build_domain_discovery_prompt(
     chunk_size: int,
     perspective: str,
     intent: str,
-    sector: str,
+    domain: str,
     entity: str,
     topic: str,
-    primary_dimension: str,
-    primary_dimension_description: str,
+    primary_facet: str,
+    primary_facet_description: str,
 ) -> str:
-    """Build the domain discovery prompt for a single chunk."""
-    return f"""You are a qualitative research methodologist specializing in taxonomy development for survey analysis. 
-Your task is to identify domains within a given dimension based on survey response data.
+    """Build the concept type discovery prompt for a single chunk."""
+    return f"""You are a qualitative research methodologist analyzing survey responses.
 
 Here is the language the survey responses are written in:
 <language>
@@ -495,76 +486,59 @@ Here is the survey question that was asked in {language}:
 
 Here is contextual information from prior analysis:
 <context>
-- Sector: {sector}
-- Entity of interest: {entity}
+- Domain: {domain}
+- Entity of interest: {entity} 
 - Topic: {topic}
 - Type of respondent: {perspective}
 - Question intent: {intent}
 </context>
 
-The primary dimension selected for this dataset is:
-<primary_dimension>
-{primary_dimension}
-</primary_dimension>
+The primary facet selected for this dataset is:
+<primary_facet>
+{primary_facet}
+</primary_facet>
 
-<primary_dimension_description>
-{primary_dimension_description}
-</primary_dimension_description>
+<primary_facet_description>
+{primary_facet_description}
+</primary_facet_description>
 
 Here is a representative sample of {chunk_size} verbatim responses:
 <sample_responses>
 {chunk_responses}
 </sample_responses>
 
-## TAXONOMY HIERARCHY
-
-You need to understand the following four-level taxonomy structure:
-
-**1. Dimension**
-- Definition: The highest-level conceptual axis used to organize a problem space. It represents a major perspective or evaluation axis.
-- Key idea: The broad lens through which something is analyzed
-- Question it answers: What overarching concept are we examining?
-- Examples: Customer Experience, Product Experience, Trust, Adoption, Usability
-
-**2. Domain**
-- Definition: A major sub-area within a dimension that groups related phenomena. It defines the main functional areas that belong to the dimension.
-- Question it answers: Which area of this dimension does the observation belong to?
-- Example: Within "Product Experience" dimension, domains might include Usability, Performance, Design, Reliability
-
-**3. Facet**
-- Definition: A specific viewpoint or characteristic within a domain that describes how the domain can vary or be evaluated.
-- Question it answers: Which specific aspect of this domain are we focusing on?
-- Example: Within "Usability" domain, facets might include Navigation, Learnability, Interface clarity, Efficiency
-
-**4. Attribute**
-- Definition: A concrete property or observable feature that describes the facet. The lowest taxonomy level before codes or measurements.
-- Question it answers: What specific characteristic or signal are we observing?
-- Example: Within "Navigation" facet, attributes might include Menu clarity, Ease of finding features, Breadcrumb visibility
-
 ## YOUR TASK
 
-Your task is to identify **domains** (level 2 in the hierarchy) for the given dimension based on the survey responses provided.
+Identify **mutually exclusive, collectively exhaustive thematic domains** that represent **distinct domains of relevance, impact, or meaning for {entity}**, as evidenced by the responses.
 
-Your goal is to identify the **fewest domains possible** that provide **full coverage** of all the responses. Each domain must be:
-- Mutually exclusive (no conceptual overlap with other domains)
-- Focused on ONE specific aspect (not a compound list of multiple concerns)
-- A natural grouping of related phenomena within the dimension
+Use the fewest domains needed for full coverage — typically 5–15, but prefer fewer clean domains over more overlapping ones.
 
-## CRITICAL REQUIREMENTS
+These thematic domains should be defined from the point of view of the topic, describing *what it means for {entity}, rather than grouping or summarizing what respondents said.
 
-- All labels and definitions in your JSON output must be in the language specified in the <language> tags
-- The "key" field should be in English for technical consistency
-- Each domain definition must describe ONE focused aspect only, not a compound list
-- Domains must be mutually exclusive with no conceptual overlap
-- You must achieve full coverage of all responses with the fewest domains possible
-- Your output must be valid JSON that matches the schema exactly
-- All output values (labels and definitions) must be in {language}.
+## GUIDANCE
+
+- Treat survey responses as **evidence**, not as the units being categorized.
+- Each thematic domain should describe **a structural domain in which {entity} is situated, affected, evaluated, or understood**.
+- Think of thematic domains as **section headers in a research report about {entity}**, not as topics, sentiments, or response types.
+- The same underlying concept should always map to **one and only one** thematic domain, regardless of wording or opinion.
+
+## REQUIREMENTS
+
+1. Thematic domains must be **mutually exclusive** — each concept should clearly belong to exactly one domain.
+2. Thematic domains must be **collectively exhaustive** — every idea extractable from the sample should fit into at least one domain.
+3. Each thematic domain must include:
+   - a **human-readable label**
+   - a **one-sentence definition** explaining the domain of relevance or implication for {entity}
+4. Aim for **fewest domains needed for full coverage** — enough to differentiate meaningfully, few enough to be analytically useful.
+5. Thematic domains must organize **domains of relevance for {entity}**, not linguistic forms, response styles, or abstract role labels (e.g., avoid “sentiment,” “opinion type,” “functional trait”).
+
+All output values (labels and definitions) must be in {language}.
 
 Begin processing now and provide your output as **valid JSON** following the response schema provided."""
 
 
-class DomainItem(BaseModel):
-    """A single domain discovered from the data."""
+class ConceptTypeItem(BaseModel):
+    """A single thematic domain discovered from the data."""
     key: str = Field(
         description="Short natural-language identifier (1-4 words, no underscores)",
         examples=["access and logistics", "value proposition", "hospitality and interaction"]
@@ -574,33 +548,33 @@ class DomainItem(BaseModel):
         examples=["Toegang en logistiek", "Waardepropositie", "Gastvrijheid en interactie"]
     )
     definition: str = Field(
-        description="One-sentence definition of ONE focused aspect of the entity this domain covers. Must NOT be a compound list of multiple concerns."
+        description="One-sentence definition of what ASPECT of the entity this thematic domain covers"
     )
 
-class DomainChunkResponse(BaseModel):
-    """LLM response for single chunk domain discovery."""
-    domains: List[DomainItem] = Field(
-        description="fewest mutually exclusive domains possible for full coverage from the responses"
+class ConceptTypeChunkResponse(BaseModel):
+    """LLM response for single chunk concept type discovery."""
+    concept_types: List[ConceptTypeItem] = Field(
+        description="fewest mutually exclusive thematic domains possible for full coverage from the responses"
     )
 
 
 # --- 4b. Consolidation ---
 
-def build_domain_consolidation_prompt(
+def build_concept_type_consolidation_prompt(
     *,
     language: str,
     survey_question: str,
-    sector: str,
+    domain: str,
     entity: str,
     topic: str,
     perspective: str,
     intent: str,
-    primary_dimension: str,
+    primary_facet: str,
     chunk_results: str,
 ) -> str:
-    """Build the domain consolidation prompt."""
+    """Build the concept type consolidation prompt."""
     return f"""You are a taxonomy consolidation specialist.
-Your task is to merge multiple chunk-level domain analyses into a single, coherent set of domains.
+Your task is to merge multiple chunk-level concept type analyses into a single, coherent set of concept types.
 
 Here is the language the survey responses are written in:
 <language>
@@ -614,53 +588,45 @@ Here is the survey question that was asked in {language}:
 
 Here is contextual information from prior analysis:
 <context>
-- Sector: {sector}
+- Domain: {domain}
 - Entity of interest: {entity}
 - Topic: {topic}
 - Type of respondent: {perspective}
 - Question intent: {intent}
 </context>
 
-The primary dimension selected for this dataset is:
-<primary_dimension>
-{primary_dimension}
-</primary_dimension>
+The primary facet selected for this dataset is:
+<primary_facet>
+{primary_facet}
+</primary_facet>
 
-Here are the chunk-level domain analyses you need to consolidate:
+Here are the chunk-level concept type analyses you need to consolidate:
 <chunk_level_analyses>
 {chunk_results}
 </chunk_level_analyses>
 
 ## YOUR TASK
 
-Your task is to consolidate these chunk-level domain lists into the fewest mutually exclusive domains needed for full coverage.
+Consolidate these chunk-level thematic domain lists into the fewest mutually exclusive thematic domains needed for full coverage — typically 5–15, but prefer fewer clean domains over more overlapping ones.
 
-Important consolidation principles:
-- MERGE domains that have conceptual overlap, near-equivalence, or represent subcategories of a broader concept
-- ENSURE mutual exclusivity: no two domains in your final list should overlap in meaning
-- MAINTAIN full coverage: the consolidated domains must collectively cover all concepts present in the chunk-level analyses
-- MINIMIZE the total number of domains while preserving meaningful distinctions
-- All domain labels and definitions must be in the language specified above
+## CONSOLIDATION RULES
 
-Before providing your final output, use the scratchpad to work through your consolidation logic:
+1. **Merge semantically equivalent domains** — if multiple chunks produced similar domains (e.g. "access and logistics" and "service accessibility"), merge them into one
+2. **Preserve robust distinctions** — if a domain appears consistently across chunks, it reflects a real pattern in the data; keep it
+3. **Account for every chunk-level domain** — each domain from every chunk must be explicitly accounted for: kept as-is, merged into a semantically related domain, or flagged as a chunk-specific artifact (e.g., driven by an unusual cluster of responses rather than a genuine structural aspect of {entity}). Never silently discard a domain.
+4. **Prefer precision over breadth, but respect boundaries** — create domains specific enough to be analytically useful. Only broaden a domain when two chunk-level domains genuinely describe the same aspect. Do not create domains so narrow that their boundaries with neighbors become ambiguous.
+5. **Each domain must describe a thematic ASPECT of {entity}** — think "section headers in a research report about {entity}." Reject linguistic role labels like "moral attribute" or "functional trait."
 
-<scratchpad>
-In your scratchpad:
-1. List all unique domains that appear across the chunk-level analyses
-2. Identify groups of domains that have conceptual overlap or proximity
-3. For each group, determine an appropriate consolidated domain label and definition
-4. Check that your consolidated domains are mutually exclusive
-5. Verify that your consolidated domains provide complete coverage of the original set
-</scratchpad>
+Verify your final set is mutually exclusive and collectively exhaustive before submitting.
 
-After completing your analysis in the scratchpad, provide your consolidated taxonomy as valid JSON inside <output> tags.
+All output values (labels, definitions) must be in {language}.
 
 Begin processing now and provide your output as valid JSON following the response schema provided."""
 
-class DomainConsolidatedResponse(BaseModel):
-    """Consolidated domains after merging all chunks."""
-    domains: List[DomainItem] = Field(
-        description="Fewest mutually exclusive domains needed for full coverage, consolidated from all chunks"
+class ConceptTypeConsolidatedResponse(BaseModel):
+    """Consolidated thematic domains after merging all chunks."""
+    concept_types: List[ConceptTypeItem] = Field(
+        description="Fewest mutually exclusive thematic domains needed for full coverage, consolidated from all chunks"
     )
 
 
@@ -668,18 +634,18 @@ class DomainConsolidatedResponse(BaseModel):
 # STAGE 6: Idea Extraction (dynamic model)
 # ═══════════════════════════════════════════════════════════════════════
 
-def _format_dimension_examples(dimension: DimensionDefinition) -> str:
-    """Format dimension examples for the extraction prompt."""
-    if not dimension.examples:
+def _format_facet_examples(facet: FacetDefinition) -> str:
+    """Format facet examples for the extraction prompt."""
+    if not facet.examples:
         return ""
     lines = []
-    for ex in dimension.examples:
+    for ex in facet.examples:
         lines.append(f"**{ex.survey_context}**")
         lines.append(f'Response: "{ex.response}"')
         lines.append(f"  instance: {ex.instance}")
-        lines.append(f"  domain: {ex.domain}")
-        lines.append(f"  interpretation: {ex.interpretation} (what does \"{ex.instance}\" mean in context?)")
-        lines.append(f"  abstraction: {ex.abstraction} (what broader phenomenon does this point to?)")
+        lines.append(f"  concept_type: {ex.concept_type}")
+        lines.append(f"  rung_1: {ex.rung_1} (what does \"{ex.instance}\" mean in context?)")
+        lines.append(f"  rung_2: {ex.rung_2} (what broader phenomenon does this point to?)")
         lines.append(f"  valence: {ex.valence}")
         lines.append("")
     return "\n".join(lines)
@@ -690,18 +656,18 @@ def build_taxonomy_enriched_extraction_prompt(
     language: str,
     var_lab: str,
     perspective: str,
-    sector: str,
+    domain: str,
     entity: str,
     topic: str,
     intent: str,
     respondent_id: str,
     response: str,
     canonical_phrasing: str,
-    dimension: DimensionDefinition,
-    domain_table: str,
+    facet: FacetDefinition,
+    concept_type_table: str,
 ) -> str:
     """Build the taxonomy-enriched idea extraction prompt."""
-    examples_block = _format_dimension_examples(dimension)
+    examples_block = _format_facet_examples(facet)
 
     return f"""You are an expert in extracting structured ideas from survey responses.
 
@@ -709,15 +675,15 @@ def build_taxonomy_enriched_extraction_prompt(
 Language: {language}
 Question ({language}): "{var_lab}"
 Respondent type: {perspective}
-Sector: {sector}
+Domain: {domain}
 Entity: {entity}
 Topic: {topic}
 Intent: {intent}
 </survey_context>
 
 <taxonomy_lens>
-Lens: "{dimension.noun_phrase_descriptor}"
-Anchor: {dimension.domain_marker}
+Lens: "{facet.noun_phrase_descriptor}"
+Anchor: {facet.dimension_marker}
 </taxonomy_lens>
 
 <response>
@@ -731,7 +697,7 @@ Response: {response}
 
 Extract ALL distinct ideas from the response. When in doubt → SPLIT. Over-splitting is preferred.
 
-{dimension.instruction}
+{facet.instruction}
 
 SPLITTING RULES (NON-NEGOTIABLE):
 - Items joined by conjunctions ("and", "or", "en", "und", "et", "y", "ou") or commas that express DIFFERENT concepts → SPLIT into separate ideas
@@ -747,7 +713,7 @@ For each idea, produce an idea statement using EXACTLY this pattern:
 {canonical_phrasing}
 
 - Do NOT alter the template prefix
-- Replace {dimension.domain_marker} with the SHORTEST verbatim span from the response that expresses the idea
+- Replace {facet.dimension_marker} with the SHORTEST verbatim span from the response that expresses the idea
 - Do NOT include the literal marker token in output
 - Use respondent_id: {respondent_id}
 - Use {language}, preserve original meaning
@@ -758,17 +724,17 @@ For each idea, produce an idea statement using EXACTLY this pattern:
 
 For each idea, perform these steps (all in {language}):
 
-### A. DOMAIN (classify)
-Assign the idea to the single best-fitting domain from the table below. When it could fit multiple domains, choose the one that best captures the primary aspect of {entity} the idea relates to.
-- {domain_table}
+### A. CONCEPT TYPE (classify)
+Assign the idea to the single best-fitting thematic domain from the table below. When it could fit multiple domains, choose the one that best captures the primary aspect of {entity} the idea relates to.
+- {concept_type_table}
 
 ### B. ABSTRACTION LADDER (ladder UP from the instance — 2 rungs)
 Build a 2-rung ladder of increasing abstraction from the instance:
-- **interpretation**: What does this instance MEAN in context? Name the concrete phenomenon or interpretation.
-- **abstraction**: What BROADER significance or higher-level theme does this point to?
-Each rung must be more abstract than the previous. Do not repeat the instance or domain.
+- **rung_1**: What does this instance MEAN in context? Name the concrete phenomenon or interpretation.
+- **rung_2**: What BROADER significance or higher-level theme does this point to?
+Each rung must be more abstract than the previous. Do not repeat the instance or concept_type.
 
-### C. VALENCE (direction of instance relative to domain)
+### C. VALENCE (direction of instance relative to concept type)
 - "+" = the instance strengthens or reinforces this domain
 - "-" = the instance weakens or undermines this domain
 - "0" = no directional effect on this domain
@@ -786,11 +752,11 @@ class SemanticTaxonomyResponse(BaseModel):
     """Abstraction ladder base class. Fields are overridden by create_extraction_model()."""
 
     instance: str = ""
-    interpretation: str = ""
-    abstraction: str = ""
-    domain: str = ""
+    rung_1: str = ""
+    rung_2: str = ""
+    concept_type: str = ""
 
-    @field_validator('instance', 'interpretation', 'abstraction', mode='before')
+    @field_validator('instance', 'rung_1', 'rung_2', mode='before')
     @classmethod
     def reject_invalid(cls, v: object) -> str:
         """STRICT: Reject None and non-string values instead of auto-fixing."""
@@ -805,7 +771,7 @@ class SemanticTaxonomyResponse(BaseModel):
 
 
 class TaxonomyEnrichedIdeaResponse(BaseModel):
-    """Base model for extraction. Use create_extraction_model() for dimension-specific versions."""
+    """Base model for extraction. Use create_extraction_model() for facet-specific versions."""
     respondent_id: str = Field(
         description="Respondent identifier from the response context"
     )
@@ -818,53 +784,53 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     )
     abstraction_ladder: Optional[SemanticTaxonomyResponse] = Field(
         default=None,
-        description="Abstraction ladder: instance -> interpretation -> abstraction (bottom-up) + domain"
+        description="Abstraction ladder: instance -> rung_1 -> rung_2 (bottom-up) + concept_type"
     )
     valence: Literal["+", "-", "0"] = Field(
         default="0",
-        description="Directional effect of the instance on the domain: +, -, or 0"
+        description="Directional effect of the instance on the concept type: +, -, or 0"
     )
 
 
 def create_extraction_model(
     *,
-    dimension: DimensionDefinition,
+    facet: FacetDefinition,
     template_prefix: str,
-    domains: list[DomainItem] | None = None,
+    concept_types: list[ConceptTypeItem] | None = None,
 ) -> type[TaxonomyEnrichedIdeaResponse]:
-    """Create dimension-specific extraction model with STRICT validation.
+    """Create facet-specific extraction model with STRICT validation.
 
-    template_prefix and domain_marker are baked in via class closure.
+    template_prefix and dimension_marker are baked in via class closure.
     No ClassVar. Each call returns a fresh class. Safe for async.
     """
     _prefix = template_prefix.strip() if template_prefix else ""
-    _marker = dimension.domain_marker
-    prompt_rules = dimension.prompt_rules
-    dimension_key = dimension.key
+    _marker = facet.dimension_marker
+    prompt_rules = facet.prompt_rules
+    facet_key = facet.key
 
-    interpretation_desc = prompt_rules.interpretation_instruction
-    abstraction_desc = prompt_rules.abstraction_instruction
+    rung_1_desc = prompt_rules.rung_1_instruction
+    rung_2_desc = prompt_rules.rung_2_instruction
 
-    # Build domain field
-    if domains:
-        allowed_keys = tuple(c.key for c in domains) + ("Other",)
-        domain_field = (
+    # Build concept_type field (thematic domain)
+    if concept_types:
+        allowed_keys = tuple(c.key for c in concept_types) + ("Other",)
+        concept_type_field = (
             Literal[allowed_keys],
             Field(
                 description=(
-                    "Domain — which aspect of the entity does this concept belong to? One of: " +
-                    ", ".join(f"{c.key} ({c.definition})" for c in domains) +
+                    "Thematic domain — which aspect of the entity does this concept belong to? One of: " +
+                    ", ".join(f"{c.key} ({c.definition})" for c in concept_types) +
                     ", Other (does not fit any of the above)"
                 ),
-                examples=[c.key for c in domains[:3]]
+                examples=[c.key for c in concept_types[:3]]
             )
         )
     else:
-        domain_field = (
+        concept_type_field = (
             str,
             Field(
                 description=(
-                    f"Domain: which ASPECT of the entity does this concept belong to? "
+                    f"Thematic domain: which ASPECT of the entity does this concept belong to? "
                     f"Use a short label (1-4 words) suitable for organizing a codebook section. "
                     f"NOT a linguistic role ('moral attribute', 'functional trait') but a thematic category "
                     f"('products and services', 'marketing and communication', 'social responsibility')."
@@ -872,31 +838,31 @@ def create_extraction_model(
             )
         )
 
-    # Create base dimension-specific SemanticTaxonomyResponse
-    _BaseDimensionTaxonomy = create_model(
-        f"SemTax_{dimension_key}_b",
+    # Create base facet-specific SemanticTaxonomyResponse
+    _BaseFacetTaxonomy = create_model(
+        f"SemTax_{facet_key}_b",
         __base__=SemanticTaxonomyResponse,
         instance=(str, Field(
             description=prompt_rules.instance_instruction,
         )),
-        interpretation=(str, Field(
-            description=interpretation_desc,
+        rung_1=(str, Field(
+            description=rung_1_desc,
         )),
-        abstraction=(str, Field(
-            description=abstraction_desc,
+        rung_2=(str, Field(
+            description=rung_2_desc,
         )),
-        domain=domain_field,
+        concept_type=concept_type_field,
     )
 
-    # Add fuzzy-match validator for domain (runs before Literal validation)
-    _key_map = {k.lower(): k for k in allowed_keys} if domains else {}
-    if domains:
+    # Add fuzzy-match validator for concept_type (runs before Literal validation)
+    _key_map = {k.lower(): k for k in allowed_keys} if concept_types else {}
+    if concept_types:
         _key_map.update({k.lower().replace(' ', '_'): k for k in allowed_keys})
 
-    class DimensionTaxonomy(_BaseDimensionTaxonomy):
-        @field_validator('domain', mode='before')
+    class FacetTaxonomy(_BaseFacetTaxonomy):
+        @field_validator('concept_type', mode='before')
         @classmethod
-        def normalize_domain(cls, v: object) -> str:
+        def normalize_concept_type(cls, v: object) -> str:
             if not isinstance(v, str) or not _key_map:
                 return v
             stripped = v.strip()
@@ -909,20 +875,20 @@ def create_extraction_model(
                 return _key_map[normalized]
             return stripped
 
-    DimensionTaxonomy.__name__ = f"SemTax_{dimension_key}"
-    DimensionTaxonomy.__qualname__ = f"SemTax_{dimension_key}"
+    FacetTaxonomy.__name__ = f"SemTax_{facet_key}"
+    FacetTaxonomy.__qualname__ = f"SemTax_{facet_key}"
 
-    # Create dimension-specific extraction model with strict validators
-    class DimensionExtractionModel(TaxonomyEnrichedIdeaResponse):
+    # Create facet-specific extraction model with strict validators
+    class FacetExtractionModel(TaxonomyEnrichedIdeaResponse):
         _template_prefix: ClassVar[str] = _prefix
-        _domain_marker: ClassVar[str] = _marker
+        _dimension_marker: ClassVar[str] = _marker
 
         idea: str = Field(
             description="Complete idea statement beginning with the canonical_phrasing template"
         )
-        abstraction_ladder: Optional[DimensionTaxonomy] = Field(
+        abstraction_ladder: Optional[FacetTaxonomy] = Field(
             default=None,
-            description="Abstraction ladder: instance -> interpretation -> abstraction (bottom-up) + domain"
+            description="Abstraction ladder: instance -> rung_1 -> rung_2 (bottom-up) + concept_type"
         )
 
         @field_validator('idea', mode='before')
@@ -938,13 +904,14 @@ def create_extraction_model(
                     f"{cls._template_prefix!r}, but starts with: {v[:len(cls._template_prefix)+10]!r}. "
                     f"Please begin your idea with: {cls._template_prefix}"
                 )
-            if cls._domain_marker and cls._domain_marker in v:
+            if cls._dimension_marker and cls._dimension_marker in v:
                 raise ValueError(
-                    f"The marker token {cls._domain_marker!r} must be replaced with actual content. "
+                    f"The marker token {cls._dimension_marker!r} must be replaced with actual content. "
                     f"Do not include the literal marker in the final idea."
                 )
             return v
 
-    DimensionExtractionModel.__name__ = f"IdeaExtr_{dimension_key}"
-    DimensionExtractionModel.__qualname__ = f"IdeaExtr_{dimension_key}"
-    return DimensionExtractionModel
+    FacetExtractionModel.__name__ = f"IdeaExtr_{facet_key}"
+    FacetExtractionModel.__qualname__ = f"IdeaExtr_{facet_key}"
+    return FacetExtractionModel
+

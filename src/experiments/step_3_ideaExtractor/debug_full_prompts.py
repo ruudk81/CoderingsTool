@@ -32,27 +32,28 @@ except ImportError:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
-# Import response models and factories from v4 modules
 try:
-    from experiments.step_3_ideaExtractor_v4.prompts_exp import (
+    from experiments.step_3_ideaExtractor.prompts_exp import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
-        PrimaryFacetChunkResponse,
-        PrimaryFacetConsolidatedResponse,
-        create_subject_model,
+        PrimaryDimensionChunkResponse,
+        PrimaryDimensionConsolidatedResponse,
+        DomainChunkResponse,
+        DomainConsolidatedResponse,
         create_extraction_model,
     )
-    from experiments.step_3_ideaExtractor_v4.facet_data import get_facet
+    from experiments.step_3_ideaExtractor.dimension_data import get_dimension
 except ImportError:
     from prompts_exp import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
-        PrimaryFacetChunkResponse,
-        PrimaryFacetConsolidatedResponse,
-        create_subject_model,
+        PrimaryDimensionChunkResponse,
+        PrimaryDimensionConsolidatedResponse,
+        DomainChunkResponse,
+        DomainConsolidatedResponse,
         create_extraction_model,
     )
-    from facet_data import get_facet
+    from experiments.step_3_ideaExtractor.dimension_data import get_dimension
 
 
 # Configuration (from centralized test_data.py)
@@ -70,8 +71,10 @@ STATIC_PROMPT_MODELS = {
     "context_specifier_group2": GenericSpecifierGroup2Response,
     "consolidate_specifiers_group1": GenericSpecifierGroup1Response,
     "consolidate_specifiers_group2": GenericSpecifierGroup2Response,
-    "taxonomy_chunk_decision_tree": PrimaryFacetChunkResponse,
-    "taxonomy_consolidation": PrimaryFacetConsolidatedResponse,
+    "dimension_chunk_decision_tree": PrimaryDimensionChunkResponse,
+    "dimension_consolidation": PrimaryDimensionConsolidatedResponse,
+    "domain_chunk": DomainChunkResponse,
+    "domain_consolidation": DomainConsolidatedResponse,
 }
 
 
@@ -92,20 +95,13 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
         model = STATIC_PROMPT_MODELS[prompt_type]
         return (model, False, f"Static model: {model.__name__}")
 
-    # Dynamic: taxonomy_aware_subject_extraction
-    if prompt_type == "taxonomy_aware_subject_extraction":
-        facet_key = metadata.get("primary_facet", "ATTRIBUTES_ASSOCIATIONS")
-        facet = get_facet(facet_key)
-        model = create_subject_model(facet=facet)
-        return (model, False, f"Dynamic model: SubjectExtractionResponse_{facet_key} (facet={facet_key})")
-
-    # Dynamic: idea_extraction_v3
-    if prompt_type == "idea_extraction_v3":
-        facet_key = metadata.get("primary_facet", "ATTRIBUTES_ASSOCIATIONS")
-        facet = get_facet(facet_key)
+    # Dynamic: idea_extraction
+    if prompt_type in ("idea_extraction", "idea_extraction_v3"):
+        dimension_key = metadata.get("primary_dimension", "ATTRIBUTES_ASSOCIATIONS")
+        dimension = get_dimension(dimension_key)
         template_prefix = metadata.get("template_prefix", "")
-        model = create_extraction_model(facet=facet, template_prefix=template_prefix)
-        return (model, True, f"Dynamic model: List[TaxonomyEnrichedIdeaResponse_{facet_key}] (facet={facet_key})")
+        model = create_extraction_model(dimension=dimension, template_prefix=template_prefix)
+        return (model, True, f"Dynamic model: List[DimensionTaxonomy_{dimension_key}] (dimension={dimension_key})")
 
     return (None, False, f"Unknown prompt type: {prompt_type}")
 
@@ -148,12 +144,12 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
         print(f"Model:     {metadata['model']}")
     if "language" in metadata:
         print(f"Language:  {metadata['language']}")
-    if "primary_facet" in metadata:
-        print(f"Facet:     {metadata['primary_facet']}")
+    if "primary_dimension" in metadata:
+        print(f"Dimension: {metadata['primary_dimension']}")
 
     # Other metadata
     other_meta = {k: v for k, v in metadata.items()
-                  if k not in ("model", "language", "primary_facet")}
+                  if k not in ("model", "language", "primary_dimension")}
     if other_meta:
         print(f"\n[Other Metadata]")
         for key, value in other_meta.items():

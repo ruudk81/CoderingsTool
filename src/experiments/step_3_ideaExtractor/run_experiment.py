@@ -1,25 +1,9 @@
-#%% 
-
-"""
-Step 3: Idea Extractor Experiment Runner (v5 — MECE Decision Tree Facets)
-
-Runs the idea extraction step in isolation for experimentation.
-Loads Step 2 (quality_filter) results from cache and runs idea extraction.
-
-v5 taxonomy: 10 MECE Facets (decision tree) + Concept Types + valence
-
-Usage:
-    cd src && python -m "experiments.step_3_ideaExtractor v4.run_experiment"
-
-Toggle:
-    USE_EXPERIMENTAL = True  -> Uses experimental ideaExtractor from this folder
-    USE_EXPERIMENTAL = False -> Uses production ideaExtractor from utils/
-"""
+#%%
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
 EXPERIMENT_N  = None  # n or None
-DISCOVER_CONCEPT_TYPES = True  # True = Phase 3 discovers types upfront; False = on-the-fly
+DISCOVER_DOMAINS = True  # True = Phase 3 discovers domains upfront; False = on-the-fly
 
 import sys
 import time
@@ -42,15 +26,14 @@ from typing import Optional
 # =============================================================================
 # SHARED IMPORTS (from production)
 # =============================================================================
-# v4 uses local models with primary_facet/concept_type fields
+
 try:
-    from experiments.step_3_ideaExtractor_v4 import models_exp_v3 as models
+    from experiments.step_3_ideaExtractor import models_exp as models
 except ImportError:
-    # Fallback for direct execution
-    models_v4_dir = Path(__file__).parent
-    if str(models_v4_dir) not in sys.path:
-        sys.path.insert(0, str(models_v4_dir))
-    import models_exp_v3 as models
+    models_dir = Path(__file__).parent
+    if str(models_dir) not in sys.path:
+        sys.path.insert(0, str(models_dir))
+    import models_exp as models
 from config import CacheConfig, ModelConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -94,11 +77,6 @@ class ExperimentConfig:
 
 
 EXPERIMENT_CONFIG = ExperimentConfig()
-
-# =============================================================================
-# TOGGLE: PRODUCTION vs EXPERIMENTAL
-# =============================================================================
-USE_EXPERIMENTAL = EXPERIMENT_CONFIG.use_experimental
 
 if USE_EXPERIMENTAL:
     try:
@@ -193,7 +171,7 @@ def run_experiment(config: ExperimentConfig = None):
         model_config=model_config,
         verbose=config.verbose,
         prompt_printer=prompt_printer,
-        discover_concept_types=DISCOVER_CONCEPT_TYPES,
+        discover_domains=DISCOVER_DOMAINS,
     )
     encoded_text = extractor.extract()
 
@@ -230,7 +208,7 @@ def run_experiment(config: ExperimentConfig = None):
         )
         if config.verbose:
             verbose_reporter.stat_line(
-                f"Cached extraction metadata: primary_facet={extraction_metadata.primary_facet}"
+                f"Cached extraction metadata: primary_dimension={extraction_metadata.primary_dimension}"
             )
 
     # Report any PROCESSING_ERROR failures
@@ -302,9 +280,11 @@ if __name__ == "__main__":
             print(f"Ideas ({sample.idea_count}):")
             for idea in sample.response_ideas:
                 print(f"  - {idea.idea}")
-                ladder_parts = [v for v in (idea.instance, idea.concept, idea.concept_type, idea.concept_type_definition) if v]
+                ladder_parts = [v for v in (idea.instance, idea.interpretation, idea.abstraction) if v]
                 if ladder_parts:
                     print(f"    ladder: {' → '.join(ladder_parts)}")
+                if idea.domain:
+                    print(f"    domain: {idea.domain}")
                 if idea.valence:
                     print(f"    valence: {idea.valence}")
             print("=" * 70)
@@ -312,20 +292,22 @@ if __name__ == "__main__":
         # Print all taxonomies
         if results:
             print("\n" + "=" * 70)
-            print("ALL ABSTRACTION LADDERS  (instance → concept → concept_type → concept_type_definition | valence)")
+            print("ALL ABSTRACTION LADDERS  (instance → interpretation → abstraction | domain | valence)")
             print("=" * 70)
             tax_count = 0
             for item in results:
                 if not item.response_ideas:
                     continue
                 for idea in item.response_ideas:
-                    chain_parts = [v for v in (idea.instance, idea.concept, idea.concept_type, idea.concept_type_definition) if v]
-                    sec_parts = []
+                    ladder_parts = [v for v in (idea.instance, idea.interpretation, idea.abstraction) if v]
+                    chain = " → ".join(ladder_parts)
+                    extras = []
+                    if idea.domain:
+                        extras.append(idea.domain)
                     if idea.valence:
-                        sec_parts.append(idea.valence)
-                    chain = " → ".join(chain_parts)
-                    if sec_parts:
-                        chain += f" | {', '.join(sec_parts)}"
+                        extras.append(idea.valence)
+                    if extras:
+                        chain += f" | {' | '.join(extras)}"
                     if chain:
                         tax_count += 1
                         print(f"  {tax_count:3d}. {chain}")

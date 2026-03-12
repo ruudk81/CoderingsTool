@@ -74,11 +74,9 @@ def format_idea(idea, response: str) -> str:
     # Abstraction ladder (what codes are assigned TO)
     lines.append(f"      LADDER:")
     lines.append(f"        instance:          {idea.instance or '(empty)'}")
-    lines.append(f"        concept:           {idea.concept or '(empty)'}")
+    lines.append(f"        rung_1:            {idea.rung_1 or '(empty)'}")
+    lines.append(f"        rung_2:            {idea.rung_2 or '(empty)'}")
     lines.append(f"        concept_type:      {idea.concept_type or '(empty)'}")
-    ct_def = getattr(idea, 'concept_type_definition', None)
-    if ct_def:
-        lines.append(f"        concept_type_def:  {ct_def}")
 
     # Assignment result
     lines.append(f"      ASSIGNED:")

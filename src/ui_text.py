@@ -52,10 +52,10 @@ UI_TEXTS = {
         """,
         
         "CLUSTERING_INFO": """
-        Clustering zal:
-        - Natuurlijke groeperingen van antwoorden herkennen op basis van semantische gelijkenis
-        - Descriptieve codes van antwoorden groeperen die dicht bij elkaar liggen in de embedding-ruimte
-        - Ruis of afwijkende antwoorden buiten de clusters laten
+        Categorisering zal:
+        - Ideeën partitioneren op basis van concept type
+        - MECE categorieën ontdekken per partitie via MAP/REDUCE analyse
+        - Elk idee toewijzen aan precies één categorie
         """,
         
         "LABELING_INFO": """
@@ -125,7 +125,7 @@ UI_TEXTS = {
             2: "Kwaliteitsfilter",
             3: "Descriptieve labels",
             4: "Embeddings",
-            5: "Clusters",
+            5: "Categorieën",
             6: "Coderen",
             7: "Thematische indeling",
             8: "Codes toewijzen",
@@ -178,10 +178,10 @@ UI_TEXTS = {
         """,
         
         "CLUSTERING_INFO": """
-        Clustering will:
-        - Detect natural groupings of responses based on semantic similarity
-        - Group together descriptive codes that occur close to each other in embedding space
-        - Leave out noise or outliers that don’t fit into any dense group    
+        Category discovery will:
+        - Partition ideas by concept type
+        - Discover MECE categories per partition via MAP/REDUCE analysis
+        - Assign each idea to exactly one category
         """,
         
         "LABELING_INFO": """
@@ -251,7 +251,7 @@ UI_TEXTS = {
             2: "Quality Filter",
             3: "Descriptive Labels",
             4: "Embeddings",
-            5: "Clusters",
+            5: "Categories",
             6: "Coding",
             7: "Theme Identification",
             8: "Code Assignment",

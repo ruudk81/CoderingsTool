@@ -1,13 +1,13 @@
 """
-Step 5: Category Discovery — Partition-Aware Map-Reduce MECE
+Step 5: Category Discovery v2 — Qualitative Researcher Pipeline
 
-Partitions by concept_type (data-driven groups from step 3).
-
-Two processing modes within each partition:
-  Mode A ("direct"):    MAP/REDUCE/MECE on concept labels directly
-  Mode B ("clustered"): Pre-cluster labels via UMAP+HDBSCAN,
-                        then MAP/REDUCE/MECE with cluster hints as context
+Partitions ideas by domain (data-driven groups from step 3),
+then runs a cross-partition pipeline:
+  1. Theme Discovery (chunked, per partition) — identify descriptive themes
+  2. Theme Consolidation (per partition) — LLM-based deduplication
+  3. Reflexive Thematic Analysis (cross-partition) — analytical themes + subthemes
+  4. Category Assignment — assign ideas to leaf subthemes
 
 Usage:
-    cd src && python -m experiments.step_5_categories.run_experiment
+    cd src && python -m experiments.step_5_categories_v2.run_experiment
 """

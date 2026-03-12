@@ -1,13 +1,13 @@
 """
-Embedder - Experimental Implementation (v5-aligned)
+Embedder - Experimental Implementation (v5-aligned, rung_1/rung_2 terminology)
 
 Generate embeddings for survey response ideas with configurable text formats
 and quality analysis.
 
 Supports:
-- 8 single-pass text formats: "idea", "idea_bare", "concept", "concept_type",
-  "concept_defined", "concept_typed", "idea_concept_defined", "ladder"
-- Multi-pass modes: "default" (4 passes), "all" (4 passes) via MULTI_PASS_SPECS
+- 8 single-pass text formats: "idea", "idea_bare", "rung_1", "concept_type",
+  "rung_1_defined", "rung_1_typed", "idea_rung_1_defined", "ladder"
+- Multi-pass modes: "default" (4 passes), "all" (5 passes) via MULTI_PASS_SPECS
 - Batch processing with configurable concurrency
 - Text deduplication for efficiency
 - Embedding quality analysis (norms, pairwise similarity)
@@ -72,18 +72,18 @@ class Embedder:
     """Generate embeddings for survey response ideas with configurable text formats.
 
     Single-pass formats (stored in idea_embedding):
-        "idea"            — idea text as-is (natural sentence incl. template_prefix)
-        "idea_bare"       — idea with template_prefix stripped
-        "concept"         — canonical concept noun phrase
-        "concept_type"    — discovered concept type
-        "concept_defined"      — concept → concept_type_definition
-        "concept_typed"        — concept (concept_type)
-        "idea_concept_defined" — idea → concept → concept_type_definition
-        "ladder"               — instance → concept → concept_type → concept_type_definition
+        "idea"              — idea text as-is (natural sentence incl. template_prefix)
+        "idea_bare"         — idea with template_prefix stripped
+        "rung_1"            — concrete interpretation (what it means)
+        "concept_type"      — discovered concept type
+        "rung_1_defined"    — rung_1 → rung_2
+        "rung_1_typed"      — rung_1 (concept_type)
+        "idea_rung_1_defined" — idea → rung_1 → rung_2
+        "ladder"            — instance → rung_1 → rung_2
 
     Multi-pass formats (each pass stored in its own field):
-        "default"         — 4 passes: idea, ladder, concept_defined, idea_concept_defined
-        "all"             — 4 passes: idea, concept, concept_type, ladder
+        "default"         — 4 passes: idea, ladder, rung_1_defined, idea_rung_1_defined
+        "all"             — 5 passes: idea, rung_1, rung_2, concept_type, ladder
 
     Args:
         config: EmbedderConfig with all embedder settings
@@ -138,12 +138,12 @@ class Embedder:
     # =========================================================================
 
     def _format_ladder_text(self, idea) -> str:
-        """Format abstraction ladder: instance → concept → concept_type → concept_type_definition.
+        """Format abstraction ladder: instance → rung_1 → rung_2.
 
         Falls back to idea.idea when all ladder fields are empty.
         """
         parts = []
-        for field in ('instance', 'concept', 'concept_type', 'concept_type_definition'):
+        for field in ('instance', 'rung_1', 'rung_2'):
             val = (getattr(idea, field, '') or '').strip()
             if val:
                 parts.append(val)
@@ -165,36 +165,40 @@ class Embedder:
                     return stripped if stripped else idea.idea
             return idea.idea
 
-        if fmt == "concept":
-            val = (getattr(idea, 'concept', '') or '').strip()
+        if fmt == "rung_1":
+            val = (getattr(idea, 'rung_1', '') or '').strip()
+            return val if val else idea.idea
+
+        if fmt == "rung_2":
+            val = (getattr(idea, 'rung_2', '') or '').strip()
             return val if val else idea.idea
 
         if fmt == "concept_type":
             val = (getattr(idea, 'concept_type', '') or '').strip()
             return val if val else idea.idea
 
-        if fmt == "concept_typed":
-            concept = (getattr(idea, 'concept', '') or '').strip()
+        if fmt == "rung_1_typed":
+            rung_1 = (getattr(idea, 'rung_1', '') or '').strip()
             concept_type = (getattr(idea, 'concept_type', '') or '').strip()
-            if concept and concept_type:
-                return f"{concept} ({concept_type})"
-            return concept or idea.idea
+            if rung_1 and concept_type:
+                return f"{rung_1} ({concept_type})"
+            return rung_1 or idea.idea
 
-        if fmt == "concept_defined":
-            concept = (getattr(idea, 'concept', '') or '').strip()
-            definition = (getattr(idea, 'concept_type_definition', '') or '').strip()
-            if concept and definition:
-                return f"{concept} → {definition}"
-            return concept or idea.idea
+        if fmt == "rung_1_defined":
+            rung_1 = (getattr(idea, 'rung_1', '') or '').strip()
+            rung_2 = (getattr(idea, 'rung_2', '') or '').strip()
+            if rung_1 and rung_2:
+                return f"{rung_1} → {rung_2}"
+            return rung_1 or idea.idea
 
-        if fmt == "idea_concept_defined":
-            concept = (getattr(idea, 'concept', '') or '').strip()
-            definition = (getattr(idea, 'concept_type_definition', '') or '').strip()
+        if fmt == "idea_rung_1_defined":
+            rung_1 = (getattr(idea, 'rung_1', '') or '').strip()
+            rung_2 = (getattr(idea, 'rung_2', '') or '').strip()
             parts = [idea.idea]
-            if concept:
-                parts.append(concept)
-            if definition:
-                parts.append(definition)
+            if rung_1:
+                parts.append(rung_1)
+            if rung_2:
+                parts.append(rung_2)
             return " → ".join(parts)
 
         if fmt == "ladder":
@@ -212,14 +216,15 @@ class Embedder:
         response_data = []
 
         format_labels = {
-            "idea":            "idea (natural sentence incl. template_prefix)",
-            "idea_bare":       "idea (template_prefix stripped)",
-            "concept":         "concept (canonical noun phrase)",
-            "concept_type":    "concept_type (discovered type)",
-            "concept_defined":      "concept → concept_type_definition",
-            "concept_typed":        "concept (concept_type)",
-            "idea_concept_defined": "idea → concept → concept_type_definition",
-            "ladder":               "abstraction ladder (instance → concept → concept_type → concept_type_definition)",
+            "idea":               "idea (natural sentence incl. template_prefix)",
+            "idea_bare":          "idea (template_prefix stripped)",
+            "rung_1":             "rung_1 (concrete interpretation)",
+            "rung_2":             "rung_2 (broader significance)",
+            "concept_type":       "concept_type (discovered type)",
+            "rung_1_defined":     "rung_1 → rung_2",
+            "rung_1_typed":       "rung_1 (concept_type)",
+            "idea_rung_1_defined": "idea → rung_1 → rung_2",
+            "ladder":             "abstraction ladder (instance → rung_1 → rung_2)",
         }
         label = format_labels.get(self.embedding_text_format, self.embedding_text_format)
         self.verbose_reporter.stat_line(f"Embedding format: {label}")
@@ -430,9 +435,9 @@ class Embedder:
                         'idea_id': response_idea.idea_id,
                         'idea': response_idea.idea,
                         'instance': getattr(response_idea, 'instance', '') or '',
-                        'concept': getattr(response_idea, 'concept', '') or '',
+                        'rung_1': getattr(response_idea, 'rung_1', '') or '',
+                        'rung_2': getattr(response_idea, 'rung_2', '') or '',
                         'concept_type': getattr(response_idea, 'concept_type', '') or '',
-                        'concept_type_definition': getattr(response_idea, 'concept_type_definition', '') or '',
                         'valence': getattr(response_idea, 'valence', '') or '',
                     }
                     if key in embedding_lookup:

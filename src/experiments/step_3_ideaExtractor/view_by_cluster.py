@@ -1,11 +1,11 @@
 #%%
 #
 """
-View Step 3 results organized by concept type.
-Displays all ideas grouped by concept_type, showing: idea, instance, concept, concept_type_definition, valence.
+View Step 3 results organized by domain.
+Displays all ideas grouped by domain, showing: idea, interpretation, valence.
 
 Usage:
-    cd src && python -m "experiments.step_3_ideaExtractor v4.view_by_cluster"
+    cd src && python -m experiments.step_3_ideaExtractor.view_by_cluster
 """
 
 import sys
@@ -15,14 +15,13 @@ sys.path.insert(0, str(src_dir))
 
 import re
 from collections import defaultdict
-# v4 uses local models with primary_facet/concept_type fields
 try:
-    from experiments.step_3_ideaExtractor_v4 import models_exp_v3 as models
+    from experiments.step_3_ideaExtractor import models_exp as models
 except ImportError:
-    models_v4_dir = Path(__file__).parent
-    if str(models_v4_dir) not in sys.path:
-        sys.path.insert(0, str(models_v4_dir))
-    import models_exp_v3 as models
+    models_dir = Path(__file__).parent
+    if str(models_dir) not in sys.path:
+        sys.path.insert(0, str(models_dir))
+    import models_exp as models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
@@ -59,28 +58,28 @@ def main():
 
     print(f"Loaded {len(encoded_text)} responses")
 
-    # Collect all ideas and group by concept_type
+    # Collect all ideas and group by domain
     groups = defaultdict(list)
     for item in encoded_text:
         if item.response_ideas:
             for idea in item.response_ideas:
-                groups[idea.concept_type].append(idea)
+                groups[idea.domain].append(idea)
 
     total_ideas = sum(len(v) for v in groups.values())
     print(f"Total ideas: {total_ideas}")
 
     # Display each group
-    for ct in sorted(groups.keys()):
-        ideas = groups[ct]
-        ideas.sort(key=lambda i: (i.concept or "", i.valence or ""))
+    for d in sorted(groups.keys()):
+        ideas = groups[d]
+        ideas.sort(key=lambda i: (i.interpretation or "", i.valence or ""))
 
         print("\n" + "=" * 60)
-        print(f"{ct.upper()} ({len(ideas)} ideas)")
+        print(f"{d.upper()} ({len(ideas)} ideas)")
         print("=" * 60)
         for idea in ideas:
             valence_str = f" [{idea.valence}]" if idea.valence else ""
-            ftd_str = f" ({idea.concept_type_definition})" if idea.concept_type_definition else ""
-            print(f"- {clean_idea(idea.idea)} | {idea.concept}{ftd_str}{valence_str}")
+            ladder = " → ".join(v for v in (idea.instance, idea.interpretation, idea.abstraction) if v)
+            print(f"- {ladder}{valence_str}")
 
 
 if __name__ == "__main__":

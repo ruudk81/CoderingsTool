@@ -35,6 +35,11 @@ from typing import Optional
 # SHARED IMPORTS (from production)
 # =============================================================================
 import models
+from experiments.models_exp import CodeAssignedModel as ExpCodeAssignedModel
+try:
+    from experiments.step_5_clusterer.clusterer_exp import ClusteringMetadataModel as ExpClusteringMetadataModel
+except ImportError:
+    ExpClusteringMetadataModel = None
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -107,7 +112,7 @@ def load_step8_cache(config: ExperimentConfig):
         )
 
     code_assigned_results = cache_manager.load_from_cache(
-        config.filename, "code_assignment_direct", variable_key, models.CodeAssignedModel
+        config.filename, "code_assignment_direct", variable_key, ExpCodeAssignedModel
     )
 
     # Load theme enriched codebook
@@ -131,8 +136,8 @@ def load_step8_cache(config: ExperimentConfig):
     if config.include_visualizations:
         try:
             metadata_list = cache_manager.load_from_cache(
-                config.filename, "clustering_metadata", variable_key, models.ClusteringMetadataModel
-            )
+                config.filename, "clustering_metadata", variable_key, ExpClusteringMetadataModel
+            ) if ExpClusteringMetadataModel else None
             clustering_metadata = metadata_list[0] if metadata_list else None
         except:
             pass

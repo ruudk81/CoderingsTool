@@ -474,7 +474,7 @@ def invalidate_from_step(start_step: int):
         2: ['quality_filtered_text'],
         3: ['extracted_ideas', 'encoded_text'],
         4: ['embedded_text'],
-        5: ['initial_cluster_results'],
+        5: ['category_results'],
         6: ['reasoning_results'],
         7: ['theme_enriched_codebook', 'refinement_results'],
         8: ['code_assigned_results'],
@@ -493,7 +493,7 @@ def invalidate_from_step(start_step: int):
     cache_manager = _get_cache_manager()
     step_mapping = {
         0: "data", 1: "preprocessed", 2: "quality_filter",
-        3: "extracted_ideas", 4: "embeddings", 5: "initial_clusters",
+        3: "extracted_ideas", 4: "embeddings", 5: "category_assignment",
         6: "codebook_generation", 7: "codebook_refinement",
         8: "code_assignment_direct", 9: "export"
     }
@@ -515,6 +515,9 @@ def invalidate_from_step(start_step: int):
             step_name = step_mapping.get(step_num)
             if step_name:
                 cache_manager.db.invalidate_cache(filename, step_name, variable_key)
+                # Step 5 also has a separate mece_categories metadata cache
+                if step_num == 5:
+                    cache_manager.db.invalidate_cache(filename, "mece_categories", variable_key)
 
 # Side bar ################################################################################################################################
 
@@ -594,11 +597,11 @@ def show_advanced_settings(current_step=0):
 
             st.markdown("---")
 
-        # Step 5: Clustering 
+        # Step 5: Category Discovery
         if current_step == 5:
-            st.markdown("#### 📊 Step 6: Clustering")
-            st.markdown("*Automatic clustering determines optimal parameters*")
-            st.info("Clustering now uses an automatic approach that analyzes the data to find the optimal epsilon value based on k-nearest neighbor distances.")
+            st.markdown("#### 📊 Step 6: Category Discovery")
+            st.markdown("*Automatic MECE category discovery from idea partitions*")
+            st.info("Category discovery partitions ideas by concept type, discovers MECE categories per partition using MAP/REDUCE, and assigns each idea to exactly one category.")
 
             st.markdown("---")
 
@@ -1008,7 +1011,7 @@ def determine_max_step_from_cache(filename: str, variable_key: str, cache_manage
         "quality_filter": 2,
         "extracted_ideas": 3,
         "embeddings": 4,
-        "initial_clusters": 5,
+        "category_assignment": 5,
         "codebook_generation": 6,
         "codebook_refinement": 7,
         "code_assignment_direct": 8,
@@ -2435,26 +2438,26 @@ def show_embedding_page():
 
 def show_clustering_page():
     """
-    Step 5: Clustering
+    Step 5: Category Discovery & Assignment
 
-    Performs UMAP dimensionality reduction and HDBSCAN clustering on embeddings from step 4.
+    Partitions ideas by concept_type, discovers MECE categories, and assigns each idea.
 
-    Pipeline function: step_5_cluster
-    Cache name: initial_clusters
-    Model: models.ClusterModel
+    Pipeline function: step_5_categories
+    Cache name: category_assignment
+    Model: models.CategoryAssignedModel
     """
     lang = st.session_state.language
 
     # ==================== HEADER ====================
-    st.header("Stap 5: Clustering" if lang == "nl" else "Step 5: Clustering")
+    st.header("Stap 5: Categorisering" if lang == "nl" else "Step 5: Category Discovery")
 
     # ==================== BLOCK 1: GREEN BOX ====================
     # Show completion status
     if is_step_completed(5):
         st.success("✅ " + (
-            "Clustering voltooid! Bekijk de resultaten en klik dan op doorgaan."
+            "Categorisering voltooid! Bekijk de resultaten en klik dan op doorgaan."
             if lang == "nl" else
-            "Clustering completed! Review the results, then click continue."))
+            "Category discovery completed! Review the results, then click continue."))
 
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
@@ -2463,21 +2466,21 @@ def show_clustering_page():
         if not is_step_completed(5):
             step4_size = st.session_state.get('step4_sample_size')
             display_size = step4_size if step4_size else get_display_sample_size(lang)
-            sample_info += (f"**Data**: {display_size} {'embeddings te clusteren' if lang == 'nl' else 'embeddings to cluster'}")
+            sample_info += (f"**Data**: {display_size} {'embeddings te categoriseren' if lang == 'nl' else 'embeddings to categorize'}")
         st.info(sample_info)
 
     # ==================== BLOCK 3: YELLOW BOX ====================
     # Show results/stats when current step is complete
     if is_step_completed(5):
-        if st.session_state.get('clustering_stats', {}):
-            stats = st.session_state.get('clustering_stats', {})
+        if st.session_state.get('category_stats', {}):
+            stats = st.session_state.get('category_stats', {})
             nl = (lang == "nl")
 
             summary_info = (
-                f"\n\n- {'Aantal clusters' if nl else 'Total clusters'}: {stats.get('num_clusters', 0)}"
-                +f"\n\n- {'Aantal embeddings geclustered' if nl else 'Embeddings clustered'}: {stats.get('total_segments', 0)}"
-                + f"\n\n- {'Ruis' if nl else 'Noise'}: {stats.get('outliers', 0)} "
-                + f"({stats.get('outlier_percentage', 0):.1f}%)"
+                f"\n\n- {'Totaal categorieën' if nl else 'Total categories'}: {stats.get('total_categories', 0)}"
+                + f"\n\n- {'Totaal ideeën' if nl else 'Total ideas'}: {stats.get('total_ideas', 0)}"
+                + f"\n\n- {'Toegewezen' if nl else 'Assigned'}: {stats.get('assigned_count', 0)}"
+                + f"\n\n- {'Partities' if nl else 'Partitions'}: {stats.get('num_partitions', 0)}"
             )
 
             st.markdown(f"""
@@ -2544,18 +2547,18 @@ def show_clustering_page():
                 else:
                     progress_container.error("❌ " + ("Geen embeddings gevonden. Voer eerst stap 4 uit." if lang == "nl" else "No embeddings found. Please run step 4 first."))
         except Exception as e:
-            st.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
+            st.error(f"Categorisering fout: {str(e)}" if lang == "nl" else f"Category discovery error: {str(e)}")
 
     # ==================== BLOCK 5: PROCESSING BUTTON ====================
     # Show processing button when ready to process
     if is_step_completed(4) and not is_step_completed(5):
         st.markdown(ui.get_text("CLUSTERING_INFO", lang))
 
-        # Show button to start clustering
-        if st.button("🚀 " + ("Start Clustering" if lang == "nl"else "Start Clustering"), type="primary"):
+        # Show button to start category discovery
+        if st.button("🚀 " + ("Start Categorisering" if lang == "nl" else "Start Category Discovery"), type="primary"):
             progress_container = st.empty()
             try:
-                progress_container.text("🔄 " + ("Clustering aan het uitvoeren..." if lang == "nl" else "Running clustering..."))
+                progress_container.text("🔄 " + ("Categorisering uitvoeren..." if lang == "nl" else "Running category discovery..."))
 
                 # Generate variable_key for caching
                 selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
@@ -2572,8 +2575,8 @@ def show_clustering_page():
                 force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 5)
 
                 # Call pipeline processing function
-                initial_cluster_results = _run_with_verbose_capture(
-                    pipeline.step_5_cluster,
+                category_results = _run_with_verbose_capture(
+                    pipeline.step_5_categories,
                     embedded_text=st.session_state.pipeline_results['embedded_text'],
                     filename=st.session_state.filename,
                     var_lab=st.session_state.pipeline_results['var_lab'],
@@ -2582,37 +2585,42 @@ def show_clustering_page():
                     force_recalc=force_recalc,
                     verbose=True)
 
-                progress_container.success("✅ " + ("Clustering voltooid" if lang == "nl" else "Clustering completed"))
+                progress_container.success("✅ " + ("Categorisering voltooid" if lang == "nl" else "Category discovery completed"))
 
                 # Store results
-                st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
+                st.session_state.pipeline_results['category_results'] = category_results
 
-                # Calculate clustering statistics
-                cluster_ids = set([
-                    segment.initial_cluster
-                    for result in initial_cluster_results
-                    for segment in result.response_ideas
-                    if segment.initial_cluster is not None and segment.initial_cluster >= 0])
+                # Calculate category statistics
+                total_ideas = sum(
+                    len(result.response_ideas) for result in category_results
+                    if result.response_ideas)
+                assigned_count = sum(
+                    1 for result in category_results if result.response_ideas
+                    for idea in result.response_ideas
+                    if idea.assigned_category)
+                categories = set(
+                    idea.assigned_category
+                    for result in category_results if result.response_ideas
+                    for idea in result.response_ideas
+                    if idea.assigned_category)
+                partitions = set(
+                    idea.partition_name
+                    for result in category_results if result.response_ideas
+                    for idea in result.response_ideas
+                    if idea.partition_name)
 
-                outliers = sum(
-                    1 for result in initial_cluster_results
-                    for segment in result.response_ideas
-                    if segment.initial_cluster == -1)
-
-                total_segments = sum(len(result.response_ideas) for result in initial_cluster_results)
-
-                st.session_state['clustering_stats'] = {
-                    'num_clusters': len(cluster_ids),
-                    'total_segments': total_segments,
-                    'outliers': outliers,
-                    'outlier_percentage': (outliers / total_segments * 100) if total_segments > 0 else 0}
+                st.session_state['category_stats'] = {
+                    'total_categories': len(categories),
+                    'total_ideas': total_ideas,
+                    'assigned_count': assigned_count,
+                    'num_partitions': len(partitions)}
 
                 # Mark step completed
                 mark_step_completed(5)
                 st.rerun()
 
             except Exception as e:
-                st.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
+                st.error(f"Categorisering fout: {str(e)}" if lang == "nl" else f"Category discovery error: {str(e)}")
 
 def show_codebook_generation_page():
     """
@@ -2640,32 +2648,32 @@ def show_codebook_generation_page():
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
     if is_step_completed(5):
-        # Get clustering stats from single source of truth
-        # If not in session state yet, calculate from cached cluster data
-        if 'clustering_stats' not in st.session_state:
+        # Get category stats from single source of truth
+        # If not in session state yet, calculate from cached category data
+        if 'category_stats' not in st.session_state:
             cache_manager = _get_cache_manager()
             variable_key = _get_variable_key_for_cache()
             if variable_key:
-                cluster_data = cache_manager.load_from_cache(
+                category_data = cache_manager.load_from_cache(
                     st.session_state.filename,
-                    "initial_clusters",
+                    "category_assignment",
                     variable_key,
-                    models.ClusterModel
+                    models.CategoryAssignedModel
                 )
-                if cluster_data:
-                    cluster_ids = set(
-                        segment.initial_cluster
-                        for result in cluster_data
-                        for segment in result.response_ideas
-                        if segment.initial_cluster != -1
+                if category_data:
+                    categories = set(
+                        idea.assigned_category
+                        for result in category_data
+                        for idea in (result.response_ideas or [])
+                        if idea.assigned_category
                     )
-                    st.session_state['clustering_stats'] = {
-                        'num_clusters': len(cluster_ids)
+                    st.session_state['category_stats'] = {
+                        'total_categories': len(categories)
                     }
 
-        num_clusters = st.session_state.get('clustering_stats', {}).get('num_clusters', 0)
+        num_categories = st.session_state.get('category_stats', {}).get('total_categories', 0)
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Data:** {num_clusters} {'clusters om te coderen' if lang == 'nl' else 'clusters to code'}")
+        sample_info += (f"\n\n**Data:** {num_categories} {'categorieën om te coderen' if lang == 'nl' else 'categories to code'}")
         st.info(sample_info)
 
     # ==================== BLOCK 3: YELLOW BOX ====================
@@ -2676,11 +2684,11 @@ def show_codebook_generation_page():
         show_verbose_log_expander(6)
 
     # ==================== BLOCK 4: DATA LOADING ====================
-    # Load initial_cluster_results if not already in pipeline_results
+    # Load category_results if not already in pipeline_results
     if is_step_completed(5) and not is_step_completed(6):
         progress_container = st.empty()
         try:
-            if 'initial_cluster_results' not in st.session_state.pipeline_results:
+            if 'category_results' not in st.session_state.pipeline_results:
                 # Generate variable_key
                 selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
                 is_merged = st.session_state.get('is_merged_variable', False)
@@ -2696,45 +2704,38 @@ def show_codebook_generation_page():
                 cache_manager = _get_cache_manager()
 
                 # Try to load from cache first (works for both upload and cache routes)
-                if cache_manager.is_cache_valid(st.session_state.filename, "initial_clusters", variable_key):
-                    progress_container.text("🔄 " + ("Cluster resultaten laden uit cache..." if lang == "nl" else "Loading cluster results from cache..."))
-                    initial_cluster_results = _load_or_recover(
+                if cache_manager.is_cache_valid(st.session_state.filename, "category_assignment", variable_key):
+                    progress_container.text("🔄 " + ("Categorie resultaten laden uit cache..." if lang == "nl" else "Loading category results from cache..."))
+                    category_results = _load_or_recover(
                         st.session_state.filename,
-                        "initial_clusters",
+                        "category_assignment",
                         variable_key,
-                        models.ClusterModel
+                        models.CategoryAssignedModel
                     )
 
                     # Check if cache load was successful
-                    if initial_cluster_results is not None:
-                        st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
+                    if category_results is not None:
+                        st.session_state.pipeline_results['category_results'] = category_results
 
-                        # Populate clustering_stats if not already present (for cache route)
-                        if 'clustering_stats' not in st.session_state:
-                            cluster_ids = set(
-                                segment.initial_cluster
-                                for result in initial_cluster_results
-                                for segment in result.response_ideas
-                                if segment.initial_cluster != -1
+                        # Populate category_stats if not already present (for cache route)
+                        if 'category_stats' not in st.session_state:
+                            categories = set(
+                                idea.assigned_category
+                                for result in category_results
+                                for idea in (result.response_ideas or [])
+                                if idea.assigned_category
                             )
-                            outliers = sum(
-                                1 for result in initial_cluster_results
-                                for segment in result.response_ideas
-                                if segment.initial_cluster == -1
-                            )
-                            total_segments = sum(len(result.response_ideas) for result in initial_cluster_results)
+                            total_ideas = sum(len(r.response_ideas or []) for r in category_results)
 
-                            st.session_state['clustering_stats'] = {
-                                'num_clusters': len(cluster_ids),
-                                'total_segments': total_segments,
-                                'outliers': outliers,
-                                'outlier_percentage': (outliers / total_segments * 100) if total_segments > 0 else 0
+                            st.session_state['category_stats'] = {
+                                'total_categories': len(categories),
+                                'total_ideas': total_ideas,
                             }
 
                         # Populate var_lab if not already in pipeline_results
                         if 'var_lab' not in st.session_state.pipeline_results:
                             # Try to get from cache metadata first
-                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "initial_clusters", variable_key)
+                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "category_assignment", variable_key)
                             if cache_info and cache_info.get('var_lab'):
                                 st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
                             else:
@@ -2744,7 +2745,7 @@ def show_codebook_generation_page():
                     else:
                         progress_container.error("❌ " + ("Cache beschadigd. Voer eerst stap 5 opnieuw uit." if lang == "nl" else "Cache corrupted. Please re-run step 5."))
                 else:
-                    progress_container.error("❌ " + ("Geen cluster resultaten gevonden. Voer eerst stap 5 uit." if lang == "nl" else "No cluster results found. Please run step 5 first."))
+                    progress_container.error("❌ " + ("Geen categorie resultaten gevonden. Voer eerst stap 5 uit." if lang == "nl" else "No category results found. Please run step 5 first."))
         except Exception as e:
             st.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
 
@@ -2753,22 +2754,16 @@ def show_codebook_generation_page():
     if is_step_completed(5) and not is_step_completed(6):
         info_text = """
         Deze stap zal:
-        - Codes genereren voor elk cluster
+        - Codes genereren voor elke categorie
         - Een gestructureerd codebook maken
         - Codes optimaliseren en dedupliceren
         """ if lang == "nl" else """
         This step will:
-        - Generate codes for each cluster
+        - Generate codes for each category
         - Create a structured codebook
         - Optimize and deduplicate codes
         """
         st.markdown(info_text)
-
-        # Codebook generation options
-        use_speculative = st.checkbox(
-            "Gebruik speculatieve starter codes" if lang == "nl" else "Use speculative starter codes",
-            value=False
-        )
 
         # Show button to start codebook generation
         if st.button("🚀 " + (
@@ -2809,14 +2804,13 @@ def show_codebook_generation_page():
                 # Call pipeline processing function
                 reasoning_results = _run_with_verbose_capture(
                     pipeline.step_6_generate_codebook,
-                    initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
+                    category_results=st.session_state.pipeline_results['category_results'],
                     filename=st.session_state.filename,
                     var_name=var_name_for_codebook,
                     var_lab=st.session_state.pipeline_results['var_lab'],
                     variable_key=variable_key,
                     cache_manager=_get_cache_manager(),
                     model_config=st.session_state.model_config,
-                    use_speculative_starter_codes=use_speculative,
                     force_recalc=force_recalc,
                     verbose=True,
                     verbose_detailed=False,
@@ -3325,15 +3319,15 @@ def show_code_assignment_page():
                 merge_config=merge_config
             )
 
-            # Load enriched cluster results from Step 6 (with expanded_cluster field)
-            if 'initial_cluster_results' not in st.session_state.pipeline_results:
+            # Load enriched category results from Step 6 (with expanded_cluster field)
+            if 'category_results' not in st.session_state.pipeline_results:
                 if cache_manager.is_cache_valid(st.session_state.filename, "expanded_clusters", variable_key):
-                    progress_container.text("🔄 " + ("Cluster resultaten laden uit cache..." if lang == "nl" else "Loading enriched cluster results from cache..."))
-                    initial_cluster_results = cache_manager.load_from_cache(
-                        st.session_state.filename, "expanded_clusters", variable_key, models.ClusterModel
+                    progress_container.text("🔄 " + ("Categorie resultaten laden uit cache..." if lang == "nl" else "Loading enriched category results from cache..."))
+                    category_results = cache_manager.load_from_cache(
+                        st.session_state.filename, "expanded_clusters", variable_key, models.CategoryAssignedModel
                     )
-                    st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
-                    progress_container.success("✅ " + ("Verrijkte cluster data geladen" if lang == "nl" else "Enriched cluster data loaded"))
+                    st.session_state.pipeline_results['category_results'] = category_results
+                    progress_container.success("✅ " + ("Verrijkte categorie data geladen" if lang == "nl" else "Enriched category data loaded"))
 
             # Load theme_enriched_codebook if not present (from step 7)
             if 'theme_enriched_codebook' not in st.session_state.pipeline_results:
@@ -4011,20 +4005,18 @@ def show_idea_samples(encoded_text, n_samples=5):
             st.rerun()
 
 
-def show_cluster_samples(initial_cluster_results):
-    """Show cluster samples with HTML rendering and back/forward navigation."""
+def show_category_samples(category_results):
+    """Show category samples with HTML rendering and back/forward navigation."""
 
     # i18n helpers
     NL = st.session_state.get("language", "en") == "nl"
     t_no_data = "Geen data beschikbaar" if NL else "No data available"
-    t_no_clusters = "Geen clusters gevonden" if NL else "No clusters found"
+    t_no_categories = "Geen categorieën gevonden" if NL else "No categories found"
     t_prev = "⬅️ Vorige" if NL else "⬅️ Previous"
     t_next = "➡️ Volgende" if NL else "➡️ Next"
     t_of = "van" if NL else "of"
-    #t_cluster_label = "Cluster" if NL else "Cluster"
-    #t_items = "items" if NL else "items"
 
-    if not initial_cluster_results:
+    if not category_results:
         st.markdown(f"""
         <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
           <span style="display:block;">{t_no_data}</span>
@@ -4032,40 +4024,38 @@ def show_cluster_samples(initial_cluster_results):
         """, unsafe_allow_html=True)
         return
 
-    # Build {cluster_id: [idea, idea, ...]}
-    cluster_dict = {}
-    for result in initial_cluster_results:
+    # Build {assigned_category: [idea, idea, ...]}
+    category_dict = {}
+    for result in category_results:
         for ri in getattr(result, "response_ideas", []) or []:
-            cid = getattr(ri, "initial_cluster", None)
+            cat = getattr(ri, "assigned_category", None)
             idea = getattr(ri, "idea", None)
-            if cid is None or idea is None:
+            if cat is None or idea is None:
                 continue
-            if cid == -1:
-                continue  # skip noise cluster
-            cluster_dict.setdefault(cid, []).append(idea)
+            category_dict.setdefault(cat, []).append(idea)
 
-    if not cluster_dict:
+    if not category_dict:
         st.markdown(f"""
         <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
-          <span style="display:block;">{t_no_clusters}</span>
+          <span style="display:block;">{t_no_categories}</span>
         </div>
         """, unsafe_allow_html=True)
         return
 
-    cluster_ids = sorted(cluster_dict.keys())
+    category_names = sorted(category_dict.keys())
 
     # Session state for current position
-    if "cluster_idx" not in st.session_state:
-        st.session_state.cluster_idx = 0
+    if "category_idx" not in st.session_state:
+        st.session_state.category_idx = 0
 
-    total = len(cluster_ids)
-    idx = st.session_state.cluster_idx
+    total = len(category_names)
+    idx = st.session_state.category_idx
 
     # Navigation header (buttons + indicator + optional jump)
     nav1, nav2, nav3, nav4 = st.columns([1, 2, 2, 2])
     with nav1:
         if st.button(t_prev, use_container_width=True, disabled=(idx <= 0)):
-            st.session_state.cluster_idx = max(0, idx - 1)
+            st.session_state.category_idx = max(0, idx - 1)
             st.rerun()
     with nav2:
         st.markdown(
@@ -4075,23 +4065,26 @@ def show_cluster_samples(initial_cluster_results):
             unsafe_allow_html=True
         )
     with nav3:
-        # Quick jump by index (keeps UI snappy for many clusters)
+        # Quick jump by index
         new_idx = st.number_input(
             label="X",
             min_value=1, max_value=total, value=idx + 1,
-            step=1, key="cluster_jump_number", label_visibility="collapsed"
+            step=1, key="category_jump_number", label_visibility="collapsed"
         )
         if new_idx - 1 != idx:
-            st.session_state.cluster_idx = new_idx - 1
+            st.session_state.category_idx = new_idx - 1
             st.rerun()
     with nav4:
         if st.button(t_next, use_container_width=True, disabled=(idx >= total - 1)):
-            st.session_state.cluster_idx = min(total - 1, idx + 1)
+            st.session_state.category_idx = min(total - 1, idx + 1)
             st.rerun()
 
-    # Active cluster
-    active_cid = cluster_ids[st.session_state.cluster_idx]
-    ideas = cluster_dict[active_cid]
+    # Active category
+    active_cat = category_names[st.session_state.category_idx]
+    ideas = category_dict[active_cat]
+
+    # Show category name as subheader
+    st.markdown(f"**{active_cat}** ({len(ideas)} {'ideeën' if NL else 'ideas'})")
 
     # Build HTML list of ideas (strip metadata)
     li_items = []
@@ -4114,9 +4107,9 @@ def show_cluster_samples(initial_cluster_results):
       </ul>
     </div>
     """, unsafe_allow_html=True)
-    
-    #save number of clusters
-    st.session_state.num_clusters = len(cluster_ids)
+
+    # Save number of categories
+    st.session_state.num_categories = len(category_names)
 
 def parse_cluster_id(cluster_id: str) -> tuple:
     """Parse cluster ID like '27-1' → (27, 1) or '12' → (12, 0) for sorting"""
@@ -4428,9 +4421,9 @@ def generate_code_html(code_index, code_name, code_info, cluster_ids, reasoning_
     """Generate complete HTML for one code section"""
     # Tab labels (removed Code Description tab)
     tab_labels = [
-        "Cluster Ideeën" if lang == "nl" else "Cluster Ideas",
-        "Cluster Thema" if lang == "nl" else "Cluster Theme",
-        "Cluster Analyse" if lang == "nl" else "Cluster Analysis",
+        "Categorie Ideeën" if lang == "nl" else "Category Ideas",
+        "Categorie Thema" if lang == "nl" else "Category Theme",
+        "Categorie Analyse" if lang == "nl" else "Category Analysis",
         "Code Toewijzing" if lang == "nl" else "Code Assignment"
     ]
 
@@ -5203,10 +5196,10 @@ def show_step_samples(step_number):
                 
         
         elif step_number == 5:
-            # Step 5: Clusters
-            data = cache_manager.load_from_cache(filename, "initial_clusters", variable_key, models.ClusterModel)
+            # Step 5: Categories
+            data = cache_manager.load_from_cache(filename, "category_assignment", variable_key, models.CategoryAssignedModel)
             if data:
-                show_cluster_samples(data)
+                show_category_samples(data)
                 
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
@@ -5214,7 +5207,7 @@ def show_step_samples(step_number):
                         st.session_state.step = 6
                         st.rerun()
             else:
-                st.write("⏳ No clusters in cache - run clustering first")
+                st.write("⏳ No categories in cache - run category discovery first")
                 
         elif step_number == 6:
             # Step 6: Codebook reasoning

@@ -1,15 +1,9 @@
 #%%
 #
 """
-Debug script for Step 5 Categories: Full LLM Request Inspector
+Debug script for Step 5 Categories v2: Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
-For each captured prompt, displays:
-  1. The filled prompt text (what goes into the 'input' / 'messages' parameter)
-  2. The Pydantic response model's JSON schema (what instructor injects as tool definition)
-
-Usage:
-    cd src && python -m experiments.step_5_categories.debug_full_prompts
 """
 
 import sys
@@ -32,20 +26,28 @@ except ImportError:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
-# Import response models
+# Import v2 response models
 try:
     from experiments.step_5_categories.prompts_exp import (
-        MapBatchThemes,
-        SynthesizedThemeList,
-        MECECategorySet,
+        ThemeDiscoveryResult,
+        ConsolidatedThemesResult,
+        ConceptDiscoveryResult,
+        COCConsolidationResult,
+        HierarchicalCodebookResult,
+        ThematicAnalysisResult,
         CategoryAssignmentBatch,
+        SingleCategoryAssignment,
     )
 except ImportError:
     from prompts_exp import (
-        MapBatchThemes,
-        SynthesizedThemeList,
-        MECECategorySet,
+        ThemeDiscoveryResult,
+        ConsolidatedThemesResult,
+        ConceptDiscoveryResult,
+        COCConsolidationResult,
+        HierarchicalCodebookResult,
+        ThematicAnalysisResult,
         CategoryAssignmentBatch,
+        SingleCategoryAssignment,
     )
 
 
@@ -60,10 +62,14 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 # =============================================================================
 
 STATIC_PROMPT_MODELS = {
-    "map_themes": MapBatchThemes,
-    "reduce_themes": SynthesizedThemeList,
-    "mece_boundaries": MECECategorySet,
+    "theme_discovery": ThemeDiscoveryResult,
+    "theme_consolidation": ConsolidatedThemesResult,
+    "concept_discovery": ConceptDiscoveryResult,
+    "coc_consolidation": COCConsolidationResult,
+    "hierarchical_codebook": HierarchicalCodebookResult,
+    "thematic_analysis": ThematicAnalysisResult,
     "category_assignment": CategoryAssignmentBatch,
+    "category_assignment_single": SingleCategoryAssignment,
 }
 
 
@@ -78,6 +84,11 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
     """
     prompt_type = prompt_entry.get("prompt_type", "")
 
+    # Detect single-mode assignment from metadata
+    metadata = prompt_entry.get("metadata", {})
+    if prompt_type == "category_assignment" and metadata.get("mode") == "single":
+        prompt_type = "category_assignment_single"
+
     if prompt_type in STATIC_PROMPT_MODELS:
         model = STATIC_PROMPT_MODELS[prompt_type]
         return (model, False, f"Static model: {model.__name__}")
@@ -89,11 +100,31 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
 # File Loading (same pattern as step_3 debug_prompts.py)
 # =============================================================================
 
-def get_prompts_file() -> Path:
-    """Get the prompts file path for current config."""
+PROMPT_MODE = "all"  # "pipeline", "assignment", or "all" (loads both)
+
+
+def get_prompts_files() -> list[Path]:
+    """Get prompts file path(s) for current config and PROMPT_MODE."""
     variable_key = generate_enhanced_variable_key([VAR_NAME], False, SAMPLE_SIZE)
     prompts_dir = project_root / "exports" / "prompts"
-    return prompts_dir / f"step5_categories_{VAR_NAME}_{variable_key}.json"
+    base = f"step5_categories_{VAR_NAME}_{variable_key}"
+
+    if PROMPT_MODE == "pipeline":
+        return [prompts_dir / f"{base}_pipeline.json"]
+    elif PROMPT_MODE == "assignment":
+        return [prompts_dir / f"{base}_assignment.json"]
+    else:  # "all"
+        files = []
+        for suffix in ("_pipeline.json", "_assignment.json"):
+            f = prompts_dir / f"{base}{suffix}"
+            if f.exists():
+                files.append(f)
+        # Fallback: legacy single file
+        if not files:
+            legacy = prompts_dir / f"{base}.json"
+            if legacy.exists():
+                files.append(legacy)
+        return files
 
 
 def load_prompts(filepath: Path) -> Optional[dict]:
@@ -125,12 +156,26 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
         print(f"Language:       {metadata['language']}")
     if "partition_name" in metadata:
         print(f"Partition:      {metadata['partition_name']}")
+    if "dimension_name" in metadata:
+        print(f"Dimension:      {metadata['dimension_name']}")
     if "batch_number" in metadata:
         print(f"Batch:          {metadata['batch_number']} / {metadata.get('total_batches', '?')}")
     if "n_batches" in metadata:
         print(f"N batches:      {metadata['n_batches']}")
+    if "n_raw_themes" in metadata:
+        print(f"N raw themes:   {metadata['n_raw_themes']}")
     if "n_themes" in metadata:
         print(f"N themes:       {metadata['n_themes']}")
+    if "total_themes" in metadata:
+        print(f"Total themes:   {metadata['total_themes']}")
+    if "n_concepts" in metadata:
+        print(f"N concepts:     {metadata['n_concepts']}")
+    if "n_total_concepts" in metadata:
+        print(f"N total COCs:   {metadata['n_total_concepts']}")
+    if "n_partitions" in metadata:
+        print(f"N partitions:   {metadata['n_partitions']}")
+    if "n_consolidated_concepts" in metadata:
+        print(f"N consolidated: {metadata['n_consolidated_concepts']}")
     if "n_categories" in metadata:
         print(f"N categories:   {metadata['n_categories']}")
     if "n_labels" in metadata:
@@ -139,8 +184,12 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
     # Other metadata
     other_meta = {k: v for k, v in metadata.items()
                   if k not in ("model", "language", "partition_name",
+                               "dimension_name",
                                "batch_number", "total_batches",
-                               "n_batches", "n_themes", "n_categories",
+                               "n_batches", "n_raw_themes", "n_themes",
+                               "total_themes", "n_concepts",
+                               "n_total_concepts", "n_partitions",
+                               "n_consolidated_concepts", "n_categories",
                                "n_labels", "survey_question")}
     if other_meta:
         print(f"\n[Other Metadata]")
@@ -188,54 +237,68 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
 # =============================================================================
 
 def main():
-    prompts_file = get_prompts_file()
+    prompts_files = get_prompts_files()
 
     print("=" * 100)
-    print("DEBUG: Step 5 Categories - Full LLM Request Inspector")
+    print("DEBUG: Step 5 Categories v2 - Full LLM Request Inspector")
     print("Shows prompt text + Pydantic response model schemas (as seen by instructor)")
     print("=" * 100)
     print(f"Variable:     {VAR_NAME}")
     print(f"Sample size:  {SAMPLE_SIZE}")
-    print(f"Prompts file: {prompts_file}")
+    print(f"Mode:         {PROMPT_MODE}")
+    print(f"Prompts files: {[f.name for f in prompts_files] if prompts_files else '(none found)'}")
     print("=" * 100)
 
-    if not prompts_file.exists():
-        print(f"\nNo prompts file found at: {prompts_file}")
+    if not prompts_files:
+        print("\nNo prompts files found.")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m experiments.step_5_categories.run_experiment")
+        print("  cd src && python -m experiments.step_5_categories_v2.run_experiment")
         print("\n(prompts are always captured; PRINT_PROMPTS controls real-time output)")
         return
 
-    data = load_prompts(prompts_file)
-    if data is None:
-        print("Failed to load prompts file.")
+    # Merge prompts from all files
+    all_prompts = []
+    for pf in prompts_files:
+        data = load_prompts(pf)
+        if data is None:
+            print(f"Failed to load: {pf.name}")
+            continue
+        print(f"\n[{pf.name}]")
+        print(f"  Session ID:    {data.get('session_id', 'unknown')}")
+        print(f"  Capture time:  {data.get('capture_time', 'unknown')}")
+        print(f"  Total prompts: {data.get('total_prompts', 0)}")
+        summary = data.get("summary", {})
+        if summary:
+            for ptype, count in summary.get("by_utility", {}).items():
+                print(f"    {ptype}: {count}")
+        all_prompts.extend(data.get("prompts", []))
+
+    prompts = all_prompts
+    if not prompts:
+        print("\nNo prompts found in files.")
         return
 
-    # Summary
-    print(f"\nSession ID:    {data.get('session_id', 'unknown')}")
-    print(f"Capture time:  {data.get('capture_time', 'unknown')}")
-    print(f"Total prompts: {data.get('total_prompts', 0)}")
+    # Group by prompt_type, keeping first instance of each
+    by_type = {}
+    for entry in prompts:
+        ptype = entry.get("prompt_type", "unknown")
+        if ptype not in by_type:
+            by_type[ptype] = entry
 
-    summary = data.get("summary", {})
-    if summary:
-        print("\n[Prompts by Step]")
-        for step, count in summary.get("by_step", {}).items():
-            print(f"  {step}: {count}")
-        print("\n[Prompts by Type]")
-        for ptype, count in summary.get("by_utility", {}).items():
-            print(f"  {ptype}: {count}")
+    print(f"\n{'#'*100}")
+    print(f"# PROMPT DISPLAY ({len(prompts)} total prompts, "
+          f"{len(by_type)} unique types)")
+    print(f"{'#'*100}")
+    for ptype in by_type:
+        count = sum(1 for p in prompts if p.get("prompt_type") == ptype)
+        print(f"  {ptype}: {count} instance(s)")
 
-    # Print each prompt with full schema
-    prompts = data.get("prompts", [])
-    if prompts:
+    for i, (ptype, entry) in enumerate(by_type.items(), 1):
         print(f"\n{'#'*100}")
-        print(f"# FULL LLM REQUEST DETAILS ({len(prompts)} prompts)")
+        print(f"# {ptype} (1 of "
+              f"{sum(1 for p in prompts if p.get('prompt_type') == ptype)} instances)")
         print(f"{'#'*100}")
-
-        for i, prompt_entry in enumerate(prompts, 1):
-            print_full_prompt(prompt_entry, i, len(prompts))
-    else:
-        print("\nNo prompts found in file.")
+        print_full_prompt(entry, i, len(by_type))
 
 
 if __name__ == "__main__":

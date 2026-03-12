@@ -146,6 +146,16 @@ warnings.filterwarnings(
     category=UserWarning,
     module=r"umap\.umap_" )
 
+
+def is_other_cluster(source_cluster_id: str) -> bool:
+    """Check if a cluster/source ID represents a DIRECT_OTHER code from step 6.
+
+    These IDs follow the pattern "other_{partition}_{valence_sign}" and are
+    created by _assign_partition_other_codes().
+    """
+    return bool(source_cluster_id) and str(source_cluster_id).startswith("other_")
+
+
 # ============================================================================
 # INTERNAL DATA STRUCTURES
 # ============================================================================
@@ -1350,6 +1360,7 @@ class InductiveCodeGenerator:
         mece_topics: Optional[Dict[int, dict]] = None,  # MECE Phase A output per cluster (legacy)
         mece_results_cache: Optional['MECEResultsCache'] = None,  # step_5_categories MECE cache
         category_assigned_data: Optional[List['CategoryAssignedModel']] = None,  # step_5_categories assignments
+        clustering_metadata = None,  # step_5_clusterer ClusteringMetadataModel (per-cluster keywords, labels)
         embedding_text_format: str = "cached",  # "cached" | "idea" | "ladder" | "concept+concept_type" | etc.
         embedding_separator: str = " → ",  # separator for multi-field/composite formats
         **kwargs  # For backward compatibility
@@ -1359,6 +1370,7 @@ class InductiveCodeGenerator:
         self._mece_topics = mece_topics  # Pre-extracted MECE topics (legacy alternative Phase 1 input)
         self._mece_results_cache = mece_results_cache  # step_5_categories: MECEResultsCache
         self._category_assigned_data = category_assigned_data  # step_5_categories: List[CategoryAssignedModel]
+        self._clustering_metadata = clustering_metadata  # step_5_clusterer: ClusteringMetadataModel
         self._embedding_text_format = embedding_text_format
         self._embedding_separator = embedding_separator
                 
@@ -1597,6 +1609,31 @@ class InductiveCodeGenerator:
             "Explain how the category's boundary test and diagnostic signals informed your "
             "theme identification; if a directional scope is stated, confirm that your themes "
             "reflect only that direction"
+        ),
+        'analysis_step_3': 'Note any sub-themes you identified, split, or merged -- and why',
+    }
+
+    CLUSTER_REP_PROMPT_PARAMS: Dict[str, str] = {
+        'data_unit': 'cluster',
+        'evidence_source': 'the assigned ideas and cluster representation metadata',
+        'data_description': (
+            "The cluster data above contains two sections:\n\n"
+            "**Cluster representation** -- metadata from the clustering algorithm including:\n"
+            "- Cluster theme label and description (generated from representative samples)\n"
+            "- Key concepts derived from the cluster\n"
+            "- Keywords extracted via statistical methods (c-TF-IDF, MMR)\n"
+            "- Cluster size and quality metrics\n\n"
+            "**Assigned ideas** -- actual survey response ideas assigned to this cluster, "
+            "sampled for diversity.\n\n"
+            "Use the cluster representation to understand the semantic scope and key themes. "
+            "Use the assigned ideas as your evidence base for theme identification. "
+            "If you observe divergence between the algorithmic label and the actual ideas, "
+            "trust the ideas."
+        ),
+        'analysis_step_2': (
+            "Explain how the cluster's theme label, keywords, and description informed your "
+            "theme identification; note any divergences between the algorithmic label and "
+            "what you observe in the actual ideas"
         ),
         'analysis_step_3': 'Note any sub-themes you identified, split, or merged -- and why',
     }
@@ -2136,10 +2173,11 @@ class InductiveCodeGenerator:
     _FORMAT_TO_CACHED_FIELD = {
         "idea":                  "idea_embedding",
         "ladder":                "ladder_embedding",
-        "concept_defined":       "concept_embedding",
-        "idea_concept_defined":  "idea_concept_defined_embedding",
+        "rung_1_defined":        "rung_1_embedding",
+        "idea_rung_1_defined":   "rung_2_embedding",
         # Only cached in step 4 "all" mode:
-        "concept":               "concept_embedding",
+        "rung_1":                "rung_1_embedding",
+        "rung_2":                "rung_2_embedding",
         "concept_type":          "concept_type_embedding",
     }
 
@@ -2244,16 +2282,20 @@ class InductiveCodeGenerator:
 
         Works with both cluster_results (cluster path) and _category_assigned_data
         (categories path) via _idea_source property.
+
+        When clustering_metadata is available (STAGE1_INPUT_SOURCE="clusters"),
+        attaches per-cluster representation metadata (keywords, labels, metrics)
+        as a 'cluster_rep' field on each group dict.
         """
         clusters = {}
 
         for result in self._idea_source:
             ideas_list = result.response_ideas or []
-            
+
             for idea in ideas_list:
                 # Use expanded_cluster if available, otherwise fall back to initial_cluster
                 cluster_id = idea.expanded_cluster if idea.expanded_cluster is not None else str(idea.initial_cluster) if idea.initial_cluster is not None else None
-                
+
                 if cluster_id is not None and cluster_id != "-1":
                     # Create cluster entry if it doesn't exist
                     if cluster_id not in clusters:
@@ -2263,17 +2305,36 @@ class InductiveCodeGenerator:
                             'embeddings': [],
                             'respondent_ids': []
                         }
-                    
+
                     # Add idea data - store the full object to preserve embeddings
                     clusters[cluster_id]['ideas'].append(idea)
                     clusters[cluster_id]['respondent_ids'].append(idea.idea_id)  # Using idea_id as respondent identifier
-                    
+
                     # Add embedding if available (kept for backward compatibility)
                     if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
                         clusters[cluster_id]['embeddings'].append(idea.idea_embedding)
-        
+
         # Filter out empty clusters
-        return {cid: cdata for cid, cdata in clusters.items() if len(cdata['embeddings']) > 0}
+        clusters = {cid: cdata for cid, cdata in clusters.items() if len(cdata['embeddings']) > 0}
+
+        # Attach cluster representation metadata when available (step 5 clusterer path)
+        if self._clustering_metadata and hasattr(self._clustering_metadata, 'clusters'):
+            meta_clusters = self._clustering_metadata.clusters  # Dict[int, ClusterRepresentationCacheModel]
+            attached = 0
+            for cid, cdata in clusters.items():
+                # Cluster IDs may be str or int; metadata keys are int
+                meta_key = int(cid) if str(cid).isdigit() else None
+                if meta_key is not None and meta_key in meta_clusters:
+                    cdata['cluster_rep'] = meta_clusters[meta_key]
+                    attached += 1
+                else:
+                    cdata['cluster_rep'] = None
+            if self.verbose:
+                self.verbose_reporter.stat_line(
+                    f"Attached cluster representations: {attached}/{len(clusters)} clusters"
+                )
+
+        return clusters
 
     def extract_category_data(self) -> Dict[int, Dict[str, Any]]:
         """Extract data organized by MECE category with sequential numeric IDs,
@@ -2565,6 +2626,7 @@ class InductiveCodeGenerator:
                 'final_definition': code_definition,
                 'decision': 'DIRECT_OTHER',
                 'ideas_count': len(ideas),
+                'idea_ids': [idea.idea_id for idea in ideas],
             })
 
         if self.verbose_reporter.enabled:
@@ -3692,6 +3754,37 @@ class InductiveCodeGenerator:
 
         return "\n".join(sections)
 
+    def _format_cluster_rep_as_text(self, cluster_rep) -> str:
+        """Format step 5 clusterer representation metadata as structured text for the prompt.
+
+        Args:
+            cluster_rep: ClusterRepresentationCacheModel from step_5_clusterer
+        """
+        sections = []
+
+        if cluster_rep.label_theme:
+            sections.append(f"Cluster theme: {cluster_rep.label_theme}")
+        if cluster_rep.label_description:
+            sections.append(f"Description: {cluster_rep.label_description}")
+        if cluster_rep.label_key_concepts:
+            concepts = ", ".join(cluster_rep.label_key_concepts)
+            sections.append(f"Key concepts: {concepts}")
+
+        # Keywords — prefer c-TF-IDF, fall back to MMR or TF-IDF
+        keywords = cluster_rep.keywords_ctfidf or cluster_rep.keywords_mmr or cluster_rep.keywords_tfidf
+        if keywords:
+            kw_labels = [kw[0] if isinstance(kw, (list, tuple)) else str(kw) for kw in keywords[:10]]
+            sections.append(f"Keywords: {', '.join(kw_labels)}")
+
+        sections.append(f"Cluster size: {cluster_rep.size} ideas")
+
+        if cluster_rep.mean_probability is not None:
+            sections.append(f"Mean membership probability: {cluster_rep.mean_probability:.2f}")
+        if cluster_rep.coherence is not None:
+            sections.append(f"Coherence: {cluster_rep.coherence:.3f}")
+
+        return "\n".join(sections)
+
     #########################################################################################################
     # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -
     #########################################################################################################
@@ -3737,7 +3830,9 @@ class InductiveCodeGenerator:
         ideas_section = "\n".join([f"- {t}" for t in sampled])
 
         # Combine category metadata + sampled ideas into cluster_text
-        ideas_text = f"{category_metadata_text}\n\n--- Assigned Ideas ---\n\n{ideas_section}"
+        #ideas_text = f"{category_metadata_text}\n\n--- Assigned Ideas ---\n\n{ideas_section}"
+
+        ideas_text = f"--- Assigned Ideas ---\n\n{ideas_section}"
 
         input_source_label = "mece_categories"
 
@@ -3900,9 +3995,27 @@ class InductiveCodeGenerator:
                 sampled_ideas = random.sample(idea_texts, k) if len(idea_texts) > k else idea_texts
                 ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
 
+        # --- Cluster representation metadata injection (step 5 clusterer path) ---
+        cluster_rep = cluster_data.get('cluster_rep')
+        if STAGE1_INPUT_SOURCE == "clusters" and cluster_rep is not None:
+            input_source_label = "clusters"
+            metadata_text = self._format_cluster_rep_as_text(cluster_rep)
+            ideas_text = (
+                f"--- Cluster Representation ---\n\n{metadata_text}\n\n"
+                f"--- Assigned Ideas ---\n\n{ideas_text}"
+            )
+
         # --- Common path: prompt construction + LLM call ---
         # Determine language
         language = self._extraction_metadata.lang if self._extraction_metadata and self._extraction_metadata.lang else DEFAULT_LANGUAGE
+
+        # Select prompt params based on input source
+        if STAGE1_INPUT_SOURCE == "clusters" and cluster_rep is not None:
+            route_params = self.CLUSTER_REP_PROMPT_PARAMS
+        elif STAGE1_INPUT_SOURCE == "mece_topics":
+            route_params = self.CLUSTER_PROMPT_PARAMS
+        else:
+            route_params = self.CLUSTER_PROMPT_PARAMS
 
         # Build prompt with context specifiers + route params
         params = {
@@ -3910,7 +4023,7 @@ class InductiveCodeGenerator:
             'survey_question': self.var_lab,
             'language': language,
             'cluster_text': ideas_text,
-            **self.CLUSTER_PROMPT_PARAMS,
+            **route_params,
             **self._get_context_specifier_params()
         }
 
@@ -4902,7 +5015,7 @@ class InductiveCodeGenerator:
                 self._processing_stats['stage_times']['theme_extraction'] = time.time() - stage_start
 
             else:
-                # --- Cluster-based paths (mece_topics or raw ideas) ---
+                # --- Cluster-based paths (step_5_clusterer, mece_topics, or raw ideas) ---
                 stage_start = time.time()
                 try:
                     clusters = self.extract_cluster_data()

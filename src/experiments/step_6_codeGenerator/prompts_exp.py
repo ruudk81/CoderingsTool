@@ -29,11 +29,146 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 #   {analysis_step_3}  -- route-specific reasoning instruction
 # -----------------------------------------------------------------------------
 
-CLUSTER_SUMMARY_PROMPT = """
-You are a qualitative researcher identifying meaning-based codes from survey response data for a codebook. Your work is interpretive but strictly data-bound: you may organize and name patterns, but you must not introduce concepts absent from the provided data.
+CLUSTER_SUMMARY_PROMPT =  """
 
-THEME PRINCIPLE (Braun & Clarke, 2006)
-A code is a meaning-based organizing concept, not a topic label. It captures WHAT UNIFIES a set of responses -- the shared interpretive thread that explains WHY these expressions belong together. If a candidate can be expressed as a single everyday word (e.g., "price"), it is likely a topic, not a theme. A well-formed code names the specific meaning pattern respondents express.
+You are a codebook designer working strictly within Braun & Clarke’s (2006) reflexive thematic analysis (reflexive TA).
+
+Your task: derive the SMALLEST set of themes that explains the shared, patterned SEMANTIC meaning expressed across the input units, while preserving real meaning differences. Themes are organizing concepts that explain how multiple codes belong together; they are NOT topic buckets, summaries, or re-labellings.
+
+----------------------------------------------------------------
+RESEARCH CONTEXT
+----------------------------------------------------------------
+<survey_context>
+Respondents were asked: "{survey_question}"
+
+Analytic reframing:
+What meanings do {perspective}s express about {entity} regarding {topic}?
+
+Your output must capture expressed meanings (what is being said/meant), not merely the surface topic mentioned.
+
+- Language: {language}
+- Domain: {domain}
+- Topic: {topic}
+- Perspective: {perspective}
+- Intent: {intent}
+- Entity: {entity}
+</survey_context>
+
+----------------------------------------------------------------
+TAXONOMY SCOPE (NON-NEGOTIABLE)
+----------------------------------------------------------------
+<taxonomy_rules>
+This codebook covers the "{facet_name}" dimension.
+Scope check: concepts must be of type {facet_valid_labels}.
+
+CRITICAL CONSTRAINTS:
+- Identify themes ONLY within the analytic scope of "{facet_name}".
+- Do NOT introduce themes that expand, reinterpret, or shift the cluster boundaries.
+- If content falls outside scope, treat it as noise and DO NOT theme it.
+</taxonomy_rules>
+
+----------------------------------------------------------------
+INPUT: {data_unit} DATA (IDEA-LEVEL)
+----------------------------------------------------------------
+<{data_unit}_data>
+  <{data_unit}_id>{cluster_id}</{data_unit}_id>
+  <{data_unit}_content>
+{cluster_text}
+  </{data_unit}_content>
+</{data_unit}_data>
+
+{data_description}
+
+IMPORTANT INPUT ASSUMPTION:
+Each {data_unit} is already split into ONE idea. Do NOT fuse different ideas into one theme definition. If the cluster contains multiple distinct ideas, that implies multiple themes are necessary.
+
+----------------------------------------------------------------
+ANALYTIC LOGIC (REFLEXIVE TA, SEMANTIC)
+----------------------------------------------------------------
+<analysis_framework>
+Work semantically (surface-meaning), not latently (no inferred mechanisms).
+
+STEP 1 — Propose ONE candidate theme (default)
+- State the most plausible single organizing concept that could account for the majority of the units.
+
+STEP 2 — Stress-test unity (the “80% rule”)
+Unify ONLY if one theme label can cover ≥80% of units WITHOUT widening meaning.
+Widening meaning includes:
+- collapsing different dominant objects (e.g., toilets vs shade vs payment),
+- collapsing different processes/experiences (e.g., access vs quality),
+- collapsing opposing evaluations when evaluation is integral to meaning (e.g., “good access” vs “poor access”).
+
+STEP 3 — Split triggers (MECE at meaning-level)
+Propose multiple themes ONLY when at least one trigger applies:
+(A) Different dominant object of evaluation (what the idea is about)
+(B) Different process/experience (what is happening)
+(C) Opposing evaluation is integral to the meaning (positive vs negative is not incidental)
+(D) A single label would require broad umbrella wording to fit
+
+STEP 4 — Name the organizing concept (not a container)
+Themes must not be generic containers (e.g., “Facilities”, “Music”, “Organization”).
+They must name the specific recurring meaning (e.g., “Toilet access”, “Shade availability”, “Cashless payment ease”).
+
+STEP 5 — Parsimony with discipline
+Use the minimum number of themes that preserves distinct meanings.
+Do NOT split by:
+- intensity, tone, or rhetorical style alone,
+- different examples of the same meaning,
+- minor nuance that does not change interpretation.
+
+If uncertain: do NOT decide by “parsimony”. Re-apply the split triggers and 80% rule.
+</analysis_framework>
+
+----------------------------------------------------------------
+OUTPUT REQUIREMENTS (JSON)
+----------------------------------------------------------------
+<instructions>
+Write all output in {language}.
+Return valid JSON that follows the provided response schema exactly.
+
+For EACH THEME you output, include:
+
+1) label
+LABEL RULES
+- Concise noun phrase, ideally 1–5 words (max 8 if unavoidable).
+- One semantic head noun; modifiers allowed.
+- No conjunctions (and/or), slashes, commas, or multi-concept bundles.
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Do NOT restate the facet dimension; "{facet_name}" is already implied.
+- Avoid containers (wrong: “Facilities”; right: “Toilet access”).
+
+2) definition
+DEFINITION RULES
+- ≤30 words.
+- Semantic + observable: describe what respondents explicitly mention/express.
+- No causes, motives, conditions, or outcomes (no “because”, “leads to”, “so that”).
+- Do NOT repeat {perspective}, {domain}, {topic}, or {entity}.
+- Use cues like: “Mentions…”, “Describes…”, “Expresses…”
+
+3) assignment_examples
+- inclusion (2–3): observable cues starting with verbs (e.g., “Mentions…”, “Describes…”), traceable to {evidence_source}.
+- exclusion (1–2): boundary cases that should NOT be coded here.
+- near_neighbor: closest confusable theme label + one sentence distinguishing them. Use "Unknown" if none.
+
+REQUIRED ANALYSIS FIELD (brief but explicit)
+In the analysis field:
+1. State 1–2 {data_unit}-level COCs (central organizing concepts you considered).
+2. Report the 80% rule result (why one theme did or didn’t cover ≥80% without widening meaning).
+3. State which split trigger(s) applied (A/B/C/D) if you used multiple themes.
+4. Justify the final number of themes as the minimum that preserves meaning distinctions.
+Include {analysis_step_2} and {analysis_step_3} where applicable.
+</instructions>
+"""
+
+
+
+
+x = """
+You are a codebook designer working strictly within Braun & Clarke’s (2006) reflexive thematic analysis framework.
+
+Your task is to identify the MINIMUM number of themes required to account for shared patterned semantic meaning across a group of descriptive codes, while preserving meaningful distinctions and avoiding unnecessary abstraction or fragmentation.
+
+Themes must function as organizing concepts that explain how multiple codes hang together, not as summaries, groupings, or re-labellings of codes.
 
 ## Research Context
 
@@ -55,8 +190,10 @@ Your codes must capture these expressed meanings, not just the surface topics me
 <taxonomy_rules>
 This codebook covers the {facet_name} dimension.
 Scope check: codes must capture concepts of type {facet_valid_labels}.
-Out of scope: {facet_invalid_labels}.
-Note: these concept types define what BELONGS here, not how to WORD labels.
+
+CRITICAL CONSTRAINT:
+- You must ONLY identify themes that fall WITHIN the analytic scope of "{facet_name}".
+- Do NOT introduce themes that expand, reinterpret, or shift the boundaries of this cluster.
 </taxonomy_rules>
 
 ## {data_unit} Data to Analyze
@@ -75,17 +212,44 @@ Note: these concept types define what BELONGS here, not how to WORD labels.
 
 ## Analysis Instructions
 
-First, identify 1-2 Central Organizing Concepts (COCs) -- analytic statements that capture what ties this {data_unit}'s data together. COCs describe shared patterns across {evidence_source}. They are NOT code labels.
+<analysis_framework>
+You must follow this analytic logic:
 
-Then derive atomic themes from the data. Each theme must satisfy ALL criteria:
+1. Examine Semantic Convergence
+- What central meaning or idea recurs across these codes?
+- Are the codes responding to the same implicit concern, experience, or process?
+- Do they describe variations of a single shared phenomenon?
+→ If yes, they should be unified under ONE theme.
 
-THEME CRITERIA
-1. Atomic: one semantic nucleus, unsplittable into independently meaningful parts.
-2. Within-facet: falls within the {facet_name} scope.
-3. Grounded: directly supported by {evidence_source}.
-4. Operational: precise enough to serve as a codebook entry.
-5. Meaning-based: captures a shared meaning pattern, not just a topic.
-6. Metadata-coherent: consistent with any structured metadata provided (inclusion definitions, boundary tests).
+2. Test for Conceptual Distinctiveness
+- Would separating the codes lead to substantively different interpretations?
+- Or would separation merely distinguish nuance, emphasis, or expression?
+→ If separation does not alter the analytic story, DO NOT split.
+
+3. Identify the Organizing Concept
+A theme must:
+- Go beyond surface wording
+- Capture what is happening across the codes in one coherent idea
+- Explain the patterned meaning, not just name a topic
+
+4. Enforce Parsimony (Minimum Theme Principle)
+Actively resist:
+- Creating themes based on tone, intensity, or examples alone
+- Elevating subthemes or dimensions into standalone themes
+- Fragmenting meaning without analytic necessity
+
+DECISION RULE:
+Assume ONE theme by default.
+Only propose multiple themes if the codes clearly reflect:
+- Distinct domains, OR
+- Distinct processes, orientations, or outcomes
+that cannot be analytically integrated.
+
+If in doubt, unify rather than split.
+</analysis_framework>
+
+<instructions>
+You must adhere to these rules:
 
 LABEL RULES
 - Concise noun phrase, 1-5 words (maximum 8 if necessary).
@@ -116,6 +280,7 @@ Document your reasoning in the analysis field:
 2. {analysis_step_2}
 3. {analysis_step_3}
 4. Justify single vs multiple themes
+</instructions>
 
 Write all output in {language}. Provide your output as valid JSON following the response schema provided.
 """
@@ -260,7 +425,7 @@ Facet instruction: {facet_description}
 - name: "{theme_name}"
 - description: "{theme_description}"
 - included expressions:
-    {inclusion}
+{inclusion}
 </new_theme>
 
 <existing_codes>

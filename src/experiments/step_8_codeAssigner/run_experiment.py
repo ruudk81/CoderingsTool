@@ -15,7 +15,7 @@ Toggle:
     USE_EXPERIMENTAL = False -> Uses production codeAssigner from utils/
 """
 
-EXPERIMENT_N = 20  # Limit number of responses to process (None = all)
+EXPERIMENT_N = None  # Limit number of responses to process (None = all)
 
 import sys
 import time
@@ -72,6 +72,8 @@ class ExperimentConfig:
     prompt_printer_enabled: bool = False
     force_recalc: bool = True
     experiment_n: Optional[int] = EXPERIMENT_N  # Limit responses for experiment (None = use all)
+    # Routing mode: "partition" (classic), "similarity" (semantic), "hybrid" (similarity + partition boost)
+    routing_mode: str = "similarity"
 
 
 EXPERIMENT_CONFIG = ExperimentConfig()
@@ -174,7 +176,10 @@ def run_experiment(config: ExperimentConfig = None):
 
     start_time = time.time()
 
-    # Create codebook entries with full MECE instructions
+    # Filter out "other" codes — they are pre-assigned in step 6 and should
+    # not be presented to the LLM as candidate codes for normal ideas.
+    from experiments.step_6_codeGenerator.codeGenerator_exp import is_other_cluster
+
     codebook = [models.CodebookExp(
         code=entry.code,
         definition=entry.definition,
@@ -188,7 +193,13 @@ def run_experiment(config: ExperimentConfig = None):
         concept_type=getattr(entry, 'concept_type', None),
         boundary_test=getattr(entry, 'boundary_test', None),
         diagnostic_signals=getattr(entry, 'diagnostic_signals', None),
-    ) for entry in theme_enriched_codebook.codes]
+    ) for entry in theme_enriched_codebook.codes
+      if not is_other_cluster(str(getattr(entry, 'source_cluster', '') or ''))]
+
+    # Extract other_idea_assignments for pre-assignment bypass in CodeAssigner
+    other_idea_assignments = getattr(theme_enriched_codebook, 'other_idea_assignments', None) or {}
+    if other_idea_assignments:
+        verbose_reporter.stat_line(f"Other idea pre-assignments: {len(other_idea_assignments)} ideas will skip LLM")
 
     # Pass partition_remap to CodeAssigner for two-level routing.
     # partition_remap maps refined_name → original_name (from step 7 splits/renames).
@@ -199,11 +210,29 @@ def run_experiment(config: ExperimentConfig = None):
     if partition_remap:
         verbose_reporter.stat_line(f"Partition remap: {len(partition_remap)} refined partitions mapped to originals")
 
+    # Extract dominance axes for partition-level routing dimensions
+    dominance_axes = getattr(theme_enriched_codebook, 'dominance_axes', None) or {}
+    if dominance_axes:
+        verbose_reporter.stat_line(f"Dominance axes: {len(dominance_axes)} partitions have routing dimensions")
+
+    # Configure routing mode
+    from experiments.step_8_codeAssigner.config_exp import SimilarityRoutingConfig
+    similarity_config = SimilarityRoutingConfig(routing_mode=config.routing_mode)
+    verbose_reporter.stat_line(f"Routing mode: {config.routing_mode}")
+
+    # Lower confidence threshold to match prompt's Best Available Match Rule (0.55)
+    from config_steps.config_codeAssigner import AdaptiveThresholdConfig
+    threshold_config = AdaptiveThresholdConfig(fixed_threshold=0.55)
+
     # Run code assignment
     code_assigner = CodeAssigner(
         response_models=response_data,
         codebook=codebook,
         partition_remap=partition_remap,
+        dominance_axes=dominance_axes,
+        other_idea_assignments=other_idea_assignments,
+        similarity_config=similarity_config,
+        adaptive_threshold_config=threshold_config,
         var_lab=var_lab,
         code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
         model_config=model_config,
@@ -221,7 +250,7 @@ def run_experiment(config: ExperimentConfig = None):
             result.assignment_metadata = {}
         result.assignment_metadata.update({
             "codebook_used": f"{len(theme_enriched_codebook.codes)} codes",
-            "assignment_method": "partition_based_ladder",
+            "assignment_method": f"{config.routing_mode}_routing",
             "experiment": True,
             "partitions": n_partitions
         })
@@ -273,6 +302,7 @@ if __name__ == "__main__":
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
     print(f"Using experimental: {USE_EXPERIMENTAL}")
+    print(f"Routing mode: {config.routing_mode}")
     print(f"Experiment N: {config.experiment_n or 'all'}")
     print("=" * 70)
 
@@ -289,7 +319,7 @@ if __name__ == "__main__":
                 print("SAMPLE ASSIGNMENT")
                 print("=" * 70)
                 print(f"Instance: {idea.instance}")
-                print(f"Concept: {idea.concept}")
+                print(f"Rung 1: {idea.rung_1}")
                 print(f"Concept Type: {idea.concept_type}")
                 print(f"Codes: {idea.assigned_codes}")
                 print(f"Themes: {idea.assigned_themes}")
