@@ -15,14 +15,13 @@ sys.path.insert(0, str(src_dir))
 
 import random
 import re
-# v4 uses local models with primary_facet/concept_type fields
 try:
-    from experiments.step_3_ideaExtractor_v4 import models_exp_v3 as models
+    from experiments.step_3_ideaExtractor import models_exp as models
 except ImportError:
-    models_v4_dir = Path(__file__).parent
-    if str(models_v4_dir) not in sys.path:
-        sys.path.insert(0, str(models_v4_dir))
-    import models_exp_v3 as models
+    models_dir = Path(__file__).parent
+    if str(models_dir) not in sys.path:
+        sys.path.insert(0, str(models_dir))
+    import models_exp as models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
@@ -50,7 +49,7 @@ def clean_idea(idea: str) -> str:
 
 
 def print_extraction_metadata(cache_manager, filename, variable_key):
-    """Load and print extraction metadata (facet, concept types, context specifiers)."""
+    """Load and print extraction metadata (dimension, domains, context specifiers)."""
     metadata = cache_manager.load_metadata_from_cache(
         filename, "extracted_ideas", variable_key, models.ExtractionMetadata
     )
@@ -66,7 +65,7 @@ def print_extraction_metadata(cache_manager, filename, variable_key):
     # Context specifiers
     print("\n[Context Specifiers]")
     print(f"  Language:    {metadata.lang or '(not set)'}")
-    print(f"  Domain:      {metadata.domain or '(not set)'}")
+    print(f"  Sector:      {metadata.sector or '(not set)'}")
     print(f"  Topic:       {metadata.topic or '(not set)'}")
     print(f"  Perspective: {metadata.perspective or '(not set)'}")
     print(f"  Entity:      {metadata.entity or '(not set)'}")
@@ -77,16 +76,16 @@ def print_extraction_metadata(cache_manager, filename, variable_key):
         print(f"\n[Template Prefix]")
         print(f"  \"{metadata.template_prefix}\"")
 
-    # Primary Facet
-    print("\n[Primary Facet]")
-    print(f"  Facet:             {metadata.primary_facet or '(not set)'}")
-    print(f"  Facet description: {metadata.primary_facet_description or '(not set)'}")
+    # Primary Dimension
+    print("\n[Primary Dimension]")
+    print(f"  Dimension:             {metadata.primary_dimension or '(not set)'}")
+    print(f"  Dimension description: {metadata.primary_dimension_description or '(not set)'}")
 
-    # Concept Types
-    if metadata.concept_types:
-        print("\n[Concept Types]")
-        for ct in metadata.concept_types:
-            print(f"  {ct['key']}: {ct['label']} — {ct['definition']}")
+    # Domains
+    if metadata.domains:
+        print("\n[Domains]")
+        for d in metadata.domains:
+            print(f"  {d['key']}: {d['label']} — {d['definition']}")
 
     print()
 
@@ -96,10 +95,12 @@ def print_idea_details(idea: models.IdeasExtractedSubmodel, indent: str = "  "):
     cleaned = clean_idea(idea.idea)
     print(f"{indent}Idea: {cleaned}")
 
-    # Abstraction ladder (4 steps)
-    ladder_parts = [v for v in (idea.instance, idea.concept, idea.concept_type, idea.concept_type_definition) if v]
+    # Abstraction ladder (bottom-up: instance → interpretation → abstraction)
+    ladder_parts = [v for v in (idea.instance, idea.interpretation, idea.abstraction) if v]
     if ladder_parts:
         print(f"{indent}  ladder: {' → '.join(ladder_parts)}")
+    if idea.domain:
+        print(f"{indent}  domain: {idea.domain}")
     if idea.valence:
         print(f"{indent}  valence: {idea.valence}")
 

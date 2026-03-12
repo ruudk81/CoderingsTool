@@ -76,8 +76,8 @@ class ExperimentConfig:
     # Embedding format for step 6 internal sampling/redistribution
     # Uses cached step 4 embedding if available, else computes on-the-fly.
     # "cached" = use idea_embedding as-is | "ladder" = ladder_embedding (default)
-    # "concept_defined" | "idea_concept_defined" | "concept" | "concept_type"
-    # Composite: "concept+concept_type_definition", "idea+concept", etc.
+    # "rung_1_defined" | "idea_rung_1_defined" | "rung_1" | "rung_2" | "concept_type"
+    # Composite: "rung_1+rung_2", "idea+rung_1", etc.
     step6_embedding_format: str = "ladder"
     step6_embedding_separator: str = " → "
     experiment_n: Optional[int] = EXPERIMENT_N  # Limit response models for experiment (None = all)
@@ -193,6 +193,48 @@ def load_mece_categories(config: ExperimentConfig, variable_key: str):
     return mece_results_cache, category_assigned
 
 
+def load_cluster_data(config: ExperimentConfig, variable_key: str):
+    """Load step 5 clusterer output: initial_clusters + clustering_metadata.
+
+    Returns:
+        (cluster_results, clustering_metadata) tuple.
+        Either may be None if cache is not available.
+    """
+    cache_manager = CacheManager(CacheConfig())
+
+    # Layer 1: ClusterModel list (ideas with cluster assignments)
+    cluster_results = None
+    try:
+        cluster_results = cache_manager.load_from_cache(
+            config.filename, "initial_clusters", variable_key, models.ClusterModel
+        )
+    except Exception as e:
+        print(f"  WARNING: Failed to load initial_clusters: {e}")
+
+    if not cluster_results:
+        print("  WARNING: initial_clusters cache not found — falling back")
+        return None, None
+
+    # Layer 2: ClusteringMetadataModel (per-cluster keywords, labels, metrics)
+    # Lazy import to avoid pulling in heavy clusterer dependencies at module level
+    clustering_metadata = None
+    try:
+        from experiments.step_5_clusterer.clusterer_exp import ClusteringMetadataModel
+        meta_list = cache_manager.load_from_cache(
+            config.filename, "clustering_metadata", variable_key, ClusteringMetadataModel
+        )
+        if meta_list:
+            clustering_metadata = meta_list[0]  # Stored as single-item list
+    except Exception as e:
+        print(f"  WARNING: Failed to load clustering_metadata: {e}")
+
+    n_clusters = len(clustering_metadata.clusters) if clustering_metadata else 0
+    print(f"  Loaded clusters: {len(cluster_results)} response models")
+    print(f"  Loaded clustering metadata: {n_clusters} cluster representations")
+
+    return cluster_results, clustering_metadata
+
+
 # =============================================================================
 # MAIN EXPERIMENT RUNNER
 # =============================================================================
@@ -218,6 +260,8 @@ def run_experiment(config: ExperimentConfig = None):
     mece_topics = None
     mece_results_cache = None
     category_assigned_data = None
+    cluster_results_data = None
+    clustering_metadata = None
 
     if USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "mece_categories":
         verbose_reporter.stat_line(f"Input source: MECE categories (STAGE1_INPUT_SOURCE={STAGE1_INPUT_SOURCE!r})")
@@ -227,6 +271,16 @@ def run_experiment(config: ExperimentConfig = None):
         elif config.experiment_n is not None and config.experiment_n < len(category_assigned_data):
             full_count = len(category_assigned_data)
             category_assigned_data = category_assigned_data[:config.experiment_n]
+            verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} of {full_count} response models")
+
+    elif USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "clusters":
+        verbose_reporter.stat_line(f"Input source: step 5 clusters (STAGE1_INPUT_SOURCE={STAGE1_INPUT_SOURCE!r})")
+        cluster_results_data, clustering_metadata = load_cluster_data(config, variable_key)
+        if not cluster_results_data:
+            verbose_reporter.stat_line("  Falling back to idea sampling")
+        elif config.experiment_n is not None and config.experiment_n < len(cluster_results_data):
+            full_count = len(cluster_results_data)
+            cluster_results_data = cluster_results_data[:config.experiment_n]
             verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} of {full_count} response models")
 
     if USE_EXPERIMENTAL and STAGE1_INPUT_SOURCE == "mece_topics" or (
@@ -241,7 +295,7 @@ def run_experiment(config: ExperimentConfig = None):
 
     # Generate codebook (clean slate — no starter codes)
     generator = InductiveCodeGenerator(
-        cluster_results=[],
+        cluster_results=cluster_results_data or [],
         starter_codes=[],
         var_lab=var_lab,
         verbose=config.verbose,
@@ -251,6 +305,7 @@ def run_experiment(config: ExperimentConfig = None):
         mece_topics=mece_topics,
         mece_results_cache=mece_results_cache,
         category_assigned_data=category_assigned_data,
+        clustering_metadata=clustering_metadata,
         embedding_text_format=config.step6_embedding_format,
         embedding_separator=config.step6_embedding_separator,
     )

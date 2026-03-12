@@ -1,12 +1,8 @@
 """
-Configuration for Category Discovery.
+Configuration for Category Discovery v2.
 
-Partitions by concept_type (data-driven from step 3), then processes
-with MAP/REDUCE/MECE.
-
-Two processing modes:
-  "direct"   (Mode A): MAP/REDUCE/MECE on labels directly
-  "clustered" (Mode B): Pre-cluster labels, then MAP/REDUCE/MECE with cluster hints
+Pipeline: per-partition chunked theme discovery → theme consolidation →
+concept discovery → codebook construction → category assignment.
 """
 
 from dataclasses import dataclass
@@ -18,82 +14,64 @@ class CategoriesConfig:
     """Configuration for Category Discovery."""
 
     # ==========================================================================
-    # PROCESSING MODE
+    # PARTITION SOURCE
     # ==========================================================================
 
-    # "direct" (Mode A): MAP/REDUCE/MECE on labels directly
-    # "clustered" (Mode B): UMAP+HDBSCAN pre-cluster, then MAP/REDUCE/MECE with hints
-    processing_mode: str = "direct"
-
-    # ==========================================================================
-    # PARTITION SOURCE 
-    # ==========================================================================
-
-    PARTITION_SOURCE = "concept_type"
+    PARTITION_SOURCE = "domain"
 
     # ==========================================================================
     # LABEL SOURCE
     # ==========================================================================
 
-    # Which text to collect as "labels" for MAP/REDUCE/MECE input.
+    # Which text to collect as "labels" for theme discovery input.
     #
-    # Stored fields (direct attributes on EmbeddingsSubmodel):
-    #   "concept_type_definition" — concept type framing
-    #   "concept"                 — canonical noun phrase
-    #   "concept_type"            — e.g., "recommendation"
-    #   "idea"                    — full idea text incl. template prefix
-    #   "instance"                — verbatim span from response
+    # Stored fields (direct attributes on IdeasExtractedSubmodel from step 3):
+    #   "interpretation" — concrete interpretation (what it means)
+    #   "abstraction"    — broader significance (why it matters)
+    #   "domain"         — discovered domain (L2), e.g., "recommendation"
+    #   "idea"           — full idea text incl. template prefix
+    #   "instance"       — verbatim span from response
     #
     # Computed composites (assembled from stored fields by format_label()):
-    #   "ladder"               — instance → concept → concept_type → concept_type_definition
-    #   "idea_concept_defined" — idea → concept → concept_type_definition
-    label_source: str = "idea_concept_defined"
+    #   "ladder"     — instance → interpretation → abstraction
+    #   "idea_rungs" — idea → interpretation → abstraction
+    label_source: str = "ladder"
 
     # Optional prefix prepended to each label string before processing.
     # "" = no prefix (default)
-    # "{concept_type}: " = dynamic prefix from idea.concept_type field
     # Any literal string = static prefix for all labels
     label_prefix: str = ""
 
     # ==========================================================================
-    # MAP-REDUCE MECE
+    # QUALITATIVE RESEARCHER PIPELINE
     # ==========================================================================
 
-    # LLM model for all 3 steps (map, reduce, mece)
-    mapreduce_model: str = "gpt-4.1"
-    mapreduce_temperature: float = 0.3
-    mapreduce_max_tokens_map: int = 4000
-    mapreduce_max_tokens_reduce: int = 4000
-    mapreduce_max_tokens_mece: int = 4000
+    # LLM settings
+    qr_model: str = "gpt-4.1"
+    qr_temperature: float = 0.3
+    qr_max_tokens_theme_discovery: int = 4000
+    qr_max_tokens_consolidation: int = 4000          # Prompt 1.5: per-partition theme consolidation
+    qr_max_tokens_concept_discovery: int = 4000      # Prompt 2a: concept discovery
+    qr_max_tokens_coc_consolidation: int = 4000      # Prompt 3: cross-partition COC consolidation
+    qr_max_tokens_hierarchical_codebook: int = 8000  # Prompt 4: hierarchical codebook construction
+    qr_max_tokens_codebook_construction: int = 4000  # Prompt 2b: per-partition codebook (legacy)
+    qr_max_tokens_thematic_analysis: int = 8000      # Legacy prompt 2 (deprecated)
 
-    # Batching: max labels per map batch
-    mapreduce_batch_size: int = 40
+    # Adaptive batching: batch size scales with partition size to keep
+    # theme discovery chunk count in a productive range (~5-20 chunks).
+    #   n ≤ 30  → 1 chunk
+    #   n ~ 500 → ~15 chunks of ~33
+    #   n ~ 2000 → ~20 chunks of 100 (hits ceiling)
+    batch_size_min: int = 30       # floor: enough labels for theme discovery
+    batch_size_max: int = 100      # ceiling: keeps prompt quality high
+    target_batches: int = 15       # ideal number of chunks
+    chunk_overlap: float = 0.2     # overlap fraction between adjacent chunks
 
-    # Fallback concurrency (used only if dynamic bootstrap fails)
-    mapreduce_concurrency: int = 5
-    mapreduce_rpm_limit: int = 30
-
-    # ==========================================================================
-    # PRE-CLUSTERING (Mode B only)
-    # ==========================================================================
-    # Simple UMAP+HDBSCAN on label embeddings within each partition.
-    # Produces cluster hints injected into MAP/REDUCE/MECE prompts as context.
-
-    # UMAP dimensionality reduction
-    precluster_umap_n_components: int = 5
-    precluster_umap_n_neighbors: int = 15
-    precluster_umap_min_dist: float = 0.0
-    precluster_umap_metric: str = "euclidean"
-    precluster_umap_random_state: int = 42
-
-    # HDBSCAN clustering
-    precluster_min_cluster_size: int = 3
-    precluster_min_samples: int = 2
-    precluster_cluster_selection_method: str = "eom"
-
-    # Minimum unique labels in a partition to attempt pre-clustering.
-    # Below this threshold, Mode B falls back to Mode A for that partition.
-    precluster_min_labels: int = 8
+    # Theme consolidation: hierarchical chunking
+    # When unique themes exceed this count, split into chunks and consolidate
+    # in successive rounds until the list fits in a single call.
+    consolidation_chunk_size: int = 45   # max themes per consolidation call
+    consolidation_max_rounds: int = 5    # safety cap on recursive rounds
 
     # ==========================================================================
     # OUTPUT
@@ -107,10 +85,6 @@ class CategoriesConfig:
 # =============================================================================
 
 DEFAULT_CONFIG = CategoriesConfig()
-
-CLUSTERED_CONFIG = CategoriesConfig(
-    processing_mode="clustered",
-)
 
 
 # =============================================================================
@@ -126,7 +100,11 @@ class AssignmentConfig:
     assignment_temperature: float = 0.1    # Low for consistent assignment
     assignment_max_tokens: int = 4000
 
-    # Batching: ideas per LLM call
+    # Assignment mode: "single" (one idea per call, flat codebook) or
+    # "batch" (N ideas per call, hierarchical codebook)
+    assignment_mode: str = "single"
+
+    # Batching: ideas per LLM call (only used in "batch" mode)
     assignment_batch_size: int = 10
 
     # Fallback category for ideas that don't clearly fit any MECE category.

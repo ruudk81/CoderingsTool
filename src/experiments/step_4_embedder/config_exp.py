@@ -1,21 +1,22 @@
 """
 Experimental Configuration for Step 4: Embedder
 
-v5-aligned embedding formats and multi-pass specifications.
+v5-aligned embedding formats with rung_1/rung_2 terminology (from step 3).
 
 Available single-pass formats (stored in idea_embedding):
-    "idea"            — idea text as-is (natural sentence incl. template_prefix)
-    "idea_bare"       — idea with template_prefix stripped
-    "concept"         — canonical concept noun phrase
-    "concept_type"    — discovered concept type
-    "concept_defined"      — concept → concept_type_definition
-    "concept_typed"        — concept (concept_type)
-    "idea_concept_defined" — idea → concept → concept_type_definition
-    "ladder"               — instance → concept → concept_type → concept_type_definition
+    "idea"              — idea text as-is (natural sentence incl. template_prefix)
+    "idea_bare"         — idea with template_prefix stripped
+    "rung_1"            — concrete interpretation (what it means)
+    "rung_2"            — broader significance (why it matters)
+    "concept_type"      — discovered concept type
+    "rung_1_defined"    — rung_1 → rung_2
+    "rung_1_typed"      — rung_1 (concept_type)
+    "idea_rung_1_defined" — idea → rung_1 → rung_2
+    "ladder"            — instance → rung_1 → rung_2
 
 Available multi-pass formats (each pass stored in its own field):
-    "default"         — 4 passes: idea, ladder, concept_defined, idea_concept_defined
-    "all"             — 4 passes: idea, concept, concept_type, ladder
+    "default"         — 4 passes: idea, ladder, rung_1_defined, idea_rung_1_defined
+    "all"             — 5 passes: idea, rung_1, rung_2, concept_type, ladder
 
 Usage:
     Set USE_EXPERIMENTAL = True in run_experiment.py to use this config.
@@ -25,8 +26,8 @@ from typing import Literal, Optional
 
 EmbeddingTextFormat = Literal[
     # Single-pass (stored in idea_embedding)
-    "idea", "idea_bare", "concept", "concept_type",
-    "concept_defined", "concept_typed", "idea_concept_defined", "ladder",
+    "idea", "idea_bare", "rung_1", "rung_2", "concept_type",
+    "rung_1_defined", "rung_1_typed", "idea_rung_1_defined", "ladder",
     # Multi-pass (each pass stored in its own field)
     "default", "all",
 ]
@@ -46,14 +47,15 @@ class EmbeddingPass:
 
 MULTI_PASS_SPECS = {
     "default": [
-        EmbeddingPass("idea",                 "idea_embedding",                  "idea (natural sentence)"),
-        EmbeddingPass("ladder",               "ladder_embedding",                "abstraction ladder (instance → concept → concept_type → concept_type_definition)"),
-        EmbeddingPass("concept_defined",      "concept_embedding",               "concept → concept_type_definition"),
-        EmbeddingPass("idea_concept_defined", "idea_concept_defined_embedding",  "idea → concept → concept_type_definition"),
+        EmbeddingPass("idea",               "idea_embedding",          "idea (natural sentence)"),
+        EmbeddingPass("ladder",             "ladder_embedding",        "abstraction ladder (instance → rung_1 → rung_2)"),
+        EmbeddingPass("rung_1_defined",     "rung_1_embedding",        "rung_1 → rung_2"),
+        EmbeddingPass("idea_rung_1_defined", "rung_2_embedding",       "idea → rung_1 → rung_2"),
     ],
     "all": [
         EmbeddingPass("idea",         "idea_embedding",         "idea (natural sentence)"),
-        EmbeddingPass("concept",      "concept_embedding",      "concept (canonical noun phrase)"),
+        EmbeddingPass("rung_1",       "rung_1_embedding",       "rung_1 (concrete interpretation)"),
+        EmbeddingPass("rung_2",       "rung_2_embedding",       "rung_2 (broader significance)"),
         EmbeddingPass("concept_type", "concept_type_embedding", "concept_type"),
         EmbeddingPass("ladder",       "ladder_embedding",       "abstraction ladder"),
     ],
@@ -93,9 +95,9 @@ class EmbedderConfigExp:
 # =============================================================================
 
 def _format_ladder(idea, separator: str = " → ") -> str:
-    """Format abstraction ladder: instance → concept → concept_type → concept_type_definition."""
+    """Format abstraction ladder: instance → rung_1 → rung_2."""
     parts = []
-    for field in ('instance', 'concept', 'concept_type', 'concept_type_definition'):
+    for field in ('instance', 'rung_1', 'rung_2'):
         val = (getattr(idea, field, '') or '').strip()
         if val:
             parts.append(val)
@@ -122,11 +124,11 @@ def format_idea_text(
     Extracted from embedder_exp.py _get_text_for_embedding() for use by any step.
 
     Args:
-        idea: Object with idea/instance/concept/concept_type/concept_type_definition fields.
+        idea: Object with idea/instance/rung_1/rung_2/concept_type fields.
         fmt: One of:
-            - Named: "idea", "idea_bare", "concept", "concept_type",
-              "concept_typed", "concept_defined", "idea_concept_defined", "ladder"
-            - Composite: "concept+concept_type_definition", "idea+concept", etc.
+            - Named: "idea", "idea_bare", "rung_1", "rung_2", "concept_type",
+              "rung_1_typed", "rung_1_defined", "idea_rung_1_defined", "ladder"
+            - Composite: "rung_1+rung_2", "idea+rung_1", etc.
               Fields joined with `separator`.
         separator: Join string for multi-field and composite formats (default " → ").
         template_prefix: For "idea_bare" — prefix to strip from idea.idea.
@@ -147,36 +149,40 @@ def format_idea_text(
             return stripped if stripped else idea.idea
         return idea.idea
 
-    if fmt == "concept":
-        val = (getattr(idea, 'concept', '') or '').strip()
+    if fmt == "rung_1":
+        val = (getattr(idea, 'rung_1', '') or '').strip()
+        return val if val else idea.idea
+
+    if fmt == "rung_2":
+        val = (getattr(idea, 'rung_2', '') or '').strip()
         return val if val else idea.idea
 
     if fmt == "concept_type":
         val = (getattr(idea, 'concept_type', '') or '').strip()
         return val if val else idea.idea
 
-    if fmt == "concept_typed":
-        concept = (getattr(idea, 'concept', '') or '').strip()
+    if fmt == "rung_1_typed":
+        rung_1 = (getattr(idea, 'rung_1', '') or '').strip()
         concept_type = (getattr(idea, 'concept_type', '') or '').strip()
-        if concept and concept_type:
-            return f"{concept} ({concept_type})"
-        return concept or idea.idea
+        if rung_1 and concept_type:
+            return f"{rung_1} ({concept_type})"
+        return rung_1 or idea.idea
 
-    if fmt == "concept_defined":
-        concept = (getattr(idea, 'concept', '') or '').strip()
-        definition = (getattr(idea, 'concept_type_definition', '') or '').strip()
-        if concept and definition:
-            return f"{concept}{separator}{definition}"
-        return concept or idea.idea
+    if fmt == "rung_1_defined":
+        rung_1 = (getattr(idea, 'rung_1', '') or '').strip()
+        rung_2 = (getattr(idea, 'rung_2', '') or '').strip()
+        if rung_1 and rung_2:
+            return f"{rung_1}{separator}{rung_2}"
+        return rung_1 or idea.idea
 
-    if fmt == "idea_concept_defined":
-        concept = (getattr(idea, 'concept', '') or '').strip()
-        definition = (getattr(idea, 'concept_type_definition', '') or '').strip()
+    if fmt == "idea_rung_1_defined":
+        rung_1 = (getattr(idea, 'rung_1', '') or '').strip()
+        rung_2 = (getattr(idea, 'rung_2', '') or '').strip()
         parts = [idea.idea]
-        if concept:
-            parts.append(concept)
-        if definition:
-            parts.append(definition)
+        if rung_1:
+            parts.append(rung_1)
+        if rung_2:
+            parts.append(rung_2)
         return separator.join(parts)
 
     if fmt == "ladder":

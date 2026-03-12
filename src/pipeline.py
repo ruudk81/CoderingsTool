@@ -37,22 +37,22 @@ model_config = ModelConfig()
 #var_name = "Q20"
 #sample_size = 500
 
-#filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
-#id_column = "DLNMID"
-#var_name = "Qd1_combined"
-#sample_size = 2000 
+filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
+id_column = "DLNMID"
+var_name = "Qd1_combined"
+sample_size = 2000 
 
 #filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 #d_column = "DLNMID"
 #var_name = "Q15"
 #sample_size = 2000
 
-filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
-id_column = "DLNMID"
-var_name = "Q10"
-sample_size = 50
+#filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
+#id_column = "DLNMID"
+#var_name = "Q10"
+#sample_size = 50
 
-RUN_UNTIL_STEP = 5
+RUN_UNTIL_STEP = 0
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False

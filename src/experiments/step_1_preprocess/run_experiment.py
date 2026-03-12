@@ -36,7 +36,8 @@ from typing import Optional
 # SHARED IMPORTS (from production)
 # =============================================================================
 import models
-from config import CacheConfig, ModelConfig, SpellCheckConfig
+from config import CacheConfig, ModelConfig
+from config_steps.config_preprocess import SpellCheckConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture

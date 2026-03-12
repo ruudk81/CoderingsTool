@@ -1,14 +1,14 @@
 """
 Local Pipeline Models for step_3_ideaExtractor v5.
 
-v5 overhaul: 10 MECE facets with decision-tree ordering.
-Prescriptiveness secondary facet removed (captured at primary level by PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS).
+Taxonomy: Dimension > Domain > Facet > Attribute (progressive narrowing).
+v5 overhaul: 10 MECE dimensions with decision-tree ordering.
 
 Differences from shared models_exp.py:
-- ExtractionMetadata: taxonomy_axis → primary_facet + decision_tree_stop_position, topical_categories → concept_types
-- IdeasExtractedSubmodel: dropped root/category_label, semantic_category → concept_type,
-  added valence (prescriptiveness and agency_focus removed in v5)
-- EmbeddingsSubmodel: category_embedding → concept_type_embedding, taxonomy_embedding → ladder_embedding
+- ExtractionMetadata: taxonomy_axis → primary_dimension + decision_tree_stop_position, topical_categories → domains
+- IdeasExtractedSubmodel: dropped root/category_label, semantic_category → domain,
+  added valence; ladder: instance → interpretation → abstraction
+- EmbeddingsSubmodel: category_embedding → domain_embedding, taxonomy_embedding → ladder_embedding
 
 Keeps shared models_exp.py untouched so v2 remains runnable.
 """
@@ -24,7 +24,6 @@ from models import (
     ResponseModel,
     PreprocessedModel,
     QualityFilteredModel,
-    QualityFilterLLMResponse,
     CodebookEntry,
     CodebookModel,
     RefinedSubcode,
@@ -38,20 +37,15 @@ from models import (
     Codebook,
     ThemeEnrichedCodebookEntry,
     ThemeEnrichedCodebookModel,
-    ClusterLabelModel,
-    ClusterRepresentationModel,
-    ClusterRepresentationsModel,
-    ClusterRepresentationCacheModel,
-    ClusteringMetricsModel,
-    LLMContextModel,
-    ClusteringMetadataModel,
 )
+
+from prompts import QualityFilterLLMResponse
 
 
 # === v3 METADATA MODEL ========================================================================
 
 class ExtractionMetadata(BaseModel):
-    """Extraction-level metadata from step 3 v3 (applies to entire dataset, not per-idea)."""
+    """Extraction-level metadata from step 3 v5 (applies to entire dataset, not per-idea)."""
 
     # File/variable info
     filename: str = ""
@@ -63,20 +57,20 @@ class ExtractionMetadata(BaseModel):
 
     # Context specifiers (6 fields from GenericSpecifierGroup1/2Response)
     lang: str = ""                        # e.g., "nl-NL"
-    domain: str = ""                      # e.g., "finance"
+    sector: str = ""                      # e.g., "finance" (industry/sector)
     topic: str = ""                       # e.g., "brand_association"
     perspective: str = ""                 # e.g., "consumer"
     entity: str = ""                      # e.g., "asn_bank"
     intent: str = ""                      # e.g., "evaluate"
 
-    # Primary facet (replaces taxonomy_axis)
-    primary_facet: str = ""               # e.g., "EVALUATION_PRIORITIZATION"
-    primary_facet_description: str = ""   # Context-specific description of the facet
-    decision_tree_stop_position: int = 0  # 1-10, which decision tree step triggered facet selection
-    # Concept types (data-driven, replaces topical_categories)
-    concept_types: List[Dict[str, str]] = Field(
+    # Primary dimension (L1 in taxonomy: Dimension > Domain > Facet > Attribute)
+    primary_dimension: str = ""               # e.g., "EVALUATION_PRIORITIZATION"
+    primary_dimension_description: str = ""   # Context-specific description of the dimension
+    decision_tree_stop_position: int = 0      # 1-10, which decision tree step triggered selection
+    # Domains (L2, data-driven, replaces topical_categories)
+    domains: List[Dict[str, str]] = Field(
         default_factory=list,
-        description="Data-driven concept types [{key, label, definition}, ...]"
+        description="Data-driven domains [{key, label, definition}, ...]"
     )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -85,18 +79,17 @@ class ExtractionMetadata(BaseModel):
 # === v3 PIPELINE MODELS =======================================================================
 
 class IdeasExtractedSubmodel(BaseModel):
-    """Per-idea data from step 3 v5 extraction.
+    """Per-idea data from step 3 extraction.
 
-    Hierarchy: instance → concept → concept_type → primary_facet (dataset-level)
-    Secondary facets: valence
+    Ladder: instance → interpretation → abstraction (bottom-up) + domain (L2 classification)
     """
     idea_id: str                          # Format: {respondent_id}_{sequence_number}
     idea: str                             # Clean text (starts with template prefix)
     instance: str = ""                    # Verbatim span from response
-    concept: str = ""                     # Canonical, reusable concept (noun phrase)
-    concept_type: str = ""                # Discovered concept type (e.g., "recommendation")
-    concept_type_definition: str = ""       # High-level framing of concept_type in survey context
-    valence: str = ""                     # positive / negative / neutral_mixed
+    interpretation: str = ""              # Concrete interpretation (what it means)
+    abstraction: str = ""                 # Broader significance (why it matters)
+    domain: str = ""                      # Discovered domain (L2, e.g., "recommendation")
+    valence: str = ""                     # +, -, or 0
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -107,10 +100,11 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
-    idea_embedding: Optional[npt.NDArray[np.float32]] = None        # idea (natural sentence incl. template_prefix)
-    concept_embedding: Optional[npt.NDArray[np.float32]] = None      # concept → concept_type_definition
-    concept_type_embedding: Optional[npt.NDArray[np.float32]] = None  # concept_type
-    ladder_embedding: Optional[npt.NDArray[np.float32]] = None      # instance → concept → concept_type → concept_type_definition
+    idea_embedding: Optional[npt.NDArray[np.float32]] = None               # idea (natural sentence incl. template_prefix)
+    interpretation_embedding: Optional[npt.NDArray[np.float32]] = None     # interpretation (concrete)
+    abstraction_embedding: Optional[npt.NDArray[np.float32]] = None        # abstraction (broader significance)
+    domain_embedding: Optional[npt.NDArray[np.float32]] = None             # domain (L2)
+    ladder_embedding: Optional[npt.NDArray[np.float32]] = None             # instance → interpretation → abstraction
 
 
 class EmbeddingsModel(IdeasExtractedModel):

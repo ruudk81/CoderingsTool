@@ -1,29 +1,22 @@
 """
 Partition Discoverer for Category Discovery.
 
-Partitions ideas by concept_type (data-driven groups from step 3),
-collects unique concepts per partition, and optionally pre-clusters
-them via UMAP+HDBSCAN for Mode B.
+Partitions ideas by domain (data-driven groups from step 3),
+collects unique labels per partition.
 
-- Dynamic partitions from concept_type
-- Partition descriptions from concept_types metadata in ExtractionMetadata
+- Dynamic partitions from domain field
+- Partition descriptions from domains metadata in ExtractionMetadata
 - Configurable label_source and label_prefix
-- Optional pre-clustering for Mode B
 """
 
 from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-import numpy as np
-
-from experiments import models_exp as models
+from experiments.step_3_ideaExtractor import models_exp as models
 
 from .config_categories_exp import CategoriesConfig
-from .partition_labels import (
-    collect_unique_labels, build_cluster_hints, PreclusterResult,
-    format_label,
-)
-from .prompts_exp import PartitionDescription, PartitionSet
+from .partition_labels import collect_unique_labels, collect_unique_labels_with_domains, format_label
+from .models_exp import PartitionDescription, PartitionSet
 
 
 # =============================================================================
@@ -37,6 +30,7 @@ class PartitionLabelMapping:
     partition: PartitionDescription
     labels: List[str]
     label_count: int
+    label_domains: List[Optional[str]] = field(default_factory=list)
 
 # =============================================================================
 # MAIN CLASS
@@ -44,8 +38,8 @@ class PartitionLabelMapping:
 
 class PartitionDiscoverer:
     """
-    Partitions ideas by concept_type and collects unique labels
-    per partition. Optionally pre-clusters labels for Mode B.
+    Partitions ideas by domain and collects unique labels
+    per partition.
     """
 
     def __init__(
@@ -55,17 +49,17 @@ class PartitionDiscoverer:
     ):
         self._config = config
         self._extraction_metadata = extraction_metadata
-        self._primary_facet = (
-            getattr(extraction_metadata, 'primary_facet', '')
+        self._primary_dimension = (
+            getattr(extraction_metadata, 'primary_dimension', '')
             if extraction_metadata else ''
         )
-        # Build concept_types lookup: {key: {label, definition}} from metadata
-        self._concept_types_lookup: Dict[str, Dict[str, str]] = {}
-        if extraction_metadata and hasattr(extraction_metadata, 'concept_types'):
-            for ct in extraction_metadata.concept_types:
-                key = ct.get('key', '')
+        # Build domains lookup: {key: {label, definition}} from metadata
+        self._domains_lookup: Dict[str, Dict[str, str]] = {}
+        if extraction_metadata and hasattr(extraction_metadata, 'domains'):
+            for d in extraction_metadata.domains:
+                key = d.get('key', '')
                 if key:
-                    self._concept_types_lookup[key] = ct
+                    self._domains_lookup[key] = d
 
         self._populated_partitions: Dict[str, List] = {}
 
@@ -81,7 +75,7 @@ class PartitionDiscoverer:
         """
         instructions = {}
         for ct_key in self._populated_partitions:
-            ct_info = self._concept_types_lookup.get(ct_key, {})
+            ct_info = self._domains_lookup.get(ct_key, {})
             definition = ct_info.get('definition', '')
             label = ct_info.get('label', ct_key)
             if definition:
@@ -98,27 +92,25 @@ class PartitionDiscoverer:
 
     def discover(
         self,
-        embeddings_models: List[models.EmbeddingsModel],
-    ) -> Tuple[PartitionSet, Dict[str, PartitionLabelMapping], Optional[Dict[str, PreclusterResult]]]:
+        ideas_models: List[models.IdeasExtractedModel],
+    ) -> Tuple[PartitionSet, Dict[str, PartitionLabelMapping]]:
         """
-        Partition ideas by concept_type and collect labels.
+        Partition ideas by domain and collect labels.
 
         Returns:
-            (partition_set, label_mappings, precluster_results)
-            precluster_results is None for Mode A, populated for Mode B.
+            (partition_set, label_mappings)
         """
         print(f"\n{'='*70}")
-        print(f"PARTITION DISCOVERY (concept_type \u2192 concepts)")
+        print(f"PARTITION DISCOVERY (domain → concepts)")
         print(f"{'='*70}")
-        print(f"  Processing mode: {self._config.processing_mode}")
         print(f"  Label source: {self._config.label_source}")
         if self._config.label_prefix:
             print(f"  Label prefix: \"{self._config.label_prefix}\"")
-        if self._primary_facet:
-            print(f"  Primary facet: {self._primary_facet}")
+        if self._primary_dimension:
+            print(f"  Primary dimension: {self._primary_dimension}")
 
-        # Step 1: Partition ideas by concept_type
-        partitioned_ideas = self._partition_by_concept_type(embeddings_models)
+        # Step 1: Partition ideas by domain
+        partitioned_ideas = self._partition_by_domain(ideas_models)
 
         # Filter empty partitions
         populated = {k: v for k, v in partitioned_ideas.items() if v}
@@ -130,14 +122,16 @@ class PartitionDiscoverer:
 
         # Step 2: Collect unique labels per partition
         label_lists = {}
+        domain_lists = {}
         empty_count = 0
         for ct, ideas in populated.items():
-            labels = collect_unique_labels(
+            labels, domains = collect_unique_labels_with_domains(
                 ideas,
                 label_source=self._config.label_source,
                 label_prefix=self._config.label_prefix,
             )
             label_lists[ct] = labels
+            domain_lists[ct] = domains
             n_empty = sum(
                 1 for idea in ideas
                 if not format_label(idea, self._config.label_source)
@@ -151,14 +145,9 @@ class PartitionDiscoverer:
         for ct in sorted(label_lists.keys()):
             print(f"    {ct}: {len(label_lists[ct])} unique labels")
 
-        # Step 3: Optional pre-clustering (Mode B)
-        precluster_results = None
-        if self._config.processing_mode == "clustered":
-            precluster_results = self._precluster_labels(label_lists)
-
-        # Step 4: Build partition set and mappings
+        # Step 3: Build partition set and mappings
         partition_set = self._build_partition_set(label_lists)
-        label_mappings = self._build_partition_mappings(partition_set, label_lists)
+        label_mappings = self._build_partition_mappings(partition_set, label_lists, domain_lists)
 
         print(f"\n  Partitions ({len(partition_set.partitions)}):")
         for p in partition_set.partitions:
@@ -168,24 +157,24 @@ class PartitionDiscoverer:
         print(f"\n  Discovery Summary:")
         print(f"    {len(populated)} partitions, {total_labels} total unique labels")
 
-        return partition_set, label_mappings, precluster_results
+        return partition_set, label_mappings
 
     # =========================================================================
     # PARTITIONING
     # =========================================================================
 
-    def _partition_by_concept_type(
+    def _partition_by_domain(
         self,
-        embeddings_models: List[models.EmbeddingsModel],
+        ideas_models: List[models.IdeasExtractedModel],
     ) -> Dict[str, List]:
-        """Group idea objects by their concept_type field.
+        """Group idea objects by their domain field.
 
         Returns:
-            Dict mapping concept_type \u2192 list of idea objects
+            Dict mapping domain \u2192 list of idea objects
         """
         partitions: Dict[str, List] = {}
 
-        for resp in embeddings_models:
+        for resp in ideas_models:
             if not resp.response_ideas:
                 continue
             for idea in resp.response_ideas:
@@ -197,113 +186,6 @@ class PartitionDiscoverer:
                 partitions[ct].append(idea)
 
         return partitions
-
-    # =========================================================================
-    # PRE-CLUSTERING (Mode B)
-    # =========================================================================
-
-    def _precluster_labels(
-        self,
-        label_lists: Dict[str, List[str]],
-    ) -> Dict[str, PreclusterResult]:
-        """Pre-cluster unique labels within each partition via UMAP+HDBSCAN.
-
-        Partitions with fewer than precluster_min_labels are skipped.
-        """
-        import umap
-        import hdbscan
-        from utils.llm import create_client
-
-        print(f"\n  Pre-clustering (Mode B):")
-        results = {}
-
-        for ct in sorted(label_lists.keys()):
-            labels = label_lists[ct]
-            if len(labels) < self._config.precluster_min_labels:
-                print(f"    {ct}: {len(labels)} labels (below threshold {self._config.precluster_min_labels}, skipped)")
-                continue
-
-            # Embed labels on-the-fly
-            print(f"    {ct}: embedding {len(labels)} labels...", end="")
-            embeddings = self._embed_labels_sync(labels)
-            print(f" done ({embeddings.shape})")
-
-            # UMAP reduce
-            n_neighbors = min(
-                self._config.precluster_umap_n_neighbors,
-                len(labels) - 1,
-            )
-            reducer = umap.UMAP(
-                n_components=min(self._config.precluster_umap_n_components, len(labels) - 1),
-                n_neighbors=n_neighbors,
-                min_dist=self._config.precluster_umap_min_dist,
-                metric=self._config.precluster_umap_metric,
-                random_state=self._config.precluster_umap_random_state,
-            )
-            reduced = reducer.fit_transform(embeddings)
-
-            # HDBSCAN cluster
-            clusterer = hdbscan.HDBSCAN(
-                min_cluster_size=self._config.precluster_min_cluster_size,
-                min_samples=self._config.precluster_min_samples,
-                cluster_selection_method=self._config.precluster_cluster_selection_method,
-            )
-            cluster_labels_arr = clusterer.fit_predict(reduced)
-
-            # Build result
-            labels_by_cluster: Dict[int, List[str]] = {}
-            noise_labels: List[str] = []
-            for label, cluster_id in zip(labels, cluster_labels_arr):
-                if cluster_id == -1:
-                    noise_labels.append(label)
-                else:
-                    if cluster_id not in labels_by_cluster:
-                        labels_by_cluster[cluster_id] = []
-                    labels_by_cluster[cluster_id].append(label)
-
-            n_clusters = len(labels_by_cluster)
-            result = PreclusterResult(
-                labels_by_cluster=labels_by_cluster,
-                noise_labels=noise_labels,
-                n_clusters=n_clusters,
-                n_noise=len(noise_labels),
-            )
-            results[ct] = result
-            print(f"    {ct}: {n_clusters} clusters, {len(noise_labels)} noise")
-
-        return results
-
-    def _embed_labels_sync(self, labels: List[str]) -> np.ndarray:
-        """Embed labels synchronously via OpenAI embedding API."""
-        from openai import OpenAI
-        from config import OPENAI_API_KEY, API_PROVIDER
-
-        if API_PROVIDER == "azure":
-            from config import (
-                AZURE_OPENAI_ENDPOINT,
-                AZURE_OPENAI_API_KEY,
-                AZURE_OPENAI_API_VERSION,
-                AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING,
-            )
-            from openai import AzureOpenAI
-            client = AzureOpenAI(
-                azure_endpoint=AZURE_OPENAI_ENDPOINT,
-                api_key=AZURE_OPENAI_API_KEY,
-                api_version=AZURE_OPENAI_API_VERSION,
-            )
-            response = client.embeddings.create(
-                input=labels,
-                model=AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING,
-            )
-        else:
-            client = OpenAI(api_key=OPENAI_API_KEY)
-            response = client.embeddings.create(
-                input=labels,
-                model="text-embedding-3-large",
-            )
-
-        embeddings = [item.embedding for item in response.data]
-        return np.array(embeddings, dtype=np.float32)
 
     # =========================================================================
     # PARTITION SET CONSTRUCTION
@@ -321,12 +203,12 @@ class PartitionDiscoverer:
         return PartitionSet(partitions=partitions)
 
     def _build_partition_description(self, ct_key: str) -> PartitionDescription:
-        """Build PartitionDescription for a concept_type partition.
+        """Build PartitionDescription for a domain partition.
 
-        Uses concept_types metadata from ExtractionMetadata when available,
+        Uses domains metadata from ExtractionMetadata when available,
         falls back to a generic description based on the partition name.
         """
-        ct_info = self._concept_types_lookup.get(ct_key, {})
+        ct_info = self._domains_lookup.get(ct_key, {})
         label = ct_info.get('label', ct_key)
         definition = ct_info.get('definition', '')
 
@@ -338,22 +220,22 @@ class PartitionDiscoverer:
         )
 
     def _build_inclusion_definition(self, label: str, definition: str) -> str:
-        """Build inclusion_definition from concept_type metadata."""
+        """Build inclusion_definition from domain metadata."""
         if definition:
             return (
-                f'Labels of type "{label}": {definition}. '
-                f'This partition captures concepts that fall under this concept type.'
+                f'Labels in domain "{label}": {definition}. '
+                f'This partition captures concepts that fall under this domain.'
             )
-        return f"Labels related to the concept type '{label}'."
+        return f"Labels related to the domain '{label}'."
 
     def _build_boundary_test(self, label: str, definition: str) -> str:
-        """Derive boundary_test from concept_type metadata."""
+        """Derive boundary_test from domain metadata."""
         if definition:
-            return f"Does this label describe a '{label}' concept ({definition})?"
+            return f"Does this label belong to the '{label}' domain ({definition})?"
         return f"Does this label relate to '{label}'?"
 
     def _build_diagnostic_signals(self, label: str, definition: str) -> List[str]:
-        """Build diagnostic signals from concept_type label and definition."""
+        """Build diagnostic signals from domain label and definition."""
         signals = [label.lower()]
         if definition:
             words = [
@@ -376,15 +258,18 @@ class PartitionDiscoverer:
         self,
         partition_set: PartitionSet,
         label_lists: Dict[str, List[str]],
+        domain_lists: Optional[Dict[str, List[Optional[str]]]] = None,
     ) -> Dict[str, PartitionLabelMapping]:
         """Build PartitionLabelMapping for each partition."""
         mappings = {}
         for p in partition_set.partitions:
             labels = label_lists.get(p.partition_name, [])
+            domains = (domain_lists or {}).get(p.partition_name, [])
             mappings[p.partition_name] = PartitionLabelMapping(
                 partition_name=p.partition_name,
                 partition=p,
                 labels=labels,
                 label_count=len(labels),
+                label_domains=domains,
             )
         return mappings

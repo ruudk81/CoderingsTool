@@ -15,11 +15,6 @@ from dataclasses import dataclass
 from config import (
     OPENAI_API_KEY,
     DEFAULT_LANGUAGE,
-    HUNSPELL_PATH,
-    DUTCH_DICT_PATH,
-    ENGLISH_DICT_PATH,
-    SpellCheckConfig,
-    DEFAULT_SPELLCHECK_CONFIG,
     ModelConfig,
     ProcessingConfig,
     DEFAULT_PROCESSING_CONFIG,
@@ -29,6 +24,13 @@ from config import (
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_API_KEY,
     AZURE_OPENAI_DEPLOYMENT_NAME,
+)
+from config_steps.config_preprocess import (
+    HUNSPELL_PATH,
+    DUTCH_DICT_PATH,
+    ENGLISH_DICT_PATH,
+    SpellCheckConfig,
+    DEFAULT_SPELLCHECK_CONFIG,
 )
 
 # =============================================================================

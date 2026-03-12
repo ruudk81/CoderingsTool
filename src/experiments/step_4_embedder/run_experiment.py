@@ -2,16 +2,6 @@
 
 """
 Step 4: Embedder Experiment Runner
-
-Runs the embedding generation step in isolation for experimentation.
-Loads Step 3 (extracted_ideas) results from cache and generates embeddings.
-
-Usage:
-    cd src && python -m experiments.step_4_embedder.run_experiment
-
-Toggle:
-    USE_EXPERIMENTAL = True  -> Uses experimental embedder from this folder
-    USE_EXPERIMENTAL = False -> Uses production embedder from utils/
 """
 
 USE_EXPERIMENTAL = True
@@ -187,7 +177,7 @@ def run_experiment(config: ExperimentConfig = None):
     elapsed_time = time.time() - start_time
 
     # Count embeddings per type
-    embed_fields = ['idea_embedding', 'concept_embedding', 'concept_type_embedding', 'ladder_embedding']
+    embed_fields = ['idea_embedding', 'rung_1_embedding', 'rung_2_embedding', 'concept_type_embedding', 'ladder_embedding']
     for field in embed_fields:
         count = sum(
             1 for resp in embedded_text

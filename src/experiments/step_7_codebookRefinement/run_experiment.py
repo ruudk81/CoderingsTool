@@ -171,6 +171,7 @@ def run_experiment(config: ExperimentConfig = None):
             concept_type_map=concept_type_map,
             source_variable=config.var_name,
             partition_remap=partition_remap,
+            reasoning_results=codebook_reasoning,
         )
 
         elapsed = time.time() - start_time
@@ -203,6 +204,9 @@ def run_experiment(config: ExperimentConfig = None):
             print(f"{'='*60}")
             for pname, result in sorted(partition_results.items()):
                 print(f"\n--- {result.theme_label} ({pname}) ---")
+                axis = getattr(result, 'dominance_axis', '')
+                if axis:
+                    print(f"  Dominance axis: {axis}")
                 for code in result.codes:
                     print(f"\n  Code: {code.code}")
                     print(f"  Definition: {code.definition}")
@@ -214,11 +218,11 @@ def run_experiment(config: ExperimentConfig = None):
                         for ex in code.inclusion_examples:
                             print(f"    + {ex}")
                     if code.exclusion_examples:
-                        print(f"  Exclusion examples:")
+                        print(f"  Routing redirects:")
                         for ex in code.exclusion_examples:
                             print(f"    - {ex}")
                     print(f"  Near neighbor: {code.near_neighbor_label}")
-                    print(f"  Tell-apart rule: {code.tell_apart_rule}")
+                    print(f"  Routing rule: {code.tell_apart_rule}")
             print(f"\n{'='*60}")
 
         verbose_reporter.stat_line(f"\nOutput: {total_codes} refined codes across {len(partition_results)} themes")

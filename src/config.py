@@ -56,7 +56,7 @@ GENERAL_CODE_LABELS = {
 # API PROVIDER CONFIGURATION
 # =============================================================================
 # Toggle between "openai" and "azure" here
-API_PROVIDER = "azure"  # Options: "openai" or "azure"
+API_PROVIDER = "openai"  # Options: "openai" or "azure"
 
 # OpenAI settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -272,7 +272,8 @@ class ModelConfig:
     codebook_refinement_model: str = "gpt-5-mini"
 
     # Code assignment
-    code_assignment_model: str = DEFAULT_MODEL
+    code_assignment_model: str = "gpt-4.1-nano"
+
   
 
     # =============================================================================
@@ -404,7 +405,7 @@ class ProcessingConfig:
 
     # Adaptive timeout bounds
     adaptive_timeout_min_seconds: float = 15.0
-    adaptive_timeout_max_seconds: float = 60.0
+    adaptive_timeout_max_seconds: float = 120.0
     adaptive_timeout_margin: float = 1.5
 
     # Latency tracking

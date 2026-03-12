@@ -16,8 +16,6 @@ from config import (
     OPENAI_API_KEY,
     DEFAULT_LANGUAGE,
     ModelConfig,
-    QualityFilterConfig,
-    DEFAULT_QUALITY_FILTER_CONFIG,
     ProcessingConfig,
     DEFAULT_PROCESSING_CONFIG,
     API_PROVIDER,
@@ -26,6 +24,10 @@ from config import (
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_API_KEY,
     AZURE_OPENAI_DEPLOYMENT_NAME,
+)
+from config_steps.config_qualityFilter import (
+    QualityFilterConfig,
+    DEFAULT_QUALITY_FILTER_CONFIG,
 )
 
 # =============================================================================

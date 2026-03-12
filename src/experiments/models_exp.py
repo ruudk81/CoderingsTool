@@ -4,9 +4,9 @@ Experimental Models — Clean Pydantic models aligned with step 3 v5 prompt outp
 Differences from production models.py:
 - ExtractionMetadata: taxonomy_primary_axis → primary_facet + primary_facet_description
   + decision_tree_stop_position; taxonomy_sample_phrases → concept_types
-- IdeasExtractedSubmodel: node → concept, semantic_category → concept_type,
-  category_label → concept_type_definition; dropped root; added valence
-- EmbeddingsSubmodel: 4 embedding fields (idea, concept, concept_type, ladder)
+- IdeasExtractedSubmodel: concept → rung_1 (concrete interpretation),
+  concept_type_definition → rung_2 (broader significance); dropped root; added valence
+- EmbeddingsSubmodel: 5 embedding fields (idea, rung_1, rung_2, concept_type, ladder)
 - OntologySubmodel: removed entirely (was unused)
 
 Usage in experimental steps:
@@ -91,16 +91,16 @@ class ExtractionMetadata(BaseModel):
 class IdeasExtractedSubmodel(BaseModel):
     """Per-idea data from step 3 v5 extraction.
 
-    Hierarchy: instance → concept → concept_type → primary_facet (dataset-level)
+    Ladder: instance → rung_1 → rung_2 (bottom-up abstraction) + concept_type (domain classification)
     Secondary facets: valence
     """
     idea_id: str                          # Format: {respondent_id}_{sequence_number}
     idea: str                             # Clean text (starts with template prefix)
     instance: str = ""                    # Verbatim span from response
-    concept: str = ""                     # Canonical, reusable concept (noun phrase)
+    rung_1: str = ""                      # Concrete interpretation (what it means)
+    rung_2: str = ""                      # Broader significance (why it matters)
     concept_type: str = ""                # Discovered concept type (e.g., "recommendation")
-    concept_type_definition: str = ""     # High-level framing of concept_type in survey context
-    valence: str = ""                     # + / - / 0
+    valence: str = ""                     # +, -, or 0
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -112,10 +112,10 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     idea_embedding: Optional[npt.NDArray[np.float32]] = None        # idea (natural sentence incl. template_prefix)
-    concept_embedding: Optional[npt.NDArray[np.float32]] = None     # concept → concept_type_definition
+    rung_1_embedding: Optional[npt.NDArray[np.float32]] = None      # rung_1 (concrete interpretation)
+    rung_2_embedding: Optional[npt.NDArray[np.float32]] = None      # rung_2 (broader significance)
     concept_type_embedding: Optional[npt.NDArray[np.float32]] = None  # concept_type
-    ladder_embedding: Optional[npt.NDArray[np.float32]] = None      # instance → concept → concept_type → concept_type_definition
-    idea_concept_defined_embedding: Optional[npt.NDArray[np.float32]] = None  # idea → concept → concept_type_definition
+    ladder_embedding: Optional[npt.NDArray[np.float32]] = None      # instance → rung_1 → rung_2
 
 
 class EmbeddingsModel(IdeasExtractedModel):
@@ -149,8 +149,9 @@ class CodeAssignedModel(ClusterModel):
 
 # === MECE CACHE MODELS (step 5 categories) ========================================================
 
+from experiments.step_5_categories.models_exp import PartitionSet
 from experiments.step_5_categories.prompts_exp import (
-    PartitionSet, MECECategory, MECEVerification,
+    MECECategory, MECEVerification,
 )
 
 
@@ -162,6 +163,7 @@ class PartitionMECEResultModel(BaseModel):
     reduce_skipped: bool
     categories: List[MECECategory] = Field(default_factory=list)
     mece_verifications: List[MECEVerification] = Field(default_factory=list)
+    hierarchy_depth: Optional[dict] = None
 
 
 class MECEResultsCache(BaseModel):
@@ -192,6 +194,7 @@ class CategoryAssignedSubmodel(EmbeddingsSubmodel):
     category_confidence: Optional[float] = None    # 0.0 - 1.0
     category_rationale: Optional[str] = None       # LLM reasoning
     partition_name: Optional[str] = None           # concept_type partition
+    parent_category: Optional[str] = None          # parent MECECategory label (None for flat)
     # Bridge fields for step 6 codeGenerator compatibility (set at runtime)
     initial_cluster: Optional[Union[int, str]] = None
     expanded_cluster: Optional[str] = None
@@ -229,3 +232,5 @@ class ThemeEnrichedCodebookModelExp(CodebookModel):
     concept_type_mapping: Optional[Dict[str, str]] = None     # source_cluster -> concept_type
     cross_partition_results: Optional[Dict[str, Any]] = None  # Cross-partition judge results
     partition_remap: Optional[Dict[str, str]] = None          # old_partition -> new_partition (for split partitions)
+    dominance_axes: Optional[Dict[str, str]] = None           # partition_name -> dominance_axis routing question
+    other_idea_assignments: Optional[Dict[str, str]] = None  # idea_id -> pre-assigned code label (DIRECT_OTHER from step 6)
