@@ -95,10 +95,10 @@ def print_idea_details(idea: models.IdeasExtractedSubmodel, indent: str = "  "):
     cleaned = clean_idea(idea.idea)
     print(f"{indent}Idea: {cleaned}")
 
-    # Abstraction ladder (bottom-up: instance → interpretation → abstraction)
-    ladder_parts = [v for v in (idea.instance, idea.interpretation, idea.abstraction) if v]
-    if ladder_parts:
-        print(f"{indent}  ladder: {' → '.join(ladder_parts)}")
+    # Taxonomy (instance → facet)
+    taxonomy_parts = [v for v in (idea.instance, idea.facet) if v]
+    if taxonomy_parts:
+        print(f"{indent}  taxonomy: {' → '.join(taxonomy_parts)}")
     if idea.domain:
         print(f"{indent}  domain: {idea.domain}")
     if idea.valence:

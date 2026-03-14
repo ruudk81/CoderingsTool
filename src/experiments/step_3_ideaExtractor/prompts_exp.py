@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 from typing import ClassVar, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, create_model
 
@@ -6,6 +7,33 @@ try:
     from .dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
 except ImportError:
     from experiments.step_3_ideaExtractor.dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Shared validator: reject strings that contain example-like phrases
+# ═══════════════════════════════════════════════════════════════════════
+
+_EXAMPLE_PATTERNS = re.compile(
+    r'\b(?:'
+    r'such as|like\s+\w+(?:\s*,\s*\w+)+|for example|for instance|e\.g\.'  # English
+    r'|zoals|bijvoorbeeld|denk aan'                                        # Dutch
+    r'|zum Beispiel|wie etwa|z\.B\.'                                       # German
+    r'|par exemple|comme'                                                  # French
+    r'|por ejemplo|como por ejemplo'                                       # Spanish
+    r')\b',
+    re.IGNORECASE,
+)
+
+
+def _reject_examples(v: str, field_label: str) -> str:
+    """Raise ValueError if value contains example-like phrases."""
+    if _EXAMPLE_PATTERNS.search(v):
+        raise ValueError(
+            f"{field_label} must NOT contain examples or enumerations "
+            f"(detected example phrase). Rewrite as a pure abstract definition "
+            f"without 'such as', 'like', 'zoals', 'bijvoorbeeld', etc."
+        )
+    return v
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -194,19 +222,20 @@ Return ONE consolidated set of GROUP 2 specifiers as valid JSON following the re
 # STAGE 3: Primary Dimension Selection (Decision Tree)
 # ═══════════════════════════════════════════════════════════════════════
 
-# All 10 dimension keys for Literal type validation
+# All 11 dimension keys for Literal type validation
 _ALL_DIMENSION_KEYS = (
     "PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS", "IDENTITY_DEFINITION",
     "ACTORS_TARGETS", "CONTEXT_CONDITIONS", "MOTIVATIONS_DRIVERS",
     "EXPERIENCE_PERCEPTION", "EVALUATION_PRIORITIZATION",
     "BEHAVIOR_FUNCTION", "ATTRIBUTES_ASSOCIATIONS", "RELATIONS_DEPENDENCIES",
+    "GENERAL_OTHER",
 )
 
 
 def _build_decision_tree_block() -> str:
 
     dimensions = get_dimensions_in_decision_order()
-    emoji_numbers = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    emoji_numbers = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "1️⃣1️⃣"]
     lines = []
     for dimension, emoji in zip(dimensions, emoji_numbers):
         signals = "\n".join(f"  • {s}" for s in dimension.criterion_signals)
@@ -301,12 +330,12 @@ DECISION TREE (Apply in Order, Stop at First Fit)
 RULES
 ------------------------------
 * Select exactly one dimension.
-* Apply the decision tree steps in order (1 through 10). Stop at the FIRST step where the answer is clearly YES for the dominant variation.
+* Apply the decision tree steps in order (1 through 11). Stop at the FIRST step where the answer is clearly YES for the dominant variation.
 * Base your decision on dominant variation, not edge cases.
 * Dimensions are organizational lenses, not labels for individual responses.
 * Evidence snippets must be copied verbatim from <sample_responses>.
 * Clarification must contrast the chosen dimension with at least one plausible alternative in a single sentence.
-* Write a 1-2 sentence primary_dimension_description: describe the chosen dimension through the lens of the survey question. Don't give examples.
+* Write a primary_dimension_description by completing: "Responses vary in [what differentiates them] regarding [survey topic]." State only the abstract principle of variation — do not list or illustrate specific response content.
 
 
 All string values (including evidence snippets) must be in {language}.
@@ -327,12 +356,13 @@ class PrimaryDimensionChunkResponse(BaseModel):
         "BEHAVIOR_FUNCTION",
         "ATTRIBUTES_ASSOCIATIONS",
         "RELATIONS_DEPENDENCIES",
+        "GENERAL_OTHER",
     ] = Field(
         description="The single best primary dimension for organizing responses"
     )
     decision_tree_stop_position: int = Field(
-        description="Which decision tree step (1-10) triggered the selection",
-        ge=1, le=10,
+        description="Which decision tree step (1-11) triggered the selection",
+        ge=1, le=11,
     )
     evidence: List[str] = Field(
         description="2-3 verbatim snippets from sample_responses supporting the chosen dimension",
@@ -342,8 +372,13 @@ class PrimaryDimensionChunkResponse(BaseModel):
         description="One sentence: why this dimension over the most plausible alternative"
     )
     primary_dimension_description: str = Field(
-        description="1-2 sentence description of what this dimension means for organizing THESE responses, without giving examples"
+        description="Scope statement completing: 'Responses vary in [what differentiates them] regarding [survey topic].' Abstract principle of variation only, no listed content or examples"
     )
+
+    @field_validator('primary_dimension_description', mode='after')
+    @classmethod
+    def no_examples_in_description(cls, v: str) -> str:
+        return _reject_examples(v, "primary_dimension_description")
 
 
 # --- 3b. Dimension consolidation ---
@@ -405,7 +440,7 @@ RULES
 * Select the ONE dimension ({dimension_keys_str}) that provides the clearest partition boundaries for coding responses.
 * If chunks converge on the same dimension, follow the consensus.
 * If chunks diverge, consult <sample_responses> directly to determine which dimension best explains the dominant variation in the actual response data.
-* Write a primary_dimension_description that: describe the response domain throught the lese of the survey question, without giving examples. 
+* Write a primary_dimension_description by completing: "Responses vary in [what differentiates them] regarding [survey topic]." State only the abstract principle of variation — do not list or illustrate specific response content.
 
 All output values must be in {language}.
 
@@ -422,8 +457,13 @@ class PrimaryDimensionConsolidatedResponse(BaseModel):
         description="1-2 sentences: why this dimension is the dominant organizing principle"
     )
     primary_dimension_description: str = Field(
-        description="Clear definition of the primary dimension. Must NOT contain examples"
+        description="Scope statement completing: 'Responses vary in [what differentiates them] regarding [survey topic].' Abstract principle of variation only, no listed content or examples"
     )
+
+    @field_validator('primary_dimension_description', mode='after')
+    @classmethod
+    def no_examples_in_description(cls, v: str) -> str:
+        return _reject_examples(v, "primary_dimension_description")
 
 
 def consolidate_primary_dimension_by_majority(
@@ -478,9 +518,10 @@ def build_domain_discovery_prompt(
     topic: str,
     primary_dimension: str,
     primary_dimension_description: str,
+    domain_diagnostic: str,
 ) -> str:
     """Build the domain discovery prompt for a single chunk."""
-    return f"""You are a qualitative research methodologist specializing in taxonomy development for survey analysis. 
+    return f"""You are a qualitative research methodologist specializing in taxonomy development for survey analysis.
 Your task is to identify domains within a given dimension based on survey response data.
 
 Here is the language the survey responses are written in:
@@ -510,6 +551,12 @@ The primary dimension selected for this dataset is:
 <primary_dimension_description>
 {primary_dimension_description}
 </primary_dimension_description>
+
+The diagnostic question for domains within this dimension is:
+<domain_diagnostic>
+{domain_diagnostic}
+</domain_diagnostic>
+Each domain should answer this question for a group of related responses.
 
 Here is a representative sample of {chunk_size} verbatim responses:
 <sample_responses>
@@ -554,7 +601,8 @@ Your goal is to identify the **fewest domains possible** that provide **full cov
 
 - All labels and definitions in your JSON output must be in the language specified in the <language> tags
 - The "key" field should be in English for technical consistency
-- Each domain definition must describe ONE focused aspect only, not a compound list
+- Each domain definition must complete: "This domain covers responses about [single aspect]." State the abstract boundary only
+- Domain definitions must NOT contain examples or enumerations — no "such as", "like", "zoals"
 - Domains must be mutually exclusive with no conceptual overlap
 - You must achieve full coverage of all responses with the fewest domains possible
 - Your output must be valid JSON that matches the schema exactly
@@ -574,8 +622,13 @@ class DomainItem(BaseModel):
         examples=["Toegang en logistiek", "Waardepropositie", "Gastvrijheid en interactie"]
     )
     definition: str = Field(
-        description="One-sentence definition of ONE focused aspect of the entity this domain covers. Must NOT be a compound list of multiple concerns."
+        description="Scope statement completing: 'This domain covers responses about [single aspect].' One focused boundary, not a compound list, no examples or enumerations"
     )
+
+    @field_validator('definition', mode='after')
+    @classmethod
+    def no_examples_in_definition(cls, v: str) -> str:
+        return _reject_examples(v, "definition")
 
 class DomainChunkResponse(BaseModel):
     """LLM response for single chunk domain discovery."""
@@ -597,6 +650,7 @@ def build_domain_consolidation_prompt(
     intent: str,
     primary_dimension: str,
     chunk_results: str,
+    domain_diagnostic: str,
 ) -> str:
     """Build the domain consolidation prompt."""
     return f"""You are a taxonomy consolidation specialist.
@@ -626,6 +680,11 @@ The primary dimension selected for this dataset is:
 {primary_dimension}
 </primary_dimension>
 
+The diagnostic question for domains within this dimension is:
+<domain_diagnostic>
+{domain_diagnostic}
+</domain_diagnostic>
+
 Here are the chunk-level domain analyses you need to consolidate:
 <chunk_level_analyses>
 {chunk_results}
@@ -640,6 +699,7 @@ Important consolidation principles:
 - ENSURE mutual exclusivity: no two domains in your final list should overlap in meaning
 - MAINTAIN full coverage: the consolidated domains must collectively cover all concepts present in the chunk-level analyses
 - MINIMIZE the total number of domains while preserving meaningful distinctions
+- Each domain definition must complete: "This domain covers responses about [single aspect]." Abstract boundary only, no examples or enumerations
 - All domain labels and definitions must be in the language specified above
 
 Before providing your final output, use the scratchpad to work through your consolidation logic:
@@ -677,9 +737,9 @@ def _format_dimension_examples(dimension: DimensionDefinition) -> str:
         lines.append(f"**{ex.survey_context}**")
         lines.append(f'Response: "{ex.response}"')
         lines.append(f"  instance: {ex.instance}")
+        lines.append(f"  interpretation: {ex.interpretation}")
+        lines.append(f"  abstraction: {ex.abstraction}")
         lines.append(f"  domain: {ex.domain}")
-        lines.append(f"  interpretation: {ex.interpretation} (what does \"{ex.instance}\" mean in context?)")
-        lines.append(f"  abstraction: {ex.abstraction} (what broader phenomenon does this point to?)")
         lines.append(f"  valence: {ex.valence}")
         lines.append("")
     return "\n".join(lines)
@@ -754,27 +814,37 @@ For each idea, produce an idea statement using EXACTLY this pattern:
 
 ---
 
-## STEP 3 — CLASSIFY AND LADDER
+## STEP 2.5 — ABSTRACTION LADDER (all in {language})
+
+For each idea, build a 2-rung ladder of increasing abstraction from the instance:
+
+### A. INTERPRETATION (what is the respondent REALLY talking about?)
+{dimension.prompt_rules.interpretation_instruction}
+- This requires INTERPRETATION, not just normalization
+- Different surface expressions pointing to the same meaning → same concept
+
+### B. ABSTRACTION (what BROADER significance does this point to?)
+{dimension.prompt_rules.abstraction_instruction}
+- Must be more abstract than the interpretation
+- Do not repeat the instance or domain
+
+---
+
+## STEP 3 — CLASSIFY
 
 For each idea, perform these steps (all in {language}):
 
-### A. DOMAIN (classify)
-Assign the idea to the single best-fitting domain from the table below. When it could fit multiple domains, choose the one that best captures the primary aspect of {entity} the idea relates to.
+### A. DOMAIN ({dimension.prompt_rules.domain_diagnostic})
+Assign the idea to the single best-fitting domain from the table below. {dimension.prompt_rules.domain_instruction}
 - {domain_table}
 
-### B. ABSTRACTION LADDER (ladder UP from the instance — 2 rungs)
-Build a 2-rung ladder of increasing abstraction from the instance:
-- **interpretation**: What does this instance MEAN in context? Name the concrete phenomenon or interpretation.
-- **abstraction**: What BROADER significance or higher-level theme does this point to?
-Each rung must be more abstract than the previous. Do not repeat the instance or domain.
-
-### C. VALENCE (direction of instance relative to domain)
+### B. VALENCE (direction of instance relative to domain)
 - "+" = the instance strengthens or reinforces this domain
 - "-" = the instance weakens or undermines this domain
 - "0" = no directional effect on this domain
 - Valence is NOT sentiment or desirability
 
-### Examples (study the BOTTOM-UP ladder — your output must be in {language})
+### Examples (your output must be in {language})
 
 {examples_block}Empty, irrelevant, or nonsensical response → return [].
 
@@ -783,7 +853,12 @@ Begin processing now and provide your output as valid JSON following the respons
 
 
 class SemanticTaxonomyResponse(BaseModel):
-    """Abstraction ladder base class. Fields are overridden by create_extraction_model()."""
+    """Taxonomy response base class. Fields are overridden by create_extraction_model().
+
+    Abstraction ladder: instance → interpretation → abstraction (survey language).
+    Domain: L2 thematic domain.
+    Facet (L3) is assigned later in step 5, NOT here.
+    """
 
     instance: str = ""
     interpretation: str = ""
@@ -818,7 +893,7 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     )
     abstraction_ladder: Optional[SemanticTaxonomyResponse] = Field(
         default=None,
-        description="Abstraction ladder: instance -> interpretation -> abstraction (bottom-up) + domain"
+        description="Abstraction ladder (instance → interpretation → abstraction) + domain classification"
     )
     valence: Literal["+", "-", "0"] = Field(
         default="0",
@@ -842,21 +917,18 @@ def create_extraction_model(
     prompt_rules = dimension.prompt_rules
     dimension_key = dimension.key
 
-    interpretation_desc = prompt_rules.interpretation_instruction
-    abstraction_desc = prompt_rules.abstraction_instruction
-
-    # Build domain field
+    # Build domain field — use label (survey language) not key (English)
     if domains:
-        allowed_keys = tuple(c.key for c in domains) + ("Other",)
+        allowed_labels = tuple(c.label for c in domains) + ("Other",)
         domain_field = (
-            Literal[allowed_keys],
+            Literal[allowed_labels],
             Field(
                 description=(
                     "Domain — which aspect of the entity does this concept belong to? One of: " +
-                    ", ".join(f"{c.key} ({c.definition})" for c in domains) +
+                    ", ".join(f"{c.label} ({c.definition})" for c in domains) +
                     ", Other (does not fit any of the above)"
                 ),
-                examples=[c.key for c in domains[:3]]
+                examples=[c.label for c in domains[:3]]
             )
         )
     else:
@@ -880,33 +952,37 @@ def create_extraction_model(
             description=prompt_rules.instance_instruction,
         )),
         interpretation=(str, Field(
-            description=interpretation_desc,
+            description=prompt_rules.interpretation_instruction,
         )),
         abstraction=(str, Field(
-            description=abstraction_desc,
+            description=prompt_rules.abstraction_instruction,
         )),
         domain=domain_field,
     )
 
     # Add fuzzy-match validator for domain (runs before Literal validation)
-    _key_map = {k.lower(): k for k in allowed_keys} if domains else {}
+    _label_map = {k.lower(): k for k in allowed_labels} if domains else {}
     if domains:
-        _key_map.update({k.lower().replace(' ', '_'): k for k in allowed_keys})
+        _label_map.update({k.lower().replace(' ', '_'): k for k in allowed_labels})
+        # Also map English keys to labels for robustness
+        for c in domains:
+            _label_map[c.key.lower()] = c.label
+            _label_map[c.key.lower().replace('_', ' ')] = c.label
 
     class DimensionTaxonomy(_BaseDimensionTaxonomy):
         @field_validator('domain', mode='before')
         @classmethod
         def normalize_domain(cls, v: object) -> str:
-            if not isinstance(v, str) or not _key_map:
+            if not isinstance(v, str) or not _label_map:
                 return v
             stripped = v.strip()
             # Exact match (case-insensitive)
-            if stripped.lower() in _key_map:
-                return _key_map[stripped.lower()]
+            if stripped.lower() in _label_map:
+                return _label_map[stripped.lower()]
             # Normalize: _ → space, & → and, collapse whitespace, strip trailing punctuation
             normalized = stripped.lower().replace('_', ' ').replace('&', 'and').replace('  ', ' ').rstrip('.,;:')
-            if normalized in _key_map:
-                return _key_map[normalized]
+            if normalized in _label_map:
+                return _label_map[normalized]
             return stripped
 
     DimensionTaxonomy.__name__ = f"SemTax_{dimension_key}"
@@ -922,7 +998,7 @@ def create_extraction_model(
         )
         abstraction_ladder: Optional[DimensionTaxonomy] = Field(
             default=None,
-            description="Abstraction ladder: instance -> interpretation -> abstraction (bottom-up) + domain"
+            description="Abstraction ladder (instance → interpretation → abstraction) + domain classification"
         )
 
         @field_validator('idea', mode='before')

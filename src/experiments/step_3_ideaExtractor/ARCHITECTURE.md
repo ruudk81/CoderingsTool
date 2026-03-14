@@ -11,7 +11,7 @@ Dimension-based idea extraction from open-ended survey responses. Key design cho
 - **10 MECE dimensions** with decision-tree ordering as the organizing principle
 - **Data-driven context discovery** (language, sector, perspective, etc.) before extraction
 - **Domain discovery** producing 5–15 MECE thematic domains per dimension
-- **3-level abstraction ladder** per idea (instance → interpretation → abstraction)
+- **Taxonomy fields** per idea: instance (L4 Attribute) → facet (L3) + domain (L2)
 - **Canonical phrasing** via dimension template patterns for normalized idea statements
 - **PID-controlled rate limiting** with learned tiktoken offset for zero 429 errors
 
@@ -75,8 +75,8 @@ Each `DimensionDefinition` (frozen dataclass) contains:
 - `criterion` + `criterion_signals` — diagnostic question and signals for decision tree
 - `exclusions` — what this dimension is NOT
 - `pattern` — template with `[ANCHOR_SUBJECT]` and domain slot (e.g., `[PRESCRIPTIVE_CHANGE_OUTCOME_ENABLER]`)
-- `prompt_rules` — extraction instructions for instance, interpretation, abstraction, domain
-- `examples` — worked examples with full ladder (survey context → response → instance → domain → interpretation → abstraction → valence)
+- `prompt_rules` — dimension-specific extraction instructions for instance, facet, domain (with diagnostic questions)
+- `examples` — worked examples with taxonomy (survey context → response → instance → domain → facet → valence)
 - `anchor_slot` + `domain_slot` — typed slot definitions (`SlotDefinition` with type and guidance)
 
 ## Prompts
@@ -125,28 +125,28 @@ Each `DimensionDefinition` (frozen dataclass) contains:
 **Extraction** (per response):
 - **Builder**: `build_taxonomy_enriched_extraction_prompt()`
 - **Response model**: dynamically built via `create_extraction_model()`
-  - `DimensionTaxonomy` — per-idea: instance, interpretation, abstraction, domain (Literal with fuzzy matching), valence
+  - `DimensionTaxonomy` — per-idea: instance, facet, domain (Literal with fuzzy matching), valence
   - `DimensionExtractionModel` — wraps list of ideas + template prefix + marker validation
-- **3-step extraction**: (1) split into atomic ideas, (2) reformulate using canonical phrasing, (3) classify + ladder + valence
+- **3-step extraction**: (1) split into atomic ideas, (2) reformulate using canonical phrasing, (3) classify + valence
 - **Runs**: once per response, all responses concurrent via async queue
 
-## Abstraction Ladder
+## Taxonomy Fields
 
-Each idea produces a 3-level bottom-up abstraction:
+Each idea produces taxonomy-aligned fields:
 
 ```
-Instance:        "more bike lanes"                    (verbatim span)
-Interpretation:  "cycling infrastructure expansion"   (what it means)
-Abstraction:     "sustainable urban mobility"         (broader significance)
-Domain:          "infrastructure and mobility"        (thematic domain, L2)
-Valence:         "+"                                  (direction of effect)
+Instance:  "more bike lanes"               Attribute (L4): verbatim span
+Facet:     "infrastructure expansion"      Facet (L3): dimension-specific aspect
+Domain:    "infrastructure and mobility"   Domain (L2): thematic domain
+Valence:   "+"                             direction of effect
 ```
 
-- **Instance**: close to verbatim, minimal reformulation
-- **Interpretation**: interpretive restatement — what the respondent means
-- **Abstraction**: broader thematic significance — why it matters
-- **Domain**: reusable thematic area (L2 in taxonomy), not a per-idea descriptor
+- **Instance** (L4 Attribute): close to verbatim, minimal reformulation
+- **Facet** (L3): dimension-specific aspect — meaning shifts per dimension (e.g., "evaluation criterion" for EVALUATION, "type of change" for PRESCRIPTIVE)
+- **Domain** (L2): reusable thematic area, not a per-idea descriptor
 - **Valence**: +, -, or 0 — direction of effect on the domain, not sentiment
+
+Each dimension defines its own diagnostic questions for Domain and Facet via `PromptRules.domain_diagnostic` and `PromptRules.facet_diagnostic`.
 
 ## Rate Limiting (3-tier system)
 
