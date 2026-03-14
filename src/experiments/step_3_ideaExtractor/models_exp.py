@@ -1,14 +1,13 @@
 """
 Local Pipeline Models for step_3_ideaExtractor v5.
 
-Taxonomy: Dimension > Domain > Facet > Attribute (progressive narrowing).
+Taxonomy: Dimension (L1) > Domain (L2) > Facet (L3) > Attribute (L4).
 v5 overhaul: 10 MECE dimensions with decision-tree ordering.
 
-Differences from shared models_exp.py:
-- ExtractionMetadata: taxonomy_axis → primary_dimension + decision_tree_stop_position, topical_categories → domains
-- IdeasExtractedSubmodel: dropped root/category_label, semantic_category → domain,
-  added valence; ladder: instance → interpretation → abstraction
-- EmbeddingsSubmodel: category_embedding → domain_embedding, taxonomy_embedding → ladder_embedding
+Per-idea fields map to taxonomy levels:
+- instance  → Attribute (L4): verbatim span
+- facet     → Facet (L3): dimension-specific aspect
+- domain    → Domain (L2): thematic domain
 
 Keeps shared models_exp.py untouched so v2 remains runnable.
 """
@@ -81,14 +80,16 @@ class ExtractionMetadata(BaseModel):
 class IdeasExtractedSubmodel(BaseModel):
     """Per-idea data from step 3 extraction.
 
-    Ladder: instance → interpretation → abstraction (bottom-up) + domain (L2 classification)
+    Taxonomy levels: instance (L4 Attribute) + facet (L3) + domain (L2)
+    Abstraction ladder: instance → interpretation → abstraction (survey language)
     """
     idea_id: str                          # Format: {respondent_id}_{sequence_number}
     idea: str                             # Clean text (starts with template prefix)
-    instance: str = ""                    # Verbatim span from response
-    interpretation: str = ""              # Concrete interpretation (what it means)
-    abstraction: str = ""                 # Broader significance (why it matters)
-    domain: str = ""                      # Discovered domain (L2, e.g., "recommendation")
+    instance: str = ""                    # Attribute (L4): verbatim span from response
+    interpretation: str = ""              # Ladder rung 2: concrete meaning (survey language)
+    abstraction: str = ""                 # Ladder rung 3: broader significance (survey language)
+    facet: str = ""                       # Facet (L3): dimension-specific aspect
+    domain: str = ""                      # Domain (L2): thematic domain
     valence: str = ""                     # +, -, or 0
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -101,9 +102,10 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     idea_embedding: Optional[npt.NDArray[np.float32]] = None               # idea (natural sentence incl. template_prefix)
-    interpretation_embedding: Optional[npt.NDArray[np.float32]] = None     # interpretation (concrete)
-    abstraction_embedding: Optional[npt.NDArray[np.float32]] = None        # abstraction (broader significance)
-    domain_embedding: Optional[npt.NDArray[np.float32]] = None             # domain (L2)
+    interpretation_embedding: Optional[npt.NDArray[np.float32]] = None     # Ladder rung 2: interpretation
+    abstraction_embedding: Optional[npt.NDArray[np.float32]] = None        # Ladder rung 3: abstraction
+    facet_embedding: Optional[npt.NDArray[np.float32]] = None              # Facet (L3)
+    domain_embedding: Optional[npt.NDArray[np.float32]] = None             # Domain (L2)
     ladder_embedding: Optional[npt.NDArray[np.float32]] = None             # instance → interpretation → abstraction
 
 

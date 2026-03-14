@@ -2,7 +2,7 @@
 #
 """
 View Step 3 results organized by domain.
-Displays all ideas grouped by domain, showing: idea, interpretation, valence.
+Displays all ideas grouped by domain, showing: idea, facet, valence.
 
 Usage:
     cd src && python -m experiments.step_3_ideaExtractor.view_by_cluster
@@ -71,15 +71,15 @@ def main():
     # Display each group
     for d in sorted(groups.keys()):
         ideas = groups[d]
-        ideas.sort(key=lambda i: (i.interpretation or "", i.valence or ""))
+        ideas.sort(key=lambda i: (i.facet or "", i.valence or ""))
 
         print("\n" + "=" * 60)
         print(f"{d.upper()} ({len(ideas)} ideas)")
         print("=" * 60)
         for idea in ideas:
             valence_str = f" [{idea.valence}]" if idea.valence else ""
-            ladder = " → ".join(v for v in (idea.instance, idea.interpretation, idea.abstraction) if v)
-            print(f"- {ladder}{valence_str}")
+            taxonomy = " → ".join(v for v in (idea.instance, idea.facet) if v)
+            print(f"- {taxonomy}{valence_str}")
 
 
 if __name__ == "__main__":

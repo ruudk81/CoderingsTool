@@ -95,9 +95,9 @@ except ImportError:
 
 # === DIMENSION DATA ===============================================================================================
 try:
-    from .dimension_data import get_dimension, DimensionDefinition, DOMAIN_FALLBACK_TABLE
+    from .dimension_data import get_dimension, DimensionDefinition
 except ImportError:
-    from experiments.step_3_ideaExtractor.dimension_data import get_dimension, DimensionDefinition, DOMAIN_FALLBACK_TABLE
+    from experiments.step_3_ideaExtractor.dimension_data import get_dimension, DimensionDefinition
 
 # === STEP-SPECIFIC CONFIG =============================================================================================
 from config_steps.config_ideaExtractor import (
@@ -871,6 +871,7 @@ class IdeaExtractor:
             intent=context_specifiers['intent'],
             primary_dimension=self.primary_dimension,
             chunk_results="\n\n".join(formatted_results),
+            domain_diagnostic=dimension.prompt_rules.domain_diagnostic,
         )
 
         if self.prompt_printer and not self._captured_domain_consolidation:
@@ -1196,6 +1197,7 @@ class IdeaExtractor:
                 else:  # group == 4: Domain discovery
                     ctx = task['context_specifiers']
 
+                    dimension = get_dimension(self.primary_dimension)
                     prompt = build_domain_discovery_prompt(
                         language=self.language,
                         survey_question=self.var_lab,
@@ -1208,6 +1210,7 @@ class IdeaExtractor:
                         topic=ctx['topic'],
                         primary_dimension=self.primary_dimension,
                         primary_dimension_description=self.primary_dimension_description,
+                        domain_diagnostic=dimension.prompt_rules.domain_diagnostic,
                     )
                     response_model = DomainChunkResponse
                     if self.prompt_printer and not self._captured_domain_chunk:
@@ -1292,12 +1295,14 @@ class IdeaExtractor:
             domain_table = (
                 "- Choose the most specific applicable domain from this predefined set; otherwise select Other:\n"
                 + "\n".join(
-                    f"  • {c.key} = \"{c.definition}\"" for c in discovered_domains
+                    f"  • {c.label} = \"{c.definition}\"" for c in discovered_domains
                 )
                 + '\n  Other = "Does not fit any of the above thematic domains"'
             )
         else:
-            domain_table = DOMAIN_FALLBACK_TABLE.format(language=self.language)
+            # During token estimation (_calculate_avg_tokens), domains haven't been
+            # discovered yet — use a placeholder table for sizing purposes.
+            domain_table = "- (domains will be discovered during extraction)"
 
         return build_taxonomy_enriched_extraction_prompt(
             language=self.language,
@@ -1664,8 +1669,7 @@ class IdeaExtractor:
                                         idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                         idea=idea_text,
                                         instance=taxonomy_resp.instance if taxonomy_resp else "",
-                                        interpretation=taxonomy_resp.interpretation if taxonomy_resp else "",
-                                        abstraction=taxonomy_resp.abstraction if taxonomy_resp else "",
+                                        facet=taxonomy_resp.facet if taxonomy_resp else "",
                                         domain=taxonomy_resp.domain if taxonomy_resp else "",
                                         valence=getattr(idea_response, 'valence', "") or "",
                                     ))
@@ -1782,7 +1786,7 @@ class IdeaExtractor:
     def _format_idea_text(self, normalized_text: str) -> str:
         """Return clean idea text.
 
-        Taxonomy fields (instance, interpretation, abstraction, domain, valence)
+        Taxonomy fields (instance, facet, domain, valence)
         are stored as separate fields on IdeasExtractedSubmodel.
 
         Args:
@@ -2416,8 +2420,7 @@ class IdeaExtractor:
                         valid_ideas.append({
                             'idea': idea.idea,
                             'instance': idea.instance,
-                            'interpretation': idea.interpretation,
-                            'abstraction': idea.abstraction,
+                            'facet': idea.facet,
                             'domain': idea.domain,
                             'valence': idea.valence,
                         })
@@ -2446,23 +2449,6 @@ class IdeaExtractor:
             'single_idea_percentage': (single_idea_responses / len(self._results) * 100) if len(self._results) > 0 and multi_idea_responses > 0 else 0,
             'multi_idea_percentage': (multi_idea_responses / len(self._results) * 100) if len(self._results) > 0 else 0
         }
-
-        if response_examples:
-            print("\n📋 Sample extracted ideas:")
-            for example in response_examples:
-                print(f'  • "{example["response"]}"')
-                for idea_info in example['ideas']:
-                    cleaned_idea = re.sub(r"\[.*?\]", "", idea_info['idea'])
-                    cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
-                    print(f'    → "{cleaned_idea}"')
-                    # Show abstraction ladder if available
-                    ladder_parts = [idea_info[f] for f in ('instance', 'interpretation', 'abstraction') if idea_info.get(f)]
-                    if ladder_parts:
-                        print(f'      ladder: {" → ".join(ladder_parts)}')
-                    if idea_info.get('valence'):
-                        print(f'      valence: {idea_info["valence"]}')
-                if example != response_examples[-1]:
-                    print()
 
         self.verbose_reporter.step_complete("Idea extraction completed")
 

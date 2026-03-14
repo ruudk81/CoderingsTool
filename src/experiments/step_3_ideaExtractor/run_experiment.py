@@ -2,7 +2,7 @@
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
-EXPERIMENT_N  = None  # n or None
+EXPERIMENT_N  = 50  # n or None
 DISCOVER_DOMAINS = True  # True = Phase 3 discovers domains upfront; False = on-the-fly
 
 import sys
@@ -292,7 +292,7 @@ if __name__ == "__main__":
         # Print all taxonomies
         if results:
             print("\n" + "=" * 70)
-            print("ALL ABSTRACTION LADDERS  (instance → interpretation → abstraction | domain | valence)")
+            print("ALL TAXONOMIES  (instance → interpretation → abstraction | domain | valence)")
             print("=" * 70)
             tax_count = 0
             for item in results:
@@ -311,7 +311,7 @@ if __name__ == "__main__":
                     if chain:
                         tax_count += 1
                         print(f"  {tax_count:3d}. {chain}")
-            print(f"\nTotal: {tax_count} abstraction ladders")
+            print(f"\nTotal: {tax_count} taxonomies")
             print("=" * 70)
 
         # Print token usage

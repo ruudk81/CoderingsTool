@@ -1,11 +1,5 @@
 """
-Dimension definitions and type system for step_3_ideaExtractor v5.
-
-Taxonomy: Dimension > Domain > Facet > Attribute (progressive narrowing).
-Dimensions are the highest-level conceptual axes used to organize the problem space.
-
-All data is expressed as frozen dataclasses. No nested dicts, no .get() chains.
-Access a dimension with: get_dimension("PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS") — KeyError if not found.
+Dimension definitions and type system for step_3_ideaExtractor.
 """
 
 from __future__ import annotations
@@ -28,22 +22,44 @@ class SlotDefinition:
 
 @dataclass(frozen=True)
 class PromptRules:
-    """Dimension-specific instructions for taxonomy field extraction."""
+    """Dimension-specific instructions for taxonomy field extraction.
+
+    Each field maps to a taxonomy level:
+    - instance_instruction       → Attribute (L4): verbatim span guidance
+    - interpretation_instruction → Abstraction ladder rung 2: concrete meaning in survey language
+    - abstraction_instruction    → Abstraction ladder rung 3: broader significance in survey language
+    - facet_instruction          → Facet (L3): dimension-specific aspect question
+    - domain_instruction         → Domain (L2): dimension-specific domain question
+    - domain_diagnostic          → Short-form domain question for prompt headers
+    - facet_diagnostic           → Short-form facet question for example formatting
+    """
     instance_instruction: str
     interpretation_instruction: str
     abstraction_instruction: str
+    facet_instruction: str
     domain_instruction: str
+    domain_diagnostic: str
+    facet_diagnostic: str
 
 
 @dataclass(frozen=True)
 class DimensionExample:
-    """One worked example for the extraction prompt."""
+    """One worked example for the extraction prompt.
+
+    Fields map to taxonomy levels + abstraction ladder:
+    - instance        → Attribute (L4): verbatim span from response
+    - interpretation  → Ladder rung 2: concrete meaning (survey language)
+    - abstraction     → Ladder rung 3: broader significance (survey language)
+    - domain          → Domain (L2): thematic domain
+    - facet           → Facet (L3): dimension-specific aspect
+    """
     survey_context: str     # e.g., "City improvement survey (entity: City of Springfield)"
     response: str           # e.g., "more bike lanes and better lighting"
-    instance: str           # verbatim span
-    domain: str             # thematic domain (L2 in taxonomy)
-    interpretation: str     # concrete interpretation (what it means)
-    abstraction: str        # broader significance (why it matters)
+    instance: str           # Attribute (L4): verbatim span
+    interpretation: str     # Ladder rung 2: concrete meaning
+    abstraction: str        # Ladder rung 3: broader significance
+    domain: str             # Domain (L2): thematic domain
+    facet: str              # Facet (L3): dimension-specific aspect
     valence: str            # "+", "-", or "0"
 
 
@@ -51,7 +67,6 @@ class DimensionExample:
 class DimensionDefinition:
     """Complete definition for one primary dimension (L1 in taxonomy: Dimension > Domain > Facet > Attribute)."""
     key: str
-    decision_tree_position: int              # 1-10, priority order in decision tree
     criterion: str                           # Diagnostic question from decision tree
     criterion_signals: Tuple[str, ...]       # Bullet-point signals for this dimension
     exclusions: Tuple[str, ...]              # "What this dimension is NOT" — disambiguation cues
@@ -87,16 +102,12 @@ DIMENSION_DECISION_ORDER: Tuple[str, ...] = (
     "BEHAVIOR_FUNCTION",
     "ATTRIBUTES_ASSOCIATIONS",
     "RELATIONS_DEPENDENCIES",
+    "GENERAL_OTHER",
 )
 
 
 # ========================================================================
-# Dimension registry — all 10 dimensions (decision tree order)
-# ========================================================================
-#
-# SKELETON: criterion + criterion_signals are complete from the user's schema.
-# Downstream metadata (allowed_concepts, instruction,
-# prompt_rules, slot definitions) are PLACEHOLDERS awaiting user input.
+# Dimension registry — all 11 dimensions in decision tree order (1-11)
 # ========================================================================
 
 DIMENSIONS: Dict[str, DimensionDefinition] = {
@@ -104,7 +115,6 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
     # ── 1. PRESCRIPTIVE CHANGE ──────────────────────────────────────────
     "PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS": DimensionDefinition(
         key="PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS",
-        decision_tree_position=1,
         criterion="Do responses mainly differ in proposed actions, improvements, or solutions?",
         criterion_signals=(
             "Concrete or abstract improvement ideas",
@@ -136,7 +146,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one proposed action or improvement from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
+            facet_instruction="What type of change is proposed? Name the change approach or intervention type.",
+            domain_instruction="Which part of the system should change? Classify into one of the discovered domains.",
+            domain_diagnostic="What part of the system should change?",
+            facet_diagnostic="How should it change?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -155,588 +168,20 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 survey_context="City improvement survey (entity: City of Springfield)",
                 response="more bike lanes and better street lighting",
                 instance="more bike lanes",
-                domain="infrastructure and mobility",
                 interpretation="cycling infrastructure expansion",
                 abstraction="sustainable urban mobility",
+                domain="infrastructure and mobility",
+                facet="infrastructure expansion",
                 valence="+",
             ),
             DimensionExample(
                 survey_context="Hospital feedback (entity: City Hospital)",
                 response="reduce the paperwork for admissions",
                 instance="reduce the paperwork",
+                interpretation="administrative burden reduction",
+                abstraction="process efficiency",
                 domain="administrative processes",
-                interpretation="admission simplification",
-                abstraction="operational efficiency",
-                valence="+",
-            ),
-        ),
-    ),
-
-    # ── 7. JUDGMENT / PRIORITIZATION ────────────────────────────────────
-    "EVALUATION_PRIORITIZATION": DimensionDefinition(
-        key="EVALUATION_PRIORITIZATION",
-        decision_tree_position=7,
-        criterion="Do responses mainly differ in opinions, judgments, or preferences?",
-        criterion_signals=(
-            "Good vs bad, positive vs negative",
-            "Preferences, rankings, comparisons",
-            "Statements of importance, value, risk, or priority",
-        ),
-        exclusions=(
-            "Proposed changes or actions",
-            "Explanations of why people care (see MOTIVATIONS)",
-            "Experience narratives as such",
-        ),
-        noun_phrase_descriptor="EVALUATION & PRIORITIZATION: opinions, judgments, or preferences",
-        dimension_description=(
-            "Use this dimension when the dominant variation is in how respondents assess or evaluate "
-            "the entity, experience, or topic — including likes/dislikes, perceived quality, "
-            "importance, or comparisons."
-        ),
-        allowed_concepts=(
-            "judgment", "preference", "opinion", "assessment",
-            "comparison", "priority", "risk_assessment", "criticism",
-            "praise", "ranking",
-        ),
-        pattern="[ANCHOR_SUBJECT] → [EVALUATION_PRIORITY]",
-        instruction=(
-            "Identify each distinct evaluative opinion, preference, or prioritization in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
-        prompt_rules=PromptRules(
-            instance_instruction="Select the minimal verbatim span expressing exactly one evaluation or preference from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
-        ),
-        anchor_slot=SlotDefinition(
-            name="ANCHOR_SUBJECT",
-            type_name="noun_phrase",
-            required=True,
-            guidance="The focal entity or phenomenon being evaluated in {language}.",
-        ),
-        domain_slot=SlotDefinition(
-            name="EVALUATION_PRIORITY",
-            type_name="noun_like_phrase",
-            required=True,
-            guidance="A concise phrase expressing a judgment, preference, opinion, or evaluative stance.",
-        ),
-        examples=(
-            DimensionExample(
-                survey_context="Airline satisfaction survey (entity: SkyAir)",
-                response="the food is terrible but the seats are comfortable",
-                instance="the food is terrible",
-                domain="onboard services",
-                interpretation="poor meal quality",
-                abstraction="onboard service standards",
-                valence="-",
-            ),
-            DimensionExample(
-                survey_context="University evaluation (entity: State University)",
-                response="excellent research reputation",
-                instance="excellent research reputation",
-                domain="academic standing",
-                interpretation="research prestige",
-                abstraction="institutional academic standing",
-                valence="+",
-            ),
-        ),
-    ),
-
-    # ── 6. LIVED EXPERIENCE / PERCEPTION ────────────────────────────────
-    "EXPERIENCE_PERCEPTION": DimensionDefinition(
-        key="EXPERIENCE_PERCEPTION",
-        decision_tree_position=6,
-        criterion="Do responses mainly differ in how something was experienced or perceived?",
-        criterion_signals=(
-            "Lived experiences (positive or negative)",
-            "Feelings, atmosphere, vibe, flow",
-            "Holistic narratives or impressions",
-        ),
-        exclusions=(
-            "Explicit rankings or prioritization",
-            "Isolated actions or mechanics",
-            "Abstract traits without experiential framing",
-        ),
-        noun_phrase_descriptor="EXPERIENCE & PERCEPTION: how something was experienced or perceived",
-        dimension_description=(
-            "Use this dimension when responses vary primarily in lived experiences, feelings, "
-            "impressions, or overall sense-making. The focus is on what it was like, rather "
-            "than judgments, actions, or attributes."
-        ),
-        allowed_concepts=(
-            "experience", "perception", "impression", "feeling",
-            "atmosphere", "encounter", "sensation", "observation",
-            "memory", "narrative",
-        ),
-        pattern="[ANCHOR_SUBJECT] → [EXPERIENCE_PERCEPTION]",
-        instruction=(
-            "Identify each distinct experience, perception, or impression described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
-        prompt_rules=PromptRules(
-            instance_instruction="Select the minimal verbatim span expressing exactly one experience or perception from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
-        ),
-        anchor_slot=SlotDefinition(
-            name="ANCHOR_SUBJECT",
-            type_name="noun_phrase",
-            required=True,
-            guidance="The focal entity or phenomenon experienced in {language}.",
-        ),
-        domain_slot=SlotDefinition(
-            name="EXPERIENCE_PERCEPTION",
-            type_name="noun_like_phrase",
-            required=True,
-            guidance="A concise phrase describing an experience, perception, impression, or feeling.",
-        ),
-        examples=(
-            DimensionExample(
-                survey_context="Hotel stay feedback (entity: Grand Plaza Hotel)",
-                response="felt rushed during checkout",
-                instance="felt rushed during checkout",
-                domain="guest journey",
-                interpretation="hurried checkout experience",
-                abstraction="guest journey quality",
-                valence="-",
-            ),
-            DimensionExample(
-                survey_context="Theme park survey (entity: FunWorld)",
-                response="the atmosphere was magical",
-                instance="the atmosphere was magical",
-                domain="park ambiance",
-                interpretation="immersive atmosphere",
-                abstraction="experiential design",
-                valence="+",
-            ),
-        ),
-        clarification=(
-            "Includes implicit evaluation when embedded in an experience narrative",
-        ),
-    ),
-
-    # ── 8. ACTION / PROCESS ─────────────────────────────────────────────
-    "BEHAVIOR_FUNCTION": DimensionDefinition(
-        key="BEHAVIOR_FUNCTION",
-        decision_tree_position=8,
-        criterion="Do responses mainly differ in what happens or how something works?",
-        criterion_signals=(
-            "Actions, processes, step-by-step descriptions",
-            "How something operates or was done",
-            "Events, outcomes, observable effects",
-        ),
-        exclusions=(
-            "Evaluative framing",
-            "Experiential or emotional framing",
-            "Proposed improvements or changes",
-        ),
-        noun_phrase_descriptor="BEHAVIOR & FUNCTION: what happened or how something works",
-        dimension_description=(
-            "Use this dimension when responses vary primarily in descriptive accounts of actions, "
-            "events, processes, or how something functions or operates — reported factually, "
-            "not evaluatively or experientially."
-        ),
-        allowed_concepts=(
-            "action", "process", "behavior", "function",
-            "effect", "outcome", "activity", "operation",
-            "performance", "service",
-        ),
-        pattern="[ANCHOR_SUBJECT] → [BEHAVIOR_FUNCTION]",
-        instruction=(
-            "Identify each distinct action, process, or functional behavior described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
-        prompt_rules=PromptRules(
-            instance_instruction="Select the minimal verbatim span expressing exactly one behavior or function from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
-        ),
-        anchor_slot=SlotDefinition(
-            name="ANCHOR_SUBJECT",
-            type_name="noun_phrase",
-            required=True,
-            guidance="The focal entity or phenomenon in {language}.",
-        ),
-        domain_slot=SlotDefinition(
-            name="BEHAVIOR_FUNCTION",
-            type_name="noun_like_phrase",
-            required=True,
-            guidance="A concise phrase describing an action, process, behavior, or functional output of the entity.",
-        ),
-        examples=(
-            DimensionExample(
-                survey_context="Banking usage survey (entity: QuickBank App)",
-                response="I transfer money and check my balance every morning",
-                instance="transfer money",
-                domain="transaction services",
-                interpretation="money transfers",
-                abstraction="core banking functionality",
-                valence="0",
-            ),
-            DimensionExample(
-                survey_context="Software feedback (entity: ProjectHub)",
-                response="the auto-save keeps overwriting my changes",
-                instance="auto-save keeps overwriting my changes",
-                domain="data management",
-                interpretation="auto-save behavior",
-                abstraction="data integrity management",
-                valence="-",
-            ),
-        ),
-    ),
-
-    # ── 9. DESCRIPTIVE QUALITIES / ASSOCIATIONS ─────────────────────────
-    "ATTRIBUTES_ASSOCIATIONS": DimensionDefinition(
-        key="ATTRIBUTES_ASSOCIATIONS",
-        decision_tree_position=9,
-        criterion="Do responses mainly differ in qualities, traits, images, or associations?",
-        criterion_signals=(
-            "Descriptive traits or characteristics",
-            "Product or brand associations",
-            "Image, reputation, perceived qualities",
-        ),
-        exclusions=(
-            "Category or definition",
-            "Judgments of good/bad",
-            "Lived experience explanations",
-        ),
-        noun_phrase_descriptor="ATTRIBUTES & ASSOCIATIONS: qualities, traits, images, or associations",
-        dimension_description=(
-            "Use this dimension when the dominant variation lies in how the entity is described "
-            "or perceived — its characteristics, symbolic meanings, reputation, or associations "
-            "— rather than experiences or judgments."
-        ),
-        allowed_concepts=(
-            "attribute", "trait", "quality", "property",
-            "association", "characteristic", "image",
-            "reputation", "perception", "symbol",
-        ),
-        pattern="[ANCHOR_SUBJECT] → [ATTRIBUTE_ASSOCIATION]",
-        instruction=(
-            "Identify each distinct quality, trait, image, or association described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
-        prompt_rules=PromptRules(
-            instance_instruction="Select the minimal verbatim span expressing exactly one attribute or association from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
-        ),
-        anchor_slot=SlotDefinition(
-            name="ANCHOR_SUBJECT",
-            type_name="noun_phrase",
-            required=True,
-            guidance="The focal entity or phenomenon in {language}.",
-        ),
-        domain_slot=SlotDefinition(
-            name="ATTRIBUTE_ASSOCIATION",
-            type_name="noun_like_phrase",
-            required=True,
-            guidance="A concise phrase describing a quality, trait, image, association, or perceived characteristic of the entity.",
-        ),
-        examples=(
-            DimensionExample(
-                survey_context="Brand association survey (entity: Merk X)",
-                response="insurance and sustainability",
-                instance="insurance",
-                domain="products and services",
-                interpretation="insurance products",
-                abstraction="financial service offering",
-                valence="0",
-            ),
-            DimensionExample(
-                survey_context="Car brand perception (entity: Volvo)",
-                response="safe but boring design",
-                instance="safe",
-                domain="safety and engineering",
-                interpretation="vehicle safety reputation",
-                abstraction="brand trust and reliability",
-                valence="+",
-            ),
-        ),
-        clarification=(
-            "Traits must be non-comparative and non-prioritized",
-        ),
-    ),
-
-    # ── 5. MOTIVATION / REASON ──────────────────────────────────────────
-    "MOTIVATIONS_DRIVERS": DimensionDefinition(
-        key="MOTIVATIONS_DRIVERS",
-        decision_tree_position=5,
-        criterion="Do responses mainly differ in why people care, want, or act?",
-        criterion_signals=(
-            "Reasons, rationales, explanations of importance",
-            "Needs, values, goals, concerns",
-            "Causal language tied to human intent: 'because…', 'so that…', 'in order to…'",
-        ),
-        exclusions=(
-            "Judgments of quality",
-            "Experience narratives",
-            "Structural/system causality not tied to human intent",
-        ),
-        noun_phrase_descriptor="MOTIVATIONS & DRIVERS: why people care, want, or act",
-        dimension_description=(
-            "Use this dimension when variation is driven by underlying reasons — needs, goals, "
-            "values, concerns, or trade-offs that explain respondents' attitudes or behaviors."
-        ),
-        allowed_concepts=(
-            "need", "goal", "value", "concern",
-            "motivation", "reason", "driver", "trade_off",
-            "aspiration", "priority",
-        ),
-        pattern="[ANCHOR_SUBJECT] → [MOTIVATION_DRIVER]",
-        instruction=(
-            "Identify each distinct motivation, need, goal, or reason expressed in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
-        prompt_rules=PromptRules(
-            instance_instruction="Select the minimal verbatim span expressing exactly one motivation or reason from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
-        ),
-        anchor_slot=SlotDefinition(
-            name="ANCHOR_SUBJECT",
-            type_name="noun_phrase",
-            required=True,
-            guidance="The focal entity or phenomenon in {language}.",
-        ),
-        domain_slot=SlotDefinition(
-            name="MOTIVATION_DRIVER",
-            type_name="noun_like_phrase",
-            required=True,
-            guidance="A concise phrase describing a need, goal, motivation, value, or reason.",
-        ),
-        examples=(
-            DimensionExample(
-                survey_context="Gym membership survey (entity: FitLife Gym)",
-                response="I go because it helps my mental health",
-                instance="helps my mental health",
-                domain="health and wellbeing",
-                interpretation="mental health benefit",
-                abstraction="personal wellbeing",
-                valence="+",
-            ),
-            DimensionExample(
-                survey_context="Grocery store choice (entity: FreshMart)",
-                response="it's close to home and the prices are low",
-                instance="close to home",
-                domain="convenience and access",
-                interpretation="proximity",
-                abstraction="convenience and accessibility",
-                valence="+",
-            ),
-        ),
-    ),
-
-    # ── 4. CONTEXT / CONDITIONS ─────────────────────────────────────────
-    "CONTEXT_CONDITIONS": DimensionDefinition(
-        key="CONTEXT_CONDITIONS",
-        decision_tree_position=4,
-        criterion="Do responses mainly differ in when, where, or under what conditions something applies?",
-        criterion_signals=(
-            "Timing, frequency, lifecycle stage",
-            "Location, channel, environment",
-            "Constraints, triggers, situational factors",
-        ),
-        exclusions=(
-            "Actions or behaviors themselves",
-            "Motivations or reasons",
-            "Descriptive attributes",
-        ),
-        noun_phrase_descriptor="CONTEXT & CONDITIONS: when, where, or under what conditions something applies",
-        dimension_description=(
-            "Use this dimension when responses vary primarily by situational factors — time, place, "
-            "environment, constraints, or conditions that shape applicability or relevance."
-        ),
-        allowed_concepts=(
-            "condition", "context", "constraint", "trigger",
-            "precondition", "environment", "setting", "situation",
-            "timing", "circumstance",
-        ),
-        pattern="[ANCHOR_SUBJECT] @ [CONTEXT_CONDITION]",
-        instruction=(
-            "Identify each distinct condition, context, or circumstance described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
-        prompt_rules=PromptRules(
-            instance_instruction="Select the minimal verbatim span expressing exactly one condition or contextual factor from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
-        ),
-        anchor_slot=SlotDefinition(
-            name="ANCHOR_SUBJECT",
-            type_name="noun_phrase",
-            required=True,
-            guidance="The focal entity, event, or topic frame in {language}.",
-        ),
-        domain_slot=SlotDefinition(
-            name="CONTEXT_CONDITION",
-            type_name="noun_like_phrase",
-            required=True,
-            guidance="A concise phrase specifying the condition, context, setting, or circumstance.",
-        ),
-        examples=(
-            DimensionExample(
-                survey_context="Remote work survey (entity: TechCorp)",
-                response="works great when internet is stable but fails during peak hours",
-                instance="during peak hours",
-                domain="technical infrastructure",
-                interpretation="network load timing",
-                abstraction="infrastructure capacity management",
-                valence="-",
-            ),
-            DimensionExample(
-                survey_context="Public transit survey (entity: Metro Line 5)",
-                response="only useful for my morning commute",
-                instance="morning commute",
-                domain="usage patterns",
-                interpretation="commute-hour dependency",
-                abstraction="usage pattern constraints",
-                valence="0",
-            ),
-        ),
-    ),
-
-    # ── 3. ACTORS / AFFECTED PARTIES ────────────────────────────────────
-    "ACTORS_TARGETS": DimensionDefinition(
-        key="ACTORS_TARGETS",
-        decision_tree_position=3,
-        criterion="Do responses mainly differ in who is involved or impacted?",
-        criterion_signals=(
-            "Different user groups, stakeholders, agents",
-            "Responsibility, ownership, accountability",
-            "Who benefits, who is affected, who decides",
-        ),
-        exclusions=(
-            "What happens or how it works",
-            "Evaluations of actors",
-            "Relationships between actors (see RELATIONS_DEPENDENCIES)",
-        ),
-        noun_phrase_descriptor="ACTORS & TARGETS: who is involved or impacted",
-        dimension_description=(
-            "Use this dimension when the dominant variation is in the actors, agents, stakeholders, "
-            "or affected parties being mentioned — who does what, who benefits, who is responsible."
-        ),
-        allowed_concepts=(
-            "actor", "stakeholder", "user_group", "target",
-            "beneficiary", "responsible_party", "affected_group",
-            "participant", "owner", "audience",
-        ),
-        pattern="[ANCHOR_SUBJECT] → [ACTOR_TARGET]",
-        instruction=(
-            "Identify each distinct actor, stakeholder, or affected party mentioned in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
-        prompt_rules=PromptRules(
-            instance_instruction="Select the minimal verbatim span expressing exactly one actor or affected party from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
-        ),
-        anchor_slot=SlotDefinition(
-            name="ANCHOR_SUBJECT",
-            type_name="noun_phrase",
-            required=True,
-            guidance="The focal entity or phenomenon in {language}.",
-        ),
-        domain_slot=SlotDefinition(
-            name="ACTOR_TARGET",
-            type_name="noun_like_phrase",
-            required=True,
-            guidance="A concise phrase identifying an actor, stakeholder, user group, or affected party.",
-        ),
-        examples=(
-            DimensionExample(
-                survey_context="School policy survey (entity: Riverside School)",
-                response="parents should be more involved in curriculum decisions",
-                instance="parents",
-                domain="school community",
-                interpretation="parental involvement",
-                abstraction="stakeholder engagement in education",
-                valence="+",
-            ),
-            DimensionExample(
-                survey_context="Healthcare access (entity: Regional Clinic)",
-                response="elderly patients struggle with the online booking system",
-                instance="elderly patients",
-                domain="patient demographics",
-                interpretation="senior accessibility",
-                abstraction="inclusive service design",
-                valence="-",
-            ),
-        ),
-    ),
-
-    # ── 10. RELATIONS / DEPENDENCIES ────────────────────────────────────
-    "RELATIONS_DEPENDENCIES": DimensionDefinition(
-        key="RELATIONS_DEPENDENCIES",
-        decision_tree_position=10,
-        criterion="Do responses mainly differ in relationships or dependencies between entities?",
-        criterion_signals=(
-            "Dependencies between components or systems",
-            "Trade-offs (A vs B, cost vs benefit)",
-            "Influence, interaction effects, system-level causality",
-        ),
-        exclusions=(
-            "Individual attributes",
-            "Actor identity",
-            "Contextual timing or location",
-        ),
-        noun_phrase_descriptor="RELATIONS & DEPENDENCIES: relationships or comparisons between entities",
-        dimension_description=(
-            "Use this dimension when responses vary primarily in how entities, concepts, or topics "
-            "relate to each other — dependencies, trade-offs, influence, or comparisons across options."
-        ),
-        allowed_concepts=(
-            "dependency", "comparison", "influence", "trade_off",
-            "interaction", "connection", "partnership", "competition",
-            "relationship", "collaboration",
-        ),
-        pattern="[ANCHOR_SUBJECT] → [RELATION_DEPENDENCY]",
-        instruction=(
-            "Identify each distinct relationship, dependency, or comparison described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
-        prompt_rules=PromptRules(
-            instance_instruction="Select the minimal verbatim span expressing exactly one relationship or dependency from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
-        ),
-        anchor_slot=SlotDefinition(
-            name="ANCHOR_SUBJECT",
-            type_name="noun_phrase",
-            required=True,
-            guidance="The focal entity or phenomenon in {language}.",
-        ),
-        domain_slot=SlotDefinition(
-            name="RELATION_DEPENDENCY",
-            type_name="noun_like_phrase",
-            required=True,
-            guidance="A concise phrase describing a relationship, dependency, comparison, or influence.",
-        ),
-        examples=(
-            DimensionExample(
-                survey_context="Energy policy survey (entity: National Grid)",
-                response="wind energy depends too much on weather conditions",
-                instance="depends too much on weather conditions",
-                domain="supply reliability",
-                interpretation="weather dependency",
-                abstraction="supply reliability risk",
-                valence="-",
-            ),
-            DimensionExample(
-                survey_context="Retail ecosystem (entity: ShopLocal Platform)",
-                response="small shops benefit from the shared delivery network",
-                instance="benefit from the shared delivery network",
-                domain="platform partnerships",
-                interpretation="shared logistics advantage",
-                abstraction="platform ecosystem value",
+                facet="process simplification",
                 valence="+",
             ),
         ),
@@ -745,7 +190,6 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
     # ── 2. CONSTITUTIVE DEFINITION ──────────────────────────────────────
     "IDENTITY_DEFINITION": DimensionDefinition(
         key="IDENTITY_DEFINITION",
-        decision_tree_position=2,
         criterion="Do responses mainly differ in how the entity is defined or categorized?",
         criterion_signals=(
             "What kind of thing it is",
@@ -777,7 +221,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one definition/identity concept from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            domain_instruction="Classify into one of the discovered domains for this dimension.",
+            facet_instruction="Which aspect of identity is being defined? (purpose, scope, category, nature)",
+            domain_instruction="What is being defined? Classify into one of the discovered domains.",
+            domain_diagnostic="What is being defined?",
+            facet_diagnostic="Which aspect of identity?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -796,41 +243,720 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 survey_context="Brand identity survey (entity: Patagonia)",
                 response="more of an activist movement than a clothing brand",
                 instance="activist movement",
-                domain="brand identity",
                 interpretation="activism positioning",
                 abstraction="brand purpose and identity",
+                domain="brand identity",
+                facet="purpose",
                 valence="0",
             ),
             DimensionExample(
                 survey_context="Municipal services survey (entity: Public Library)",
                 response="it's a community hub, not just a book lending place",
                 instance="community hub",
-                domain="institutional role",
                 interpretation="community function",
                 abstraction="institutional social value",
+                domain="institutional role",
+                facet="social function",
                 valence="+",
             ),
         ),
     ),
+
+    # ── 3. ACTORS / AFFECTED PARTIES ────────────────────────────────────
+    "ACTORS_TARGETS": DimensionDefinition(
+        key="ACTORS_TARGETS",
+        criterion="Do responses mainly differ in who is involved or impacted?",
+        criterion_signals=(
+            "Different user groups, stakeholders, agents",
+            "Responsibility, ownership, accountability",
+            "Who benefits, who is affected, who decides",
+        ),
+        exclusions=(
+            "What happens or how it works",
+            "Evaluations of actors",
+            "Relationships between actors (see RELATIONS_DEPENDENCIES)",
+        ),
+        noun_phrase_descriptor="ACTORS & TARGETS: who is involved or impacted",
+        dimension_description=(
+            "Use this dimension when the dominant variation is in the actors, agents, stakeholders, "
+            "or affected parties being mentioned — who does what, who benefits, who is responsible."
+        ),
+        allowed_concepts=(
+            "actor", "stakeholder", "user_group", "target",
+            "beneficiary", "responsible_party", "affected_group",
+            "participant", "owner", "audience",
+        ),
+        pattern="[ANCHOR_SUBJECT] → [ACTOR_TARGET]",
+        instruction=(
+            "Identify each distinct actor, stakeholder, or affected party mentioned in the response. "
+            "For each idea, produce one concise realization formatted according to the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing exactly one actor or affected party from the response.",
+            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
+            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            facet_instruction="What role does this actor play? (responsibility, decision-maker, beneficiary, affected party)",
+            domain_instruction="In what situation are actors involved? Classify into one of the discovered domains.",
+            domain_diagnostic="In what situation are actors involved?",
+            facet_diagnostic="What role do they play?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity or phenomenon in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="ACTOR_TARGET",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase identifying an actor, stakeholder, user group, or affected party.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="School policy survey (entity: Riverside School)",
+                response="parents should be more involved in curriculum decisions",
+                instance="parents",
+                interpretation="parental involvement",
+                abstraction="stakeholder engagement in education",
+                domain="school community",
+                facet="responsibility",
+                valence="+",
+            ),
+            DimensionExample(
+                survey_context="Healthcare access (entity: Regional Clinic)",
+                response="elderly patients struggle with the online booking system",
+                instance="elderly patients",
+                interpretation="senior accessibility",
+                abstraction="inclusive service design",
+                domain="patient demographics",
+                facet="affected party",
+                valence="-",
+            ),
+        ),
+    ),
+
+    # ── 4. CONTEXT / CONDITIONS ─────────────────────────────────────────
+    "CONTEXT_CONDITIONS": DimensionDefinition(
+        key="CONTEXT_CONDITIONS",
+        criterion="Do responses mainly differ in when, where, or under what conditions something applies?",
+        criterion_signals=(
+            "Timing, frequency, lifecycle stage",
+            "Location, channel, environment",
+            "Constraints, triggers, situational factors",
+        ),
+        exclusions=(
+            "Actions or behaviors themselves",
+            "Motivations or reasons",
+            "Descriptive attributes",
+        ),
+        noun_phrase_descriptor="CONTEXT & CONDITIONS: when, where, or under what conditions something applies",
+        dimension_description=(
+            "Use this dimension when responses vary primarily by situational factors — time, place, "
+            "environment, constraints, or conditions that shape applicability or relevance."
+        ),
+        allowed_concepts=(
+            "condition", "context", "constraint", "trigger",
+            "precondition", "environment", "setting", "situation",
+            "timing", "circumstance",
+        ),
+        pattern="[ANCHOR_SUBJECT] @ [CONTEXT_CONDITION]",
+        instruction=(
+            "Identify each distinct condition, context, or circumstance described in the response. "
+            "For each idea, produce one concise realization formatted according to the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing exactly one condition or contextual factor from the response.",
+            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
+            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            facet_instruction="What context dimension is involved? (time, location, constraint, trigger, environment)",
+            domain_instruction="What situation is being discussed? Classify into one of the discovered domains.",
+            domain_diagnostic="What situation is being discussed?",
+            facet_diagnostic="Time? location? constraint?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity, event, or topic frame in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="CONTEXT_CONDITION",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase specifying the condition, context, setting, or circumstance.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="Remote work survey (entity: TechCorp)",
+                response="works great when internet is stable but fails during peak hours",
+                instance="during peak hours",
+                interpretation="network load timing",
+                abstraction="infrastructure capacity management",
+                domain="technical infrastructure",
+                facet="time",
+                valence="-",
+            ),
+            DimensionExample(
+                survey_context="Public transit survey (entity: Metro Line 5)",
+                response="only useful for my morning commute",
+                instance="morning commute",
+                interpretation="commute-hour dependency",
+                abstraction="usage pattern constraints",
+                domain="usage patterns",
+                facet="time",
+                valence="0",
+            ),
+        ),
+    ),
+
+    # ── 5. MOTIVATION / REASON ──────────────────────────────────────────
+    "MOTIVATIONS_DRIVERS": DimensionDefinition(
+        key="MOTIVATIONS_DRIVERS",
+        criterion="Do responses mainly differ in why people care, want, or act?",
+        criterion_signals=(
+            "Reasons, rationales, explanations of importance",
+            "Needs, values, goals, concerns",
+            "Causal language tied to human intent: 'because…', 'so that…', 'in order to…'",
+        ),
+        exclusions=(
+            "Judgments of quality",
+            "Experience narratives",
+            "Structural/system causality not tied to human intent",
+        ),
+        noun_phrase_descriptor="MOTIVATIONS & DRIVERS: why people care, want, or act",
+        dimension_description=(
+            "Use this dimension when variation is driven by underlying reasons — needs, goals, "
+            "values, concerns, or trade-offs that explain respondents' attitudes or behaviors."
+        ),
+        allowed_concepts=(
+            "need", "goal", "value", "concern",
+            "motivation", "reason", "driver", "trade_off",
+            "aspiration", "priority",
+        ),
+        pattern="[ANCHOR_SUBJECT] → [MOTIVATION_DRIVER]",
+        instruction=(
+            "Identify each distinct motivation, need, goal, or reason expressed in the response. "
+            "For each idea, produce one concise realization formatted according to the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing exactly one motivation or reason from the response.",
+            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
+            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            facet_instruction="What type of motivation is expressed? (need, goal, fear, value, aspiration)",
+            domain_instruction="What is the motivation about? Classify into one of the discovered domains.",
+            domain_diagnostic="What is the motivation about?",
+            facet_diagnostic="Need? goal? fear? value?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity or phenomenon in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="MOTIVATION_DRIVER",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase describing a need, goal, motivation, value, or reason.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="Gym membership survey (entity: FitLife Gym)",
+                response="I go because it helps my mental health",
+                instance="helps my mental health",
+                interpretation="mental health benefit",
+                abstraction="personal wellbeing",
+                domain="health and wellbeing",
+                facet="need",
+                valence="+",
+            ),
+            DimensionExample(
+                survey_context="Grocery store choice (entity: FreshMart)",
+                response="it's close to home and the prices are low",
+                instance="close to home",
+                interpretation="proximity",
+                abstraction="convenience and accessibility",
+                domain="convenience and access",
+                facet="value",
+                valence="+",
+            ),
+        ),
+    ),
+
+    # ── 6. LIVED EXPERIENCE / PERCEPTION ────────────────────────────────
+    "EXPERIENCE_PERCEPTION": DimensionDefinition(
+        key="EXPERIENCE_PERCEPTION",
+        criterion="Do responses mainly differ in how something was experienced or perceived?",
+        criterion_signals=(
+            "Lived experiences (positive or negative)",
+            "Feelings, atmosphere, vibe, flow",
+            "Holistic narratives or impressions",
+        ),
+        exclusions=(
+            "Explicit rankings or prioritization",
+            "Isolated actions or mechanics",
+            "Abstract traits without experiential framing",
+            "Detached judgments without narrative framing (see EVALUATION_PRIORITIZATION)",
+        ),
+        noun_phrase_descriptor="EXPERIENCE & PERCEPTION: how something was experienced or perceived",
+        dimension_description=(
+            "Use this dimension when responses vary primarily in lived experiences, feelings, "
+            "impressions, or overall sense-making. The focus is on what it was like, rather "
+            "than judgments, actions, or attributes."
+        ),
+        allowed_concepts=(
+            "experience", "perception", "impression", "feeling",
+            "atmosphere", "encounter", "sensation", "observation",
+            "memory", "narrative",
+        ),
+        pattern="[ANCHOR_SUBJECT] → [EXPERIENCE_PERCEPTION]",
+        instruction=(
+            "Identify each distinct experience, perception, or impression described in the response. "
+            "For each idea, produce one concise realization formatted according to the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing exactly one experience or perception from the response.",
+            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
+            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            facet_instruction="What experiential dimension is involved? (flow, atmosphere, interaction, sensation, emotion)",
+            domain_instruction="Which part of the experience? Classify into one of the discovered domains.",
+            domain_diagnostic="Which part of the experience?",
+            facet_diagnostic="Flow? atmosphere? interaction?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity or phenomenon experienced in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="EXPERIENCE_PERCEPTION",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase describing an experience, perception, impression, or feeling.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="Hotel stay feedback (entity: Grand Plaza Hotel)",
+                response="felt rushed during checkout",
+                instance="felt rushed during checkout",
+                interpretation="hurried checkout experience",
+                abstraction="guest journey quality",
+                domain="guest journey",
+                facet="flow",
+                valence="-",
+            ),
+            DimensionExample(
+                survey_context="Theme park survey (entity: FunWorld)",
+                response="the atmosphere was magical",
+                instance="the atmosphere was magical",
+                interpretation="immersive atmosphere",
+                abstraction="experiential design",
+                domain="park ambiance",
+                facet="atmosphere",
+                valence="+",
+            ),
+        ),
+        clarification=(
+            "Includes implicit evaluation when embedded in an experience narrative",
+            "Experience = narrative interaction with the entity; the respondent recounts what happened or how it felt",
+        ),
+    ),
+
+    # ── 7. JUDGMENT / PRIORITIZATION ────────────────────────────────────
+    "EVALUATION_PRIORITIZATION": DimensionDefinition(
+        key="EVALUATION_PRIORITIZATION",
+        criterion="Do responses mainly differ in opinions, judgments, or preferences?",
+        criterion_signals=(
+            "Good vs bad, positive vs negative",
+            "Preferences, rankings, comparisons",
+            "Statements of importance, value, risk, or priority",
+        ),
+        exclusions=(
+            "Proposed changes or actions",
+            "Explanations of why people care (see MOTIVATIONS)",
+            "Narrative interaction accounts where evaluation is implicit (see EXPERIENCE_PERCEPTION)",
+            "Neutral descriptive properties without value judgment (see ATTRIBUTES_ASSOCIATIONS)",
+        ),
+        noun_phrase_descriptor="EVALUATION & PRIORITIZATION: opinions, judgments, or preferences",
+        dimension_description=(
+            "Use this dimension when the dominant variation is in how respondents assess or evaluate "
+            "the entity, experience, or topic — including likes/dislikes, perceived quality, "
+            "importance, or comparisons."
+        ),
+        allowed_concepts=(
+            "judgment", "preference", "opinion", "assessment",
+            "comparison", "priority", "risk_assessment", "criticism",
+            "praise", "ranking",
+        ),
+        pattern="[ANCHOR_SUBJECT] → [EVALUATION_PRIORITY]",
+        instruction=(
+            "Identify each distinct evaluative opinion, preference, or prioritization in the response. "
+            "For each idea, produce one concise realization formatted according to the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing exactly one evaluation or preference from the response.",
+            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
+            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            facet_instruction="What evaluation criterion is being applied? (speed, cost, quality, importance, satisfaction)",
+            domain_instruction="What object is being evaluated? Classify into one of the discovered domains.",
+            domain_diagnostic="What object is evaluated?",
+            facet_diagnostic="Speed? cost? quality? importance?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity or phenomenon being evaluated in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="EVALUATION_PRIORITY",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase expressing a judgment, preference, opinion, or evaluative stance.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="Airline satisfaction survey (entity: SkyAir)",
+                response="the food is terrible but the seats are comfortable",
+                instance="the food is terrible",
+                interpretation="poor meal quality",
+                abstraction="onboard service standards",
+                domain="onboard services",
+                facet="quality",
+                valence="-",
+            ),
+            DimensionExample(
+                survey_context="University evaluation (entity: State University)",
+                response="excellent research reputation",
+                instance="excellent research reputation",
+                interpretation="research prestige",
+                abstraction="institutional academic standing",
+                domain="academic standing",
+                facet="reputation",
+                valence="+",
+            ),
+        ),
+        clarification=(
+            "Evaluation = detached judgment or assessment, not embedded in an interaction narrative",
+        ),
+    ),
+
+    # ── 8. ACTION / PROCESS ─────────────────────────────────────────────
+    "BEHAVIOR_FUNCTION": DimensionDefinition(
+        key="BEHAVIOR_FUNCTION",
+        criterion="Do responses mainly differ in what happens or how something works?",
+        criterion_signals=(
+            "Actions, processes, step-by-step descriptions",
+            "How something operates or was done",
+            "Events, outcomes, observable effects",
+        ),
+        exclusions=(
+            "Evaluative framing",
+            "Experiential or emotional framing",
+            "Proposed improvements or changes",
+            "Causal links between two variables or entities (see RELATIONS_DEPENDENCIES)",
+        ),
+        noun_phrase_descriptor="BEHAVIOR & FUNCTION: what happened or how something works",
+        dimension_description=(
+            "Use this dimension when responses vary primarily in descriptive accounts of actions, "
+            "events, processes, or how something functions or operates — reported factually, "
+            "not evaluatively or experientially."
+        ),
+        allowed_concepts=(
+            "action", "process", "behavior", "function",
+            "effect", "outcome", "activity", "operation",
+            "performance", "service",
+        ),
+        pattern="[ANCHOR_SUBJECT] → [BEHAVIOR_FUNCTION]",
+        instruction=(
+            "Identify each distinct action, process, or functional behavior described in the response. "
+            "For each idea, produce one concise realization formatted according to the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing exactly one behavior or function from the response.",
+            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
+            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            facet_instruction="Which functional stage or step is described? (input, processing, output, interaction)",
+            domain_instruction="What system or process? Classify into one of the discovered domains.",
+            domain_diagnostic="What system or process?",
+            facet_diagnostic="Which step or function?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity or phenomenon in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="BEHAVIOR_FUNCTION",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase describing an action, process, behavior, or functional output of the entity.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="Banking usage survey (entity: QuickBank App)",
+                response="I transfer money and check my balance every morning",
+                instance="transfer money",
+                interpretation="money transfers",
+                abstraction="core banking functionality",
+                domain="transaction services",
+                facet="processing",
+                valence="0",
+            ),
+            DimensionExample(
+                survey_context="Software feedback (entity: ProjectHub)",
+                response="the auto-save keeps overwriting my changes",
+                instance="auto-save keeps overwriting my changes",
+                interpretation="auto-save behavior",
+                abstraction="data integrity management",
+                domain="data management",
+                facet="output",
+                valence="-",
+            ),
+        ),
+        clarification=(
+            "Behavior = a single event, action, or process occurring; one entity acts or something happens",
+        ),
+    ),
+
+    # ── 9. DESCRIPTIVE QUALITIES / ASSOCIATIONS ─────────────────────────
+    "ATTRIBUTES_ASSOCIATIONS": DimensionDefinition(
+        key="ATTRIBUTES_ASSOCIATIONS",
+        criterion="Do responses mainly differ in qualities, traits, images, or associations?",
+        criterion_signals=(
+            "Descriptive traits or characteristics",
+            "Product or brand associations",
+            "Image, reputation, perceived qualities",
+        ),
+        exclusions=(
+            "Category or definition",
+            "Judgments of good/bad (see EVALUATION_PRIORITIZATION)",
+            "Evaluative adjectives that imply positive/negative assessment (e.g., 'great', 'terrible')",
+            "Lived experience explanations",
+        ),
+        noun_phrase_descriptor="ATTRIBUTES & ASSOCIATIONS: qualities, traits, images, or associations",
+        dimension_description=(
+            "Use this dimension when the dominant variation lies in how the entity is described "
+            "or perceived — its characteristics, symbolic meanings, reputation, or associations "
+            "— rather than experiences or judgments."
+        ),
+        allowed_concepts=(
+            "attribute", "trait", "quality", "property",
+            "association", "characteristic", "image",
+            "reputation", "perception", "symbol",
+        ),
+        pattern="[ANCHOR_SUBJECT] → [ATTRIBUTE_ASSOCIATION]",
+        instruction=(
+            "Identify each distinct quality, trait, image, or association described in the response. "
+            "For each idea, produce one concise realization formatted according to the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing exactly one attribute or association from the response.",
+            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
+            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            facet_instruction="What attribute category does this trait belong to? (visual, emotional, functional, symbolic)",
+            domain_instruction="What entity has the trait? Classify into one of the discovered domains.",
+            domain_diagnostic="What entity has the trait?",
+            facet_diagnostic="Visual? emotional? functional?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity or phenomenon in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="ATTRIBUTE_ASSOCIATION",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase describing a quality, trait, image, association, or perceived characteristic of the entity.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="Brand association survey (entity: Merk X)",
+                response="insurance and sustainability",
+                instance="insurance",
+                interpretation="insurance products",
+                abstraction="financial service offering",
+                domain="products and services",
+                facet="functional",
+                valence="0",
+            ),
+            DimensionExample(
+                survey_context="Car brand perception (entity: Volvo)",
+                response="safe but boring design",
+                instance="safe",
+                interpretation="vehicle safety reputation",
+                abstraction="brand trust and reliability",
+                domain="safety and engineering",
+                facet="functional",
+                valence="+",
+            ),
+        ),
+        clarification=(
+            "Traits must be non-comparative and non-prioritized",
+            "Attribute = descriptive property without value judgment (e.g., 'blue packaging', 'Dutch brand')",
+        ),
+    ),
+
+    # ── 10. RELATIONS / DEPENDENCIES ────────────────────────────────────
+    "RELATIONS_DEPENDENCIES": DimensionDefinition(
+        key="RELATIONS_DEPENDENCIES",
+        criterion="Do responses mainly differ in relationships or dependencies between entities?",
+        criterion_signals=(
+            "Dependencies between components or systems",
+            "Trade-offs (A vs B, cost vs benefit)",
+            "Influence, interaction effects, system-level causality",
+        ),
+        exclusions=(
+            "Individual attributes",
+            "Actor identity",
+            "Contextual timing or location",
+            "Single-entity events or processes without inter-variable dependency (see BEHAVIOR_FUNCTION)",
+        ),
+        noun_phrase_descriptor="RELATIONS & DEPENDENCIES: relationships or comparisons between entities",
+        dimension_description=(
+            "Use this dimension when responses vary primarily in how entities, concepts, or topics "
+            "relate to each other — dependencies, trade-offs, influence, or comparisons across options."
+        ),
+        allowed_concepts=(
+            "dependency", "comparison", "influence", "trade_off",
+            "interaction", "connection", "partnership", "competition",
+            "relationship", "collaboration",
+        ),
+        pattern="[ANCHOR_SUBJECT] → [RELATION_DEPENDENCY]",
+        instruction=(
+            "Identify each distinct relationship, dependency, or comparison described in the response. "
+            "For each idea, produce one concise realization formatted according to the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing exactly one relationship or dependency from the response.",
+            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
+            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            facet_instruction="What type of relationship is described? (dependency, trade-off, influence, comparison)",
+            domain_instruction="What entities are involved? Classify into one of the discovered domains.",
+            domain_diagnostic="What entities are involved?",
+            facet_diagnostic="Dependency? trade-off? influence?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity or phenomenon in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="RELATION_DEPENDENCY",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase describing a relationship, dependency, comparison, or influence.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="Energy policy survey (entity: National Grid)",
+                response="wind energy depends too much on weather conditions",
+                instance="depends too much on weather conditions",
+                interpretation="weather dependency",
+                abstraction="supply reliability risk",
+                domain="supply reliability",
+                facet="dependency",
+                valence="-",
+            ),
+            DimensionExample(
+                survey_context="Retail ecosystem (entity: ShopLocal Platform)",
+                response="small shops benefit from the shared delivery network",
+                instance="benefit from the shared delivery network",
+                interpretation="shared logistics advantage",
+                abstraction="platform ecosystem value",
+                domain="platform partnerships",
+                facet="influence",
+                valence="+",
+            ),
+        ),
+        clarification=(
+            "Relation = dependency or influence between two or more variables; requires at least two entities connected causally or comparatively",
+        ),
+    ),
+
+    # ── 11. GENERAL / OTHER (fallback) ────────────────────────────────────
+    "GENERAL_OTHER": DimensionDefinition(
+        key="GENERAL_OTHER",
+        criterion="Does the response not clearly fit any of the above dimensions?",
+        criterion_signals=(
+            "Statements that do not match the criteria of the defined dimensions",
+            "Very general or vague remarks",
+            "Meta-responses (e.g., 'I don't know', 'no comment')",
+            "Ambiguous or mixed statements without a dominant interpretation",
+        ),
+        exclusions=(
+            "Statements that can reasonably be classified under an existing dimension",
+        ),
+        noun_phrase_descriptor="GENERAL / OTHER: responses that do not clearly fit a specific dimension",
+        dimension_description=(
+            "Use this dimension as a fallback when none of the defined dimensions "
+            "clearly apply. This category captures general remarks, ambiguous responses, "
+            "meta-responses, and other edge cases that cannot be reliably classified "
+            "under the existing dimensions."
+        ),
+        allowed_concepts=(
+            "general_remark",
+            "comment",
+            "statement",
+            "note",
+            "unspecified_response",
+        ),
+        pattern="[ANCHOR_SUBJECT] → [GENERAL_STATEMENT]",
+        instruction=(
+            "Identify the core idea expressed in the response and represent it "
+            "concisely using the pattern."
+        ),
+        prompt_rules=PromptRules(
+            instance_instruction="Select the minimal verbatim span expressing the main idea of the response.",
+            interpretation_instruction="What is the respondent really saying or expressing?",
+            abstraction_instruction="What general type of remark or theme does this point to?",
+            facet_instruction="What kind of general remark or statement is this?",
+            domain_instruction="What topic does this relate to?",
+            domain_diagnostic="What is this about?",
+            facet_diagnostic="What type of remark is this?",
+        ),
+        anchor_slot=SlotDefinition(
+            name="ANCHOR_SUBJECT",
+            type_name="noun_phrase",
+            required=True,
+            guidance="The focal entity or phenomenon in {language}.",
+        ),
+        domain_slot=SlotDefinition(
+            name="GENERAL_STATEMENT",
+            type_name="noun_like_phrase",
+            required=True,
+            guidance="A concise phrase summarizing the general idea or statement.",
+        ),
+        examples=(
+            DimensionExample(
+                survey_context="Customer feedback (entity: TelcoProvider)",
+                response="I don't really know what to say about them",
+                instance="don't really know what to say",
+                interpretation="onzekerheid over mening",
+                abstraction="gebrek aan merkbetrokkenheid",
+                domain="general",
+                facet="uncertain response",
+                valence="0",
+            ),
+            DimensionExample(
+                survey_context="City policy survey (entity: City Council)",
+                response="they do many things, hard to summarize",
+                instance="many things, hard to summarize",
+                interpretation="moeilijk samen te vatten",
+                abstraction="complexiteit van gemeentelijk beleid",
+                domain="general",
+                facet="general remark",
+                valence="0",
+            ),
+        ),
+    ),
 }
-
-
-# ========================================================================
-# Fallback domain guidance (used when DISCOVER_DOMAINS = False)
-# ========================================================================
-
-
-DOMAIN_FALLBACK_TABLE = (
-    "EXAMPLES (from other surveys, for illustration):\n"
-    "    - GOOD domains:\n"
-    "       • appointment scheduling → access and logistics\n"
-    "       • schedule reliability → operations and planning\n"
-    "       • warmth of service → hospitality and interaction\n\n"
-    "   - BAD domains:\n"
-    "       × Linguistic role labels: 'functional trait', 'moral attribute', 'quality measure'\n"
-    "       × Paraphrases of the interpretation: 'scheduling issue' for 'appointment scheduling'\n"
-    "       × Generic catch-alls: 'characteristics', 'properties', 'features'\n\n"
-)
 
 
 def get_dimension(dimension_key: str) -> DimensionDefinition:
@@ -845,5 +971,5 @@ def get_dimension(dimension_key: str) -> DimensionDefinition:
 
 
 def get_dimensions_in_decision_order() -> list[DimensionDefinition]:
-    """Return all dimensions in decision tree order (position 1-10)."""
+    """Return all dimensions in decision tree order (position 1-11)."""
     return [DIMENSIONS[key] for key in DIMENSION_DECISION_ORDER]
