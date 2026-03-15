@@ -24,14 +24,16 @@ class SlotDefinition:
 class PromptRules:
     """Dimension-specific instructions for taxonomy field extraction.
 
-    Each field maps to a taxonomy level:
-    - instance_instruction       → Attribute (L4): verbatim span guidance
-    - interpretation_instruction → Abstraction ladder rung 2: concrete meaning in survey language
-    - abstraction_instruction    → Abstraction ladder rung 3: broader significance in survey language
-    - facet_instruction          → Facet (L3): dimension-specific aspect question
-    - domain_instruction         → Domain (L2): dimension-specific domain question
-    - domain_diagnostic          → Short-form domain question for prompt headers
-    - facet_diagnostic           → Short-form facet question for example formatting
+    Each field maps to a taxonomy level or abstraction ladder rung:
+    - instance_instruction       → Abstraction ladder rung 1: verbatim span guidance
+    - interpretation_instruction → Abstraction ladder rung 2: concrete meaning
+    - abstraction_instruction    → Abstraction ladder rung 3: broader significance
+    - domain_instruction         → Domain (L2): dimension-specific subject question
+    - domain_diagnostic          → Domain (L2): short-form question for prompt headers
+    - facet_instruction          → Facet (L3): dimension-specific analytical lens question
+    - facet_diagnostic           → Facet (L3): short-form question for prompt headers
+    - attribute_instruction      → Attribute (L4): dimension-specific observable property question
+    - attribute_diagnostic       → Attribute (L4): short-form question for prompt headers
     """
     instance_instruction: str
     interpretation_instruction: str
@@ -40,6 +42,8 @@ class PromptRules:
     domain_instruction: str
     domain_diagnostic: str
     facet_diagnostic: str
+    attribute_instruction: str
+    attribute_diagnostic: str
 
 
 @dataclass(frozen=True)
@@ -47,15 +51,15 @@ class DimensionExample:
     """One worked example for the extraction prompt.
 
     Fields map to taxonomy levels + abstraction ladder:
-    - instance        → Attribute (L4): verbatim span from response
-    - interpretation  → Ladder rung 2: concrete meaning (survey language)
-    - abstraction     → Ladder rung 3: broader significance (survey language)
+    - instance        → Abstraction ladder rung 1: verbatim span from response
+    - interpretation  → Abstraction ladder rung 2: concrete meaning (survey language)
+    - abstraction     → Abstraction ladder rung 3: broader significance (survey language)
     - domain          → Domain (L2): thematic domain
-    - facet           → Facet (L3): dimension-specific aspect
+    - facet           → Facet (L3): analytical lens
     """
     survey_context: str     # e.g., "City improvement survey (entity: City of Springfield)"
     response: str           # e.g., "more bike lanes and better lighting"
-    instance: str           # Attribute (L4): verbatim span
+    instance: str           # Abstraction ladder rung 1: verbatim span
     interpretation: str     # Ladder rung 2: concrete meaning
     abstraction: str        # Ladder rung 3: broader significance
     domain: str             # Domain (L2): thematic domain
@@ -146,10 +150,23 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one proposed action or improvement from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="What type of change is proposed? Name the change approach or intervention type.",
-            domain_instruction="Which part of the system should change? Classify into one of the discovered domains.",
-            domain_diagnostic="What part of the system should change?",
-            facet_diagnostic="How should it change?",
+            domain_instruction=(
+                "Definition: A domain identifies the part of the system, organization, or context that is the target of the proposed change. \n"
+                "Key idea: Domains specify what part of the system should change. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: What is the target of the change?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which proposed changes are examined — specifically, the type or approach of change being proposed. "
+                "Facets distinguish between different kinds of interventions aimed at the same target area; each must be independently analyzable. "
+                "Key idea: Facets specify how the target should change."
+            ),
+            facet_diagnostic="What type of change is proposed?",
+            attribute_instruction=(
+                "An attribute identifies the specific, concrete improvement or action being proposed. "
+                "It is a named property that captures the precise nature of the suggestion. "
+                "Key idea: Attributes name the specific proposed improvement."
+            ),
+            attribute_diagnostic="What exactly is the proposed improvement?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -221,10 +238,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one definition/identity concept from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="Which aspect of identity is being defined? (purpose, scope, category, nature)",
-            domain_instruction="What is being defined? Classify into one of the discovered domains.",
-            domain_diagnostic="What is being defined?",
+            domain_instruction=(
+                "Definition: A domain identifies the entity or concept whose identity is being defined or categorized. \n"
+                "Key idea: Domains specify what is being defined. "
+            ),
+            domain_diagnostic="Question that needs to be answered: What is being defined?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which an entity's identity is examined — specifically, "
+                "the aspect of identity being addressed (purpose, scope, category, nature, or meaning). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify which aspect of identity is being defined."
+            ),
             facet_diagnostic="Which aspect of identity?",
+            attribute_instruction=(
+                "An attribute identifies the specific defining characteristic or identity marker being articulated. "
+                "It is a named property that captures the precise feature of the entity's identity. "
+                "Key idea: Attributes name the specific defining feature."
+            ),
+            attribute_diagnostic="What defining feature is mentioned?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -295,10 +326,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one actor or affected party from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="What role does this actor play? (responsibility, decision-maker, beneficiary, affected party)",
-            domain_instruction="In what situation are actors involved? Classify into one of the discovered domains.",
-            domain_diagnostic="In what situation are actors involved?",
+            domain_instruction=(
+                "Definition: A domain identifies the subject or situation in which actors are involved. \n"
+                "Key idea: Domains specify the subject or situation in which actors are involved. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: In what situation are actors involved?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which actor involvement is examined — specifically, "
+                "the role or position the actor occupies (decision-maker, beneficiary, affected party, or responsible party). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify what role the actor plays."
+            ),
             facet_diagnostic="What role do they play?",
+            attribute_instruction=(
+                "An attribute identifies the specific actor group or stakeholder type referenced. "
+                "It is a named property that captures the precise party being discussed. "
+                "Key idea: Attributes name the specific actor or stakeholder group."
+            ),
+            attribute_diagnostic="Which specific actor group is referenced?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -369,10 +414,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one condition or contextual factor from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="What context dimension is involved? (time, location, constraint, trigger, environment)",
-            domain_instruction="What situation is being discussed? Classify into one of the discovered domains.",
-            domain_diagnostic="What situation is being discussed?",
+            domain_instruction=(
+                "Definition: A domain identifies the situation, activity, or process to which contextual conditions apply. \n"
+                "Key idea: Domains specify what situation is being discussed. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: What situation is being discussed?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which contextual conditions are examined — specifically, "
+                "the type of contextual dimension (time, location, constraint, trigger, or environment). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify what type of condition is described."
+            ),
             facet_diagnostic="Time? location? constraint?",
+            attribute_instruction=(
+                "An attribute identifies the specific condition, circumstance, or contextual factor being mentioned. "
+                "It is a named property that captures the precise situational feature. "
+                "Key idea: Attributes name the specific contextual condition."
+            ),
+            attribute_diagnostic="What specific condition is mentioned?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -443,10 +502,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one motivation or reason from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="What type of motivation is expressed? (need, goal, fear, value, aspiration)",
-            domain_instruction="What is the motivation about? Classify into one of the discovered domains.",
-            domain_diagnostic="What is the motivation about?",
+            domain_instruction=(
+                "Definition: A domain identifies the object, activity, or situation that the motivation is about. \n"
+                "Key idea: Domains specify what the motivation is about. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: What is the motivation about?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which motivations are examined — specifically, "
+                "the type of motivation expressed (need, goal, fear, value, or aspiration). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify what type of motivation is expressed."
+            ),
             facet_diagnostic="Need? goal? fear? value?",
+            attribute_instruction=(
+                "An attribute identifies the specific reason, benefit, or motivational factor being stated. "
+                "It is a named property that captures the precise driver. "
+                "Key idea: Attributes name the specific motivational factor."
+            ),
+            attribute_diagnostic="What specific reason is stated?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -501,9 +574,8 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         ),
         noun_phrase_descriptor="EXPERIENCE & PERCEPTION: how something was experienced or perceived",
         dimension_description=(
-            "Use this dimension when responses vary primarily in lived experiences, feelings, "
-            "impressions, or overall sense-making. The focus is on what it was like, rather "
-            "than judgments, actions, or attributes."
+            "Use this dimension when responses vary primarily in lived experiences, feelings, impressions, or overall sense-making. "
+            "The focus is on what it was like, rather than judgments, actions, or attributes."
         ),
         allowed_concepts=(
             "experience", "perception", "impression", "feeling",
@@ -519,10 +591,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one experience or perception from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="What experiential dimension is involved? (flow, atmosphere, interaction, sensation, emotion)",
-            domain_instruction="Which part of the experience? Classify into one of the discovered domains.",
-            domain_diagnostic="Which part of the experience?",
+            domain_instruction=(
+                "Definition: A domain identifies the part of the experience or journey being described. \n"
+                "Key idea: Domains specify which part of the experience is described. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: Which part of the experience?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which experiences are examined — specifically, "
+                "the experiential dimension being addressed (flow, atmosphere, interaction, sensation, or emotion). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify what experiential quality is described."
+            ),
             facet_diagnostic="Flow? atmosphere? interaction?",
+            attribute_instruction=(
+                "An attribute identifies the specific experiential feature observed or felt. "
+                "It is a named property that captures the precise aspect of the experience. "
+                "Key idea: Attributes name the specific observed experience feature."
+            ),
+            attribute_diagnostic="What specific experience feature was observed or felt?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -599,10 +685,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one evaluation or preference from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="What evaluation criterion is being applied? (speed, cost, quality, importance, satisfaction)",
-            domain_instruction="What object is being evaluated? Classify into one of the discovered domains.",
-            domain_diagnostic="What object is evaluated?",
+            domain_instruction=(
+                "Definition: A domain identifies the object, service, or aspect being evaluated or judged. \n"
+                "Key idea: Domains specify what is being evaluated. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: What object is evaluated?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which evaluations are examined — specifically, "
+                "the evaluation criterion being applied (speed, cost, quality, importance, or satisfaction). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify on what criterion the evaluation is based."
+            ),
             facet_diagnostic="Speed? cost? quality? importance?",
+            attribute_instruction=(
+                "An attribute identifies the specific evaluative signal or evidence of judgment. "
+                "It is a named property that captures the precise characteristic being assessed. "
+                "Key idea: Attributes name the specific evaluation signal."
+            ),
+            attribute_diagnostic="What specific evidence of evaluation appears?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -678,10 +778,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one behavior or function from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="Which functional stage or step is described? (input, processing, output, interaction)",
-            domain_instruction="What system or process? Classify into one of the discovered domains.",
-            domain_diagnostic="What system or process?",
+            domain_instruction=(
+                "Definition: A domain identifies the process, system, or activity being described. \n"
+                "Key idea: Domains specify what system or process is described. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: What system or process?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which behaviors or functions are examined — specifically, "
+                "the functional stage or step (input, processing, output, or interaction). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify which step or function is described."
+            ),
             facet_diagnostic="Which step or function?",
+            attribute_instruction=(
+                "An attribute identifies the specific action, behavior, or functional feature being described. "
+                "It is a named property that captures the precise operational characteristic. "
+                "Key idea: Attributes name the specific behavioral or functional feature."
+            ),
+            attribute_diagnostic="What specific action occurs?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -757,10 +871,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one attribute or association from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="What attribute category does this trait belong to? (visual, emotional, functional, symbolic)",
-            domain_instruction="What entity has the trait? Classify into one of the discovered domains.",
-            domain_diagnostic="What entity has the trait?",
+            domain_instruction=(
+                "Definition: A domain identifies the entity or object being described with qualities or associations. \n"
+                "Key idea: Domains specify what entity has the trait. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: What entity has the trait?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which descriptive qualities are examined — specifically, "
+                "the attribute category (visual, emotional, functional, or symbolic). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify what type of quality is described."
+            ),
             facet_diagnostic="Visual? emotional? functional?",
+            attribute_instruction=(
+                "An attribute identifies the specific quality, trait, or association being described. "
+                "It is a named property that captures the precise descriptive characteristic. "
+                "Key idea: Attributes name the specific quality or trait."
+            ),
+            attribute_diagnostic="What specific quality is described?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -836,10 +964,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing exactly one relationship or dependency from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
-            facet_instruction="What type of relationship is described? (dependency, trade-off, influence, comparison)",
-            domain_instruction="What entities are involved? Classify into one of the discovered domains.",
-            domain_diagnostic="What entities are involved?",
+            domain_instruction=(
+                "Definition: A domain identifies the system or set of entities involved in the relationship. \n"
+                "Key idea: Domains specify what entities are involved in the relationship. \n"
+            ),
+            domain_diagnostic="Question that needs to be answered: What entities are involved?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which relationships are examined — specifically, "
+                "the type of relationship (dependency, trade-off, influence, or comparison). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify what type of relationship is described."
+            ),
             facet_diagnostic="Dependency? trade-off? influence?",
+            attribute_instruction=(
+                "An attribute identifies the specific relational feature or linkage being described. "
+                "It is a named property that captures the precise nature of the connection between entities. "
+                "Key idea: Attributes name the specific relational feature."
+            ),
+            attribute_diagnostic="What specific relationship is described?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -916,10 +1058,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             instance_instruction="Select the minimal verbatim span expressing the main idea of the response.",
             interpretation_instruction="What is the respondent really saying or expressing?",
             abstraction_instruction="What general type of remark or theme does this point to?",
-            facet_instruction="What kind of general remark or statement is this?",
-            domain_instruction="What topic does this relate to?",
-            domain_diagnostic="What is this about?",
+            domain_instruction=(
+                "Definition: A domain identifies the general subject area of the response. \n"
+                "Key idea: Domains specify what subject the response relates to."
+            ),
+            domain_diagnostic="Question that needs to be answered: What is this about?",
+            facet_instruction=(
+                "A facet identifies the analytical lens through which general remarks are examined — specifically, "
+                "the type of remark (uncertain response, meta-comment, general observation). "
+                "Each facet must be independently analyzable. "
+                "Key idea: Facets specify what type of general remark this is."
+            ),
             facet_diagnostic="What type of remark is this?",
+            attribute_instruction=(
+                "An attribute identifies the specific feature or characteristic of the general remark. "
+                "It is a named property that captures whatever concrete signal is present. "
+                "Key idea: Attributes name whatever specific feature can be identified."
+            ),
+            attribute_diagnostic="What specific feature is mentioned?",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",

@@ -4,12 +4,18 @@ Local Pipeline Models for step_3_ideaExtractor v5.
 Taxonomy: Dimension (L1) > Domain (L2) > Facet (L3) > Attribute (L4).
 v5 overhaul: 10 MECE dimensions with decision-tree ordering.
 
-Per-idea fields map to taxonomy levels:
-- instance  → Attribute (L4): verbatim span
-- facet     → Facet (L3): dimension-specific aspect
-- domain    → Domain (L2): thematic domain
+Per-idea taxonomy fields:
+- domain    → Domain (L2): thematic domain (assigned by step 3)
+- facet     → Facet (L3): analytical lens (step 3 hint; completed by step 5)
+- attribute → Attribute (L4): named observable property (assigned by step 5)
 
-Keeps shared models_exp.py untouched so v2 remains runnable.
+Per-idea extraction metadata (abstraction ladder):
+- instance       → Rung 1: verbatim span from response
+- interpretation → Rung 2: concrete meaning (survey language)
+- abstraction    → Rung 3: broader significance (survey language)
+
+Note: Instance ≠ Attribute. Instance is a verbatim span (ladder rung 1);
+Attribute is a named observable property (taxonomy L4).
 """
 
 from typing import List, Any, Optional, Union, Dict
@@ -80,17 +86,24 @@ class ExtractionMetadata(BaseModel):
 class IdeasExtractedSubmodel(BaseModel):
     """Per-idea data from step 3 extraction.
 
-    Taxonomy levels: instance (L4 Attribute) + facet (L3) + domain (L2)
-    Abstraction ladder: instance → interpretation → abstraction (survey language)
+    Taxonomy fields: domain (L2), facet (L3), attribute (L4).
+    - Domain assigned by step 3; facet partially populated by step 3.
+    - Facet and attribute completed by step 5.
+
+    Abstraction ladder (extraction metadata): instance → interpretation → abstraction.
     """
     idea_id: str                          # Format: {respondent_id}_{sequence_number}
     idea: str                             # Clean text (starts with template prefix)
-    instance: str = ""                    # Attribute (L4): verbatim span from response
-    interpretation: str = ""              # Ladder rung 2: concrete meaning (survey language)
-    abstraction: str = ""                 # Ladder rung 3: broader significance (survey language)
-    facet: str = ""                       # Facet (L3): dimension-specific aspect
+    # --- Abstraction ladder (extraction metadata, NOT taxonomy levels) ---
+    instance: str = ""                    # Rung 1: verbatim span from response
+    interpretation: str = ""              # Rung 2: concrete meaning (survey language)
+    abstraction: str = ""                 # Rung 3: broader significance (survey language)
+    # --- Taxonomy levels ---
     domain: str = ""                      # Domain (L2): thematic domain
-    valence: str = ""                     # +, -, or 0
+    facet: str = ""                       # Facet (L3): analytical lens (step 3 hint; completed by step 5)
+    attribute: str = ""                   # Attribute (L4): named observable property (assigned by step 5)
+    # --- Classification metadata ---
+    valence: str = ""                     # Directional effect: +, -, or 0
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 

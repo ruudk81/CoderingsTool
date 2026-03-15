@@ -519,6 +519,7 @@ def build_domain_discovery_prompt(
     primary_dimension: str,
     primary_dimension_description: str,
     domain_diagnostic: str,
+    domain_instruction: str,
 ) -> str:
     """Build the domain discovery prompt for a single chunk."""
     return f"""You are a qualitative research methodologist specializing in taxonomy development for survey analysis.
@@ -545,18 +546,8 @@ Here is contextual information from prior analysis:
 
 The primary dimension selected for this dataset is:
 <primary_dimension>
-{primary_dimension}
+{primary_dimension}: {primary_dimension_description}
 </primary_dimension>
-
-<primary_dimension_description>
-{primary_dimension_description}
-</primary_dimension_description>
-
-The diagnostic question for domains within this dimension is:
-<domain_diagnostic>
-{domain_diagnostic}
-</domain_diagnostic>
-Each domain should answer this question for a group of related responses.
 
 Here is a representative sample of {chunk_size} verbatim responses:
 <sample_responses>
@@ -567,30 +558,24 @@ Here is a representative sample of {chunk_size} verbatim responses:
 
 You need to understand the following four-level taxonomy structure:
 
-**1. Dimension**
-- Definition: The highest-level conceptual axis used to organize a problem space. It represents a major perspective or evaluation axis.
-- Key idea: The broad lens through which something is analyzed
-- Question it answers: What overarching concept are we examining?
-- Examples: Customer Experience, Product Experience, Trust, Adoption, Usability
+**1. Dimension (L1)**
+- Definition: A dimension identifies the type of information conveyed by a response. 
 
-**2. Domain**
-- Definition: A major sub-area within a dimension that groups related phenomena. It defines the main functional areas that belong to the dimension.
-- Question it answers: Which area of this dimension does the observation belong to?
-- Example: Within "Product Experience" dimension, domains might include Usability, Performance, Design, Reliability
+**2. Domain (L2)**
+{domain_instruction}
 
-**3. Facet**
-- Definition: A specific viewpoint or characteristic within a domain that describes how the domain can vary or be evaluated.
-- Question it answers: Which specific aspect of this domain are we focusing on?
-- Example: Within "Usability" domain, facets might include Navigation, Learnability, Interface clarity, Efficiency
+**3. Facet (L3)**
+- Definition: A facet identifies the analytical lens through which the domain is being examined. 
 
-**4. Attribute**
-- Definition: A concrete property or observable feature that describes the facet. The lowest taxonomy level before codes or measurements.
-- Question it answers: What specific characteristic or signal are we observing?
-- Example: Within "Navigation" facet, attributes might include Menu clarity, Ease of finding features, Breadcrumb visibility
+**4. Attribute (L4)**
+- Definition: An attribute identifies the specific observable property, feature, or signal that the response refers to. 
 
 ## YOUR TASK
 
 Your task is to identify **domains** (level 2 in the hierarchy) for the given dimension based on the survey responses provided.
+
+{domain_instruction}
+{domain_diagnostic}
 
 Your goal is to identify the **fewest domains possible** that provide **full coverage** of all the responses. Each domain must be:
 - Mutually exclusive (no conceptual overlap with other domains)
@@ -599,14 +584,10 @@ Your goal is to identify the **fewest domains possible** that provide **full cov
 
 ## CRITICAL REQUIREMENTS
 
-- All labels and definitions in your JSON output must be in the language specified in the <language> tags
+- All labels and definitions in your JSON output must be in the language specified in the <language> tags, which is {language}
 - The "key" field should be in English for technical consistency
-- Each domain definition must complete: "This domain covers responses about [single aspect]." State the abstract boundary only
 - Domain definitions must NOT contain examples or enumerations — no "such as", "like", "zoals"
 - Domains must be mutually exclusive with no conceptual overlap
-- You must achieve full coverage of all responses with the fewest domains possible
-- Your output must be valid JSON that matches the schema exactly
-- All output values (labels and definitions) must be in {language}.
 
 Begin processing now and provide your output as **valid JSON** following the response schema provided."""
 
@@ -614,15 +595,15 @@ Begin processing now and provide your output as **valid JSON** following the res
 class DomainItem(BaseModel):
     """A single domain discovered from the data."""
     key: str = Field(
-        description="Short natural-language identifier (1-4 words, no underscores)",
-        examples=["access and logistics", "value proposition", "hospitality and interaction"]
+        description="Short identifier",
+        examples=["access_and_logistics", "value_proposition", "hospitality_and_interaction"]
     )
     label: str = Field(
-        description="Human-readable label in the response language",
+        description="Human-readable label in {language} (1-4 words)",
         examples=["Toegang en logistiek", "Waardepropositie", "Gastvrijheid en interactie"]
     )
     definition: str = Field(
-        description="Scope statement completing: 'This domain covers responses about [single aspect].' One focused boundary, not a compound list, no examples or enumerations"
+        description="Short clarification of domain label in {language} (1 sentence). CRITICAL: One focused boundary, not a compound list, no examples or enumerations"
     )
 
     @field_validator('definition', mode='after')

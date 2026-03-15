@@ -9,9 +9,7 @@ These settings control:
 - Tiktoken-to-API offset learning
 - Timeouts and latency handling
 - Progress reporting intervals
-- Bootstrap measurement
-- PID controller for rate limiting
-- TPM tracking and utilization
+- Concurrency discovery and rate limiting
 - Throughput adjustment
 - Generic specifier extraction
 """
@@ -60,7 +58,6 @@ class TimeoutConfig:
     default_timeout_seconds: float = 30.0   # Default timeout when no latency data
     default_latency_seconds: float = 2.0    # Default latency estimate
     max_token_acquire_attempts: int = 1000  # Max attempts to acquire tokens before failing
-    bootstrap_timeout_seconds: float = 30.0 # Timeout for bootstrap probe calls
 
 
 # =============================================================================
@@ -72,7 +69,7 @@ class ReportingConfig:
     """Configuration for progress and diagnostic reporting intervals."""
     progress_report_interval: int = 5       # Seconds between progress reports
     diagnostic_interval: int = 10           # Seconds between diagnostic outputs
-    adjustment_interval: int = 20           # Seconds between throughput adjustments
+    adjustment_interval: int = 20           # Seconds between concurrency/throughput adjustments
 
 
 # =============================================================================
@@ -81,10 +78,53 @@ class ReportingConfig:
 
 @dataclass
 class BootstrapConfig:
-    """Configuration for bootstrap measurement phase."""
-    num_probes: int = 5                     # Number of probe calls for accuracy
+    """Configuration for initial token estimation defaults."""
     default_avg_tokens: int = 1500          # Default token estimate fallback
     sample_size_for_token_estimation: int = 10  # Sample size for initial token calculation
+
+
+# =============================================================================
+# RAMP-UP CONFIGURATION
+# =============================================================================
+
+@dataclass
+class RampUpConfig:
+    """Completion-based concurrency ramp with congestion detection.
+
+    Concurrency scales linearly with completion progress:
+      0% complete → start_fraction (50%) of Little's Law
+      100% complete → target_fraction (90%) of Little's Law
+
+    Stop early if throughput drops OR queue starts backing up.
+    """
+    start_fraction: float = 0.50                # Start at 50% of Little's Law cap
+    target_fraction: float = 0.90               # Ramp toward 90% of Little's Law cap
+    min_initial: int = 5                        # Never start below 5
+    measurement_window_seconds: float = 0.5     # Check every 0.5s (completion-driven)
+    min_completions_per_step: int = 3           # Need N completions to evaluate
+
+
+# =============================================================================
+# CIRCUIT BREAKER CONFIGURATION
+# =============================================================================
+
+@dataclass
+class CircuitBreakerConfig:
+    """Concurrency circuit breaker — reacts to sustained timeout RATE, not individual events.
+
+    Prevents death spiral: individual timeouts are retried by tenacity.
+    Only reduces concurrency when timeout rate exceeds threshold in sliding window.
+
+    State machine: CLOSED → OPEN (tripped, cooldown) → RECOVERING → CLOSED.
+    """
+    window_seconds: float = 30.0          # Sliding window for timeout rate measurement
+    trip_threshold: float = 0.05          # Trip if >5% of events are timeouts
+    min_events_to_trip: int = 10          # Need enough events to be statistically meaningful
+    reduction_factor: float = 0.85        # Reduce concurrency by 15% when tripped
+    cooldown_seconds: float = 60.0        # No further reductions during cooldown
+    recovery_step_pct: float = 0.10       # Recover 10% per interval toward baseline
+    recovery_interval_seconds: float = 30.0  # Check recovery every 30s
+    min_concurrency: int = 10             # Hard floor
 
 
 # =============================================================================
@@ -93,16 +133,15 @@ class BootstrapConfig:
 
 @dataclass
 class PIDControllerConfig:
-    """Configuration for PID-style throughput controller.
+    """PID controller for arrival rate adjustment.
 
     Uses ASYMMETRIC gains:
     - kp_up: Aggressive when under-utilizing (speed up faster)
     - kp_down: Gentle when over-utilizing (slow down carefully)
 
-    The controller tracks:
-    - Error: difference between target and actual TPM utilization
-    - Integral: accumulated error over time (handles persistent bias)
-    - Derivative: rate of change (dampens oscillations)
+    The controller adjusts the arrival rate (requests/second) based on
+    real-time TPM utilization, keeping throughput near optimal without
+    hitting rate limits.
     """
     kp_up: float = 0.4                      # Proportional gain when under-utilizing
     kp_down: float = 0.2                    # Proportional gain when over-utilizing
@@ -118,13 +157,12 @@ class PIDControllerConfig:
 
 @dataclass
 class TPMTrackingConfig:
-    """Configuration for real-time TPM (Tokens Per Minute) tracking.
+    """Real-time TPM (Tokens Per Minute) tracking for PID input.
 
-    Tracks actual consumption in a sliding window to provide
+    Tracks actual token consumption in a sliding window to provide
     accurate utilization metrics for PID control.
     """
     sliding_window_seconds: float = 60.0    # Track TPM over last 60 seconds
-    sample_interval: float = 1.0            # Sample TPM every 1 second
     target_utilization: float = 0.80        # Target 80% TPM utilization (20% buffer)
 
 
@@ -134,9 +172,25 @@ class TPMTrackingConfig:
 
 @dataclass
 class ThroughputConfig:
-    """Configuration for threshold-based throughput adjustment (fallback to PID)."""
+    """Configuration for threshold-based token estimate correction."""
     adjustment_min_samples: int = 10        # Min samples before adjustment
     adjustment_threshold: float = 1.05      # Sensitivity threshold (5%)
+
+
+# =============================================================================
+# WARM-UP CALIBRATION CONFIGURATION
+# =============================================================================
+
+@dataclass
+class WarmUpConfig:
+    """Configuration for warm-up token calibration.
+
+    During the first N completions, we measure actual token usage
+    and latency to calibrate estimates. After calibration, Little's Law
+    concurrency is recomputed with measured data.
+    """
+    sample_min: int = 15               # Min completions before token calibration
+    sample_max: int = 30               # Max completions before forced calibration
 
 
 # =============================================================================
@@ -155,10 +209,6 @@ class SpecifierConfig:
     chunk_size: int = 50                    # Chunk size for specifier extraction
     max_workers: int = 10                   # Max workers for specifier extraction
 
-
-# =============================================================================
-# DEFAULT INSTANCES
-# =============================================================================
 
 # =============================================================================
 # SEGMENTATION CONFIGURATION (moved from config.py - ideaExtractor-only)
@@ -197,7 +247,10 @@ DEFAULT_TIKTOKEN_OFFSET_CONFIG = TiktokenOffsetConfig()
 DEFAULT_TIMEOUT_CONFIG = TimeoutConfig()
 DEFAULT_REPORTING_CONFIG = ReportingConfig()
 DEFAULT_BOOTSTRAP_CONFIG = BootstrapConfig()
+DEFAULT_THROUGHPUT_CONFIG = ThroughputConfig()
+DEFAULT_WARM_UP_CONFIG = WarmUpConfig()
+DEFAULT_RAMP_UP_CONFIG = RampUpConfig()
+DEFAULT_CIRCUIT_BREAKER_CONFIG = CircuitBreakerConfig()
 DEFAULT_PID_CONTROLLER_CONFIG = PIDControllerConfig()
 DEFAULT_TPM_TRACKING_CONFIG = TPMTrackingConfig()
-DEFAULT_THROUGHPUT_CONFIG = ThroughputConfig()
 DEFAULT_SPECIFIER_CONFIG = SpecifierConfig()
