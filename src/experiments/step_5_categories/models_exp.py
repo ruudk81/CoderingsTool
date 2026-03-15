@@ -59,11 +59,15 @@ class PartitionSet(BaseModel):
 # =============================================================================
 
 class PartitionMECEResultModel(BaseModel):
-    """Pydantic-serializable partition result for caching."""
+    """Pydantic-serializable partition result for caching (v3)."""
     partition_name: str
     n_labels: int
     n_batches: int
     categories: List[MECECategory] = Field(default_factory=list)
+    # v3 fields
+    facets: List[Dict[str, Any]] = Field(default_factory=list)
+    facet_assignments: Dict[str, str] = Field(default_factory=dict)
+    attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
 
 
 class MECEResultsCache(BaseModel):
@@ -82,7 +86,9 @@ class MECEResultsCache(BaseModel):
 class CategoryAssignedSubmodel(IdeasExtractedSubmodel):
     """Per-idea data with MECE category assignment.
 
-    Extends step 3's IdeasExtractedSubmodel (no embeddings).
+    Extends step 3's IdeasExtractedSubmodel.
+    Step 5 populates: facet (L3), attribute (L4) on the base model,
+    plus category assignment fields below.
     """
     assigned_category: Optional[str] = None
     category_confidence: Optional[float] = None

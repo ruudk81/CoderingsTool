@@ -1,117 +1,144 @@
 """
-Prompts and Pydantic response models for Category Discovery.
+Prompts and Pydantic response models for Category Discovery v3.
 
 Organized in pipeline processing order:
-  §1  Theme Discovery (per-partition, chunked)
-  §2  Theme Consolidation (per-partition)
-  §3  Concept Discovery (per-partition)
-  §4  Cross-Partition COC Consolidation
-  §5  Hierarchical Codebook Construction
-  §6  Shared Data Models (MECECategory, MECEVerification, ThematicAnalysisResult)
-  §7  Bridge — HierarchicalCodebookResult → List[MECECategory]
-  §8  Category Assignment (batch)
-  §9  Category Assignment (single idea)
+  §1  Dimension Context Block (shared helper)
+  §2  Facet Discovery (P1: per-domain, chunked)
+  §3  Facet Assignment (P2: per-domain, batched)
+  §4  Attribute Discovery (P3: per facet within domain)
+  §5  Code Generation from Attributes (P4: cross-domain)
+  §6  Bridge — codes → MECECategory
+  §7  Shared Data Models (MECECategory, MECEVerification)
+  §8  Code Assignment — batch (P5)
+  §9  Code Assignment — single idea (P5)
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 from pydantic import BaseModel, Field
 
+if TYPE_CHECKING:
+    from experiments.step_3_ideaExtractor.dimension_data import DimensionDefinition
+
 
 # =============================================================================
-# §1 THEME DISCOVERY — per-partition chunked theme extraction
+# §1 DIMENSION CONTEXT BLOCK — shared helper for all prompts
 # =============================================================================
 
-def build_theme_discovery_prompt(
+def build_dimension_context_block(
+    *,
+    dimension_def: Optional[DimensionDefinition],
+    dimension_name: str,
+    dimension_description: str,
+    domain_name: str,
+    domain_definition: str,
+) -> str:
+    """Build a dimension-specific taxonomy context block for prompts. """
+    if dimension_def is None:
+        # Fallback: generic taxonomy block (no dimension-specific semantics)
+        return f"""<taxonomy_context>
+Dimension: {dimension_name} — {dimension_description}
+Domain: {domain_name} — {domain_definition}
+
+Taxonomy levels:
+- Dimension (L1): the type of information expressed in the response
+- Domain (L2): the subject the statement refers to
+- Facet (L3): the analytical lens applied to the subject
+- Attribute (L4): the specific observable property being described
+</taxonomy_context>"""
+
+    rules = dimension_def.prompt_rules
+
+    # Build worked example from dimension's examples
+    example_block = ""
+    if dimension_def.examples:
+        ex = dimension_def.examples[0]
+        example_block = f"""
+Example (from a different survey):
+  Survey: {ex.survey_context}
+  Response: "{ex.response}"
+  Domain: {ex.domain}
+  Facet: {ex.facet}
+  Instance: {ex.instance}"""
+
+    return f"""<taxonomy_context>
+Dimension: {dimension_name} — {dimension_description}
+Domain: {domain_name} — {domain_definition}
+
+This dimension analyzes: {dimension_def.criterion}
+
+Taxonomy levels for this dimension:
+- Domain (L2): {rules.domain_diagnostic}
+- Facet (L3): {rules.facet_diagnostic}
+  {rules.facet_instruction}
+- Attribute (L4): {rules.attribute_diagnostic}
+  {rules.attribute_instruction}
+{example_block}
+</taxonomy_context>"""
+
+
+# =============================================================================
+# §2 FACET DISCOVERY (P1) — per-domain chunked pattern extraction
+# =============================================================================
+
+class DiscoveredFacet(BaseModel):
+    """A facet (L3) discovered from observations within a domain."""
+    facet_name: str = Field(
+        ..., description="Short descriptive name for the facet (2-5 words)"
+    )
+    facet_description: str = Field(
+        ..., description="What this facet captures — the specific viewpoint or aspect (1-2 sentences)"
+    )
+    example_observations: List[str] = Field(
+        ..., description="3-5 representative observations from the input"
+    )
+
+
+class FacetDiscoveryResult(BaseModel):
+    """P1 output: facets discovered in observations."""
+    facets: List[DiscoveredFacet] = Field(
+        ..., description="Facets identified in the observations"
+    )
+
+
+def build_facet_discovery_prompt(
     *,
     survey_question: str,
     language: str,
     dataset_context_section: str,
+    dimension_def: Optional[DimensionDefinition],
     dimension_name: str,
     dimension_description: str,
     partition_name: str,
     partition_definition: str,
-    labels: List[str],
-    label_domains: Optional[List[Optional[str]]] = None,
+    observations: List[str],
 ) -> str:
-    """Discover themes/insights from a chunk of labels."""
-    _domains = label_domains or []
-    labels_block = "\n".join(
-        f"{i}. {label}" + (
-            f"  [domain: {_domains[i - 1]}]"
-            if i - 1 < len(_domains) and _domains[i - 1] else ""
-        )
-        for i, label in enumerate(labels, 1)
+    """Discover facets (L3) from a chunk of observations within a domain."""
+    observations_block = "\n".join(
+        f"{i}. {obs}" for i, obs in enumerate(observations, 1)
     )
 
-    return f"""You are a qualitative research analyst.
-
-Your task is to identify atomic themes that capture the shared patterns of meaning across coded responses.
-
-A theme is a pattern of shared meaning across the dataset that answers the research question.
-Themes are not just topics — they should capture something meaningful about the data.
-
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-</survey_context>
-
-<example>
-Codes:
-- loneliness
-- homesickness
-- missing family
-
-Theme:
-Emotional challenges of transition to university
-
-Braun & Clarke emphasize that themes are constructed by the researcher, not simply "found" in the data.
-</example>
-
-All output MUST be in {language}.
-
-Provide output as valid JSON following the response schema provided.
-
-<coded_responses>
-{labels_block}
-</coded_responses>"""
-
-
-class ThemeDiscoveryResult(BaseModel):
-    """Prompt 1 output: concise theme phrases from a chunk of labels."""
-    themes: List[str] = Field(
-        ...,
-        description="Concise theme phrases (one short sentence or phrase each)"
+    taxonomy_block = build_dimension_context_block(
+        dimension_def=dimension_def,
+        dimension_name=dimension_name,
+        dimension_description=dimension_description,
+        domain_name=partition_name,
+        domain_definition=partition_definition,
     )
 
+    # Dimension-specific facet guidance
+    if dimension_def:
+        rules = dimension_def.prompt_rules
+        facet_question = rules.facet_diagnostic
+        facet_guidance = rules.facet_instruction
+    else:
+        facet_question = "What specific aspect or viewpoint does this represent?"
+        facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
 
-# =============================================================================
-# §2 THEME CONSOLIDATION — deduplicate themes per partition
-# =============================================================================
+    return f"""You are assisting with qualitative analysis.
 
-def build_theme_consolidation_prompt(
-    *,
-    survey_question: str,
-    language: str,
-    dataset_context_section: str,
-    dimension_name: str,
-    dimension_description: str,
-    partition_name: str,
-    partition_definition: str,
-    themes: List[str],
-) -> str:
-    """Consolidate raw themes per partition."""
-    themes_block = "\n".join(
-        f"{i}. {theme}" for i, theme in enumerate(themes, 1)
-    )
-
-    return f"""You are a qualitative research analyst performing theme consolidation.
-
-You will receive a list of {len(themes)} themes/insights that were independently discovered from overlapping chunks of the same dataset. Because chunks overlap and theme discovery runs independently per chunk, the list contains SUBSTANTIAL redundancy: many themes are paraphrases, near-duplicates, or minor variations of the same underlying insight.
-
-These themes were discovered along the taxonomy dimension "{dimension_name}": {dimension_description}
-Within this taxonomy, we are looking at the section "{partition_name}": {partition_definition}
+The observations below are derived from responses to a survey question, grouped within a specified domain.
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -119,26 +146,375 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-<raw_themes>
-{themes_block}
-</raw_themes>
+{taxonomy_block}
+
+<facet_level_guidance>
+Target abstraction level: FACET (L3)
+
+{facet_guidance}
+A facet answers the question: {facet_question}
+
+Your goal is to identify the **fewest meaningful facets** that explain the observations within the domain.
+
+Guidelines:
+- Prefer FEWER and BROADER facets rather than many narrow ones
+- Merge facets whenever they could belong to the same broader viewpoint
+- If two facets differ only by specific examples, they should be merged
+- Do NOT create facets for observations outside the domain: {partition_name}
+</facet_level_guidance>
+
+## TASK
+Identify recurring facets (L3) within the domain "{partition_name}" by answering: {facet_question}
 
 <instructions>
-Your task is to AGGRESSIVELY consolidate these {len(themes)} themes into a clean, deduplicated list. The input is expected to contain 50-80% redundancy — your output should be dramatically shorter than the input.
+Step 1 — Identify the main facets through which the entity is described within this domain.
+Step 2 — Group observations under these facets.
+Step 3 — Organize into dominant facets (capture the majority) and minor facets (infrequent or singletons).
 
-Consolidation rules:
-1. Two themes describe the SAME insight if they refer to the same perception, evaluation, or experience — even when they use different words, emphasize different facets, or vary in specificity. For example:
-   - "Strong focus on sustainability" and "Commitment to green energy and environment" → SAME insight (both about environmental commitment)
-   - "Good customer service experience" and "Helpful and responsive staff" → SAME insight (both about positive service interactions)
-   - "High prices compared to competitors" and "Products are expensive" → SAME insight (both about price perception)
+Only return dominant facets.
+</instructions>
 
-2. For each group of overlapping themes, write ONE consolidated theme that captures the richest, most specific version of the insight. Do not water it down into a vague umbrella term.
+<observations>
+{observations_block}
+</observations>
 
-3. Do NOT add new themes that aren't present in the input.
+All output MUST be in {language}.
 
-4. After your initial pass, do a SELF-CHECK: review your consolidated list and ask "Could any two of these remaining themes still be merged?" If yes, merge them. Repeat until no further merges are possible.
+Provide output as valid JSON following the response schema provided."""
 
-A typical result has 10-25 themes. If your output is longer than 30 themes, you are almost certainly under-merging — revisit and merge more aggressively.
+
+# =============================================================================
+# §3 FACET ASSIGNMENT (P2) — per-domain batched assignment
+# =============================================================================
+
+class FacetAssignment(BaseModel):
+    """Single idea-to-facet assignment."""
+    idea_id: str = Field(
+        ..., description="The idea_id from the input"
+    )
+    assigned_facet_id: str = Field(
+        ..., description=(
+            "The facet ID from the [F#] prefix (e.g. 'F1', 'F3'). "
+            "Return ONLY the ID, not the facet name."
+        )
+    )
+    confidence: float = Field(
+        ..., description="Confidence in the assignment (0.0 to 1.0)"
+    )
+
+
+class FacetAssignmentBatch(BaseModel):
+    """Batch of facet assignments for multiple ideas."""
+    assignments: List[FacetAssignment] = Field(
+        ..., description="One assignment per idea in the input batch"
+    )
+
+
+def _build_facet_codebook_block(
+    facets: List[DiscoveredFacet],
+    other_label: Optional[str] = None,
+) -> str:
+    """Format discovered facets as a numbered codebook for assignment."""
+    lines = []
+    for i, facet in enumerate(facets, 1):
+        examples = "; ".join(facet.example_observations[:3])
+        lines.append(
+            f"[F{i}] {facet.facet_name}\n"
+            f"    Description: {facet.facet_description}\n"
+            f"    Examples: {examples}"
+        )
+    if other_label:
+        n = len(facets) + 1
+        lines.append(
+            f"[F{n}] {other_label}\n"
+            f"    Description: Observations that do not clearly fit any of the above facets.\n"
+            f"    Examples: (none)"
+        )
+    return "\n\n".join(lines)
+
+
+def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
+    """Format ideas for facet assignment prompt."""
+    lines = []
+    for idea in ideas:
+        interpretation = getattr(idea, 'interpretation', '') or ''
+        abstraction = getattr(idea, 'abstraction', '') or ''
+        instance = getattr(idea, 'instance', '') or ''
+        lines.append(
+            f"- idea_id: {idea.idea_id}\n"
+            f"  instance: {instance}\n"
+            f"  interpretation: {interpretation}\n"
+            f"  abstraction: {abstraction}"
+        )
+    return "\n".join(lines)
+
+
+def build_facet_assignment_prompt(
+    *,
+    survey_question: str,
+    language: str,
+    dataset_context_section: str,
+    dimension_def: Optional[DimensionDefinition],
+    dimension_name: str,
+    dimension_description: str,
+    domain_name: str,
+    domain_definition: str,
+    facets: List[DiscoveredFacet],
+    other_label: Optional[str],
+    ideas: List,
+) -> str:
+    """Build prompt for assigning ideas to discovered facets (L3)."""
+    taxonomy_block = build_dimension_context_block(
+        dimension_def=dimension_def,
+        dimension_name=dimension_name,
+        dimension_description=dimension_description,
+        domain_name=domain_name,
+        domain_definition=domain_definition,
+    )
+
+    facet_codebook = _build_facet_codebook_block(facets, other_label)
+    ideas_block = _build_ideas_block_for_facet_assignment(ideas)
+
+    # Dimension-specific facet question
+    if dimension_def:
+        facet_question = dimension_def.prompt_rules.facet_diagnostic
+    else:
+        facet_question = "What specific aspect or viewpoint does this represent?"
+
+    other_label_display = other_label or "Other"
+
+    return f"""You are a qualitative coding assistant assigning survey response ideas to discovered facets.
+
+<survey_context>
+Survey question: "{survey_question}"
+Language: {language}
+{dataset_context_section}
+</survey_context>
+
+{taxonomy_block}
+
+<facets>
+Assign each idea to exactly ONE of these facets:
+
+{facet_codebook}
+</facets>
+
+<ideas_to_assign>
+{ideas_block}
+</ideas_to_assign>
+
+<instructions>
+For each idea:
+1. Read the idea's instance, interpretation, and abstraction.
+2. Determine which facet best answers the question: {facet_question}
+3. Assign exactly ONE facet per idea. Return the facet ID from [F#] brackets (e.g. "F1", "F3"). Do NOT return the facet name.
+4. Assign "{other_label_display}" ONLY if no facet fits at all.
+5. Rate your confidence (0.0 to 1.0).
+
+All output MUST be in {language}.
+
+Provide output as valid JSON following the response schema provided.
+</instructions>
+"""
+
+
+# =============================================================================
+# §4 ATTRIBUTE DISCOVERY (P3) — per facet within domain
+# =============================================================================
+
+class DiscoveredAttribute(BaseModel):
+    """A concrete attribute (L4) discovered within a facet."""
+    attribute_name: str = Field(
+        ..., description="Short descriptive name for the attribute (2-5 words)"
+    )
+    attribute_description: str = Field(
+        ..., description="What this attribute captures — a concrete, observable property (1-2 sentences)"
+    )
+    parent_facet: str = Field(
+        ..., description="The facet this attribute belongs to"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-3 representative observations from the input"
+    )
+
+
+class AttributeDiscoveryResult(BaseModel):
+    """P3 output: attributes discovered within a facet."""
+    attributes: List[DiscoveredAttribute] = Field(
+        ..., description="Concrete attributes identified within the facet"
+    )
+
+
+def build_attribute_discovery_prompt(
+    *,
+    survey_question: str,
+    language: str,
+    dataset_context_section: str,
+    dimension_def: Optional[DimensionDefinition],
+    dimension_name: str,
+    dimension_description: str,
+    domain_name: str,
+    domain_definition: str,
+    facet_name: str,
+    facet_description: str,
+    observations: List[str],
+) -> str:
+    """Discover concrete attributes (L4) within a facet."""
+    observations_block = "\n".join(
+        f"{i}. {obs}" for i, obs in enumerate(observations, 1)
+    )
+
+    taxonomy_block = build_dimension_context_block(
+        dimension_def=dimension_def,
+        dimension_name=dimension_name,
+        dimension_description=dimension_description,
+        domain_name=domain_name,
+        domain_definition=domain_definition,
+    )
+
+    # Dimension-specific attribute guidance
+    if dimension_def:
+        attribute_guidance = dimension_def.prompt_rules.attribute_instruction
+    else:
+        attribute_guidance = (
+            "An attribute identifies the specific observable property or feature being described. "
+            "It is a named property — not a verbatim span from the response."
+        )
+
+    return f"""You are assisting with qualitative analysis.
+
+The observations below all belong to a specific facet within a domain. Your task is to identify the concrete attributes (L4) within this facet.
+
+<survey_context>
+Survey question: "{survey_question}"
+Language: {language}
+{dataset_context_section}
+</survey_context>
+
+{taxonomy_block}
+
+<facet_context>
+Facet: {facet_name} — {facet_description}
+</facet_context>
+
+<attribute_level_guidance>
+Target abstraction level: ATTRIBUTE (L4)
+
+An attribute is a concrete, observable property within the facet "{facet_name}".
+{attribute_guidance}
+
+Guidelines:
+- Attributes should be MORE SPECIFIC than the facet — they name distinct observable phenomena within it
+- Each attribute should represent a clearly different concrete signal
+- Merge attributes that express the same phenomenon in different words
+- Aim for 3-10 attributes per facet (depending on the variety of observations)
+</attribute_level_guidance>
+
+## TASK
+Within the facet "{facet_name}" ({facet_description}), identify the distinct concrete attributes present in the observations.
+
+<observations>
+{observations_block}
+</observations>
+
+All output MUST be in {language}.
+
+Provide output as valid JSON following the response schema provided."""
+
+
+# =============================================================================
+# §5 CODE GENERATION FROM ATTRIBUTES (P4) — cross-domain
+# =============================================================================
+
+class CodeFromAttributes(BaseModel):
+    """A formal qualitative code derived from attributes."""
+    code_name: str = Field(
+        ..., description="Short code name (2-5 words)"
+    )
+    definition: str = Field(
+        ..., description="Clear definition of what this code covers (1-2 sentences)"
+    )
+    typical_indicators: List[str] = Field(
+        ..., description="Words or phrases that signal this code"
+    )
+    source_attributes: List[str] = Field(
+        default_factory=list,
+        description="Attribute names this code is derived from"
+    )
+
+
+# Keep FormalCode as alias for backward compatibility with assignment infrastructure
+FormalCode = CodeFromAttributes
+
+
+class CodeGenerationFromAttributesResult(BaseModel):
+    """P4 output: codes derived from attributes."""
+    evaluation: str = Field(
+        ..., description="Brief evaluation of how codes were derived from attributes"
+    )
+    codes: List[CodeFromAttributes] = Field(
+        ..., description="Formal codes derived from the attribute inventory"
+    )
+
+
+def build_code_from_attributes_prompt(
+    *,
+    survey_question: str,
+    language: str,
+    dataset_context_section: str,
+    dimension_name: str,
+    dimension_description: str,
+    domain_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+) -> str:
+    """Generate codebook codes from the complete attribute inventory.
+
+    Args:
+        domain_attributes: {domain_name: {facet_name: [DiscoveredAttribute, ...]}}
+    """
+    # Build structured attribute inventory
+    inventory_lines = []
+    for domain_name, facet_attrs in sorted(domain_attributes.items()):
+        inventory_lines.append(f"Domain: {domain_name}")
+        for facet_name, attributes in sorted(facet_attrs.items()):
+            inventory_lines.append(f"  Facet: {facet_name}")
+            for attr in attributes:
+                examples = "; ".join(attr.example_observations[:2])
+                inventory_lines.append(
+                    f"    - {attr.attribute_name}: {attr.attribute_description}"
+                    + (f" (e.g., {examples})" if examples else "")
+                )
+        inventory_lines.append("")
+    inventory_block = "\n".join(inventory_lines)
+
+    return f"""You are creating a qualitative codebook from a structured attribute inventory.
+
+<survey_context>
+Survey question: "{survey_question}"
+Language: {language}
+{dataset_context_section}
+</survey_context>
+
+<dimension_context>
+Dimension: {dimension_name} — {dimension_description}
+</dimension_context>
+
+The attribute inventory below is organized by Domain > Facet > Attribute.
+Each attribute represents a concrete, observable phenomenon found in survey responses.
+
+<attribute_inventory>
+{inventory_block}
+</attribute_inventory>
+
+## TASK
+Derive a codebook where each code represents a distinct, observable concept suitable for consistent coding.
+
+<instructions>
+- Each code should be grounded in one or more attributes from the inventory.
+- If multiple attributes across different facets or domains express the same phenomenon, merge them into a single code.
+- Codes must be mutually exclusive — a response should clearly belong to one code.
+- Prefer broader codes over narrow ones, but ensure each code remains concrete and actionable.
+- Each code needs: a short name, a clear definition, typical indicators (words/phrases that signal it), and which source attributes it covers.
+- Include the source_attributes field listing which attribute names each code is derived from.
 </instructions>
 
 All output MUST be in {language}.
@@ -146,488 +522,34 @@ All output MUST be in {language}.
 Provide output as valid JSON following the response schema provided."""
 
 
-class ConsolidatedThemesResult(BaseModel):
-    """Prompt 1.5 output: consolidated themes for a single partition."""
-    themes: List[str] = Field(
-        ...,
-        description="Consolidated list of distinct themes (each a concise, information-rich phrase)"
-    )
+# =============================================================================
+# §6 BRIDGE — codes → MECECategory
+# =============================================================================
+
+def convert_codes_to_mece_categories(
+    codes: List[CodeFromAttributes],
+) -> List[MECECategory]:
+    """Convert CodeFromAttributes list to MECECategory list for downstream assignment."""
+    categories = []
+    for code in codes:
+        categories.append(MECECategory(
+            category_label=code.code_name,
+            inclusion_definition=code.definition,
+            boundary_test=f"Does this idea express: {code.definition}?",
+            diagnostic_signals=code.typical_indicators[:5],
+            key_expressions=[],
+            tiebreaker_rules=[],
+            subcategories=[],
+        ))
+    return categories
+
+
+# Backward compatibility alias
+convert_formal_codes_to_mece_categories = convert_codes_to_mece_categories
 
 
 # =============================================================================
-# §3 CONCEPT DISCOVERY — themes → organizing concepts (per-partition)
-# =============================================================================
-
-def build_concept_discovery_prompt(
-    *,
-    survey_question: str,
-    language: str,
-    dataset_context_section: str,
-    dimension_name: str,
-    dimension_description: str,
-    partition_name: str,
-    partition_definition: str,
-    themes: List[str],
-) -> str:
-    """Build Prompt 2a: Concept Discovery (per partition).
-
-    Takes consolidated descriptive codes from a SINGLE partition and identifies
-    central organizing concepts — interpretive claims about shared meaning
-    patterns, not topic buckets.
-    """
-    themes_list = "\n".join(
-        f"  {i}. {theme}" for i, theme in enumerate(themes, 1)
-    )
-
-    return f"""You are assisting with qualitative data analysis.
-
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
-
-<context>
-Below is a set of descriptive codes derived from open-ended survey responses.
-These codes originate from thematic analysis of the "{partition_name}" partition ({partition_definition}).
-They belong to the taxonomy dimension "{dimension_name}" ({dimension_description}).
-
-Your task is to identify the CENTRAL ORGANIZING CONCEPTS that explain the patterns across these codes.
-</context>
-
-<important_principles>
-- Do not create topic buckets.
-- Concepts must express an interpretive meaning about how respondents construct or understand the topic.
-- Each concept should capture a shared meaning pattern across multiple descriptive codes.
-- Concepts may reflect dimensions such as identity, practices, values, symbolism, audience alignment, time orientation, or legitimacy.
-</important_principles>
-
-<style_instruction>
-Write in framework style, not narrative style.
-Concepts should resemble analytical labels used in conceptual frameworks.
-</style_instruction>
-
-<descriptive_codes>
-{len(themes)} descriptive codes from partition "{partition_name}":
-
-{themes_list}
-</descriptive_codes>
-
-Follow the steps below.
-
-STEP 1 — Normalize descriptive codes
-
-Clean the list of descriptive codes so each expresses one clear meaning.
-
-- Remove redundancy
-- Split codes containing multiple ideas
-- Rewrite as short analytic statements if needed
-
-Output: List of normalized descriptive codes.
-
-STEP 2 — Identify central organizing concepts
-
-Group the descriptive codes into meaningful clusters.
-
-For each concept provide:
-- Concept name
-- Short explanation (1-2 sentences explaining the interpretive idea)
-- Descriptive codes included
-
-Concepts must represent shared meaning patterns rather than topical groupings.
-
-STEP 3 — Identify underlying meaning dimensions
-
-Identify the conceptual dimensions that organize the concepts.
-
-Possible examples include:
-- Identity
-- Practices or behaviors
-- Values or principles
-- Symbolism
-- Audience or identity alignment
-- Time orientation
-- Legitimacy or credibility
-
-Output: List of dimensions and the concepts associated with them.
-
-STEP 4 — Concept compression (MECE-ready)
-
-Convert the organizing concepts into a concise list of concept statements.
-
-Requirements:
-- Produce 4-7 concepts
-- Each concept must be a short interpretive claim
-- Maximum 12 words per concept
-- No explanations or paragraphs
-- Use the structure: [Subject] is constructed as [interpretive meaning]
-
-Examples of acceptable structure:
-- Sustainability is constructed as the moral core of the brand
-- Banking is constructed as a mechanism for directing money toward impact
-- Sustainability positioning invites scrutiny of authenticity
-
-All output MUST be in {language}.
-
-Provide output as valid JSON following the response schema provided."""
-
-
-class OrganizingConcept(BaseModel):
-    """A central organizing concept identified from descriptive codes."""
-    concept_name: str = Field(
-        ...,
-        description=(
-            "Short interpretive claim, max 12 words. "
-            "Structure: '[Subject] is constructed as [interpretive meaning]'"
-        )
-    )
-    explanation: str = Field(
-        ...,
-        description="1-2 sentence explanation of the interpretive idea"
-    )
-    codes_covered: List[str] = Field(
-        ...,
-        description="Descriptive codes from the input that this concept subsumes"
-    )
-
-
-class MeaningDimension(BaseModel):
-    """An underlying meaning dimension that organizes concepts."""
-    dimension_name: str = Field(
-        ...,
-        description="Name of the meaning dimension (e.g. identity, values, legitimacy)"
-    )
-    concepts_associated: List[str] = Field(
-        ...,
-        description="concept_name values that fall under this dimension"
-    )
-
-
-class ConceptDiscoveryResult(BaseModel):
-    """Prompt 2a output: organizing concepts from descriptive codes."""
-    normalized_codes: List[str] = Field(
-        ...,
-        description="Cleaned, deduplicated descriptive codes (one clear meaning each)"
-    )
-    organizing_concepts: List[OrganizingConcept] = Field(
-        ...,
-        description="4-7 central organizing concepts as short interpretive claims"
-    )
-    meaning_dimensions: List[MeaningDimension] = Field(
-        ...,
-        description="Conceptual dimensions that organize the concepts"
-    )
-    compressed_concepts: List[str] = Field(
-        ...,
-        description=(
-            "Final 4-7 concept statements in the form "
-            "'[Subject] is constructed as [interpretive meaning]'. "
-            "Max 12 words each."
-        )
-    )
-
-
-# =============================================================================
-# §4 CROSS-PARTITION COC CONSOLIDATION
-# =============================================================================
-
-def build_coc_consolidation_prompt(
-    *,
-    survey_question: str,
-    language: str,
-    dataset_context_section: str,
-    partition_concepts: Dict[str, ConceptDiscoveryResult],
-    partition_definitions: Dict[str, str],
-) -> str:
-    """Build Prompt 3: Cross-Partition COC Consolidation.
-
-    Takes organizing concepts from all partitions and produces the minimum
-    set of unified concepts for full coverage — MECE, parsimonious,
-    non-overlapping, non-redundant.
-    """
-    # Format per-partition concepts block
-    partition_blocks = []
-    for name in sorted(partition_concepts.keys()):
-        concept_result = partition_concepts[name]
-        definition = partition_definitions.get(name, "")
-        concepts_list = "\n".join(
-            f"  {i}. {c.concept_name}: {c.explanation}"
-            for i, c in enumerate(concept_result.organizing_concepts, 1)
-        )
-        partition_blocks.append(
-            f'Partition: "{name}" ({definition})\n{concepts_list}'
-        )
-
-    all_partitions_block = "\n\n".join(partition_blocks)
-
-    return f"""You are assisting with qualitative research codebook development.
-
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
-
-<context>
-Below are central organizing concepts discovered independently within each data partition.
-Many concepts overlap across partitions because they capture the same underlying meaning pattern.
-
-Your task is to consolidate these into the MINIMUM set of organizing concepts that covers ALL partitions.
-</context>
-
-<per_partition_concepts>
-{all_partitions_block}
-</per_partition_concepts>
-
-<consolidation_criteria>
-- MECE: each consolidated concept covers a distinct meaning dimension
-- Parsimonious: use as few concepts as possible while maintaining full coverage
-- Non-overlapping: no two consolidated concepts should capture the same meaning
-- Non-redundant: every concept adds a distinct analytical insight
-- Full coverage: every original per-partition concept must map to exactly one consolidated concept
-- Traceability: record which partitions and original concepts feed into each consolidated concept
-</consolidation_criteria>
-
-<interpretive_requirement>
-Concepts must represent interpretive claims about how respondents understand the topic.
-Do NOT create topic buckets. A concept should answer: "Respondents construct [subject] as..."
-</interpretive_requirement>
-
-Follow the steps below.
-
-STEP 1 — Identify overlaps
-
-Group concepts across partitions that share the same interpretive claim or meaning dimension.
-List each group with the original concept names and their source partitions.
-
-STEP 2 — Merge redundant concepts
-
-For each group of overlapping concepts, produce a single consolidated concept that:
-- Captures the shared interpretive claim in a single statement
-- Preserves the strongest/most precise explanation
-- Records all source partitions and original concept names
-
-STEP 3 — Preserve unique concepts
-
-Identify concepts that are genuinely unique to a single partition or a small subset.
-Keep these as separate consolidated concepts — do not force-merge distinct meanings.
-
-STEP 4 — Final consolidated set
-
-Present the final set of consolidated concepts.
-Verify: every original per-partition concept must appear in exactly one consolidated concept's source_concepts list.
-
-All output MUST be in {language}.
-
-Provide output as valid JSON following the response schema provided."""
-
-
-class ConsolidatedCOC(BaseModel):
-    """A single consolidated organizing concept."""
-    concept_name: str = Field(
-        ..., description="Short interpretive claim (max 12 words)"
-    )
-    explanation: str = Field(
-        ..., description="1-2 sentence explanation of this concept"
-    )
-    source_partitions: List[str] = Field(
-        ..., description="Which partitions contributed to this concept"
-    )
-    source_concepts: List[str] = Field(
-        ..., description="Original per-partition concept names merged into this one"
-    )
-
-
-class COCConsolidationResult(BaseModel):
-    """Prompt 3 output: consolidated COCs across all partitions."""
-    consolidation_rationale: str = Field(
-        ..., description=(
-            "Brief explanation (~150 words) of merge decisions: "
-            "which concepts were combined, which kept distinct, and why."
-        )
-    )
-    consolidated_concepts: List[ConsolidatedCOC] = Field(
-        ..., description="The minimum set of organizing concepts for full coverage"
-    )
-
-
-# =============================================================================
-# §5 HIERARCHICAL CODEBOOK CONSTRUCTION
-# =============================================================================
-
-def build_hierarchical_codebook_prompt(
-    *,
-    survey_question: str,
-    language: str,
-    dataset_context_section: str,
-    consolidated_concepts: List[ConsolidatedCOC],
-) -> str:
-    """Build Prompt 4: Hierarchical Codebook Construction.
-
-    Takes consolidated COCs from Prompt 3 and produces a 2-3 level
-    hierarchical codebook (theme → subtheme/topic → optional sentiment/valence).
-    """
-    concepts_block = "\n".join(
-        f"{i}. {c.concept_name}: {c.explanation} "
-        f"[from: {', '.join(c.source_partitions)}]"
-        for i, c in enumerate(consolidated_concepts, 1)
-    )
-
-    return f"""You are assisting with qualitative research codebook development.
-
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
-
-<context>
-Below are consolidated organizing concepts derived from cross-partition thematic analysis.
-These represent the unified set of meaning patterns across all data partitions.
-
-Your task is to convert these concepts into a hierarchical MECE codebook.
-</context>
-
-<style_instruction>
-Write in codebook style, not narrative or academic prose.
-The output should resemble a coding manual used by qualitative researchers.
-</style_instruction>
-
-<hierarchy_structure>
-The codebook uses a 2-3 level hierarchy:
-- Level 1: THEMES — broad interpretive dimensions that organize the codebook
-- Level 2: SUBTHEMES/TOPICS — specific codes under each theme, the primary coding targets
-- Level 3: SENTIMENT/VALENCE — optional, only where valence (positive/negative/neutral framing) is analytically meaningful for a subtheme
-
-Level 3 is NOT required for every subtheme. Only add it where the distinction between positive and negative framing adds analytical value.
-</hierarchy_structure>
-
-<mece_requirements>
-- Mutually exclusive at each level: themes are distinct, subthemes within a theme are distinct
-- Collectively exhaustive: all consolidated concepts must be covered
-- Parsimonious: use as few themes and codes as possible
-- Non-redundant: each code adds a distinct analytical insight
-</mece_requirements>
-
-<interpretive_requirement>
-Codes must represent interpretive claims about how respondents understand the topic.
-Do NOT create topic buckets.
-</interpretive_requirement>
-
-<constraint>
-Use the provided consolidated concepts as the analytical foundation.
-Every consolidated concept must be covered by at least one code.
-Do NOT introduce new concepts.
-</constraint>
-
-<consolidated_concepts>
-{concepts_block}
-</consolidated_concepts>
-
-Follow the steps below.
-
-STEP 1 — Identify themes
-
-Group the consolidated concepts into the smallest set of broad interpretive dimensions (themes).
-Each theme should represent a distinct way respondents construct meaning about the topic.
-
-STEP 2 — Construct subthemes
-
-For each theme, create level 2 codes (subthemes/topics).
-
-For each code provide:
-- Code label: 2-4 word label
-- Definition: Max 25 words describing the interpretive claim
-- Include when: 2-3 short bullet rules
-- Exclude when: 2 short bullet rules clarifying boundaries
-- Diagnostic signals: 3-5 concrete words/phrases from respondent language
-- Concepts covered: which consolidated concepts this code covers
-
-STEP 3 — Add valence where meaningful
-
-For subthemes where sentiment/valence adds analytical value, add level 3 codes.
-These capture whether respondents frame the subtheme positively, negatively, or neutrally.
-
-Only add level 3 where the distinction is analytically meaningful — do NOT add it mechanically to every subtheme.
-
-STEP 4 — MECE validation
-
-Provide a brief validation (~120 words) assessing:
-- Mutual exclusivity at each level
-- Collective exhaustiveness (all concepts covered)
-- Parsimony
-
-If problems are detected: revise and present the improved structure.
-
-All output MUST be in {language}.
-
-Provide output as valid JSON following the response schema provided."""
-
-
-class CodebookCode(BaseModel):
-    """Level 2 or 3 code in the hierarchical codebook."""
-    code_label: str = Field(
-        ..., description="Short label (2-4 words)"
-    )
-    definition: str = Field(
-        ..., description="Interpretive claim, max 25 words"
-    )
-    level: int = Field(
-        ..., description="Hierarchy level: 2 = subtheme/topic, 3 = sentiment/valence"
-    )
-    include_when: List[str] = Field(
-        ..., description="2-3 short bullet rules for when this code applies"
-    )
-    exclude_when: List[str] = Field(
-        ..., description="2 short bullet rules clarifying boundaries with other codes"
-    )
-    diagnostic_signals: List[str] = Field(
-        ..., description="3-5 concrete words/phrases from respondent language"
-    )
-    concepts_covered: List[str] = Field(
-        ..., description="Which consolidated COCs this code covers"
-    )
-    subcodes: List[CodebookCode] = Field(
-        default_factory=list,
-        description=(
-            "Optional level 3 codes (sentiment/valence). "
-            "Only include when valence is analytically meaningful for this subtheme."
-        )
-    )
-
-
-# Resolve forward reference for recursive subcodes
-CodebookCode.model_rebuild()
-
-
-class CodebookTheme(BaseModel):
-    """Level 1 theme in the hierarchical codebook."""
-    theme_label: str = Field(
-        ..., description="Broad theme label (2-5 words)"
-    )
-    theme_definition: str = Field(
-        ..., description="Interpretive claim for this theme, max 30 words"
-    )
-    codes: List[CodebookCode] = Field(
-        ..., description="Level 2 subtheme/topic codes under this theme"
-    )
-
-
-class HierarchicalCodebookResult(BaseModel):
-    """Prompt 4 output: hierarchical codebook from consolidated COCs."""
-    themes: List[CodebookTheme] = Field(
-        ..., description="Level 1 themes, each containing level 2 (and optionally level 3) codes"
-    )
-    mece_validation: str = Field(
-        ..., description=(
-            "Brief validation (~120 words) assessing mutual exclusivity, "
-            "collective exhaustiveness, and parsimony at each hierarchy level."
-        )
-    )
-
-
-# =============================================================================
-# §6 SHARED DATA MODELS — Used by category assignment, caching, step 6+
+# §7 SHARED DATA MODELS — Used by code assignment, caching, step 6+
 # =============================================================================
 
 class MECECategory(BaseModel):
@@ -695,25 +617,6 @@ class MECECategory(BaseModel):
 MECECategory.model_rebuild()
 
 
-class ThematicAnalysisResult(BaseModel):
-    """Wrapper for backward compatibility with qualitative_researcher.thematic_analysis property."""
-    themes: List[MECECategory] = Field(
-        ...,
-        description=(
-            "Analytical themes — each with an interpretive_claim ('Respondents construct [subject] as ...'). "
-            "Each theme uses subcategories for its subthemes. "
-            "Leaf subthemes are the coding targets. All themes and subthemes must have interpretive_claim filled."
-        )
-    )
-    thematic_map: str = Field(
-        ...,
-        description=(
-            "Brief narrative explaining how themes relate to each other, "
-            "which are core vs contextual/evaluative, and the overall meaning pattern."
-        )
-    )
-
-
 class MECEVerification(BaseModel):
     """Self-verification test for one pair of adjacent MECE categories."""
     category_a: str = Field(
@@ -739,95 +642,26 @@ class MECEVerification(BaseModel):
 
 
 # =============================================================================
-# §7 BRIDGE — HierarchicalCodebookResult → List[MECECategory]
-# =============================================================================
-
-def convert_hierarchical_to_mece_categories(
-    result: HierarchicalCodebookResult,
-) -> List[MECECategory]:
-    """Convert Prompt 4 output to List[MECECategory] for downstream compatibility.
-
-    Produces a hierarchical list: each CodebookTheme becomes a level 1
-    MECECategory, with CodebookCodes as level 2 subcategories (and
-    optional level 3 subcodes as level 3 subcategories).
-    """
-    categories = []
-    for theme in result.themes:
-        # Build level 2 subcategories
-        subcats = []
-        for code in theme.codes:
-            # Build level 3 sub-subcategories (if any)
-            level3_subcats = []
-            for subcode in code.subcodes:
-                level3_subcats.append(MECECategory(
-                    hierarchy_level=3,
-                    interpretive_claim=subcode.definition,
-                    category_label=subcode.code_label,
-                    inclusion_definition=subcode.definition,
-                    boundary_test=_synthesize_boundary_test(subcode.include_when),
-                    diagnostic_signals=subcode.diagnostic_signals,
-                    key_expressions=subcode.concepts_covered[:5],
-                    tiebreaker_rules=[
-                        f"Exclude when: {rule}" for rule in subcode.exclude_when
-                    ],
-                    subcategories=[],
-                ))
-
-            subcats.append(MECECategory(
-                hierarchy_level=2,
-                interpretive_claim=code.definition,
-                category_label=code.code_label,
-                inclusion_definition=code.definition,
-                boundary_test=_synthesize_boundary_test(code.include_when),
-                diagnostic_signals=code.diagnostic_signals,
-                key_expressions=code.concepts_covered[:5],
-                tiebreaker_rules=[
-                    f"Exclude when: {rule}" for rule in code.exclude_when
-                ],
-                subcategories=level3_subcats,
-            ))
-
-        # Build level 1 theme
-        categories.append(MECECategory(
-            hierarchy_level=1,
-            interpretive_claim=theme.theme_definition,
-            category_label=theme.theme_label,
-            inclusion_definition=theme.theme_definition,
-            boundary_test=f"Does this idea relate to: {theme.theme_label}?",
-            diagnostic_signals=[],  # themes are organizational, not directly coded
-            key_expressions=[c.code_label for c in theme.codes],
-            tiebreaker_rules=[],
-            subcategories=subcats,
-        ))
-
-    return categories
-
-
-def _synthesize_boundary_test(include_when: List[str]) -> str:
-    """Synthesize a yes/no boundary test question from include_when criteria."""
-    if not include_when:
-        return "Does this idea fit this code?"
-    # Use the first (most important) inclusion criterion as the boundary test
-    criterion = include_when[0].rstrip(".")
-    return f"Does this idea express: {criterion}?"
-
-
-# =============================================================================
-# §8 CATEGORY ASSIGNMENT — batch
+# §8 CODE ASSIGNMENT — batch (P5)
 # =============================================================================
 
 # ---- Prompt helpers ----
 
-def _build_ideas_block(*, ideas: List) -> str:
+def _build_ideas_block(*, ideas: List, facet_lookup: Optional[Dict[str, str]] = None) -> str:
     """Format ideas for the assignment prompt."""
     lines = []
     for idea in ideas:
         valence = getattr(idea, 'valence', '') or '0'
+        interpretation = getattr(idea, 'interpretation', '') or ''
+        abstraction = getattr(idea, 'abstraction', '') or ''
+        # Use P2 facet assignment if available, fall back to idea.facet
+        facet = (facet_lookup or {}).get(idea.idea_id, '') or getattr(idea, 'facet', '') or ''
         lines.append(
             f"- idea_id: {idea.idea_id}\n"
             f"  idea: {idea.idea}\n"
-            f"  interpretation: {idea.interpretation}\n"
-            f"  abstraction: {idea.abstraction}\n"
+            f"  interpretation: {interpretation}\n"
+            f"  abstraction: {abstraction}\n"
+            f"  facet: {facet}\n"
             f"  valence: {valence}"
         )
     return "\n".join(lines)
@@ -840,23 +674,15 @@ def _format_leaf_category(
     indent: str = "",
 ) -> str:
     """Format a single leaf category block for the assignment prompt."""
-    signals = (
+    indicators = (
         ", ".join(cat.diagnostic_signals)
         if cat.diagnostic_signals else "(none)"
     )
-    block = f'{indent}[C{number}] {cat.category_label}'
-    if cat.interpretive_claim:
-        block += f"\n{indent}    Claim: {cat.interpretive_claim}"
-    block += (
-        f"\n{indent}    Inclusion: {cat.inclusion_definition}\n"
-        f"{indent}    Boundary test: {cat.boundary_test}\n"
-        f"{indent}    Diagnostic signals: {signals}"
+    block = (
+        f"{indent}[C{number}] {cat.category_label}\n"
+        f"{indent}    Definition: {cat.inclusion_definition}\n"
+        f"{indent}    Indicators: {indicators}"
     )
-    if cat.tiebreaker_rules:
-        tb_lines = "\n".join(
-            f"{indent}      - {r}" for r in cat.tiebreaker_rules
-        )
-        block += f"\n{indent}    Tiebreaker rules:\n{tb_lines}"
     return block
 
 
@@ -901,11 +727,9 @@ def _build_flat_categories_block(
         n = len(categories) + 1
         lines.append(
             f"[C{n}] {other_label}\n"
-            f"    Inclusion: Ideas that do not clearly fit any of the "
-            f"above categories after applying all boundary tests.\n"
-            f"    Boundary test: Do all other categories' boundary tests "
-            f"fail for this idea?\n"
-            f"    Diagnostic signals: no matching signals from any category"
+            f"    Definition: Ideas that do not clearly fit any of the "
+            f"above categories.\n"
+            f"    Indicators: no matching indicators from any category"
         )
 
     return "\n\n".join(lines)
@@ -928,14 +752,10 @@ def _build_hierarchical_categories_block(
     def _render(cat: MECECategory, depth: int):
         indent = "  " * depth
         if cat.subcategories:
-            # Parent: show as scope header with claim + boundary test
+            # Parent: show as scope header
             header = f"{indent}[Parent: {cat.category_label}]"
-            if cat.interpretive_claim:
-                header += f"\n{indent}  Claim: {cat.interpretive_claim}"
             if cat.inclusion_definition:
-                header += f"\n{indent}  Scope: {cat.inclusion_definition}"
-            if cat.boundary_test:
-                header += f"\n{indent}  Boundary test: {cat.boundary_test}"
+                header += f"\n{indent}  Definition: {cat.inclusion_definition}"
             lines.append(header)
             for child in cat.subcategories:
                 _render(child, depth + 1)
@@ -955,11 +775,9 @@ def _build_hierarchical_categories_block(
         counter[0] += 1
         lines.append(
             f"[C{counter[0]}] {other_label}\n"
-            f"    Inclusion: Ideas that do not clearly fit any of the "
-            f"above categories after applying all boundary tests.\n"
-            f"    Boundary test: Do all other categories' boundary tests "
-            f"fail for this idea?\n"
-            f"    Diagnostic signals: no matching signals from any category"
+            f"    Definition: Ideas that do not clearly fit any of the "
+            f"above categories.\n"
+            f"    Indicators: no matching indicators from any category"
         )
 
     return "\n\n".join(lines)
@@ -978,6 +796,7 @@ def build_category_assignment_prompt(
     other_label: Optional[str],
     hierarchical_categories: Optional[List[MECECategory]],
     ideas: List,
+    facet_lookup: Optional[Dict[str, str]] = None,
 ) -> str:
     """Build prompt for assigning ideas to MECE categories."""
     categories_block = _build_categories_block(
@@ -985,7 +804,7 @@ def build_category_assignment_prompt(
         other_label=other_label,
         hierarchical_categories=hierarchical_categories,
     )
-    ideas_block = _build_ideas_block(ideas=ideas)
+    ideas_block = _build_ideas_block(ideas=ideas, facet_lookup=facet_lookup)
 
     # Derive hierarchy instruction from hierarchical categories
     hierarchy_instruction = ""
@@ -1009,17 +828,14 @@ def build_category_assignment_prompt(
             )
 
         hierarchy_instruction = (
-            f"Categories are organized in a {actual_depth}-level hierarchy.{depth_explanation}\n\n"
-            f"Assignment rules for hierarchical categories:\n"
-            f"- You MUST assign ideas to numbered leaf categories [C1], [C2], ... only.\n"
-            f"- Use the parent's Scope and Boundary test to narrow your search: first identify "
-            f"which parent group the idea belongs to, then select the best leaf within that group.\n"
-            f"- When a leaf category could fit under multiple parents, the parent's Scope "
-            f"acts as a tiebreaker: choose the leaf whose parent's Scope best matches "
-            f"the idea's broader context.\n"
-            f"- If two leaf categories across different parents seem equally fitting, "
-            f"prefer the one whose parent Scope aligns more closely with the idea's "
-            f"abstraction (broader significance).\n\n"
+            f"Codes are organized in a {actual_depth}-level hierarchy.{depth_explanation}\n\n"
+            f"Assignment rules for hierarchical codes:\n"
+            f"- You MUST assign ideas to numbered leaf codes [C1], [C2], ... only.\n"
+            f"- Use the parent's Definition to narrow your search: first identify "
+            f"which parent group the idea belongs to, then select the best leaf code within that group.\n"
+            f"- When a leaf code could fit under multiple parents, the parent's Definition "
+            f"acts as a tiebreaker: choose the leaf whose parent best matches "
+            f"the idea's meaning.\n\n"
         )
 
     # Use other_label for prompt references (fallback for display)
@@ -1050,19 +866,18 @@ You MUST assign each idea to exactly ONE of these categories:
 
 <instructions>
 {hierarchy_instruction}For each idea:
-1. Read the idea text, interpretation (concrete interpretation), abstraction (broader significance), and valence (+/-/0). Understand the meaning pattern the respondent is expressing.
-2. Theme-level screening: read each parent theme's Claim ("Respondents construct [subject] as ..."). Which theme captures the meaning pattern this idea participates in? The Claim tells you what interpretive lens to apply.
-3. Subtheme matching: within the matching parent theme, read each subtheme's Claim and inclusion_definition. Which subtheme best captures the specific meaning pattern of this idea? Use diagnostic_signals as supporting evidence (one matching signal is sufficient).
-4. Confirm with the boundary_test to verify the match.
-5. If ambiguous between two subthemes, apply the tiebreaker_rules. If ambiguous between two parent themes, compare their Claims — which interpretive lens better fits the idea's abstraction (broader significance)?
-6. Assign "{other_label_display}" ONLY as a last resort — when no subtheme even approximately captures the meaning pattern the respondent is expressing. Do not assign "{other_label_display}" simply because boundary criteria are not perfectly met; if a subtheme reasonably captures the idea's meaning, assign it.
-7. Assign exactly ONE category per idea. For assigned_category_id, return the category ID shown in [C#] brackets (e.g. "C1", "C7"). Do NOT return the category name — return ONLY the ID.
-8. Rate your confidence (0.0 to 1.0):
-   - 0.90-1.00: subtheme clearly captures the meaning pattern, boundary_test and signals confirm
-   - 0.70-0.89: subtheme captures the meaning pattern well, boundary_test mostly passes
-   - 0.50-0.69: approximate fit — subtheme captures the gist but not perfectly
+1. Read the idea text, facet, and valence.
+2. Compare the idea against each code's definition. Which code best describes what the respondent is expressing?
+3. Use indicators as supporting evidence — if the idea contains words or phrases matching a code's indicators, that strengthens the match.
+4. If ambiguous between two codes, re-read their definitions and pick the one whose definition more precisely covers the idea's core meaning.
+5. Assign "{other_label_display}" ONLY as a last resort — when no code even approximately fits.
+6. Assign exactly ONE code per idea. For assigned_category_id, return the code ID shown in [C#] brackets (e.g. "C1", "C7"). Do NOT return the code name — return ONLY the ID.
+7. Rate your confidence (0.0 to 1.0):
+   - 0.90-1.00: code clearly fits, definition and indicators confirm
+   - 0.70-0.89: code fits well, definition covers the idea
+   - 0.50-0.69: approximate fit — code covers the gist but not perfectly
    - below 0.50: weak fit — strongly consider "{other_label_display}" instead
-9. Provide a brief rationale explaining which meaning pattern you identified and why this subtheme captures it.
+8. Provide a brief rationale explaining why this code fits the idea.
 
 All output (rationale) MUST be in {language}.
 
@@ -1105,7 +920,7 @@ class CategoryAssignmentBatch(BaseModel):
 
 
 # =============================================================================
-# §9 CATEGORY ASSIGNMENT — single idea
+# §9 CODE ASSIGNMENT — single idea (P5)
 # =============================================================================
 
 def build_single_idea_assignment_prompt(
@@ -1118,6 +933,7 @@ def build_single_idea_assignment_prompt(
     categories: List[MECECategory],
     other_label: Optional[str],
     idea,
+    facet_lookup: Optional[Dict[str, str]] = None,
 ) -> str:
     """Build prompt for assigning a SINGLE idea to one MECE category.
 
@@ -1133,11 +949,16 @@ def build_single_idea_assignment_prompt(
 
     # Format single idea
     valence = getattr(idea, 'valence', '') or '0'
+    interpretation = getattr(idea, 'interpretation', '') or ''
+    abstraction = getattr(idea, 'abstraction', '') or ''
+    # Use P2 facet assignment if available, fall back to idea.facet
+    facet = (facet_lookup or {}).get(idea.idea_id, '') or getattr(idea, 'facet', '') or ''
     idea_block = (
         f"idea_id: {idea.idea_id}\n"
         f"idea: {idea.idea}\n"
-        f"interpretation: {idea.interpretation}\n"
-        f"abstraction: {idea.abstraction}\n"
+        f"interpretation: {interpretation}\n"
+        f"abstraction: {abstraction}\n"
+        f"facet: {facet}\n"
         f"valence: {valence}"
     )
 
@@ -1167,12 +988,12 @@ Assign the idea to exactly ONE of these categories:
 </idea>
 
 <instructions>
-1. Read the idea text, interpretation, abstraction, and valence.
-2. Compare against each category's inclusion_definition and boundary_test.
-3. Use diagnostic_signals as supporting evidence.
-4. If ambiguous between categories, apply tiebreaker_rules.
-5. Assign "{other_label_display}" only if NO category fits at all.
-6. For assigned_category_id, return the category ID shown in [C#] brackets (e.g. "C1", "C7"). Do NOT return the category name — return ONLY the ID.
+1. Read the idea text, facet, and valence.
+2. Compare against each code's definition. Which code best describes what the respondent is expressing?
+3. Use indicators as supporting evidence.
+4. If ambiguous between codes, re-read their definitions and pick the one that more precisely covers the idea.
+5. Assign "{other_label_display}" only if NO code fits at all.
+6. For assigned_category_id, return the code ID shown in [C#] brackets (e.g. "C1", "C7"). Do NOT return the code name — return ONLY the ID.
 7. Rate confidence: 0.90-1.00 = clear match, 0.70-0.89 = good fit, 0.50-0.69 = approximate, <0.50 = weak.
 
 All output MUST be in {language}.

@@ -397,7 +397,7 @@ class ProcessingConfig:
     rate_limit_headroom: float = 0.9  # Use 80% of API limits for safety
 
     # Concurrency bounds
-    concurrency_cap_default: int = 300
+    concurrency_cap_default: int = 1000
     concurrency_cap_permissive: int = 10000
     concurrency_min_default: int = 100
     concurrency_min_permissive: int = 0

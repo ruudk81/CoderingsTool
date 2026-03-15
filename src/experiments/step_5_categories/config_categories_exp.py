@@ -1,8 +1,8 @@
 """
-Configuration for Category Discovery v2.
+Configuration for Category Discovery v3.
 
-Pipeline: per-partition chunked theme discovery → theme consolidation →
-concept discovery → codebook construction → category assignment.
+Pipeline: facet discovery → facet assignment → attribute discovery →
+code generation from attributes → code assignment.
 """
 
 from dataclasses import dataclass
@@ -11,7 +11,7 @@ from typing import Dict, Optional
 
 @dataclass
 class CategoriesConfig:
-    """Configuration for Category Discovery."""
+    """Configuration for Category Discovery v3."""
 
     # ==========================================================================
     # PARTITION SOURCE
@@ -23,14 +23,15 @@ class CategoriesConfig:
     # LABEL SOURCE
     # ==========================================================================
 
-    # Which text to collect as "labels" for theme discovery input.
+    # Which text to collect as "observations" for facet/attribute discovery input.
     #
     # Stored fields (direct attributes on IdeasExtractedSubmodel from step 3):
-    #   "interpretation" — concrete interpretation (what it means)
-    #   "abstraction"    — broader significance (why it matters)
-    #   "domain"         — discovered domain (L2), e.g., "recommendation"
-    #   "idea"           — full idea text incl. template prefix
-    #   "instance"       — verbatim span from response
+    #   "instance"        — Attribute (L4): verbatim span from response
+    #   "interpretation"  — Ladder rung 2: concrete meaning (survey language)
+    #   "abstraction"     — Ladder rung 3: broader significance (survey language)
+    #   "facet"           — Facet (L3): dimension-specific aspect
+    #   "domain"          — Domain (L2): thematic domain
+    #   "idea"            — full idea text incl. template prefix
     #
     # Computed composites (assembled from stored fields by format_label()):
     #   "ladder"     — instance → interpretation → abstraction
@@ -43,34 +44,35 @@ class CategoriesConfig:
     label_prefix: str = ""
 
     # ==========================================================================
-    # QUALITATIVE RESEARCHER PIPELINE
+    # QUALITATIVE RESEARCHER PIPELINE (v3: 4 phases)
     # ==========================================================================
 
     # LLM settings
     qr_model: str = "gpt-4.1"
     qr_temperature: float = 0.3
-    qr_max_tokens_theme_discovery: int = 4000
-    qr_max_tokens_consolidation: int = 4000          # Prompt 1.5: per-partition theme consolidation
-    qr_max_tokens_concept_discovery: int = 4000      # Prompt 2a: concept discovery
-    qr_max_tokens_coc_consolidation: int = 4000      # Prompt 3: cross-partition COC consolidation
-    qr_max_tokens_hierarchical_codebook: int = 8000  # Prompt 4: hierarchical codebook construction
-    qr_max_tokens_codebook_construction: int = 4000  # Prompt 2b: per-partition codebook (legacy)
-    qr_max_tokens_thematic_analysis: int = 8000      # Legacy prompt 2 (deprecated)
 
-    # Adaptive batching: batch size scales with partition size to keep
-    # theme discovery chunk count in a productive range (~5-20 chunks).
-    #   n ≤ 30  → 1 chunk
-    #   n ~ 500 → ~15 chunks of ~33
-    #   n ~ 2000 → ~20 chunks of 100 (hits ceiling)
-    batch_size_min: int = 30       # floor: enough labels for theme discovery
+    # P1: Facet Discovery (per-domain, chunked)
+    qr_max_tokens_facet_discovery: int = 4000
+
+    # P2: Facet Assignment (per-domain, batched)
+    qr_max_tokens_facet_assignment: int = 4000
+    facet_assignment_batch_size: int = 15  # ideas per assignment call
+
+    # P3: Attribute Discovery (per facet within domain)
+    qr_max_tokens_attribute_discovery: int = 4000
+
+    # P4: Code Generation from Attributes (cross-domain)
+    qr_max_tokens_code_from_attributes: int = 16000
+
+    # Adaptive batching for P1 (facet discovery chunks)
+    batch_size_min: int = 30       # floor: enough observations for discovery
     batch_size_max: int = 100      # ceiling: keeps prompt quality high
     target_batches: int = 15       # ideal number of chunks
     chunk_overlap: float = 0.2     # overlap fraction between adjacent chunks
 
-    # Theme consolidation: hierarchical chunking
-    # When unique themes exceed this count, split into chunks and consolidate
-    # in successive rounds until the list fits in a single call.
-    consolidation_chunk_size: int = 45   # max themes per consolidation call
+    # Facet consolidation: when unique facets exceed this count after
+    # programmatic dedup, an LLM consolidation pass merges near-duplicates.
+    consolidation_chunk_size: int = 45   # threshold to trigger LLM consolidation
     consolidation_max_rounds: int = 5    # safety cap on recursive rounds
 
     # ==========================================================================

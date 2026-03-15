@@ -191,6 +191,11 @@ class CategoryAssigner:
     # PUBLIC API
     # =========================================================================
 
+    @staticmethod
+    def _normalize_key(key: str) -> str:
+        """Canonical partition key: lowercase, underscores→spaces."""
+        return (key or '').strip().lower().replace('_', ' ')
+
     def assign_all(self) -> List[CategoryAssignedModel]:
         """Sync entry point. Returns list of CategoryAssignedModel."""
         return asyncio.run(self._assign_all_async())
@@ -210,25 +215,54 @@ class CategoryAssigner:
             model=self._config.assignment_model, async_mode=True
         )
 
-        # 2. Group all ideas by partition (domain)
+        # 2. Build global facet lookup from P2 facet assignments
+        self._facet_lookup: Dict[str, str] = {}
+        for mece_res in self._mece_results.values():
+            if mece_res.facet_assignments:
+                self._facet_lookup.update(mece_res.facet_assignments)
+
+        # 3. Group all ideas by partition (domain)
         partition_ideas = self._group_ideas_by_partition()
         total_ideas = sum(len(ideas) for ideas in partition_ideas.values())
 
         # Resolve codebook: __global__ → shared across all partitions
         if "__global__" in self._mece_results:
             global_mece = self._mece_results["__global__"]
-            self._resolved_mece = {
-                pname: global_mece for pname in partition_ideas
-            }
         else:
-            self._resolved_mece = self._mece_results
+            # Legacy cache: per-partition keys. Merge all categories into
+            # a single global codebook (deduplicated by category_label).
+            all_cats = []
+            seen_labels = set()
+            for mece_res in self._mece_results.values():
+                if mece_res and mece_res.categories:
+                    for cat in mece_res.categories:
+                        if cat.category_label not in seen_labels:
+                            seen_labels.add(cat.category_label)
+                            all_cats.append(cat)
+            total_labels = sum(
+                r.n_labels for r in self._mece_results.values()
+                if r
+            )
+            global_mece = PartitionMECEResultModel(
+                partition_name="__global__",
+                n_labels=total_labels,
+                n_batches=0,
+                categories=all_cats,
+            )
+            if verbose:
+                print(f"  Legacy cache: merged {len(self._mece_results)} "
+                      f"partition codebooks → {len(all_cats)} global categories")
+
+        # Broadcast global codebook to all idea partitions
+        self._resolved_mece = {
+            pname: global_mece for pname in partition_ideas
+        }
 
         if verbose:
             print(f"\n{'='*70}")
             print(f"CATEGORY ASSIGNMENT")
             print(f"{'='*70}")
-            codebook_mode = ("global" if "__global__" in self._mece_results
-                             else "per-partition")
+            codebook_mode = "global"
             print(f"  Ideas: {total_ideas} across {len(partition_ideas)} partitions")
             print(f"  Codebook: {codebook_mode}")
             print(f"  Model: {self._config.assignment_model}")
@@ -907,6 +941,7 @@ class CategoryAssigner:
             other_label=other_label if self._config.include_other_category else None,
             hierarchical_categories=hier_cats,
             ideas=ideas,
+            facet_lookup=self._facet_lookup,
         )
 
     def _build_single_assignment_prompt(
@@ -948,6 +983,7 @@ class CategoryAssigner:
             categories=categories,
             other_label=other_label if self._config.include_other_category else None,
             idea=idea,
+            facet_lookup=self._facet_lookup,
         )
 
     # =========================================================================
@@ -963,7 +999,7 @@ class CategoryAssigner:
             if not resp.response_ideas:
                 continue
             for idea in resp.response_ideas:
-                ct = (idea.domain or '').strip().lower()
+                ct = self._normalize_key(idea.domain)
                 if not ct:
                     continue
                 if ct not in partitions:
@@ -986,13 +1022,15 @@ class CategoryAssigner:
         id_resolution: Dict[str, str],
     ) -> List[CategoryAssignedModel]:
         """Build CategoryAssignedModel list preserving response structure."""
+        facet_lookup = self._facet_lookup
+
         output = []
         for resp in self._ideas_models:
             new_ideas = []
             if resp.response_ideas:
                 for idea in resp.response_ideas:
                     assignment = assignment_lookup.get(idea.idea_id)
-                    ct = (idea.domain or '').strip().lower()
+                    ct = self._normalize_key(idea.domain)
 
                     resolved_label = id_resolution.get(idea.idea_id)
 
@@ -1020,6 +1058,7 @@ class CategoryAssigner:
                         ),
                         partition_name=ct if ct else None,
                         parent_category=parent_cat,
+                        facet=facet_lookup.get(idea.idea_id, idea_data.get('facet', '')),
                     )
                     new_ideas.append(new_idea)
 
