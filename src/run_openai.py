@@ -2,5 +2,5 @@
 import config
 config.API_PROVIDER = "openai"
 
-from experiments.step_8_codeAssigner.run_experiment import run_experiment
+from development.step_8_codeAssigner.run_experiment import run_experiment
 run_experiment()
