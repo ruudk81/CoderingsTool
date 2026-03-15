@@ -1,7 +1,10 @@
 #%%
 
 """
-Step 5: Categories runnner
+Step 5: Categories runner (v3)
+
+Pipeline: facet discovery → facet assignment → attribute discovery →
+code generation from attributes → code assignment.
 """
 
 import sys
@@ -19,12 +22,13 @@ from experiments.step_3_ideaExtractor import models_exp as models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 
-# Import step_5_categories_v2 components
+# Import step_5_categories components
 from experiments.step_5_categories.config_categories_exp import (
     CategoriesConfig, AssignmentConfig,
 )
 from experiments.step_5_categories.partition_discoverer import PartitionDiscoverer, PartitionLabelMapping
 from experiments.step_5_categories.qualitative_researcher import QualitativeResearcher, PipelineResult, PartitionResult
+from experiments.step_5_categories.prompts_exp import FormalCode
 from experiments.step_5_categories.models_exp import (
     PartitionSet, PartitionMECEResultModel, MECEResultsCache,
     CategoryAssignedModel,
@@ -135,159 +139,100 @@ def load_extraction_metadata(
 # RESULTS PRINTING
 # =============================================================================
 
-def _print_categories(categories, indent=4):
-    """Recursively print MECE categories with subcategory support."""
-    prefix = " " * indent
-    for j, cat in enumerate(categories, 1):
-        print(f"\n{prefix}[{j}] {cat.category_label}")
-        if cat.interpretive_claim:
-            print(f"{prefix}    Claim: {cat.interpretive_claim}")
-        print(f"{prefix}    Inclusion: {cat.inclusion_definition}")
-        print(f"{prefix}    Boundary test: {cat.boundary_test}")
-        signals = (", ".join(cat.diagnostic_signals[:5])
-                   if cat.diagnostic_signals else "(none)")
-        print(f"{prefix}    Diagnostic signals: {signals}")
-        if cat.tiebreaker_rules:
-            print(f"{prefix}    Tiebreaker rules:")
-            for rule in cat.tiebreaker_rules:
-                print(f"{prefix}      - {rule}")
-        if cat.key_expressions:
-            print(f"{prefix}    Key expressions:")
-            for expr in cat.key_expressions[:3]:
-                truncated = (expr[:80] + "..."
-                             if len(expr) > 80 else expr)
-                print(f"{prefix}      - {truncated}")
-        if cat.subcategories:
-            print(f"{prefix}    Subcategories ({len(cat.subcategories)}):")
-            _print_categories(cat.subcategories, indent=indent + 6)
-
-
 def print_results(
     partition_set: PartitionSet,
     label_mappings: Dict[str, PartitionLabelMapping],
     pipeline_result: PipelineResult,
 ):
-    """Print the complete v2 pipeline results."""
+    """Print the complete v3 pipeline results."""
     results = pipeline_result.partition_results
 
-    # --- Per-partition themes ---
+    # --- Per-domain facets, assignments, and attributes ---
     print(f"\n{'='*80}")
-    print(f"PER-PARTITION THEMES "
-          f"({len(partition_set.partitions)} partitions)")
+    print(f"PER-DOMAIN RESULTS "
+          f"({len(partition_set.partitions)} domains)")
     print(f"{'='*80}")
 
     for i, part in enumerate(partition_set.partitions, 1):
         name = part.partition_name
         mapping = label_mappings.get(name)
         result = results.get(name)
-        themes = pipeline_result.partition_themes.get(name, [])
 
         print(f"\n{'─'*80}")
         n_labels = result.n_labels if result else (mapping.label_count if mapping else 0)
         n_chunks = result.n_batches if result else 0
-        print(f"PARTITION {i}: {name} "
+        n_facets = len(result.facets) if result else 0
+        n_assigned = len(result.facet_assignments) if result else 0
+        n_attrs = sum(
+            len(attrs) for attrs in result.attributes.values()
+        ) if result else 0
+        print(f"DOMAIN {i}: {name} "
               f"(n={n_labels}, {n_chunks} chunk(s), "
-              f"{len(themes)} themes)")
+              f"{n_facets} facets, {n_assigned} assigned, "
+              f"{n_attrs} attributes)")
         print(f"{'─'*80}")
 
         print(f"  Inclusion: {part.inclusion_definition}")
 
         if mapping:
-            print(f"  Labels: {mapping.label_count} unique")
+            print(f"  Observations: {mapping.label_count} unique")
 
-        if themes:
-            print(f"\n  Themes ({len(themes)}):")
-            for j, theme in enumerate(themes, 1):
-                print(f"    {j}. {theme}")
-        else:
-            print(f"\n  (no themes — processing may have failed)")
+        if result and result.facets:
+            print(f"\n  Facets ({len(result.facets)}):")
+            for j, facet in enumerate(result.facets, 1):
+                print(f"    {j}. {facet.facet_name}: {facet.facet_description}")
 
-    # --- Per-partition organizing concepts (if available) ---
-    if pipeline_result.partition_concepts:
-        print(f"\n{'='*80}")
-        total_concepts = sum(
-            len(pcr.concept_discovery.compressed_concepts)
-            for pcr in pipeline_result.partition_concepts.values()
-        )
-        print(f"PER-PARTITION ORGANIZING CONCEPTS ({total_concepts} COCs "
-              f"across {len(pipeline_result.partition_concepts)} partitions)")
-        print(f"{'='*80}")
+        if result and result.attributes:
+            print(f"\n  Attributes per facet:")
+            for facet_name, attrs in sorted(result.attributes.items()):
+                print(f"    {facet_name} ({len(attrs)}):")
+                for attr in attrs:
+                    print(f"      - {attr.attribute_name}: {attr.attribute_description}")
 
-        for name, pcr in sorted(pipeline_result.partition_concepts.items()):
-            cd = pcr.concept_discovery
-            print(f"\n  [{name}] ({len(cd.compressed_concepts)} concepts)")
-            for j, concept in enumerate(cd.compressed_concepts, 1):
-                print(f"    {j}. {concept}")
-            if cd.meaning_dimensions:
-                print(f"    Meaning dimensions:")
-                for dim in cd.meaning_dimensions:
-                    print(f"      - {dim.dimension_name}: "
-                          f"{', '.join(dim.concepts_associated)}")
-
-    # --- Consolidated COCs (if available) ---
-    if pipeline_result.coc_consolidation:
-        cons = pipeline_result.coc_consolidation
-        n_input = sum(
-            len(pcr.concept_discovery.compressed_concepts)
-            for pcr in (pipeline_result.partition_concepts or {}).values()
-        )
-        print(f"\n{'='*80}")
-        print(f"CONSOLIDATED ORGANIZING CONCEPTS "
-              f"({n_input} per-partition → {len(cons.consolidated_concepts)} consolidated)")
-        print(f"{'='*80}")
-
-        print(f"\n  Rationale: {cons.consolidation_rationale}")
-
-        for j, c in enumerate(cons.consolidated_concepts, 1):
-            sources = ", ".join(c.source_partitions)
-            print(f"\n  [{j}] {c.concept_name}")
-            print(f"      {c.explanation}")
-            print(f"      Sources: {sources}")
-            print(f"      Merged from: {', '.join(c.source_concepts)}")
-
-    # --- Hierarchical codebook ---
-    codebook = pipeline_result.codebook
+    # --- Codebook ---
     print(f"\n{'='*80}")
-    print(f"HIERARCHICAL CODEBOOK")
+    print(f"CODEBOOK "
+          f"({len(pipeline_result.codes)} codes)")
     print(f"{'='*80}")
 
-    _print_categories(codebook, indent=4)
+    for j, code in enumerate(pipeline_result.codes, 1):
+        indicators = ", ".join(code.typical_indicators[:5])
+        sources = ", ".join(code.source_attributes[:5]) if code.source_attributes else "(none)"
+        print(f"\n    [{j}] {code.code_name}")
+        print(f"        Definition: {code.definition}")
+        print(f"        Indicators: {indicators}")
+        print(f"        Source attributes: {sources}")
 
-    # --- MECE validation ---
+    # --- Evaluation ---
     print(f"\n{'='*80}")
-    print(f"MECE VALIDATION")
+    print(f"CODE GENERATION EVALUATION")
     print(f"{'='*80}")
     print(f"  {pipeline_result.codebook_narrative}")
 
     # --- Grand summary ---
     total_labels = sum(m.label_count for m in label_mappings.values())
-    total_themes = sum(len(t) for t in pipeline_result.partition_themes.values())
-    n_per_partition_concepts = sum(
-        len(pcr.concept_discovery.compressed_concepts)
-        for pcr in (pipeline_result.partition_concepts or {}).values()
+    total_facets = sum(
+        len(r.facets) for r in results.values()
     )
-    n_consolidated = (
-        len(pipeline_result.coc_consolidation.consolidated_concepts)
-        if pipeline_result.coc_consolidation else 0
+    total_assignments = sum(
+        len(r.facet_assignments) for r in results.values()
     )
-    # Count hierarchy levels
-    n_l1 = len(codebook)
-    n_l2 = sum(len(c.subcategories) for c in codebook)
-    n_l3 = sum(
-        len(sc.subcategories) for c in codebook for sc in c.subcategories
+    total_attributes = sum(
+        len(attrs)
+        for r in results.values()
+        for attrs in r.attributes.values()
     )
+    n_codes = len(pipeline_result.codes)
+
     print(f"\n{'='*80}")
     print(f"GRAND SUMMARY")
     print(f"{'='*80}")
-    print(f"  Partitions:              {len(partition_set.partitions)}")
-    print(f"  Total Labels:            {total_labels}")
-    print(f"  Descriptive Themes:      {total_themes}")
-    print(f"  Per-Partition COCs:      {n_per_partition_concepts}")
-    print(f"  Consolidated COCs:       {n_consolidated}")
-    print(f"  Codebook L1 (themes):    {n_l1}")
-    print(f"  Codebook L2 (subthemes): {n_l2}")
-    if n_l3:
-        print(f"  Codebook L3 (valence):   {n_l3}")
+    print(f"  Domains:                 {len(partition_set.partitions)}")
+    print(f"  Total Observations:      {total_labels}")
+    print(f"  Facets (P1):             {total_facets}")
+    print(f"  Ideas assigned (P2):     {total_assignments}")
+    print(f"  Attributes (P3):         {total_attributes}")
+    print(f"  Codes (P4):              {n_codes}")
     print(f"{'='*80}\n")
 
 
@@ -296,14 +241,14 @@ def print_results(
 # =============================================================================
 
 def main():
-    """Run the Category Discovery pipeline."""
+    """Run the Category Discovery v3 pipeline."""
     print("=" * 70)
-    print("Category Discovery (Qualitative Researcher Pipeline)")
+    print("Category Discovery v3 (Inductive Code Generation Pipeline)")
     print("=" * 70)
     print(f"\nDataset: {FILENAME}")
     print(f"Variable: {VARIABLE}")
     print(f"Sample size: {SAMPLE_SIZE}")
-    print(f"Label source: {CONFIG.label_source}")
+    print(f"Observation source: {CONFIG.label_source}")
     if CONFIG.label_prefix:
         print(f"Label prefix: {CONFIG.label_prefix!r}")
     print(f"Batch sizing: {CONFIG.batch_size_min}-{CONFIG.batch_size_max} "
@@ -327,7 +272,7 @@ def main():
     )
 
     # =========================================================================
-    # Stage 2: Qualitative Researcher v2 pipeline
+    # Stage 2: Qualitative Researcher v3 pipeline
     # =========================================================================
     # Build context from extraction metadata
     survey_question = ""
@@ -454,9 +399,11 @@ def cache_mece_results(
 ) -> Dict[str, PartitionMECEResultModel]:
     """Cache codebook results for later use by category assignment.
 
-    The codebook (hierarchical MECECategory tree) is stored as a single
-    partition result keyed by "__global__", since v2 produces a single
-    cross-partition codebook rather than per-partition categories.
+    The codebook is stored as a single partition result keyed by "__global__",
+    since v3 produces a single cross-partition codebook.
+
+    Per-domain results (facets, assignments, attributes) are also stored
+    for debugging and analysis.
     """
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
@@ -465,9 +412,10 @@ def cache_mece_results(
             sample_size=sample_size,
         )
 
-    # Store the global codebook as a single "partition" for cache compat
+    # Store the global codebook
     codebook = pipeline_result.codebook
     total_labels = sum(m.label_count for m in label_mappings.values())
+
     pydantic_results = {
         "__global__": PartitionMECEResultModel(
             partition_name="__global__",
@@ -476,6 +424,21 @@ def cache_mece_results(
             categories=codebook,
         )
     }
+
+    # Store per-domain results with v3 fields
+    for name, result in pipeline_result.partition_results.items():
+        pydantic_results[name] = PartitionMECEResultModel(
+            partition_name=name,
+            n_labels=result.n_labels,
+            n_batches=result.n_batches,
+            categories=[],
+            facets=[f.model_dump() for f in result.facets],
+            facet_assignments=result.facet_assignments,
+            attributes={
+                facet_name: [a.model_dump() for a in attrs]
+                for facet_name, attrs in result.attributes.items()
+            },
+        )
 
     mece_cache = MECEResultsCache(
         partition_set=partition_set,
@@ -494,9 +457,13 @@ def cache_mece_results(
         step="mece_categories",
         variable_key=variable_key,
     )
-    n_subthemes = sum(len(c.subcategories) for c in codebook)
-    print(f"Thematic analysis cached "
-          f"({len(codebook)} themes, {n_subthemes} subthemes)")
+    n_codes = len(codebook)
+    total_facets = sum(
+        len(r.facets) for r in pipeline_result.partition_results.values()
+    )
+    print(f"v3 results cached "
+          f"({n_codes} codes, {total_facets} facets across "
+          f"{len(pipeline_result.partition_results)} domains)")
 
     return pydantic_results
 

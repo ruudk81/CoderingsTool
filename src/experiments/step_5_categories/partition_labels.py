@@ -1,10 +1,12 @@
 """
 Label extraction and formatting utilities for Category Discovery.
 
-Uses step 3's abstraction ladder terminology:
-  instance       — verbatim span from response
-  interpretation — concrete interpretation (what it means)
-  abstraction    — broader significance (why it matters)
+Uses step 3's taxonomy terminology (Dimension > Domain > Facet > Attribute):
+  instance        — Attribute (L4): verbatim span from response
+  interpretation  — Ladder rung 2: concrete meaning (survey language)
+  abstraction     — Ladder rung 3: broader significance (survey language)
+  facet           — Facet (L3): dimension-specific aspect
+  domain          — Domain (L2): thematic domain
 
 Handles:
 - Extracting text from idea objects based on configurable label_source
@@ -48,10 +50,9 @@ def format_label(idea, label_source: str, label_prefix: str = "") -> str:
 
     Args:
         idea: Idea object with step 3 fields (idea, instance, interpretation,
-              abstraction, domain, valence)
+              abstraction, facet, domain, valence)
         label_source: Stored field name or composite format key.
-            Stored fields: "idea", "instance", "interpretation", "abstraction",
-                           "domain"
+            Stored fields: "idea", "instance", "interpretation", "abstraction", "facet", "domain"
             Computed composites:
                 "ladder"     — instance → interpretation → abstraction
                 "idea_rungs" — idea → interpretation → abstraction

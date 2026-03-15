@@ -1,14 +1,13 @@
 """
-Qualitative Researcher pipeline v2 for Category Discovery.
+Inductive Code Generation pipeline for Category Discovery v3.
 
 Pipeline:
-  1.  Theme Discovery (chunked, per partition) — overlapping chunks + taxonomy context
-  1.5 Theme Consolidation (per partition) — LLM-based deduplication
-  2a. Concept Discovery (per partition) — organizing concepts from descriptive codes
-  3.  COC Consolidation (cross-partition) — merge COCs into minimum set
-  4.  Hierarchical Codebook (single call) — 2-3 level codebook from consolidated COCs
+  P1. Facet Discovery (chunked, per domain) — dimension-specific semantics
+  P2. Facet Assignment (batched, per domain) — assign ideas to discovered facets
+  P3. Attribute Discovery (per facet within domain) — concrete observables
+  P4. Code Generation from Attributes (cross-domain) — derive codebook codes
 
-Per-partition steps (1, 1.5, 2a) run CONCURRENTLY. Steps 3 and 4 are sequential.
+Per-domain steps (P1, P2, P3) run CONCURRENTLY. P4 is sequential.
 
 Usage:
     from .qualitative_researcher import QualitativeResearcher
@@ -18,7 +17,7 @@ Usage:
     result = processor.process_all_partitions(
         label_mappings={"identity": mapping, ...},
         partition_set=partition_set,
-        dimension_name="EVALUATION_PRIORITIZATION",
+        dimension_name="ATTRIBUTES_ASSOCIATIONS",
         dimension_description="...",
         ...
     )
@@ -41,23 +40,35 @@ from config import (
     API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
 )
 
+from experiments.step_3_ideaExtractor.dimension_data import (
+    get_dimension, DimensionDefinition,
+)
+
 from .config_categories_exp import CategoriesConfig
 from .partition_discoverer import PartitionLabelMapping
+from .partition_labels import format_label
 from .models_exp import PartitionSet, PartitionDescription
 from .prompts_exp import (
     MECECategory,
-    build_theme_discovery_prompt,
-    ThemeDiscoveryResult,
-    build_theme_consolidation_prompt,
-    ConsolidatedThemesResult,
-    build_concept_discovery_prompt,
-    ConceptDiscoveryResult,
-    build_coc_consolidation_prompt,
-    COCConsolidationResult,
-    build_hierarchical_codebook_prompt,
-    HierarchicalCodebookResult,
-    convert_hierarchical_to_mece_categories,
-    ThematicAnalysisResult,
+    # P1: Facet Discovery
+    build_facet_discovery_prompt,
+    FacetDiscoveryResult,
+    DiscoveredFacet,
+    # P2: Facet Assignment
+    build_facet_assignment_prompt,
+    FacetAssignmentBatch,
+    # P3: Attribute Discovery
+    build_attribute_discovery_prompt,
+    AttributeDiscoveryResult,
+    DiscoveredAttribute,
+    # P4: Code Generation from Attributes
+    build_code_from_attributes_prompt,
+    CodeGenerationFromAttributesResult,
+    CodeFromAttributes,
+    FormalCode,
+    # Bridge
+    convert_codes_to_mece_categories,
+    convert_formal_codes_to_mece_categories,
 )
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
@@ -83,6 +94,7 @@ class PromptContext:
     dataset_context_section: str
     dimension_name: str
     dimension_description: str
+    dimension_def: Optional[DimensionDefinition] = None
 
 
 @dataclass
@@ -94,43 +106,32 @@ class PartitionContext:
 
 @dataclass
 class PartitionResult:
-    """Theme discovery result for a single partition."""
+    """Per-domain pipeline result (v3)."""
     partition_name: str
     n_labels: int
     n_batches: int
-    themes: List[str]
-
-
-@dataclass
-class PartitionConceptResult:
-    """Concept discovery result for a single partition."""
-    partition_name: str
-    concept_discovery: ConceptDiscoveryResult
+    facets: List[DiscoveredFacet]
+    facet_assignments: Dict[str, str]  # idea_id -> facet_name
+    attributes: Dict[str, List[DiscoveredAttribute]]  # facet_name -> attributes
 
 
 @dataclass
 class PipelineResult:
-    """Complete v2 pipeline output."""
-    partition_themes: Dict[str, List[str]]
+    """Complete pipeline output (v3)."""
+    partition_results: Dict[str, PartitionResult]
     codebook_categories: List[MECECategory]
     codebook_narrative: str
-    partition_results: Dict[str, PartitionResult]
-    partition_concepts: Optional[Dict[str, PartitionConceptResult]] = None
-    coc_consolidation: Optional[COCConsolidationResult] = None
-    hierarchical_codebook: Optional[HierarchicalCodebookResult] = None
+    codes: List[FormalCode]
 
     @property
     def codebook(self) -> List[MECECategory]:
         """Returns the final MECE codebook entries."""
         return self.codebook_categories
 
+    # Backward compatibility alias
     @property
-    def thematic_analysis(self) -> ThematicAnalysisResult:
-        """Backward compat shim for run_experiment.py and cache_mece_results."""
-        return ThematicAnalysisResult(
-            themes=self.codebook_categories,
-            thematic_map=self.codebook_narrative,
-        )
+    def consolidated_codes(self) -> List[FormalCode]:
+        return self.codes
 
 
 # =============================================================================
@@ -183,27 +184,24 @@ async def bootstrap_measure_async(call_fn, n_probes: int = 3):
 
 class QualitativeResearcher:
     """
-    Per-partition Qualitative Researcher pipeline v2.
+    Inductive Code Generation pipeline for Category Discovery v3.
 
     Pipeline:
-    1.  THEME DISCOVERY:          Per partition, chunked with overlap (concurrent)
-    1b. PROGRAMMATIC DEDUP:       Per partition, case-insensitive (no LLM)
-    1.5 THEME CONSOLIDATION:      Per partition, LLM-based dedup (concurrent)
-    2a. CONCEPT DISCOVERY:        Per partition, organizing concepts (concurrent)
-    3.  COC CONSOLIDATION:        Cross-partition, merge COCs into minimum set
-    4.  HIERARCHICAL CODEBOOK:    Single call, build 2-3 level codebook from consolidated COCs
-
-    LLM calls: sum(N_chunks per partition) + N_partitions + N_partitions + 1 + 1
+    P1. FACET DISCOVERY:        Per domain, chunked with overlap (concurrent)
+    P1b. PROGRAMMATIC DEDUP:    Per domain, case-insensitive facet name merge (no LLM)
+    P2. FACET ASSIGNMENT:       Per domain, assign ideas to facets (concurrent)
+    P3. ATTRIBUTE DISCOVERY:    Per (domain, facet), discover attributes (concurrent)
+    P4. CODE GENERATION:        Cross-domain, derive codes from attributes
     """
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None):
         self._model = config.qr_model
         self._temperature = config.qr_temperature
-        self._max_tokens_themes = config.qr_max_tokens_theme_discovery
-        self._max_tokens_consolidation = config.qr_max_tokens_consolidation
-        self._max_tokens_concept_discovery = config.qr_max_tokens_concept_discovery
-        self._max_tokens_coc_consolidation = config.qr_max_tokens_coc_consolidation
-        self._max_tokens_hierarchical_codebook = config.qr_max_tokens_hierarchical_codebook
+        self._max_tokens_facet_discovery = config.qr_max_tokens_facet_discovery
+        self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
+        self._max_tokens_attribute_discovery = config.qr_max_tokens_attribute_discovery
+        self._max_tokens_code_from_attributes = config.qr_max_tokens_code_from_attributes
+        self._facet_assignment_batch_size = config.facet_assignment_batch_size
 
         # Batch sizing
         self._batch_size_min = config.batch_size_min
@@ -212,6 +210,10 @@ class QualitativeResearcher:
         self._chunk_overlap = config.chunk_overlap
         self._consolidation_chunk_size = config.consolidation_chunk_size
         self._consolidation_max_rounds = config.consolidation_max_rounds
+
+        # Label source for observation formatting
+        self._label_source = config.label_source
+        self._label_prefix = config.label_prefix
 
         # Prompt capture (optional)
         self._prompt_printer = prompt_printer
@@ -237,10 +239,22 @@ class QualitativeResearcher:
         dimension_description: str = "",
         verbose: bool = False,
     ) -> PipelineResult:
-        """Process all partitions through the v2 pipeline."""
+        """Process all partitions through the v3 inductive coding pipeline."""
         print(f"\n{'='*70}")
-        print(f"QUALITATIVE RESEARCHER v2: Category Discovery")
+        print(f"INDUCTIVE CODE GENERATION v3: Category Discovery")
         print(f"{'='*70}")
+
+        # Resolve dimension definition from dimension_data.py
+        dimension_def = None
+        if dimension_name:
+            dimension_def = get_dimension(dimension_name)
+            if dimension_def and verbose:
+                print(f"  Dimension: {dimension_name}")
+                print(f"  Facet diagnostic: {dimension_def.prompt_rules.facet_diagnostic}")
+                print(f"  Domain diagnostic: {dimension_def.prompt_rules.domain_diagnostic}")
+            elif not dimension_def and verbose:
+                print(f"  WARNING: No DimensionDefinition found for '{dimension_name}'")
+                print(f"  Falling back to generic taxonomy language")
 
         # Build shared prompt context
         dataset_context_section = self._build_dataset_context_section(dataset_context)
@@ -251,6 +265,7 @@ class QualitativeResearcher:
             dataset_context_section=dataset_context_section,
             dimension_name=dimension_name,
             dimension_description=dimension_description,
+            dimension_def=dimension_def,
         )
 
         # Build per-partition context
@@ -264,27 +279,12 @@ class QualitativeResearcher:
 
         if verbose:
             total_labels = sum(m.label_count for m in active_partitions.values())
-            partition_info = []
-            total_chunks = 0
-            for name, mapping in sorted(active_partitions.items()):
-                n = len(mapping.labels)
-                bs = self._compute_batch_size(n)
-                nb = len(self._create_batches(mapping.labels))
-                total_chunks += nb
-                partition_info.append(f"{name}: {n}→{nb}×{bs}")
+            total_ideas = sum(len(m.ideas) for m in active_partitions.values())
             n_partitions = len(active_partitions)
-            total_llm_calls = total_chunks + n_partitions + n_partitions + 2
-            print(f"  Processing {n_partitions} partitions concurrently "
-                  f"({total_labels} labels)")
-            print(f"  Adaptive batch sizes: {', '.join(partition_info)}")
-            print(f"  Chunk overlap: {self._chunk_overlap:.0%}")
-            print(f"  LLM calls: ~{total_llm_calls} "
-                  f"({total_chunks} theme discovery + "
-                  f"{n_partitions} consolidation + "
-                  f"{n_partitions} concept discovery + "
-                  f"1 COC consolidation + 1 codebook)")
-            if dimension_name:
-                print(f"  Taxonomy: {dimension_name}")
+            print(f"  Processing {n_partitions} domains concurrently "
+                  f"({total_labels} observations, {total_ideas} ideas)")
+            print(f"  Pipeline: P1 facet discovery → P2 facet assignment → "
+                  f"P3 attribute discovery → P4 code generation")
 
         return asyncio.run(
             self._process_all_async(
@@ -322,7 +322,8 @@ class QualitativeResearcher:
         prompt_context: PromptContext,
         verbose: bool,
     ) -> PipelineResult:
-        """Main async entry: bootstrap → theme discovery → MECE → codebook."""
+        """Main async entry: bootstrap → P1 facet discovery → P2 facet assignment →
+        P3 attribute discovery → P4 code generation."""
         self._client = create_client(model=self._model, async_mode=True)
 
         processing_config = DEFAULT_PROCESSING_CONFIG
@@ -352,18 +353,17 @@ class QualitativeResearcher:
         probe_batch_size = self._compute_batch_size(len(first_labels))
         probe_n = min(probe_batch_size, len(first_labels))
         probe_batch = first_labels[:probe_n]
-        probe_domains = first_mapping.label_domains[:probe_n] if first_mapping.label_domains else None
         first_part_ctx = partition_contexts[first_name]
-        probe_prompt = build_theme_discovery_prompt(
+        probe_prompt = build_facet_discovery_prompt(
             survey_question=prompt_context.survey_question,
             language=prompt_context.language,
             dataset_context_section=prompt_context.dataset_context_section,
+            dimension_def=prompt_context.dimension_def,
             dimension_name=prompt_context.dimension_name,
             dimension_description=prompt_context.dimension_description,
             partition_name=first_part_ctx.partition_name,
             partition_definition=first_part_ctx.partition_definition,
-            labels=probe_batch,
-            label_domains=probe_domains,
+            observations=probe_batch,
         )
 
         if verbose:
@@ -402,12 +402,17 @@ class QualitativeResearcher:
         arrival_rate = min(rpm_throughput, tpm_throughput)
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
 
-        # Total tasks: theme chunks + consolidation + concept discovery + COC consolidation + codebook
-        total_theme_chunks = sum(
+        # Estimate total tasks across all phases
+        total_p1_chunks = sum(
             len(self._create_batches(m.labels))
             for m in label_mappings.values()
         )
-        total_tasks = total_theme_chunks + len(label_mappings) + len(label_mappings) + 2
+        n_domains = len(label_mappings)
+        # P2 tasks estimated per domain (will refine after P1)
+        est_p2_batches = n_domains * 3  # rough estimate
+        est_p3_tasks = n_domains * 5  # rough estimate
+        total_tasks = total_p1_chunks + est_p2_batches + est_p3_tasks + 1  # +1 for P4
+
         self._semaphore = asyncio.Semaphore(min(total_tasks, optimal))
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
 
@@ -421,291 +426,296 @@ class QualitativeResearcher:
             print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
             print(f"  Optimal by Little's Law: {little_law_conc}")
             print(f"  Concurrency (semaphore): {min(total_tasks, optimal)}")
-            print(f"  Total LLM calls: ~{total_tasks}")
 
-        # =================================================================
-        # PHASE 1: Per-partition theme discovery (concurrent)
-        # =================================================================
         start_time = time.time()
 
-        tasks = {
-            name: self._discover_partition_themes(
+        # =================================================================
+        # PHASE 1 (P1): Per-domain Facet Discovery (concurrent)
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 1: Per-domain Facet Discovery...")
+
+        facet_tasks = {
+            name: self._discover_partition_facets(
                 name, mapping.labels, partition_contexts[name],
                 prompt_context, verbose,
-                label_domains=mapping.label_domains or None,
             )
             for name, mapping in sorted(label_mappings.items())
         }
 
-        results_list = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        facet_results_list = await asyncio.gather(
+            *facet_tasks.values(), return_exceptions=True
+        )
 
-        partition_results = {}
-        partition_themes = {}
-        for name, result in zip(tasks.keys(), results_list):
+        partition_facets: Dict[str, List[DiscoveredFacet]] = {}
+        partition_n_labels: Dict[str, int] = {}
+        partition_n_batches: Dict[str, int] = {}
+        for name, result in zip(facet_tasks.keys(), facet_results_list):
             if isinstance(result, Exception):
-                print(f"  Partition '{name}' FAILED: "
+                print(f"  Domain '{name}' FAILED: "
                       f"{type(result).__name__}: {result}")
             else:
-                partition_results[name] = result
-                partition_themes[name] = result.themes
+                facets, n_labels, n_batches = result
+                partition_facets[name] = facets
+                partition_n_labels[name] = n_labels
+                partition_n_batches[name] = n_batches
 
         phase1_elapsed = time.time() - start_time
         if verbose:
-            total_themes = sum(len(t) for t in partition_themes.values())
+            total_facets = sum(len(f) for f in partition_facets.values())
             print(f"\n  Phase 1 done in {phase1_elapsed:.1f}s → "
-                  f"{total_themes} raw themes across "
-                  f"{len(partition_results)} partitions")
+                  f"{total_facets} facets across "
+                  f"{len(partition_facets)} domains")
+            for name in sorted(partition_facets.keys()):
+                facet_names = [f.facet_name for f in partition_facets[name]]
+                print(f"    {name}: {facet_names}")
 
         # =================================================================
-        # PHASE 1.5: Per-partition theme consolidation (concurrent)
+        # PHASE 2 (P2): Per-domain Facet Assignment (concurrent)
         # =================================================================
         if verbose:
-            print(f"\n  Phase 1.5: Per-partition Theme Consolidation...")
+            print(f"\n  Phase 2: Per-domain Facet Assignment...")
 
-        t_consolidation = time.time()
+        t_phase2 = time.time()
 
-        consolidation_tasks = {
-            name: self._run_theme_consolidation(
-                name, themes, partition_contexts[name], prompt_context
+        assignment_tasks = {
+            name: self._run_facet_assignment(
+                name, partition_facets[name],
+                label_mappings[name].ideas,
+                partition_contexts[name], prompt_context,
             )
-            for name, themes in sorted(partition_themes.items())
-            if themes
+            for name in sorted(partition_facets.keys())
+            if partition_facets[name] and label_mappings[name].ideas
         }
 
-        consolidation_results = await asyncio.gather(
-            *consolidation_tasks.values(), return_exceptions=True
+        assignment_results_list = await asyncio.gather(
+            *assignment_tasks.values(), return_exceptions=True
         )
 
-        for name, result in zip(consolidation_tasks.keys(), consolidation_results):
+        # idea_id -> facet_name per domain
+        partition_assignments: Dict[str, Dict[str, str]] = {}
+        for name, result in zip(assignment_tasks.keys(), assignment_results_list):
             if isinstance(result, Exception):
-                print(f"  Consolidation '{name}' FAILED: "
+                print(f"  Facet assignment '{name}' FAILED: "
                       f"{type(result).__name__}: {result}")
-                # Keep raw themes as fallback
+                partition_assignments[name] = {}
             else:
-                old_count = len(partition_themes[name])
-                partition_themes[name] = result.themes
+                partition_assignments[name] = result
                 if verbose:
-                    print(f"    {name}: {old_count} → {len(result.themes)} themes")
+                    n_assigned = len(result)
+                    n_ideas = len(label_mappings[name].ideas)
+                    print(f"    {name}: {n_assigned}/{n_ideas} ideas assigned")
 
-        t_consolidation = time.time() - t_consolidation
+        t_phase2 = time.time() - t_phase2
         if verbose:
-            total_consolidated = sum(len(t) for t in partition_themes.values())
-            print(f"  Phase 1.5 done in {t_consolidation:.1f}s → "
-                  f"{total_consolidated} consolidated themes")
+            total_assigned = sum(len(a) for a in partition_assignments.values())
+            print(f"  Phase 2 done in {t_phase2:.1f}s → "
+                  f"{total_assigned} ideas assigned to facets")
 
         # =================================================================
-        # PHASE 2a: Per-partition Concept Discovery (concurrent)
+        # PHASE 3 (P3): Per-facet Attribute Discovery (concurrent)
         # =================================================================
         if verbose:
-            print(f"\n  Phase 2a: Per-partition Concept Discovery "
-                  f"({len(partition_themes)} partitions)...")
-
-        t_phase2a = time.time()
-
-        concept_tasks = {
-            name: self._run_concept_discovery(
-                name, themes, partition_contexts[name], prompt_context
-            )
-            for name, themes in sorted(partition_themes.items())
-            if themes
-        }
-
-        concept_results_list = await asyncio.gather(
-            *concept_tasks.values(), return_exceptions=True
-        )
-
-        partition_concepts: Dict[str, PartitionConceptResult] = {}
-        concept_results_for_consolidation: Dict[str, ConceptDiscoveryResult] = {}
-        for name, result in zip(concept_tasks.keys(), concept_results_list):
-            if isinstance(result, Exception):
-                print(f"  Concept discovery '{name}' FAILED: "
-                      f"{type(result).__name__}: {result}")
-            else:
-                partition_concepts[name] = PartitionConceptResult(
-                    partition_name=name,
-                    concept_discovery=result,
-                )
-                concept_results_for_consolidation[name] = result
-
-        t_phase2a = time.time() - t_phase2a
-
-        if verbose:
-            total_concepts = sum(
-                len(pcr.concept_discovery.compressed_concepts)
-                for pcr in partition_concepts.values()
-            )
-            print(f"\n  Phase 2a done in {t_phase2a:.1f}s → "
-                  f"{total_concepts} COCs across "
-                  f"{len(partition_concepts)} partitions")
-            for name, pcr in sorted(partition_concepts.items()):
-                n_concepts = len(pcr.concept_discovery.compressed_concepts)
-                print(f"    {name}: {n_concepts} concepts")
-                for i, c in enumerate(pcr.concept_discovery.compressed_concepts, 1):
-                    print(f"      {i}. {c}")
-
-        # =================================================================
-        # PHASE 3: Cross-partition COC Consolidation (single call)
-        # =================================================================
-        if verbose:
-            print(f"\n  Phase 3: Cross-partition COC Consolidation...")
+            print(f"\n  Phase 3: Per-facet Attribute Discovery...")
 
         t_phase3 = time.time()
 
-        # Collect partition definitions for the consolidation prompt
-        partition_definitions = {
-            name: partition_contexts[name].partition_definition
-            for name in concept_results_for_consolidation
-        }
-
-        consolidated = await self._run_coc_consolidation(
-            concept_results_for_consolidation, partition_definitions, prompt_context
+        # Group ideas by (domain, facet) using P2 assignments
+        domain_facet_ideas = self._group_ideas_by_facet(
+            label_mappings, partition_facets, partition_assignments
         )
 
-        t_phase3 = time.time() - t_phase3
+        attr_tasks = {}
+        for (domain_name, facet_name), ideas in domain_facet_ideas.items():
+            # Find the facet object for description
+            facet_obj = None
+            for f in partition_facets.get(domain_name, []):
+                if f.facet_name == facet_name:
+                    facet_obj = f
+                    break
 
-        if verbose:
-            n_input = sum(
-                len(cr.compressed_concepts)
-                for cr in concept_results_for_consolidation.values()
+            if not facet_obj or not ideas:
+                continue
+
+            # Collect observations (labels) from the ideas in this facet
+            observations = []
+            for idea in ideas:
+                label = format_label(idea, self._label_source, self._label_prefix)
+                if label:
+                    observations.append(label)
+
+            if not observations:
+                continue
+
+            task_key = f"{domain_name}::{facet_name}"
+            attr_tasks[task_key] = self._discover_facet_attributes(
+                domain_name=domain_name,
+                facet_name=facet_name,
+                facet_description=facet_obj.facet_description,
+                observations=observations,
+                part_context=partition_contexts[domain_name],
+                prompt_context=prompt_context,
             )
-            n_output = len(consolidated.consolidated_concepts)
-            print(f"\n  Phase 3 done in {t_phase3:.1f}s → "
-                  f"{n_input} per-partition COCs → {n_output} consolidated COCs")
-            for i, c in enumerate(consolidated.consolidated_concepts, 1):
-                sources = ", ".join(c.source_partitions)
-                print(f"    {i}. {c.concept_name} [{sources}]")
+
+        attr_results_list = await asyncio.gather(
+            *attr_tasks.values(), return_exceptions=True
+        )
+
+        # Collect attributes: domain -> facet -> [attributes]
+        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
+        # Also per-domain flat: facet -> [attributes]
+        partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
+
+        for key, result in zip(attr_tasks.keys(), attr_results_list):
+            domain_name, facet_name = key.split("::", 1)
+            if isinstance(result, Exception):
+                print(f"  Attribute discovery '{key}' FAILED: "
+                      f"{type(result).__name__}: {result}")
+            else:
+                if domain_name not in domain_facet_attributes:
+                    domain_facet_attributes[domain_name] = {}
+                domain_facet_attributes[domain_name][facet_name] = result
+
+                if domain_name not in partition_attributes:
+                    partition_attributes[domain_name] = {}
+                partition_attributes[domain_name][facet_name] = result
+
+                if verbose:
+                    print(f"    {domain_name}/{facet_name}: "
+                          f"{len(result)} attributes")
+
+        t_phase3 = time.time() - t_phase3
+        if verbose:
+            total_attrs = sum(
+                len(attrs)
+                for facet_attrs in domain_facet_attributes.values()
+                for attrs in facet_attrs.values()
+            )
+            print(f"  Phase 3 done in {t_phase3:.1f}s → "
+                  f"{total_attrs} attributes across "
+                  f"{len(attr_tasks)} facets")
 
         # =================================================================
-        # PHASE 4: Hierarchical Codebook Construction (single call)
+        # PHASE 4 (P4): Code Generation from Attributes (single call)
         # =================================================================
         if verbose:
-            print(f"\n  Phase 4: Hierarchical Codebook Construction...")
+            print(f"\n  Phase 4: Code Generation from Attributes...")
 
         t_phase4 = time.time()
 
-        codebook_result = await self._run_hierarchical_codebook(
-            consolidated, prompt_context
+        code_gen_result = await self._run_code_generation_from_attributes(
+            domain_facet_attributes, prompt_context
         )
 
-        # Bridge to MECECategory
-        codebook = convert_hierarchical_to_mece_categories(codebook_result)
-        codebook_narrative = codebook_result.mece_validation
+        # Bridge to MECECategory for downstream compatibility
+        codebook = convert_codes_to_mece_categories(code_gen_result.codes)
+        codebook_narrative = code_gen_result.evaluation
 
         t_phase4 = time.time() - t_phase4
 
         if verbose:
-            n_themes = len(codebook_result.themes)
-            n_codes = sum(len(t.codes) for t in codebook_result.themes)
-            n_subcodes = sum(
-                len(sc) for t in codebook_result.themes
-                for c in t.codes for sc in [c.subcodes]
-            )
-            print(f"\n  Phase 4 done in {t_phase4:.1f}s → "
-                  f"{n_themes} themes, {n_codes} subthemes"
-                  + (f", {n_subcodes} valence codes" if n_subcodes else ""))
-            for theme in codebook_result.themes:
-                print(f"    L1: {theme.theme_label}: {theme.theme_definition}")
-                for code in theme.codes:
-                    print(f"      L2: {code.code_label}: {code.definition}")
-                    for subcode in code.subcodes:
-                        print(f"        L3: {subcode.code_label}: {subcode.definition}")
+            n_codes = len(code_gen_result.codes)
+            print(f"\n  Phase 4 done in {t_phase4:.1f}s → {n_codes} codes")
+            for i, code in enumerate(code_gen_result.codes, 1):
+                print(f"    {i}. {code.code_name}: {code.definition}")
 
         total_elapsed = time.time() - start_time
         if verbose:
             print(f"\n  Pipeline complete in {total_elapsed:.1f}s")
 
+        # Build PartitionResult for each domain
+        partition_results = {}
+        for name in partition_facets:
+            partition_results[name] = PartitionResult(
+                partition_name=name,
+                n_labels=partition_n_labels.get(name, 0),
+                n_batches=partition_n_batches.get(name, 0),
+                facets=partition_facets.get(name, []),
+                facet_assignments=partition_assignments.get(name, {}),
+                attributes=partition_attributes.get(name, {}),
+            )
+
         return PipelineResult(
-            partition_themes=partition_themes,
+            partition_results=partition_results,
             codebook_categories=codebook,
             codebook_narrative=codebook_narrative,
-            partition_results=partition_results,
-            partition_concepts=partition_concepts,
-            coc_consolidation=consolidated,
-            hierarchical_codebook=codebook_result,
+            codes=code_gen_result.codes,
         )
 
     # =========================================================================
-    # PHASE 1: PER-PARTITION THEME DISCOVERY
+    # PHASE 1 (P1): PER-DOMAIN FACET DISCOVERY
     # =========================================================================
 
-    async def _discover_partition_themes(
+    async def _discover_partition_facets(
         self,
         partition_name: str,
         labels: List[str],
         part_context: PartitionContext,
         prompt_context: PromptContext,
         verbose: bool = False,
-        label_domains: Optional[List] = None,
-    ) -> PartitionResult:
-        """Run theme discovery + programmatic dedup for a single partition."""
+    ) -> tuple:
+        """Run facet discovery + programmatic dedup for a single domain.
 
+        Returns: (facets, n_labels, n_batches)
+        """
         # Step 0: Create overlapping batches
         batches = self._create_batches(labels)
-        domain_batches = self._create_batches(label_domains) if label_domains else None
         n_batches = len(batches)
 
         if verbose:
             batch_size = self._compute_batch_size(len(labels))
-            print(f"    Partition '{partition_name}': {len(labels)} labels, "
+            print(f"    Domain '{partition_name}': {len(labels)} observations, "
                   f"{n_batches} chunk(s) of ~{batch_size} "
                   f"(overlap {self._chunk_overlap:.0%})")
 
-        # Step 1: THEME DISCOVERY (chunked, concurrent)
-        t_themes = time.time()
-        all_themes = await self._run_theme_discovery(
+        # Step 1: FACET DISCOVERY (chunked, concurrent)
+        t_discovery = time.time()
+        all_facets = await self._run_facet_discovery(
             partition_name, batches, part_context, prompt_context,
-            domain_batches=domain_batches,
         )
-        t_themes = time.time() - t_themes
+        t_discovery = time.time() - t_discovery
 
-        # Step 2: Programmatic dedup (case-insensitive, strip whitespace)
+        # Step 2: Programmatic dedup by facet name (case-insensitive)
         seen = set()
-        unique_themes = []
-        for theme in all_themes:
-            key = theme.strip().lower()
+        unique_facets = []
+        for facet in all_facets:
+            key = facet.facet_name.strip().lower()
             if key and key not in seen:
                 seen.add(key)
-                unique_themes.append(theme.strip())
+                unique_facets.append(facet)
 
         if verbose:
-            print(f"    Partition '{partition_name}' themes: "
-                  f"{len(all_themes)} raw → {len(unique_themes)} unique "
-                  f"[{t_themes:.1f}s]")
+            print(f"    Domain '{partition_name}' facets: "
+                  f"{len(all_facets)} raw → {len(unique_facets)} unique "
+                  f"[{t_discovery:.1f}s]")
 
-        return PartitionResult(
-            partition_name=partition_name,
-            n_labels=len(labels),
-            n_batches=n_batches,
-            themes=unique_themes,
-        )
+        return unique_facets, len(labels), n_batches
 
-    async def _run_theme_discovery(
+    async def _run_facet_discovery(
         self,
         partition_name: str,
         batches: List[List[str]],
         part_context: PartitionContext,
         prompt_context: PromptContext,
-        domain_batches: Optional[List[List]] = None,
-    ) -> List[str]:
-        """Discover themes from chunked labels (concurrent)."""
+    ) -> List[DiscoveredFacet]:
+        """Discover facets from chunked observations (concurrent)."""
         results = [None] * len(batches)
 
-        async def process_chunk(chunk_idx: int, labels: List[str]):
-            domains = domain_batches[chunk_idx] if domain_batches else None
-            prompt = build_theme_discovery_prompt(
+        async def process_chunk(chunk_idx: int, observations: List[str]):
+            prompt = build_facet_discovery_prompt(
                 survey_question=prompt_context.survey_question,
                 language=prompt_context.language,
                 dataset_context_section=prompt_context.dataset_context_section,
+                dimension_def=prompt_context.dimension_def,
                 dimension_name=prompt_context.dimension_name,
                 dimension_description=prompt_context.dimension_description,
                 partition_name=part_context.partition_name,
                 partition_definition=part_context.partition_definition,
-                labels=labels,
-                label_domains=domains,
+                observations=observations,
             )
 
-            # Prompt capture (first chunk per partition)
-            gate_key = f"qr_themes_{partition_name}"
+            # Prompt capture (first chunk per domain)
+            gate_key = f"qr_facets_{partition_name}"
             if (self._prompt_printer is not None
                     and chunk_idx == 0
                     and gate_key not in self._captured_gates):
@@ -713,7 +723,7 @@ class QualitativeResearcher:
                     step_name="qualitative_researcher",
                     utility_name="QualitativeResearcher",
                     prompt_content=prompt,
-                    prompt_type="theme_discovery",
+                    prompt_type="facet_discovery",
                     metadata={
                         "model": self._model,
                         "language": prompt_context.language,
@@ -727,278 +737,223 @@ class QualitativeResearcher:
 
             try:
                 result = await self._llm_call(
-                    prompt, ThemeDiscoveryResult, self._max_tokens_themes
+                    prompt, FacetDiscoveryResult, self._max_tokens_facet_discovery
                 )
                 results[chunk_idx] = result
             except Exception as e:
-                print(f"    THEME DISCOVERY '{partition_name}' chunk "
+                print(f"    FACET DISCOVERY '{partition_name}' chunk "
                       f"{chunk_idx + 1}/{len(batches)} FAILED: "
                       f"{type(e).__name__}: {e}")
-                results[chunk_idx] = ThemeDiscoveryResult(themes=[])
+                results[chunk_idx] = FacetDiscoveryResult(facets=[])
 
         await asyncio.gather(*(
             process_chunk(i, batch) for i, batch in enumerate(batches)
         ))
 
-        # Flatten all themes from all chunks
-        all_themes = []
+        # Flatten all facets from all chunks
+        all_facets = []
         for r in results:
             if r is not None:
-                all_themes.extend(r.themes)
-        return all_themes
+                all_facets.extend(r.facets)
+        return all_facets
 
     # =========================================================================
-    # PHASE 1.5: PER-PARTITION THEME CONSOLIDATION
+    # PHASE 2 (P2): PER-DOMAIN FACET ASSIGNMENT
     # =========================================================================
 
-    async def _run_theme_consolidation(
+    async def _run_facet_assignment(
         self,
-        partition_name: str,
-        themes: List[str],
+        domain_name: str,
+        facets: List[DiscoveredFacet],
+        ideas: List,
         part_context: PartitionContext,
         prompt_context: PromptContext,
-    ) -> ConsolidatedThemesResult:
-        """Consolidate raw themes into distinct set.
+    ) -> Dict[str, str]:
+        """Assign all ideas in a domain to discovered facets.
 
-        Uses hierarchical chunking when themes exceed consolidation_chunk_size:
-        split into batches, consolidate each concurrently, dedup merged results,
-        repeat until the list fits in a single final call.
+        Returns: Dict[idea_id, facet_name]
         """
-        max_per_call = self._consolidation_chunk_size
-        max_rounds = self._consolidation_max_rounds
-        current_themes = list(themes)
+        # Build facet ID -> name mapping
+        facet_id_to_name = {}
+        for i, facet in enumerate(facets, 1):
+            facet_id_to_name[f"F{i}"] = facet.facet_name
 
-        for round_idx in range(max_rounds):
-            # Fits in one call → single final consolidation
-            if len(current_themes) <= max_per_call:
-                return await self._consolidate_single_batch(
-                    partition_name, current_themes, part_context, prompt_context,
-                    round_idx=round_idx, is_final=True,
-                )
+        # Batch ideas
+        batch_size = self._facet_assignment_batch_size
+        idea_batches = [
+            ideas[i:i + batch_size]
+            for i in range(0, len(ideas), batch_size)
+        ]
 
-            # Chunk, consolidate each chunk concurrently, dedup, loop
-            chunks = self._chunk_themes_for_consolidation(
-                current_themes, max_per_call
+        all_assignments: Dict[str, str] = {}
+
+        async def process_batch(batch_idx: int, batch_ideas: List):
+            prompt = build_facet_assignment_prompt(
+                survey_question=prompt_context.survey_question,
+                language=prompt_context.language,
+                dataset_context_section=prompt_context.dataset_context_section,
+                dimension_def=prompt_context.dimension_def,
+                dimension_name=prompt_context.dimension_name,
+                dimension_description=prompt_context.dimension_description,
+                domain_name=domain_name,
+                domain_definition=part_context.partition_definition,
+                facets=facets,
+                other_label=None,  # No "other" for facet assignment
+                ideas=batch_ideas,
             )
 
-            if round_idx > 0:
-                print(f"      {partition_name} round {round_idx + 1}: "
-                      f"{len(current_themes)} themes in {len(chunks)} chunks")
-
-            chunk_results = await asyncio.gather(*(
-                self._consolidate_single_batch(
-                    partition_name, chunk, part_context, prompt_context,
-                    round_idx=round_idx, chunk_idx=i, total_chunks=len(chunks),
+            # Prompt capture (first batch per domain)
+            gate_key = f"qr_facet_assign_{domain_name}"
+            if (self._prompt_printer is not None
+                    and batch_idx == 0
+                    and gate_key not in self._captured_gates):
+                self._prompt_printer.capture_prompt(
+                    step_name="qualitative_researcher",
+                    utility_name="QualitativeResearcher",
+                    prompt_content=prompt,
+                    prompt_type="facet_assignment",
+                    metadata={
+                        "model": self._model,
+                        "language": prompt_context.language,
+                        "partition_name": domain_name,
+                        "batch_number": batch_idx + 1,
+                        "total_batches": len(idea_batches),
+                        "n_facets": len(facets),
+                        "dimension_name": prompt_context.dimension_name,
+                    }
                 )
-                for i, chunk in enumerate(chunks)
-            ))
+                self._captured_gates.add(gate_key)
 
-            # Flatten + programmatic dedup
-            merged: List[str] = []
-            seen: set = set()
-            for result in chunk_results:
-                for theme in result.themes:
-                    key = theme.strip().lower()
-                    if key and key not in seen:
-                        seen.add(key)
-                        merged.append(theme.strip())
+            try:
+                result = await self._llm_call(
+                    prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment
+                )
+                return result.assignments
+            except Exception as e:
+                print(f"    FACET ASSIGNMENT '{domain_name}' batch "
+                      f"{batch_idx + 1}/{len(idea_batches)} FAILED: "
+                      f"{type(e).__name__}: {e}")
+                return []
 
-            current_themes = merged
+        batch_results = await asyncio.gather(*(
+            process_batch(i, batch)
+            for i, batch in enumerate(idea_batches)
+        ))
 
-        # Exhausted max_rounds — do one final call with whatever remains
-        return await self._consolidate_single_batch(
-            partition_name, current_themes, part_context, prompt_context,
-            round_idx=max_rounds, is_final=True,
-        )
+        for assignments in batch_results:
+            for assignment in assignments:
+                facet_name = facet_id_to_name.get(
+                    assignment.assigned_facet_id,
+                    assignment.assigned_facet_id,
+                )
+                all_assignments[assignment.idea_id] = facet_name
 
-    async def _consolidate_single_batch(
+        return all_assignments
+
+    # =========================================================================
+    # PHASE 3 (P3): PER-FACET ATTRIBUTE DISCOVERY
+    # =========================================================================
+
+    async def _discover_facet_attributes(
         self,
-        partition_name: str,
-        themes: List[str],
+        domain_name: str,
+        facet_name: str,
+        facet_description: str,
+        observations: List[str],
         part_context: PartitionContext,
         prompt_context: PromptContext,
-        *,
-        round_idx: int = 0,
-        chunk_idx: int | None = None,
-        total_chunks: int | None = None,
-        is_final: bool = False,
-    ) -> ConsolidatedThemesResult:
-        """Single consolidation LLM call."""
-        prompt = build_theme_consolidation_prompt(
+    ) -> List[DiscoveredAttribute]:
+        """Discover attributes (L4) within a single facet."""
+        prompt = build_attribute_discovery_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_def=prompt_context.dimension_def,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            domain_name=domain_name,
+            domain_definition=part_context.partition_definition,
+            facet_name=facet_name,
+            facet_description=facet_description,
+            observations=observations,
+        )
+
+        # Prompt capture
+        gate_key = f"qr_attributes_{domain_name}_{facet_name}"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="attribute_discovery",
+                metadata={
+                    "model": self._model,
+                    "language": prompt_context.language,
+                    "partition_name": domain_name,
+                    "facet_name": facet_name,
+                    "n_observations": len(observations),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        try:
+            result = await self._llm_call(
+                prompt, AttributeDiscoveryResult, self._max_tokens_attribute_discovery
+            )
+            return result.attributes
+        except Exception as e:
+            print(f"    ATTRIBUTE DISCOVERY '{domain_name}/{facet_name}' FAILED: "
+                  f"{type(e).__name__}: {e}")
+            return []
+
+    # =========================================================================
+    # PHASE 4 (P4): CODE GENERATION FROM ATTRIBUTES
+    # =========================================================================
+
+    async def _run_code_generation_from_attributes(
+        self,
+        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+        prompt_context: PromptContext,
+    ) -> CodeGenerationFromAttributesResult:
+        """Generate codes from the complete attribute inventory (cross-domain)."""
+        prompt = build_code_from_attributes_prompt(
             survey_question=prompt_context.survey_question,
             language=prompt_context.language,
             dataset_context_section=prompt_context.dataset_context_section,
             dimension_name=prompt_context.dimension_name,
             dimension_description=prompt_context.dimension_description,
-            partition_name=part_context.partition_name,
-            partition_definition=part_context.partition_definition,
-            themes=themes,
-        )
-
-        # Prompt capture (only first chunk of first round)
-        gate_key = f"qr_consolidation_{partition_name}"
-        if (self._prompt_printer is not None
-                and round_idx == 0
-                and (chunk_idx is None or chunk_idx == 0)
-                and gate_key not in self._captured_gates):
-            self._prompt_printer.capture_prompt(
-                step_name="qualitative_researcher",
-                utility_name="QualitativeResearcher",
-                prompt_content=prompt,
-                prompt_type="theme_consolidation",
-                metadata={
-                    "model": self._model,
-                    "language": prompt_context.language,
-                    "partition_name": partition_name,
-                    "n_raw_themes": len(themes),
-                    "dimension_name": prompt_context.dimension_name,
-                    "round": round_idx,
-                    "chunk": chunk_idx,
-                    "total_chunks": total_chunks,
-                }
-            )
-            self._captured_gates.add(gate_key)
-
-        return await self._llm_call(
-            prompt, ConsolidatedThemesResult, self._max_tokens_consolidation
-        )
-
-    @staticmethod
-    def _chunk_themes_for_consolidation(
-        themes: List[str], chunk_size: int,
-    ) -> List[List[str]]:
-        """Split themes into non-overlapping chunks of at most chunk_size."""
-        return [themes[i:i + chunk_size]
-                for i in range(0, len(themes), chunk_size)]
-
-    # =========================================================================
-    # PHASE 2a: PER-PARTITION CONCEPT DISCOVERY
-    # =========================================================================
-
-    async def _run_concept_discovery(
-        self,
-        partition_name: str,
-        themes: List[str],
-        part_context: PartitionContext,
-        prompt_context: PromptContext,
-    ) -> ConceptDiscoveryResult:
-        """Identify organizing concepts from a single partition's themes."""
-        prompt = build_concept_discovery_prompt(
-            survey_question=prompt_context.survey_question,
-            language=prompt_context.language,
-            dataset_context_section=prompt_context.dataset_context_section,
-            dimension_name=prompt_context.dimension_name,
-            dimension_description=prompt_context.dimension_description,
-            partition_name=part_context.partition_name,
-            partition_definition=part_context.partition_definition,
-            themes=themes,
+            domain_attributes=domain_facet_attributes,
         )
 
         # Prompt capture
-        gate_key = f"qr_concept_discovery_{partition_name}"
+        gate_key = "qr_code_gen_from_attrs"
         if (self._prompt_printer is not None
                 and gate_key not in self._captured_gates):
+            total_attrs = sum(
+                len(attrs)
+                for facet_attrs in domain_facet_attributes.values()
+                for attrs in facet_attrs.values()
+            )
             self._prompt_printer.capture_prompt(
                 step_name="qualitative_researcher",
                 utility_name="QualitativeResearcher",
                 prompt_content=prompt,
-                prompt_type="concept_discovery",
+                prompt_type="code_generation_from_attributes",
                 metadata={
                     "model": self._model,
                     "language": prompt_context.language,
-                    "partition_name": partition_name,
-                    "n_themes": len(themes),
+                    "n_domains": len(domain_facet_attributes),
+                    "n_total_attributes": total_attrs,
                     "dimension_name": prompt_context.dimension_name,
                 }
             )
             self._captured_gates.add(gate_key)
 
         return await self._llm_call(
-            prompt, ConceptDiscoveryResult, self._max_tokens_concept_discovery
-        )
-
-    # =========================================================================
-    # PHASE 3: CROSS-PARTITION COC CONSOLIDATION
-    # =========================================================================
-
-    async def _run_coc_consolidation(
-        self,
-        concept_results: Dict[str, ConceptDiscoveryResult],
-        partition_definitions: Dict[str, str],
-        prompt_context: PromptContext,
-    ) -> COCConsolidationResult:
-        """Consolidate per-partition COCs into minimum set for full coverage."""
-        prompt = build_coc_consolidation_prompt(
-            survey_question=prompt_context.survey_question,
-            language=prompt_context.language,
-            dataset_context_section=prompt_context.dataset_context_section,
-            partition_concepts=concept_results,
-            partition_definitions=partition_definitions,
-        )
-
-        # Prompt capture
-        gate_key = "qr_coc_consolidation"
-        if (self._prompt_printer is not None
-                and gate_key not in self._captured_gates):
-            self._prompt_printer.capture_prompt(
-                step_name="qualitative_researcher",
-                utility_name="QualitativeResearcher",
-                prompt_content=prompt,
-                prompt_type="coc_consolidation",
-                metadata={
-                    "model": self._model,
-                    "language": prompt_context.language,
-                    "n_partitions": len(concept_results),
-                    "n_total_concepts": sum(
-                        len(cr.compressed_concepts)
-                        for cr in concept_results.values()
-                    ),
-                    "dimension_name": prompt_context.dimension_name,
-                }
-            )
-            self._captured_gates.add(gate_key)
-
-        return await self._llm_call(
-            prompt, COCConsolidationResult, self._max_tokens_coc_consolidation
-        )
-
-    # =========================================================================
-    # PHASE 4: HIERARCHICAL CODEBOOK CONSTRUCTION
-    # =========================================================================
-
-    async def _run_hierarchical_codebook(
-        self,
-        consolidated: COCConsolidationResult,
-        prompt_context: PromptContext,
-    ) -> HierarchicalCodebookResult:
-        """Build hierarchical codebook from consolidated COCs."""
-        prompt = build_hierarchical_codebook_prompt(
-            survey_question=prompt_context.survey_question,
-            language=prompt_context.language,
-            dataset_context_section=prompt_context.dataset_context_section,
-            consolidated_concepts=consolidated.consolidated_concepts,
-        )
-
-        # Prompt capture
-        gate_key = "qr_hierarchical_codebook"
-        if (self._prompt_printer is not None
-                and gate_key not in self._captured_gates):
-            self._prompt_printer.capture_prompt(
-                step_name="qualitative_researcher",
-                utility_name="QualitativeResearcher",
-                prompt_content=prompt,
-                prompt_type="hierarchical_codebook",
-                metadata={
-                    "model": self._model,
-                    "language": prompt_context.language,
-                    "n_consolidated_concepts": len(consolidated.consolidated_concepts),
-                    "dimension_name": prompt_context.dimension_name,
-                }
-            )
-            self._captured_gates.add(gate_key)
-
-        return await self._llm_call(
-            prompt, HierarchicalCodebookResult, self._max_tokens_hierarchical_codebook
+            prompt, CodeGenerationFromAttributesResult,
+            self._max_tokens_code_from_attributes
         )
 
     # =========================================================================
@@ -1086,6 +1041,39 @@ class QualitativeResearcher:
                 break
 
         return batches
+
+    def _group_ideas_by_facet(
+        self,
+        label_mappings: Dict[str, PartitionLabelMapping],
+        partition_facets: Dict[str, List[DiscoveredFacet]],
+        partition_assignments: Dict[str, Dict[str, str]],
+    ) -> Dict[tuple, List]:
+        """Group ideas by (domain, facet) using P2 assignments.
+
+        Returns: {(domain_name, facet_name): [idea_objects]}
+        """
+        groups: Dict[tuple, List] = {}
+
+        for domain_name, assignments in partition_assignments.items():
+            mapping = label_mappings.get(domain_name)
+            if not mapping:
+                continue
+
+            # Build idea_id -> idea object lookup
+            idea_lookup = {
+                idea.idea_id: idea for idea in mapping.ideas
+            }
+
+            for idea_id, facet_name in assignments.items():
+                idea = idea_lookup.get(idea_id)
+                if idea is None:
+                    continue
+                key = (domain_name, facet_name)
+                if key not in groups:
+                    groups[key] = []
+                groups[key].append(idea)
+
+        return groups
 
     def _build_all_partition_contexts(
         self,

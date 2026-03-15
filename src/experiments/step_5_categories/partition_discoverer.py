@@ -25,12 +25,13 @@ from .models_exp import PartitionDescription, PartitionSet
 
 @dataclass
 class PartitionLabelMapping:
-    """Mapping of a partition to its unique labels."""
+    """Mapping of a partition to its unique labels and idea objects."""
     partition_name: str
     partition: PartitionDescription
     labels: List[str]
     label_count: int
     label_domains: List[Optional[str]] = field(default_factory=list)
+    ideas: List = field(default_factory=list)  # IdeasExtractedSubmodel objects
 
 # =============================================================================
 # MAIN CLASS
@@ -265,11 +266,13 @@ class PartitionDiscoverer:
         for p in partition_set.partitions:
             labels = label_lists.get(p.partition_name, [])
             domains = (domain_lists or {}).get(p.partition_name, [])
+            ideas = self._populated_partitions.get(p.partition_name, [])
             mappings[p.partition_name] = PartitionLabelMapping(
                 partition_name=p.partition_name,
                 partition=p,
                 labels=labels,
                 label_count=len(labels),
                 label_domains=domains,
+                ideas=ideas,
             )
         return mappings

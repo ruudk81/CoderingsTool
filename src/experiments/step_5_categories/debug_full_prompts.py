@@ -26,26 +26,22 @@ except ImportError:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
-# Import v2 response models
+# Import response models (v3)
 try:
     from experiments.step_5_categories.prompts_exp import (
-        ThemeDiscoveryResult,
-        ConsolidatedThemesResult,
-        ConceptDiscoveryResult,
-        COCConsolidationResult,
-        HierarchicalCodebookResult,
-        ThematicAnalysisResult,
+        FacetDiscoveryResult,
+        FacetAssignmentBatch,
+        AttributeDiscoveryResult,
+        CodeGenerationFromAttributesResult,
         CategoryAssignmentBatch,
         SingleCategoryAssignment,
     )
 except ImportError:
     from prompts_exp import (
-        ThemeDiscoveryResult,
-        ConsolidatedThemesResult,
-        ConceptDiscoveryResult,
-        COCConsolidationResult,
-        HierarchicalCodebookResult,
-        ThematicAnalysisResult,
+        FacetDiscoveryResult,
+        FacetAssignmentBatch,
+        AttributeDiscoveryResult,
+        CodeGenerationFromAttributesResult,
         CategoryAssignmentBatch,
         SingleCategoryAssignment,
     )
@@ -62,12 +58,10 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 # =============================================================================
 
 STATIC_PROMPT_MODELS = {
-    "theme_discovery": ThemeDiscoveryResult,
-    "theme_consolidation": ConsolidatedThemesResult,
-    "concept_discovery": ConceptDiscoveryResult,
-    "coc_consolidation": COCConsolidationResult,
-    "hierarchical_codebook": HierarchicalCodebookResult,
-    "thematic_analysis": ThematicAnalysisResult,
+    "facet_discovery": FacetDiscoveryResult,
+    "facet_assignment": FacetAssignmentBatch,
+    "attribute_discovery": AttributeDiscoveryResult,
+    "code_generation_from_attributes": CodeGenerationFromAttributesResult,
     "category_assignment": CategoryAssignmentBatch,
     "category_assignment_single": SingleCategoryAssignment,
 }
@@ -162,20 +156,16 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
         print(f"Batch:          {metadata['batch_number']} / {metadata.get('total_batches', '?')}")
     if "n_batches" in metadata:
         print(f"N batches:      {metadata['n_batches']}")
-    if "n_raw_themes" in metadata:
-        print(f"N raw themes:   {metadata['n_raw_themes']}")
-    if "n_themes" in metadata:
-        print(f"N themes:       {metadata['n_themes']}")
-    if "total_themes" in metadata:
-        print(f"Total themes:   {metadata['total_themes']}")
-    if "n_concepts" in metadata:
-        print(f"N concepts:     {metadata['n_concepts']}")
-    if "n_total_concepts" in metadata:
-        print(f"N total COCs:   {metadata['n_total_concepts']}")
-    if "n_partitions" in metadata:
-        print(f"N partitions:   {metadata['n_partitions']}")
-    if "n_consolidated_concepts" in metadata:
-        print(f"N consolidated: {metadata['n_consolidated_concepts']}")
+    if "n_facets" in metadata:
+        print(f"N facets:       {metadata['n_facets']}")
+    if "facet_name" in metadata:
+        print(f"Facet:          {metadata['facet_name']}")
+    if "n_observations" in metadata:
+        print(f"N observations: {metadata['n_observations']}")
+    if "n_domains" in metadata:
+        print(f"N domains:      {metadata['n_domains']}")
+    if "n_total_attributes" in metadata:
+        print(f"N total attrs:  {metadata['n_total_attributes']}")
     if "n_categories" in metadata:
         print(f"N categories:   {metadata['n_categories']}")
     if "n_labels" in metadata:
@@ -186,11 +176,10 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
                   if k not in ("model", "language", "partition_name",
                                "dimension_name",
                                "batch_number", "total_batches",
-                               "n_batches", "n_raw_themes", "n_themes",
-                               "total_themes", "n_concepts",
-                               "n_total_concepts", "n_partitions",
-                               "n_consolidated_concepts", "n_categories",
-                               "n_labels", "survey_question")}
+                               "n_batches", "n_clusters", "n_codes",
+                               "n_domains", "n_total_codes",
+                               "n_categories", "n_labels",
+                               "survey_question")}
     if other_meta:
         print(f"\n[Other Metadata]")
         for key, value in other_meta.items():
@@ -240,7 +229,7 @@ def main():
     prompts_files = get_prompts_files()
 
     print("=" * 100)
-    print("DEBUG: Step 5 Categories v2 - Full LLM Request Inspector")
+    print("DEBUG: Step 5 Categories v3 - Full LLM Request Inspector")
     print("Shows prompt text + Pydantic response model schemas (as seen by instructor)")
     print("=" * 100)
     print(f"Variable:     {VAR_NAME}")
