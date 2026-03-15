@@ -1,269 +1,177 @@
 
-The dimension defines **what kind of variation in responses you are trying to explain**.
+TAXONOMY STRUCTURE
 
-You can think of it like this:
+Hierarchy
+Dimension -> Domain -> Facet -> Attribute
 
-```
-Dimension = analytical lens
-Domain    = what the lens is applied to
-Facet     = the aspect within that lens
-Attribute = the concrete signal in the response
-```
+Purpose
+This taxonomy organizes survey responses by first identifying the type of information expressed and then specifying the subject of the statement, the analytical lens applied to that subject, and the specific observable property being referenced.
 
-Because each **dimension represents a different type of variation**, the meaning of Domain and Facet necessarily shifts slightly.
+Conceptual progression
+information type -> subject -> analytical lens -> observable property
 
----
-
-# How Domain / Facet / Attribute adapt to the Dimension
-
-Below is a **clean conceptual mapping for your 10 dimensions**.
+Each level represents a qualitatively different analytical layer rather than a simple narrowing of the level above.
 
 ---
 
-# 1 PRESCRIPTIVE_CHANGE_OUTCOME_ENABLERS
+LEVEL 1: DIMENSION
 
-**Variation:** proposed actions or improvements
+Definition
+- A dimension identifies the type of information conveyed by a response.
+- It captures the informational role of the statement, independent of the topic being discussed.
 
-| Level     | Meaning                                | Diagnostic question                 |
-| --------- | -------------------------------------- | ----------------------------------- |
-| Domain    | What part of the system should change? | *What is the target of the change?* |
-| Facet     | What type of change is proposed?       | *How should it change?*             |
-| Attribute | Concrete suggestion phrasing           | *What exactly is proposed?*         |
+Key idea: The dimension represents the kind of statement being made.
+Question answered: What type of information does this statement provide?
+
+Typical dimensions
+
+experience_perception
+evaluation_prioritization
+motivation_drivers
+behavior_function
+prescriptive_change_solution
+attributes_associations
+actors_stakeholders
+context_conditions
+relations_dependencies
+identity_definition
 
 Example
 
-```
-Domain: Customer support
-Facet: Response speed improvement
-Attribute: "add live chat"
-Code: Introduce live chat support
-```
+Response
+The website was hard to navigate.
+
+Dimension
+experience_perception
+
+The statement describes a user's experience or perceived difficulty.
 
 ---
 
-# 2 IDENTITY_DEFINITION
+LEVEL 2: DOMAIN
 
-**Variation:** what something *is*
+Definition
+- A domain identifies the primary subject, system component, or thematic area that the response refers to.
+- Domains group statements according to what part of the product, system, organization, or phenomenon is being discussed.
 
-| Level     | Meaning               | Diagnostic question                   |
-| --------- | --------------------- | ------------------------------------- |
-| Domain    | Entity being defined  | *What is being defined?*              |
-| Facet     | Aspect of identity    | *Which aspect of identity?*           |
-| Attribute | Descriptive statement | *What defining feature is mentioned?* |
+Key idea: The domain represents the subject of the statement.
+Question answered: What is this statement about?
+
+Example domains (product context)
+
+usability
+performance
+design
+reliability
+pricing
+customer_support
+features
 
 Example
 
-```
-Domain: The platform
-Facet: Purpose
-Attribute: "a place for professionals to network"
-Code: Professional networking platform
-```
+Response
+The website was hard to navigate.
+
+Domain
+usability
+
+The statement refers to the ease of interacting with the system.
 
 ---
 
-# 3 ACTORS_TARGETS
+LEVEL 3: FACET
 
-**Variation:** who is involved
+Definition
+- A facet identifies the analytical lens through which the domain is being examined.
+- Facets represent the criteria or perspectives used to interpret, evaluate, or describe the domain. Each facet must be independently analyzable.
+- They define the interpretive dimension along which the subject is being examined rather than a specific feature of the system.
 
-| Level     | Meaning             | Diagnostic question                      |
-| --------- | ------------------- | ---------------------------------------- |
-| Domain    | Activity or context | *In what situation are actors involved?* |
-| Facet     | Role of actor       | *What role do they play?*                |
-| Attribute | Actor mentioned     | *Which actor group?*                     |
+Key idea: The facet represents the analytical lens applied to the subject.
+Question answered: Through what analytical lens is the subject being examined?
+
+Example facets (food and drink context)
+
+quality
+price
+variety
+healthiness
+convenience
+presentation
 
 Example
 
-```
-Domain: Decision-making
-Facet: Responsibility
-Attribute: "product managers"
-Code: Product managers responsible
-```
+Response
+The restaurant has too few vegetarian options.
+
+Facet
+variety
+
+The statement examines the domain through the lens of available choices.
 
 ---
 
-# 4 CONTEXT_CONDITIONS
+LEVEL 4: ATTRIBUTE
 
-**Variation:** when / where / under what conditions
+Definition
+- An attribute identifies the specific observable property, feature, or signal that the response refers to.
+- Attributes represent the concrete characteristic through which a facet becomes visible or measurable.
+- Attributes are analytical labels, not verbatim spans or phrases extracted from the response text.
 
-| Level     | Meaning               | Diagnostic question                  |
-| --------- | --------------------- | ------------------------------------ |
-| Domain    | Situation or activity | *What situation is being discussed?* |
-| Facet     | Context dimension     | *Time? location? constraint?*        |
-| Attribute | Concrete condition    | *What condition is mentioned?*       |
+Key idea: The attribute captures the specific observable property referenced by the statement.
+Question answered: What specific characteristic is being described?
+
+Example attributes (facet: variety)
+
+vegetarian_options_available
+number_of_menu_items
+seasonal_menu_items
+dietary_accommodation_options
 
 Example
 
-```
-Domain: Product usage
-Facet: Time
-Attribute: "during peak hours"
-Code: Peak-time usage
-```
+Response
+The restaurant has too few vegetarian options.
+
+Attribute
+vegetarian_options_available
 
 ---
 
-# 5 MOTIVATIONS_DRIVERS
+FULL CLASSIFICATION EXAMPLE
 
-**Variation:** why people care or act
+Response
+It takes too long to find the export button.
 
-| Level     | Meaning              | Diagnostic question             |
-| --------- | -------------------- | ------------------------------- |
-| Domain    | Object of motivation | *What is the motivation about?* |
-| Facet     | Type of motivation   | *Need? goal? fear? value?*      |
-| Attribute | Expressed reason     | *What reason is stated?*        |
+Dimension
+experience_perception
 
-Example
+Domain
+usability
 
-```
-Domain: Using the app
-Facet: Convenience
-Attribute: "saves me time"
-Code: Time-saving motivation
-```
+Facet
+navigation
+
+Attribute
+feature_discoverability
 
 ---
 
-# 6 EXPERIENCE_PERCEPTION
+SUMMARY
 
-**Variation:** lived experience
+Dimension
+Identifies the type of information expressed in the response.
 
-| Level     | Meaning                     | Diagnostic question              |
-| --------- | --------------------------- | -------------------------------- |
-| Domain    | Part of experience          | *Which part of the experience?*  |
-| Facet     | Experiential dimension      | *Flow? atmosphere? interaction?* |
-| Attribute | Observed experience feature | *What happened or was felt?*     |
+Domain
+Identifies the subject area or system component being discussed.
 
-Example
+Facet
+Identifies the analytical lens applied to that subject.
 
-```
-Domain: Onboarding
-Facet: Flow
-Attribute: "steps were confusing"
-Code: Confusing onboarding flow
-```
+Attribute
+Identifies the specific observable property or characteristic referenced by the statement.
 
----
+Conceptual flow
+information type -> subject -> analytical lens -> observable property
 
-# 7 EVALUATION_PRIORITIZATION
-
-**Variation:** judgments or preferences
-
-| Level     | Meaning                    | Diagnostic question                    |
-| --------- | -------------------------- | -------------------------------------- |
-| Domain    | What is being judged       | *What object is evaluated?*            |
-| Facet     | Evaluation criterion       | *Speed? cost? quality? importance?*    |
-| Attribute | Specific evaluation signal | *What evidence of evaluation appears?* |
-
-Example
-
-```
-Domain: Delivery
-Facet: Speed
-Attribute: "delivery was slow"
-Code: Slow delivery
-```
-
-This is the **evaluation framework we discussed earlier**.
-
----
-
-# 8 BEHAVIOR_FUNCTION
-
-**Variation:** what happens / how something works
-
-| Level     | Meaning           | Diagnostic question       |
-| --------- | ----------------- | ------------------------- |
-| Domain    | Process or system | *What system or process?* |
-| Facet     | Functional stage  | *Which step or function?* |
-| Attribute | Described action  | *What action occurs?*     |
-
-Example
-
-```
-Domain: Checkout process
-Facet: Payment step
-Attribute: "user enters credit card"
-Code: Payment entry step
-```
-
----
-
-# 9 ATTRIBUTES_ASSOCIATIONS
-
-**Variation:** descriptive qualities
-
-| Level     | Meaning                | Diagnostic question              |
-| --------- | ---------------------- | -------------------------------- |
-| Domain    | Object being described | *What entity has the trait?*     |
-| Facet     | Attribute category     | *Visual? emotional? functional?* |
-| Attribute | Trait mentioned        | *What quality is described?*     |
-
-Example
-
-```
-Domain: Brand
-Facet: Personality
-Attribute: "modern"
-Code: Modern brand image
-```
-
----
-
-# 10 RELATIONS_DEPENDENCIES
-
-**Variation:** relationships between entities
-
-| Level     | Meaning                         | Diagnostic question                 |
-| --------- | ------------------------------- | ----------------------------------- |
-| Domain    | System or entities              | *What entities are involved?*       |
-| Facet     | Relationship type               | *Dependency? trade-off? influence?* |
-| Attribute | Specific relationship statement | *What relationship is described?*   |
-
-Example
-
-```
-Domain: Pricing vs quality
-Facet: Trade-off
-Attribute: "cheaper means worse quality"
-Code: Price-quality trade-off
-```
-
----
-
-# The deeper principle behind your system
-
-Your framework is actually doing something very sophisticated:
-
-It separates **10 different types of conceptual variation in open-ended responses**.
-
-Each dimension answers a different question:
-
-```
-What should change?       → PRESCRIPTIVE
-What is it?               → IDENTITY
-Who is involved?          → ACTORS
-When/where does it apply? → CONTEXT
-Why do people care?       → MOTIVATION
-What was experienced?     → EXPERIENCE
-Is it good/bad?           → EVALUATION
-What happens?             → BEHAVIOR
-What qualities exist?     → ATTRIBUTES
-How do things interact?   → RELATIONS
-```
-
-Once the **dimension is chosen**, the interpretation of **Domain and Facet becomes dimension-specific**.
-
----
-
-✅ **Short answer**
-
-Yes — **Domain, Facet, and Attribute must be interpreted slightly differently depending on the dimension**, because the dimension defines **what type of variation you are analyzing**.
-
-Your decision tree is essentially a **meta-taxonomy that determines the semantics of the taxonomy below it.**
-
----
-
-If you'd like, I can also show you something interesting:
-Your 10 dimensions are actually **very close to a complete semantic classification of survey responses** used in advanced qualitative analysis. There is a small way to make them **even cleaner and mutually exclusive**, which could make coding much easier.
+Dimension-specific adaptation
+While the structural meaning of each level remains stable, the specific interpretation of Domain, Facet, and Attribute varies across dimensions. See dynamic taxonomy definitions.md for dimension-specific definitions.
