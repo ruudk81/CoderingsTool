@@ -7,7 +7,7 @@ Runs the preprocessing step in isolation for experimentation.
 Loads Step 0 (data) results from cache and runs preprocessing.
 
 Usage:
-    cd src && python -m development.step_1_preprocess.run_experiment
+    cd src && python -m development.step_1_preProcessor.run_experiment
 
 Toggle:
     USE_EXPERIMENTAL = True  -> Uses experimental utils from this folder

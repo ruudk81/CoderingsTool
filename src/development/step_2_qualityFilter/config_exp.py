@@ -4,7 +4,7 @@ Experimental Configuration for Step 2: Quality Filter
 Re-exports production config items that don't need modification.
 Defines experimental constants for quality filtering.
 
-Pattern follows step_1_preprocess/config_exp.py
+Pattern follows step_1_preProcessor/config_exp.py
 """
 
 from dataclasses import dataclass
