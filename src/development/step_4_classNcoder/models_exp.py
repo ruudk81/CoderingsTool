@@ -13,14 +13,14 @@ from development.step_3_ideaExtractor.models_exp import (
     IdeasExtractedSubmodel,
     IdeasExtractedModel,
 )
-from .prompts_exp import MECECategory, MECEVerification
+from .prompts_exp import MECECode, MECEVerification
 
 
 # =============================================================================
 # PARTITION MODELS (data-driven domain groups)
 # =============================================================================
 
-class PartitionDescription(BaseModel):
+class DomainDescription(BaseModel):
     """Description of a domain partition."""
     partition_name: str = Field(
         ...,
@@ -46,9 +46,9 @@ class PartitionDescription(BaseModel):
     )
 
 
-class PartitionSet(BaseModel):
+class DomainSet(BaseModel):
     """Complete set of domain partitions."""
-    partitions: List[PartitionDescription] = Field(
+    partitions: List[DomainDescription] = Field(
         ...,
         description="List of populated domain partitions"
     )
@@ -58,32 +58,33 @@ class PartitionSet(BaseModel):
 # MECE CACHE MODELS
 # =============================================================================
 
-class PartitionMECEResultModel(BaseModel):
+class DomainResultModel(BaseModel):
     """Pydantic-serializable partition result for caching (v3)."""
     partition_name: str
     n_labels: int
     n_batches: int
-    categories: List[MECECategory] = Field(default_factory=list)
+    categories: List[MECECode] = Field(default_factory=list)
     # v3 fields
     facets: List[Dict[str, Any]] = Field(default_factory=list)
     facet_assignments: Dict[str, str] = Field(default_factory=dict)
     attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
 
 
-class MECEResultsCache(BaseModel):
+class CodingResultsCache(BaseModel):
     """Top-level cache wrapper for all category results."""
-    partition_set: PartitionSet
-    partition_results: Dict[str, PartitionMECEResultModel]
+    partition_set: DomainSet
+    partition_results: Dict[str, DomainResultModel]
     label_counts: Dict[str, int] = Field(default_factory=dict)
     label_source: str = ""
     total_categories: int = 0
+    raw_codes: List[Dict] = Field(default_factory=list)  # CodeFromAttributes dicts for dual assignment
 
 
 # =============================================================================
 # CATEGORY ASSIGNMENT OUTPUT MODELS
 # =============================================================================
 
-class CategoryAssignedSubmodel(IdeasExtractedSubmodel):
+class CodeAssignedSubmodel(IdeasExtractedSubmodel):
     """Per-idea data with MECE category assignment.
 
     Extends step 3's IdeasExtractedSubmodel.
@@ -91,13 +92,14 @@ class CategoryAssignedSubmodel(IdeasExtractedSubmodel):
     plus category assignment fields below.
     """
     assigned_category: Optional[str] = None
+    assigned_attribute: Optional[str] = None
     category_confidence: Optional[float] = None
     category_rationale: Optional[str] = None
     partition_name: Optional[str] = None
     parent_category: Optional[str] = None
 
 
-class CategoryAssignedModel(IdeasExtractedModel):
+class CodeAssignedModel(IdeasExtractedModel):
     """Response-level model with category-assigned ideas."""
-    response_ideas: Optional[List[CategoryAssignedSubmodel]] = None
+    response_ideas: Optional[List[CodeAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None

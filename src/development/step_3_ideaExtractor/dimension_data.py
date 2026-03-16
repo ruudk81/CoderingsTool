@@ -152,18 +152,17 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the part of the system, organization, or context that is the target of the proposed change. \n"
-                "Key idea: Domains specify what part of the system should change. \n"
+                "Key idea: Domains specify what part of the system should change."
             ),
             domain_diagnostic="Question that needs to be answered: What is the target of the change?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which proposed changes are examined — specifically, the type or approach of change being proposed. "
-                "Facets distinguish between different kinds of interventions aimed at the same target area; each must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which proposed changes are examined — specifically, the type or approach of change being proposed. "
+                "Facets distinguish between different kinds of interventions aimed at the same target area; each must be independently analyzable. \n"
                 "Key idea: Facets specify how the target should change."
             ),
-            facet_diagnostic="What type of change is proposed?",
+            facet_diagnostic="What type of change is proposed (such as: expansion, simplification, addition, removal, or restructuring)?",
             attribute_instruction=(
-                "An attribute identifies the specific, concrete improvement or action being proposed. "
-                "It is a named property that captures the precise nature of the suggestion. "
+                "Definition: An attribute identifies the specific, concrete improvement or action being proposed. It is a named property that captures the precise nature of the suggestion. \n"
                 "Key idea: Attributes name the specific proposed improvement."
             ),
             attribute_diagnostic="What exactly is the proposed improvement?",
@@ -240,19 +239,17 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the entity or concept whose identity is being defined or categorized. \n"
-                "Key idea: Domains specify what is being defined. "
+                "Key idea: Domains specify what is being defined."
             ),
             domain_diagnostic="Question that needs to be answered: What is being defined?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which an entity's identity is examined — specifically, "
-                "the aspect of identity being addressed (purpose, scope, category, nature, or meaning). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which an entity's identity is examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify which aspect of identity is being defined."
             ),
-            facet_diagnostic="Which aspect of identity?",
+            facet_diagnostic="What aspect of identity is being addressed (such as: purpose, scope, category, nature, or meaning)?",
             attribute_instruction=(
-                "An attribute identifies the specific defining characteristic or identity marker being articulated. "
-                "It is a named property that captures the precise feature of the entity's identity. "
+                "Definition: An attribute identifies the specific defining characteristic or identity marker being articulated. "
+                "It is a named property that captures the precise feature of the entity's identity. \n"
                 "Key idea: Attributes name the specific defining feature."
             ),
             attribute_diagnostic="What defining feature is mentioned?",
@@ -328,19 +325,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the subject or situation in which actors are involved. \n"
-                "Key idea: Domains specify the subject or situation in which actors are involved. \n"
+                "Key idea: Domains specify the subject or situation in which actors are involved."
             ),
             domain_diagnostic="Question that needs to be answered: In what situation are actors involved?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which actor involvement is examined — specifically, "
-                "the role or position the actor occupies (decision-maker, beneficiary, affected party, or responsible party). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which actor involvement is examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify what role the actor plays."
             ),
-            facet_diagnostic="What role do they play?",
+            facet_diagnostic="What role or position does the actor occupy (such as: decision-maker, beneficiary, affected party, or responsible party)?",
             attribute_instruction=(
-                "An attribute identifies the specific actor group or stakeholder type referenced. "
-                "It is a named property that captures the precise party being discussed. "
+                "Definition: An attribute identifies the specific actor group or stakeholder type referenced. It is a named property that captures the precise party being discussed. \n"
                 "Key idea: Attributes name the specific actor or stakeholder group."
             ),
             attribute_diagnostic="Which specific actor group is referenced?",
@@ -416,19 +410,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the situation, activity, or process to which contextual conditions apply. \n"
-                "Key idea: Domains specify what situation is being discussed. \n"
+                "Key idea: Domains specify what situation is being discussed."
             ),
             domain_diagnostic="Question that needs to be answered: What situation is being discussed?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which contextual conditions are examined — specifically, "
-                "the type of contextual dimension (time, location, constraint, trigger, or environment). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which contextual conditions are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify what type of condition is described."
             ),
-            facet_diagnostic="Time? location? constraint?",
+            facet_diagnostic="What type of contextual dimension (such as: time, location, constraint, trigger, or environment)?",
             attribute_instruction=(
-                "An attribute identifies the specific condition, circumstance, or contextual factor being mentioned. "
-                "It is a named property that captures the precise situational feature. "
+                "Definition: An attribute identifies the specific condition, circumstance, or contextual factor being mentioned. It is a named property that captures the precise situational feature. \n"
                 "Key idea: Attributes name the specific contextual condition."
             ),
             attribute_diagnostic="What specific condition is mentioned?",
@@ -504,19 +495,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the object, activity, or situation that the motivation is about. \n"
-                "Key idea: Domains specify what the motivation is about. \n"
+                "Key idea: Domains specify what the motivation is about."
             ),
             domain_diagnostic="Question that needs to be answered: What is the motivation about?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which motivations are examined — specifically, "
-                "the type of motivation expressed (need, goal, fear, value, or aspiration). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which motivations are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify what type of motivation is expressed."
             ),
-            facet_diagnostic="Need? goal? fear? value?",
+            facet_diagnostic="What type of motivation is expressed (such as: need, goal, fear, value, or aspiration)?",
             attribute_instruction=(
-                "An attribute identifies the specific reason, benefit, or motivational factor being stated. "
-                "It is a named property that captures the precise driver. "
+                "Definition: An attribute identifies the specific reason, benefit, or motivational factor being stated. It is a named property that captures the precise driver. \n"
                 "Key idea: Attributes name the specific motivational factor."
             ),
             attribute_diagnostic="What specific reason is stated?",
@@ -593,19 +581,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the part of the experience or journey being described. \n"
-                "Key idea: Domains specify which part of the experience is described. \n"
+                "Key idea: Domains specify which part of the experience is described."
             ),
             domain_diagnostic="Question that needs to be answered: Which part of the experience?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which experiences are examined — specifically, "
-                "the experiential dimension being addressed (flow, atmosphere, interaction, sensation, or emotion). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which experiences are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify what experiential quality is described."
             ),
-            facet_diagnostic="Flow? atmosphere? interaction?",
+            facet_diagnostic="What experiential dimension is being addressed (such as: flow, atmosphere, interaction, sensation, or emotion)?",
             attribute_instruction=(
-                "An attribute identifies the specific experiential feature observed or felt. "
-                "It is a named property that captures the precise aspect of the experience. "
+                "Definition: An attribute identifies the specific experiential feature observed or felt. It is a named property that captures the precise aspect of the experience. \n"
                 "Key idea: Attributes name the specific observed experience feature."
             ),
             attribute_diagnostic="What specific experience feature was observed or felt?",
@@ -687,19 +672,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the object, service, or aspect being evaluated or judged. \n"
-                "Key idea: Domains specify what is being evaluated. \n"
+                "Key idea: Domains specify what is being evaluated."
             ),
             domain_diagnostic="Question that needs to be answered: What object is evaluated?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which evaluations are examined — specifically, "
-                "the evaluation criterion being applied (speed, cost, quality, importance, or satisfaction). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which evaluations are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify on what criterion the evaluation is based."
             ),
-            facet_diagnostic="Speed? cost? quality? importance?",
+            facet_diagnostic="What evaluation criterion is being applied (such as: speed, cost, quality, importance, or satisfaction)?",
             attribute_instruction=(
-                "An attribute identifies the specific evaluative signal or evidence of judgment. "
-                "It is a named property that captures the precise characteristic being assessed. "
+                "Definition: An attribute identifies the specific evaluative signal or evidence of judgment. It is a named property that captures the precise characteristic being assessed. \n"
                 "Key idea: Attributes name the specific evaluation signal."
             ),
             attribute_diagnostic="What specific evidence of evaluation appears?",
@@ -780,19 +762,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the process, system, or activity being described. \n"
-                "Key idea: Domains specify what system or process is described. \n"
+                "Key idea: Domains specify what system or process is described."
             ),
             domain_diagnostic="Question that needs to be answered: What system or process?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which behaviors or functions are examined — specifically, "
-                "the functional stage or step (input, processing, output, or interaction). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which behaviors or functions are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify which step or function is described."
             ),
-            facet_diagnostic="Which step or function?",
+            facet_diagnostic="Which functional stage or step (such as: input, processing, output, or interaction)?",
             attribute_instruction=(
-                "An attribute identifies the specific action, behavior, or functional feature being described. "
-                "It is a named property that captures the precise operational characteristic. "
+                "Definition: An attribute identifies the specific action, behavior, or functional feature being described. It is a named property that captures the precise operational characteristic. \n"
                 "Key idea: Attributes name the specific behavioral or functional feature."
             ),
             attribute_diagnostic="What specific action occurs?",
@@ -873,19 +852,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the entity or object being described with qualities or associations. \n"
-                "Key idea: Domains specify what entity has the trait. \n"
+                "Key idea: Domains specify what entity has the trait."
             ),
             domain_diagnostic="Question that needs to be answered: What entity has the trait?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which descriptive qualities are examined — specifically, "
-                "the attribute category (visual, emotional, functional, or symbolic). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which descriptive qualities are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify what type of quality is described."
             ),
-            facet_diagnostic="Visual? emotional? functional?",
+            facet_diagnostic="What attribute category (such as: visual, emotional, functional, or symbolic)?",
             attribute_instruction=(
-                "An attribute identifies the specific quality, trait, or association being described. "
-                "It is a named property that captures the precise descriptive characteristic. "
+                "Definition: An attribute identifies the specific quality, trait, or association being described. It is a named property that captures the precise descriptive characteristic. \n"
                 "Key idea: Attributes name the specific quality or trait."
             ),
             attribute_diagnostic="What specific quality is described?",
@@ -966,19 +942,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the system or set of entities involved in the relationship. \n"
-                "Key idea: Domains specify what entities are involved in the relationship. \n"
+                "Key idea: Domains specify what entities are involved in the relationship."
             ),
             domain_diagnostic="Question that needs to be answered: What entities are involved?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which relationships are examined — specifically, "
-                "the type of relationship (dependency, trade-off, influence, or comparison). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which relationships are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify what type of relationship is described."
             ),
-            facet_diagnostic="Dependency? trade-off? influence?",
+            facet_diagnostic="What type of relationship (such as: dependency, trade-off, influence, or comparison)?",
             attribute_instruction=(
-                "An attribute identifies the specific relational feature or linkage being described. "
-                "It is a named property that captures the precise nature of the connection between entities. "
+                "Definition: An attribute identifies the specific relational feature or linkage being described. It is a named property that captures the precise nature of the connection between entities. \n"
                 "Key idea: Attributes name the specific relational feature."
             ),
             attribute_diagnostic="What specific relationship is described?",
@@ -1064,15 +1037,12 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             domain_diagnostic="Question that needs to be answered: What is this about?",
             facet_instruction=(
-                "A facet identifies the analytical lens through which general remarks are examined — specifically, "
-                "the type of remark (uncertain response, meta-comment, general observation). "
-                "Each facet must be independently analyzable. "
+                "Definition: A facet identifies the analytical lens through which general remarks are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify what type of general remark this is."
             ),
-            facet_diagnostic="What type of remark is this?",
+            facet_diagnostic="What type of remark (such as: uncertain response, meta-comment, general observation)?",
             attribute_instruction=(
-                "An attribute identifies the specific feature or characteristic of the general remark. "
-                "It is a named property that captures whatever concrete signal is present. "
+                "Definition: An attribute identifies the specific feature or characteristic of the general remark. It is a named property that captures whatever concrete signal is present. \n"
                 "Key idea: Attributes name whatever specific feature can be identified."
             ),
             attribute_diagnostic="What specific feature is mentioned?",

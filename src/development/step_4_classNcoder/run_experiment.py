@@ -1,7 +1,7 @@
 #%%
 
 """
-Step 5: Categories runner (v3)
+Step 5: Categories runner
 
 Pipeline: facet discovery → facet assignment → attribute discovery →
 code generation from attributes → code assignment.
@@ -22,18 +22,18 @@ from development.step_3_ideaExtractor import models_exp as models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 
-# Import step_5_categories components
-from development.step_5_categories.config_categories_exp import (
+# Import step_4_classNcoder components
+from development.step_4_classNcoder.config_classNcoder_exp import (
     CategoriesConfig, AssignmentConfig,
 )
-from development.step_5_categories.partition_discoverer import PartitionDiscoverer, PartitionLabelMapping
-from development.step_5_categories.qualitative_researcher import QualitativeResearcher, PipelineResult, PartitionResult
-from development.step_5_categories.prompts_exp import FormalCode
-from development.step_5_categories.models_exp import (
-    PartitionSet, PartitionMECEResultModel, MECEResultsCache,
-    CategoryAssignedModel,
+from development.step_4_classNcoder.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
+from development.step_4_classNcoder.qualitative_researcher import QualitativeResearcher, PipelineResult, DomainResult
+from development.step_4_classNcoder.prompts_exp import FormalCode
+from development.step_4_classNcoder.models_exp import (
+    DomainSet, DomainResultModel, CodingResultsCache,
+    CodeAssignedModel,
 )
-from development.step_5_categories.category_assignment import CategoryAssigner
+from development.step_4_classNcoder.code_assignment import CodeAssigner
 
 
 # =============================================================================
@@ -54,16 +54,16 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 RUN_ASSIGNMENT = False  # Set True to run category assignment after MECE discovery
 RUN_ASSIGNMENT_ONLY = False  # Set True to skip pipeline, run assignment from cache only
-EXPERIMENT_N = 100  # Limit number of responses for a test run (None = use all)
+EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-# All defaults defined in config_categories_exp.py.
+# All defaults defined in config_classNcoder_exp.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="ladder",              # see config_categories_exp.py for all valid values
+    label_source="ladder",              # see config_classNcoder_exp.py for all valid values
     label_prefix="",                   # "" or any static prefix string
 )
 
@@ -140,7 +140,7 @@ def load_extraction_metadata(
 # =============================================================================
 
 def print_results(
-    partition_set: PartitionSet,
+    partition_set: DomainSet,
     label_mappings: Dict[str, PartitionLabelMapping],
     pipeline_result: PipelineResult,
 ):
@@ -266,7 +266,7 @@ def main():
     # =========================================================================
     # Stage 1: Partition Discovery
     # =========================================================================
-    discoverer = PartitionDiscoverer(CONFIG, extraction_metadata)
+    discoverer = DomainDiscoverer(CONFIG, extraction_metadata)
     partition_set, label_mappings = discoverer.discover(
         ideas_models
     )
@@ -379,7 +379,6 @@ def save_results_to_file(
 ASSIGNMENT_CONFIG = AssignmentConfig(
     assignment_model="gpt-4.1-nano",
     assignment_temperature=0.1,
-    assignment_batch_size=10,
     verbose=True,
 )
 
@@ -389,14 +388,14 @@ ASSIGNMENT_CONFIG = AssignmentConfig(
 # =============================================================================
 
 def cache_mece_results(
-    partition_set: PartitionSet,
+    partition_set: DomainSet,
     label_mappings: Dict[str, PartitionLabelMapping],
     pipeline_result: PipelineResult,
     filename: str = FILENAME,
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
     variable_key: Optional[str] = None,
-) -> Dict[str, PartitionMECEResultModel]:
+) -> Dict[str, DomainResultModel]:
     """Cache codebook results for later use by category assignment.
 
     The codebook is stored as a single partition result keyed by "__global__",
@@ -417,7 +416,7 @@ def cache_mece_results(
     total_labels = sum(m.label_count for m in label_mappings.values())
 
     pydantic_results = {
-        "__global__": PartitionMECEResultModel(
+        "__global__": DomainResultModel(
             partition_name="__global__",
             n_labels=total_labels,
             n_batches=0,
@@ -427,7 +426,7 @@ def cache_mece_results(
 
     # Store per-domain results with v3 fields
     for name, result in pipeline_result.partition_results.items():
-        pydantic_results[name] = PartitionMECEResultModel(
+        pydantic_results[name] = DomainResultModel(
             partition_name=name,
             n_labels=result.n_labels,
             n_batches=result.n_batches,
@@ -440,7 +439,7 @@ def cache_mece_results(
             },
         )
 
-    mece_cache = MECEResultsCache(
+    mece_cache = CodingResultsCache(
         partition_set=partition_set,
         partition_results=pydantic_results,
         label_counts={
@@ -448,6 +447,7 @@ def cache_mece_results(
         },
         label_source=CONFIG.label_source,
         total_categories=len(codebook),
+        raw_codes=[c.model_dump() for c in pipeline_result.codes],
     )
 
     cache_manager = CacheManager()
@@ -473,7 +473,7 @@ def load_mece_cache(
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
     variable_key: Optional[str] = None,
-) -> Optional[MECEResultsCache]:
+) -> Optional[CodingResultsCache]:
     """Load cached MECE results if available."""
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
@@ -487,7 +487,7 @@ def load_mece_cache(
         filename=filename,
         step="mece_categories",
         variable_key=variable_key,
-        model_cls=MECEResultsCache,
+        model_cls=CodingResultsCache,
     )
 
 
@@ -495,22 +495,24 @@ def load_mece_cache(
 # CATEGORY ASSIGNMENT
 # =============================================================================
 
-def run_category_assignment(
+def run_code_assignment(
     ideas_models: List[models.IdeasExtractedModel],
-    mece_results: Dict[str, PartitionMECEResultModel],
-    partition_set: PartitionSet,
+    mece_results: Dict[str, DomainResultModel],
+    partition_set: DomainSet,
     extraction_metadata: Optional[models.ExtractionMetadata] = None,
     config: AssignmentConfig = ASSIGNMENT_CONFIG,
     prompt_printer=None,
-) -> List[CategoryAssignedModel]:
+    codes=None,
+) -> List[CodeAssignedModel]:
     """Run category assignment and cache results."""
-    assigner = CategoryAssigner(
+    assigner = CodeAssigner(
         config=config,
         ideas_models=ideas_models,
         mece_results=mece_results,
         partition_set=partition_set,
         extraction_metadata=extraction_metadata,
         prompt_printer=prompt_printer,
+        codes=codes,
     )
 
     assigned_results = assigner.assign_all()
@@ -525,7 +527,7 @@ def run_category_assignment(
     cache_manager.save_to_cache(
         assigned_results,
         FILENAME,
-        "category_assignment",
+        "code_assignment",
         variable_key,
     )
     print(f"Category assignment results cached "
@@ -558,20 +560,26 @@ def run_assignment_only():
     partition_set = mece_cache.partition_set
     pydantic_results = mece_cache.partition_results
 
+    # Reconstruct CodeFromAttributes from cached dicts
+    from .prompts_exp import CodeFromAttributes
+    codes = [CodeFromAttributes(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else None
+
     n_themes = mece_cache.total_categories
     n_partitions = len(partition_set.partitions)
-    print(f"  Loaded codebook: {n_themes} themes, {n_partitions} partitions")
+    print(f"  Loaded codebook: {n_themes} themes, {n_partitions} partitions"
+          f", {len(codes) if codes else 0} raw codes")
 
     prompt_printer = PromptPrinter(
         enabled=True,
         print_realtime=PRINT_PROMPTS,
     )
-    assigned_results = run_category_assignment(
+    assigned_results = run_code_assignment(
         ideas_models=ideas_models,
         mece_results=pydantic_results,
         partition_set=partition_set,
         extraction_metadata=extraction_metadata,
         prompt_printer=prompt_printer,
+        codes=codes,
     )
 
     return assigned_results, prompt_printer
@@ -606,12 +614,13 @@ if __name__ == "__main__":
             # Run category assignment (optional)
             if RUN_ASSIGNMENT:
                 extraction_metadata = load_extraction_metadata()
-                assigned_results = run_category_assignment(
+                assigned_results = run_code_assignment(
                     ideas_models=ideas_models,
                     mece_results=pydantic_results,
                     partition_set=partition_set,
                     extraction_metadata=extraction_metadata,
                     prompt_printer=prompt_printer,
+                    codes=pipeline_result.codes,
                 )
             else:
                 print("\n  Category assignment skipped (RUN_ASSIGNMENT = False)")
@@ -629,7 +638,7 @@ if __name__ == "__main__":
             prompts_dir.mkdir(parents=True, exist_ok=True)
 
             # Split prompts into pipeline (generation) vs assignment
-            ASSIGNMENT_TYPES = {"category_assignment"}
+            ASSIGNMENT_TYPES = {"code_assignment"}
             pipeline_prompts = [
                 p for p in prompt_printer.prompts
                 if p.get("prompt_type") not in ASSIGNMENT_TYPES

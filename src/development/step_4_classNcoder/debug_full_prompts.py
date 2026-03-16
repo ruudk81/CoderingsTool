@@ -28,22 +28,26 @@ except ImportError:
 
 # Import response models (v3)
 try:
-    from development.step_5_categories.prompts_exp import (
+    from development.step_4_classNcoder.prompts_exp import (
         FacetDiscoveryResult,
+        FacetConsolidatedResponse,
         FacetAssignmentBatch,
         AttributeDiscoveryResult,
         CodeGenerationFromAttributesResult,
-        CategoryAssignmentBatch,
-        SingleCategoryAssignment,
+        CodebookConsolidationResult,
+        CodeAssignmentBatch,
+        CodeAttributeAssignment,
     )
 except ImportError:
     from prompts_exp import (
         FacetDiscoveryResult,
+        FacetConsolidatedResponse,
         FacetAssignmentBatch,
         AttributeDiscoveryResult,
         CodeGenerationFromAttributesResult,
-        CategoryAssignmentBatch,
-        SingleCategoryAssignment,
+        CodebookConsolidationResult,
+        CodeAssignmentBatch,
+        CodeAttributeAssignment,
     )
 
 
@@ -59,11 +63,13 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 STATIC_PROMPT_MODELS = {
     "facet_discovery": FacetDiscoveryResult,
+    "facet_consolidation": FacetConsolidatedResponse,
     "facet_assignment": FacetAssignmentBatch,
     "attribute_discovery": AttributeDiscoveryResult,
     "code_generation_from_attributes": CodeGenerationFromAttributesResult,
-    "category_assignment": CategoryAssignmentBatch,
-    "category_assignment_single": SingleCategoryAssignment,
+    "codebook_consolidation": CodebookConsolidationResult,
+    "code_assignment": CodeAssignmentBatch,
+    "dual_assignment": CodeAttributeAssignment,
 }
 
 
@@ -77,11 +83,6 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
         - description_note: Human-readable note about the model
     """
     prompt_type = prompt_entry.get("prompt_type", "")
-
-    # Detect single-mode assignment from metadata
-    metadata = prompt_entry.get("metadata", {})
-    if prompt_type == "category_assignment" and metadata.get("mode") == "single":
-        prompt_type = "category_assignment_single"
 
     if prompt_type in STATIC_PROMPT_MODELS:
         model = STATIC_PROMPT_MODELS[prompt_type]
@@ -241,7 +242,7 @@ def main():
     if not prompts_files:
         print("\nNo prompts files found.")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m development.step_5_categories_v2.run_experiment")
+        print("  cd src && python -m development.step_4_classNcoder_v2.run_experiment")
         print("\n(prompts are always captured; PRINT_PROMPTS controls real-time output)")
         return
 

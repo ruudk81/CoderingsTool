@@ -90,14 +90,14 @@ class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
     embedding_text_format: str = "idea"  # "idea", "concept", "ladder", "default", "all", etc.
 
-class CategoryAssignedSubmodel(EmbeddingsSubmodel):
+class CodeAssignedSubmodel(EmbeddingsSubmodel):
     """Per-idea data with MECE category assignment.
 
     Extends EmbeddingsSubmodel (not ClusterSubmodel) since category
     assignment operates on ideas partitioned by concept_type, independent
     of clustering.
     """
-    assigned_category: Optional[str] = None        # MECECategory.category_label
+    assigned_category: Optional[str] = None        # MECECode.category_label
     category_confidence: Optional[float] = None    # 0.0 - 1.0
     category_rationale: Optional[str] = None       # LLM reasoning
     partition_name: Optional[str] = None           # concept_type partition
@@ -107,9 +107,9 @@ class CategoryAssignedSubmodel(EmbeddingsSubmodel):
     cluster_theme: Optional[str] = None
 
 
-class CategoryAssignedModel(EmbeddingsModel):
+class CodeAssignedModel(EmbeddingsModel):
     """Response-level model with category-assigned ideas."""
-    response_ideas: Optional[List[CategoryAssignedSubmodel]] = None
+    response_ideas: Optional[List[CodeAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None
 
 
@@ -221,29 +221,29 @@ class ThemeEnrichedCodebookModel(CodebookModel):
 # === MECE CACHE MODELS (step 5 categories) ========================================================================================================
 
 from prompts import (
-    PartitionSet, MECECategory, MECEVerification,
+    DomainSet, MECECode, MECEVerification,
 )
 
 
-class PartitionMECEResultModel(BaseModel):
+class DomainResultModel(BaseModel):
     """Pydantic-serializable version of PartitionMECEResult for caching."""
     partition_name: str
     n_labels: int
     n_batches: int
     reduce_skipped: bool
-    categories: List[MECECategory] = Field(default_factory=list)
+    categories: List[MECECode] = Field(default_factory=list)
     mece_verifications: List[MECEVerification] = Field(default_factory=list)
 
 
-class MECEResultsCache(BaseModel):
+class CodingResultsCache(BaseModel):
     """Top-level cache wrapper for all MECE results.
 
     Stores the complete output of the MAP/REDUCE/MECE pipeline:
     partition definitions, MECE category sets, and label counts.
     Designed for save_metadata_to_cache() (single model).
     """
-    partition_set: PartitionSet
-    partition_results: Dict[str, PartitionMECEResultModel]
+    partition_set: DomainSet
+    partition_results: Dict[str, DomainResultModel]
     label_counts: Dict[str, int] = Field(default_factory=dict)
     processing_mode: str = ""
     label_source: str = ""

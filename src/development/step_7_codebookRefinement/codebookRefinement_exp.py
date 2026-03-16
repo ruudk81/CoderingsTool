@@ -53,7 +53,7 @@ class LLMRefinementResponse(BaseModel):
 try:
     from .prompts_exp import (
         CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT,
-        CODEBOOK_MECE_ENFORCEMENT_PROMPT, MECEPartitionResult,
+        CODEBOOK_MECE_ENFORCEMENT_PROMPT, MECEDomainResult,
         PARTITION_REFINEMENT_PROMPT, CROSS_PARTITION_JUDGE_PROMPT,
         PartitionRefinementResult, CrossPartitionJudgeResult,
         PARTITION_REVIEW_PROMPT, PartitionReviewResult,
@@ -62,7 +62,7 @@ try:
 except ImportError:
     from prompts_exp import (
         CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT,
-        CODEBOOK_MECE_ENFORCEMENT_PROMPT, MECEPartitionResult,
+        CODEBOOK_MECE_ENFORCEMENT_PROMPT, MECEDomainResult,
         PARTITION_REFINEMENT_PROMPT, CROSS_PARTITION_JUDGE_PROMPT,
         PartitionRefinementResult, CrossPartitionJudgeResult,
         PARTITION_REVIEW_PROMPT, PartitionReviewResult,
@@ -1342,7 +1342,7 @@ class CodebookRefinementProcessor:
         survey_question: str,
         refined_model: RefinedCodebookModel,
         reasoning_results: CodeGeneratorReasoningResults
-    ) -> Dict[str, MECEPartitionResult]:
+    ) -> Dict[str, MECEDomainResult]:
         """Run MECE enforcement per concept_type partition.
 
         1. Extracts concept_type mapping from step 6 data
@@ -1356,7 +1356,7 @@ class CodebookRefinementProcessor:
             reasoning_results: Step 6 results (for concept_type extraction)
 
         Returns:
-            Dict mapping partition_name to MECEPartitionResult.
+            Dict mapping partition_name to MECEDomainResult.
             Also stores concept_type_map on self for downstream use.
         """
         # Extract concept_type mapping
@@ -1391,7 +1391,7 @@ class CodebookRefinementProcessor:
 
         # Run MECE enforcement per partition
         all_partition_names = sorted(code_groups.keys())
-        mece_results: Dict[str, MECEPartitionResult] = {}
+        mece_results: Dict[str, MECEDomainResult] = {}
 
         for partition_name in all_partition_names:
             codes = code_groups[partition_name]
@@ -1443,7 +1443,7 @@ class CodebookRefinementProcessor:
                     client=self.client,
                     model=model_name,
                     prompt=prompt,
-                    response_model=MECEPartitionResult,
+                    response_model=MECEDomainResult,
                     temperature=temperature,
                     max_tokens=self.model_config.default_max_tokens,
                     track_usage=True,
@@ -2271,7 +2271,7 @@ class CodebookRefinementProcessor:
                     partition_name = stripped[:last_underscore] if last_underscore >= 0 else stripped
 
                 # Use language-aware "other" label for theme
-                from development.step_5_categories.config_categories_exp import get_other_category_label
+                from development.step_4_classNcoder.config_classNcoder_exp import get_other_category_label
                 other_label = get_other_category_label(self.config.language)
                 theme_label = f"{partition_name} — {other_label}"
 
@@ -2387,7 +2387,7 @@ def enforce_mece(
     language: str = DEFAULT_LANGUAGE,
     verbose: bool = True,
     prompt_printer: Optional[Any] = None
-) -> Dict[str, 'MECEPartitionResult']:
+) -> Dict[str, 'MECEDomainResult']:
     """Run MECE enforcement on a refined codebook, partitioned by concept_type.
 
     Args:
@@ -2400,7 +2400,7 @@ def enforce_mece(
         prompt_printer: Optional prompt capture utility
 
     Returns:
-        Dict mapping partition_name to MECEPartitionResult.
+        Dict mapping partition_name to MECEDomainResult.
     """
     if model_config is None:
         model_config = DEFAULT_MODEL_CONFIG

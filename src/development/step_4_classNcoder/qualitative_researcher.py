@@ -11,7 +11,7 @@ Per-domain steps (P1, P2, P3) run CONCURRENTLY. P4 is sequential.
 
 Usage:
     from .qualitative_researcher import QualitativeResearcher
-    from .config_categories_exp import CategoriesConfig
+    from .config_classNcoder_exp import CategoriesConfig
 
     processor = QualitativeResearcher(config)
     result = processor.process_all_partitions(
@@ -44,16 +44,19 @@ from development.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
 )
 
-from .config_categories_exp import CategoriesConfig
-from .partition_discoverer import PartitionLabelMapping
+from .config_classNcoder_exp import CategoriesConfig
+from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
-from .models_exp import PartitionSet, PartitionDescription
+from .models_exp import DomainSet, DomainDescription
 from .prompts_exp import (
-    MECECategory,
+    MECECode,
     # P1: Facet Discovery
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
     DiscoveredFacet,
+    # P1.5: Facet Consolidation
+    build_facet_consolidation_prompt,
+    FacetConsolidatedResponse,
     # P2: Facet Assignment
     build_facet_assignment_prompt,
     FacetAssignmentBatch,
@@ -66,6 +69,9 @@ from .prompts_exp import (
     CodeGenerationFromAttributesResult,
     CodeFromAttributes,
     FormalCode,
+    # P4.5: Codebook Consolidation
+    build_codebook_consolidation_prompt,
+    CodebookConsolidationResult,
     # Bridge
     convert_codes_to_mece_categories,
     convert_formal_codes_to_mece_categories,
@@ -98,14 +104,14 @@ class PromptContext:
 
 
 @dataclass
-class PartitionContext:
+class DomainContext:
     """Partition-specific context."""
     partition_name: str
     partition_definition: str
 
 
 @dataclass
-class PartitionResult:
+class DomainResult:
     """Per-domain pipeline result (v3)."""
     partition_name: str
     n_labels: int
@@ -118,13 +124,13 @@ class PartitionResult:
 @dataclass
 class PipelineResult:
     """Complete pipeline output (v3)."""
-    partition_results: Dict[str, PartitionResult]
-    codebook_categories: List[MECECategory]
+    partition_results: Dict[str, DomainResult]
+    codebook_categories: List[MECECode]
     codebook_narrative: str
     codes: List[FormalCode]
 
     @property
-    def codebook(self) -> List[MECECategory]:
+    def codebook(self) -> List[MECECode]:
         """Returns the final MECE codebook entries."""
         return self.codebook_categories
 
@@ -195,12 +201,17 @@ class QualitativeResearcher:
     """
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None):
-        self._model = config.qr_model
+        self._model_p1 = config.qr_model_p1
+        self._model_p1_5 = config.qr_model_p1_5
+        self._model_p2 = config.qr_model_p2
+        self._model_p3 = config.qr_model_p3
+        self._model_p4 = config.qr_model_p4
         self._temperature = config.qr_temperature
         self._max_tokens_facet_discovery = config.qr_max_tokens_facet_discovery
         self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
         self._max_tokens_attribute_discovery = config.qr_max_tokens_attribute_discovery
         self._max_tokens_code_from_attributes = config.qr_max_tokens_code_from_attributes
+        self._max_tokens_codebook_consolidation = config.qr_max_tokens_codebook_consolidation
         self._facet_assignment_batch_size = config.facet_assignment_batch_size
 
         # Batch sizing
@@ -231,7 +242,7 @@ class QualitativeResearcher:
     def process_all_partitions(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
-        partition_set: PartitionSet,
+        partition_set: DomainSet,
         survey_question: str = "",
         language: str = "Dutch",
         dataset_context: Optional[Dict[str, str]] = None,
@@ -299,8 +310,8 @@ class QualitativeResearcher:
     async def _probe_call(self, prompt: str):
         """Probe call for bootstrap measurement — returns usage dict."""
         resp = await llm_create_async(
-            client=self._client,
-            model=self._model,
+            client=self._clients[self._model_p1],
+            model=self._model_p1,
             prompt=prompt,
             response_model=ProbeResponse,
             temperature=self._temperature,
@@ -318,13 +329,15 @@ class QualitativeResearcher:
     async def _process_all_async(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
-        partition_contexts: Dict[str, PartitionContext],
+        partition_contexts: Dict[str, DomainContext],
         prompt_context: PromptContext,
         verbose: bool,
     ) -> PipelineResult:
         """Main async entry: bootstrap → P1 facet discovery → P2 facet assignment →
         P3 attribute discovery → P4 code generation."""
-        self._client = create_client(model=self._model, async_mode=True)
+        # Create one client per unique model
+        unique_models = {self._model_p1, self._model_p1_5, self._model_p2, self._model_p3, self._model_p4}
+        self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
 
         processing_config = DEFAULT_PROCESSING_CONFIG
         headroom = processing_config.rate_limit_headroom
@@ -418,7 +431,8 @@ class QualitativeResearcher:
 
         if verbose:
             print(f"\n  [RATE LIMITING SETUP]")
-            print(f"  Model: {self._model}")
+            print(f"  Models: P1={self._model_p1}, P1.5={self._model_p1_5}, "
+                  f"P2={self._model_p2}, P3={self._model_p3}, P4={self._model_p4}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
             print(f"  TPM: {limits.tokens_per_minute:,} "
@@ -525,6 +539,12 @@ class QualitativeResearcher:
             label_mappings, partition_facets, partition_assignments
         )
 
+        # Track valences per (domain, facet) for P4 valence split
+        facet_valences: Dict[tuple, set] = {}
+        for (domain_name, facet_name), ideas in domain_facet_ideas.items():
+            valences = {getattr(idea, 'valence', '0') or '0' for idea in ideas}
+            facet_valences[(domain_name, facet_name)] = valences
+
         attr_tasks = {}
         for (domain_name, facet_name), ideas in domain_facet_ideas.items():
             # Find the facet object for description
@@ -596,37 +616,87 @@ class QualitativeResearcher:
                   f"{len(attr_tasks)} facets")
 
         # =================================================================
-        # PHASE 4 (P4): Code Generation from Attributes (single call)
+        # PHASE 4 (P4): Per-domain Code Generation with valence split
         # =================================================================
         if verbose:
-            print(f"\n  Phase 4: Code Generation from Attributes...")
+            print(f"\n  Phase 4: Per-domain Code Generation (valence split)...")
 
         t_phase4 = time.time()
 
-        code_gen_result = await self._run_code_generation_from_attributes(
-            domain_facet_attributes, prompt_context
-        )
+        # Build per-domain tasks, split by valence
+        p4_tasks = {}
+        for domain_name in domain_facet_attributes:
+            pos_attrs, neg_attrs = self._split_attributes_by_valence(
+                domain_facet_attributes, facet_valences, domain_name
+            )
+            if pos_attrs:
+                p4_tasks[f"{domain_name}::pos"] = self._run_code_generation_from_attributes(
+                    {domain_name: pos_attrs}, prompt_context, valence_label="positive"
+                )
+            if neg_attrs:
+                p4_tasks[f"{domain_name}::neg"] = self._run_code_generation_from_attributes(
+                    {domain_name: neg_attrs}, prompt_context, valence_label="negative"
+                )
 
-        # Bridge to MECECategory for downstream compatibility
-        codebook = convert_codes_to_mece_categories(code_gen_result.codes)
-        codebook_narrative = code_gen_result.evaluation
+        p4_results = await asyncio.gather(*p4_tasks.values(), return_exceptions=True)
+
+        # Collect all codes with provenance tracking
+        all_codes = []
+        code_provenance = {}  # code index -> "domain::valence"
+        codebook_narratives = []
+        for key, result in zip(p4_tasks.keys(), p4_results):
+            if isinstance(result, Exception):
+                print(f"  P4 '{key}' FAILED: {type(result).__name__}: {result}")
+            else:
+                for code in result.codes:
+                    code_provenance[len(all_codes)] = key
+                    all_codes.append(code)
+                codebook_narratives.append(f"[{key}] {result.evaluation}")
+                if verbose:
+                    print(f"    {key}: {len(result.codes)} codes")
 
         t_phase4 = time.time() - t_phase4
 
         if verbose:
-            n_codes = len(code_gen_result.codes)
-            print(f"\n  Phase 4 done in {t_phase4:.1f}s → {n_codes} codes")
-            for i, code in enumerate(code_gen_result.codes, 1):
+            print(f"\n  Phase 4 done in {t_phase4:.1f}s → {len(all_codes)} raw codes "
+                  f"from {len(p4_tasks)} calls")
+
+        # =================================================================
+        # PHASE 4.5: Cross-domain Codebook Consolidation
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 4.5: Codebook Consolidation...")
+
+        t_phase45 = time.time()
+
+        if len(all_codes) > 0:
+            consolidation_result = await self._consolidate_codebook(
+                all_codes, code_provenance, prompt_context
+            )
+            all_codes = consolidation_result.codes
+            codebook_narratives.append(
+                f"[consolidation] {consolidation_result.evaluation}"
+            )
+
+        codebook = convert_codes_to_mece_categories(all_codes)
+        codebook_narrative = "\n".join(codebook_narratives)
+
+        t_phase45 = time.time() - t_phase45
+
+        if verbose:
+            print(f"\n  Phase 4.5 done in {t_phase45:.1f}s → {len(all_codes)} codes "
+                  f"(after consolidation)")
+            for i, code in enumerate(all_codes, 1):
                 print(f"    {i}. {code.code_name}: {code.definition}")
 
         total_elapsed = time.time() - start_time
         if verbose:
             print(f"\n  Pipeline complete in {total_elapsed:.1f}s")
 
-        # Build PartitionResult for each domain
+        # Build DomainResult for each domain
         partition_results = {}
         for name in partition_facets:
-            partition_results[name] = PartitionResult(
+            partition_results[name] = DomainResult(
                 partition_name=name,
                 n_labels=partition_n_labels.get(name, 0),
                 n_batches=partition_n_batches.get(name, 0),
@@ -639,7 +709,7 @@ class QualitativeResearcher:
             partition_results=partition_results,
             codebook_categories=codebook,
             codebook_narrative=codebook_narrative,
-            codes=code_gen_result.codes,
+            codes=all_codes,
         )
 
     # =========================================================================
@@ -650,11 +720,11 @@ class QualitativeResearcher:
         self,
         partition_name: str,
         labels: List[str],
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
         verbose: bool = False,
     ) -> tuple:
-        """Run facet discovery + programmatic dedup for a single domain.
+        """Run facet discovery + LLM consolidation for a single domain.
 
         Returns: (facets, n_labels, n_batches)
         """
@@ -670,35 +740,44 @@ class QualitativeResearcher:
 
         # Step 1: FACET DISCOVERY (chunked, concurrent)
         t_discovery = time.time()
-        all_facets = await self._run_facet_discovery(
+        chunk_facets = await self._run_facet_discovery(
             partition_name, batches, part_context, prompt_context,
         )
         t_discovery = time.time() - t_discovery
 
-        # Step 2: Programmatic dedup by facet name (case-insensitive)
-        seen = set()
-        unique_facets = []
-        for facet in all_facets:
-            key = facet.facet_name.strip().lower()
-            if key and key not in seen:
-                seen.add(key)
-                unique_facets.append(facet)
+        # Count raw facets across all chunks
+        n_raw = sum(len(cf) for cf in chunk_facets)
+        non_empty_chunks = [cf for cf in chunk_facets if cf]
+
+        # Step 2: Consolidation
+        if len(non_empty_chunks) <= 1:
+            # Single chunk: use directly, no consolidation needed
+            facets = non_empty_chunks[0] if non_empty_chunks else []
+        else:
+            # Multiple chunks: LLM consolidation
+            facets = await self._consolidate_facets(
+                partition_name, chunk_facets, part_context, prompt_context,
+            )
 
         if verbose:
             print(f"    Domain '{partition_name}' facets: "
-                  f"{len(all_facets)} raw → {len(unique_facets)} unique "
+                  f"{n_raw} raw → {len(facets)} consolidated "
                   f"[{t_discovery:.1f}s]")
 
-        return unique_facets, len(labels), n_batches
+        return facets, len(labels), n_batches
 
     async def _run_facet_discovery(
         self,
         partition_name: str,
         batches: List[List[str]],
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
-    ) -> List[DiscoveredFacet]:
-        """Discover facets from chunked observations (concurrent)."""
+    ) -> List[List[DiscoveredFacet]]:
+        """Discover facets from chunked observations (concurrent).
+
+        Returns per-chunk facet lists (not flattened) so the consolidation
+        step can show chunk provenance.
+        """
         results = [None] * len(batches)
 
         async def process_chunk(chunk_idx: int, observations: List[str]):
@@ -725,7 +804,7 @@ class QualitativeResearcher:
                     prompt_content=prompt,
                     prompt_type="facet_discovery",
                     metadata={
-                        "model": self._model,
+                        "model": self._model_p1,
                         "language": prompt_context.language,
                         "partition_name": partition_name,
                         "batch_number": chunk_idx + 1,
@@ -750,12 +829,73 @@ class QualitativeResearcher:
             process_chunk(i, batch) for i, batch in enumerate(batches)
         ))
 
-        # Flatten all facets from all chunks
-        all_facets = []
-        for r in results:
-            if r is not None:
-                all_facets.extend(r.facets)
-        return all_facets
+        return [r.facets for r in results if r is not None]
+
+    # =========================================================================
+    # PHASE 1.5: FACET CONSOLIDATION (per-domain, LLM-based)
+    # =========================================================================
+
+    async def _consolidate_facets(
+        self,
+        partition_name: str,
+        chunk_facets: List[List[DiscoveredFacet]],
+        part_context: DomainContext,
+        prompt_context: PromptContext,
+    ) -> List[DiscoveredFacet]:
+        """Consolidate chunk-level facet discoveries into a single coherent set.
+
+        Follows the same pattern as step 3's _consolidate_domains().
+        """
+        # Format chunk results for the consolidation prompt
+        formatted_chunks = []
+        for idx, facets in enumerate(chunk_facets):
+            if not facets:
+                continue
+            facet_lines = []
+            for f in facets:
+                examples = "; ".join(f.example_observations[:3])
+                facet_lines.append(
+                    f'    - "{f.facet_name}" — {f.facet_description} (examples: {examples})'
+                )
+            formatted_chunks.append(
+                f"Chunk {idx + 1}:\n  Facets:\n" + "\n".join(facet_lines)
+            )
+
+        prompt = build_facet_consolidation_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_def=prompt_context.dimension_def,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            partition_name=part_context.partition_name,
+            partition_definition=part_context.partition_definition,
+            chunk_results="\n\n".join(formatted_chunks),
+        )
+
+        # Prompt capture
+        gate_key = f"qr_facet_consolidation_{partition_name}"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="facet_consolidation",
+                metadata={
+                    "model": self._model_p1_5,
+                    "language": prompt_context.language,
+                    "partition_name": partition_name,
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        result = await self._llm_call(
+            prompt, FacetConsolidatedResponse, self._max_tokens_facet_discovery,
+            temperature=0.0, model=self._model_p1_5,
+        )
+        return result.facets
 
     # =========================================================================
     # PHASE 2 (P2): PER-DOMAIN FACET ASSIGNMENT
@@ -766,7 +906,7 @@ class QualitativeResearcher:
         domain_name: str,
         facets: List[DiscoveredFacet],
         ideas: List,
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
     ) -> Dict[str, str]:
         """Assign all ideas in a domain to discovered facets.
@@ -813,7 +953,7 @@ class QualitativeResearcher:
                     prompt_content=prompt,
                     prompt_type="facet_assignment",
                     metadata={
-                        "model": self._model,
+                        "model": self._model_p2,
                         "language": prompt_context.language,
                         "partition_name": domain_name,
                         "batch_number": batch_idx + 1,
@@ -826,7 +966,8 @@ class QualitativeResearcher:
 
             try:
                 result = await self._llm_call(
-                    prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment
+                    prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment,
+                    model=self._model_p2,
                 )
                 return result.assignments
             except Exception as e:
@@ -860,7 +1001,7 @@ class QualitativeResearcher:
         facet_name: str,
         facet_description: str,
         observations: List[str],
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
     ) -> List[DiscoveredAttribute]:
         """Discover attributes (L4) within a single facet."""
@@ -888,7 +1029,7 @@ class QualitativeResearcher:
                 prompt_content=prompt,
                 prompt_type="attribute_discovery",
                 metadata={
-                    "model": self._model,
+                    "model": self._model_p3,
                     "language": prompt_context.language,
                     "partition_name": domain_name,
                     "facet_name": facet_name,
@@ -900,7 +1041,8 @@ class QualitativeResearcher:
 
         try:
             result = await self._llm_call(
-                prompt, AttributeDiscoveryResult, self._max_tokens_attribute_discovery
+                prompt, AttributeDiscoveryResult, self._max_tokens_attribute_discovery,
+                model=self._model_p3,
             )
             return result.attributes
         except Exception as e:
@@ -912,12 +1054,32 @@ class QualitativeResearcher:
     # PHASE 4 (P4): CODE GENERATION FROM ATTRIBUTES
     # =========================================================================
 
+    def _split_attributes_by_valence(
+        self,
+        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+        facet_valences: Dict[tuple, set],
+        domain_name: str,
+    ) -> tuple:
+        """Split a domain's facet->attributes into positive/neutral vs negative."""
+        pos_attrs = {}
+        neg_attrs = {}
+        for facet_name, attributes in domain_facet_attributes.get(domain_name, {}).items():
+            valences = facet_valences.get((domain_name, facet_name), {"0"})
+            has_pos = bool(valences & {"+", "0"})
+            has_neg = "-" in valences
+            if has_pos:
+                pos_attrs[facet_name] = attributes
+            if has_neg:
+                neg_attrs[facet_name] = attributes
+        return pos_attrs, neg_attrs
+
     async def _run_code_generation_from_attributes(
         self,
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
         prompt_context: PromptContext,
+        valence_label: str = "",
     ) -> CodeGenerationFromAttributesResult:
-        """Generate codes from the complete attribute inventory (cross-domain)."""
+        """Generate codes from an attribute inventory (per-domain, valence-scoped)."""
         prompt = build_code_from_attributes_prompt(
             survey_question=prompt_context.survey_question,
             language=prompt_context.language,
@@ -925,10 +1087,12 @@ class QualitativeResearcher:
             dimension_name=prompt_context.dimension_name,
             dimension_description=prompt_context.dimension_description,
             domain_attributes=domain_facet_attributes,
+            valence_label=valence_label,
         )
 
         # Prompt capture
-        gate_key = "qr_code_gen_from_attrs"
+        domain_key = "::".join(domain_facet_attributes.keys())
+        gate_key = f"qr_code_gen_{domain_key}_{valence_label}"
         if (self._prompt_printer is not None
                 and gate_key not in self._captured_gates):
             total_attrs = sum(
@@ -942,10 +1106,11 @@ class QualitativeResearcher:
                 prompt_content=prompt,
                 prompt_type="code_generation_from_attributes",
                 metadata={
-                    "model": self._model,
+                    "model": self._model_p4,
                     "language": prompt_context.language,
                     "n_domains": len(domain_facet_attributes),
                     "n_total_attributes": total_attrs,
+                    "valence": valence_label or "all",
                     "dimension_name": prompt_context.dimension_name,
                 }
             )
@@ -953,7 +1118,53 @@ class QualitativeResearcher:
 
         return await self._llm_call(
             prompt, CodeGenerationFromAttributesResult,
-            self._max_tokens_code_from_attributes
+            self._max_tokens_code_from_attributes,
+            model=self._model_p4,
+        )
+
+    # =========================================================================
+    # PHASE 4.5: CODEBOOK CONSOLIDATION
+    # =========================================================================
+
+    async def _consolidate_codebook(
+        self,
+        raw_codes: list,
+        code_provenance: dict,
+        prompt_context: PromptContext,
+    ) -> CodebookConsolidationResult:
+        """Consolidate per-domain codes into a final parsimonious codebook."""
+        prompt = build_codebook_consolidation_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            raw_codes=raw_codes,
+            code_provenance=code_provenance,
+        )
+
+        # Prompt capture
+        gate_key = "qr_codebook_consolidation"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="codebook_consolidation",
+                metadata={
+                    "model": self._model_p4,
+                    "language": prompt_context.language,
+                    "n_raw_codes": len(raw_codes),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        return await self._llm_call(
+            prompt, CodebookConsolidationResult,
+            self._max_tokens_codebook_consolidation,
+            model=self._model_p4,
         )
 
     # =========================================================================
@@ -978,7 +1189,7 @@ class QualitativeResearcher:
             model = AZURE_OPENAI_DEPLOYMENT_NAME
         else:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            model = self._model
+            model = self._model_p1
 
         response = await client.chat.completions.with_raw_response.create(
             model=model,
@@ -991,16 +1202,19 @@ class QualitativeResearcher:
     # SHARED LLM CALL
     # =========================================================================
 
-    async def _llm_call(self, prompt: str, response_model, max_tokens: int):
+    async def _llm_call(self, prompt: str, response_model, max_tokens: int,
+                        temperature: float | None = None, model: str | None = None):
         """Make a rate-limited LLM call through the shared semaphore."""
+        use_model = model or self._model_p1
+        client = self._clients[use_model]
         async with self._semaphore:
             async with self._rate_limiter:
                 return await llm_create_async(
-                    client=self._client,
-                    model=self._model,
+                    client=client,
+                    model=use_model,
                     prompt=prompt,
                     response_model=response_model,
-                    temperature=self._temperature,
+                    temperature=temperature if temperature is not None else self._temperature,
                     max_tokens=max_tokens,
                 )
 
@@ -1077,12 +1291,12 @@ class QualitativeResearcher:
 
     def _build_all_partition_contexts(
         self,
-        partition_set: PartitionSet,
-    ) -> Dict[str, PartitionContext]:
-        """Build PartitionContext for each partition."""
+        partition_set: DomainSet,
+    ) -> Dict[str, DomainContext]:
+        """Build DomainContext for each partition."""
         contexts = {}
         for part in partition_set.partitions:
-            contexts[part.partition_name] = PartitionContext(
+            contexts[part.partition_name] = DomainContext(
                 partition_name=part.partition_name,
                 partition_definition=part.inclusion_definition,
             )

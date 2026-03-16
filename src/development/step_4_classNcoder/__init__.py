@@ -9,5 +9,5 @@ then runs a cross-partition pipeline:
   4. Category Assignment — assign ideas to leaf subthemes
 
 Usage:
-    cd src && python -m development.step_5_categories_v2.run_experiment
+    cd src && python -m development.step_4_classNcoder_v2.run_experiment
 """

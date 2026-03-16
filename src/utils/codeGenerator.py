@@ -25,7 +25,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # === CONFIG & MODELS ========================================================================================================
 import models
-from prompts import MECECategory
+from prompts import MECECode
 from config_steps.config_categories import get_other_category_label
 from config_steps.config_embedder import format_idea_text
 from facet_data import get_facet
@@ -1295,7 +1295,7 @@ class InductiveCodeGenerator:
     
     def __init__(
         self,
-        cluster_results: List[Any],  # CategoryAssignedModel or empty in MECE route
+        cluster_results: List[Any],  # CodeAssignedModel or empty in MECE route
         starter_codes: List[Dict[str, str]],
         var_lab: str,
         verbose: bool = False,
@@ -1307,8 +1307,8 @@ class InductiveCodeGenerator:
         stages_to_run: str = 'all',  # 'all' or 'theme_extraction_only'
         extraction_metadata = None,  # ExtractionMetadata for experimental theme extraction
         mece_topics: Optional[Dict[int, dict]] = None,  # MECE Phase A output per cluster (legacy)
-        mece_results_cache: Optional['MECEResultsCache'] = None,  # step_5_categories MECE cache
-        category_assigned_data: Optional[List['CategoryAssignedModel']] = None,  # step_5_categories assignments
+        mece_results_cache: Optional['CodingResultsCache'] = None,  # step_4_classNcoder MECE cache
+        category_assigned_data: Optional[List['CodeAssignedModel']] = None,  # step_4_classNcoder assignments
         embedding_text_format: str = "cached",  # "cached" | "idea" | "ladder" | "concept+concept_type" | etc.
         embedding_separator: str = " → ",  # separator for multi-field/composite formats
         **kwargs  # For backward compatibility
@@ -1316,8 +1316,8 @@ class InductiveCodeGenerator:
         self.cluster_results = cluster_results
         self._extraction_metadata = extraction_metadata  # For experimental theme extraction
         self._mece_topics = mece_topics  # Pre-extracted MECE topics (legacy alternative Phase 1 input)
-        self._mece_results_cache = mece_results_cache  # step_5_categories: MECEResultsCache
-        self._category_assigned_data = category_assigned_data  # step_5_categories: List[CategoryAssignedModel]
+        self._mece_results_cache = mece_results_cache  # step_4_classNcoder: CodingResultsCache
+        self._category_assigned_data = category_assigned_data  # step_4_classNcoder: List[CodeAssignedModel]
         self._embedding_text_format = embedding_text_format
         self._embedding_separator = embedding_separator
                 
@@ -2252,9 +2252,9 @@ class InductiveCodeGenerator:
             'cluster_id': int,
             'category_key': str,              # "{partition}::{label} [+]" / "[-]" / "[0]"
             'partition_name': str,
-            'category': MECECategory | None,  # None for overig/anders ideas
+            'category': MECECode | None,  # None for overig/anders ideas
             'valence_sign': str,              # raw valence: "+", "-", or "0"
-            'ideas': List[CategoryAssignedSubmodel],
+            'ideas': List[CodeAssignedSubmodel],
             'embeddings': List[ndarray],
             'idea_texts': List[str],
             'respondent_ids': List[str],
@@ -2263,8 +2263,8 @@ class InductiveCodeGenerator:
         if not self._mece_results_cache or not self._category_assigned_data:
             return {}
 
-        # --- Pass 1: build MECECategory lookup ---
-        category_lookup: Dict[tuple, 'MECECategory'] = {}
+        # --- Pass 1: build MECECode lookup ---
+        category_lookup: Dict[tuple, 'MECECode'] = {}
         for part_name, part_result in self._mece_results_cache.partition_results.items():
             for cat in part_result.categories:
                 category_lookup[(part_name, cat.category_label)] = cat
@@ -3603,14 +3603,14 @@ class InductiveCodeGenerator:
 
     def _format_category_metadata_as_text(
         self,
-        category: 'MECECategory',
+        category: 'MECECode',
         partition_name: str = "",
         valence_group: str = ""
     ) -> str:
         """Format full MECE category metadata as structured text for the prompt.
 
         Args:
-            category: MECECategory object from step_5_categories
+            category: MECECode object from step_4_classNcoder
             partition_name: Name of the concept_type partition this category belongs to
             valence_group: "pos", "neg", or "" — controls directional scope note
         """
@@ -3665,12 +3665,12 @@ class InductiveCodeGenerator:
 
         Args:
             category_key: Composite key "{partition_name}::{category_label}" (for prompt context)
-            category_data: Dict with 'category' (MECECategory), 'ideas', 'embeddings',
+            category_data: Dict with 'category' (MECECode), 'ideas', 'embeddings',
                            'idea_texts', 'partition_name'
             numeric_id: Sequential integer ID for dict keying (matches initial_cluster)
         """
         dict_key = numeric_id if numeric_id is not None else category_key
-        category: 'MECECategory' = category_data['category']
+        category: 'MECECode' = category_data['category']
         ideas = category_data['ideas']
         embeddings = category_data['embeddings']
         idea_texts = category_data['idea_texts']
@@ -4816,7 +4816,7 @@ class InductiveCodeGenerator:
             other_results = []  # populated only by _using_categories path
 
             if _using_categories:
-                # --- MECE categories path (step_5_categories) ---
+                # --- MECE categories path (step_4_classNcoder) ---
                 stage_start = time.time()
                 try:
                     all_categories = self.extract_category_data()
@@ -4825,7 +4825,7 @@ class InductiveCodeGenerator:
                     )
                     if not all_categories:
                         self.verbose_reporter.warning(
-                            "No valid MECE categories found - check step_5_categories cache"
+                            "No valid MECE categories found - check step_4_classNcoder cache"
                         )
                         return []
 

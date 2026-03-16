@@ -42,7 +42,7 @@ from config import (
 )
 
 from config_steps.config_categories import CategoriesConfig
-from .partition_discoverer import PartitionLabelMapping
+from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import PreclusterResult, build_cluster_hints
 from prompts import (
     MAP_CATEGORIES_PROMPT,
@@ -50,11 +50,11 @@ from prompts import (
     MECE_BOUNDARIES_PROMPT,
     MapBatchThemes,
     SynthesizedThemeList,
-    MECECategorySet,
-    MECECategory,
+    MECECodeSet,
+    MECECode,
     MECEVerification,
-    PartitionSet,
-    PartitionDescription,
+    DomainSet,
+    DomainDescription,
 )
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
@@ -126,7 +126,7 @@ class PromptContext:
 
 
 @dataclass
-class PartitionContext:
+class DomainContext:
     """Partition-specific context injected into all prompts."""
     partition_name: str
     partition_inclusion: str
@@ -143,7 +143,7 @@ class PartitionMECEResult:
     n_labels: int
     n_batches: int
     reduce_skipped: bool
-    categories: List[MECECategory]
+    categories: List[MECECode]
     mece_verifications: List[MECEVerification] = field(default_factory=list)
 
 
@@ -186,7 +186,7 @@ class MapReduceMECE:
     def process_all_partitions(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
-        partition_set: PartitionSet,
+        partition_set: DomainSet,
         survey_question: str = "",
         language: str = "Dutch",
         dataset_context: Optional[Dict[str, str]] = None,
@@ -204,7 +204,7 @@ class MapReduceMECE:
 
         Args:
             label_mappings: Dict mapping partition_name → PartitionLabelMapping
-            partition_set: Full PartitionSet (for building peer partition context)
+            partition_set: Full DomainSet (for building peer partition context)
             survey_question: The survey question for prompt context
             language: Language for output (default: Dutch)
             dataset_context: Optional dict with domain, entity, topic, etc.
@@ -290,7 +290,7 @@ class MapReduceMECE:
     async def _process_all_async(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
-        partition_contexts: Dict[str, PartitionContext],
+        partition_contexts: Dict[str, DomainContext],
         prompt_context: PromptContext,
         verbose: bool,
     ) -> Dict[str, PartitionMECEResult]:
@@ -423,7 +423,7 @@ class MapReduceMECE:
         self,
         partition_name: str,
         labels: List[str],
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
         verbose: bool = False,
     ) -> PartitionMECEResult:
@@ -556,7 +556,7 @@ class MapReduceMECE:
         self,
         partition_name: str,
         batches: List[List[str]],
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
     ) -> List[MapBatchThemes]:
         """Send each batch to LLM concurrently through shared rate limiter."""
@@ -612,7 +612,7 @@ class MapReduceMECE:
         self,
         partition_name: str,
         map_results: List[MapBatchThemes],
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
     ) -> SynthesizedThemeList:
         """Synthesize candidate themes from all batches into overarching themes."""
@@ -668,9 +668,9 @@ class MapReduceMECE:
         partition_name: str,
         synthesized_themes: SynthesizedThemeList,
         n_labels: int,
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
-    ) -> MECECategorySet:
+    ) -> MECECodeSet:
         """Apply MECE constraints with boundary criteria."""
         prompt = self._build_mece_prompt(
             synthesized_themes, n_labels, part_context, prompt_context
@@ -698,14 +698,14 @@ class MapReduceMECE:
 
         try:
             return await self._llm_call(
-                prompt, MECECategorySet, self._max_tokens_mece
+                prompt, MECECodeSet, self._max_tokens_mece
             )
         except Exception as e:
             print(f"    MECE '{partition_name}' FAILED: "
                   f"{type(e).__name__}: {e}")
-            return MECECategorySet(
+            return MECECodeSet(
                 categories=[
-                    MECECategory(
+                    MECECode(
                         category_label=t.theme_label,
                         inclusion_definition=t.description,
                         boundary_test="",
@@ -727,7 +727,7 @@ class MapReduceMECE:
         labels: List[str],
         batch_idx: int,
         total_batches: int,
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
     ) -> str:
         """Build prompt for the MAP step with partition context."""
@@ -756,7 +756,7 @@ class MapReduceMECE:
     def _build_reduce_prompt(
         self,
         map_results: List[MapBatchThemes],
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
     ) -> str:
         """Build prompt for the REDUCE step with partition context."""
@@ -799,7 +799,7 @@ class MapReduceMECE:
         self,
         synthesized_themes: SynthesizedThemeList,
         n_labels: int,
-        part_context: PartitionContext,
+        part_context: DomainContext,
         prompt_context: PromptContext,
     ) -> str:
         """Build prompt for the MECE step with partition context."""
@@ -838,11 +838,11 @@ class MapReduceMECE:
 
     def _build_all_partition_contexts(
         self,
-        partition_set: PartitionSet,
+        partition_set: DomainSet,
         grouping_instructions: Optional[Dict[str, str]] = None,
         precluster_results: Optional[Dict[str, PreclusterResult]] = None,
-    ) -> Dict[str, PartitionContext]:
-        """Build PartitionContext for each partition with peer partitions listed."""
+    ) -> Dict[str, DomainContext]:
+        """Build DomainContext for each partition with peer partitions listed."""
         contexts = {}
         all_partitions = partition_set.partitions
 
@@ -868,7 +868,7 @@ class MapReduceMECE:
                 if pc_result:
                     hints = build_cluster_hints(pc_result)
 
-            contexts[part.partition_name] = PartitionContext(
+            contexts[part.partition_name] = DomainContext(
                 partition_name=part.partition_name,
                 partition_inclusion=part.inclusion_definition,
                 partition_boundary_test=part.boundary_test,

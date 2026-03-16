@@ -65,7 +65,7 @@ STEP_NAMES = {
     2: "quality_filter",
     3: "extracted_ideas",
     4: "embeddings",
-    5: "category_assignment",
+    5: "code_assignment",
     6: "codebook_generation",
     7: "codebook_refinement",
     8: "code_assignment_direct",
@@ -827,7 +827,7 @@ def step_4_generate_embeddings(
     return embedded_text
 
 
-def step_5_categories(
+def step_4_classNcoder(
     embedded_text,
     filename,
     var_lab,
@@ -859,15 +859,15 @@ def step_5_categories(
         streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
-        List[models.CategoryAssignedModel]: Ideas with category assignments
+        List[models.CodeAssignedModel]: Ideas with category assignments
     """
     from config_steps.config_categories import CategoriesConfig, AssignmentConfig
-    from utils.partition_discoverer import PartitionDiscoverer
+    from utils.domain_discoverer import DomainDiscoverer
     from utils.map_reduce_mece import MapReduceMECE
-    from utils.category_assignment import CategoryAssigner
+    from utils.code_assignment import CodeAssigner
     from utils.verboseReporter import VerboseReporter
 
-    step_name = "category_assignment"
+    step_name = "code_assignment"
     mece_step_name = "mece_categories"
     variable_key, cache_manager, _ = _resolve_step_defaults(variable_key, cache_manager)
 
@@ -878,7 +878,7 @@ def step_5_categories(
     # ─── Cache check ────────────────────────────────────────────────────
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
         category_results = cache_manager.load_from_cache(
-            filename, step_name, variable_key, models.CategoryAssignedModel
+            filename, step_name, variable_key, models.CodeAssignedModel
         )
         total_ideas = sum(
             len(resp.response_ideas)
@@ -925,7 +925,7 @@ def step_5_categories(
     assignment_config = AssignmentConfig()
 
     # ═══ Stage 1: Partition Discovery ═══════════════════════════════════
-    discoverer = PartitionDiscoverer(categories_config, extraction_metadata)
+    discoverer = DomainDiscoverer(categories_config, extraction_metadata)
     partition_set, label_mappings, precluster_results = discoverer.discover(
         embedded_text
     )
@@ -974,7 +974,7 @@ def step_5_categories(
     # ═══ Cache MECE results (metadata) ═════════════════════════════════
     pydantic_results = {}
     for name, result in mece_results.items():
-        pydantic_results[name] = models.PartitionMECEResultModel(
+        pydantic_results[name] = models.DomainResultModel(
             partition_name=result.partition_name,
             n_labels=result.n_labels,
             n_batches=result.n_batches,
@@ -983,7 +983,7 @@ def step_5_categories(
             mece_verifications=result.mece_verifications,
         )
 
-    mece_cache = models.MECEResultsCache(
+    mece_cache = models.CodingResultsCache(
         partition_set=partition_set,
         partition_results=pydantic_results,
         label_counts={
@@ -1007,7 +1007,7 @@ def step_5_categories(
               f"{len(pydantic_results)} partitions)")
 
     # ═══ Stage 3: Category Assignment ══════════════════════════════════
-    assigner = CategoryAssigner(
+    assigner = CodeAssigner(
         config=assignment_config,
         embeddings_models=embedded_text,
         mece_results=pydantic_results,
@@ -1071,7 +1071,7 @@ def step_6_generate_codebook(
     """Step 6: Generate codebook from MECE categories using inductive coding
 
     Args:
-        category_results: List of CategoryAssignedModel instances from step 5
+        category_results: List of CodeAssignedModel instances from step 5
         filename: SPSS filename for caching
         var_name: Variable name for metadata
         var_lab: Variable label for context
@@ -1134,7 +1134,7 @@ def step_6_generate_codebook(
             filename=filename,
             step="mece_categories",
             variable_key=variable_key,
-            model_cls=models.MECEResultsCache,
+            model_cls=models.CodingResultsCache,
         )
         if mece_results_cache and verbose:
             total_cats = mece_results_cache.total_categories
@@ -1948,8 +1948,8 @@ if __name__ == '__main__':
 
     # === STEP 5 ====
     """Category Discovery & Assignment"""
-    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "category_assignment"
-    category_results = step_5_categories(
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment"
+    category_results = step_4_classNcoder(
         embedded_text, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
