@@ -47,8 +47,12 @@ class CategoriesConfig:
     # QUALITATIVE RESEARCHER PIPELINE (v3: 4 phases)
     # ==========================================================================
 
-    # LLM settings
-    qr_model: str = "gpt-4.1"
+    # LLM settings — per-phase model selection
+    qr_model_p1: str = "gpt-4.1-mini"       # P1: Facet Discovery
+    qr_model_p1_5: str = "gpt-4.1"          # P1.5: Facet Consolidation
+    qr_model_p2: str = "gpt-4.1-nano"       # P2: Facet Assignment (classification)
+    qr_model_p3: str = "gpt-4.1-mini"       # P3: Attribute Discovery
+    qr_model_p4: str = "gpt-4.1"            # P4: Code Generation
     qr_temperature: float = 0.3
 
     # P1: Facet Discovery (per-domain, chunked)
@@ -56,13 +60,16 @@ class CategoriesConfig:
 
     # P2: Facet Assignment (per-domain, batched)
     qr_max_tokens_facet_assignment: int = 4000
-    facet_assignment_batch_size: int = 15  # ideas per assignment call
+    facet_assignment_batch_size: int = 10  # ideas per assignment call (nano-friendly)
 
     # P3: Attribute Discovery (per facet within domain)
     qr_max_tokens_attribute_discovery: int = 4000
 
-    # P4: Code Generation from Attributes (cross-domain)
+    # P4: Code Generation from Attributes (per-domain, valence-split)
     qr_max_tokens_code_from_attributes: int = 16000
+
+    # P4.5: Codebook Consolidation (cross-domain review)
+    qr_max_tokens_codebook_consolidation: int = 16000
 
     # Adaptive batching for P1 (facet discovery chunks)
     batch_size_min: int = 30       # floor: enough observations for discovery
@@ -101,13 +108,6 @@ class AssignmentConfig:
     assignment_model: str = "gpt-4.1-mini"
     assignment_temperature: float = 0.1    # Low for consistent assignment
     assignment_max_tokens: int = 4000
-
-    # Assignment mode: "single" (one idea per call, flat codebook) or
-    # "batch" (N ideas per call, hierarchical codebook)
-    assignment_mode: str = "single"
-
-    # Batching: ideas per LLM call (only used in "batch" mode)
-    assignment_batch_size: int = 10
 
     # Fallback category for ideas that don't clearly fit any MECE category.
     # Resolved by language from extraction_metadata.lang.

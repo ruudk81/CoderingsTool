@@ -1298,7 +1298,7 @@ def create_extraction_model(
 
 # --- Partition models (data-driven concept_type groups) ---
 
-class PartitionDescription(BaseModel):
+class DomainDescription(BaseModel):
     """Description of a concept_type partition."""
     partition_name: str = Field(
         ...,
@@ -1324,9 +1324,9 @@ class PartitionDescription(BaseModel):
     )
 
 
-class PartitionSet(BaseModel):
+class DomainSet(BaseModel):
     """Complete set of concept_type partitions."""
-    partitions: List[PartitionDescription] = Field(
+    partitions: List[DomainDescription] = Field(
         ...,
         description="List of populated concept_type partitions"
     )
@@ -1616,7 +1616,7 @@ Provide output as valid JSON following the response schema provided.
 """
 
 
-class MECECategory(BaseModel):
+class MECECode(BaseModel):
     """A MECE category with independent boundary criteria."""
     category_label: str = Field(
         ...,
@@ -1680,9 +1680,9 @@ class MECEVerification(BaseModel):
     )
 
 
-class MECECategorySet(BaseModel):
+class MECECodeSet(BaseModel):
     """Complete MECE category set for a single partition, with self-verification."""
-    categories: List[MECECategory] = Field(
+    categories: List[MECECode] = Field(
         ...,
         description="MECE categories for this partition"
     )
@@ -1743,7 +1743,7 @@ Provide output as valid JSON following the response schema provided.
 """
 
 
-class CategoryAssignment(BaseModel):
+class CodeAssignment(BaseModel):
     """Single idea-to-category assignment."""
     idea_id: str = Field(
         ...,
@@ -1763,9 +1763,9 @@ class CategoryAssignment(BaseModel):
     )
 
 
-class CategoryAssignmentBatch(BaseModel):
+class CodeAssignmentBatch(BaseModel):
     """Batch of category assignments for multiple ideas."""
-    assignments: List[CategoryAssignment] = Field(
+    assignments: List[CodeAssignment] = Field(
         ...,
         description="One assignment per idea in the input batch"
     )

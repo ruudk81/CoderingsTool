@@ -446,7 +446,7 @@ class CacheConfig:
         "code_assignment": "009",
         "export": "010",
         "mece_categories": "005",
-        "category_assignment": "005",
+        "code_assignment": "005",
         })
     
     # Cache validity settings

@@ -1,14 +1,14 @@
 #%%
 #
 """
-Debug script for Single-Idea Category Assignment prompts.
+Debug script for Single-Idea Dual Assignment prompts.
 
-Loads cached step 3 ideas and MECE codebook, randomly picks a few ideas,
-builds the single-idea assignment prompt for each, and displays it along
+Loads cached step 3 ideas and codebook, randomly picks a few ideas,
+builds the single-idea dual assignment prompt for each, and displays it along
 with the Pydantic response model schema.
 
 Usage:
-    cd src && python -m development.step_5_categories_v2.debug_assignment_prompt
+    cd src && python -m development.step_4_classNcoder.debug_assignment_prompt
 """
 
 import sys
@@ -33,16 +33,17 @@ except ImportError:
     from test_data import TEST_DATA
 
 from development.step_3_ideaExtractor import models_exp as models
-from development.step_5_categories.models_exp import (
-    PartitionSet, PartitionMECEResultModel, MECEResultsCache,
+from development.step_4_classNcoder.models_exp import (
+    DomainSet, DomainResultModel, CodingResultsCache,
 )
-from development.step_5_categories.prompts_exp import (
-    build_single_idea_assignment_prompt,
-    SingleCategoryAssignment,
-    MECECategory,
+from development.step_4_classNcoder.prompts_exp import (
+    build_single_dual_assignment_prompt,
+    CodeAttributeAssignment,
+    CodeFromAttributes,
+    MECECode,
 )
-from development.step_5_categories.category_assignment import CategoryAssigner
-from development.step_5_categories.config_categories_exp import (
+from development.step_4_classNcoder.code_assignment import CodeAssigner
+from development.step_4_classNcoder.config_classNcoder_exp import (
     AssignmentConfig, get_other_category_label,
 )
 
@@ -78,7 +79,7 @@ def load_step3_ideas() -> List[models.IdeasExtractedModel]:
     return data
 
 
-def load_mece_cache() -> Optional[MECEResultsCache]:
+def load_mece_cache() -> Optional[CodingResultsCache]:
     """Load cached MECE results."""
     from utils.cacheManager import CacheManager
     variable_key = generate_enhanced_variable_key(
@@ -87,7 +88,7 @@ def load_mece_cache() -> Optional[MECEResultsCache]:
     cache_manager = CacheManager()
     return cache_manager.load_metadata_from_cache(
         filename=FILENAME, step="mece_categories",
-        variable_key=variable_key, model_cls=MECEResultsCache,
+        variable_key=variable_key, model_cls=CodingResultsCache,
     )
 
 
@@ -145,14 +146,12 @@ def sample_ideas(
 # =============================================================================
 
 def build_prompt_for_idea(
-    partition_name: str,
     idea,
-    mece_results: Dict[str, PartitionMECEResultModel],
-    partition_set: PartitionSet,
+    codes: List[CodeFromAttributes],
     extraction_metadata: Optional[models.ExtractionMetadata],
     config: AssignmentConfig,
 ) -> str:
-    """Build a single-idea assignment prompt (flat codebook, one idea)."""
+    """Build a single-idea dual assignment prompt (flat codebook, one idea)."""
     # Survey context
     survey_question = ""
     language = "Dutch"
@@ -168,35 +167,16 @@ def build_prompt_for_idea(
         if parts:
             dataset_context_section = "\n".join(parts)
 
-    # Partition inclusion
-    partition_inclusion = ""
-    for p in partition_set.partitions:
-        if p.partition_name == partition_name:
-            partition_inclusion = p.inclusion_definition
-            break
-
-    # Resolve codebook
-    if "__global__" in mece_results:
-        mece_res = mece_results["__global__"]
-    else:
-        mece_res = mece_results.get(partition_name)
-
-    if not mece_res or not mece_res.categories:
-        return f"(No categories found for partition '{partition_name}')"
-
-    leaf_categories = CategoryAssigner._flatten_categories(mece_res.categories)
-
     other_label = get_other_category_label(language)
 
-    return build_single_idea_assignment_prompt(
+    return build_single_dual_assignment_prompt(
         survey_question=survey_question,
         language=language,
         dataset_context_section=dataset_context_section,
-        partition_name=partition_name,
-        partition_inclusion=partition_inclusion,
-        categories=leaf_categories,
+        codes=codes,
         other_label=other_label if config.include_other_category else None,
         idea=idea,
+        facet_lookup=None,
     )
 
 
@@ -222,10 +202,10 @@ def print_prompt(
     print(f"  {idea.idea_id}: {idea.idea}  [valence={valence}]")
     if hasattr(idea, 'instance') and idea.instance:
         print(f"  instance: \"{idea.instance}\"")
-    if hasattr(idea, 'rung_1') and idea.rung_1:
-        print(f"  rung_1:   {idea.rung_1}")
-    if hasattr(idea, 'rung_2') and idea.rung_2:
-        print(f"  rung_2:   {idea.rung_2}")
+    if hasattr(idea, 'interpretation') and idea.interpretation:
+        print(f"  interpretation:   {idea.interpretation}")
+    if hasattr(idea, 'abstraction') and idea.abstraction:
+        print(f"  abstraction:   {idea.abstraction}")
 
     # Full prompt
     print(f"\n[Full Prompt]")
@@ -241,9 +221,9 @@ def print_prompt(
 def print_response_schema():
     """Display the Pydantic response model schema."""
     print(f"\n{'='*100}")
-    print(f"RESPONSE MODEL: SingleCategoryAssignment")
+    print(f"RESPONSE MODEL: CodeAttributeAssignment")
     print(f"{'='*100}")
-    schema = SingleCategoryAssignment.model_json_schema()
+    schema = CodeAttributeAssignment.model_json_schema()
     schema_str = json.dumps(schema, indent=2)
     print(schema_str)
     print(f"\n  Schema: {len(schema_str):,} chars (~{len(schema_str) // 4:,} tokens)")
@@ -255,7 +235,7 @@ def print_response_schema():
 
 def main():
     print("=" * 100)
-    print("DEBUG: Single-Idea Category Assignment Prompt Inspector")
+    print("DEBUG: Single-Idea Dual Assignment Prompt Inspector")
     print("Randomly picks ideas per partition and builds one prompt per idea")
     print("=" * 100)
     print(f"Variable:              {VAR_NAME}")
@@ -272,15 +252,17 @@ def main():
     if mece_cache is None:
         print("\nERROR: No cached MECE results found.")
         print("Run the full pipeline first:")
-        print("  cd src && python -m development.step_5_categories_v2.run_experiment")
+        print("  cd src && python -m development.step_4_classNcoder.run_experiment")
         return
 
     partition_set = mece_cache.partition_set
-    mece_results = mece_cache.partition_results
 
-    n_themes = mece_cache.total_categories
+    # Reconstruct codes from raw_codes cache
+    codes = [CodeFromAttributes(**d) for d in mece_cache.raw_codes]
+
+    n_codes = len(codes)
     n_partitions = len(partition_set.partitions)
-    print(f"\nCodebook: {n_themes} themes, {n_partitions} partitions")
+    print(f"\nCodebook: {n_codes} codes, {n_partitions} partitions")
 
     # Group and sample ideas
     partition_ideas = group_ideas_by_partition(ideas_models)
@@ -301,10 +283,8 @@ def main():
         for idea in ideas:
             prompt_idx += 1
             prompt = build_prompt_for_idea(
-                partition_name=pname,
                 idea=idea,
-                mece_results=mece_results,
-                partition_set=partition_set,
+                codes=codes,
                 extraction_metadata=extraction_metadata,
                 config=config,
             )

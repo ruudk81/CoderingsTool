@@ -14,9 +14,9 @@ from dataclasses import dataclass, field
 
 from development.step_3_ideaExtractor import models_exp as models
 
-from .config_categories_exp import CategoriesConfig
+from .config_classNcoder_exp import CategoriesConfig
 from .partition_labels import collect_unique_labels, collect_unique_labels_with_domains, format_label
-from .models_exp import PartitionDescription, PartitionSet
+from .models_exp import DomainDescription, DomainSet
 
 
 # =============================================================================
@@ -27,7 +27,7 @@ from .models_exp import PartitionDescription, PartitionSet
 class PartitionLabelMapping:
     """Mapping of a partition to its unique labels and idea objects."""
     partition_name: str
-    partition: PartitionDescription
+    partition: DomainDescription
     labels: List[str]
     label_count: int
     label_domains: List[Optional[str]] = field(default_factory=list)
@@ -37,7 +37,7 @@ class PartitionLabelMapping:
 # MAIN CLASS
 # =============================================================================
 
-class PartitionDiscoverer:
+class DomainDiscoverer:
     """
     Partitions ideas by domain and collects unique labels
     per partition.
@@ -55,12 +55,17 @@ class PartitionDiscoverer:
             if extraction_metadata else ''
         )
         # Build domains lookup: {key: {label, definition}} from metadata
+        # Index by both key ("eten_en_drinken") and lowercased label ("eten en drinken")
+        # because ideas store the label, not the key, in their domain field.
         self._domains_lookup: Dict[str, Dict[str, str]] = {}
         if extraction_metadata and hasattr(extraction_metadata, 'domains'):
             for d in extraction_metadata.domains:
                 key = d.get('key', '')
                 if key:
                     self._domains_lookup[key] = d
+                label = d.get('label', '')
+                if label:
+                    self._domains_lookup[label.lower()] = d
 
         self._populated_partitions: Dict[str, List] = {}
 
@@ -94,7 +99,7 @@ class PartitionDiscoverer:
     def discover(
         self,
         ideas_models: List[models.IdeasExtractedModel],
-    ) -> Tuple[PartitionSet, Dict[str, PartitionLabelMapping]]:
+    ) -> Tuple[DomainSet, Dict[str, PartitionLabelMapping]]:
         """
         Partition ideas by domain and collect labels.
 
@@ -195,16 +200,16 @@ class PartitionDiscoverer:
     def _build_partition_set(
         self,
         label_lists: Dict[str, List[str]],
-    ) -> PartitionSet:
-        """Build PartitionSet from populated partitions."""
+    ) -> DomainSet:
+        """Build DomainSet from populated partitions."""
         partitions = []
         for ct_key in sorted(label_lists.keys()):
             partition = self._build_partition_description(ct_key)
             partitions.append(partition)
-        return PartitionSet(partitions=partitions)
+        return DomainSet(partitions=partitions)
 
-    def _build_partition_description(self, ct_key: str) -> PartitionDescription:
-        """Build PartitionDescription for a domain partition.
+    def _build_partition_description(self, ct_key: str) -> DomainDescription:
+        """Build DomainDescription for a domain partition.
 
         Uses domains metadata from ExtractionMetadata when available,
         falls back to a generic description based on the partition name.
@@ -213,7 +218,7 @@ class PartitionDiscoverer:
         label = ct_info.get('label', ct_key)
         definition = ct_info.get('definition', '')
 
-        return PartitionDescription(
+        return DomainDescription(
             partition_name=ct_key,
             inclusion_definition=self._build_inclusion_definition(label, definition),
             boundary_test=self._build_boundary_test(label, definition),
@@ -223,10 +228,7 @@ class PartitionDiscoverer:
     def _build_inclusion_definition(self, label: str, definition: str) -> str:
         """Build inclusion_definition from domain metadata."""
         if definition:
-            return (
-                f'Labels in domain "{label}": {definition}. '
-                f'This partition captures concepts that fall under this domain.'
-            )
+            return definition
         return f"Labels related to the domain '{label}'."
 
     def _build_boundary_test(self, label: str, definition: str) -> str:
@@ -257,7 +259,7 @@ class PartitionDiscoverer:
 
     def _build_partition_mappings(
         self,
-        partition_set: PartitionSet,
+        partition_set: DomainSet,
         label_lists: Dict[str, List[str]],
         domain_lists: Optional[Dict[str, List[Optional[str]]]] = None,
     ) -> Dict[str, PartitionLabelMapping]:

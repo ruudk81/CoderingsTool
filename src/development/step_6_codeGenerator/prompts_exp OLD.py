@@ -319,7 +319,7 @@ Begin your analysis now. Think carefully through the cluster data, identify the 
 """
 
 # -----------------------------------------------------------------------------
-# 1c. CATEGORY_SUMMARY_PROMPT: variant for step_5_categories MECE categories
+# 1c. CATEGORY_SUMMARY_PROMPT: variant for step_4_classNcoder MECE categories
 #     with full category metadata + confidence-band sampled ideas
 # -----------------------------------------------------------------------------
 

@@ -9,13 +9,13 @@ Pipeline:
   2. Bootstrap: fetch rate limits + probe calls for latency/token measurement
   3. Little's Law → optimal concurrency
   4. Batch ideas per partition, submit all batches concurrently
-  5. Collect assignments, build CategoryAssignedModel list
+  5. Collect assignments, build CodeAssignedModel list
 
 Usage:
-    from .category_assignment import CategoryAssigner
+    from .code_assignment import CodeAssigner
     from config_steps.config_categories import AssignmentConfig
 
-    assigner = CategoryAssigner(
+    assigner = CodeAssigner(
         config=AssignmentConfig(),
         embeddings_models=embeddings_models,
         mece_results=mece_results,
@@ -45,9 +45,9 @@ import models
 from config_steps.config_categories import AssignmentConfig, get_other_category_label
 from prompts import (
     CATEGORY_ASSIGNMENT_PROMPT,
-    CategoryAssignmentBatch,
-    MECECategory,
-    PartitionSet,
+    CodeAssignmentBatch,
+    MECECode,
+    DomainSet,
 )
 
 # Reuse bootstrap utilities from map_reduce_mece
@@ -59,7 +59,7 @@ from .map_reduce_mece import (
 nest_asyncio.apply()
 
 
-class CategoryAssigner:
+class CodeAssigner:
     """
     Assigns each idea to exactly one MECE category within its concept_type
     partition. All partitions are processed concurrently through a shared
@@ -70,8 +70,8 @@ class CategoryAssigner:
         self,
         config: AssignmentConfig,
         embeddings_models: List[models.EmbeddingsModel],
-        mece_results: Dict[str, models.PartitionMECEResultModel],
-        partition_set: PartitionSet,
+        mece_results: Dict[str, models.DomainResultModel],
+        partition_set: DomainSet,
         extraction_metadata: Optional[models.ExtractionMetadata] = None,
         prompt_printer=None,
     ):
@@ -94,15 +94,15 @@ class CategoryAssigner:
     # PUBLIC API
     # =========================================================================
 
-    def assign_all(self) -> List[models.CategoryAssignedModel]:
-        """Sync entry point. Returns list of CategoryAssignedModel."""
+    def assign_all(self) -> List[models.CodeAssignedModel]:
+        """Sync entry point. Returns list of CodeAssignedModel."""
         return asyncio.run(self._assign_all_async())
 
     # =========================================================================
     # ASYNC ORCHESTRATION
     # =========================================================================
 
-    async def _assign_all_async(self) -> List[models.CategoryAssignedModel]:
+    async def _assign_all_async(self) -> List[models.CodeAssignedModel]:
         """Main async orchestration: bootstrap, batch, gather, collect."""
         verbose = self._config.verbose
 
@@ -245,7 +245,7 @@ class CategoryAssigner:
         results = await asyncio.gather(*all_tasks, return_exceptions=True)
         elapsed = time.time() - start_time
 
-        # 9. Collect assignments into lookup: idea_id → CategoryAssignment
+        # 9. Collect assignments into lookup: idea_id → CodeAssignment
         assignment_lookup = {}
         failed_count = 0
         mismatched_ids = 0
@@ -285,9 +285,9 @@ class CategoryAssigner:
     async def _assign_batch(
         self,
         ideas: List,
-        categories: List[MECECategory],
+        categories: List[MECECode],
         partition_name: str,
-    ) -> CategoryAssignmentBatch:
+    ) -> CodeAssignmentBatch:
         """Rate-limited LLM call for one batch of ideas."""
         prompt = self._build_assignment_prompt(
             ideas, categories, partition_name
@@ -296,10 +296,10 @@ class CategoryAssigner:
         # Prompt capture (first batch only)
         if self._prompt_printer is not None and not self._captured_assignment:
             self._prompt_printer.capture_prompt(
-                step_name="category_assignment",
-                utility_name="CategoryAssigner",
+                step_name="code_assignment",
+                utility_name="CodeAssigner",
                 prompt_content=prompt,
-                prompt_type="category_assignment",
+                prompt_type="code_assignment",
                 metadata={
                     "model": self._config.assignment_model,
                     "language": (
@@ -319,7 +319,7 @@ class CategoryAssigner:
                     client=self._client,
                     model=self._config.assignment_model,
                     prompt=prompt,
-                    response_model=CategoryAssignmentBatch,
+                    response_model=CodeAssignmentBatch,
                     temperature=self._config.assignment_temperature,
                     max_tokens=self._config.assignment_max_tokens,
                 )
@@ -331,7 +331,7 @@ class CategoryAssigner:
     def _build_assignment_prompt(
         self,
         ideas: List,
-        categories: List[MECECategory],
+        categories: List[MECECode],
         partition_name: str,
     ) -> str:
         """Build the full assignment prompt for a batch of ideas."""
@@ -379,7 +379,7 @@ class CategoryAssigner:
 
     @staticmethod
     def _build_categories_block(
-        categories: List[MECECategory],
+        categories: List[MECECode],
         other_label: Optional[str] = None,
     ) -> str:
         """Format MECE categories for the prompt.
@@ -464,10 +464,10 @@ class CategoryAssigner:
     def _build_output_models(
         self,
         assignment_lookup: dict,
-    ) -> List[models.CategoryAssignedModel]:
-        """Build CategoryAssignedModel list preserving response structure.
+    ) -> List[models.CodeAssignedModel]:
+        """Build CodeAssignedModel list preserving response structure.
 
-        Converts each EmbeddingsSubmodel idea to CategoryAssignedSubmodel,
+        Converts each EmbeddingsSubmodel idea to CodeAssignedSubmodel,
         injecting assignment data via idea_id lookup.
         """
         output = []
@@ -478,11 +478,11 @@ class CategoryAssigner:
                     assignment = assignment_lookup.get(idea.idea_id)
                     ct = (idea.concept_type or '').strip().lower()
 
-                    # Build CategoryAssignedSubmodel from EmbeddingsSubmodel
+                    # Build CodeAssignedSubmodel from EmbeddingsSubmodel
                     idea_data = idea.model_dump()
-                    new_idea = models.CategoryAssignedSubmodel(
+                    new_idea = models.CodeAssignedSubmodel(
                         **{k: v for k, v in idea_data.items()
-                           if k in models.CategoryAssignedSubmodel.model_fields},
+                           if k in models.CodeAssignedSubmodel.model_fields},
                         assigned_category=(
                             assignment.assigned_category
                             if assignment else None
@@ -499,11 +499,11 @@ class CategoryAssigner:
                     )
                     new_ideas.append(new_idea)
 
-            # Build CategoryAssignedModel from EmbeddingsModel
+            # Build CodeAssignedModel from EmbeddingsModel
             resp_data = resp.model_dump()
-            new_resp = models.CategoryAssignedModel(
+            new_resp = models.CodeAssignedModel(
                 **{k: v for k, v in resp_data.items()
-                   if k in models.CategoryAssignedModel.model_fields
+                   if k in models.CodeAssignedModel.model_fields
                    and k != 'response_ideas'},
                 response_ideas=new_ideas,
             )
@@ -589,7 +589,7 @@ class CategoryAssigner:
 
     @staticmethod
     def _print_assignment_summary(
-        output: List[models.CategoryAssignedModel],
+        output: List[models.CodeAssignedModel],
     ):
         """Print per-partition assignment summary."""
         partition_stats: Dict[str, Dict] = {}

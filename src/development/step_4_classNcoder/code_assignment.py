@@ -1,21 +1,22 @@
 """
-Category Assignment for MECE Categories.
+Dual Assignment: Code + Attribute per Idea.
 
-Assigns each idea to exactly one MECE category within its domain
-partition. All partitions are processed concurrently with shared rate limiting.
+Assigns each idea to exactly one MECE code and its best-matching attribute
+via a single LLM call. All partitions are processed concurrently with shared
+rate limiting.
 
 Pipeline:
   1. Group ideas by partition (domain)
   2. Bootstrap: fetch rate limits + probe calls for latency/token measurement
   3. Little's Law → optimal concurrency
-  4. Queue + workers: process batches with TokenBucket + rate limiter + retry
-  5. Collect assignments, build CategoryAssignedModel list
+  4. Queue + workers: process single ideas with TokenBucket + rate limiter + retry
+  5. Collect assignments, build CodeAssignedModel list
 
 Usage:
-    from .category_assignment import CategoryAssigner
-    from .config_categories_exp import AssignmentConfig
+    from .code_assignment import CodeAssigner
+    from .config_classNcoder_exp import AssignmentConfig
 
-    assigner = CategoryAssigner(
+    assigner = CodeAssigner(
         config=AssignmentConfig(),
         ideas_models=ideas_models,
         mece_results=mece_results,
@@ -48,14 +49,15 @@ from config import (
 )
 
 from development.step_3_ideaExtractor import models_exp as models
-from .config_categories_exp import AssignmentConfig, get_other_category_label
-from .models_exp import PartitionSet, PartitionMECEResultModel, CategoryAssignedSubmodel, CategoryAssignedModel
+from .config_classNcoder_exp import AssignmentConfig, get_other_category_label
+from .models_exp import DomainSet, DomainResultModel, CodeAssignedSubmodel, CodeAssignedModel
 from .prompts_exp import (
-    build_category_assignment_prompt,
-    build_single_idea_assignment_prompt,
-    CategoryAssignmentBatch,
-    SingleCategoryAssignment,
-    MECECategory,
+    build_single_dual_assignment_prompt,
+    CodeAssignment,
+    CodeAssignmentBatch,
+    CodeAttributeAssignment,
+    CodeFromAttributes,
+    MECECode,
 )
 
 # Reuse bootstrap utilities from qualitative_researcher
@@ -129,7 +131,7 @@ class TokenBucket:
                 self.available = min(self.tpm, self.available - delta_tokens)
 
 
-class CategoryAssigner:
+class CodeAssigner:
     """
     Assigns each idea to exactly one MECE category within its domain
     partition. All partitions are processed concurrently through a shared
@@ -140,16 +142,18 @@ class CategoryAssigner:
         self,
         config: AssignmentConfig,
         ideas_models: List[models.IdeasExtractedModel],
-        mece_results: Dict[str, PartitionMECEResultModel],
-        partition_set: PartitionSet,
+        mece_results: Dict[str, DomainResultModel],
+        partition_set: DomainSet,
         extraction_metadata: Optional[models.ExtractionMetadata] = None,
         prompt_printer=None,
+        codes: List[CodeFromAttributes] = None,
     ):
         self._config = config
         self._ideas_models = ideas_models
         self._mece_results = mece_results
         self._partition_set = partition_set
         self._extraction_metadata = extraction_metadata
+        self._codes = codes or []
 
         # Prompt capture (optional — pass PromptPrinter to enable)
         self._prompt_printer = prompt_printer
@@ -161,14 +165,14 @@ class CategoryAssigner:
         self._rate_limiter = None
         self._tpm_bucket = None
 
-        # Hierarchy data — populated in _assign_all_async()
-        self._partition_hier_cats: Dict[str, List[MECECategory]] = {}
-
         # ID-based resolution maps — populated in _assign_all_async()
         self._id_to_label: Dict[str, str] = {}
         self._id_to_parent: Dict[str, str] = {}
         self._other_id: Optional[str] = None
         self._other_label: Optional[str] = None
+
+        # Attribute assignments from dual mode (idea_id -> attribute name)
+        self._attribute_assignments: Dict[str, str] = {}
 
         # Processing stats
         self._stats = {
@@ -196,15 +200,15 @@ class CategoryAssigner:
         """Canonical partition key: lowercase, underscores→spaces."""
         return (key or '').strip().lower().replace('_', ' ')
 
-    def assign_all(self) -> List[CategoryAssignedModel]:
-        """Sync entry point. Returns list of CategoryAssignedModel."""
+    def assign_all(self) -> List[CodeAssignedModel]:
+        """Sync entry point. Returns list of CodeAssignedModel."""
         return asyncio.run(self._assign_all_async())
 
     # =========================================================================
     # ASYNC ORCHESTRATION
     # =========================================================================
 
-    async def _assign_all_async(self) -> List[CategoryAssignedModel]:
+    async def _assign_all_async(self) -> List[CodeAssignedModel]:
         """Main async orchestration: bootstrap, queue+workers, collect."""
         verbose = self._config.verbose
         processing_config = DEFAULT_PROCESSING_CONFIG
@@ -243,7 +247,7 @@ class CategoryAssigner:
                 r.n_labels for r in self._mece_results.values()
                 if r
             )
-            global_mece = PartitionMECEResultModel(
+            global_mece = DomainResultModel(
                 partition_name="__global__",
                 n_labels=total_labels,
                 n_batches=0,
@@ -266,7 +270,6 @@ class CategoryAssigner:
             print(f"  Ideas: {total_ideas} across {len(partition_ideas)} partitions")
             print(f"  Codebook: {codebook_mode}")
             print(f"  Model: {self._config.assignment_model}")
-            print(f"  Batch size: {self._config.assignment_batch_size}")
 
         if total_ideas == 0:
             print("  WARNING: No ideas to assign")
@@ -281,32 +284,13 @@ class CategoryAssigner:
             print(f"  Rate limits: TPM={limits.tokens_per_minute:,}, "
                   f"RPM={limits.requests_per_minute:,}")
 
-        # 4. Pre-build ID maps and hierarchy data
+        # 4. Pre-build ID maps
         self._build_id_maps()
-        for pname, mece_res in self._resolved_mece.items():
-            if mece_res and mece_res.categories:
-                self._partition_hier_cats[pname] = mece_res.categories
 
-        # 5. Determine assignment mode
-        is_single_mode = self._config.assignment_mode == "single"
-
-        # 6. Bootstrap measurement (3 probe calls)
+        # 5. Bootstrap measurement (3 probe calls)
         first_partition = next(iter(sorted(partition_ideas.keys())))
-        first_cats = self._flatten_categories(
-            self._resolved_mece[first_partition].categories
-        )
-        if is_single_mode:
-            first_idea = partition_ideas[first_partition][0]
-            probe_prompt = self._build_single_assignment_prompt(
-                first_idea, first_cats, first_partition
-            )
-        else:
-            first_ideas = partition_ideas[first_partition][
-                :min(self._config.assignment_batch_size, 3)
-            ]
-            probe_prompt = self._build_assignment_prompt(
-                first_ideas, first_cats, first_partition
-            )
+        first_idea = partition_ideas[first_partition][0]
+        probe_prompt = self._build_dual_assignment_prompt(first_idea)
 
         if verbose:
             print("  Running bootstrap measurement (3 probe calls)...")
@@ -365,34 +349,13 @@ class CategoryAssigner:
                           f"'{partition_name}', skipping {len(ideas)} ideas")
                 continue
 
-            leaf_categories = self._flatten_categories(
-                mece_result.categories
-            )
-
-            if is_single_mode:
-                # One task per idea
-                for idea_idx, idea in enumerate(ideas):
-                    task_list.append({
-                        'idea': idea,
-                        'ideas': [idea],  # Backward compat for stats
-                        'categories': leaf_categories,
-                        'partition_name': partition_name,
-                        'batch_idx': idea_idx,
-                        'n_batches': len(ideas),
-                        'single_mode': True,
-                    })
-            else:
-                # Batch mode: N ideas per task
-                batches = self._create_batches(ideas)
-                for batch_idx, batch in enumerate(batches):
-                    task_list.append({
-                        'ideas': batch,
-                        'categories': leaf_categories,
-                        'partition_name': partition_name,
-                        'batch_idx': batch_idx,
-                        'n_batches': len(batches),
-                        'single_mode': False,
-                    })
+            for idea_idx, idea in enumerate(ideas):
+                task_list.append({
+                    'idea': idea,
+                    'partition_name': partition_name,
+                    'batch_idx': idea_idx,
+                    'n_batches': len(ideas),
+                })
 
         total_batches = len(task_list)
 
@@ -500,7 +463,7 @@ class CategoryAssigner:
 
         elapsed = time.time() - start_time
 
-        # 10. Collect assignments into lookup: idea_id → CategoryAssignment
+        # 10. Collect assignments into lookup: idea_id → CodeAssignment
         assignment_lookup = {}
         failed_count = self._stats['tasks_failed']
 
@@ -618,7 +581,6 @@ class CategoryAssigner:
                     self._failure_log.append({
                         'partition': task['partition_name'],
                         'batch_idx': task['batch_idx'],
-                        'n_ideas': len(task['ideas']),
                         'error_type': error_type,
                     })
 
@@ -649,38 +611,26 @@ class CategoryAssigner:
     async def _process_batch_with_retry(
         self,
         task: Dict,
-    ) -> CategoryAssignmentBatch:
-        """Process a single batch/idea with rate limiting, token bucket, and retry.
+    ) -> CodeAssignmentBatch:
+        """Process a single idea with rate limiting, token bucket, and retry.
 
-        In single mode: processes one idea, wraps result in CategoryAssignmentBatch.
-        In batch mode: processes N ideas as before.
+        Performs dual assignment (code + attribute) for one idea, then wraps
+        the result in a CodeAssignmentBatch for uniform downstream handling.
         """
-        categories = task['categories']
         partition_name = task['partition_name']
-        is_single = task.get('single_mode', False)
-
-        if is_single:
-            idea = task['idea']
-            prompt = self._build_single_assignment_prompt(
-                idea, categories, partition_name
-            )
-            response_model = SingleCategoryAssignment
-        else:
-            ideas = task['ideas']
-            prompt = self._build_assignment_prompt(
-                ideas, categories, partition_name
-            )
-            response_model = CategoryAssignmentBatch
+        idea = task['idea']
+        prompt = self._build_dual_assignment_prompt(idea)
+        response_model = CodeAttributeAssignment
 
         # Prompt capture (first task per partition)
         _assign_key = f"assign_{partition_name}"
         if (self._prompt_printer is not None
                 and _assign_key not in self._captured_assign_gates):
             self._prompt_printer.capture_prompt(
-                step_name="category_assignment",
-                utility_name="CategoryAssigner",
+                step_name="code_assignment",
+                utility_name="CodeAssigner",
                 prompt_content=prompt,
-                prompt_type="category_assignment",
+                prompt_type="dual_assignment",
                 metadata={
                     "model": self._config.assignment_model,
                     "language": (
@@ -688,9 +638,7 @@ class CategoryAssigner:
                         if self._extraction_metadata else "Dutch"
                     ),
                     "partition_name": partition_name,
-                    "n_ideas": 1 if is_single else len(task['ideas']),
-                    "n_categories": len(categories),
-                    "mode": "single" if is_single else "batch",
+                    "n_codes": len(self._codes),
                 }
             )
             self._captured_assign_gates.add(_assign_key)
@@ -738,20 +686,20 @@ class CategoryAssigner:
                     delta = actual_total - est_tokens
                     await self._tpm_bucket.reconcile(delta)
 
-                # Wrap single result into batch format for uniform downstream handling
-                if is_single:
-                    from .prompts_exp import CategoryAssignment
-                    wrapped = CategoryAssignmentBatch(
-                        assignments=[CategoryAssignment(
-                            idea_id=idea.idea_id,
-                            assigned_category_id=result.assigned_category_id,
-                            confidence=result.confidence,
-                            rationale=result.rationale,
-                        )]
-                    )
-                    return wrapped
+                # Store attribute assignment
+                if result.assigned_attribute:
+                    self._attribute_assignments[idea.idea_id] = result.assigned_attribute
 
-                return result
+                # Wrap into batch format for uniform downstream handling
+                wrapped = CodeAssignmentBatch(
+                    assignments=[CodeAssignment(
+                        idea_id=idea.idea_id,
+                        assigned_category_id=result.assigned_code_id,
+                        confidence=result.confidence,
+                        rationale=result.rationale,
+                    )]
+                )
+                return wrapped
 
     # =========================================================================
     # THROUGHPUT ADJUSTMENT
@@ -809,7 +757,7 @@ class CategoryAssigner:
     @staticmethod
     def _normalize_id(raw_id: str) -> str:
         """Normalize a raw category ID: 'c7' -> 'C7', '7' -> 'C7'."""
-        cat_id = CategoryAssigner._RE_NORMALIZE_ID.sub('', raw_id.strip().upper())
+        cat_id = CodeAssigner._RE_NORMALIZE_ID.sub('', raw_id.strip().upper())
         if not cat_id.startswith('C') and cat_id.isdigit():
             cat_id = f"C{cat_id}"
         return cat_id
@@ -825,7 +773,7 @@ class CategoryAssigner:
         id_to_parent: Dict[str, str] = {}
         counter = [0]
 
-        def _walk(cats: List[MECECategory], parent_label: Optional[str] = None):
+        def _walk(cats: List[MECECode], parent_label: Optional[str] = None):
             for cat in cats:
                 if cat.subcategories:
                     _walk(cat.subcategories, cat.category_label)
@@ -861,52 +809,11 @@ class CategoryAssigner:
         self._id_to_parent = id_to_parent
 
     # =========================================================================
-    # HIERARCHY HELPERS
+    # PROMPT BUILDING
     # =========================================================================
 
-    @staticmethod
-    def _flatten_categories(
-        categories: List[MECECategory],
-    ) -> List[MECECategory]:
-        """Flatten hierarchical categories to leaf level for assignment."""
-        leaves = []
-        for cat in categories:
-            if cat.subcategories:
-                leaves.extend(
-                    CategoryAssigner._flatten_categories(cat.subcategories)
-                )
-            else:
-                leaves.append(cat)
-        return leaves
-
-    @staticmethod
-    def _build_parent_map(
-        categories: List[MECECategory],
-    ) -> Dict[str, str]:
-        """Build mapping from leaf category_label to immediate parent label."""
-        parent_map: Dict[str, str] = {}
-
-        def _recurse(cats: List[MECECategory], parent_label: Optional[str]):
-            for cat in cats:
-                if cat.subcategories:
-                    _recurse(cat.subcategories, cat.category_label)
-                elif parent_label is not None:
-                    parent_map[cat.category_label] = parent_label
-
-        _recurse(categories, None)
-        return parent_map
-
-    # =========================================================================
-    # BATCH PROCESSING HELPERS
-    # =========================================================================
-
-    def _build_assignment_prompt(
-        self,
-        ideas: List,
-        categories: List[MECECategory],
-        partition_name: str,
-    ) -> str:
-        """Build the full assignment prompt for a batch of ideas."""
+    def _build_dual_assignment_prompt(self, idea) -> str:
+        """Build prompt for dual assignment (code + attribute) using raw codes."""
         survey_question = ""
         language = "Dutch"
         dataset_context_section = ""
@@ -922,65 +829,13 @@ class CategoryAssigner:
             if parts:
                 dataset_context_section = "\n".join(parts)
 
-        partition_inclusion = ""
-        for p in self._partition_set.partitions:
-            if p.partition_name == partition_name:
-                partition_inclusion = p.inclusion_definition
-                break
-
         other_label = get_other_category_label(language)
-        hier_cats = self._partition_hier_cats.get(partition_name)
 
-        return build_category_assignment_prompt(
+        return build_single_dual_assignment_prompt(
             survey_question=survey_question,
             language=language,
             dataset_context_section=dataset_context_section,
-            partition_name=partition_name,
-            partition_inclusion=partition_inclusion,
-            categories=categories,
-            other_label=other_label if self._config.include_other_category else None,
-            hierarchical_categories=hier_cats,
-            ideas=ideas,
-            facet_lookup=self._facet_lookup,
-        )
-
-    def _build_single_assignment_prompt(
-        self,
-        idea,
-        categories: List[MECECategory],
-        partition_name: str,
-    ) -> str:
-        """Build prompt for assigning a single idea (flat codebook, no hierarchy)."""
-        survey_question = ""
-        language = "Dutch"
-        dataset_context_section = ""
-
-        if self._extraction_metadata:
-            survey_question = self._extraction_metadata.var_lab or ""
-            language = self._extraction_metadata.lang or "Dutch"
-            parts = []
-            for f in ('domain', 'entity', 'topic', 'perspective', 'intent'):
-                val = getattr(self._extraction_metadata, f, None)
-                if val:
-                    parts.append(f"{f.capitalize()}: {val}")
-            if parts:
-                dataset_context_section = "\n".join(parts)
-
-        partition_inclusion = ""
-        for p in self._partition_set.partitions:
-            if p.partition_name == partition_name:
-                partition_inclusion = p.inclusion_definition
-                break
-
-        other_label = get_other_category_label(language)
-
-        return build_single_idea_assignment_prompt(
-            survey_question=survey_question,
-            language=language,
-            dataset_context_section=dataset_context_section,
-            partition_name=partition_name,
-            partition_inclusion=partition_inclusion,
-            categories=categories,
+            codes=self._codes,
             other_label=other_label if self._config.include_other_category else None,
             idea=idea,
             facet_lookup=self._facet_lookup,
@@ -1007,11 +862,6 @@ class CategoryAssigner:
                 partitions[ct].append(idea)
         return partitions
 
-    def _create_batches(self, ideas: list) -> list:
-        """Split ideas into batches of assignment_batch_size."""
-        bs = self._config.assignment_batch_size
-        return [ideas[i:i + bs] for i in range(0, len(ideas), bs)]
-
     # =========================================================================
     # OUTPUT MODEL CONSTRUCTION
     # =========================================================================
@@ -1020,8 +870,8 @@ class CategoryAssigner:
         self,
         assignment_lookup: dict,
         id_resolution: Dict[str, str],
-    ) -> List[CategoryAssignedModel]:
-        """Build CategoryAssignedModel list preserving response structure."""
+    ) -> List[CodeAssignedModel]:
+        """Build CodeAssignedModel list preserving response structure."""
         facet_lookup = self._facet_lookup
 
         output = []
@@ -1042,9 +892,9 @@ class CategoryAssigner:
                         parent_cat = self._id_to_parent.get(cat_id)
 
                     idea_data = idea.model_dump()
-                    new_idea = CategoryAssignedSubmodel(
+                    new_idea = CodeAssignedSubmodel(
                         **{k: v for k, v in idea_data.items()
-                           if k in CategoryAssignedSubmodel.model_fields},
+                           if k in CodeAssignedSubmodel.model_fields},
                         assigned_category=(
                             resolved_label or None
                         ),
@@ -1056,6 +906,9 @@ class CategoryAssigner:
                             assignment.rationale
                             if assignment else None
                         ),
+                        assigned_attribute=(
+                            self._attribute_assignments.get(idea.idea_id)
+                        ),
                         partition_name=ct if ct else None,
                         parent_category=parent_cat,
                         facet=facet_lookup.get(idea.idea_id, idea_data.get('facet', '')),
@@ -1063,9 +916,9 @@ class CategoryAssigner:
                     new_ideas.append(new_idea)
 
             resp_data = resp.model_dump()
-            new_resp = CategoryAssignedModel(
+            new_resp = CodeAssignedModel(
                 **{k: v for k, v in resp_data.items()
-                   if k in CategoryAssignedModel.model_fields
+                   if k in CodeAssignedModel.model_fields
                    and k != 'response_ideas'},
                 response_ideas=new_ideas,
             )
@@ -1151,7 +1004,7 @@ class CategoryAssigner:
 
     @staticmethod
     def _print_assignment_summary(
-        output: List[CategoryAssignedModel],
+        output: List[CodeAssignedModel],
     ):
         """Print per-partition assignment summary, grouped by parent when available."""
         partition_stats: Dict[str, Dict] = {}

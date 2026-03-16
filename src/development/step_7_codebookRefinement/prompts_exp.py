@@ -824,7 +824,7 @@ class MECEPairVerification(BaseModel):
     )
 
 
-class MECEPartitionResult(BaseModel):
+class MECEDomainResult(BaseModel):
     """Complete MECE enforcement result for a single concept-type partition."""
     partition_name: str = Field(
         ...,

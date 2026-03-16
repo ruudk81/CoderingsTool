@@ -5,7 +5,7 @@ View category assignments: inspect which code each idea/ladder was assigned to.
 
 Modes:
   - "idea":   compact view — idea text → assigned category + confidence
-  - "ladder": detailed view — instance → rung_1 → rung_2 → category + rationale
+  - "ladder": detailed view — instance → interpretation → abstraction → code + attribute + rationale
 """
 
 import sys
@@ -18,7 +18,7 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root / "src" / "development"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from development.step_5_categories.models_exp import CategoryAssignedModel
+from development.step_4_classNcoder.models_exp import CodeAssignedModel
 
 try:
     from development.test_data import TEST_DATA
@@ -51,7 +51,7 @@ def load_assignments(
     filename: str = FILENAME,
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
-) -> List[CategoryAssignedModel]:
+) -> List[CodeAssignedModel]:
     """Load category assignment results from cache."""
     variable_key = generate_enhanced_variable_key(
         selected_variables=[variable],
@@ -61,12 +61,12 @@ def load_assignments(
 
     cache_manager = CacheManager()
     data = cache_manager.load_from_cache(
-        filename, "category_assignment", variable_key, CategoryAssignedModel
+        filename, "code_assignment", variable_key, CodeAssignedModel
     )
 
     if not data:
         raise FileNotFoundError(
-            f"No cached assignment results for step 'category_assignment' / "
+            f"No cached assignment results for step 'code_assignment' / "
             f"variable_key '{variable_key}'.\n"
             f"Run the assignment first."
         )
@@ -83,13 +83,13 @@ def load_assignments(
 # =============================================================================
 
 def group_by_partition(
-    data: List[CategoryAssignedModel],
+    data: List[CodeAssignedModel],
 ) -> Dict[str, Dict[str, List]]:
     """Group ideas by partition → (parent_category, assigned_category) → [ideas].
 
     Returns:
         Dict[partition_name, Dict[assigned_category, List[idea]]]
-        Each idea is a CategoryAssignedSubmodel.
+        Each idea is a CodeAssignedSubmodel.
     """
     grouped: Dict[str, Dict[str, List]] = defaultdict(lambda: defaultdict(list))
 
@@ -105,7 +105,7 @@ def group_by_partition(
 
 
 def group_by_category(
-    data: List[CategoryAssignedModel],
+    data: List[CodeAssignedModel],
 ) -> Dict[str, List]:
     """Group ideas by (parent_category, assigned_category) across all partitions.
 
@@ -171,6 +171,8 @@ def print_idea_mode(grouped: Dict[str, Dict[str, List]]):
                     text = text[:77] + "..."
                 valence = idea.valence or "0"
                 print(f"    {idx:3d}. [{conf:.2f}] ({valence}) \"{text}\"  ({idea.idea_id})")
+                if idea.assigned_attribute:
+                    print(f"         attribute: {idea.assigned_attribute}")
 
             if len(sorted_ideas) > limit:
                 print(f"    ... +{len(sorted_ideas) - limit} more")
@@ -209,8 +211,9 @@ def print_ladder_mode(grouped: Dict[str, Dict[str, List]]):
                 valence = idea.valence or "0"
                 print(f"    {idx:3d}. [{conf:.2f}] ({idea.idea_id}) valence={valence}")
                 print(f"         instance: \"{idea.instance or ''}\"")
-                print(f"         rung_1:   {idea.rung_1 or ''}")
-                print(f"         rung_2:   {idea.rung_2 or ''}")
+                print(f"         interpretation:   {idea.interpretation or ''}")
+                print(f"         abstraction:   {idea.abstraction or ''}")
+                print(f"         attribute: {idea.assigned_attribute or ''}")
                 if idea.category_rationale:
                     rationale = idea.category_rationale
                     if len(rationale) > 120:
@@ -311,6 +314,8 @@ def print_category_idea_mode(cat_grouped: Dict[str, List]):
             valence = idea.valence or "0"
             part = (idea.partition_name or "?")[:20]
             print(f"    {idx:3d}. [{conf:.2f}] ({valence}) \"{text}\"  [{part}]")
+            if idea.assigned_attribute:
+                print(f"         attribute: {idea.assigned_attribute}")
 
         if len(sorted_ideas) > limit:
             print(f"    ... +{len(sorted_ideas) - limit} more")
@@ -356,8 +361,9 @@ def print_category_ladder_mode(cat_grouped: Dict[str, List]):
             part = (idea.partition_name or "?")[:25]
             print(f"    {idx:3d}. [{conf:.2f}] ({idea.idea_id}) valence={valence}  [{part}]")
             print(f"         instance: \"{idea.instance or ''}\"")
-            print(f"         rung_1:   {idea.rung_1 or ''}")
-            print(f"         rung_2:   {idea.rung_2 or ''}")
+            print(f"         interpretation:   {idea.interpretation or ''}")
+            print(f"         abstraction:   {idea.abstraction or ''}")
+            print(f"         attribute: {idea.assigned_attribute or ''}")
             if idea.category_rationale:
                 rationale = idea.category_rationale
                 if len(rationale) > 120:

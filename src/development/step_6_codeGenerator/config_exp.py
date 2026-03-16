@@ -32,7 +32,7 @@ STAGE1_TEXT_SOURCE: Literal["idea"] = "idea"
 # Stage 1 input source:
 #   "ideas"           — sample raw ideas from clusters (uses STAGE1_TEXT_SOURCE)
 #   "mece_topics"     — use old MECE Phase A pickle output (legacy)
-#   "mece_categories" — use step_5_categories cache: MECEResultsCache + CategoryAssignedModel
+#   "mece_categories" — use step_4_classNcoder cache: CodingResultsCache + CodeAssignedModel
 #   "clusters"        — use step_5_clusterer cache: ClusterModel + ClusteringMetadataModel
 # When "mece_topics", "mece_categories", or "clusters", STAGE1_TEXT_SOURCE is ignored.
 STAGE1_INPUT_SOURCE: Literal["ideas", "mece_topics", "mece_categories", "clusters"] = "clusters"

@@ -493,7 +493,7 @@ def invalidate_from_step(start_step: int):
     cache_manager = _get_cache_manager()
     step_mapping = {
         0: "data", 1: "preprocessed", 2: "quality_filter",
-        3: "extracted_ideas", 4: "embeddings", 5: "category_assignment",
+        3: "extracted_ideas", 4: "embeddings", 5: "code_assignment",
         6: "codebook_generation", 7: "codebook_refinement",
         8: "code_assignment_direct", 9: "export"
     }
@@ -1011,7 +1011,7 @@ def determine_max_step_from_cache(filename: str, variable_key: str, cache_manage
         "quality_filter": 2,
         "extracted_ideas": 3,
         "embeddings": 4,
-        "category_assignment": 5,
+        "code_assignment": 5,
         "codebook_generation": 6,
         "codebook_refinement": 7,
         "code_assignment_direct": 8,
@@ -1226,7 +1226,7 @@ def show_upload_page():
             if selected_dataset:
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                	st.write("**Dataset:** " + selected_dataset['dataset_name'])
+                	st.write("**Dataset:** " + selected_dataset['dataset_name']) 
                 with col2:
                 	st.write("**Variables:** " + selected_dataset['variables'])
                 with col3:
@@ -2442,9 +2442,9 @@ def show_clustering_page():
 
     Partitions ideas by concept_type, discovers MECE categories, and assigns each idea.
 
-    Pipeline function: step_5_categories
-    Cache name: category_assignment
-    Model: models.CategoryAssignedModel
+    Pipeline function: step_4_classNcoder
+    Cache name: code_assignment
+    Model: models.CodeAssignedModel
     """
     lang = st.session_state.language
 
@@ -2576,7 +2576,7 @@ def show_clustering_page():
 
                 # Call pipeline processing function
                 category_results = _run_with_verbose_capture(
-                    pipeline.step_5_categories,
+                    pipeline.step_4_classNcoder,
                     embedded_text=st.session_state.pipeline_results['embedded_text'],
                     filename=st.session_state.filename,
                     var_lab=st.session_state.pipeline_results['var_lab'],
@@ -2656,9 +2656,9 @@ def show_codebook_generation_page():
             if variable_key:
                 category_data = cache_manager.load_from_cache(
                     st.session_state.filename,
-                    "category_assignment",
+                    "code_assignment",
                     variable_key,
-                    models.CategoryAssignedModel
+                    models.CodeAssignedModel
                 )
                 if category_data:
                     categories = set(
@@ -2704,13 +2704,13 @@ def show_codebook_generation_page():
                 cache_manager = _get_cache_manager()
 
                 # Try to load from cache first (works for both upload and cache routes)
-                if cache_manager.is_cache_valid(st.session_state.filename, "category_assignment", variable_key):
+                if cache_manager.is_cache_valid(st.session_state.filename, "code_assignment", variable_key):
                     progress_container.text("🔄 " + ("Categorie resultaten laden uit cache..." if lang == "nl" else "Loading category results from cache..."))
                     category_results = _load_or_recover(
                         st.session_state.filename,
-                        "category_assignment",
+                        "code_assignment",
                         variable_key,
-                        models.CategoryAssignedModel
+                        models.CodeAssignedModel
                     )
 
                     # Check if cache load was successful
@@ -2735,7 +2735,7 @@ def show_codebook_generation_page():
                         # Populate var_lab if not already in pipeline_results
                         if 'var_lab' not in st.session_state.pipeline_results:
                             # Try to get from cache metadata first
-                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "category_assignment", variable_key)
+                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "code_assignment", variable_key)
                             if cache_info and cache_info.get('var_lab'):
                                 st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
                             else:
@@ -3324,7 +3324,7 @@ def show_code_assignment_page():
                 if cache_manager.is_cache_valid(st.session_state.filename, "expanded_clusters", variable_key):
                     progress_container.text("🔄 " + ("Categorie resultaten laden uit cache..." if lang == "nl" else "Loading enriched category results from cache..."))
                     category_results = cache_manager.load_from_cache(
-                        st.session_state.filename, "expanded_clusters", variable_key, models.CategoryAssignedModel
+                        st.session_state.filename, "expanded_clusters", variable_key, models.CodeAssignedModel
                     )
                     st.session_state.pipeline_results['category_results'] = category_results
                     progress_container.success("✅ " + ("Verrijkte categorie data geladen" if lang == "nl" else "Enriched category data loaded"))
@@ -5197,7 +5197,7 @@ def show_step_samples(step_number):
         
         elif step_number == 5:
             # Step 5: Categories
-            data = cache_manager.load_from_cache(filename, "category_assignment", variable_key, models.CategoryAssignedModel)
+            data = cache_manager.load_from_cache(filename, "code_assignment", variable_key, models.CodeAssignedModel)
             if data:
                 show_category_samples(data)
                 

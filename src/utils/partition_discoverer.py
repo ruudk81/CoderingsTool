@@ -23,7 +23,7 @@ from .partition_labels import (
     collect_unique_labels, build_cluster_hints, PreclusterResult,
     format_label,
 )
-from prompts import PartitionDescription, PartitionSet
+from prompts import DomainDescription, DomainSet
 
 
 # =============================================================================
@@ -34,7 +34,7 @@ from prompts import PartitionDescription, PartitionSet
 class PartitionLabelMapping:
     """Mapping of a partition to its unique labels."""
     partition_name: str
-    partition: PartitionDescription
+    partition: DomainDescription
     labels: List[str]
     label_count: int
 
@@ -42,7 +42,7 @@ class PartitionLabelMapping:
 # MAIN CLASS
 # =============================================================================
 
-class PartitionDiscoverer:
+class DomainDiscoverer:
     """
     Partitions ideas by concept_type and collects unique labels
     per partition. Optionally pre-clusters labels for Mode B.
@@ -99,7 +99,7 @@ class PartitionDiscoverer:
     def discover(
         self,
         embeddings_models: List[models.EmbeddingsModel],
-    ) -> Tuple[PartitionSet, Dict[str, PartitionLabelMapping], Optional[Dict[str, PreclusterResult]]]:
+    ) -> Tuple[DomainSet, Dict[str, PartitionLabelMapping], Optional[Dict[str, PreclusterResult]]]:
         """
         Partition ideas by concept_type and collect labels.
 
@@ -312,16 +312,16 @@ class PartitionDiscoverer:
     def _build_partition_set(
         self,
         label_lists: Dict[str, List[str]],
-    ) -> PartitionSet:
-        """Build PartitionSet from populated partitions."""
+    ) -> DomainSet:
+        """Build DomainSet from populated partitions."""
         partitions = []
         for ct_key in sorted(label_lists.keys()):
             partition = self._build_partition_description(ct_key)
             partitions.append(partition)
-        return PartitionSet(partitions=partitions)
+        return DomainSet(partitions=partitions)
 
-    def _build_partition_description(self, ct_key: str) -> PartitionDescription:
-        """Build PartitionDescription for a concept_type partition.
+    def _build_partition_description(self, ct_key: str) -> DomainDescription:
+        """Build DomainDescription for a concept_type partition.
 
         Uses concept_types metadata from ExtractionMetadata when available,
         falls back to a generic description based on the partition name.
@@ -330,7 +330,7 @@ class PartitionDiscoverer:
         label = ct_info.get('label', ct_key)
         definition = ct_info.get('definition', '')
 
-        return PartitionDescription(
+        return DomainDescription(
             partition_name=ct_key,
             inclusion_definition=self._build_inclusion_definition(label, definition),
             boundary_test=self._build_boundary_test(label, definition),
@@ -374,7 +374,7 @@ class PartitionDiscoverer:
 
     def _build_partition_mappings(
         self,
-        partition_set: PartitionSet,
+        partition_set: DomainSet,
         label_lists: Dict[str, List[str]],
     ) -> Dict[str, PartitionLabelMapping]:
         """Build PartitionLabelMapping for each partition."""

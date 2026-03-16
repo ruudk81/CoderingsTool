@@ -151,7 +151,7 @@ def load_mece_topics(config: ExperimentConfig, variable_key: str):
 
 
 def load_mece_categories(config: ExperimentConfig, variable_key: str):
-    """Load MECE category data from step_5_categories cache.
+    """Load MECE category data from step_4_classNcoder cache.
 
     Returns:
         (mece_results_cache, category_assigned_data) tuple.
@@ -159,11 +159,11 @@ def load_mece_categories(config: ExperimentConfig, variable_key: str):
     """
     cache_manager = CacheManager(CacheConfig())
 
-    # Load MECEResultsCache (metadata cache)
+    # Load CodingResultsCache (metadata cache)
     mece_results_cache = None
     try:
         mece_results_cache = cache_manager.load_metadata_from_cache(
-            config.filename, "mece_categories", variable_key, models.MECEResultsCache
+            config.filename, "mece_categories", variable_key, models.CodingResultsCache
         )
     except Exception as e:
         print(f"  WARNING: Failed to load MECE categories metadata: {e}")
@@ -172,11 +172,11 @@ def load_mece_categories(config: ExperimentConfig, variable_key: str):
         print("  WARNING: MECE categories cache not found — falling back")
         return None, None
 
-    # Load CategoryAssignedModel list (list cache)
+    # Load CodeAssignedModel list (list cache)
     category_assigned = None
     try:
         category_assigned = cache_manager.load_from_cache(
-            config.filename, "category_assignment", variable_key, models.CategoryAssignedModel
+            config.filename, "code_assignment", variable_key, models.CodeAssignedModel
         )
     except Exception as e:
         print(f"  WARNING: Failed to load category assignments: {e}")
