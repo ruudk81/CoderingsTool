@@ -578,16 +578,18 @@ Your task is to identify **domains** (level 2 in the hierarchy) for the given di
 {domain_diagnostic}
 
 Your goal is to identify the **fewest domains possible** that provide **full coverage** of all the responses. Each domain must be:
-- Mutually exclusive (no conceptual overlap with other domains)
+- **Ontologically distinct** — no two domains may share conceptual space. A domain must not be a subset of another domain, and two domains must not be two lenses on the same phenomenon.
+- **Semantically distant** — a coder assigning a response to a domain must not plausibly consider a neighboring domain. No "could go either way" situations.
 - Focused on ONE specific aspect (not a compound list of multiple concerns)
 - A natural grouping of related phenomena within the dimension
+- Strictly within the boundaries and through the lens of the primary dimension above
 
 ## CRITICAL REQUIREMENTS
 
 - All labels and definitions in your JSON output must be in the language specified in the <language> tags, which is {language}
 - The "key" field should be in English for technical consistency
 - Domain definitions must NOT contain examples or enumerations — no "such as", "like", "zoals"
-- Domains must be mutually exclusive with no conceptual overlap
+- Domains must be ontologically distinct and semantically distant — no shared conceptual space, no coder hesitation
 
 Begin processing now and provide your output as **valid JSON** following the response schema provided."""
 
@@ -677,9 +679,12 @@ Your task is to consolidate these chunk-level domain lists into the fewest mutua
 
 Important consolidation principles:
 - MERGE domains that have conceptual overlap, near-equivalence, or represent subcategories of a broader concept
-- ENSURE mutual exclusivity: no two domains in your final list should overlap in meaning
+- MERGE domains that are two lenses on the same phenomenon (e.g., "merkidentiteit" and "merkperceptie" both describe brand characteristics)
+- ENSURE ontological distinctness: no two domains may share conceptual space. A domain must not be a subset of another.
+- ENSURE semantic distance: a coder assigning a response must not plausibly hesitate between two domains. No "could go either way" situations.
 - MAINTAIN full coverage: the consolidated domains must collectively cover all concepts present in the chunk-level analyses
 - MINIMIZE the total number of domains while preserving meaningful distinctions
+- All domains must stay strictly within the boundaries and through the lens of the primary dimension
 - Each domain definition must complete: "This domain covers responses about [single aspect]." Abstract boundary only, no examples or enumerations
 - All domain labels and definitions must be in the language specified above
 
@@ -690,7 +695,7 @@ In your scratchpad:
 1. List all unique domains that appear across the chunk-level analyses
 2. Identify groups of domains that have conceptual overlap or proximity
 3. For each group, determine an appropriate consolidated domain label and definition
-4. Check that your consolidated domains are mutually exclusive
+4. For each pair of surviving domains, ask: "Could a response plausibly belong to both?" If yes, merge them.
 5. Verify that your consolidated domains provide complete coverage of the original set
 </scratchpad>
 
