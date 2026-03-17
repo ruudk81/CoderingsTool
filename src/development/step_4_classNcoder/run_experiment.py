@@ -53,7 +53,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 RUN_ASSIGNMENT = False  # Set True to run category assignment after MECE discovery
-RUN_ASSIGNMENT_ONLY = False  # Set True to skip pipeline, run assignment from cache only
+RUN_ASSIGNMENT_ONLY = True  # Set True to skip pipeline, run assignment from cache only
 EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 
@@ -346,7 +346,7 @@ def save_results_to_file(
     sample_size: Optional[int],
 ) -> Path:
     """Save results to a text file."""
-    output_dir = project_root / "exports" / "cluster_results"
+    output_dir = project_root / "exports" / "verbose_logs"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_name = Path(filename).stem
@@ -561,7 +561,7 @@ def run_assignment_only():
     pydantic_results = mece_cache.partition_results
 
     # Reconstruct CodeFromAttributes from cached dicts
-    from .prompts_exp import CodeFromAttributes
+    from development.step_4_classNcoder.prompts_exp import CodeFromAttributes
     codes = [CodeFromAttributes(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else None
 
     n_themes = mece_cache.total_categories
@@ -638,8 +638,8 @@ if __name__ == "__main__":
             prompts_dir.mkdir(parents=True, exist_ok=True)
 
             # Split prompts into pipeline (generation) vs assignment
-            ASSIGNMENT_TYPES = {"code_assignment"}
-            pipeline_prompts = [
+            ASSIGNMENT_TYPES = {"code_assignment", "dual_assignment"}
+            generation_prompts = [
                 p for p in prompt_printer.prompts
                 if p.get("prompt_type") not in ASSIGNMENT_TYPES
             ]
@@ -648,11 +648,11 @@ if __name__ == "__main__":
                 if p.get("prompt_type") in ASSIGNMENT_TYPES
             ]
 
-            base = f"step5_categories_{VARIABLE}_{variable_key}"
-            if pipeline_prompts:
-                pp_pipeline = PromptPrinter(enabled=True)
-                pp_pipeline.prompts = pipeline_prompts
-                pp_pipeline.save_prompts(str(prompts_dir / f"{base}_pipeline.json"))
+            base = f"step4_classNcoder_{variable_key}"
+            if generation_prompts:
+                pp_generation = PromptPrinter(enabled=True)
+                pp_generation.prompts = generation_prompts
+                pp_generation.save_prompts(str(prompts_dir / f"{base}_generation.json"))
             if assignment_prompts:
                 pp_assign = PromptPrinter(enabled=True)
                 pp_assign.prompts = assignment_prompts

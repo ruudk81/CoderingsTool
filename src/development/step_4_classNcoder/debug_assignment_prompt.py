@@ -150,6 +150,7 @@ def build_prompt_for_idea(
     codes: List[CodeFromAttributes],
     extraction_metadata: Optional[models.ExtractionMetadata],
     config: AssignmentConfig,
+    facet_lookup: Optional[Dict[str, str]] = None,
 ) -> str:
     """Build a single-idea dual assignment prompt (flat codebook, one idea)."""
     # Survey context
@@ -176,7 +177,7 @@ def build_prompt_for_idea(
         codes=codes,
         other_label=other_label if config.include_other_category else None,
         idea=idea,
-        facet_lookup=None,
+        facet_lookup=facet_lookup,
     )
 
 
@@ -260,9 +261,16 @@ def main():
     # Reconstruct codes from raw_codes cache
     codes = [CodeFromAttributes(**d) for d in mece_cache.raw_codes]
 
+    # Build facet lookup from cached P2 facet assignments
+    facet_lookup: Dict[str, str] = {}
+    for mece_res in mece_cache.partition_results.values():
+        if mece_res.facet_assignments:
+            facet_lookup.update(mece_res.facet_assignments)
+
     n_codes = len(codes)
     n_partitions = len(partition_set.partitions)
     print(f"\nCodebook: {n_codes} codes, {n_partitions} partitions")
+    print(f"Facet lookup: {len(facet_lookup)} entries")
 
     # Group and sample ideas
     partition_ideas = group_ideas_by_partition(ideas_models)
@@ -287,6 +295,7 @@ def main():
                 codes=codes,
                 extraction_metadata=extraction_metadata,
                 config=config,
+                facet_lookup=facet_lookup,
             )
             print_prompt(pname, idea, prompt, prompt_idx, total_sampled)
 
