@@ -95,30 +95,25 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
 # File Loading (same pattern as step_3 debug_prompts.py)
 # =============================================================================
 
-PROMPT_MODE = "all"  # "pipeline", "assignment", or "all" (loads both)
+PROMPT_MODE = "all"  # "generation", "assignment", or "all" (loads both)
 
 
 def get_prompts_files() -> list[Path]:
     """Get prompts file path(s) for current config and PROMPT_MODE."""
     variable_key = generate_enhanced_variable_key([VAR_NAME], False, SAMPLE_SIZE)
     prompts_dir = project_root / "exports" / "prompts"
-    base = f"step5_categories_{VAR_NAME}_{variable_key}"
+    base = f"step4_classNcoder_{variable_key}"
 
-    if PROMPT_MODE == "pipeline":
-        return [prompts_dir / f"{base}_pipeline.json"]
+    if PROMPT_MODE == "generation":
+        return [prompts_dir / f"{base}_generation.json"]
     elif PROMPT_MODE == "assignment":
         return [prompts_dir / f"{base}_assignment.json"]
     else:  # "all"
         files = []
-        for suffix in ("_pipeline.json", "_assignment.json"):
+        for suffix in ("_generation.json", "_assignment.json"):
             f = prompts_dir / f"{base}{suffix}"
             if f.exists():
                 files.append(f)
-        # Fallback: legacy single file
-        if not files:
-            legacy = prompts_dir / f"{base}.json"
-            if legacy.exists():
-                files.append(legacy)
         return files
 
 

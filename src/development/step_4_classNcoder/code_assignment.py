@@ -221,9 +221,11 @@ class CodeAssigner:
 
         # 2. Build global facet lookup from P2 facet assignments
         self._facet_lookup: Dict[str, str] = {}
-        for mece_res in self._mece_results.values():
+        for name, mece_res in self._mece_results.items():
             if mece_res.facet_assignments:
                 self._facet_lookup.update(mece_res.facet_assignments)
+        if verbose:
+            print(f"  Facet lookup: {len(self._facet_lookup)} entries")
 
         # 3. Group all ideas by partition (domain)
         partition_ideas = self._group_ideas_by_partition()
@@ -431,19 +433,12 @@ class CodeAssigner:
                 else:
                     eta_str = "?"
 
-                ideas_done = sum(
-                    len(task_list[i]['ideas'])
-                    for i in range(total_batches)
-                    if results[i] is not None
-                )
-
                 failed_str = (
                     f", Failed: {self._stats['tasks_failed']}"
                     if self._stats['tasks_failed'] else ""
                 )
                 print(
-                    f"  Progress: {completed}/{total_batches} batches "
-                    f"({ideas_done}/{total_ideas} ideas), "
+                    f"  Progress: {completed}/{total_batches} ideas, "
                     f"Rate: {rate:.1f}/s, "
                     f"ETA: {eta_str}{failed_str}"
                 )
@@ -892,9 +887,15 @@ class CodeAssigner:
                         parent_cat = self._id_to_parent.get(cat_id)
 
                     idea_data = idea.model_dump()
+                    explicit_fields = {
+                        'assigned_category', 'category_confidence',
+                        'category_rationale', 'assigned_attribute',
+                        'partition_name', 'parent_category', 'facet',
+                    }
                     new_idea = CodeAssignedSubmodel(
                         **{k: v for k, v in idea_data.items()
-                           if k in CodeAssignedSubmodel.model_fields},
+                           if k in CodeAssignedSubmodel.model_fields
+                           and k not in explicit_fields},
                         assigned_category=(
                             resolved_label or None
                         ),
