@@ -1,5 +1,9 @@
 # Step 4 classNcoder — Work To Be Done
 
+### Prerequisites (in step 3)
+
+Jobs 2 and 3 below depend on step 3's Job 1 (audit dimension_data.py + MECE enforcement in domain prompts). See `step_3_ideaExtractor/work_to_be_done.md`.
+
 ---
 
 ## Job 1: Align prompt processing strategy with step 3 best practices
@@ -362,4 +366,4 @@ Run assignment with both approaches on the same dataset:
 
 ## Jobs completed
 
-(none yet)
+- **Job 1**: Aligned code_assignment.py with step 3 rate limiting strategy (commit `ea13df8`, 2026-03-17)
