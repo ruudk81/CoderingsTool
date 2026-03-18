@@ -87,7 +87,6 @@ from .prompts_exp import (
     CodeAssignmentBatch,
     CodeAttributeAssignment,
     CodeFromAttributes,
-    MECECode,
 )
 
 # Reuse Little's Law calculation from qualitative_researcher
@@ -230,32 +229,6 @@ class CodeAssigner:
         partition_ideas = self._group_ideas_by_partition()
         total_ideas = sum(len(ideas) for ideas in partition_ideas.values())
 
-        # 1d. Resolve codebook: __global__ → shared across all partitions
-        if "__global__" in self._mece_results:
-            global_mece = self._mece_results["__global__"]
-        else:
-            all_cats = []
-            seen_labels = set()
-            for mece_res in self._mece_results.values():
-                if mece_res and mece_res.categories:
-                    for cat in mece_res.categories:
-                        if cat.category_label not in seen_labels:
-                            seen_labels.add(cat.category_label)
-                            all_cats.append(cat)
-            total_labels = sum(
-                r.n_labels for r in self._mece_results.values() if r
-            )
-            global_mece = DomainResultModel(
-                partition_name="__global__",
-                n_labels=total_labels,
-                n_batches=0,
-                categories=all_cats,
-            )
-
-        self._resolved_mece = {
-            pname: global_mece for pname in partition_ideas
-        }
-
         if verbose:
             print(f"\n{'='*70}")
             print(f"CATEGORY ASSIGNMENT")
@@ -290,16 +263,14 @@ class CodeAssigner:
 
         # ── Phase 4: Build task list ─────────────────────────────────────────
 
+        if not self._codes:
+            if verbose:
+                print("  WARNING: No codes available, skipping assignment")
+            return []
+
         task_list = []
         for partition_name in sorted(partition_ideas.keys()):
             ideas = partition_ideas[partition_name]
-            mece_result = self._resolved_mece.get(partition_name)
-
-            if not mece_result or not mece_result.categories:
-                if verbose:
-                    print(f"  WARNING: No MECE categories for "
-                          f"'{partition_name}', skipping {len(ideas)} ideas")
-                continue
 
             for idea_idx, idea in enumerate(ideas):
                 task_list.append({
@@ -914,34 +885,20 @@ class CodeAssigner:
         return cat_id
 
     def _build_id_maps(self) -> None:
-        """Build ID-to-label and ID-to-parent maps for all leaf categories.
+        """Build ID-to-label maps from self._codes (ConsolidatedCode list).
 
-        Uses depth-first traversal matching the prompt numbering order.
         Populates self._id_to_label, self._id_to_parent, self._other_id,
         self._other_label.
         """
         id_to_label: Dict[str, str] = {}
         id_to_parent: Dict[str, str] = {}
-        counter = [0]
 
-        def _walk(cats: List[MECECode], parent_label: Optional[str] = None):
-            for cat in cats:
-                if cat.subcategories:
-                    _walk(cat.subcategories, cat.category_label)
-                else:
-                    counter[0] += 1
-                    cat_id = f"C{counter[0]}"
-                    id_to_label[cat_id] = cat.category_label
-                    if parent_label:
-                        id_to_parent[cat_id] = parent_label
-
-        # Use first resolved partition (all share same global codebook)
-        for mece_res in self._resolved_mece.values():
-            if mece_res and mece_res.categories:
-                _walk(mece_res.categories)
-                break
+        for i, code in enumerate(self._codes, 1):
+            cat_id = f"C{i}"
+            id_to_label[cat_id] = code.code_name
 
         # Add "other" category as final entry
+        counter = [len(self._codes)]
         if self._config.include_other_category:
             language = "Dutch"
             if self._extraction_metadata:
