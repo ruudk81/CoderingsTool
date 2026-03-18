@@ -64,6 +64,13 @@ from .prompts_exp import (
     build_attribute_discovery_prompt,
     AttributeDiscoveryResult,
     DiscoveredAttribute,
+    # P3 chunk consolidation
+    build_attribute_chunk_consolidation_prompt,
+    AttributeChunkConsolidatedResponse,
+    # P3.5: Attribute Consolidation (cross-facet within domain)
+    build_attribute_consolidation_prompt,
+    AttributeConsolidatedResponse,
+    ConsolidatedAttribute,
     # P4: Code Generation from Attributes
     build_code_from_attributes_prompt,
     CodeGenerationFromAttributesResult,
@@ -214,7 +221,7 @@ class QualitativeResearcher:
         self._max_tokens_codebook_consolidation = config.qr_max_tokens_codebook_consolidation
         self._facet_assignment_batch_size = config.facet_assignment_batch_size
 
-        # Batch sizing
+        # Batch sizing — P1 (facet discovery)
         self._batch_size_min = config.batch_size_min
         self._batch_size_max = config.batch_size_max
         self._target_batches = config.target_batches
@@ -222,9 +229,16 @@ class QualitativeResearcher:
         self._consolidation_chunk_size = config.consolidation_chunk_size
         self._consolidation_max_rounds = config.consolidation_max_rounds
 
+        # Batch sizing — P3 (attribute discovery)
+        self._p3_batch_size_min = config.p3_batch_size_min
+        self._p3_batch_size_max = config.p3_batch_size_max
+        self._p3_target_batches = config.p3_target_batches
+        self._p3_chunk_overlap = config.p3_chunk_overlap
+
         # Label source for observation formatting
         self._label_source = config.label_source
         self._label_prefix = config.label_prefix
+        self._include_valence = config.include_valence
 
         # Prompt capture (optional)
         self._prompt_printer = prompt_printer
@@ -449,13 +463,19 @@ class QualitativeResearcher:
         if verbose:
             print(f"\n  Phase 1: Per-domain Facet Discovery...")
 
-        facet_tasks = {
-            name: self._discover_partition_facets(
+        facet_tasks = {}
+        for name, mapping in sorted(label_mappings.items()):
+            # Build excluded domains: all other domains
+            excluded = [
+                (other_name, partition_contexts[other_name].partition_definition)
+                for other_name in partition_contexts
+                if other_name != name
+            ]
+            facet_tasks[name] = self._discover_partition_facets(
                 name, mapping.labels, partition_contexts[name],
                 prompt_context, verbose,
+                excluded_domains=excluded,
             )
-            for name, mapping in sorted(label_mappings.items())
-        }
 
         facet_results_list = await asyncio.gather(
             *facet_tasks.values(), return_exceptions=True
@@ -560,12 +580,19 @@ class QualitativeResearcher:
             # Collect observations (labels) from the ideas in this facet
             observations = []
             for idea in ideas:
-                label = format_label(idea, self._label_source, self._label_prefix)
+                label = format_label(idea, self._label_source, self._label_prefix, self._include_valence)
                 if label:
                     observations.append(label)
 
             if not observations:
                 continue
+
+            # Build excluded facets: all other facets in the same domain
+            excluded_f = [
+                (f.facet_name, f.facet_description)
+                for f in partition_facets.get(domain_name, [])
+                if f.facet_name != facet_name
+            ]
 
             task_key = f"{domain_name}::{facet_name}"
             attr_tasks[task_key] = self._discover_facet_attributes(
@@ -575,6 +602,7 @@ class QualitativeResearcher:
                 observations=observations,
                 part_context=partition_contexts[domain_name],
                 prompt_context=prompt_context,
+                excluded_facets=excluded_f,
             )
 
         attr_results_list = await asyncio.gather(
@@ -614,6 +642,76 @@ class QualitativeResearcher:
             print(f"  Phase 3 done in {t_phase3:.1f}s → "
                   f"{total_attrs} attributes across "
                   f"{len(attr_tasks)} facets")
+
+        # =================================================================
+        # PHASE 3.5 (P3.5): Cross-facet Attribute Consolidation per domain
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 3.5: Cross-facet Attribute Consolidation...")
+
+        t_phase35 = time.time()
+
+        consolidation_tasks = {}
+        for domain_name, facet_attrs in domain_facet_attributes.items():
+            # Only consolidate if domain has 2+ facets with attributes
+            if len(facet_attrs) < 2:
+                continue
+            consolidation_tasks[domain_name] = self._consolidate_domain_attributes(
+                domain_name=domain_name,
+                facet_attributes=facet_attrs,
+                partition_facets=partition_facets.get(domain_name, []),
+                part_context=partition_contexts[domain_name],
+                prompt_context=prompt_context,
+            )
+
+        if consolidation_tasks:
+            consolidation_results = await asyncio.gather(
+                *consolidation_tasks.values(), return_exceptions=True
+            )
+
+            for domain_name, result in zip(
+                consolidation_tasks.keys(), consolidation_results
+            ):
+                if isinstance(result, Exception):
+                    print(f"  P3.5 '{domain_name}' FAILED: "
+                          f"{type(result).__name__}: {result}")
+                    continue
+
+                # Rebuild facet -> [attributes] from consolidated result
+                before_count = sum(
+                    len(a) for a in domain_facet_attributes[domain_name].values()
+                )
+                new_facet_attrs: Dict[str, List[DiscoveredAttribute]] = {}
+                for attr in result:
+                    facet = attr.parent_facet
+                    if facet not in new_facet_attrs:
+                        new_facet_attrs[facet] = []
+                    # Convert ConsolidatedAttribute back to DiscoveredAttribute
+                    new_facet_attrs[facet].append(DiscoveredAttribute(
+                        attribute_name=attr.attribute_name,
+                        attribute_description=attr.attribute_description,
+                        parent_facet=attr.parent_facet,
+                        example_observations=attr.example_observations,
+                    ))
+
+                domain_facet_attributes[domain_name] = new_facet_attrs
+                partition_attributes[domain_name] = new_facet_attrs
+
+                if verbose:
+                    after_count = sum(len(a) for a in new_facet_attrs.values())
+                    print(f"    {domain_name}: {before_count} → "
+                          f"{after_count} attributes "
+                          f"({len(new_facet_attrs)} facets)")
+
+        t_phase35 = time.time() - t_phase35
+        if verbose:
+            total_attrs_after = sum(
+                len(attrs)
+                for facet_attrs in domain_facet_attributes.values()
+                for attrs in facet_attrs.values()
+            )
+            print(f"  Phase 3.5 done in {t_phase35:.1f}s → "
+                  f"{total_attrs_after} consolidated attributes")
 
         # =================================================================
         # PHASE 4 (P4): Per-domain Code Generation with valence split
@@ -723,6 +821,7 @@ class QualitativeResearcher:
         part_context: DomainContext,
         prompt_context: PromptContext,
         verbose: bool = False,
+        excluded_domains: Optional[List[tuple]] = None,
     ) -> tuple:
         """Run facet discovery + LLM consolidation for a single domain.
 
@@ -742,6 +841,7 @@ class QualitativeResearcher:
         t_discovery = time.time()
         chunk_facets = await self._run_facet_discovery(
             partition_name, batches, part_context, prompt_context,
+            excluded_domains=excluded_domains,
         )
         t_discovery = time.time() - t_discovery
 
@@ -757,6 +857,7 @@ class QualitativeResearcher:
             # Multiple chunks: LLM consolidation
             facets = await self._consolidate_facets(
                 partition_name, chunk_facets, part_context, prompt_context,
+                excluded_domains=excluded_domains,
             )
 
         if verbose:
@@ -772,6 +873,7 @@ class QualitativeResearcher:
         batches: List[List[str]],
         part_context: DomainContext,
         prompt_context: PromptContext,
+        excluded_domains: Optional[List[tuple]] = None,
     ) -> List[List[DiscoveredFacet]]:
         """Discover facets from chunked observations (concurrent).
 
@@ -791,6 +893,7 @@ class QualitativeResearcher:
                 partition_name=part_context.partition_name,
                 partition_definition=part_context.partition_definition,
                 observations=observations,
+                excluded_domains=excluded_domains,
             )
 
             # Prompt capture (first chunk per domain)
@@ -841,6 +944,7 @@ class QualitativeResearcher:
         chunk_facets: List[List[DiscoveredFacet]],
         part_context: DomainContext,
         prompt_context: PromptContext,
+        excluded_domains: Optional[List[tuple]] = None,
     ) -> List[DiscoveredFacet]:
         """Consolidate chunk-level facet discoveries into a single coherent set.
 
@@ -871,6 +975,7 @@ class QualitativeResearcher:
             partition_name=part_context.partition_name,
             partition_definition=part_context.partition_definition,
             chunk_results="\n\n".join(formatted_chunks),
+            excluded_domains=excluded_domains,
         )
 
         # Prompt capture
@@ -1003,9 +1108,241 @@ class QualitativeResearcher:
         observations: List[str],
         part_context: DomainContext,
         prompt_context: PromptContext,
+        excluded_facets: Optional[List[tuple]] = None,
     ) -> List[DiscoveredAttribute]:
-        """Discover attributes (L4) within a single facet."""
-        prompt = build_attribute_discovery_prompt(
+        """Discover attributes (L4) within a single facet.
+
+        Mirrors P1's chunking strategy: when observations exceed
+        batch_size_min, they are split into overlapping chunks, each
+        chunk is processed independently, and results are consolidated
+        via an LLM merge pass.
+        """
+        # Step 0: Create overlapping batches using P3-specific sizing
+        batches = self._create_batches(
+            observations,
+            size_min=self._p3_batch_size_min,
+            size_max=self._p3_batch_size_max,
+            target=self._p3_target_batches,
+            overlap=self._p3_chunk_overlap,
+        )
+        n_batches = len(batches)
+
+        # Step 1: ATTRIBUTE DISCOVERY (chunked, concurrent)
+        chunk_attributes = await self._run_attribute_discovery_chunks(
+            domain_name, facet_name, facet_description,
+            batches, part_context, prompt_context,
+            excluded_facets=excluded_facets,
+        )
+
+        # Count raw attributes across all chunks
+        n_raw = sum(len(ca) for ca in chunk_attributes)
+        non_empty_chunks = [ca for ca in chunk_attributes if ca]
+
+        # Step 2: Consolidation (mirrors P1.5 pattern)
+        if len(non_empty_chunks) <= 1:
+            # Single chunk or no results: use directly
+            attributes = non_empty_chunks[0] if non_empty_chunks else []
+        else:
+            # Multiple chunks: LLM consolidation
+            attributes = await self._consolidate_attribute_chunks(
+                domain_name, facet_name, facet_description,
+                chunk_attributes, part_context, prompt_context,
+                excluded_facets=excluded_facets,
+            )
+
+        if n_batches > 1:
+            print(f"      {domain_name}/{facet_name}: "
+                  f"{len(observations)} obs, {n_batches} chunks, "
+                  f"{n_raw} raw → {len(attributes)} consolidated")
+
+        return attributes
+
+    async def _run_attribute_discovery_chunks(
+        self,
+        domain_name: str,
+        facet_name: str,
+        facet_description: str,
+        batches: List[List[str]],
+        part_context: DomainContext,
+        prompt_context: PromptContext,
+        excluded_facets: Optional[List[tuple]] = None,
+    ) -> List[List[DiscoveredAttribute]]:
+        """Discover attributes from chunked observations (concurrent).
+
+        Returns per-chunk attribute lists (not flattened) so the consolidation
+        step can show chunk provenance.
+        """
+        results = [None] * len(batches)
+
+        async def process_chunk(chunk_idx: int, observations: List[str]):
+            prompt = build_attribute_discovery_prompt(
+                survey_question=prompt_context.survey_question,
+                language=prompt_context.language,
+                dataset_context_section=prompt_context.dataset_context_section,
+                dimension_def=prompt_context.dimension_def,
+                dimension_name=prompt_context.dimension_name,
+                dimension_description=prompt_context.dimension_description,
+                domain_name=domain_name,
+                domain_definition=part_context.partition_definition,
+                facet_name=facet_name,
+                facet_description=facet_description,
+                observations=observations,
+                excluded_facets=excluded_facets,
+            )
+
+            # Prompt capture (first chunk per facet)
+            gate_key = f"qr_attributes_{domain_name}_{facet_name}"
+            if (self._prompt_printer is not None
+                    and chunk_idx == 0
+                    and gate_key not in self._captured_gates):
+                self._prompt_printer.capture_prompt(
+                    step_name="qualitative_researcher",
+                    utility_name="QualitativeResearcher",
+                    prompt_content=prompt,
+                    prompt_type="attribute_discovery",
+                    metadata={
+                        "model": self._model_p3,
+                        "language": prompt_context.language,
+                        "partition_name": domain_name,
+                        "facet_name": facet_name,
+                        "n_observations": len(observations),
+                        "batch_number": chunk_idx + 1,
+                        "total_batches": len(batches),
+                        "dimension_name": prompt_context.dimension_name,
+                    }
+                )
+                self._captured_gates.add(gate_key)
+
+            try:
+                result = await self._llm_call(
+                    prompt, AttributeDiscoveryResult,
+                    self._max_tokens_attribute_discovery,
+                    model=self._model_p3,
+                )
+                results[chunk_idx] = result.attributes
+            except Exception as e:
+                print(f"    ATTRIBUTE DISCOVERY '{domain_name}/{facet_name}' "
+                      f"chunk {chunk_idx + 1} FAILED: "
+                      f"{type(e).__name__}: {e}")
+                results[chunk_idx] = []
+
+        tasks = [
+            process_chunk(i, batch)
+            for i, batch in enumerate(batches)
+        ]
+        await asyncio.gather(*tasks)
+        return results
+
+    async def _consolidate_attribute_chunks(
+        self,
+        domain_name: str,
+        facet_name: str,
+        facet_description: str,
+        chunk_attributes: List[List[DiscoveredAttribute]],
+        part_context: DomainContext,
+        prompt_context: PromptContext,
+        excluded_facets: Optional[List[tuple]] = None,
+    ) -> List[DiscoveredAttribute]:
+        """Consolidate chunk-level attribute discoveries into a single set.
+
+        Mirrors _consolidate_facets() pattern.
+        """
+        # Format chunk results for the consolidation prompt
+        formatted_chunks = []
+        for idx, attributes in enumerate(chunk_attributes):
+            if not attributes:
+                continue
+            attr_lines = []
+            for a in attributes:
+                examples = "; ".join(a.example_observations[:3])
+                attr_lines.append(
+                    f'    - "{a.attribute_name}" — {a.attribute_description} '
+                    f'(examples: {examples})'
+                )
+            formatted_chunks.append(
+                f"Chunk {idx + 1}:\n  Attributes:\n" + "\n".join(attr_lines)
+            )
+
+        prompt = build_attribute_chunk_consolidation_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_def=prompt_context.dimension_def,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            domain_name=domain_name,
+            facet_name=facet_name,
+            facet_description=facet_description,
+            chunk_results="\n\n".join(formatted_chunks),
+            excluded_facets=excluded_facets,
+        )
+
+        # Prompt capture
+        gate_key = f"qr_attribute_chunk_consolidation_{domain_name}_{facet_name}"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="attribute_chunk_consolidation",
+                metadata={
+                    "model": self._model_p1_5,
+                    "language": prompt_context.language,
+                    "domain_name": domain_name,
+                    "facet_name": facet_name,
+                    "n_chunks": len([c for c in chunk_attributes if c]),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        result = await self._llm_call(
+            prompt, AttributeChunkConsolidatedResponse,
+            self._max_tokens_attribute_discovery,
+            temperature=0.0, model=self._model_p1_5,
+        )
+        return result.attributes
+
+    # =========================================================================
+    # PHASE 3.5 (P3.5): CROSS-FACET ATTRIBUTE CONSOLIDATION
+    # =========================================================================
+
+    async def _consolidate_domain_attributes(
+        self,
+        domain_name: str,
+        facet_attributes: Dict[str, List[DiscoveredAttribute]],
+        partition_facets: List[DiscoveredFacet],
+        part_context: DomainContext,
+        prompt_context: PromptContext,
+    ) -> List[ConsolidatedAttribute]:
+        """Consolidate attributes across facets within a domain.
+
+        Takes all facets and their attributes for one domain, deduplicates
+        overlapping attributes, and assigns each to its best-fitting facet.
+        """
+        # Format facet->attributes block for the prompt
+        lines = []
+        for facet_name, attributes in sorted(facet_attributes.items()):
+            # Find facet description
+            facet_desc = ""
+            for f in partition_facets:
+                if f.facet_name == facet_name:
+                    facet_desc = f.facet_description
+                    break
+
+            lines.append(f'Facet: "{facet_name}" — {facet_desc}')
+            for attr in attributes:
+                examples = "; ".join(attr.example_observations[:2])
+                lines.append(
+                    f'  - "{attr.attribute_name}" — {attr.attribute_description} '
+                    f'(examples: {examples})'
+                )
+            lines.append("")  # blank line between facets
+
+        facet_attributes_block = "\n".join(lines)
+
+        prompt = build_attribute_consolidation_prompt(
             survey_question=prompt_context.survey_question,
             language=prompt_context.language,
             dataset_context_section=prompt_context.dataset_context_section,
@@ -1014,41 +1351,36 @@ class QualitativeResearcher:
             dimension_description=prompt_context.dimension_description,
             domain_name=domain_name,
             domain_definition=part_context.partition_definition,
-            facet_name=facet_name,
-            facet_description=facet_description,
-            observations=observations,
+            facet_attributes_block=facet_attributes_block,
         )
 
         # Prompt capture
-        gate_key = f"qr_attributes_{domain_name}_{facet_name}"
+        gate_key = f"qr_attribute_consolidation_{domain_name}"
         if (self._prompt_printer is not None
                 and gate_key not in self._captured_gates):
             self._prompt_printer.capture_prompt(
                 step_name="qualitative_researcher",
                 utility_name="QualitativeResearcher",
                 prompt_content=prompt,
-                prompt_type="attribute_discovery",
+                prompt_type="attribute_consolidation",
                 metadata={
                     "model": self._model_p3,
                     "language": prompt_context.language,
-                    "partition_name": domain_name,
-                    "facet_name": facet_name,
-                    "n_observations": len(observations),
-                    "dimension_name": prompt_context.dimension_name,
+                    "domain_name": domain_name,
+                    "n_facets": len(facet_attributes),
+                    "n_attributes_before": sum(
+                        len(a) for a in facet_attributes.values()
+                    ),
                 }
             )
             self._captured_gates.add(gate_key)
 
-        try:
-            result = await self._llm_call(
-                prompt, AttributeDiscoveryResult, self._max_tokens_attribute_discovery,
-                model=self._model_p3,
-            )
-            return result.attributes
-        except Exception as e:
-            print(f"    ATTRIBUTE DISCOVERY '{domain_name}/{facet_name}' FAILED: "
-                  f"{type(e).__name__}: {e}")
-            return []
+        result = await self._llm_call(
+            prompt, AttributeConsolidatedResponse,
+            self._max_tokens_attribute_discovery,
+            model=self._model_p3,
+        )
+        return result.attributes
 
     # =========================================================================
     # PHASE 4 (P4): CODE GENERATION FROM ATTRIBUTES
@@ -1222,26 +1554,47 @@ class QualitativeResearcher:
     # HELPERS
     # =========================================================================
 
-    def _compute_batch_size(self, n_labels: int) -> int:
-        """Compute adaptive batch size."""
-        if n_labels <= self._batch_size_min:
-            return n_labels
-        ideal = max(n_labels // self._target_batches, 1)
-        return max(self._batch_size_min, min(ideal, self._batch_size_max))
+    def _compute_batch_size(
+        self, n_labels: int,
+        *, size_min: Optional[int] = None, size_max: Optional[int] = None,
+        target: Optional[int] = None,
+    ) -> int:
+        """Compute adaptive batch size.
 
-    def _create_batches(self, labels: List[str]) -> List[List[str]]:
+        Accepts optional overrides; defaults to P1 config values.
+        """
+        bmin = size_min if size_min is not None else self._batch_size_min
+        bmax = size_max if size_max is not None else self._batch_size_max
+        tgt = target if target is not None else self._target_batches
+
+        if n_labels <= bmin:
+            return n_labels
+        ideal = max(n_labels // tgt, 1)
+        return max(bmin, min(ideal, bmax))
+
+    def _create_batches(
+        self, labels: List[str],
+        *, size_min: Optional[int] = None, size_max: Optional[int] = None,
+        target: Optional[int] = None, overlap: Optional[float] = None,
+    ) -> List[List[str]]:
         """Split labels into overlapping batches.
 
         Each batch overlaps with the previous by chunk_overlap * batch_size
         labels. First batch starts at 0, subsequent batches step forward
         by (1 - overlap) * batch_size.
+
+        Accepts optional overrides; defaults to P1 config values.
         """
-        batch_size = self._compute_batch_size(len(labels))
+        chunk_overlap = overlap if overlap is not None else self._chunk_overlap
+
+        batch_size = self._compute_batch_size(
+            len(labels), size_min=size_min, size_max=size_max, target=target,
+        )
         if len(labels) <= batch_size:
             return [labels]
 
-        overlap = int(batch_size * self._chunk_overlap)
-        step = max(batch_size - overlap, 1)
+        ovlp = int(batch_size * chunk_overlap)
+        step = max(batch_size - ovlp, 1)
 
         batches = []
         i = 0

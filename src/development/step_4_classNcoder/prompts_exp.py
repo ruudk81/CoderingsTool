@@ -15,7 +15,7 @@ Organized in pipeline processing order:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -33,6 +33,26 @@ def _extract_key_idea(instruction: str) -> str:
     if idx == -1:
         return instruction.strip()
     return instruction[idx + len(marker):].strip().rstrip(".")
+
+
+def _build_exclusion_block(
+    items: List[Tuple[str, str]],
+    tag_name: str,
+) -> str:
+    """Build an XML-tagged exclusion block for domains or facets.
+
+    Args:
+        items: list of (name, definition) tuples to exclude.
+        tag_name: XML tag name, e.g. 'excluded_domains' or 'excluded_facets'.
+    """
+    if not items:
+        return ""
+    lines = [f"- {name} — {definition}" for name, definition in items]
+    content = "\n".join(lines)
+    return (
+        f"\nYou must NOT include categories that belong to these excluded areas:\n"
+        f"<{tag_name}>\n{content}\n</{tag_name}>\n"
+    )
 
 
 def build_dimension_context_block(
@@ -124,79 +144,122 @@ def build_facet_discovery_prompt(
     partition_name: str,
     partition_definition: str,
     observations: List[str],
+    excluded_domains: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
     """Discover facets (L3) from a chunk of observations within a domain."""
     observations_block = "\n".join(
         f"{i}. {obs}" for i, obs in enumerate(observations, 1)
     )
 
-    taxonomy_block = build_dimension_context_block(
-        dimension_def=dimension_def,
-        dimension_name=dimension_name,
-        dimension_description=dimension_description,
-        domain_name=partition_name,
-        domain_definition=partition_definition,
-    )
-
-    # Dimension-specific facet guidance
+    # Dimension-specific guidance
     if dimension_def:
         rules = dimension_def.prompt_rules
-        facet_question = rules.facet_diagnostic
         facet_guidance = rules.facet_instruction
+        facet_key_idea = _extract_key_idea(rules.facet_instruction)
+        facet_question_stem = rules.facet_diagnostic.rstrip("?")
+        attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
+        noun_phrase = dimension_def.noun_phrase_descriptor
+        domain_key_idea = _extract_key_idea(rules.domain_instruction)
+
+        # Build worked example
+        example_block = ""
+        if dimension_def.examples:
+            ex = dimension_def.examples[0]
+            example_block = f"""
+Example (from a different survey):
+  Survey: {ex.survey_context}
+  Response: "{ex.response}"
+  Domain: {ex.domain}
+  Facet: {ex.facet}
+  Instance: {ex.instance}
+"""
     else:
-        facet_question = "What specific aspect or viewpoint does this represent?"
         facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
+        facet_key_idea = "the analytical lens applied to the subject"
+        facet_question_stem = "What specific aspect or viewpoint does this represent"
+        attribute_key_idea = "the specific observable property being described"
+        noun_phrase = dimension_name
+        domain_key_idea = "the subject the statement refers to"
+        example_block = ""
 
-    return f"""You are assisting with qualitative analysis.
+    excluded_block = _build_exclusion_block(
+        excluded_domains or [], "excluded_domains"
+    )
 
-The observations below are derived from responses to a survey question, grouped within a specified domain.
+    return f"""You are assisting with qualitative analysis of survey responses. Your task is to identify the fewest recurring facets that provide full coverage of a set of observations.
 
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
+All of your output must be in this language:
+<language>
+{language}
+</language>
 
-{taxonomy_block}
-
-<facet_level_guidance>
-Target abstraction level: FACET (L3)
-
-{facet_guidance}
-
-Your goal is to identify the **fewest meaningful facets** that explain the observations within the domain.
-
-Guidelines:
-- Prefer FEWER and BROADER facets rather than many narrow ones
-- Ensure each facet represents a distinct experiential dimension
-- Merge facets whenever they could belong to the same broader viewpoint
-- If two facets differ only by specific examples, they should be merged
-- Do NOT create facets for observations outside the domain: {partition_name}
-</facet_level_guidance>
-
-## TASK
-Identify recurring facets (L3) within the domain "{partition_name}" by answering: {facet_question}
-
-<instructions>
-Step 1 — Mentally cluster similar observations together (internal reasoning only).
-Step 2 — Identify the main facets through which the entity is described within this domain.
-Facets should describe experiential dimensions, not specific examples or items.
-Step 3 — Group observations under these facets.
-Step 4 — Organize facets into dominant facets and minor facets.
-
-Dominant facets = facets supported by multiple observations and representing recurring patterns.
-Minor facets = facets supported by only 1–2 observations.
-
-Only return dominant facets.
-</instructions>
-
+You are working within this domain:
+<domain>
+{partition_name}  
+</domain>
+{excluded_block}
+Here are the observations you need to analyze:
 <observations>
 {observations_block}
 </observations>
 
-All output MUST be in {language}.
+<facet_definition_guidance>
+Taxonomy levels for this dimension:
+- Dimension (L1): {noun_phrase}
+- Domain (L2): {domain_key_idea}
+- Facet (L3): {facet_key_idea}
+- Attribute (L4): {attribute_key_idea}
+{example_block}
+Target abstraction level: FACET (L3)
 
-Provide output as valid JSON following the response schema provided."""
+{facet_guidance}
+
+Each facet must be:
+- **Ontologically distinct** — no two facets may share conceptual space. A facet must not be a subset of another facet, and two facets must not be two different lenses on the same phenomenon.
+- **Semantically distant** — someone coding a response should clearly know which facet applies, with no "could go either way" situations.
+- Focused on ONE specific aspect (not a compound list of multiple concerns)
+- A natural grouping of related phenomena within the domain
+- Strictly within the boundaries of the included domain described above
+</facet_definition_guidance>
+
+<task_instructions>
+Follow these steps to complete your analysis:
+
+**Step 1: Cluster observations**
+Mentally group similar observations together. Look for recurring patterns and themes. Note which observations share the same {facet_key_idea}.
+
+**Step 2: Identify candidate facets**
+Based on your clustering, identify potential facets. For each candidate facet, write:
+- The facet name
+- {facet_question_stem} for this facet
+- Which observation numbers support it
+- Whether it is ontologically distinct from other candidates
+
+**Step 3: Distinguish dominant from minor facets**
+- Dominant facets = supported by multiple observations (3+) and represent recurring patterns
+- Minor facets = supported by only 1-2 observations
+
+Only dominant facets should be included in your final output.
+
+**Step 4: Verify distinctness**
+Check each pair of dominant facets to ensure they are:
+- Ontologically distinct (not overlapping in conceptual space)
+- Semantically distant (a coder would clearly know which to choose)
+- Not two lenses on the same phenomenon
+
+If two facets fail this test, consolidate them into one.
+
+**Step 5: Provide final output**
+After your analysis, provide output as valid JSON following the response schema provided.
+</task_instructions>
+
+<key_reminders>
+- Return ONLY dominant facets (3+ observations)
+- Ensure facets are ontologically distinct and semantically distant
+- Each facet should capture ONE {facet_key_idea}, not multiple
+- All facets must fall within the included domain, not the excluded domains
+- All output must be in {language}
+</key_reminders>"""
 
 
 # =============================================================================
@@ -221,47 +284,79 @@ def build_facet_consolidation_prompt(
     partition_name: str,
     partition_definition: str,
     chunk_results: str,
+    excluded_domains: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
     """Consolidate chunk-level facet discoveries into a single coherent set."""
-    taxonomy_block = build_dimension_context_block(
-        dimension_def=dimension_def,
-        dimension_name=dimension_name,
-        dimension_description=dimension_description,
-        domain_name=partition_name,
-        domain_definition=partition_definition,
-    )
-
-    # Dimension-specific facet guidance
+    # Dimension-specific guidance
     if dimension_def:
-        facet_question = dimension_def.prompt_rules.facet_diagnostic
-        facet_guidance = dimension_def.prompt_rules.facet_instruction
+        rules = dimension_def.prompt_rules
+        facet_guidance = rules.facet_instruction
+        facet_key_idea = _extract_key_idea(rules.facet_instruction)
+        attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
+        noun_phrase = dimension_def.noun_phrase_descriptor
+        domain_key_idea = _extract_key_idea(rules.domain_instruction)
+
+        example_block = ""
+        if dimension_def.examples:
+            ex = dimension_def.examples[0]
+            example_block = f"""
+Example (from a different survey):
+  Survey: {ex.survey_context}
+  Response: "{ex.response}"
+  Domain: {ex.domain}
+  Facet: {ex.facet}
+  Instance: {ex.instance}
+"""
     else:
-        facet_question = "What specific aspect or viewpoint does this represent?"
         facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
+        facet_key_idea = "the analytical lens applied to the subject"
+        attribute_key_idea = "the specific observable property being described"
+        noun_phrase = dimension_name
+        domain_key_idea = "the subject the statement refers to"
+        example_block = ""
+
+    excluded_block = _build_exclusion_block(
+        excluded_domains or [], "excluded_domains"
+    )
 
     return f"""You are a taxonomy consolidation specialist.
 Your task is to merge multiple chunk-level facet analyses into a single, coherent set of facets for the domain "{partition_name}".
 
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
+All of your output must be in this language:
+<language>
+{language}
+</language>
 
-{taxonomy_block}
-
-<facet_level_guidance>
-{facet_guidance}
-A facet answers the question: {facet_question}
-</facet_level_guidance>
-
-Here are the chunk-level facet analyses you need to consolidate:
+You are working within this domain:
+<domain>
+{partition_name} — {partition_definition}
+</domain>
+{excluded_block}
+Here are the facets you need to consolidate:
 <chunk_level_analyses>
 {chunk_results}
 </chunk_level_analyses>
 
-## YOUR TASK
+<facet_definition_guidance>
+Taxonomy levels for this dimension:
+- Dimension (L1): {noun_phrase}
+- Domain (L2): {domain_key_idea}
+- Facet (L3): {facet_key_idea}
+- Attribute (L4): {attribute_key_idea}
+{example_block}
+Target abstraction level: FACET (L3)
 
+{facet_guidance}
+
+Each facet must be:
+- **Ontologically distinct** — no two facets may share conceptual space. A facet must not be a subset of another facet, and two facets must not be two different lenses on the same phenomenon.
+- **Semantically distant** — someone coding a response should clearly know which facet applies, with no "could go either way" situations.
+- Focused on ONE specific aspect (not a compound list of multiple concerns)
+- A natural grouping of related phenomena within the domain
+- Strictly within the boundaries of the included domain described above
+</facet_definition_guidance>
+
+## YOUR TASK
 Consolidate these chunk-level facet lists into the fewest mutually exclusive facets needed for full coverage within the domain "{partition_name}".
 
 Important consolidation principles:
@@ -273,11 +368,11 @@ Important consolidation principles:
 - All facet names and descriptions must be in {language}
 
 <scratchpad>
-In your scratchpad:
+Follow these steps to complete your analysis:
 1. List all unique facets that appear across the chunk-level analyses
 2. Identify groups of facets that have conceptual overlap or proximity
 3. For each group, determine an appropriate consolidated facet name and description
-4. Check that your consolidated facets are mutually exclusive
+4. Check that your consolidated facets are mutually exclusive — for each pair ask: "Could an observation plausibly belong to both?" If yes, merge them.
 5. Verify that your consolidated facets provide complete coverage of the original set
 </scratchpad>
 
@@ -336,6 +431,16 @@ def _build_facet_codebook_block(
     return "\n\n".join(lines)
 
 
+def _valence_display(idea) -> str:
+    """Map idea.valence to a readable tag for prompts."""
+    val = str(getattr(idea, 'valence', '') or '0').strip()
+    if val in ('1', '+1', 'positive'):
+        return '[+]'
+    if val in ('-1', 'negative'):
+        return '[-]'
+    return '[0]'
+
+
 def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
     """Format ideas for facet assignment prompt."""
     lines = []
@@ -343,8 +448,10 @@ def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
         interpretation = getattr(idea, 'interpretation', '') or ''
         abstraction = getattr(idea, 'abstraction', '') or ''
         instance = getattr(idea, 'instance', '') or ''
+        valence = _valence_display(idea)
         lines.append(
             f"- idea_id: {idea.idea_id}\n"
+            f"  valence: {valence}\n"
             f"  instance: {instance}\n"
             f"  interpretation: {interpretation}\n"
             f"  abstraction: {abstraction}"
@@ -461,64 +568,375 @@ def build_attribute_discovery_prompt(
     facet_name: str,
     facet_description: str,
     observations: List[str],
+    excluded_facets: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
     """Discover concrete attributes (L4) within a facet."""
     observations_block = "\n".join(
         f"{i}. {obs}" for i, obs in enumerate(observations, 1)
     )
 
-    taxonomy_block = build_dimension_context_block(
-        dimension_def=dimension_def,
-        dimension_name=dimension_name,
-        dimension_description=dimension_description,
-        domain_name=domain_name,
-        domain_definition=domain_definition,
-    )
-
-    # Dimension-specific attribute guidance
+    # Dimension-specific guidance
     if dimension_def:
-        attribute_guidance = dimension_def.prompt_rules.attribute_instruction
+        rules = dimension_def.prompt_rules
+        attribute_guidance = rules.attribute_instruction
+        attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
+        attribute_question_stem = rules.attribute_diagnostic.rstrip("?")
+        facet_key_idea = _extract_key_idea(rules.facet_instruction)
+        noun_phrase = dimension_def.noun_phrase_descriptor
+        domain_key_idea = _extract_key_idea(rules.domain_instruction)
+
+        example_block = ""
+        if dimension_def.examples:
+            ex = dimension_def.examples[0]
+            example_block = f"""
+Example (from a different survey):
+  Survey: {ex.survey_context}
+  Response: "{ex.response}"
+  Domain: {ex.domain}
+  Facet: {ex.facet}
+  Instance: {ex.instance}
+"""
     else:
         attribute_guidance = (
             "An attribute identifies the specific observable property or feature being described. "
             "It is a named property — not a verbatim span from the response."
         )
+        attribute_key_idea = "the specific observable property being described"
+        attribute_question_stem = "What specific feature or property is described"
+        facet_key_idea = "the analytical lens applied to the subject"
+        noun_phrase = dimension_name
+        domain_key_idea = "the subject the statement refers to"
+        example_block = ""
+
+    excluded_block = _build_exclusion_block(
+        excluded_facets or [], "excluded_facets"
+    )
 
     return f"""You are assisting with qualitative analysis.
 
 The observations below all belong to a specific facet within a domain. Your task is to identify the concrete attributes (L4) within this facet.
 
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
+All of your output must be in this language:
+<language>
+{language}
+</language>
 
-{taxonomy_block}
-
-<facet_context>
-Facet: {facet_name} — {facet_description}
-</facet_context>
-
-<attribute_level_guidance>
-Target abstraction level: ATTRIBUTE (L4)
-
-An attribute is a concrete, observable property within the facet "{facet_name}".
-{attribute_guidance}
-
-Guidelines:
-- Attributes should be MORE SPECIFIC than the facet — they name distinct observable phenomena within it
-- Each attribute should represent a clearly different concrete signal
-- Merge attributes that express the same phenomenon in different words
-- Aim for 3-10 attributes per facet (depending on the variety of observations)
-</attribute_level_guidance>
-
-## TASK
-Within the facet "{facet_name}" ({facet_description}), identify the distinct concrete attributes present in the observations.
-
+You are working within this facet:
+<facet>
+{facet_name} — {facet_description}
+</facet>
+{excluded_block}
+Here are the observations you need to analyze:
 <observations>
 {observations_block}
 </observations>
+
+<attribute_definition_guidance>
+Taxonomy levels for this dimension:
+- Dimension (L1): {noun_phrase}
+- Domain (L2): {domain_key_idea}
+- Facet (L3): {facet_key_idea}
+- Attribute (L4): {attribute_key_idea}
+{example_block}
+Target abstraction level: ATTRIBUTE (L4)
+
+{attribute_guidance}
+
+Each attribute must be:
+- **Ontologically distinct** — no two attributes may share conceptual space. An attribute must not be a subset of another attribute, and two attributes must not be two different lenses on the same phenomenon.
+- **Semantically distant** — someone coding a response should clearly know which attribute applies, with no "could go either way" situations.
+- Focused on ONE specific aspect (not a compound list of multiple concerns)
+- A natural grouping of related phenomena within the facet
+- Strictly within the boundaries of the included facet described above
+</attribute_definition_guidance>
+
+<task_instructions>
+Follow these steps to complete your analysis:
+
+**Step 1: Cluster observations**
+Mentally group similar observations together. Look for recurring patterns and themes. Note which observations share the same {attribute_key_idea}.
+
+**Step 2: Identify candidate attributes**
+Based on your clustering, identify potential attributes. For each candidate attribute, write:
+- The attribute name
+- {attribute_question_stem} for this attribute
+- Which observation numbers support it
+- Whether it is ontologically distinct from other candidates
+
+**Step 3: Verify distinctness**
+Ensure that each attribute is:
+- Ontologically distinct (not overlapping in conceptual space)
+- Semantically distant (a coder would clearly know which to choose)
+- Not two lenses on the same phenomenon
+
+If two attributes fail this test, consolidate them into one.
+
+**Step 4: Provide final output**
+After your analysis, provide output as valid JSON following the response schema provided.
+</task_instructions>
+
+<key_reminders>
+- Ensure attributes are ontologically distinct and semantically distant
+- Each attribute should capture ONE {attribute_key_idea}, not multiple
+- All attributes must fall within the included facet, not the excluded facets
+- All output must be in {language}
+</key_reminders>"""
+
+
+# =============================================================================
+# §4.25 ATTRIBUTE CHUNK CONSOLIDATION — merge chunk-level attributes within facet
+# =============================================================================
+
+class AttributeChunkConsolidatedResponse(BaseModel):
+    """Consolidated attributes after merging chunk-level discoveries within a facet."""
+    attributes: List[DiscoveredAttribute] = Field(
+        ..., description="Fewest mutually exclusive attributes needed for full coverage, consolidated from all chunks"
+    )
+
+
+def build_attribute_chunk_consolidation_prompt(
+    *,
+    survey_question: str,
+    language: str,
+    dataset_context_section: str,
+    dimension_def: Optional[DimensionDefinition],
+    dimension_name: str,
+    dimension_description: str,
+    domain_name: str,
+    facet_name: str,
+    facet_description: str,
+    chunk_results: str,
+    excluded_facets: Optional[List[Tuple[str, str]]] = None,
+) -> str:
+    """Consolidate chunk-level attribute discoveries into a single coherent set within a facet."""
+    # Dimension-specific guidance
+    if dimension_def:
+        rules = dimension_def.prompt_rules
+        attribute_guidance = rules.attribute_instruction
+        attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
+        facet_key_idea = _extract_key_idea(rules.facet_instruction)
+        noun_phrase = dimension_def.noun_phrase_descriptor
+        domain_key_idea = _extract_key_idea(rules.domain_instruction)
+
+        example_block = ""
+        if dimension_def.examples:
+            ex = dimension_def.examples[0]
+            example_block = f"""
+Example (from a different survey):
+  Survey: {ex.survey_context}
+  Response: \"{ex.response}\"
+  Domain: {ex.domain}
+  Facet: {ex.facet}
+  Instance: {ex.instance}
+"""
+    else:
+        attribute_guidance = (
+            "An attribute identifies the specific observable property or feature being described. "
+            "It is a named property — not a verbatim span from the response."
+        )
+        attribute_key_idea = "the specific observable property being described"
+        facet_key_idea = "the analytical lens applied to the subject"
+        noun_phrase = dimension_name
+        domain_key_idea = "the subject the statement refers to"
+        example_block = ""
+
+    excluded_block = _build_exclusion_block(
+        excluded_facets or [], "excluded_facets"
+    )
+
+    return f"""You are a taxonomy consolidation specialist.
+Your task is to merge multiple chunk-level attribute analyses into a single, coherent set of attributes for the facet \"{facet_name}\" within domain \"{domain_name}\".
+
+All of your output must be in this language:
+<language>
+{language}
+</language>
+
+You are working within this facet:
+<facet>
+{facet_name} — {facet_description}
+</facet>
+{excluded_block}
+Here are the attributes you need to consolidate:
+<chunk_level_analyses>
+{chunk_results}
+</chunk_level_analyses>
+
+<attribute_definition_guidance>
+Taxonomy levels for this dimension:
+- Dimension (L1): {noun_phrase}
+- Domain (L2): {domain_key_idea}
+- Facet (L3): {facet_key_idea}
+- Attribute (L4): {attribute_key_idea}
+{example_block}
+Target abstraction level: ATTRIBUTE (L4)
+
+{attribute_guidance}
+
+Each attribute must be:
+- **Ontologically distinct** — no two attributes may share conceptual space. An attribute must not be a subset of another attribute, and two attributes must not be two different lenses on the same phenomenon.
+- **Semantically distant** — someone coding a response should clearly know which attribute applies, with no \"could go either way\" situations.
+- Focused on ONE specific aspect (not a compound list of multiple concerns)
+- A natural grouping of related phenomena within the facet
+- Strictly within the boundaries of the included facet described above
+</attribute_definition_guidance>
+
+## YOUR TASK
+Consolidate these chunk-level attribute lists into the fewest mutually exclusive attributes needed for full coverage within the facet \"{facet_name}\".
+
+Important consolidation principles:
+- MERGE attributes that have conceptual overlap, near-equivalence, or represent subcategories of a broader attribute
+- ENSURE mutual exclusivity: no two attributes in your final list should overlap in meaning
+- MAINTAIN full coverage: the consolidated attributes must collectively cover all concepts present in the chunk-level analyses
+- MINIMIZE the total number of attributes while preserving meaningful distinctions
+- When merging attributes, pick the most representative example observations from across the merged set (2-3 examples)
+- All attribute names and descriptions must be in {language}
+
+<scratchpad>
+Follow these steps to complete your analysis:
+1. List all unique attributes that appear across the chunk-level analyses
+2. Identify groups of attributes that have conceptual overlap or proximity
+3. For each group, determine an appropriate consolidated attribute name and description
+4. Check that your consolidated attributes are mutually exclusive — for each pair ask: \"Could an observation plausibly belong to both?\" If yes, merge them.
+5. Verify that your consolidated attributes provide complete coverage of the original set
+</scratchpad>
+
+All output MUST be in {language}.
+
+Provide output as valid JSON following the response schema provided."""
+
+
+# =============================================================================
+# §4.5 ATTRIBUTE CONSOLIDATION (P3.5) — cross-facet dedup within domain
+# =============================================================================
+
+class ConsolidatedAttribute(BaseModel):
+    """An attribute assigned to its best-fitting facet after cross-facet consolidation."""
+    attribute_name: str = Field(
+        ..., description="Short descriptive name for the attribute (2-5 words)"
+    )
+    attribute_description: str = Field(
+        ..., description="What this attribute captures (1-2 sentences)"
+    )
+    parent_facet: str = Field(
+        ..., description="The facet name this attribute best belongs to"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-3 representative observations from the input"
+    )
+
+
+class AttributeConsolidatedResponse(BaseModel):
+    """Consolidated attributes after cross-facet deduplication within a domain."""
+    attributes: List[ConsolidatedAttribute] = Field(
+        ..., description="Deduplicated attributes, each assigned to its best-fitting facet"
+    )
+
+
+def build_attribute_consolidation_prompt(
+    *,
+    survey_question: str,
+    language: str,
+    dataset_context_section: str,
+    dimension_def: Optional[DimensionDefinition],
+    dimension_name: str,
+    dimension_description: str,
+    domain_name: str,
+    domain_definition: str,
+    facet_attributes_block: str,
+) -> str:
+    """Consolidate attributes across facets within a domain into a MECE set.
+
+    P3.5: after P3 discovers attributes per facet independently, this step
+    deduplicates overlapping attributes across facets and assigns each
+    surviving attribute to its best-fitting facet.
+    """
+    # Dimension-specific guidance
+    if dimension_def:
+        rules = dimension_def.prompt_rules
+        attribute_guidance = rules.attribute_instruction
+        attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
+        facet_key_idea = _extract_key_idea(rules.facet_instruction)
+        noun_phrase = dimension_def.noun_phrase_descriptor
+        domain_key_idea = _extract_key_idea(rules.domain_instruction)
+
+        example_block = ""
+        if dimension_def.examples:
+            ex = dimension_def.examples[0]
+            example_block = f"""
+Example (from a different survey):
+  Survey: {ex.survey_context}
+  Response: "{ex.response}"
+  Domain: {ex.domain}
+  Facet: {ex.facet}
+  Instance: {ex.instance}
+"""
+    else:
+        attribute_guidance = (
+            "An attribute identifies the specific observable property or feature being described. "
+            "It is a named property — not a verbatim span from the response."
+        )
+        attribute_key_idea = "the specific observable property being described"
+        facet_key_idea = "the analytical lens applied to the subject"
+        noun_phrase = dimension_name
+        domain_key_idea = "the subject the statement refers to"
+        example_block = ""
+
+    return f"""You are a taxonomy consolidation specialist.
+Your task is to deduplicate attributes across facets within the domain "{domain_name}", producing a single MECE attribute inventory for the entire domain.
+
+All of your output must be in this language:
+<language>
+{language}
+</language>
+
+You are working within this domain:
+<domain>
+{domain_name} — {domain_definition}
+</domain>
+
+Here are all facets and their discovered attributes:
+<facet_attributes>
+{facet_attributes_block}
+</facet_attributes>
+
+<attribute_definition_guidance>
+Taxonomy levels for this dimension:
+- Dimension (L1): {noun_phrase}
+- Domain (L2): {domain_key_idea}
+- Facet (L3): {facet_key_idea}
+- Attribute (L4): {attribute_key_idea}
+{example_block}
+Target abstraction level: ATTRIBUTE (L4)
+
+{attribute_guidance}
+
+Each attribute must be:
+- **Ontologically distinct** — no two attributes may share conceptual space, even across different facets. An attribute must not be a subset of another attribute, and two attributes must not be two different lenses on the same phenomenon.
+- **Semantically distant** — someone coding a response should clearly know which attribute applies, with no "could go either way" situations.
+- Assigned to exactly ONE parent facet (the best fit)
+</attribute_definition_guidance>
+
+## YOUR TASK
+Deduplicate the attributes listed above. The same concept may have been discovered independently under multiple facets (e.g., "sparen" appearing under both "Financiële producten" and "Financiële functionaliteit"). Your job is to produce the fewest mutually exclusive attributes that cover all concepts, with each attribute assigned to its single best-fitting parent facet.
+
+Important principles:
+- MERGE attributes that overlap in meaning, even if they were discovered under different facets
+- ASSIGN each surviving attribute to the ONE facet where it fits best
+- Do NOT restructure or rename facets — only deduplicate attributes
+- ENSURE mutual exclusivity: no two attributes in your final list should overlap in meaning
+- MAINTAIN full coverage: every concept from the input must be represented
+- When merging, pick the most representative example observations (2-3 examples)
+- All attribute names and descriptions must be in {language}
+
+<scratchpad>
+Follow these steps:
+1. List all attributes across all facets, noting which facets each appears in
+2. Identify groups of attributes that overlap in meaning (same concept, different facet or wording)
+3. For each group, choose one consolidated attribute name and assign it to its best-fitting facet
+4. For each pair of surviving attributes, ask: "Could an observation plausibly belong to both?" If yes, merge them.
+5. Verify complete coverage of the original attribute set
+</scratchpad>
 
 All output MUST be in {language}.
 
