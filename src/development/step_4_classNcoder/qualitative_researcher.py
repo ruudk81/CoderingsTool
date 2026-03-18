@@ -79,6 +79,7 @@ from .prompts_exp import (
     # P4.5: Codebook Consolidation
     build_codebook_consolidation_prompt,
     CodebookConsolidationResult,
+    ConsolidatedCode,
     # Bridge
     convert_codes_to_mece_categories,
     convert_formal_codes_to_mece_categories,
@@ -134,16 +135,15 @@ class PipelineResult:
     partition_results: Dict[str, DomainResult]
     codebook_categories: List[MECECode]
     codebook_narrative: str
-    codes: List[FormalCode]
+    codes: List[ConsolidatedCode]
 
     @property
     def codebook(self) -> List[MECECode]:
         """Returns the final MECE codebook entries."""
         return self.codebook_categories
 
-    # Backward compatibility alias
     @property
-    def consolidated_codes(self) -> List[FormalCode]:
+    def consolidated_codes(self) -> List[ConsolidatedCode]:
         return self.codes
 
 
@@ -226,7 +226,8 @@ class QualitativeResearcher:
         self._batch_size_max = config.batch_size_max
         self._target_batches = config.target_batches
         self._chunk_overlap = config.chunk_overlap
-        self._consolidation_chunk_size = config.consolidation_chunk_size
+        self._consolidation_max_chunks_per_call = config.consolidation_max_chunks_per_call
+        self._consolidation_max_items_per_call = config.consolidation_max_items_per_call
         self._consolidation_max_rounds = config.consolidation_max_rounds
 
         # Batch sizing — P3 (attribute discovery)
@@ -849,15 +850,20 @@ class QualitativeResearcher:
         n_raw = sum(len(cf) for cf in chunk_facets)
         non_empty_chunks = [cf for cf in chunk_facets if cf]
 
-        # Step 2: Consolidation
+        # Step 2: Consolidation (hierarchical when needed)
         if len(non_empty_chunks) <= 1:
             # Single chunk: use directly, no consolidation needed
             facets = non_empty_chunks[0] if non_empty_chunks else []
         else:
-            # Multiple chunks: LLM consolidation
-            facets = await self._consolidate_facets(
-                partition_name, chunk_facets, part_context, prompt_context,
-                excluded_domains=excluded_domains,
+            async def _facet_consolidate_fn(chunks):
+                return await self._consolidate_facets(
+                    partition_name, chunks, part_context, prompt_context,
+                    excluded_domains=excluded_domains,
+                )
+
+            facets = await self._hierarchical_consolidate(
+                chunk_facets, _facet_consolidate_fn,
+                label=f"facets/{partition_name}",
             )
 
         if verbose:
@@ -1003,6 +1009,93 @@ class QualitativeResearcher:
         return result.facets
 
     # =========================================================================
+    # HIERARCHICAL CONSOLIDATION (shared by P1.5 and P3.25)
+    # =========================================================================
+
+    async def _hierarchical_consolidate(
+        self,
+        chunk_results: List[list],
+        consolidate_fn,
+        label: str,
+        _round: int = 0,
+    ) -> list:
+        """Recursively consolidate chunk results respecting capacity limits.
+
+        Groups chunks into sub-groups of at most max_chunks_per_call,
+        consolidates each group concurrently, then recurses on the
+        intermediate results until everything fits in a single call.
+
+        Works for both DiscoveredFacet (P1.5) and DiscoveredAttribute
+        (P3.25) via the callback pattern — consolidate_fn encapsulates
+        the prompt-building and LLM call logic.
+
+        Args:
+            chunk_results: Per-chunk discovery results (List[List[T]]).
+            consolidate_fn: async (List[List[T]]) -> List[T]
+            label: Human-readable label for logging.
+            _round: Internal recursion counter (do not set externally).
+        """
+        max_c = self._consolidation_max_chunks_per_call
+        max_i = self._consolidation_max_items_per_call
+        max_r = self._consolidation_max_rounds
+
+        non_empty = [c for c in chunk_results if c]
+        if not non_empty:
+            return []
+
+        n_chunks = len(non_empty)
+        total_items = sum(len(c) for c in non_empty)
+
+        # Base case: fits in a single consolidation call
+        if n_chunks <= max_c and total_items <= max_i:
+            return await consolidate_fn(non_empty)
+
+        # Safety cap: force merge if we've hit max rounds
+        if _round >= max_r:
+            print(f"    WARNING: {label}: hit max consolidation rounds ({max_r}), "
+                  f"forcing final merge of {n_chunks} chunks / {total_items} items")
+            return await consolidate_fn(non_empty)
+
+        # Determine group size: respect both chunk count and item count limits.
+        # Floor at 2: grouping by 1 would create no reduction and loop forever.
+        group_size = max_c
+        avg_items = total_items / n_chunks if n_chunks > 0 else 0
+        while group_size > 2 and group_size * avg_items > max_i:
+            group_size -= 1
+
+        # Split into groups
+        groups = [
+            non_empty[i:i + group_size]
+            for i in range(0, n_chunks, group_size)
+        ]
+
+        print(f"    {label}: hierarchical round {_round + 1}: "
+              f"{n_chunks} chunks ({total_items} items) → "
+              f"{len(groups)} groups of ≤{group_size}")
+
+        # Consolidate each group concurrently
+        intermediate = await asyncio.gather(*[
+            consolidate_fn(group) for group in groups
+        ], return_exceptions=True)
+
+        # Handle failures: keep failed groups as-is (flatten their chunks)
+        next_chunks = []
+        for i, result in enumerate(intermediate):
+            if isinstance(result, Exception):
+                print(f"    WARNING: {label}: group {i + 1} consolidation failed: "
+                      f"{type(result).__name__}: {result}")
+                # Fall back to raw chunks from this group
+                for chunk in groups[i]:
+                    next_chunks.append(chunk)
+            else:
+                next_chunks.append(result)
+
+        # Recurse with intermediate results as new chunks
+        return await self._hierarchical_consolidate(
+            next_chunks, consolidate_fn, label, _round=_round + 1,
+        )
+
+    # =========================================================================
     # PHASE 2 (P2): PER-DOMAIN FACET ASSIGNMENT
     # =========================================================================
 
@@ -1138,16 +1231,21 @@ class QualitativeResearcher:
         n_raw = sum(len(ca) for ca in chunk_attributes)
         non_empty_chunks = [ca for ca in chunk_attributes if ca]
 
-        # Step 2: Consolidation (mirrors P1.5 pattern)
+        # Step 2: Consolidation (hierarchical when needed)
         if len(non_empty_chunks) <= 1:
             # Single chunk or no results: use directly
             attributes = non_empty_chunks[0] if non_empty_chunks else []
         else:
-            # Multiple chunks: LLM consolidation
-            attributes = await self._consolidate_attribute_chunks(
-                domain_name, facet_name, facet_description,
-                chunk_attributes, part_context, prompt_context,
-                excluded_facets=excluded_facets,
+            async def _attr_consolidate_fn(chunks):
+                return await self._consolidate_attribute_chunks(
+                    domain_name, facet_name, facet_description,
+                    chunks, part_context, prompt_context,
+                    excluded_facets=excluded_facets,
+                )
+
+            attributes = await self._hierarchical_consolidate(
+                chunk_attributes, _attr_consolidate_fn,
+                label=f"attrs/{domain_name}/{facet_name}",
             )
 
         if n_batches > 1:
