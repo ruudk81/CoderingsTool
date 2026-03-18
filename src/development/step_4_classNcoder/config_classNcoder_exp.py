@@ -126,6 +126,13 @@ class AssignmentConfig:
     # Resolved by language from extraction_metadata.lang.
     include_other_category: bool = True
 
+    # Embedding pre-filtering (scopes codebook to top-N codes per idea)
+    use_embedding_prefilter: bool = True
+    embedding_top_n: int = 5
+    embedding_model: str = "text-embedding-3-large"
+    embedding_batch_size: int = 100
+    embedding_max_concurrent: int = 5
+
     # Output
     verbose: bool = True
 
