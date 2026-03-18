@@ -350,21 +350,21 @@ def save_results_to_file(
     output_dir = project_root / "exports" / "verbose_logs"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    base_name = Path(filename).stem
+    base_name = Path(filename).stem.replace(" ", "_")
     sample_str = str(sample_size) if sample_size else "full"
-    date_str = datetime.now().strftime("%Y%m%d")
+    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Determine run mode suffix from flags
     if RUN_ASSIGNMENT_ONLY:
         mode_suffix = "_assignment"
     elif RUN_ASSIGNMENT:
-        mode_suffix = "_generation+assignment"
+        mode_suffix = "_generation_assignment"
     else:
         mode_suffix = "_generation"
 
     output_filename = (
-        f"category_results_{base_name}_{variable}"
-        f"_{sample_str}_{date_str}{mode_suffix}.txt"
+        f"{base_name}_{variable}_{sample_str}"
+        f"_step4_{date_str}{mode_suffix}.txt"
     )
     output_path = output_dir / output_filename
 

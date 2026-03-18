@@ -263,6 +263,10 @@ def main():
         print("\nNo prompts found in files.")
         return
 
+    # Exclude P5 assignment prompts (handled by debug_assignment_prompt.py)
+    P5_TYPES = {"code_assignment", "dual_assignment"}
+    prompts = [p for p in prompts if p.get("prompt_type", "") not in P5_TYPES]
+
     # Group by prompt_type, keeping first instance of each
     by_type = {}
     for entry in prompts:

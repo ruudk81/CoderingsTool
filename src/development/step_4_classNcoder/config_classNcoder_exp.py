@@ -77,23 +77,23 @@ class CategoriesConfig:
     qr_max_tokens_codebook_consolidation: int = 16000
 
     # Adaptive batching for P1 (facet discovery chunks)
-    batch_size_min: int = 30       # floor: enough observations for discovery
-    batch_size_max: int = 100      # ceiling: keeps prompt quality high
-    target_batches: int = 15       # ideal number of chunks
+    batch_size_min: int = 100      # no splitting below this (single batch)
+    batch_size_max: int = 150      # ceiling: keeps prompt quality high
+    target_batches: int = 6        # ideal number of chunks
     chunk_overlap: float = 0.2     # overlap fraction between adjacent chunks
 
     # Adaptive batching for P3 (attribute discovery chunks within a facet)
-    # Higher min than P1: facets are already subsets of a domain, so
-    # observation counts are smaller and we want fewer, larger chunks.
     p3_batch_size_min: int = 100   # no splitting below this (single batch)
     p3_batch_size_max: int = 150   # ceiling per chunk
     p3_target_batches: int = 5     # ideal number of chunks
     p3_chunk_overlap: float = 0.2  # overlap fraction between adjacent chunks
 
-    # Facet consolidation: when unique facets exceed this count after
-    # programmatic dedup, an LLM consolidation pass merges near-duplicates.
-    consolidation_chunk_size: int = 45   # threshold to trigger LLM consolidation
-    consolidation_max_rounds: int = 5    # safety cap on recursive rounds
+    # Hierarchical consolidation (shared by P1.5 and P3.25)
+    # When chunk count or total item count exceeds these limits,
+    # consolidation becomes hierarchical: group → consolidate → recurse.
+    consolidation_max_chunks_per_call: int = 6   # Rule 2: max chunks per consolidation call
+    consolidation_max_items_per_call: int = 150  # Rule 3: max total items per consolidation call
+    consolidation_max_rounds: int = 5            # safety cap on recursive rounds
 
     # ==========================================================================
     # OUTPUT
