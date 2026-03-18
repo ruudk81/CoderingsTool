@@ -138,6 +138,10 @@ class CodeAssigner:
         self._extraction_metadata = extraction_metadata
         self._codes = codes or []
 
+        # Embedding pre-filter results (populated in Phase 3b if enabled)
+        self._idea_code_candidates: Optional[Dict[str, List[int]]] = None
+        self._per_task_resolutions: Dict[str, str] = {}
+
         # Prompt capture (optional — pass PromptPrinter to enable)
         self._prompt_printer = prompt_printer
         self._captured_assign_gates: set = set()
@@ -261,6 +265,52 @@ class CodeAssigner:
         if verbose:
             print(f"  Token estimate (tiktoken): {self._avg_tokens}")
 
+        # ── Phase 3b: Embedding pre-filtering ─────────────────────────────────
+
+        if self._config.use_embedding_prefilter and self._codes:
+            from .embedding_matcher import EmbeddingMatcher
+
+            matcher = EmbeddingMatcher(
+                model=self._config.embedding_model,
+                batch_size=self._config.embedding_batch_size,
+                max_concurrent=self._config.embedding_max_concurrent,
+            )
+
+            # Flatten all ideas in same order as Phase 4
+            all_ideas_flat = []
+            for pname in sorted(partition_ideas.keys()):
+                all_ideas_flat.extend(partition_ideas[pname])
+
+            idea_texts = [
+                matcher.build_idea_text(idea, self._facet_lookup)
+                for idea in all_ideas_flat
+            ]
+            code_texts = [
+                matcher.build_code_text(code)
+                for code in self._codes
+            ]
+
+            if verbose:
+                print(f"  Embedding pre-filter: embedding {len(idea_texts)} ideas "
+                      f"+ {len(code_texts)} codes...")
+
+            idea_embeddings = await matcher.embed_texts(idea_texts)
+            code_embeddings = await matcher.embed_texts(code_texts)
+
+            top_n = self._config.embedding_top_n
+            top_n_per_idea = matcher.compute_top_n(
+                idea_embeddings, code_embeddings, n=top_n,
+            )
+
+            self._idea_code_candidates = {
+                idea.idea_id: indices
+                for idea, indices in zip(all_ideas_flat, top_n_per_idea)
+            }
+
+            if verbose:
+                print(f"  Embedding pre-filter: top-{top_n} candidates per idea → "
+                      f"prompt codebook scoped from {len(self._codes)} to {top_n} codes")
+
         # ── Phase 4: Build task list ─────────────────────────────────────────
 
         if not self._codes:
@@ -273,11 +323,27 @@ class CodeAssigner:
             ideas = partition_ideas[partition_name]
 
             for idea_idx, idea in enumerate(ideas):
+                # Determine codes for this idea
+                if self._idea_code_candidates and idea.idea_id in self._idea_code_candidates:
+                    candidate_indices = self._idea_code_candidates[idea.idea_id]
+                    candidate_codes = [self._codes[idx] for idx in candidate_indices]
+                else:
+                    candidate_codes = self._codes
+
+                # Build per-task ID map (scoped C1..CN → code_name)
+                task_id_to_label = {}
+                for ci, code in enumerate(candidate_codes, 1):
+                    task_id_to_label[f"C{ci}"] = code.code_name
+                if self._config.include_other_category and self._other_label:
+                    task_id_to_label[f"C{len(candidate_codes) + 1}"] = self._other_label
+
                 task_list.append({
                     'idea': idea,
                     'partition_name': partition_name,
                     'batch_idx': idea_idx,
                     'n_batches': len(ideas),
+                    'candidate_codes': candidate_codes,
+                    'task_id_to_label': task_id_to_label,
                 })
 
         total_batches = len(task_list)
@@ -404,9 +470,17 @@ class CodeAssigner:
         assigned_count = len(assignment_lookup)
 
         # Resolve category IDs to labels
+        # Per-task resolutions (from embedding pre-filter) take priority over global ID map
         id_resolution: Dict[str, str] = {}
         resolve_stats = {"resolved": 0, "fallback": 0, "unresolved": 0}
         for idea_id, assignment in assignment_lookup.items():
+            # Try per-task resolution first (scoped IDs from embedding pre-filter)
+            if idea_id in self._per_task_resolutions:
+                id_resolution[idea_id] = self._per_task_resolutions[idea_id]
+                resolve_stats["resolved"] += 1
+                continue
+
+            # Fallback to global ID map (non-prefiltered mode)
             raw_id = getattr(assignment, 'assigned_category_id', '') or ''
             cat_id = self._normalize_id(raw_id)
             label = self._id_to_label.get(cat_id)
@@ -477,6 +551,16 @@ class CodeAssigner:
                     else:
                         results[task['result_index']] = result
                         self._stats['tasks_successful'] += 1
+
+                        # Per-task ID resolution (for embedding pre-filter scoped IDs)
+                        task_id_map = task.get('task_id_to_label')
+                        if task_id_map and result.assignments:
+                            idea = task['idea']
+                            raw_id = result.assignments[0].assigned_category_id or ''
+                            cat_id = self._normalize_id(raw_id)
+                            label = task_id_map.get(cat_id)
+                            if label:
+                                self._per_task_resolutions[idea.idea_id] = label
                 except Exception as e:
                     error_type = type(e).__name__
                     error_str = str(e)
@@ -525,7 +609,9 @@ class CodeAssigner:
         """
         partition_name = task['partition_name']
         idea = task['idea']
-        prompt = self._build_dual_assignment_prompt(idea)
+        candidate_codes = task.get('candidate_codes', self._codes)
+        task_id_to_label = task.get('task_id_to_label', self._id_to_label)
+        prompt = self._build_dual_assignment_prompt(idea, codes=candidate_codes)
         response_model = CodeAttributeAssignment
 
         # Prompt capture (first task per partition)
@@ -544,7 +630,7 @@ class CodeAssigner:
                         if self._extraction_metadata else "Dutch"
                     ),
                     "partition_name": partition_name,
-                    "n_codes": len(self._codes),
+                    "n_codes": len(candidate_codes),
                 }
             )
             self._captured_assign_gates.add(_assign_key)
@@ -920,8 +1006,15 @@ class CodeAssigner:
     # PROMPT BUILDING
     # =========================================================================
 
-    def _build_dual_assignment_prompt(self, idea) -> str:
-        """Build prompt for dual assignment (code + attribute) using raw codes."""
+    def _build_dual_assignment_prompt(self, idea, codes=None) -> str:
+        """Build prompt for dual assignment (code + attribute).
+
+        Args:
+            idea: The idea to assign.
+            codes: Optional subset of codes. Defaults to self._codes (all codes).
+        """
+        codes = codes if codes is not None else self._codes
+
         survey_question = ""
         language = "Dutch"
         dataset_context_section = ""
@@ -943,7 +1036,7 @@ class CodeAssigner:
             survey_question=survey_question,
             language=language,
             dataset_context_section=dataset_context_section,
-            codes=self._codes,
+            codes=codes,
             other_label=other_label if self._config.include_other_category else None,
             idea=idea,
             facet_lookup=self._facet_lookup,
