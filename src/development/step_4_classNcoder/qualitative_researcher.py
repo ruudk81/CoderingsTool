@@ -49,7 +49,6 @@ from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
 from .models_exp import DomainSet, DomainDescription
 from .prompts_exp import (
-    MECECode,
     # P1: Facet Discovery
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
@@ -80,9 +79,6 @@ from .prompts_exp import (
     build_codebook_consolidation_prompt,
     CodebookConsolidationResult,
     ConsolidatedCode,
-    # Bridge
-    convert_codes_to_mece_categories,
-    convert_formal_codes_to_mece_categories,
 )
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
@@ -133,18 +129,8 @@ class DomainResult:
 class PipelineResult:
     """Complete pipeline output (v3)."""
     partition_results: Dict[str, DomainResult]
-    codebook_categories: List[MECECode]
     codebook_narrative: str
     codes: List[ConsolidatedCode]
-
-    @property
-    def codebook(self) -> List[MECECode]:
-        """Returns the final MECE codebook entries."""
-        return self.codebook_categories
-
-    @property
-    def consolidated_codes(self) -> List[ConsolidatedCode]:
-        return self.codes
 
 
 # =============================================================================
@@ -777,7 +763,6 @@ class QualitativeResearcher:
                 f"[consolidation] {consolidation_result.evaluation}"
             )
 
-        codebook = convert_codes_to_mece_categories(all_codes)
         codebook_narrative = "\n".join(codebook_narratives)
 
         t_phase45 = time.time() - t_phase45
@@ -806,7 +791,6 @@ class QualitativeResearcher:
 
         return PipelineResult(
             partition_results=partition_results,
-            codebook_categories=codebook,
             codebook_narrative=codebook_narrative,
             codes=all_codes,
         )

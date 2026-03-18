@@ -40,7 +40,7 @@ from development.step_4_classNcoder.prompts_exp import (
     build_single_dual_assignment_prompt,
     CodeAttributeAssignment,
     CodeFromAttributes,
-    MECECode,
+    ConsolidatedCode,
 )
 from development.step_4_classNcoder.code_assignment import CodeAssigner
 from development.step_4_classNcoder.config_classNcoder_exp import (
@@ -259,7 +259,7 @@ def main():
     partition_set = mece_cache.partition_set
 
     # Reconstruct codes from raw_codes cache
-    codes = [CodeFromAttributes(**d) for d in mece_cache.raw_codes]
+    codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes]
 
     # Build facet lookup from cached P2 facet assignments
     facet_lookup: Dict[str, str] = {}

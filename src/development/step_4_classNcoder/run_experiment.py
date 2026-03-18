@@ -28,7 +28,6 @@ from development.step_4_classNcoder.config_classNcoder_exp import (
 )
 from development.step_4_classNcoder.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
 from development.step_4_classNcoder.qualitative_researcher import QualitativeResearcher, PipelineResult, DomainResult
-from development.step_4_classNcoder.prompts_exp import FormalCode
 from development.step_4_classNcoder.models_exp import (
     DomainSet, DomainResultModel, CodingResultsCache,
     CodeAssignedModel,
@@ -412,26 +411,13 @@ def cache_mece_results(
             sample_size=sample_size,
         )
 
-    # Store the global codebook
-    codebook = pipeline_result.codebook
-    total_labels = sum(m.label_count for m in label_mappings.values())
-
-    pydantic_results = {
-        "__global__": DomainResultModel(
-            partition_name="__global__",
-            n_labels=total_labels,
-            n_batches=0,
-            categories=codebook,
-        )
-    }
-
-    # Store per-domain results with v3 fields
+    # Store per-domain results (facets, assignments, attributes)
+    pydantic_results = {}
     for name, result in pipeline_result.partition_results.items():
         pydantic_results[name] = DomainResultModel(
             partition_name=name,
             n_labels=result.n_labels,
             n_batches=result.n_batches,
-            categories=[],
             facets=[f.model_dump() for f in result.facets],
             facet_assignments=result.facet_assignments,
             attributes={
@@ -440,6 +426,7 @@ def cache_mece_results(
             },
         )
 
+    n_codes = len(pipeline_result.codes)
     mece_cache = CodingResultsCache(
         partition_set=partition_set,
         partition_results=pydantic_results,
@@ -447,7 +434,7 @@ def cache_mece_results(
             name: m.label_count for name, m in label_mappings.items()
         },
         label_source=CONFIG.label_source,
-        total_categories=len(codebook),
+        total_categories=n_codes,
         raw_codes=[c.model_dump() for c in pipeline_result.codes],
     )
 
@@ -458,7 +445,6 @@ def cache_mece_results(
         step="mece_categories",
         variable_key=variable_key,
     )
-    n_codes = len(codebook)
     total_facets = sum(
         len(r.facets) for r in pipeline_result.partition_results.values()
     )
@@ -561,9 +547,9 @@ def run_assignment_only():
     partition_set = mece_cache.partition_set
     pydantic_results = mece_cache.partition_results
 
-    # Reconstruct CodeFromAttributes from cached dicts
-    from development.step_4_classNcoder.prompts_exp import CodeFromAttributes
-    codes = [CodeFromAttributes(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else None
+    # Reconstruct ConsolidatedCode from cached dicts
+    from development.step_4_classNcoder.prompts_exp import ConsolidatedCode
+    codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else None
 
     n_themes = mece_cache.total_categories
     n_partitions = len(partition_set.partitions)

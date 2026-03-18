@@ -7,10 +7,8 @@ Organized in pipeline processing order:
   §3  Facet Assignment (P2: per-domain, batched)
   §4  Attribute Discovery (P3: per facet within domain)
   §5  Code Generation from Attributes (P4: cross-domain)
-  §6  Bridge — codes → MECECode
-  §7  Shared Data Models (MECECode, MECEVerification)
-  §8  Code Assignment — batch (P5)
-  §9  Code Assignment — single idea (P5)
+  §6  Code Assignment — batch (P5)
+  §7  Code Assignment — single idea (P5)
 """
 
 from __future__ import annotations
@@ -1296,135 +1294,10 @@ All output MUST be in {language}.
 Provide output as valid JSON following the response schema provided."""
 
 
-# =============================================================================
-# §6 BRIDGE — codes → MECECode
-# =============================================================================
-
-def convert_codes_to_mece_categories(
-    codes: list,
-) -> List[MECECode]:
-    """Convert code list to MECECode list for downstream assignment.
-
-    Accepts both CodeFromAttributes (from P4) and ConsolidatedCode (from P4.5).
-    """
-    categories = []
-    for code in codes:
-        # ConsolidatedCode has diagnostic_test; CodeFromAttributes does not
-        boundary = getattr(code, 'diagnostic_test', None)
-        if not boundary:
-            boundary = f"Does this idea express: {code.definition}?"
-
-        categories.append(MECECode(
-            category_label=code.code_name,
-            inclusion_definition=code.definition,
-            boundary_test=boundary,
-            diagnostic_signals=code.typical_indicators[:5],
-            key_expressions=[],
-            tiebreaker_rules=[],
-            subcategories=[],
-        ))
-    return categories
-
-
-# Backward compatibility alias
-convert_formal_codes_to_mece_categories = convert_codes_to_mece_categories
 
 
 # =============================================================================
-# §7 SHARED DATA MODELS — Used by code assignment, caching, step 6+
-# =============================================================================
-
-class MECECode(BaseModel):
-    """A MECE category with independent boundary criteria."""
-    hierarchy_level: Optional[int] = Field(
-        default=None,
-        description=(
-            "This category's position in the hierarchy "
-            "(1 = broadest top level, higher numbers = more specific). "
-            "Leaf categories have the highest level number."
-        )
-    )
-    interpretive_claim: Optional[str] = Field(
-        default=None,
-        description=(
-            "Complete this sentence: 'Respondents construct [subject] as ...' "
-            "For themes: the core interpretive insight. "
-            "For subthemes: the specific meaning pattern this subtheme captures. "
-            "Only used in thematic analysis — omit for assignment categories."
-        )
-    )
-    category_label: str = Field(
-        ...,
-        description="Short noun phrase (1-4 words) naming this category"
-    )
-    inclusion_definition: str = Field(
-        ...,
-        description=(
-            "What kinds of labels belong to this category. "
-            "Must use observable criteria, not vague semantic descriptions."
-        )
-    )
-    boundary_test: str = Field(
-        ...,
-        description=(
-            "A yes/no question a human coder asks to determine if a label belongs here. "
-            "Must be self-contained — no references to other categories."
-        )
-    )
-    diagnostic_signals: List[str] = Field(
-        ...,
-        description=(
-            "3-5 concrete words, phrases, or framings that, if present, "
-            "indicate this category"
-        )
-    )
-    key_expressions: List[str] = Field(
-        ...,
-        description="3-5 representative labels from the partition that exemplify this category"
-    )
-    tiebreaker_rules: List[str] = Field(
-        ...,
-        description=(
-            "For each similar/adjacent category, a rule: "
-            "'If ambiguous with [category X], assign here when [observable condition]'"
-        )
-    )
-    subcategories: List[MECECode] = Field(
-        default_factory=list,
-        description="Child categories at the next hierarchy level."
-    )
-
-
-# Pydantic v2: rebuild model to resolve forward reference for recursive subcategories
-MECECode.model_rebuild()
-
-
-class MECEVerification(BaseModel):
-    """Self-verification test for one pair of adjacent MECE categories."""
-    category_a: str = Field(
-        ...,
-        description="First category in the pair — MUST be an exact category_label from your categories list"
-    )
-    category_b: str = Field(
-        ...,
-        description="Second category in the pair — MUST be an exact category_label from your categories list"
-    )
-    ambiguous_example: str = Field(
-        ...,
-        description="A constructed label that could plausibly fit either category"
-    )
-    assigned_to: str = Field(
-        ...,
-        description="Which category the ambiguous example is assigned to — MUST be either category_a or category_b"
-    )
-    reasoning: str = Field(
-        ...,
-        description="Why this assignment is correct, using only boundary_test and diagnostic_signals"
-    )
-
-
-# =============================================================================
-# §8 CODE + ATTRIBUTE ASSIGNMENT (P5) — single idea, dual output
+# §6 CODE + ATTRIBUTE ASSIGNMENT (P5) — single idea, dual output
 # =============================================================================
 
 # ---- Internal wrapper models (used by code_assignment.py for downstream) ----

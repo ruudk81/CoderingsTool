@@ -13,7 +13,6 @@ from development.step_3_ideaExtractor.models_exp import (
     IdeasExtractedSubmodel,
     IdeasExtractedModel,
 )
-from .prompts_exp import MECECode, MECEVerification
 
 
 # =============================================================================
@@ -63,8 +62,6 @@ class DomainResultModel(BaseModel):
     partition_name: str
     n_labels: int
     n_batches: int
-    categories: List[MECECode] = Field(default_factory=list)
-    # v3 fields
     facets: List[Dict[str, Any]] = Field(default_factory=list)
     facet_assignments: Dict[str, str] = Field(default_factory=dict)
     attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
@@ -77,7 +74,7 @@ class CodingResultsCache(BaseModel):
     label_counts: Dict[str, int] = Field(default_factory=dict)
     label_source: str = ""
     total_categories: int = 0
-    raw_codes: List[Dict] = Field(default_factory=list)  # CodeFromAttributes dicts for dual assignment
+    raw_codes: List[Dict] = Field(default_factory=list)  # ConsolidatedCode dicts
 
 
 # =============================================================================
