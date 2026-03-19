@@ -85,10 +85,10 @@ def load_assignments(
 def group_by_partition(
     data: List[CodeAssignedModel],
 ) -> Dict[str, Dict[str, List]]:
-    """Group ideas by partition → (parent_category, assigned_category) → [ideas].
+    """Group ideas by partition → (_REMOVED_parent, assigned_code) → [ideas].
 
     Returns:
-        Dict[partition_name, Dict[assigned_category, List[idea]]]
+        Dict[partition_name, Dict[assigned_code, List[idea]]]
         Each idea is a CodeAssignedSubmodel.
     """
     grouped: Dict[str, Dict[str, List]] = defaultdict(lambda: defaultdict(list))
@@ -98,7 +98,7 @@ def group_by_partition(
             continue
         for idea in response.response_ideas:
             partition = (idea.partition_name or idea.domain or "(unknown)").strip()
-            category = idea.assigned_category or "(unassigned)"
+            category = idea.assigned_code or "(unassigned)"
             grouped[partition][category].append(idea)
 
     return dict(grouped)
@@ -107,10 +107,10 @@ def group_by_partition(
 def group_by_category(
     data: List[CodeAssignedModel],
 ) -> Dict[str, List]:
-    """Group ideas by (parent_category, assigned_category) across all partitions.
+    """Group ideas by (_REMOVED_parent, assigned_code) across all partitions.
 
     Returns:
-        Dict[assigned_category, List[idea]]
+        Dict[assigned_code, List[idea]]
     """
     grouped: Dict[str, List] = defaultdict(list)
 
@@ -118,7 +118,7 @@ def group_by_category(
         if not response.response_ideas:
             continue
         for idea in response.response_ideas:
-            category = idea.assigned_category or "(unassigned)"
+            category = idea.assigned_code or "(unassigned)"
             grouped[category].append(idea)
 
     return dict(grouped)
@@ -131,7 +131,7 @@ def group_by_category(
 def _category_sort_key(item):
     """Sort categories: parent-grouped, then by count descending."""
     category, ideas = item
-    parent = ideas[0].parent_category or ""
+    parent = ""
     return (parent, -len(ideas))
 
 
@@ -148,9 +148,9 @@ def print_idea_mode(grouped: Dict[str, Dict[str, List]]):
         sorted_cats = sorted(categories.items(), key=_category_sort_key)
 
         for category, ideas in sorted_cats:
-            parent = ideas[0].parent_category or ""
+            parent = ""
             avg_conf = (
-                sum(i.category_confidence or 0 for i in ideas) / len(ideas)
+                sum(i.confidence or 0 for i in ideas) / len(ideas)
                 if ideas else 0
             )
 
@@ -160,12 +160,12 @@ def print_idea_mode(grouped: Dict[str, Dict[str, List]]):
 
             # Sort by confidence descending
             sorted_ideas = sorted(
-                ideas, key=lambda i: i.category_confidence or 0, reverse=True
+                ideas, key=lambda i: i.confidence or 0, reverse=True
             )
 
             limit = MAX_PER_CATEGORY or len(sorted_ideas)
             for idx, idea in enumerate(sorted_ideas[:limit], 1):
-                conf = idea.category_confidence or 0
+                conf = idea.confidence or 0
                 text = idea.idea or ""
                 if len(text) > 80:
                     text = text[:77] + "..."
@@ -191,9 +191,9 @@ def print_ladder_mode(grouped: Dict[str, Dict[str, List]]):
         sorted_cats = sorted(categories.items(), key=_category_sort_key)
 
         for category, ideas in sorted_cats:
-            parent = ideas[0].parent_category or ""
+            parent = ""
             avg_conf = (
-                sum(i.category_confidence or 0 for i in ideas) / len(ideas)
+                sum(i.confidence or 0 for i in ideas) / len(ideas)
                 if ideas else 0
             )
 
@@ -202,20 +202,20 @@ def print_ladder_mode(grouped: Dict[str, Dict[str, List]]):
             print(f"  {'─' * 70}")
 
             sorted_ideas = sorted(
-                ideas, key=lambda i: i.category_confidence or 0, reverse=True
+                ideas, key=lambda i: i.confidence or 0, reverse=True
             )
 
             limit = MAX_PER_CATEGORY or len(sorted_ideas)
             for idx, idea in enumerate(sorted_ideas[:limit], 1):
-                conf = idea.category_confidence or 0
+                conf = idea.confidence or 0
                 valence = idea.valence or "0"
                 print(f"    {idx:3d}. [{conf:.2f}] ({idea.idea_id}) valence={valence}")
                 print(f"         instance: \"{idea.instance or ''}\"")
                 print(f"         interpretation:   {idea.interpretation or ''}")
                 print(f"         abstraction:   {idea.abstraction or ''}")
                 print(f"         attribute: {idea.assigned_attribute or ''}")
-                if idea.category_rationale:
-                    rationale = idea.category_rationale
+                if idea.rationale:
+                    rationale = idea.rationale
                     if len(rationale) > 120:
                         rationale = rationale[:117] + "..."
                     print(f"         rationale: {rationale}")
@@ -237,16 +237,16 @@ def print_summary(grouped: Dict[str, Dict[str, List]]):
         categories = grouped[partition]
         n_ideas = sum(len(ideas) for ideas in categories.values())
         n_assigned = sum(
-            len([i for i in ideas if i.assigned_category])
+            len([i for i in ideas if i.assigned_code])
             for ideas in categories.values()
         )
         n_cats = len(categories)
         avg_conf = (
             sum(
-                i.category_confidence or 0
+                i.confidence or 0
                 for ideas in categories.values()
                 for i in ideas
-                if i.category_confidence
+                if i.confidence
             ) / max(n_assigned, 1)
         )
 
@@ -266,7 +266,7 @@ def print_summary(grouped: Dict[str, Dict[str, List]]):
 def _cat_group_sort_key(item):
     """Sort by parent theme, then by count descending."""
     category, ideas = item
-    parent = ideas[0].parent_category or ""
+    parent = ""
     return (parent, -len(ideas))
 
 
@@ -276,8 +276,8 @@ def print_category_idea_mode(cat_grouped: Dict[str, List]):
 
     current_parent = None
     for category, ideas in sorted_cats:
-        parent = ideas[0].parent_category or ""
-        avg_conf = sum(i.category_confidence or 0 for i in ideas) / len(ideas)
+        parent = ""
+        avg_conf = sum(i.confidence or 0 for i in ideas) / len(ideas)
 
         # Print parent header when it changes
         if parent != current_parent:
@@ -304,10 +304,10 @@ def print_category_idea_mode(cat_grouped: Dict[str, List]):
         print(f"  partitions: {partition_str}")
         print(f"  {'─' * 70}")
 
-        sorted_ideas = sorted(ideas, key=lambda i: i.category_confidence or 0, reverse=True)
+        sorted_ideas = sorted(ideas, key=lambda i: i.confidence or 0, reverse=True)
         limit = MAX_PER_CATEGORY or len(sorted_ideas)
         for idx, idea in enumerate(sorted_ideas[:limit], 1):
-            conf = idea.category_confidence or 0
+            conf = idea.confidence or 0
             text = idea.idea or ""
             if len(text) > 70:
                 text = text[:67] + "..."
@@ -327,8 +327,8 @@ def print_category_ladder_mode(cat_grouped: Dict[str, List]):
 
     current_parent = None
     for category, ideas in sorted_cats:
-        parent = ideas[0].parent_category or ""
-        avg_conf = sum(i.category_confidence or 0 for i in ideas) / len(ideas)
+        parent = ""
+        avg_conf = sum(i.confidence or 0 for i in ideas) / len(ideas)
 
         if parent != current_parent:
             current_parent = parent
@@ -353,10 +353,10 @@ def print_category_ladder_mode(cat_grouped: Dict[str, List]):
         print(f"  partitions: {partition_str}")
         print(f"  {'─' * 70}")
 
-        sorted_ideas = sorted(ideas, key=lambda i: i.category_confidence or 0, reverse=True)
+        sorted_ideas = sorted(ideas, key=lambda i: i.confidence or 0, reverse=True)
         limit = MAX_PER_CATEGORY or len(sorted_ideas)
         for idx, idea in enumerate(sorted_ideas[:limit], 1):
-            conf = idea.category_confidence or 0
+            conf = idea.confidence or 0
             valence = idea.valence or "0"
             part = (idea.partition_name or "?")[:25]
             print(f"    {idx:3d}. [{conf:.2f}] ({idea.idea_id}) valence={valence}  [{part}]")
@@ -364,8 +364,8 @@ def print_category_ladder_mode(cat_grouped: Dict[str, List]):
             print(f"         interpretation:   {idea.interpretation or ''}")
             print(f"         abstraction:   {idea.abstraction or ''}")
             print(f"         attribute: {idea.assigned_attribute or ''}")
-            if idea.category_rationale:
-                rationale = idea.category_rationale
+            if idea.rationale:
+                rationale = idea.rationale
                 if len(rationale) > 120:
                     rationale = rationale[:117] + "..."
                 print(f"         rationale: {rationale}")
@@ -385,13 +385,13 @@ def print_category_summary(cat_grouped: Dict[str, List]):
 
     current_parent = None
     for category, ideas in sorted_cats:
-        parent = ideas[0].parent_category or ""
+        parent = ""
         if parent != current_parent:
             current_parent = parent
             if parent:
                 print(f"\n  [{parent}]")
 
-        avg_conf = sum(i.category_confidence or 0 for i in ideas) / len(ideas)
+        avg_conf = sum(i.confidence or 0 for i in ideas) / len(ideas)
         print(f"    {category:50s}  {len(ideas):4d} ideas  avg conf: {avg_conf:.2f}")
         total += len(ideas)
 

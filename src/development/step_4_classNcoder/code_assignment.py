@@ -168,7 +168,6 @@ class CodeAssigner:
 
         # ID-based resolution maps — populated in _assign_all_async()
         self._id_to_label: Dict[str, str] = {}
-        self._id_to_parent: Dict[str, str] = {}
         self._other_id: Optional[str] = None
         self._other_label: Optional[str] = None
 
@@ -482,7 +481,7 @@ class CodeAssigner:
                 continue
 
             # Fallback to global ID map (non-prefiltered mode)
-            raw_id = getattr(assignment, 'assigned_category_id', '') or ''
+            raw_id = getattr(assignment, 'assigned_code_id', '') or ''
             cat_id = self._normalize_id(raw_id)
             label = self._id_to_label.get(cat_id)
             if label:
@@ -557,7 +556,7 @@ class CodeAssigner:
                         task_id_map = task.get('task_id_to_label')
                         if task_id_map and result.assignments:
                             idea = task['idea']
-                            raw_id = result.assignments[0].assigned_category_id or ''
+                            raw_id = result.assignments[0].assigned_code_id or ''
                             cat_id = self._normalize_id(raw_id)
                             label = task_id_map.get(cat_id)
                             if label:
@@ -717,7 +716,7 @@ class CodeAssigner:
                 wrapped = CodeAssignmentBatch(
                     assignments=[CodeAssignment(
                         idea_id=idea.idea_id,
-                        assigned_category_id=result.assigned_code_id,
+                        assigned_code_id=result.assigned_code_id,
                         confidence=result.confidence,
                         rationale=result.rationale,
                     )]
@@ -974,25 +973,20 @@ class CodeAssigner:
     def _build_id_maps(self) -> None:
         """Build ID-to-label maps from self._codes (ConsolidatedCode list).
 
-        Populates self._id_to_label, self._id_to_parent, self._other_id,
-        self._other_label.
+        Populates self._id_to_label, self._other_id, self._other_label.
         """
         id_to_label: Dict[str, str] = {}
-        id_to_parent: Dict[str, str] = {}
 
         for i, code in enumerate(self._codes, 1):
-            cat_id = f"C{i}"
-            id_to_label[cat_id] = code.code_name
+            id_to_label[f"C{i}"] = code.code_name
 
-        # Add "other" category as final entry
-        counter = [len(self._codes)]
+        # Add "other" as final entry
         if self._config.include_other_category:
             language = "Dutch"
             if self._extraction_metadata:
                 language = getattr(self._extraction_metadata, 'lang', 'Dutch') or 'Dutch'
             other_label = get_other_category_label(language)
-            counter[0] += 1
-            other_id = f"C{counter[0]}"
+            other_id = f"C{len(self._codes) + 1}"
             id_to_label[other_id] = other_label
             self._other_id = other_id
             self._other_label = other_label
@@ -1001,7 +995,6 @@ class CodeAssigner:
             self._other_label = None
 
         self._id_to_label = id_to_label
-        self._id_to_parent = id_to_parent
 
     # =========================================================================
     # PROMPT BUILDING
@@ -1086,31 +1079,24 @@ class CodeAssigner:
 
                     resolved_label = id_resolution.get(idea.idea_id)
 
-                    # Parent lookup via ID
-                    parent_cat = None
-                    if assignment:
-                        raw_id = getattr(assignment, 'assigned_category_id', '') or ''
-                        cat_id = self._normalize_id(raw_id)
-                        parent_cat = self._id_to_parent.get(cat_id)
-
                     idea_data = idea.model_dump()
                     explicit_fields = {
-                        'assigned_category', 'category_confidence',
-                        'category_rationale', 'assigned_attribute',
-                        'partition_name', 'parent_category', 'facet',
+                        'assigned_code', 'confidence',
+                        'rationale', 'assigned_attribute',
+                        'partition_name', 'facet',
                     }
                     new_idea = CodeAssignedSubmodel(
                         **{k: v for k, v in idea_data.items()
                            if k in CodeAssignedSubmodel.model_fields
                            and k not in explicit_fields},
-                        assigned_category=(
+                        assigned_code=(
                             resolved_label or None
                         ),
-                        category_confidence=(
+                        confidence=(
                             assignment.confidence
                             if assignment else None
                         ),
-                        category_rationale=(
+                        rationale=(
                             assignment.rationale
                             if assignment else None
                         ),
@@ -1118,7 +1104,6 @@ class CodeAssigner:
                             self._attribute_assignments.get(idea.idea_id)
                         ),
                         partition_name=ct if ct else None,
-                        parent_category=parent_cat,
                         facet=facet_lookup.get(idea.idea_id, idea_data.get('facet', '')),
                     )
                     new_ideas.append(new_idea)
@@ -1183,29 +1168,26 @@ class CodeAssigner:
     # REPORTING
     # =========================================================================
 
-    @staticmethod
     def _print_assignment_summary(
+        self,
         output: List[CodeAssignedModel],
     ):
-        """Print assignment summary: codes with their attributes nested underneath."""
-        # Collect stats per code: count + attribute breakdown
+        """Print code-centric assignment summary with attribute breakdowns."""
+        # Collect stats per code
         code_stats: Dict[str, Dict] = {}
         total_ideas = 0
         total_assigned = 0
-        all_confidences = []
 
         for resp in output:
             if not resp.response_ideas:
                 continue
             for idea in resp.response_ideas:
                 total_ideas += 1
-                if not idea.assigned_category:
+                if not idea.assigned_code:
                     continue
                 total_assigned += 1
-                conf = idea.category_confidence or 0.0
-                all_confidences.append(conf)
 
-                code = idea.assigned_category
+                code = idea.assigned_code
                 if code not in code_stats:
                     code_stats[code] = {
                         "count": 0,
@@ -1213,37 +1195,46 @@ class CodeAssigner:
                         "attributes": {},
                     }
                 code_stats[code]["count"] += 1
-                code_stats[code]["confidences"].append(conf)
+                code_stats[code]["confidences"].append(idea.confidence or 0.0)
 
                 attr = idea.assigned_attribute or "(no attribute)"
                 code_stats[code]["attributes"][attr] = (
                     code_stats[code]["attributes"].get(attr, 0) + 1
                 )
 
-        avg_conf = (
-            sum(all_confidences) / len(all_confidences)
-            if all_confidences else 0.0
-        )
+        # Build code order + valence lookup from self._codes
+        code_order = []
+        code_valence = {}
+        for code in self._codes:
+            code_order.append(code.code_name)
+            code_valence[code.code_name] = getattr(code, 'valence', '') or ''
+
+        # Add any assigned codes not in the codebook (e.g., "overig/anders")
+        for code_name in code_stats:
+            if code_name not in code_valence:
+                code_order.append(code_name)
+                code_valence[code_name] = ''
 
         print(f"\n  {'─'*60}")
-        print(f"  ASSIGNMENT SUMMARY")
+        print(f"  ASSIGNMENT SUMMARY ({total_assigned}/{total_ideas} ideas → "
+              f"{len(code_stats)} codes)")
         print(f"  {'─'*60}")
-        print(f"  Assigned: {total_assigned}/{total_ideas}  "
-              f"Avg confidence: {avg_conf:.2f}")
-        print(f"  Codes: {len(code_stats)}")
 
-        for code, stats in sorted(
-            code_stats.items(), key=lambda x: -x[1]["count"]
-        ):
-            code_conf = (
+        for i, code_name in enumerate(code_order, 1):
+            if code_name not in code_stats:
+                continue
+            stats = code_stats[code_name]
+            avg_conf = (
                 sum(stats["confidences"]) / len(stats["confidences"])
                 if stats["confidences"] else 0.0
             )
-            print(f"\n    {code}: {stats['count']}  "
-                  f"(conf {code_conf:.2f})")
+            valence = code_valence.get(code_name, '')
+            v_tag = {"positive": "+", "negative": "-", "neutral": "~"}.get(valence, "")
 
-            # Show attributes under each code
+            print(f"\n  [{i}] ({v_tag}) {code_name} — {stats['count']} ideas "
+                  f"(conf {avg_conf:.2f})")
+
             for attr, count in sorted(
                 stats["attributes"].items(), key=lambda x: -x[1]
             ):
-                print(f"      {attr}: {count}")
+                print(f"        {attr}: {count}")
