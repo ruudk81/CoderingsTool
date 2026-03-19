@@ -249,9 +249,9 @@ valence: +
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| Phase 0: Preparation | NOT STARTED | |
-| Phase 1: Attribute Assignment | NOT STARTED | |
-| Phase 2: Move Consolidation | NOT STARTED | |
-| Phase 3: Code Generation Update | NOT STARTED | |
-| Phase 4: Simplify Code Assignment | NOT STARTED | |
-| Phase 5: Cleanup & Documentation | NOT STARTED | |
+| Phase 0: Preparation | DONE | Tag: pre-pipeline-overhaul |
+| Phase 1: Attribute Assignment | DONE | Prompt, model, method implemented |
+| Phase 2: Move Consolidation | DONE | Frequency data + remap logic |
+| Phase 3: Code Generation Update | DONE | Frequency-weighted inventory |
+| Phase 4: Simplify Code Assignment | DONE | Code-only, attributes pre-assigned |
+| Phase 5: Cleanup & Documentation | DONE | ARCHITECTURE.md updated |

@@ -56,16 +56,28 @@ Phase 2: Facet Assignment (per domain, concurrent)
   Ideas + Facet set --> [P2] Assign each idea to a facet (L3)
                     --> ideas now have domain (L2) + facet (L3)
 
-Phase 3: Attribute Discovery (per facet within domain, concurrent)
+Step 3: Attribute Discovery (per facet within domain, concurrent)
   Ideas grouped by facet --> [P3] Discover attributes (L4) within each facet
                          --> attribute set per facet
 
-Phase 4: Code Generation (cross-domain)
-  All attributes --> [P4] Derive codes from attributes
-                 --> codebook (codes grounded in L4 attributes)
+Step 4a: Attribute Assignment (per facet, concurrent)
+  Ideas + Attributes per facet --> [P4a] Assign each idea to an attribute (L4)
+                               --> ideas now have domain + facet + attribute
 
-Phase 5: Code Assignment
-  Ideas + Codebook --> [P5] Assign codes to ideas --> assigned ideas
+Step 4b: Attribute Consolidation (cross-facet within domain)
+  Attributes + assignment frequencies --> [P3.5] Deduplicate across facets
+                                      --> consolidated attribute inventory with frequency data
+                                      --> remap idea assignments to consolidated names
+
+Step 5: Code Generation (per domain, valence-split)
+  Frequency-weighted attribute inventory --> [P4] Derive codes from attributes
+                                         --> codebook (codes grounded in L4 attributes)
+  P4.5: Cross-domain codebook consolidation --> final MECE codebook
+
+Step 6: Code Assignment (with embedding pre-filter)
+  Ideas + Codebook --> [P5] Assign codes to ideas (code-only, attribute already assigned)
+                   --> embedding pre-filter selects top-5 codes per idea
+                   --> assigned ideas (code + attribute + confidence)
 ```
 
 ## Dimension-Specific Prompt Injection
