@@ -82,21 +82,20 @@ class CodingResultsCache(BaseModel):
 # =============================================================================
 
 class CodeAssignedSubmodel(IdeasExtractedSubmodel):
-    """Per-idea data with MECE category assignment.
+    """Per-idea data with code + attribute assignment.
 
     Extends step 3's IdeasExtractedSubmodel.
     Step 5 populates: facet (L3), attribute (L4) on the base model,
-    plus category assignment fields below.
+    plus code assignment fields below.
     """
-    assigned_category: Optional[str] = None
+    assigned_code: Optional[str] = None
     assigned_attribute: Optional[str] = None
-    category_confidence: Optional[float] = None
-    category_rationale: Optional[str] = None
+    confidence: Optional[float] = None
+    rationale: Optional[str] = None
     partition_name: Optional[str] = None
-    parent_category: Optional[str] = None
 
 
 class CodeAssignedModel(IdeasExtractedModel):
-    """Response-level model with category-assigned ideas."""
+    """Response-level model with code-assigned ideas."""
     response_ideas: Optional[List[CodeAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None
