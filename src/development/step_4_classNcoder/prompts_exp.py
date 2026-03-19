@@ -527,6 +527,119 @@ Provide output as valid JSON following the response schema provided.
 
 
 # =============================================================================
+# §3.5 ATTRIBUTE ASSIGNMENT — per facet (Step 4a)
+# =============================================================================
+
+class AttributeAssignment(BaseModel):
+    """Single idea-to-attribute assignment."""
+    idea_id: str = Field(
+        ..., description="The idea_id from the input"
+    )
+    assigned_attribute_id: str = Field(
+        ..., description=(
+            "The attribute ID from the [A#] prefix (e.g. 'A1', 'A3'). "
+            "Return ONLY the ID, not the attribute name."
+        )
+    )
+    confidence: float = Field(
+        ..., description="Confidence in the assignment (0.0 to 1.0)"
+    )
+
+
+class AttributeAssignmentBatch(BaseModel):
+    """Batch of attribute assignments for multiple ideas."""
+    assignments: List[AttributeAssignment] = Field(
+        ..., description="One assignment per idea in the input batch"
+    )
+
+
+def _build_attribute_codebook_block(
+    attributes: List['DiscoveredAttribute'],
+) -> str:
+    """Format discovered attributes as a numbered list for assignment."""
+    lines = []
+    for i, attr in enumerate(attributes, 1):
+        examples = "; ".join(attr.example_observations[:3])
+        lines.append(
+            f"[A{i}] {attr.attribute_name}\n"
+            f"    Description: {attr.attribute_description}\n"
+            f"    Examples: {examples}"
+        )
+    return "\n\n".join(lines)
+
+
+def build_attribute_assignment_prompt(
+    *,
+    survey_question: str,
+    language: str,
+    dataset_context_section: str,
+    dimension_def: Optional[DimensionDefinition],
+    dimension_name: str,
+    dimension_description: str,
+    domain_name: str,
+    domain_definition: str,
+    facet_name: str,
+    facet_description: str,
+    attributes: List['DiscoveredAttribute'],
+    ideas: List,
+) -> str:
+    """Build prompt for assigning ideas to discovered attributes (L4) within a facet."""
+    taxonomy_block = build_dimension_context_block(
+        dimension_def=dimension_def,
+        dimension_name=dimension_name,
+        dimension_description=dimension_description,
+        domain_name=domain_name,
+        domain_definition=domain_definition,
+    )
+
+    attribute_codebook = _build_attribute_codebook_block(attributes)
+    ideas_block = _build_ideas_block_for_facet_assignment(ideas)
+
+    # Dimension-specific attribute question
+    if dimension_def:
+        attr_question = dimension_def.prompt_rules.attribute_diagnostic
+    else:
+        attr_question = "What specific quality or trait is being described?"
+
+    return f"""You are a qualitative coding assistant assigning survey response ideas to discovered attributes within a facet.
+
+<survey_context>
+Survey question: "{survey_question}"
+Language: {language}
+{dataset_context_section}
+</survey_context>
+
+{taxonomy_block}
+
+<facet_context>
+Facet: {facet_name} — {facet_description}
+</facet_context>
+
+<attributes>
+Assign each idea to exactly ONE of these attributes within the facet above:
+
+{attribute_codebook}
+</attributes>
+
+<ideas_to_assign>
+{ideas_block}
+</ideas_to_assign>
+
+<instructions>
+For each idea:
+1. Read the idea's instance, interpretation, and abstraction.
+2. Determine which attribute best answers the question: {attr_question}
+3. Assign exactly ONE attribute per idea. Return the attribute ID from [A#] brackets (e.g. "A1", "A3"). Do NOT return the attribute name.
+4. Rate your confidence (0.0 to 1.0).
+
+All output MUST be in {language}.
+
+Provide output as valid JSON following the response schema provided.
+</instructions>
+"""
+
+
+# =============================================================================
 # §4 ATTRIBUTE DISCOVERY (P3) — per facet within domain
 # =============================================================================
 
@@ -822,6 +935,10 @@ class ConsolidatedAttribute(BaseModel):
     example_observations: List[str] = Field(
         ..., description="2-3 representative observations from the input"
     )
+    source_attributes: List[str] = Field(
+        default_factory=list,
+        description="Original attribute names that were merged into this consolidated attribute"
+    )
 
 
 class AttributeConsolidatedResponse(BaseModel):
@@ -985,13 +1102,21 @@ def build_code_from_attributes_prompt(
     dimension_description: str,
     domain_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
     valence_label: str = "",
+    attribute_assignments: Optional[Dict[str, str]] = None,
 ) -> str:
     """Generate codebook codes from a (possibly valence-filtered) attribute inventory.
 
     Args:
         domain_attributes: {domain_name: {facet_name: [DiscoveredAttribute, ...]}}
         valence_label: "positive" or "negative" — scopes code generation by valence
+        attribute_assignments: idea_id -> attribute_name, for frequency display
     """
+    # Compute attribute frequencies
+    attr_counts: Dict[str, int] = {}
+    if attribute_assignments:
+        for attr_name in attribute_assignments.values():
+            attr_counts[attr_name] = attr_counts.get(attr_name, 0) + 1
+
     # Build structured attribute inventory
     inventory_lines = []
     for domain_name, facet_attrs in sorted(domain_attributes.items()):
@@ -1000,8 +1125,11 @@ def build_code_from_attributes_prompt(
             inventory_lines.append(f"  Facet: {facet_name}")
             for attr in attributes:
                 examples = "; ".join(attr.example_observations[:2])
+                count = attr_counts.get(attr.attribute_name, 0)
+                freq_tag = f" [{count} ideas]" if attr_counts else ""
                 inventory_lines.append(
-                    f"    - {attr.attribute_name}: {attr.attribute_description}"
+                    f"    - {attr.attribute_name}{freq_tag}: "
+                    f"{attr.attribute_description}"
                     + (f" (e.g., {examples})" if examples else "")
                 )
         inventory_lines.append("")
@@ -1320,14 +1448,10 @@ class CodeAssignmentBatch(BaseModel):
 
 
 class CodeAttributeAssignment(BaseModel):
-    """Single idea → code + attribute assignment."""
+    """Single idea → code assignment."""
     assigned_code_id: str = Field(
         ...,
         description="The code ID from the [C#] prefix (e.g. 'C1', 'C7'). Return ONLY the ID."
-    )
-    assigned_attribute: str = Field(
-        ...,
-        description="The best-matching attribute name from the assigned code's attribute list."
     )
     confidence: float = Field(
         ...,
@@ -1335,15 +1459,15 @@ class CodeAttributeAssignment(BaseModel):
     )
     rationale: str = Field(
         ...,
-        description="Brief rationale for the code and attribute choice"
+        description="Brief rationale for the code choice"
     )
 
 
-def _build_codes_with_attributes_block(
+def _build_codes_block(
     codes: List[CodeFromAttributes],
     other_label: Optional[str] = None,
 ) -> str:
-    """Format codes with their source attributes for assignment prompt."""
+    """Format codes for assignment prompt (code-only, no attributes)."""
     lines = []
     for i, code in enumerate(codes, 1):
         diagnostic = getattr(code, 'diagnostic_test', '') or ''
@@ -1355,9 +1479,6 @@ def _build_codes_with_attributes_block(
         if diagnostic:
             block += f"    Diagnostic: {diagnostic}\n"
         block += f"    Indicators: {indicators}"
-        if code.source_attributes:
-            attrs = "\n".join(f"      - {a}" for a in code.source_attributes)
-            block += f"\n    Attributes:\n{attrs}"
         lines.append(block)
 
     if other_label:
@@ -1365,8 +1486,7 @@ def _build_codes_with_attributes_block(
         lines.append(
             f"[C{n}] {other_label}\n"
             f"    Definition: Ideas that do not clearly fit any of the above codes.\n"
-            f"    Indicators: no matching indicators\n"
-            f"    Attributes:\n      - (none)"
+            f"    Indicators: no matching indicators"
         )
 
     return "\n\n".join(lines)
@@ -1383,7 +1503,7 @@ def build_single_dual_assignment_prompt(
     facet_lookup: Optional[Dict[str, str]] = None,
 ) -> str:
     """Build prompt for assigning a single idea to a code AND attribute."""
-    codes_block = _build_codes_with_attributes_block(codes, other_label)
+    codes_block = _build_codes_block(codes, other_label)
 
     # Format single idea
     valence = getattr(idea, 'valence', '') or '0'
@@ -1403,7 +1523,7 @@ def build_single_dual_assignment_prompt(
 
     other_label_display = other_label or "Other"
 
-    return f"""You are a qualitative coding assistant. Assign the idea below to the best-matching code AND attribute.
+    return f"""You are a qualitative coding assistant. Assign the idea below to the best-matching code.
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -1422,11 +1542,9 @@ Language: {language}
 <instructions>
 1. Read the idea's text, interpretation, facet, and valence.
 2. Find the code whose definition best matches what the respondent is expressing.
-3. Within that code, pick the attribute that most closely describes the specific phenomenon in this idea.
-4. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
-5. Return the attribute name exactly as listed under the code.
-6. Assign "{other_label_display}" only if NO code fits at all.
-7. Rate confidence: 0.90+ = clear, 0.70-0.89 = good, 0.50-0.69 = approximate, <0.50 = weak.
+3. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
+4. Assign "{other_label_display}" only if NO code fits at all.
+5. Rate confidence: 0.90+ = clear, 0.70-0.89 = good, 0.50-0.69 = approximate, <0.50 = weak.
 
 All output MUST be in {language}.
 Provide output as valid JSON following the response schema provided.

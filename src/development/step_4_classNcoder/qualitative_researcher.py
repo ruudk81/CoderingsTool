@@ -59,6 +59,9 @@ from .prompts_exp import (
     # P2: Facet Assignment
     build_facet_assignment_prompt,
     FacetAssignmentBatch,
+    # P3.5 (Step 4a): Attribute Assignment
+    build_attribute_assignment_prompt,
+    AttributeAssignmentBatch,
     # P3: Attribute Discovery
     build_attribute_discovery_prompt,
     AttributeDiscoveryResult,
@@ -123,6 +126,7 @@ class DomainResult:
     facets: List[DiscoveredFacet]
     facet_assignments: Dict[str, str]  # idea_id -> facet_name
     attributes: Dict[str, List[DiscoveredAttribute]]  # facet_name -> attributes
+    attribute_assignments: Dict[str, str] = field(default_factory=dict)  # idea_id -> attribute_name
 
 
 @dataclass
@@ -631,7 +635,74 @@ class QualitativeResearcher:
                   f"{len(attr_tasks)} facets")
 
         # =================================================================
+        # PHASE 4a: Per-facet Attribute Assignment
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 4a: Per-facet Attribute Assignment...")
+
+        t_phase4a = time.time()
+
+        # Assign attributes to ideas, grouped by facet
+        attribute_assignments: Dict[str, str] = {}  # idea_id -> attribute_name
+        assign_tasks = {}
+
+        for domain_name, facet_attrs in domain_facet_attributes.items():
+            for facet_name, attributes in facet_attrs.items():
+                if not attributes:
+                    continue
+
+                # Get ideas assigned to this facet
+                facet_ideas = domain_facet_ideas.get(
+                    (domain_name, facet_name), []
+                )
+                if not facet_ideas:
+                    continue
+
+                # Find facet description
+                facet_obj = None
+                for f in partition_facets.get(domain_name, []):
+                    if f.facet_name == facet_name:
+                        facet_obj = f
+                        break
+
+                if not facet_obj:
+                    continue
+
+                task_key = f"{domain_name}::{facet_name}"
+                assign_tasks[task_key] = self._assign_attributes_to_ideas(
+                    domain_name=domain_name,
+                    facet_name=facet_name,
+                    facet_description=facet_obj.facet_description,
+                    attributes=attributes,
+                    ideas=facet_ideas,
+                    part_context=partition_contexts[domain_name],
+                    prompt_context=prompt_context,
+                )
+
+        if assign_tasks:
+            assign_results = await asyncio.gather(
+                *assign_tasks.values(), return_exceptions=True
+            )
+
+            for task_key, result in zip(assign_tasks.keys(), assign_results):
+                if isinstance(result, Exception):
+                    print(f"  Attribute assignment '{task_key}' FAILED: "
+                          f"{type(result).__name__}: {result}")
+                else:
+                    attribute_assignments.update(result)
+                    if verbose:
+                        domain_name, facet_name = task_key.split("::", 1)
+                        print(f"    {domain_name}/{facet_name}: "
+                              f"{len(result)} ideas assigned")
+
+        t_phase4a = time.time() - t_phase4a
+        if verbose:
+            print(f"  Phase 4a done in {t_phase4a:.1f}s → "
+                  f"{len(attribute_assignments)} ideas with attributes")
+
+        # =================================================================
         # PHASE 3.5 (P3.5): Cross-facet Attribute Consolidation per domain
+        # (now with frequency data from attribute assignments)
         # =================================================================
         if verbose:
             print(f"\n  Phase 3.5: Cross-facet Attribute Consolidation...")
@@ -643,12 +714,19 @@ class QualitativeResearcher:
             # Only consolidate if domain has 2+ facets with attributes
             if len(facet_attrs) < 2:
                 continue
+            # Filter attribute_assignments to this domain
+            domain_facet_ids = set(partition_assignments.get(domain_name, {}).keys())
+            domain_attr_assigns = {
+                iid: aname for iid, aname in attribute_assignments.items()
+                if iid in domain_facet_ids
+            }
             consolidation_tasks[domain_name] = self._consolidate_domain_attributes(
                 domain_name=domain_name,
                 facet_attributes=facet_attrs,
                 partition_facets=partition_facets.get(domain_name, []),
                 part_context=partition_contexts[domain_name],
                 prompt_context=prompt_context,
+                attribute_assignments=domain_attr_assigns,
             )
 
         if consolidation_tasks:
@@ -684,11 +762,25 @@ class QualitativeResearcher:
                 domain_facet_attributes[domain_name] = new_facet_attrs
                 partition_attributes[domain_name] = new_facet_attrs
 
+                # Remap attribute assignments: old names → consolidated names
+                remap = {}
+                for attr in result:
+                    for src in attr.source_attributes:
+                        if src != attr.attribute_name:
+                            remap[src] = attr.attribute_name
+                if remap:
+                    remapped = 0
+                    for idea_id, attr_name in list(attribute_assignments.items()):
+                        if attr_name in remap:
+                            attribute_assignments[idea_id] = remap[attr_name]
+                            remapped += 1
+
                 if verbose:
                     after_count = sum(len(a) for a in new_facet_attrs.values())
+                    remap_msg = f", {remapped} remapped" if remap else ""
                     print(f"    {domain_name}: {before_count} → "
                           f"{after_count} attributes "
-                          f"({len(new_facet_attrs)} facets)")
+                          f"({len(new_facet_attrs)} facets{remap_msg})")
 
         t_phase35 = time.time() - t_phase35
         if verbose:
@@ -711,16 +803,27 @@ class QualitativeResearcher:
         # Build per-domain tasks, split by valence
         p4_tasks = {}
         for domain_name in domain_facet_attributes:
+            # Filter attribute_assignments to this domain
+            domain_facet_ids = set(partition_assignments.get(domain_name, {}).keys())
+            domain_attr_assigns = {
+                iid: aname for iid, aname in attribute_assignments.items()
+                if iid in domain_facet_ids
+            }
+
             pos_attrs, neg_attrs = self._split_attributes_by_valence(
                 domain_facet_attributes, facet_valences, domain_name
             )
             if pos_attrs:
                 p4_tasks[f"{domain_name}::pos"] = self._run_code_generation_from_attributes(
-                    {domain_name: pos_attrs}, prompt_context, valence_label="positive"
+                    {domain_name: pos_attrs}, prompt_context,
+                    valence_label="positive",
+                    attribute_assignments=domain_attr_assigns,
                 )
             if neg_attrs:
                 p4_tasks[f"{domain_name}::neg"] = self._run_code_generation_from_attributes(
-                    {domain_name: neg_attrs}, prompt_context, valence_label="negative"
+                    {domain_name: neg_attrs}, prompt_context,
+                    valence_label="negative",
+                    attribute_assignments=domain_attr_assigns,
                 )
 
         p4_results = await asyncio.gather(*p4_tasks.values(), return_exceptions=True)
@@ -780,6 +883,13 @@ class QualitativeResearcher:
         # Build DomainResult for each domain
         partition_results = {}
         for name in partition_facets:
+            # Collect attribute assignments for this domain
+            domain_facet_ids = set(partition_assignments.get(name, {}).keys())
+            domain_attr_assigns = {
+                idea_id: attr_name
+                for idea_id, attr_name in attribute_assignments.items()
+                if idea_id in domain_facet_ids
+            }
             partition_results[name] = DomainResult(
                 partition_name=name,
                 n_labels=partition_n_labels.get(name, 0),
@@ -787,6 +897,7 @@ class QualitativeResearcher:
                 facets=partition_facets.get(name, []),
                 facet_assignments=partition_assignments.get(name, {}),
                 attributes=partition_attributes.get(name, {}),
+                attribute_assignments=domain_attr_assigns,
             )
 
         return PipelineResult(
@@ -1174,6 +1285,105 @@ class QualitativeResearcher:
         return all_assignments
 
     # =========================================================================
+    # PHASE 4a: PER-FACET ATTRIBUTE ASSIGNMENT
+    # =========================================================================
+
+    async def _assign_attributes_to_ideas(
+        self,
+        domain_name: str,
+        facet_name: str,
+        facet_description: str,
+        attributes: List[DiscoveredAttribute],
+        ideas: List,
+        part_context: 'DomainContext',
+        prompt_context: 'PromptContext',
+    ) -> Dict[str, str]:
+        """Assign each idea to an attribute within its facet.
+
+        Returns dict of idea_id -> attribute_name.
+        """
+        # Build ID-to-name map
+        attr_id_to_name = {}
+        for i, attr in enumerate(attributes, 1):
+            attr_id_to_name[f"A{i}"] = attr.attribute_name
+
+        # Batch ideas (reuse facet assignment batch size)
+        batch_size = self._facet_assignment_batch_size
+        idea_batches = [
+            ideas[i:i + batch_size]
+            for i in range(0, len(ideas), batch_size)
+        ]
+
+        all_assignments: Dict[str, str] = {}
+
+        async def process_batch(batch_idx: int, batch_ideas: List):
+            prompt = build_attribute_assignment_prompt(
+                survey_question=prompt_context.survey_question,
+                language=prompt_context.language,
+                dataset_context_section=prompt_context.dataset_context_section,
+                dimension_def=prompt_context.dimension_def,
+                dimension_name=prompt_context.dimension_name,
+                dimension_description=prompt_context.dimension_description,
+                domain_name=domain_name,
+                domain_definition=part_context.partition_definition,
+                facet_name=facet_name,
+                facet_description=facet_description,
+                attributes=attributes,
+                ideas=batch_ideas,
+            )
+
+            # Prompt capture (first batch per facet)
+            gate_key = f"qr_attr_assign_{domain_name}_{facet_name}"
+            if (self._prompt_printer is not None
+                    and batch_idx == 0
+                    and gate_key not in self._captured_gates):
+                self._prompt_printer.capture_prompt(
+                    step_name="qualitative_researcher",
+                    utility_name="QualitativeResearcher",
+                    prompt_content=prompt,
+                    prompt_type="attribute_assignment",
+                    metadata={
+                        "model": self._model_p2,
+                        "language": prompt_context.language,
+                        "partition_name": domain_name,
+                        "facet_name": facet_name,
+                        "batch_number": batch_idx + 1,
+                        "total_batches": len(idea_batches),
+                        "n_attributes": len(attributes),
+                        "dimension_name": prompt_context.dimension_name,
+                    }
+                )
+                self._captured_gates.add(gate_key)
+
+            try:
+                result = await self._llm_call(
+                    prompt, AttributeAssignmentBatch,
+                    self._max_tokens_facet_assignment,
+                    model=self._model_p2,
+                )
+                return result.assignments
+            except Exception as e:
+                print(f"    ATTR ASSIGNMENT '{domain_name}/{facet_name}' "
+                      f"batch {batch_idx + 1}/{len(idea_batches)} FAILED: "
+                      f"{type(e).__name__}: {e}")
+                return []
+
+        batch_results = await asyncio.gather(*(
+            process_batch(i, batch)
+            for i, batch in enumerate(idea_batches)
+        ))
+
+        for assignments in batch_results:
+            for assignment in assignments:
+                attr_name = attr_id_to_name.get(
+                    assignment.assigned_attribute_id,
+                    assignment.assigned_attribute_id,
+                )
+                all_assignments[assignment.idea_id] = attr_name
+
+        return all_assignments
+
+    # =========================================================================
     # PHASE 3 (P3): PER-FACET ATTRIBUTE DISCOVERY
     # =========================================================================
 
@@ -1397,12 +1607,20 @@ class QualitativeResearcher:
         partition_facets: List[DiscoveredFacet],
         part_context: DomainContext,
         prompt_context: PromptContext,
+        attribute_assignments: Optional[Dict[str, str]] = None,
     ) -> List[ConsolidatedAttribute]:
         """Consolidate attributes across facets within a domain.
 
         Takes all facets and their attributes for one domain, deduplicates
         overlapping attributes, and assigns each to its best-fitting facet.
+        When attribute_assignments is provided, frequency counts are included.
         """
+        # Compute attribute frequencies from assignments
+        attr_counts: Dict[str, int] = {}
+        if attribute_assignments:
+            for attr_name in attribute_assignments.values():
+                attr_counts[attr_name] = attr_counts.get(attr_name, 0) + 1
+
         # Format facet->attributes block for the prompt
         lines = []
         for facet_name, attributes in sorted(facet_attributes.items()):
@@ -1416,8 +1634,11 @@ class QualitativeResearcher:
             lines.append(f'Facet: "{facet_name}" — {facet_desc}')
             for attr in attributes:
                 examples = "; ".join(attr.example_observations[:2])
+                count = attr_counts.get(attr.attribute_name, 0)
+                freq_tag = f" ({count} ideas)" if attribute_assignments else ""
                 lines.append(
-                    f'  - "{attr.attribute_name}" — {attr.attribute_description} '
+                    f'  - "{attr.attribute_name}"{freq_tag} — '
+                    f'{attr.attribute_description} '
                     f'(examples: {examples})'
                 )
             lines.append("")  # blank line between facets
@@ -1492,6 +1713,7 @@ class QualitativeResearcher:
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
         prompt_context: PromptContext,
         valence_label: str = "",
+        attribute_assignments: Optional[Dict[str, str]] = None,
     ) -> CodeGenerationFromAttributesResult:
         """Generate codes from an attribute inventory (per-domain, valence-scoped)."""
         prompt = build_code_from_attributes_prompt(
@@ -1502,6 +1724,7 @@ class QualitativeResearcher:
             dimension_description=prompt_context.dimension_description,
             domain_attributes=domain_facet_attributes,
             valence_label=valence_label,
+            attribute_assignments=attribute_assignments,
         )
 
         # Prompt capture

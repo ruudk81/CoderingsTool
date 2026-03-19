@@ -65,6 +65,7 @@ class DomainResultModel(BaseModel):
     facets: List[Dict[str, Any]] = Field(default_factory=list)
     facet_assignments: Dict[str, str] = Field(default_factory=dict)
     attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
+    attribute_assignments: Dict[str, str] = Field(default_factory=dict)
 
 
 class CodingResultsCache(BaseModel):

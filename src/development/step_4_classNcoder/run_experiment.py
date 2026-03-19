@@ -424,6 +424,7 @@ def cache_mece_results(
                 facet_name: [a.model_dump() for a in attrs]
                 for facet_name, attrs in result.attributes.items()
             },
+            attribute_assignments=result.attribute_assignments,
         )
 
     n_codes = len(pipeline_result.codes)
@@ -490,8 +491,9 @@ def run_code_assignment(
     config: AssignmentConfig = ASSIGNMENT_CONFIG,
     prompt_printer=None,
     codes=None,
+    attribute_assignments: Optional[Dict[str, str]] = None,
 ) -> List[CodeAssignedModel]:
-    """Run category assignment and cache results."""
+    """Run code assignment and cache results."""
     assigner = CodeAssigner(
         config=config,
         ideas_models=ideas_models,
@@ -500,6 +502,7 @@ def run_code_assignment(
         extraction_metadata=extraction_metadata,
         prompt_printer=prompt_printer,
         codes=codes,
+        attribute_assignments=attribute_assignments,
     )
 
     assigned_results = assigner.assign_all()
@@ -560,6 +563,11 @@ def run_assignment_only():
         enabled=True,
         print_realtime=PRINT_PROMPTS,
     )
+    # Collect attribute_assignments from all domains
+    all_attr_assignments = {}
+    for domain_result in pydantic_results.values():
+        all_attr_assignments.update(domain_result.attribute_assignments)
+
     assigned_results = run_code_assignment(
         ideas_models=ideas_models,
         mece_results=pydantic_results,
@@ -567,6 +575,7 @@ def run_assignment_only():
         extraction_metadata=extraction_metadata,
         prompt_printer=prompt_printer,
         codes=codes,
+        attribute_assignments=all_attr_assignments,
     )
 
     return assigned_results, prompt_printer
@@ -598,9 +607,13 @@ if __name__ == "__main__":
                 partition_set, label_mappings, pipeline_result,
             )
 
-            # Run category assignment (optional)
+            # Run code assignment (optional)
             if RUN_ASSIGNMENT:
                 extraction_metadata = load_extraction_metadata()
+                # Collect attribute_assignments from pipeline
+                all_attr_assignments = {}
+                for domain_result in pipeline_result.partition_results.values():
+                    all_attr_assignments.update(domain_result.attribute_assignments)
                 assigned_results = run_code_assignment(
                     ideas_models=ideas_models,
                     mece_results=pydantic_results,
@@ -608,6 +621,7 @@ if __name__ == "__main__":
                     extraction_metadata=extraction_metadata,
                     prompt_printer=prompt_printer,
                     codes=pipeline_result.codes,
+                    attribute_assignments=all_attr_assignments,
                 )
             else:
                 print("\n  Category assignment skipped (RUN_ASSIGNMENT = False)")

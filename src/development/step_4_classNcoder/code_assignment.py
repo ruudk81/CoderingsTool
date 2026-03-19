@@ -130,6 +130,7 @@ class CodeAssigner:
         extraction_metadata: Optional[models.ExtractionMetadata] = None,
         prompt_printer=None,
         codes: List[CodeFromAttributes] = None,
+        attribute_assignments: Optional[Dict[str, str]] = None,
     ):
         self._config = config
         self._ideas_models = ideas_models
@@ -171,8 +172,8 @@ class CodeAssigner:
         self._other_id: Optional[str] = None
         self._other_label: Optional[str] = None
 
-        # Attribute assignments from dual mode (idea_id -> attribute name)
-        self._attribute_assignments: Dict[str, str] = {}
+        # Pre-assigned attributes from pipeline step 4a (idea_id -> attribute name)
+        self._attribute_assignments: Dict[str, str] = attribute_assignments or {}
 
         # Processing stats
         self._stats = {
@@ -707,10 +708,6 @@ class CodeAssigner:
                         await self._tpm_tracker.record(actual_total)
                     if self._rpm_tracker:
                         await self._rpm_tracker.record()
-
-                # Store attribute assignment
-                if result.assigned_attribute:
-                    self._attribute_assignments[idea.idea_id] = result.assigned_attribute
 
                 # Wrap into batch format
                 wrapped = CodeAssignmentBatch(
