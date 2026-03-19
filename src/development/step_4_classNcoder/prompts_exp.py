@@ -1346,12 +1346,15 @@ def _build_codes_with_attributes_block(
     """Format codes with their source attributes for assignment prompt."""
     lines = []
     for i, code in enumerate(codes, 1):
+        diagnostic = getattr(code, 'diagnostic_test', '') or ''
         indicators = ", ".join(code.typical_indicators[:5]) if code.typical_indicators else "(none)"
         block = (
             f"[C{i}] {code.code_name}\n"
             f"    Definition: {code.definition}\n"
-            f"    Indicators: {indicators}"
         )
+        if diagnostic:
+            block += f"    Diagnostic: {diagnostic}\n"
+        block += f"    Indicators: {indicators}"
         if code.source_attributes:
             attrs = "\n".join(f"      - {a}" for a in code.source_attributes)
             block += f"\n    Attributes:\n{attrs}"

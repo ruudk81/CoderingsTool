@@ -226,6 +226,7 @@ class CodeAssigner:
         for name, mece_res in self._mece_results.items():
             if mece_res.facet_assignments:
                 self._facet_lookup.update(mece_res.facet_assignments)
+
         if verbose:
             print(f"  Facet lookup: {len(self._facet_lookup)} entries")
 
@@ -1186,90 +1187,63 @@ class CodeAssigner:
     def _print_assignment_summary(
         output: List[CodeAssignedModel],
     ):
-        """Print per-partition assignment summary, grouped by parent when available."""
-        partition_stats: Dict[str, Dict] = {}
+        """Print assignment summary: codes with their attributes nested underneath."""
+        # Collect stats per code: count + attribute breakdown
+        code_stats: Dict[str, Dict] = {}
+        total_ideas = 0
+        total_assigned = 0
+        all_confidences = []
 
         for resp in output:
             if not resp.response_ideas:
                 continue
             for idea in resp.response_ideas:
-                pt = idea.partition_name or "(unknown)"
-                if pt not in partition_stats:
-                    partition_stats[pt] = {
-                        "total": 0,
-                        "assigned": 0,
+                total_ideas += 1
+                if not idea.assigned_category:
+                    continue
+                total_assigned += 1
+                conf = idea.category_confidence or 0.0
+                all_confidences.append(conf)
+
+                code = idea.assigned_category
+                if code not in code_stats:
+                    code_stats[code] = {
+                        "count": 0,
                         "confidences": [],
-                        "categories": {},
-                        "parent_groups": {},
-                        "has_parents": False,
+                        "attributes": {},
                     }
-                stats = partition_stats[pt]
-                stats["total"] += 1
-                if idea.assigned_category:
-                    stats["assigned"] += 1
-                    stats["confidences"].append(
-                        idea.category_confidence or 0.0
-                    )
-                    cat = idea.assigned_category
-                    stats["categories"][cat] = (
-                        stats["categories"].get(cat, 0) + 1
-                    )
-                    if idea.parent_category:
-                        stats["has_parents"] = True
-                        parent = idea.parent_category
-                        if parent not in stats["parent_groups"]:
-                            stats["parent_groups"][parent] = {}
-                        stats["parent_groups"][parent][cat] = (
-                            stats["parent_groups"][parent].get(cat, 0) + 1
-                        )
+                code_stats[code]["count"] += 1
+                code_stats[code]["confidences"].append(conf)
+
+                attr = idea.assigned_attribute or "(no attribute)"
+                code_stats[code]["attributes"][attr] = (
+                    code_stats[code]["attributes"].get(attr, 0) + 1
+                )
+
+        avg_conf = (
+            sum(all_confidences) / len(all_confidences)
+            if all_confidences else 0.0
+        )
 
         print(f"\n  {'─'*60}")
         print(f"  ASSIGNMENT SUMMARY")
         print(f"  {'─'*60}")
+        print(f"  Assigned: {total_assigned}/{total_ideas}  "
+              f"Avg confidence: {avg_conf:.2f}")
+        print(f"  Codes: {len(code_stats)}")
 
-        for pt in sorted(partition_stats.keys()):
-            stats = partition_stats[pt]
-            avg_conf = (
+        for code, stats in sorted(
+            code_stats.items(), key=lambda x: -x[1]["count"]
+        ):
+            code_conf = (
                 sum(stats["confidences"]) / len(stats["confidences"])
                 if stats["confidences"] else 0.0
             )
-            print(f"\n  Partition: {pt}")
-            print(f"    Assigned: {stats['assigned']}/{stats['total']}")
-            print(f"    Avg confidence: {avg_conf:.2f}")
+            print(f"\n    {code}: {stats['count']}  "
+                  f"(conf {code_conf:.2f})")
 
-            if stats["has_parents"] and stats["parent_groups"]:
-                print(f"    Categories ({len(stats['categories'])}):")
-                parent_totals = {
-                    p: sum(cats.values())
-                    for p, cats in stats["parent_groups"].items()
-                }
-                sorted_parents = sorted(
-                    parent_totals, key=lambda p: -parent_totals[p]
-                )
-                for parent in sorted_parents:
-                    print(f"      {parent} ({parent_totals[parent]}):")
-                    children = stats["parent_groups"][parent]
-                    for cat, count in sorted(
-                        children.items(), key=lambda x: -x[1]
-                    ):
-                        print(f"        {cat}: {count}")
-                # Orphan categories (e.g., "overig/anders" — no parent)
-                parented_cats = set()
-                for children in stats["parent_groups"].values():
-                    parented_cats.update(children.keys())
-                orphans = {
-                    c: n for c, n in stats["categories"].items()
-                    if c not in parented_cats
-                }
-                if orphans:
-                    for cat, count in sorted(
-                        orphans.items(), key=lambda x: -x[1]
-                    ):
-                        print(f"      {cat}: {count}")
-            else:
-                print(f"    Categories ({len(stats['categories'])}):")
-                for cat, count in sorted(
-                    stats["categories"].items(),
-                    key=lambda x: -x[1],
-                ):
-                    print(f"      {cat}: {count}")
+            # Show attributes under each code
+            for attr, count in sorted(
+                stats["attributes"].items(), key=lambda x: -x[1]
+            ):
+                print(f"      {attr}: {count}")
