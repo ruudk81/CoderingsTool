@@ -1277,13 +1277,42 @@ class QualitativeResearcher:
             for i, batch in enumerate(idea_batches)
         ))
 
-        for assignments in batch_results:
+        # Build expected IDs per batch for validation (BP1)
+        batch_expected_ids = [
+            {idea.idea_id for idea in batch} for batch in idea_batches
+        ]
+
+        for batch_idx, assignments in enumerate(batch_results):
+            expected_ids = batch_expected_ids[batch_idx] if batch_idx < len(batch_expected_ids) else set()
+
             for assignment in assignments:
-                facet_name = facet_id_to_name.get(
-                    assignment.assigned_facet_id,
-                    assignment.assigned_facet_id,
-                )
+                # BP1: Validate returned idea_id against input batch
+                if assignment.idea_id not in expected_ids:
+                    print(f"    ID DRIFT: LLM returned unexpected idea_id "
+                          f"'{assignment.idea_id}' in batch {batch_idx} — skipping")
+                    continue
+
+                # Fix 2 (BP6): Reject invalid facet_id — no raw string fallback
+                facet_name = facet_id_to_name.get(assignment.assigned_facet_id)
+                if facet_name is None:
+                    print(f"    WARNING: Invalid facet_id '{assignment.assigned_facet_id}' "
+                          f"for idea '{assignment.idea_id}' — skipping")
+                    continue
+
+                # Fix 3: Detect duplicate assignments
+                if assignment.idea_id in all_assignments:
+                    print(f"    WARNING: Duplicate assignment for '{assignment.idea_id}' — "
+                          f"overwriting '{all_assignments[assignment.idea_id]}' with '{facet_name}'")
+
                 all_assignments[assignment.idea_id] = facet_name
+
+        # BP3 + BP4: Iterate ALL originals, create fallback for missing, count reconciliation
+        expected_all = {idea.idea_id for idea in ideas}
+        missing = expected_all - set(all_assignments.keys())
+        if missing:
+            print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
+            for idea_id in missing:
+                all_assignments[idea_id] = "__UNASSIGNED__"
 
         return all_assignments
 
@@ -1376,13 +1405,43 @@ class QualitativeResearcher:
             for i, batch in enumerate(idea_batches)
         ))
 
-        for assignments in batch_results:
+        # Build expected IDs per batch for validation (BP1)
+        batch_expected_ids = [
+            {idea.idea_id for idea in batch} for batch in idea_batches
+        ]
+
+        for batch_idx, assignments in enumerate(batch_results):
+            expected_ids = batch_expected_ids[batch_idx] if batch_idx < len(batch_expected_ids) else set()
+
             for assignment in assignments:
-                attr_name = attr_id_to_name.get(
-                    assignment.assigned_attribute_id,
-                    assignment.assigned_attribute_id,
-                )
+                # BP1: Validate returned idea_id against input batch
+                if assignment.idea_id not in expected_ids:
+                    print(f"    ID DRIFT: LLM returned unexpected idea_id "
+                          f"'{assignment.idea_id}' in attr batch {batch_idx} — skipping")
+                    continue
+
+                # Fix 6 (BP6): Reject invalid attribute_id — no raw string fallback
+                attr_name = attr_id_to_name.get(assignment.assigned_attribute_id)
+                if attr_name is None:
+                    print(f"    WARNING: Invalid attribute_id '{assignment.assigned_attribute_id}' "
+                          f"for idea '{assignment.idea_id}' — skipping")
+                    continue
+
+                # Detect duplicate assignments
+                if assignment.idea_id in all_assignments:
+                    print(f"    WARNING: Duplicate attr assignment for '{assignment.idea_id}' — "
+                          f"overwriting '{all_assignments[assignment.idea_id]}' with '{attr_name}'")
+
                 all_assignments[assignment.idea_id] = attr_name
+
+        # BP3 + BP4: Iterate ALL originals, create fallback for missing
+        expected_all = {idea.idea_id for idea in ideas}
+        missing = expected_all - set(all_assignments.keys())
+        if missing:
+            print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no attribute assignment "
+                  f"in facet '{facet_name}'")
+            for idea_id in missing:
+                all_assignments[idea_id] = "__UNASSIGNED__"
 
         return all_assignments
 
