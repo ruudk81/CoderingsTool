@@ -62,7 +62,7 @@ EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 # All defaults defined in config_classNcoder_exp.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="ladder",              # see config_classNcoder_exp.py for all valid values
+    label_source="idea",                # show idea text only (includes template_prefix), not full ladder
     label_prefix="",                   # "" or any static prefix string
     include_valence=True,              # prepend [+]/[-]/[0] valence tag to labels
 )

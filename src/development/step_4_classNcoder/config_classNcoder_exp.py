@@ -36,7 +36,7 @@ class CategoriesConfig:
     # Computed composites (assembled from stored fields by format_label()):
     #   "ladder"     — instance → interpretation → abstraction
     #   "idea_rungs" — idea → interpretation → abstraction
-    label_source: str = "ladder"
+    label_source: str = "idea"
 
     # Optional prefix prepended to each label string before processing.
     # "" = no prefix (default)
