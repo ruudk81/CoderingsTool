@@ -28,7 +28,7 @@ from development.step_4_classNcoder.config_classNcoder_exp import (
 )
 from development.step_4_classNcoder.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
 from development.step_4_classNcoder.qualitative_researcher import (
-    QualitativeResearcher, PipelineResult, DomainResult, TaxonomyResult,
+    QualitativeResearcher, PipelineResult, TaxonomyResult,
 )
 from development.step_4_classNcoder.models_exp import (
     DomainSet, DomainResultModel, CodingResultsCache, TaxonomyResultsCache,
@@ -222,6 +222,57 @@ def print_taxonomy_results(
     print(f"  Ideas assigned (P2):     {total_assignments}")
     print(f"  Attributes (P3):         {total_attributes}")
     print(f"  Ideas with attrs (P4a):  {total_attr_assigned}")
+    print(f"{'='*80}\n")
+
+
+def print_codebook_results(pipeline_result: PipelineResult):
+    """Print codebook results (P4-P4.5): codes with definitions and source attributes."""
+    print(f"\n{'='*80}")
+    print(f"CODEBOOK "
+          f"({len(pipeline_result.codes)} codes)")
+    print(f"{'='*80}")
+
+    for j, code in enumerate(pipeline_result.codes, 1):
+        indicators = ", ".join(code.typical_indicators[:5]) if code.typical_indicators else "(none)"
+        sources = ", ".join(code.source_attributes[:5]) if code.source_attributes else "(none)"
+        valence = getattr(code, 'valence', '') or ''
+        diagnostic = getattr(code, 'diagnostic_test', '') or ''
+        print(f"\n    [{j}] {code.code_name}")
+        print(f"        Definition: {code.definition}")
+        if diagnostic:
+            print(f"        Diagnostic: {diagnostic}")
+        if valence:
+            print(f"        Valence: {valence}")
+        print(f"        Indicators: {indicators}")
+        print(f"        Source attributes: {sources}")
+
+    if pipeline_result.codebook_narrative:
+        print(f"\n{'='*80}")
+        print(f"CODE GENERATION EVALUATION")
+        print(f"{'='*80}")
+        print(f"  {pipeline_result.codebook_narrative}")
+
+    print(f"\n{'='*80}")
+    print(f"Total codes: {len(pipeline_result.codes)}")
+    print(f"{'='*80}\n")
+
+
+def print_assignment_results(assigned_results):
+    """Print assignment summary."""
+    total_ideas = sum(
+        len(r.response_ideas or []) for r in assigned_results
+    )
+    assigned_count = sum(
+        1 for r in assigned_results
+        for idea in (r.response_ideas or [])
+        if idea.assigned_code
+    )
+    print(f"\n{'='*80}")
+    print(f"ASSIGNMENT SUMMARY")
+    print(f"{'='*80}")
+    print(f"  Responses:       {len(assigned_results)}")
+    print(f"  Total ideas:     {total_ideas}")
+    print(f"  Ideas assigned:  {assigned_count}")
     print(f"{'='*80}\n")
 
 
@@ -817,6 +868,9 @@ def run_codebook_from_cache():
         verbose=CONFIG.verbose,
     )
 
+    # Print codebook results
+    print_codebook_results(pipeline_result)
+
     return partition_set, pydantic_results, pipeline_result, prompt_printer
 
 
@@ -871,6 +925,9 @@ def run_assignment_only():
         codes=codes,
         attribute_assignments=all_attr_assignments,
     )
+
+    # Print assignment summary
+    print_assignment_results(assigned_results)
 
     return assigned_results, prompt_printer
 
