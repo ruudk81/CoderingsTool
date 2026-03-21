@@ -386,7 +386,10 @@ Provide output as valid JSON following the response schema provided."""
 class FacetAssignment(BaseModel):
     """Single idea-to-facet assignment."""
     idea_id: str = Field(
-        ..., description="The idea_id from the input"
+        ..., description="The EXACT idea_id from the input. Do not modify."
+    )
+    instance: str = Field(
+        ..., description="Echo back the EXACT instance text from the input for this idea_id."
     )
     assigned_facet_id: str = Field(
         ..., description=(
@@ -533,7 +536,10 @@ Provide output as valid JSON following the response schema provided.
 class AttributeAssignment(BaseModel):
     """Single idea-to-attribute assignment."""
     idea_id: str = Field(
-        ..., description="The idea_id from the input"
+        ..., description="The EXACT idea_id from the input. Do not modify."
+    )
+    instance: str = Field(
+        ..., description="Echo back the EXACT instance text from the input for this idea_id."
     )
     assigned_attribute_id: str = Field(
         ..., description=(

@@ -1277,34 +1277,50 @@ class QualitativeResearcher:
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Build expected IDs per batch for validation (BP1)
-        batch_expected_ids = [
-            {idea.idea_id for idea in batch} for batch in idea_batches
+        # BP1: Build original idea lookup per batch for validation + content cross-check
+        from difflib import SequenceMatcher
+        batch_idea_lookups = [
+            {idea.idea_id: idea for idea in batch} for batch in idea_batches
         ]
 
         for batch_idx, assignments in enumerate(batch_results):
-            expected_ids = batch_expected_ids[batch_idx] if batch_idx < len(batch_expected_ids) else set()
+            original_lookup = batch_idea_lookups[batch_idx] if batch_idx < len(batch_idea_lookups) else {}
 
             for assignment in assignments:
-                # BP1: Validate returned idea_id against input batch
-                if assignment.idea_id not in expected_ids:
+                # BP1: Validate returned idea_id exists in original batch
+                original_idea = original_lookup.get(assignment.idea_id)
+                if original_idea is None:
                     print(f"    ID DRIFT: LLM returned unexpected idea_id "
                           f"'{assignment.idea_id}' in batch {batch_idx} — skipping")
                     continue
+
+                # Content cross-validation: compare returned instance vs original
+                original_instance = getattr(original_idea, 'instance', '') or ''
+                returned_instance = getattr(assignment, 'instance', '') or ''
+                if original_instance and returned_instance:
+                    similarity = SequenceMatcher(
+                        None, returned_instance.lower(), original_instance.lower()
+                    ).ratio()
+                    if similarity < 0.7:
+                        print(f"    CONTENT DRIFT: idea '{original_idea.idea_id}' — "
+                              f"returned instance '{returned_instance}' doesn't match "
+                              f"original '{original_instance}' (similarity: {similarity:.2f}) — skipping")
+                        continue
 
                 # Fix 2 (BP6): Reject invalid facet_id — no raw string fallback
                 facet_name = facet_id_to_name.get(assignment.assigned_facet_id)
                 if facet_name is None:
                     print(f"    WARNING: Invalid facet_id '{assignment.assigned_facet_id}' "
-                          f"for idea '{assignment.idea_id}' — skipping")
+                          f"for idea '{original_idea.idea_id}' — skipping")
                     continue
 
                 # Fix 3: Detect duplicate assignments
-                if assignment.idea_id in all_assignments:
-                    print(f"    WARNING: Duplicate assignment for '{assignment.idea_id}' — "
-                          f"overwriting '{all_assignments[assignment.idea_id]}' with '{facet_name}'")
+                if original_idea.idea_id in all_assignments:
+                    print(f"    WARNING: Duplicate assignment for '{original_idea.idea_id}' — "
+                          f"overwriting '{all_assignments[original_idea.idea_id]}' with '{facet_name}'")
 
-                all_assignments[assignment.idea_id] = facet_name
+                # BP1: Always store under ORIGINAL idea_id
+                all_assignments[original_idea.idea_id] = facet_name
 
         # BP3 + BP4: Iterate ALL originals, create fallback for missing, count reconciliation
         expected_all = {idea.idea_id for idea in ideas}
@@ -1405,34 +1421,50 @@ class QualitativeResearcher:
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Build expected IDs per batch for validation (BP1)
-        batch_expected_ids = [
-            {idea.idea_id for idea in batch} for batch in idea_batches
+        # BP1: Build original idea lookup per batch for validation + content cross-check
+        from difflib import SequenceMatcher
+        batch_idea_lookups = [
+            {idea.idea_id: idea for idea in batch} for batch in idea_batches
         ]
 
         for batch_idx, assignments in enumerate(batch_results):
-            expected_ids = batch_expected_ids[batch_idx] if batch_idx < len(batch_expected_ids) else set()
+            original_lookup = batch_idea_lookups[batch_idx] if batch_idx < len(batch_idea_lookups) else {}
 
             for assignment in assignments:
-                # BP1: Validate returned idea_id against input batch
-                if assignment.idea_id not in expected_ids:
+                # BP1: Validate returned idea_id exists in original batch
+                original_idea = original_lookup.get(assignment.idea_id)
+                if original_idea is None:
                     print(f"    ID DRIFT: LLM returned unexpected idea_id "
                           f"'{assignment.idea_id}' in attr batch {batch_idx} — skipping")
                     continue
+
+                # Content cross-validation: compare returned instance vs original
+                original_instance = getattr(original_idea, 'instance', '') or ''
+                returned_instance = getattr(assignment, 'instance', '') or ''
+                if original_instance and returned_instance:
+                    similarity = SequenceMatcher(
+                        None, returned_instance.lower(), original_instance.lower()
+                    ).ratio()
+                    if similarity < 0.7:
+                        print(f"    CONTENT DRIFT: idea '{original_idea.idea_id}' — "
+                              f"returned instance '{returned_instance}' doesn't match "
+                              f"original '{original_instance}' (similarity: {similarity:.2f}) — skipping")
+                        continue
 
                 # Fix 6 (BP6): Reject invalid attribute_id — no raw string fallback
                 attr_name = attr_id_to_name.get(assignment.assigned_attribute_id)
                 if attr_name is None:
                     print(f"    WARNING: Invalid attribute_id '{assignment.assigned_attribute_id}' "
-                          f"for idea '{assignment.idea_id}' — skipping")
+                          f"for idea '{original_idea.idea_id}' — skipping")
                     continue
 
                 # Detect duplicate assignments
-                if assignment.idea_id in all_assignments:
-                    print(f"    WARNING: Duplicate attr assignment for '{assignment.idea_id}' — "
-                          f"overwriting '{all_assignments[assignment.idea_id]}' with '{attr_name}'")
+                if original_idea.idea_id in all_assignments:
+                    print(f"    WARNING: Duplicate attr assignment for '{original_idea.idea_id}' — "
+                          f"overwriting '{all_assignments[original_idea.idea_id]}' with '{attr_name}'")
 
-                all_assignments[assignment.idea_id] = attr_name
+                # BP1: Always store under ORIGINAL idea_id
+                all_assignments[original_idea.idea_id] = attr_name
 
         # BP3 + BP4: Iterate ALL originals, create fallback for missing
         expected_all = {idea.idea_id for idea in ideas}
