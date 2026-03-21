@@ -156,7 +156,7 @@ Note: unlike §5, this function doesn't accept `domain_definition` at all.
 | `parent_facet` required in schema but prompt never asks for it | `DiscoveredAttribute.parent_facet` | Same as §5 — redundant echo-back of the facet the LLM is already told it's working in |
 | `example_observations` required but prompt never mentions selecting examples when merging | `DiscoveredAttribute.example_observations` (2-3) | Prompt consolidation rules focus on merge/overlap logic but give no guidance about preserving representative examples |
 
-### 6.3 Cross-section observation: §3 vs §6 consolidation pattern mismatch
+### 6.3 Cross-section observation: §3 vs §6 consolidation pattern mismatch — DONE (§3 already had strong pattern; §8 upgraded)
 
 §3 (Facet Consolidation) and §6 (Attribute Chunk Consolidation) do the same job at different taxonomy levels — merge chunk-level discoveries. But they use different instruction patterns:
 
@@ -213,7 +213,7 @@ Note: `domain_name` and `domain_definition` ARE both used here (unlike §5/§6).
 
 Unlike §5/§6 where `parent_facet` was redundant (all attributes belong to the same facet), here it's correct — this prompt consolidates *across* facets, so the LLM must decide which facet each surviving attribute belongs to.
 
-### 8.4 Cross-section observation: consolidation instruction pattern
+### 8.4 Cross-section observation: consolidation instruction pattern — DONE
 
 §8 uses the `<scratchpad>` approach (same as §3), not the `<strict_consolidation_rule>` + `<disambiguation_test>` + `<precedence_rule>` pattern from §6. Since §8 is the harder task (cross-facet dedup vs within-facet chunk merge), it could benefit even more from the stricter rules.
 

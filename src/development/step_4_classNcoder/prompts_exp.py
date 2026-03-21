@@ -1124,26 +1124,54 @@ Each attribute must be:
 </attribute_definition_guidance>
 
 ## YOUR TASK
-Deduplicate the attributes listed above. The same concept may have been discovered independently under multiple facets (e.g., "sparen" appearing under both "Financiële producten" and "Financiële functionaliteit"). Your job is to produce the fewest mutually exclusive attributes that cover all concepts, with each attribute assigned to its single best-fitting parent facet.
+Deduplicate the attributes listed above. The same concept may have been discovered independently under multiple facets. Your job is to produce the fewest mutually exclusive attributes that cover all concepts, with each attribute assigned to its single best-fitting parent facet.
 
-Important principles:
-- MERGE attributes that overlap in meaning, even if they were discovered under different facets
-- ASSIGN each surviving attribute to the ONE facet where it fits best
-- Do NOT restructure or rename facets — only deduplicate attributes
-- ENSURE mutual exclusivity: no two attributes in your final list should overlap in meaning
-- MAINTAIN full coverage: every concept from the input must be represented
-- When merging, pick the most representative example observations (2-3 examples)
-- For each consolidated attribute, list the original attribute names that were merged into it (source_attributes)
-- All attribute names and descriptions must be in {language}
+Do NOT restructure or rename facets — only deduplicate attributes.
 
-<scratchpad>
-Follow these steps:
-1. List all attributes across all facets, noting which facets each appears in
-2. Identify groups of attributes that overlap in meaning (same concept, different facet or wording)
-3. For each group, choose one consolidated attribute name and assign it to its best-fitting facet
-4. For each pair of surviving attributes, ask: "Could an observation plausibly belong to both?" If yes, merge them.
-5. Verify complete coverage of the original attribute set
-</scratchpad>
+<strict_consolidation_rule>
+1. MERGE OVERLAP (MANDATORY)
+All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different facets.
+
+2. ORTHOGONALITY (MAIN RULE)
+For each pair of attributes:
+"Can a single observation plausibly fall under both?"
+
+- Yes → merge
+- Doubt → merge
+- Only if clearly no → keep separate
+
+3. NO HIERARCHY
+Attributes must not be:
+- general vs. specific
+- principle vs. application
+If this occurs → merge
+
+4. NO OBJECT SPLITTING
+Do not split based on object (e.g., humans vs. animals)
+If the same underlying principle applies → merge
+
+5. MINIMALITY (MANDATORY)
+Use the smallest number of attributes that provides full coverage.
+If an attribute is not strictly necessary → remove it
+
+6. FACET ASSIGNMENT
+Assign each surviving attribute to the ONE facet where it fits best.
+</strict_consolidation_rule>
+
+<disambiguation_test>
+For any pair of attributes:
+"Can a clear rule assign every observation to exactly one attribute?"
+- No → merge
+</disambiguation_test>
+
+<precedence_rule>
+When rules conflict, prioritize:
+1. Non-overlap (orthogonality)
+2. Minimality (merge unless clearly distinct)
+3. Clarity for annotation
+
+When in doubt → merge attributes
+</precedence_rule>
 
 For each consolidated attribute, provide:
 - A short descriptive name (2-5 words)
