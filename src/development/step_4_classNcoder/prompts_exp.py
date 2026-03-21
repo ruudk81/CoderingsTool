@@ -1501,14 +1501,11 @@ The result must be conceptually clean, mutually exclusive, and easy for human co
 - Each candidate code is tagged with its source domain in parentheses
 - Codes from DIFFERENT domains that share similar names represent DIFFERENT phenomena
 - Do NOT merge codes across domains unless they are truly identical in meaning
-- Example: "Betrouwbaarheid" from customer service domain ≠ "Betrouwbaarheid" from brand identity domain
+- Example: "Reliability" from a customer service domain ≠ "Reliability" from a brand identity domain
 
 ### 10. ATTRIBUTE TYPE SEPARATION
 - Codes that differ in underlying mechanism must remain separate, even if they co-occur in responses
-- Maintain separation between different types of attributes, such as:
-  - Values-based attributes (ethics, sustainability, social responsibility)
-  - Functional attributes (products, usability, pricing, service quality)
-  - Perceptual attributes (image, recognition, personality, reputation)
+- If two codes describe different types of phenomena (e.g., values vs functional properties vs perceptions), they represent different mechanisms and must not be merged
 - Do NOT merge across attribute types into a single code
 
 ### 11. COVERAGE GUARD
@@ -1517,13 +1514,12 @@ The result must be conceptually clean, mutually exclusive, and easy for human co
 - Test: can you describe what this code covers in ONE sentence without using "and/or" more than once? If not, split it
 - Codes backed by many ideas carry more analytical value — do not merge them away lightly
 
-### 12. DO-NOT-MERGE DISTINCTIONS
-- The following types of distinctions must be preserved (do NOT merge):
-  - Ethics vs Trust (different underlying mechanisms)
-  - Service quality vs Usability (experience vs interface)
-  - Brand image vs Brand awareness (perception vs knowledge)
-  - Financial attractiveness vs Product availability (value vs range)
-  - General sentiment vs Specific attributes (vague vs concrete)
+### 12. PRESERVE DISTINCT MECHANISMS
+- Codes that differ in underlying mechanism must remain separate, even if they seem thematically related
+- Examples of distinctions that must be preserved:
+  - Evaluative judgments vs factual descriptions
+  - Causes vs consequences
+  - General impressions vs specific experiences
 - When in doubt whether two codes differ: they probably do — keep them separate
 
 </core_principles>

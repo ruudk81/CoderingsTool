@@ -271,7 +271,7 @@ All params wired in correctly. No dead params.
 | `source_attributes` not in output requirements | `ConsolidatedCode.source_attributes` | Same as above — input codes show "Source attributes:" but output requirements don't ask to track/merge these. |
 | `evaluation` not prompted for | `CodebookConsolidationResult.evaluation` | Wrapper field not requested in prompt (same as §9). |
 
-### 10.3 Hardcoded domain-specific content (2)
+### 10.3 Hardcoded domain-specific content (2) — DONE
 
 These principles contain examples that are specific to a banking/brand-association dataset and will not generalize:
 
