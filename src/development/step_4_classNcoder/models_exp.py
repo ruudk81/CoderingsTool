@@ -82,6 +82,25 @@ class CodingResultsCache(BaseModel):
 # CATEGORY ASSIGNMENT OUTPUT MODELS
 # =============================================================================
 
+# --- Internal wrapper models for code assignment (data-flow, not LLM response) ---
+
+class CodeAssignment(BaseModel):
+    """Single idea-to-code assignment (internal wrapper)."""
+    idea_id: str = Field(..., description="The idea_id from the input")
+    assigned_code_id: str = Field(
+        ..., description="The code ID from [C#] prefix (e.g. 'C1', 'C7'). ONLY the ID."
+    )
+    confidence: float = Field(..., description="Confidence (0.0 to 1.0)")
+    rationale: str = Field(..., description="Brief rationale")
+
+
+class CodeAssignmentBatch(BaseModel):
+    """Batch wrapper for uniform downstream handling."""
+    assignments: List[CodeAssignment] = Field(
+        ..., description="One assignment per idea"
+    )
+
+
 class CodeAssignedSubmodel(IdeasExtractedSubmodel):
     """Per-idea data with code + attribute assignment.
 

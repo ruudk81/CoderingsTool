@@ -314,7 +314,7 @@ All params wired in correctly. No dead params.
 | Docstring | line 1574 | "assign a single idea to a code AND attribute" | Update to "assign a single idea to a code" |
 | Class name | `CodeAttributeAssignment` | "Attribute" misleading — only handles code assignment | Rename to `CodeAssignmentResponse` or similar |
 
-### 11.4 Misplaced models
+### 11.4 Misplaced models — DONE
 
 `CodeAssignment` and `CodeAssignmentBatch` are defined here but are NOT LLM response models — they're post-hoc wrappers used by `code_assignment.py` (line 774) to add `idea_id` from the original task. They arguably belong in `models_exp.py` rather than `prompts_exp.py`.
 

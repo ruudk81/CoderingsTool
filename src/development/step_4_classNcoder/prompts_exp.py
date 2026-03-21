@@ -1575,23 +1575,8 @@ Provide output as valid JSON following the response schema provided."""
 # §11 CODE ASSIGNMENT (P5) — single idea
 # =============================================================================
 
-# ---- Internal wrapper models (used by code_assignment.py for downstream) ----
-
-class CodeAssignment(BaseModel):
-    """Single idea-to-code assignment (internal wrapper)."""
-    idea_id: str = Field(..., description="The idea_id from the input")
-    assigned_code_id: str = Field(
-        ..., description="The code ID from [C#] prefix (e.g. 'C1', 'C7'). ONLY the ID."
-    )
-    confidence: float = Field(..., description="Confidence (0.0 to 1.0)")
-    rationale: str = Field(..., description="Brief rationale")
-
-
-class CodeAssignmentBatch(BaseModel):
-    """Batch wrapper for uniform downstream handling."""
-    assignments: List[CodeAssignment] = Field(
-        ..., description="One assignment per idea"
-    )
+# Re-export data-flow wrapper models (canonical definition in models_exp.py)
+from .models_exp import CodeAssignment, CodeAssignmentBatch
 
 
 class CodeAttributeAssignment(BaseModel):
