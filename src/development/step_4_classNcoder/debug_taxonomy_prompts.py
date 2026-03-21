@@ -251,8 +251,8 @@ def main():
     if not prompts_files:
         print("\nNo prompts files found.")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m development.step_4_classNcoder_v2.run_experiment")
-        print("\n(prompts are always captured; PRINT_PROMPTS controls real-time output)")
+        print("  cd src && python -m development.step_4_classNcoder.run_experiment")
+        print("  (with RUN_MODE = 'taxonomy', 'codebook', or 'all')")
         return
 
     # Merge prompts from all files
