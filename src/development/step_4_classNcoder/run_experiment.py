@@ -53,7 +53,7 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-RUN_MODE = "all"  # "taxonomy" | "codebook" | "assignment" | "all"
+RUN_MODE = "taxonomy"  # "taxonomy" | "codebook" | "assignment" | "all"
 EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 
@@ -139,6 +139,91 @@ def load_extraction_metadata(
 # =============================================================================
 # RESULTS PRINTING
 # =============================================================================
+
+def print_taxonomy_results(
+    partition_set: DomainSet,
+    label_mappings: Dict[str, PartitionLabelMapping],
+    taxonomy_result: TaxonomyResult,
+):
+    """Print taxonomy results (P1-P3.5): domains, facets, attributes."""
+    print(f"\n{'='*80}")
+    print(f"TAXONOMY RESULTS "
+          f"({len(partition_set.partitions)} domains)")
+    print(f"{'='*80}")
+
+    for i, part in enumerate(partition_set.partitions, 1):
+        name = part.partition_name
+        mapping = label_mappings.get(name)
+        facets = taxonomy_result.partition_facets.get(name, [])
+        assignments = taxonomy_result.partition_assignments.get(name, {})
+        attributes = taxonomy_result.partition_attributes.get(name, {})
+
+        # Collect attribute assignment counts
+        domain_facet_ids = set(assignments.keys())
+        domain_attr_assigns = {
+            iid: aname for iid, aname in taxonomy_result.attribute_assignments.items()
+            if iid in domain_facet_ids
+        }
+        attr_counts = {}
+        for attr_name in domain_attr_assigns.values():
+            attr_counts[attr_name] = attr_counts.get(attr_name, 0) + 1
+
+        n_labels = taxonomy_result.partition_n_labels.get(name, 0)
+        n_chunks = taxonomy_result.partition_n_batches.get(name, 0)
+
+        print(f"\n{'─'*80}")
+        print(f"DOMAIN {i}: {name} "
+              f"(n={n_labels}, {n_chunks} chunk(s), "
+              f"{len(facets)} facets, {len(assignments)} assigned, "
+              f"{sum(len(a) for a in attributes.values())} attributes)")
+        print(f"{'─'*80}")
+
+        print(f"  Inclusion: {part.inclusion_definition}")
+
+        if mapping:
+            print(f"  Observations: {mapping.label_count} unique")
+
+        if facets:
+            print(f"\n  Facets ({len(facets)}):")
+            for j, facet in enumerate(facets, 1):
+                print(f"    {j}. {facet.facet_name}: {facet.facet_description}")
+
+        if attributes:
+            print(f"\n  Attributes per facet:")
+            for facet_name, attrs in sorted(attributes.items()):
+                print(f"    {facet_name} ({len(attrs)}):")
+                for attr in attrs:
+                    count = attr_counts.get(attr.attribute_name, 0)
+                    print(f"      - {attr.attribute_name} [{count} ideas]: "
+                          f"{attr.attribute_description}")
+
+    # Summary
+    total_labels = sum(m.label_count for m in label_mappings.values())
+    total_facets = sum(
+        len(taxonomy_result.partition_facets.get(name, []))
+        for name in taxonomy_result.partition_facets
+    )
+    total_assignments = sum(
+        len(a) for a in taxonomy_result.partition_assignments.values()
+    )
+    total_attributes = sum(
+        len(attrs)
+        for facet_attrs in taxonomy_result.partition_attributes.values()
+        for attrs in facet_attrs.values()
+    )
+    total_attr_assigned = len(taxonomy_result.attribute_assignments)
+
+    print(f"\n{'='*80}")
+    print(f"TAXONOMY SUMMARY")
+    print(f"{'='*80}")
+    print(f"  Domains:                 {len(partition_set.partitions)}")
+    print(f"  Total Observations:      {total_labels}")
+    print(f"  Facets (P1):             {total_facets}")
+    print(f"  Ideas assigned (P2):     {total_assignments}")
+    print(f"  Attributes (P3):         {total_attributes}")
+    print(f"  Ideas with attrs (P4a):  {total_attr_assigned}")
+    print(f"{'='*80}\n")
+
 
 def print_results(
     partition_set: DomainSet,
@@ -652,6 +737,9 @@ def run_taxonomy():
         dimension_description=dimension_description,
         verbose=CONFIG.verbose,
     )
+
+    # Print taxonomy results
+    print_taxonomy_results(partition_set, label_mappings, taxonomy_result)
 
     return partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer
 
