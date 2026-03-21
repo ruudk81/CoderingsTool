@@ -415,6 +415,9 @@ def main():
     # Print results
     print_results(partition_set, label_mappings, pipeline_result)
 
+    # Save prompts
+    save_prompts_to_json(prompt_printer)
+
     return partition_set, label_mappings, pipeline_result, ideas_models, prompt_printer
 
 
@@ -720,6 +723,57 @@ def run_code_assignment(
     return assigned_results
 
 
+def save_prompts_to_json(prompt_printer):
+    """Save captured prompts to JSON files (3-way split by stage)."""
+    if not prompt_printer or not prompt_printer.prompts:
+        return
+
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[VARIABLE],
+        is_merged=False,
+        sample_size=SAMPLE_SIZE,
+    )
+    prompts_dir = project_root / "exports" / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+
+    TAXONOMY_TYPES = {
+        "facet_discovery", "facet_consolidation", "facet_assignment",
+        "attribute_discovery", "attribute_chunk_consolidation",
+        "attribute_consolidation", "attribute_assignment",
+    }
+    CODEBOOK_TYPES = {
+        "code_generation_from_attributes", "codebook_consolidation",
+    }
+    ASSIGNMENT_TYPES = {"code_assignment", "dual_assignment"}
+
+    taxonomy_prompts = [
+        p for p in prompt_printer.prompts
+        if p.get("prompt_type") in TAXONOMY_TYPES
+    ]
+    codebook_prompts = [
+        p for p in prompt_printer.prompts
+        if p.get("prompt_type") in CODEBOOK_TYPES
+    ]
+    assignment_prompts = [
+        p for p in prompt_printer.prompts
+        if p.get("prompt_type") in ASSIGNMENT_TYPES
+    ]
+
+    base = f"step4_classNcoder_{variable_key}"
+    if taxonomy_prompts:
+        pp_tax = PromptPrinter(enabled=True)
+        pp_tax.prompts = taxonomy_prompts
+        pp_tax.save_prompts(str(prompts_dir / f"{base}_taxonomy.json"))
+    if codebook_prompts:
+        pp_code = PromptPrinter(enabled=True)
+        pp_code.prompts = codebook_prompts
+        pp_code.save_prompts(str(prompts_dir / f"{base}_codebook.json"))
+    if assignment_prompts:
+        pp_assign = PromptPrinter(enabled=True)
+        pp_assign.prompts = assignment_prompts
+        pp_assign.save_prompts(str(prompts_dir / f"{base}_assignment.json"))
+
+
 def _extract_metadata_context(extraction_metadata):
     """Extract survey context from extraction metadata."""
     survey_question = ""
@@ -791,6 +845,9 @@ def run_taxonomy():
 
     # Print taxonomy results
     print_taxonomy_results(partition_set, label_mappings, taxonomy_result)
+
+    # Save prompts
+    save_prompts_to_json(prompt_printer)
 
     return partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer
 
@@ -871,6 +928,9 @@ def run_codebook_from_cache():
     # Print codebook results
     print_codebook_results(pipeline_result)
 
+    # Save prompts
+    save_prompts_to_json(prompt_printer)
+
     return partition_set, pydantic_results, pipeline_result, prompt_printer
 
 
@@ -928,6 +988,9 @@ def run_assignment_only():
 
     # Print assignment summary
     print_assignment_results(assigned_results)
+
+    # Save prompts
+    save_prompts_to_json(prompt_printer)
 
     return assigned_results, prompt_printer
 
@@ -1036,55 +1099,6 @@ if __name__ == "__main__":
             print("Valid options: 'taxonomy', 'codebook', 'assignment', 'all'")
             prompt_printer = PromptPrinter()
 
-        # =====================================================================
-        # Save captured prompts to JSON (3-way split)
-        # =====================================================================
-        if prompt_printer.prompts:
-            variable_key = generate_enhanced_variable_key(
-                selected_variables=[VARIABLE],
-                is_merged=False,
-                sample_size=SAMPLE_SIZE,
-            )
-            prompts_dir = project_root / "exports" / "prompts"
-            prompts_dir.mkdir(parents=True, exist_ok=True)
-
-            # 3-way prompt split by stage
-            TAXONOMY_TYPES = {
-                "facet_discovery", "facet_consolidation", "facet_assignment",
-                "attribute_discovery", "attribute_chunk_consolidation",
-                "attribute_consolidation", "attribute_assignment",
-            }
-            CODEBOOK_TYPES = {
-                "code_generation_from_attributes", "codebook_consolidation",
-            }
-            ASSIGNMENT_TYPES = {"code_assignment", "dual_assignment"}
-
-            taxonomy_prompts = [
-                p for p in prompt_printer.prompts
-                if p.get("prompt_type") in TAXONOMY_TYPES
-            ]
-            codebook_prompts = [
-                p for p in prompt_printer.prompts
-                if p.get("prompt_type") in CODEBOOK_TYPES
-            ]
-            assignment_prompts = [
-                p for p in prompt_printer.prompts
-                if p.get("prompt_type") in ASSIGNMENT_TYPES
-            ]
-
-            base = f"step4_classNcoder_{variable_key}"
-            if taxonomy_prompts:
-                pp_tax = PromptPrinter(enabled=True)
-                pp_tax.prompts = taxonomy_prompts
-                pp_tax.save_prompts(str(prompts_dir / f"{base}_taxonomy.json"))
-            if codebook_prompts:
-                pp_code = PromptPrinter(enabled=True)
-                pp_code.prompts = codebook_prompts
-                pp_code.save_prompts(str(prompts_dir / f"{base}_codebook.json"))
-            if assignment_prompts:
-                pp_assign = PromptPrinter(enabled=True)
-                pp_assign.prompts = assignment_prompts
-                pp_assign.save_prompts(str(prompts_dir / f"{base}_assignment.json"))
     finally:
         sys.stdout = tee.original_stdout
 
