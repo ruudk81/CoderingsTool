@@ -96,13 +96,13 @@ Note: `partition_definition` IS used here (`{partition_name} — {partition_defi
 
 This prompt is the **reference pattern** — all params are wired in correctly via `<survey_context>` + `build_dimension_context_block()` + helper formatters. No dead params.
 
-### 4.2 Schema ↔ Prompt alignment (1 nit)
+### 4.2 Schema ↔ Prompt alignment (1 nit) — DONE (echo-back skipped by design)
 
 | Issue | Location | Detail |
 |-------|----------|--------|
 | Schema asks LLM to echo back idea text, prompt doesn't mention it | `FacetAssignment.idea` — "Echo back the EXACT idea text" | Prompt instructions (steps 1-5) never ask the LLM to return the idea text. Works via schema enforcement. This echo-back is used downstream for content-drift validation (`SequenceMatcher` in `qualitative_researcher.py`). |
 
-### 4.3 Observations
+### 4.3 Observations — DONE (valence tags now explained in instructions)
 
 - `other_label` is always passed as `None` by the orchestrator — the "Other" category feature exists but is never activated.
 - Valence tags (`[+]`, `[-]`, `[0]`) appear in ideas block but the prompt never explains what they mean or how they should influence assignment.
@@ -177,13 +177,13 @@ Note: unlike §5, this function doesn't accept `domain_definition` at all.
 
 Like §4, all params are wired in correctly via `<survey_context>` + `build_dimension_context_block()` + `<facet_context>` + helper formatters. No dead params.
 
-### 7.2 Schema ↔ Prompt alignment (1 nit)
+### 7.2 Schema ↔ Prompt alignment (1 nit) — DONE (echo-back skipped by design)
 
 | Issue | Location | Detail |
 |-------|----------|--------|
 | Schema asks LLM to echo back idea text, prompt doesn't mention it | `AttributeAssignment.idea` — "Echo back the EXACT idea text" | Same as §4 — works via schema enforcement, used for content-drift validation downstream |
 
-### 7.3 Observations
+### 7.3 Observations — DONE (valence tags now explained in instructions)
 
 - No `other_label` / "Other" fallback (unlike §4) — deliberate: every idea must map to a discovered attribute.
 - Valence tags (`[+]`, `[-]`, `[0]`) appear in ideas block but prompt doesn't explain them (same as §4).

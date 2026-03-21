@@ -554,7 +554,7 @@ Assign each idea to exactly ONE of these facets:
 
 <instructions>
 For each idea:
-1. Read the idea text.
+1. Read the idea text and valence ([+] positive, [-] negative, [0] neutral).
 2. Determine which facet best answers the question: {facet_question}
 3. Assign exactly ONE facet per idea. Return the facet ID from [F#] brackets (e.g. "F1", "F3"). Do NOT return the facet name.
 4. Assign "{other_label_display}" ONLY if no facet fits at all.
@@ -993,7 +993,7 @@ Assign each idea to exactly ONE of these attributes within the facet above:
 
 <instructions>
 For each idea:
-1. Read the idea text.
+1. Read the idea text and valence ([+] positive, [-] negative, [0] neutral).
 2. Determine which attribute best answers the question: {attr_question}
 3. Assign exactly ONE attribute per idea. Return the attribute ID from [A#] brackets (e.g. "A1", "A3"). Do NOT return the attribute name.
 4. Rate your confidence (0.0 to 1.0).
