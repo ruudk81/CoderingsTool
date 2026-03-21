@@ -1,7 +1,7 @@
 #%%
 #
 """
-Debug script for Step 5 Categories v2: Full LLM Request Inspector
+Debug script for Step 5 Taxonomy prompts (P1-P3.5): Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
 """
@@ -104,7 +104,7 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
 # File Loading (same pattern as step_3 debug_prompts.py)
 # =============================================================================
 
-PROMPT_MODE = "all"  # "generation", "assignment", or "all" (loads both)
+PROMPT_MODE = "all"  # "taxonomy", "codebook", or "all" (loads both)
 
 
 def get_prompts_files() -> list[Path]:
@@ -113,13 +113,13 @@ def get_prompts_files() -> list[Path]:
     prompts_dir = project_root / "exports" / "prompts"
     base = f"step4_classNcoder_{variable_key}"
 
-    if PROMPT_MODE == "generation":
-        return [prompts_dir / f"{base}_generation.json"]
-    elif PROMPT_MODE == "assignment":
-        return [prompts_dir / f"{base}_assignment.json"]
+    if PROMPT_MODE == "taxonomy":
+        return [prompts_dir / f"{base}_taxonomy.json"]
+    elif PROMPT_MODE == "codebook":
+        return [prompts_dir / f"{base}_codebook.json"]
     else:  # "all"
         files = []
-        for suffix in ("_generation.json", "_assignment.json"):
+        for suffix in ("_taxonomy.json", "_codebook.json"):
             f = prompts_dir / f"{base}{suffix}"
             if f.exists():
                 files.append(f)
@@ -239,7 +239,7 @@ def main():
     prompts_files = get_prompts_files()
 
     print("=" * 100)
-    print("DEBUG: Step 5 Categories v3 - Full LLM Request Inspector")
+    print("DEBUG: Step 5 Taxonomy & Codebook Prompt Inspector")
     print("Shows prompt text + Pydantic response model schemas (as seen by instructor)")
     print("=" * 100)
     print(f"Variable:     {VAR_NAME}")
