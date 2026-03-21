@@ -474,6 +474,8 @@ class CodeAssigner:
         # Per-task resolutions (from embedding pre-filter) take priority over global ID map
         id_resolution: Dict[str, str] = {}
         resolve_stats = {"resolved": 0, "fallback": 0, "unresolved": 0}
+        has_prefilter = bool(self._idea_code_candidates)
+
         for idea_id, assignment in assignment_lookup.items():
             # Try per-task resolution first (scoped IDs from embedding pre-filter)
             if idea_id in self._per_task_resolutions:
@@ -481,7 +483,15 @@ class CodeAssigner:
                 resolve_stats["resolved"] += 1
                 continue
 
-            # Fallback to global ID map (non-prefiltered mode)
+            # Fix 8b (BP1): When pre-filter is active, do NOT fall back to global
+            # because scoped C1-C5 map to DIFFERENT codes than global C1-C22
+            if has_prefilter:
+                print(f"    WARNING: No scoped resolution for idea '{idea_id}' "
+                      f"with pre-filter active — unassigned")
+                resolve_stats["unresolved"] += 1
+                continue
+
+            # Global ID map (only when no pre-filter)
             raw_id = getattr(assignment, 'assigned_code_id', '') or ''
             cat_id = self._normalize_id(raw_id)
             label = self._id_to_label.get(cat_id)
@@ -489,10 +499,12 @@ class CodeAssigner:
                 id_resolution[idea_id] = label
                 resolve_stats["resolved"] += 1
             elif raw_id:
+                # BP6: Log the fallback explicitly
+                print(f"    WARNING: Code ID '{cat_id}' not in global map for "
+                      f"idea '{idea_id}' — assigning to 'other'")
                 id_resolution[idea_id] = self._other_label or ""
                 resolve_stats["fallback"] += 1
             else:
-                id_resolution[idea_id] = ""
                 resolve_stats["unresolved"] += 1
 
         # Final stats
@@ -562,6 +574,10 @@ class CodeAssigner:
                             label = task_id_map.get(cat_id)
                             if label:
                                 self._per_task_resolutions[idea.idea_id] = label
+                            else:
+                                # Fix 8a (BP6): Log resolution failure
+                                print(f"    WARNING: Code ID '{cat_id}' not in scoped "
+                                      f"candidates for idea '{idea.idea_id}'")
                 except Exception as e:
                     error_type = type(e).__name__
                     error_str = str(e)
@@ -709,7 +725,18 @@ class CodeAssigner:
                     if self._rpm_tracker:
                         await self._rpm_tracker.record()
 
-                # Wrap into batch format
+                # BP6: Validate response before accessing fields
+                if result is None or not hasattr(result, 'assigned_code_id'):
+                    print(f"    WARNING: Empty or invalid response for idea "
+                          f"'{idea.idea_id}' — skipping")
+                    return None
+
+                if not result.assigned_code_id:
+                    print(f"    WARNING: No code_id in response for idea "
+                          f"'{idea.idea_id}' — skipping")
+                    return None
+
+                # Wrap into batch format (idea_id from original task, not LLM)
                 wrapped = CodeAssignmentBatch(
                     assignments=[CodeAssignment(
                         idea_id=idea.idea_id,
@@ -1063,18 +1090,31 @@ class CodeAssigner:
         assignment_lookup: dict,
         id_resolution: Dict[str, str],
     ) -> List[CodeAssignedModel]:
-        """Build CodeAssignedModel list preserving response structure."""
+        """Build CodeAssignedModel list preserving response structure.
+
+        BP3: Iterates ALL original ideas (not just successful assignments).
+        BP2: Creates fallback entries for unassigned ideas.
+        BP4: Logs count reconciliation.
+        """
         facet_lookup = self._facet_lookup
+        total_ideas = 0
+        unassigned_ideas = 0
 
         output = []
         for resp in self._ideas_models:
             new_ideas = []
             if resp.response_ideas:
                 for idea in resp.response_ideas:
+                    total_ideas += 1
                     assignment = assignment_lookup.get(idea.idea_id)
                     ct = self._normalize_key(idea.domain)
 
                     resolved_label = id_resolution.get(idea.idea_id)
+
+                    # BP2: Create fallback for unassigned ideas
+                    if not resolved_label:
+                        unassigned_ideas += 1
+                        resolved_label = "__UNASSIGNED__"
 
                     idea_data = idea.model_dump()
                     explicit_fields = {
@@ -1086,16 +1126,14 @@ class CodeAssigner:
                         **{k: v for k, v in idea_data.items()
                            if k in CodeAssignedSubmodel.model_fields
                            and k not in explicit_fields},
-                        assigned_code=(
-                            resolved_label or None
-                        ),
+                        assigned_code=resolved_label,
                         confidence=(
                             assignment.confidence
-                            if assignment else None
+                            if assignment else 0.0
                         ),
                         rationale=(
                             assignment.rationale
-                            if assignment else None
+                            if assignment else "No assignment from LLM"
                         ),
                         assigned_attribute=(
                             self._attribute_assignments.get(idea.idea_id)
@@ -1113,6 +1151,11 @@ class CodeAssigner:
                 response_ideas=new_ideas,
             )
             output.append(new_resp)
+
+        # BP4: Count reconciliation
+        if unassigned_ideas > 0:
+            print(f"    WARNING: {unassigned_ideas}/{total_ideas} ideas have no code assignment "
+                  f"({unassigned_ideas/max(total_ideas,1)*100:.1f}%)")
 
         return output
 
