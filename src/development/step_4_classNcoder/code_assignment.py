@@ -454,10 +454,36 @@ class CodeAssigner:
 
         elapsed = time.time() - start_time
 
-        # ── Phase 7: Handle timed-out tasks ──────────────────────────────────
+        # ── Phase 7: Retry timed-out tasks (BP5) ───────────────────────────
 
-        if timed_out and verbose:
-            print(f"\n  Timed out: {len(timed_out)} tasks (fallback, no retry)")
+        if timed_out:
+            if verbose:
+                print(f"\n  Retrying {len(timed_out)} timed-out tasks...")
+            retried = 0
+            for idx, task in timed_out:
+                try:
+                    result = await self._process_task_with_retry(task)
+                    if result is not None:
+                        results[idx] = result
+                        retried += 1
+                        self._stats['tasks_successful'] += 1
+
+                        # Per-task resolution for retried tasks
+                        task_id_map = task.get('task_id_to_label')
+                        if task_id_map and result.assignments:
+                            idea = task['idea']
+                            raw_id = result.assignments[0].assigned_code_id or ''
+                            cat_id = self._normalize_id(raw_id)
+                            label = task_id_map.get(cat_id)
+                            if label:
+                                self._per_task_resolutions[idea.idea_id] = label
+                except Exception as e:
+                    if verbose:
+                        print(f"    Retry failed for idea "
+                              f"'{task['idea'].idea_id}': {type(e).__name__}")
+            if verbose:
+                still_failed = len(timed_out) - retried
+                print(f"    Retried: {retried} recovered, {still_failed} still failed")
 
         # ── Phase 8: Collect assignments ─────────────────────────────────────
 
@@ -564,6 +590,12 @@ class CodeAssigner:
                     else:
                         results[task['result_index']] = result
                         self._stats['tasks_successful'] += 1
+
+                        # Fix 8c: Assert single assignment per task
+                        if len(result.assignments) != 1:
+                            print(f"    WARNING: Expected 1 assignment, got "
+                                  f"{len(result.assignments)} for task "
+                                  f"{task['result_index']}")
 
                         # Per-task ID resolution (for embedding pre-filter scoped IDs)
                         task_id_map = task.get('task_id_to_label')
