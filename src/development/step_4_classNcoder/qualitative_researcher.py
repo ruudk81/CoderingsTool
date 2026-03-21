@@ -129,6 +129,17 @@ class DomainResult:
 
 
 @dataclass
+class TaxonomyResult:
+    """Output of taxonomy stages P1-P3.5."""
+    partition_n_labels: Dict[str, int]
+    partition_n_batches: Dict[str, int]
+    partition_facets: Dict[str, List[DiscoveredFacet]]
+    partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
+    partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]]  # domain -> {facet -> [attrs]}
+    attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
+
+
+@dataclass
 class PipelineResult:
     """Complete pipeline output (v3)."""
     partition_results: Dict[str, DomainResult]
@@ -243,7 +254,7 @@ class QualitativeResearcher:
     # PUBLIC API
     # =========================================================================
 
-    def process_all_partitions(
+    def _prepare_context(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
         partition_set: DomainSet,
@@ -253,12 +264,8 @@ class QualitativeResearcher:
         dimension_name: str = "",
         dimension_description: str = "",
         verbose: bool = False,
-    ) -> PipelineResult:
-        """Process all partitions through the v3 inductive coding pipeline."""
-        print(f"\n{'='*70}")
-        print(f"INDUCTIVE CODE GENERATION v3: Category Discovery")
-        print(f"{'='*70}")
-
+    ):
+        """Shared setup: resolve dimension, build contexts, filter empty mappings."""
         # Resolve dimension definition from dimension_data.py
         dimension_def = None
         if dimension_name:
@@ -271,7 +278,6 @@ class QualitativeResearcher:
                 print(f"  WARNING: No DimensionDefinition found for '{dimension_name}'")
                 print(f"  Falling back to generic taxonomy language")
 
-        # Build shared prompt context
         dataset_context_section = self._build_dataset_context_section(dataset_context)
 
         prompt_context = PromptContext(
@@ -283,14 +289,70 @@ class QualitativeResearcher:
             dimension_def=dimension_def,
         )
 
-        # Build per-partition context
         partition_contexts = self._build_all_partition_contexts(partition_set)
 
-        # Filter empty mappings
         active_partitions = {
             name: mapping for name, mapping in label_mappings.items()
             if mapping.labels
         }
+
+        return prompt_context, partition_contexts, active_partitions
+
+    def process_all_partitions(
+        self,
+        label_mappings: Dict[str, PartitionLabelMapping],
+        partition_set: DomainSet,
+        survey_question: str = "",
+        language: str = "Dutch",
+        dataset_context: Optional[Dict[str, str]] = None,
+        dimension_name: str = "",
+        dimension_description: str = "",
+        verbose: bool = False,
+    ) -> PipelineResult:
+        """Run full pipeline: taxonomy (P1-P3.5) + codebook (P4-P4.5)."""
+        print(f"\n{'='*70}")
+        print(f"INDUCTIVE CODE GENERATION v3: Category Discovery")
+        print(f"{'='*70}")
+
+        prompt_context, partition_contexts, active_partitions = self._prepare_context(
+            label_mappings, partition_set, survey_question, language,
+            dataset_context, dimension_name, dimension_description, verbose,
+        )
+
+        if verbose:
+            total_labels = sum(m.label_count for m in active_partitions.values())
+            total_ideas = sum(len(m.ideas) for m in active_partitions.values())
+            n_partitions = len(active_partitions)
+            print(f"  Processing {n_partitions} domains concurrently "
+                  f"({total_labels} observations, {total_ideas} ideas)")
+            print(f"  Pipeline: P1-P3.5 taxonomy → P4-P4.5 codebook")
+
+        return asyncio.run(
+            self._process_all_async(
+                active_partitions, partition_contexts, prompt_context, verbose
+            )
+        )
+
+    def process_taxonomy_only(
+        self,
+        label_mappings: Dict[str, PartitionLabelMapping],
+        partition_set: DomainSet,
+        survey_question: str = "",
+        language: str = "Dutch",
+        dataset_context: Optional[Dict[str, str]] = None,
+        dimension_name: str = "",
+        dimension_description: str = "",
+        verbose: bool = False,
+    ) -> TaxonomyResult:
+        """Run taxonomy stages only (P1-P3.5): facets, attributes, assignments."""
+        print(f"\n{'='*70}")
+        print(f"TAXONOMY DISCOVERY (P1-P3.5)")
+        print(f"{'='*70}")
+
+        prompt_context, partition_contexts, active_partitions = self._prepare_context(
+            label_mappings, partition_set, survey_question, language,
+            dataset_context, dimension_name, dimension_description, verbose,
+        )
 
         if verbose:
             total_labels = sum(m.label_count for m in active_partitions.values())
@@ -299,13 +361,66 @@ class QualitativeResearcher:
             print(f"  Processing {n_partitions} domains concurrently "
                   f"({total_labels} observations, {total_ideas} ideas)")
             print(f"  Pipeline: P1 facet discovery → P2 facet assignment → "
-                  f"P3 attribute discovery → P4 code generation")
+                  f"P3 attribute discovery → P3.5 consolidation")
 
-        return asyncio.run(
-            self._process_all_async(
+        async def _run():
+            await self._initialize_async_resources(
                 active_partitions, partition_contexts, prompt_context, verbose
             )
+            return await self._process_taxonomy_async(
+                active_partitions, partition_contexts, prompt_context, verbose
+            )
+
+        return asyncio.run(_run())
+
+    def process_codebook_only(
+        self,
+        taxonomy: TaxonomyResult,
+        partition_set: DomainSet,
+        survey_question: str = "",
+        language: str = "Dutch",
+        dataset_context: Optional[Dict[str, str]] = None,
+        dimension_name: str = "",
+        dimension_description: str = "",
+        label_mappings: Optional[Dict[str, PartitionLabelMapping]] = None,
+        verbose: bool = False,
+    ) -> PipelineResult:
+        """Run codebook stages only (P4-P4.5) from a TaxonomyResult."""
+        print(f"\n{'='*70}")
+        print(f"CODEBOOK GENERATION (P4-P4.5)")
+        print(f"{'='*70}")
+
+        # Need label_mappings for bootstrap; use empty if not provided
+        if label_mappings is None:
+            label_mappings = {}
+
+        prompt_context, partition_contexts, active_partitions = self._prepare_context(
+            label_mappings, partition_set, survey_question, language,
+            dataset_context, dimension_name, dimension_description, verbose,
         )
+
+        async def _run():
+            # Initialize clients and rate limiters
+            # For codebook-only, bootstrap uses fallback if no labels available
+            if active_partitions:
+                await self._initialize_async_resources(
+                    active_partitions, partition_contexts, prompt_context, verbose
+                )
+            else:
+                # No labels available — use fallback rate limits
+                unique_models = {self._model_p1, self._model_p1_5, self._model_p2,
+                                 self._model_p3, self._model_p4}
+                self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
+                self._semaphore = asyncio.Semaphore(5)
+                self._rate_limiter = AsyncLimiter(1, time_period=0.1)
+                if verbose:
+                    print("  Using fallback rate limits (no labels for bootstrap)")
+
+            return await self._process_codebook_async(
+                taxonomy, partition_contexts, prompt_context, verbose
+            )
+
+        return asyncio.run(_run())
 
     # =========================================================================
     # ASYNC ORCHESTRATION
@@ -330,15 +445,14 @@ class QualitativeResearcher:
         output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
         return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
 
-    async def _process_all_async(
+    async def _initialize_async_resources(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
         partition_contexts: Dict[str, DomainContext],
         prompt_context: PromptContext,
         verbose: bool,
-    ) -> PipelineResult:
-        """Main async entry: bootstrap → P1 facet discovery → P2 facet assignment →
-        P3 attribute discovery → P4 code generation."""
+    ):
+        """Bootstrap: create clients, probe rate limits, set up concurrency."""
         # Create one client per unique model
         unique_models = {self._model_p1, self._model_p1_5, self._model_p2, self._model_p3, self._model_p4}
         self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
@@ -425,10 +539,9 @@ class QualitativeResearcher:
             for m in label_mappings.values()
         )
         n_domains = len(label_mappings)
-        # P2 tasks estimated per domain (will refine after P1)
-        est_p2_batches = n_domains * 3  # rough estimate
-        est_p3_tasks = n_domains * 5  # rough estimate
-        total_tasks = total_p1_chunks + est_p2_batches + est_p3_tasks + 1  # +1 for P4
+        est_p2_batches = n_domains * 3
+        est_p3_tasks = n_domains * 5
+        total_tasks = total_p1_chunks + est_p2_batches + est_p3_tasks + 1
 
         self._semaphore = asyncio.Semaphore(min(total_tasks, optimal))
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
@@ -445,6 +558,42 @@ class QualitativeResearcher:
             print(f"  Optimal by Little's Law: {little_law_conc}")
             print(f"  Concurrency (semaphore): {min(total_tasks, optimal)}")
 
+    async def _process_all_async(
+        self,
+        label_mappings: Dict[str, PartitionLabelMapping],
+        partition_contexts: Dict[str, DomainContext],
+        prompt_context: PromptContext,
+        verbose: bool,
+    ) -> PipelineResult:
+        """Main async entry: runs taxonomy (P1-P3.5) then codebook (P4-P4.5)."""
+        await self._initialize_async_resources(
+            label_mappings, partition_contexts, prompt_context, verbose
+        )
+
+        start_time = time.time()
+
+        taxonomy = await self._process_taxonomy_async(
+            label_mappings, partition_contexts, prompt_context, verbose
+        )
+
+        codebook_result = await self._process_codebook_async(
+            taxonomy, partition_contexts, prompt_context, verbose
+        )
+
+        total_elapsed = time.time() - start_time
+        if verbose:
+            print(f"\n  Pipeline complete in {total_elapsed:.1f}s")
+
+        return codebook_result
+
+    async def _process_taxonomy_async(
+        self,
+        label_mappings: Dict[str, PartitionLabelMapping],
+        partition_contexts: Dict[str, DomainContext],
+        prompt_context: PromptContext,
+        verbose: bool,
+    ) -> TaxonomyResult:
+        """Taxonomy stages P1-P3.5: facets, attributes, assignments."""
         start_time = time.time()
 
         # =================================================================
@@ -785,6 +934,35 @@ class QualitativeResearcher:
             print(f"  Phase 3.5 done in {t_phase35:.1f}s → "
                   f"{total_attrs_after} consolidated attributes")
 
+        taxonomy_elapsed = time.time() - start_time
+        if verbose:
+            print(f"\n  Taxonomy (P1-P3.5) complete in {taxonomy_elapsed:.1f}s")
+
+        return TaxonomyResult(
+            partition_n_labels=partition_n_labels,
+            partition_n_batches=partition_n_batches,
+            partition_facets=partition_facets,
+            partition_assignments=partition_assignments,
+            partition_attributes=partition_attributes,
+            attribute_assignments=attribute_assignments,
+        )
+
+    async def _process_codebook_async(
+        self,
+        taxonomy: TaxonomyResult,
+        partition_contexts: Dict[str, DomainContext],
+        prompt_context: PromptContext,
+        verbose: bool,
+    ) -> PipelineResult:
+        """Codebook stages P4-P4.5: code generation + consolidation."""
+        # Unpack taxonomy result
+        partition_facets = taxonomy.partition_facets
+        partition_assignments = taxonomy.partition_assignments
+        domain_facet_attributes = taxonomy.partition_attributes
+        attribute_assignments = taxonomy.attribute_assignments
+
+        start_time = time.time()
+
         # =================================================================
         # PHASE 4 (P4): Per-domain Code Generation
         # =================================================================
@@ -877,9 +1055,9 @@ class QualitativeResearcher:
             for i, code in enumerate(all_codes, 1):
                 print(f"    {i}. {code.code_name}: {code.definition}")
 
-        total_elapsed = time.time() - start_time
+        codebook_elapsed = time.time() - start_time
         if verbose:
-            print(f"\n  Pipeline complete in {total_elapsed:.1f}s")
+            print(f"\n  Codebook (P4-P4.5) complete in {codebook_elapsed:.1f}s")
 
         # Build DomainResult for each domain
         partition_results = {}
@@ -893,11 +1071,11 @@ class QualitativeResearcher:
             }
             partition_results[name] = DomainResult(
                 partition_name=name,
-                n_labels=partition_n_labels.get(name, 0),
-                n_batches=partition_n_batches.get(name, 0),
+                n_labels=taxonomy.partition_n_labels.get(name, 0),
+                n_batches=taxonomy.partition_n_batches.get(name, 0),
                 facets=partition_facets.get(name, []),
                 facet_assignments=partition_assignments.get(name, {}),
-                attributes=partition_attributes.get(name, {}),
+                attributes=taxonomy.partition_attributes.get(name, {}),
                 attribute_assignments=domain_attr_assigns,
             )
 
@@ -1313,10 +1491,10 @@ class QualitativeResearcher:
 
                 # Fix 2 (BP6): Reject invalid facet_id — no raw string fallback
                 facet_name = facet_id_to_name.get(assignment.assigned_facet_id)
-                if facet_name is None:
-                    print(f"    WARNING: Invalid facet_id '{assignment.assigned_facet_id}' "
-                          f"for idea '{original_idea.idea_id}' — skipping")
-                    continue
+                #if facet_name is None:
+                #    print(f"    WARNING: Invalid facet_id '{assignment.assigned_facet_id}' "
+                #          f"for idea '{original_idea.idea_id}' — skipping")
+                #    continue
 
                 # Fix 3: Detect duplicate assignments
                 if original_idea.idea_id in all_assignments:

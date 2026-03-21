@@ -54,7 +54,7 @@ class DomainSet(BaseModel):
 
 
 # =============================================================================
-# MECE CACHE MODELS
+# CACHE MODELS
 # =============================================================================
 
 class DomainResultModel(BaseModel):
@@ -68,8 +68,16 @@ class DomainResultModel(BaseModel):
     attribute_assignments: Dict[str, str] = Field(default_factory=dict)
 
 
+class TaxonomyResultsCache(BaseModel):
+    """Cache for taxonomy results (P1-P3.5): domains, facets, attributes."""
+    partition_set: DomainSet
+    partition_results: Dict[str, DomainResultModel]
+    label_counts: Dict[str, int] = Field(default_factory=dict)
+    label_source: str = ""
+
+
 class CodingResultsCache(BaseModel):
-    """Top-level cache wrapper for all category results."""
+    """Cache for full pipeline results (taxonomy + codes)."""
     partition_set: DomainSet
     partition_results: Dict[str, DomainResultModel]
     label_counts: Dict[str, int] = Field(default_factory=dict)
