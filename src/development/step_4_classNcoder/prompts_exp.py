@@ -1135,23 +1135,6 @@ def build_code_from_attributes_prompt(
         inventory_lines.append("")
     inventory_block = "\n".join(inventory_lines)
 
-    # Valence context section
-    valence_section = ""
-    if valence_label == "positive":
-        valence_section = """
-<valence_context>
-You are generating codes for POSITIVE and NEUTRAL responses only.
-Focus on codes that capture what people appreciate, value, or neutrally observe.
-</valence_context>
-"""
-    elif valence_label == "negative":
-        valence_section = """
-<valence_context>
-You are generating codes for NEGATIVE responses only.
-Focus on codes that capture complaints, criticisms, and suggestions for improvement.
-</valence_context>
-"""
-
     return f"""You are creating a qualitative codebook from a structured attribute inventory.
 
 <survey_context>
@@ -1163,7 +1146,7 @@ Language: {language}
 <dimension_context>
 Dimension: {dimension_name} — {dimension_description}
 </dimension_context>
-{valence_section}
+
 The attribute inventory below is organized by Domain > Facet > Attribute.
 Each attribute represents a concrete, observable phenomenon found in survey responses.
 
@@ -1213,6 +1196,11 @@ The final codebook should normally contain 3–5 codes unless the attributes cle
 
 Mutual Exclusivity Rule
 Codes must represent clearly different {dimension_name} phenomena so that responses can be coded consistently.
+
+Valence Sensitivity Rule
+Generate separate codes for positive and negative phenomena.
+Do not combine praise and criticism into a single code.
+If the attributes contain both positive and negative aspects, create distinct codes for each direction.
 
 Hierarchy Rule
 Only use attribute content to derive codes.
@@ -1293,23 +1281,19 @@ def build_codebook_consolidation_prompt(
     """Consolidate per-domain codes into a final parsimonious, MECE codebook.
 
     Args:
-        raw_codes: All codes from P4 (per-domain, valence-split)
-        code_provenance: Maps code index to "domain_name::pos" or "domain_name::neg"
+        raw_codes: All codes from P4 (per-domain)
+        code_provenance: Maps code index to domain_name
     """
-    # Format raw codes with valence tags (no domain provenance)
+    # Format raw codes with domain provenance tags
     code_lines = []
     for i, code in enumerate(raw_codes):
         provenance = code_provenance.get(i, "")
-        valence_tag = ""
-        if "::pos" in provenance:
-            valence_tag = "(+) "
-        elif "::neg" in provenance:
-            valence_tag = "(-) "
+        domain_tag = f"({provenance}) " if provenance else ""
 
         attrs = ", ".join(code.source_attributes[:5]) if code.source_attributes else "—"
         indicators = "; ".join(code.typical_indicators[:3]) if code.typical_indicators else "—"
         code_lines.append(
-            f"[C{i+1}] {valence_tag}{code.code_name}\n"
+            f"[C{i+1}] {domain_tag}{code.code_name}\n"
             f"      Definition: {code.definition}\n"
             f"      Indicators: {indicators}\n"
             f"      Source attributes: {attrs}"
@@ -1381,6 +1365,12 @@ The result must be conceptually clean, mutually exclusive, and easy for human co
 ### 8. ACTIONABILITY
 - Each code must represent something meaningful and actionable given the survey question
 - Remove or merge codes that are too abstract or too narrow to be useful through the lens of the survey question
+
+### 9. DOMAIN AWARENESS
+- Each candidate code is tagged with its source domain in parentheses
+- Codes from DIFFERENT domains that share similar names represent DIFFERENT phenomena
+- Do NOT merge codes across domains unless they are truly identical in meaning
+- Example: "Betrouwbaarheid" from customer service domain ≠ "Betrouwbaarheid" from brand identity domain
 
 </core_principles>
 

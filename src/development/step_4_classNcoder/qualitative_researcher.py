@@ -550,12 +550,6 @@ class QualitativeResearcher:
             label_mappings, partition_facets, partition_assignments
         )
 
-        # Track valences per (domain, facet) for P4 valence split
-        facet_valences: Dict[tuple, set] = {}
-        for (domain_name, facet_name), ideas in domain_facet_ideas.items():
-            valences = {getattr(idea, 'valence', '0') or '0' for idea in ideas}
-            facet_valences[(domain_name, facet_name)] = valences
-
         attr_tasks = {}
         for (domain_name, facet_name), ideas in domain_facet_ideas.items():
             # Find the facet object for description
@@ -793,16 +787,20 @@ class QualitativeResearcher:
                   f"{total_attrs_after} consolidated attributes")
 
         # =================================================================
-        # PHASE 4 (P4): Per-domain Code Generation with valence split
+        # PHASE 4 (P4): Per-domain Code Generation
         # =================================================================
         if verbose:
-            print(f"\n  Phase 4: Per-domain Code Generation (valence split)...")
+            print(f"\n  Phase 4: Per-domain Code Generation...")
 
         t_phase4 = time.time()
 
-        # Build per-domain tasks, split by valence
+        # Build one task per domain (no valence split — codes emerge naturally)
         p4_tasks = {}
         for domain_name in domain_facet_attributes:
+            domain_attrs = domain_facet_attributes.get(domain_name, {})
+            if not domain_attrs:
+                continue
+
             # Filter attribute_assignments to this domain
             domain_facet_ids = set(partition_assignments.get(domain_name, {}).keys())
             domain_attr_assigns = {
@@ -810,27 +808,17 @@ class QualitativeResearcher:
                 if iid in domain_facet_ids
             }
 
-            pos_attrs, neg_attrs = self._split_attributes_by_valence(
-                domain_facet_attributes, facet_valences, domain_name
+            p4_tasks[domain_name] = self._run_code_generation_from_attributes(
+                {domain_name: domain_attrs}, prompt_context,
+                valence_label="",
+                attribute_assignments=domain_attr_assigns,
             )
-            if pos_attrs:
-                p4_tasks[f"{domain_name}::pos"] = self._run_code_generation_from_attributes(
-                    {domain_name: pos_attrs}, prompt_context,
-                    valence_label="positive",
-                    attribute_assignments=domain_attr_assigns,
-                )
-            if neg_attrs:
-                p4_tasks[f"{domain_name}::neg"] = self._run_code_generation_from_attributes(
-                    {domain_name: neg_attrs}, prompt_context,
-                    valence_label="negative",
-                    attribute_assignments=domain_attr_assigns,
-                )
 
         p4_results = await asyncio.gather(*p4_tasks.values(), return_exceptions=True)
 
         # Collect all codes with provenance tracking
         all_codes = []
-        code_provenance = {}  # code index -> "domain::valence"
+        code_provenance = {}  # code index -> domain_name
         codebook_narratives = []
         for key, result in zip(p4_tasks.keys(), p4_results):
             if isinstance(result, Exception):
@@ -1688,25 +1676,6 @@ class QualitativeResearcher:
     # =========================================================================
     # PHASE 4 (P4): CODE GENERATION FROM ATTRIBUTES
     # =========================================================================
-
-    def _split_attributes_by_valence(
-        self,
-        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
-        facet_valences: Dict[tuple, set],
-        domain_name: str,
-    ) -> tuple:
-        """Split a domain's facet->attributes into positive/neutral vs negative."""
-        pos_attrs = {}
-        neg_attrs = {}
-        for facet_name, attributes in domain_facet_attributes.get(domain_name, {}).items():
-            valences = facet_valences.get((domain_name, facet_name), {"0"})
-            has_pos = bool(valences & {"+", "0"})
-            has_neg = "-" in valences
-            if has_pos:
-                pos_attrs[facet_name] = attributes
-            if has_neg:
-                neg_attrs[facet_name] = attributes
-        return pos_attrs, neg_attrs
 
     async def _run_code_generation_from_attributes(
         self,

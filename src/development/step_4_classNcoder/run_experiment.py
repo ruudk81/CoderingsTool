@@ -51,8 +51,8 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-RUN_ASSIGNMENT = False  # Set True to run category assignment after MECE discovery
-RUN_ASSIGNMENT_ONLY = True  # Set True to skip pipeline, run assignment from cache only
+RUN_ASSIGNMENT = True  # Set True to run category assignment after MECE discovery
+RUN_ASSIGNMENT_ONLY = False  # Set True to skip pipeline, run assignment from cache only
 EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 
