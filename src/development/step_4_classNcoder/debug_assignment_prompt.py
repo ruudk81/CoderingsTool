@@ -130,8 +130,8 @@ def main():
         print(f"\nERROR: No captured assignment prompts found at:")
         print(f"  {prompts_file}")
         print("\nRun assignment first:")
-        print("  Set RUN_ASSIGNMENT = True (or RUN_ASSIGNMENT_ONLY = True)")
         print("  cd src && python -m development.step_4_classNcoder.run_experiment")
+        print("  (with RUN_MODE = 'assignment' or 'all')")
         return
 
     print(f"Session ID:    {data.get('session_id', 'unknown')}")
