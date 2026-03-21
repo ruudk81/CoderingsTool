@@ -51,7 +51,7 @@ Language: {language}
 {taxonomy_block}   ← includes dimension + domain via build_dimension_context_block()
 ```
 
-### 2.2 Schema ↔ Prompt alignment (2 nits)
+### 2.2 Schema ↔ Prompt alignment (2 nits) — DONE
 
 | Issue | Location | Detail |
 |-------|----------|--------|
@@ -74,7 +74,7 @@ Same pattern as §2 — these are accepted but never interpolated:
 
 Note: `partition_definition` IS used here (`{partition_name} — {partition_definition}` in `<domain>` block), unlike §2 where it's dead.
 
-### 3.2 Schema ↔ Prompt alignment (1)
+### 3.2 Schema ↔ Prompt alignment (1) — DONE
 
 | Issue | Location | Detail |
 |-------|----------|--------|
@@ -123,7 +123,7 @@ This prompt is the **reference pattern** — all params are wired in correctly v
 
 This is the worst case — 5 dead params. The LLM gets no survey context, no dataset context, and doesn't even know which domain it's working in.
 
-### 5.2 Schema ↔ Prompt alignment (2)
+### 5.2 Schema ↔ Prompt alignment (2) — DONE
 
 | Issue | Location | Detail |
 |-------|----------|--------|
@@ -149,7 +149,7 @@ Unlike §2 Facet Discovery, this prompt has no dominant/minor distinction — al
 
 Note: unlike §5, this function doesn't accept `domain_definition` at all.
 
-### 6.2 Schema ↔ Prompt alignment (2)
+### 6.2 Schema ↔ Prompt alignment (2) — DONE
 
 | Issue | Location | Detail |
 |-------|----------|--------|
@@ -203,7 +203,7 @@ Like §4, all params are wired in correctly via `<survey_context>` + `build_dime
 
 Note: `domain_name` and `domain_definition` ARE both used here (unlike §5/§6).
 
-### 8.2 Schema ↔ Prompt alignment (1)
+### 8.2 Schema ↔ Prompt alignment (1) — DONE
 
 | Issue | Location | Detail |
 |-------|----------|--------|
@@ -235,7 +235,7 @@ Consider standardizing all three on the §6 pattern.
 |-----------|------|--------|--------|
 | `valence_label` | 1154 | Accepted, documented in docstring ("scopes code generation by valence"), but never interpolated in the prompt. Orchestrator always passes `""`. | Remove param, or wire it in if valence-scoped generation is intended |
 
-### 9.2 Schema ↔ Prompt alignment (2)
+### 9.2 Schema ↔ Prompt alignment (2) — DONE
 
 | Issue | Location | Detail |
 |-------|----------|--------|
@@ -263,7 +263,7 @@ Consider standardizing all three on the §6 pattern.
 
 All params wired in correctly. No dead params.
 
-### 10.2 Schema ↔ Prompt alignment (3)
+### 10.2 Schema ↔ Prompt alignment (3) — DONE
 
 | Issue | Location | Detail |
 |-------|----------|--------|
@@ -300,7 +300,7 @@ These should either be:
 
 All params wired in correctly. No dead params.
 
-### 11.2 Schema ↔ Prompt alignment (1)
+### 11.2 Schema ↔ Prompt alignment (1) — DONE
 
 | Issue | Location | Detail |
 |-------|----------|--------|

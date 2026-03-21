@@ -255,7 +255,12 @@ Check each pair of dominant facets to ensure they are:
 If two facets fail this test, consolidate them into one.
 
 **Step 5: Provide final output**
-After your analysis, provide output as valid JSON following the response schema provided.
+For each dominant facet, provide:
+- A short descriptive name (2-5 words)
+- A description of what the facet captures (1-2 sentences)
+- 3-5 representative observations from the input (exact text, not numbers)
+
+Provide output as valid JSON following the response schema provided.
 </task_instructions>
 
 <key_reminders>
@@ -407,7 +412,12 @@ When rules conflict, prioritize:
 When in doubt → merge facets
 </precedence_rule>
 
-All facets names and descriptions must be in {language}.
+For each consolidated facet, provide:
+- A short descriptive name (2-5 words)
+- A description of what the facet captures (1-2 sentences)
+- 3-5 representative observations selected from across the merged chunks (exact text)
+
+All facet names and descriptions must be in {language}.
 
 Provide output as valid JSON following the response schema provided."""
 
@@ -707,7 +717,12 @@ Ensure that each attribute is:
 If two attributes fail this test, consolidate them into one.
 
 **Step 4: Provide final output**
-After your analysis, provide output as valid JSON following the response schema provided.
+For each attribute, provide:
+- A short descriptive name (2-5 words)
+- A description of what the attribute captures — a concrete, observable property (1-2 sentences)
+- 2-3 representative observations from the input (exact text, not numbers)
+
+Provide output as valid JSON following the response schema provided.
 </task_instructions>
 
 <key_reminders>
@@ -864,7 +879,12 @@ When rules conflict, prioritize:
 When in doubt → merge attributes
 </precedence_rule>
 
-All attribute names and descriptions must be in {language}
+For each consolidated attribute, provide:
+- A short descriptive name (2-5 words)
+- A description of what the attribute captures — a concrete, observable property (1-2 sentences)
+- 2-3 representative observations selected from across the merged chunks (exact text)
+
+All attribute names and descriptions must be in {language}.
 
 Provide output as valid JSON following the response schema provided."""
 
@@ -1113,6 +1133,7 @@ Important principles:
 - ENSURE mutual exclusivity: no two attributes in your final list should overlap in meaning
 - MAINTAIN full coverage: every concept from the input must be represented
 - When merging, pick the most representative example observations (2-3 examples)
+- For each consolidated attribute, list the original attribute names that were merged into it (source_attributes)
 - All attribute names and descriptions must be in {language}
 
 <scratchpad>
@@ -1123,6 +1144,13 @@ Follow these steps:
 4. For each pair of surviving attributes, ask: "Could an observation plausibly belong to both?" If yes, merge them.
 5. Verify complete coverage of the original attribute set
 </scratchpad>
+
+For each consolidated attribute, provide:
+- A short descriptive name (2-5 words)
+- A description of what the attribute captures (1-2 sentences)
+- The parent facet this attribute best belongs to
+- 2-3 representative example observations (exact text)
+- source_attributes: list of original attribute names that were merged into this one
 
 All output MUST be in {language}.
 
@@ -1136,7 +1164,7 @@ Provide output as valid JSON following the response schema provided."""
 class CodeFromAttributes(BaseModel):
     """A formal qualitative code derived from attributes."""
     code_name: str = Field(
-        ..., description="Short code name (2-5 words)"
+        ..., description="Short code name (3-5 word noun phrase)"
     )
     definition: str = Field(
         ..., description="Clear definition of what this code covers (1-2 sentences)"
@@ -1286,6 +1314,9 @@ Each code must include:
 
 Language
 All output must be written in {language}.
+
+Evaluation
+Provide a brief evaluation of how you derived codes from the attributes — what was merged and why.
 </instructions>
 
 Provide output as valid JSON following the response schema provided."""
@@ -1489,6 +1520,12 @@ Each code must include a diagnostic_test:
 - Must be unique per code
 - Must not overlap with other codes
 
+### ADDITIONAL REQUIRED FIELDS
+Each code must also include:
+- **valence**: one of "positive", "negative", or "neutral"
+- **typical_indicators**: words or phrases that signal this code
+- **source_attributes**: list of attribute names this code is derived from (from all merged codes)
+
 </code_definition_requirements>
 
 <workflow>
@@ -1504,8 +1541,9 @@ Follow these steps (DO NOT SKIP):
 
 All output MUST be in {language}.
 
-Provide output as valid JSON following the response schema provided."""
+Include a brief evaluation of what was merged, removed, or preserved and why.
 
+Provide output as valid JSON following the response schema provided."""
 
 
 
@@ -1626,6 +1664,7 @@ Language: {language}
 3. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
 4. Assign "{other_label_display}" only if NO code fits at all.
 5. Rate confidence: 0.90+ = clear, 0.70-0.89 = good, 0.50-0.69 = approximate, <0.50 = weak.
+6. Provide a brief rationale for your code choice.
 
 All output MUST be in {language}.
 Provide output as valid JSON following the response schema provided.
