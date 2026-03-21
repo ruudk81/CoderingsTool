@@ -27,9 +27,11 @@ from development.step_4_classNcoder.config_classNcoder_exp import (
     CategoriesConfig, AssignmentConfig,
 )
 from development.step_4_classNcoder.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
-from development.step_4_classNcoder.qualitative_researcher import QualitativeResearcher, PipelineResult, DomainResult
+from development.step_4_classNcoder.qualitative_researcher import (
+    QualitativeResearcher, PipelineResult, DomainResult, TaxonomyResult,
+)
 from development.step_4_classNcoder.models_exp import (
-    DomainSet, DomainResultModel, CodingResultsCache,
+    DomainSet, DomainResultModel, CodingResultsCache, TaxonomyResultsCache,
     CodeAssignedModel,
 )
 from development.step_4_classNcoder.code_assignment import CodeAssigner
@@ -51,8 +53,7 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-RUN_ASSIGNMENT = True  # Set True to run category assignment after MECE discovery
-RUN_ASSIGNMENT_ONLY = False  # Set True to skip pipeline, run assignment from cache only
+RUN_MODE = "all"  # "taxonomy" | "codebook" | "assignment" | "all"
 EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 
@@ -241,9 +242,9 @@ def print_results(
 # =============================================================================
 
 def main():
-    """Run the Category Discovery v3 pipeline."""
+    """Run the full Category Discovery v3 pipeline (taxonomy + codebook)."""
     print("=" * 70)
-    print("Category Discovery v3 (Inductive Code Generation Pipeline)")
+    print("Category Discovery v3 (Full Pipeline)")
     print("=" * 70)
     print(f"\nDataset: {FILENAME}")
     print(f"Variable: {VARIABLE}")
@@ -255,47 +256,13 @@ def main():
           f"(target {CONFIG.target_batches} chunks)")
     print()
 
-    # Load data
-    ideas_models = load_step3_ideas()
-    if EXPERIMENT_N is not None and EXPERIMENT_N < len(ideas_models):
-        total = len(ideas_models)
-        ideas_models = ideas_models[:EXPERIMENT_N]
-        print(f"Experiment subset: {EXPERIMENT_N} responses (of {total} total)")
-    extraction_metadata = load_extraction_metadata()
-
-    # =========================================================================
-    # Stage 1: Partition Discovery
-    # =========================================================================
-    discoverer = DomainDiscoverer(CONFIG, extraction_metadata)
-    partition_set, label_mappings = discoverer.discover(
-        ideas_models
-    )
-
-    # =========================================================================
-    # Stage 2: Qualitative Researcher v3 pipeline
-    # =========================================================================
-    # Build context from extraction metadata
-    survey_question = ""
-    language = "Dutch"
-    dataset_context = None
-    dimension_name = ""
-    dimension_description = ""
-
-    if extraction_metadata:
-        meta = extraction_metadata
-        survey_question = getattr(meta, 'var_lab', '') or ''
-        language = getattr(meta, 'lang', 'Dutch') or 'Dutch'
-        dataset_context = {}
-        for f in ('sector', 'entity', 'topic', 'perspective', 'intent'):
-            val = getattr(meta, f, None)
-            if val:
-                dataset_context[f] = val
-        dimension_name = getattr(meta, 'primary_dimension', '') or ''
-        dimension_description = getattr(meta, 'primary_dimension_description', '') or ''
+    ideas_models, extraction_metadata, partition_set, label_mappings = _load_and_discover()
+    survey_question, language, dataset_context, dimension_name, dimension_description = \
+        _extract_metadata_context(extraction_metadata)
 
     prompt_printer = PromptPrinter(
-        enabled=True,                    # Always capture prompts for debugging
-        print_realtime=PRINT_PROMPTS,    # Only print to console if requested
+        enabled=True,
+        print_realtime=PRINT_PROMPTS,
     )
     processor = QualitativeResearcher(CONFIG, prompt_printer=prompt_printer)
     pipeline_result = processor.process_all_partitions(
@@ -309,9 +276,7 @@ def main():
         verbose=CONFIG.verbose,
     )
 
-    # =========================================================================
     # Print results
-    # =========================================================================
     print_results(partition_set, label_mappings, pipeline_result)
 
     return partition_set, label_mappings, pipeline_result, ideas_models, prompt_printer
@@ -353,13 +318,8 @@ def save_results_to_file(
     sample_str = str(sample_size) if sample_size else "full"
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Determine run mode suffix from flags
-    if RUN_ASSIGNMENT_ONLY:
-        mode_suffix = "_assignment"
-    elif RUN_ASSIGNMENT:
-        mode_suffix = "_generation_assignment"
-    else:
-        mode_suffix = "_generation"
+    # Determine run mode suffix
+    mode_suffix = f"_{RUN_MODE}"
 
     output_filename = (
         f"{base_name}_{variable}_{sample_str}"
@@ -480,6 +440,104 @@ def load_mece_cache(
 
 
 # =============================================================================
+# TAXONOMY CACHING
+# =============================================================================
+
+def cache_taxonomy_results(
+    partition_set: DomainSet,
+    label_mappings: Dict[str, PartitionLabelMapping],
+    taxonomy_result: TaxonomyResult,
+    filename: str = FILENAME,
+    variable: str = VARIABLE,
+    sample_size: Optional[int] = SAMPLE_SIZE,
+    variable_key: Optional[str] = None,
+) -> Dict[str, DomainResultModel]:
+    """Cache taxonomy results (P1-P3.5) for later use by codebook generation."""
+    if variable_key is None:
+        variable_key = generate_enhanced_variable_key(
+            selected_variables=[variable],
+            is_merged=False,
+            sample_size=sample_size,
+        )
+
+    # Build per-domain pydantic results
+    pydantic_results = {}
+    for name in taxonomy_result.partition_facets:
+        domain_facet_ids = set(taxonomy_result.partition_assignments.get(name, {}).keys())
+        domain_attr_assigns = {
+            iid: aname for iid, aname in taxonomy_result.attribute_assignments.items()
+            if iid in domain_facet_ids
+        }
+        pydantic_results[name] = DomainResultModel(
+            partition_name=name,
+            n_labels=taxonomy_result.partition_n_labels.get(name, 0),
+            n_batches=taxonomy_result.partition_n_batches.get(name, 0),
+            facets=[f.model_dump() for f in taxonomy_result.partition_facets.get(name, [])],
+            facet_assignments=taxonomy_result.partition_assignments.get(name, {}),
+            attributes={
+                facet_name: [a.model_dump() for a in attrs]
+                for facet_name, attrs in taxonomy_result.partition_attributes.get(name, {}).items()
+            },
+            attribute_assignments=domain_attr_assigns,
+        )
+
+    taxonomy_cache = TaxonomyResultsCache(
+        partition_set=partition_set,
+        partition_results=pydantic_results,
+        label_counts={
+            name: m.label_count for name, m in label_mappings.items()
+        },
+        label_source=CONFIG.label_source,
+    )
+
+    cache_manager = CacheManager()
+    cache_manager.save_metadata_to_cache(
+        metadata=taxonomy_cache,
+        filename=filename,
+        step="taxonomy",
+        variable_key=variable_key,
+    )
+
+    total_facets = sum(
+        len(taxonomy_result.partition_facets.get(name, []))
+        for name in taxonomy_result.partition_facets
+    )
+    total_attrs = sum(
+        len(attrs)
+        for facet_attrs in taxonomy_result.partition_attributes.values()
+        for attrs in facet_attrs.values()
+    )
+    print(f"Taxonomy results cached "
+          f"({total_facets} facets, {total_attrs} attributes across "
+          f"{len(pydantic_results)} domains)")
+
+    return pydantic_results
+
+
+def load_taxonomy_cache(
+    filename: str = FILENAME,
+    variable: str = VARIABLE,
+    sample_size: Optional[int] = SAMPLE_SIZE,
+    variable_key: Optional[str] = None,
+) -> Optional[TaxonomyResultsCache]:
+    """Load cached taxonomy results if available."""
+    if variable_key is None:
+        variable_key = generate_enhanced_variable_key(
+            selected_variables=[variable],
+            is_merged=False,
+            sample_size=sample_size,
+        )
+
+    cache_manager = CacheManager()
+    return cache_manager.load_metadata_from_cache(
+        filename=filename,
+        step="taxonomy",
+        variable_key=variable_key,
+        model_cls=TaxonomyResultsCache,
+    )
+
+
+# =============================================================================
 # CATEGORY ASSIGNMENT
 # =============================================================================
 
@@ -526,6 +584,154 @@ def run_code_assignment(
     return assigned_results
 
 
+def _extract_metadata_context(extraction_metadata):
+    """Extract survey context from extraction metadata."""
+    survey_question = ""
+    language = "Dutch"
+    dataset_context = None
+    dimension_name = ""
+    dimension_description = ""
+
+    if extraction_metadata:
+        meta = extraction_metadata
+        survey_question = getattr(meta, 'var_lab', '') or ''
+        language = getattr(meta, 'lang', 'Dutch') or 'Dutch'
+        dataset_context = {}
+        for f in ('sector', 'entity', 'topic', 'perspective', 'intent'):
+            val = getattr(meta, f, None)
+            if val:
+                dataset_context[f] = val
+        dimension_name = getattr(meta, 'primary_dimension', '') or ''
+        dimension_description = getattr(meta, 'primary_dimension_description', '') or ''
+
+    return survey_question, language, dataset_context, dimension_name, dimension_description
+
+
+def _load_and_discover(extraction_metadata=None):
+    """Shared data loading: step 3 ideas + partition discovery."""
+    ideas_models = load_step3_ideas()
+    if EXPERIMENT_N is not None and EXPERIMENT_N < len(ideas_models):
+        total = len(ideas_models)
+        ideas_models = ideas_models[:EXPERIMENT_N]
+        print(f"Experiment subset: {EXPERIMENT_N} responses (of {total} total)")
+    if extraction_metadata is None:
+        extraction_metadata = load_extraction_metadata()
+
+    discoverer = DomainDiscoverer(CONFIG, extraction_metadata)
+    partition_set, label_mappings = discoverer.discover(ideas_models)
+
+    return ideas_models, extraction_metadata, partition_set, label_mappings
+
+
+def run_taxonomy():
+    """Run taxonomy stages only (P1-P3.5): facets, attributes, assignments."""
+    print("=" * 70)
+    print("TAXONOMY ONLY MODE (P1-P3.5)")
+    print("=" * 70)
+    print(f"\nDataset: {FILENAME}")
+    print(f"Variable: {VARIABLE}")
+    print(f"Sample size: {SAMPLE_SIZE}")
+    print()
+
+    ideas_models, extraction_metadata, partition_set, label_mappings = _load_and_discover()
+    survey_question, language, dataset_context, dimension_name, dimension_description = \
+        _extract_metadata_context(extraction_metadata)
+
+    prompt_printer = PromptPrinter(
+        enabled=True,
+        print_realtime=PRINT_PROMPTS,
+    )
+    processor = QualitativeResearcher(CONFIG, prompt_printer=prompt_printer)
+    taxonomy_result = processor.process_taxonomy_only(
+        label_mappings=label_mappings,
+        partition_set=partition_set,
+        survey_question=survey_question,
+        language=language,
+        dataset_context=dataset_context,
+        dimension_name=dimension_name,
+        dimension_description=dimension_description,
+        verbose=CONFIG.verbose,
+    )
+
+    return partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer
+
+
+def run_codebook_from_cache():
+    """Run codebook generation (P4-P4.5) from cached taxonomy results."""
+    print("=" * 70)
+    print("CODEBOOK ONLY MODE (P4-P4.5, loading taxonomy from cache)")
+    print("=" * 70)
+
+    extraction_metadata = load_extraction_metadata()
+    taxonomy_cache = load_taxonomy_cache()
+    if taxonomy_cache is None:
+        print("\nERROR: No cached taxonomy results found.")
+        print("Run taxonomy first (RUN_MODE = 'taxonomy' or 'all').")
+        return None
+
+    partition_set = taxonomy_cache.partition_set
+    pydantic_results = taxonomy_cache.partition_results
+
+    n_facets = sum(len(r.facets) for r in pydantic_results.values())
+    n_attrs = sum(
+        len(attrs) for r in pydantic_results.values()
+        for attrs in r.attributes.values()
+    )
+    print(f"  Loaded taxonomy: {n_facets} facets, {n_attrs} attributes "
+          f"across {len(pydantic_results)} domains")
+
+    # Reconstruct TaxonomyResult from cached data
+    from development.step_4_classNcoder.prompts_exp import DiscoveredFacet, DiscoveredAttribute
+
+    partition_facets = {}
+    partition_assignments = {}
+    partition_attributes = {}
+    partition_n_labels = {}
+    partition_n_batches = {}
+    all_attr_assignments = {}
+
+    for name, result in pydantic_results.items():
+        partition_facets[name] = [DiscoveredFacet(**f) for f in result.facets]
+        partition_assignments[name] = result.facet_assignments
+        partition_attributes[name] = {
+            facet_name: [DiscoveredAttribute(**a) for a in attrs]
+            for facet_name, attrs in result.attributes.items()
+        }
+        partition_n_labels[name] = result.n_labels
+        partition_n_batches[name] = result.n_batches
+        all_attr_assignments.update(result.attribute_assignments)
+
+    taxonomy_result = TaxonomyResult(
+        partition_n_labels=partition_n_labels,
+        partition_n_batches=partition_n_batches,
+        partition_facets=partition_facets,
+        partition_assignments=partition_assignments,
+        partition_attributes=partition_attributes,
+        attribute_assignments=all_attr_assignments,
+    )
+
+    survey_question, language, dataset_context, dimension_name, dimension_description = \
+        _extract_metadata_context(extraction_metadata)
+
+    prompt_printer = PromptPrinter(
+        enabled=True,
+        print_realtime=PRINT_PROMPTS,
+    )
+    processor = QualitativeResearcher(CONFIG, prompt_printer=prompt_printer)
+    pipeline_result = processor.process_codebook_only(
+        taxonomy=taxonomy_result,
+        partition_set=partition_set,
+        survey_question=survey_question,
+        language=language,
+        dataset_context=dataset_context,
+        dimension_name=dimension_name,
+        dimension_description=dimension_description,
+        verbose=CONFIG.verbose,
+    )
+
+    return partition_set, pydantic_results, pipeline_result, prompt_printer
+
+
 def run_assignment_only():
     """Run category assignment from cached data (skip pipeline).
 
@@ -544,7 +750,7 @@ def run_assignment_only():
     mece_cache = load_mece_cache()
     if mece_cache is None:
         print("\nERROR: No cached MECE results found.")
-        print("Run the full pipeline first (RUN_ASSIGNMENT_ONLY = False).")
+        print("Run codebook generation first (RUN_MODE = 'codebook' or 'all').")
         return
 
     partition_set = mece_cache.partition_set
@@ -587,47 +793,106 @@ if __name__ == "__main__":
     sys.stdout = tee
 
     try:
-        if RUN_ASSIGNMENT_ONLY:
-            # =====================================================================
-            # Assignment-only mode: load from cache, run assignment
-            # =====================================================================
+        if RUN_MODE == "taxonomy":
+            # =================================================================
+            # Taxonomy only: P1-P3.5
+            # =================================================================
+            partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer = run_taxonomy()
+            cache_taxonomy_results(partition_set, label_mappings, taxonomy_result)
+
+        elif RUN_MODE == "codebook":
+            # =================================================================
+            # Codebook only: P4-P4.5 from cached taxonomy
+            # =================================================================
+            result = run_codebook_from_cache()
+            if result:
+                partition_set, pydantic_results, pipeline_result, prompt_printer = result
+                # Also cache as MECE (taxonomy + codes) for assignment
+                # Need label_mappings for cache — reconstruct from taxonomy cache
+                taxonomy_cache = load_taxonomy_cache()
+                label_counts = taxonomy_cache.label_counts if taxonomy_cache else {}
+                cache_mece_results(
+                    partition_set, {},  # no label_mappings needed, use pipeline_result
+                    pipeline_result,
+                )
+            else:
+                prompt_printer = PromptPrinter()
+
+        elif RUN_MODE == "assignment":
+            # =================================================================
+            # Assignment only: P5 from cached codebook
+            # =================================================================
             result = run_assignment_only()
             if result:
                 assigned_results, prompt_printer = result
             else:
                 prompt_printer = PromptPrinter()
-        else:
-            # =====================================================================
-            # Full pipeline mode
-            # =====================================================================
+
+        elif RUN_MODE == "all":
+            # =================================================================
+            # Full pipeline: taxonomy + codebook + assignment
+            # =================================================================
             partition_set, label_mappings, pipeline_result, ideas_models, prompt_printer = main()
 
-            # Cache MECE results
+            # Cache taxonomy results (for future codebook-only runs)
+            # Reconstruct TaxonomyResult from pipeline_result for caching
+            tax_pydantic = {}
+            for name, result in pipeline_result.partition_results.items():
+                tax_pydantic[name] = DomainResultModel(
+                    partition_name=name,
+                    n_labels=result.n_labels,
+                    n_batches=result.n_batches,
+                    facets=[f.model_dump() for f in result.facets],
+                    facet_assignments=result.facet_assignments,
+                    attributes={
+                        facet_name: [a.model_dump() for a in attrs]
+                        for facet_name, attrs in result.attributes.items()
+                    },
+                    attribute_assignments=result.attribute_assignments,
+                )
+            taxonomy_cache_obj = TaxonomyResultsCache(
+                partition_set=partition_set,
+                partition_results=tax_pydantic,
+                label_counts={name: m.label_count for name, m in label_mappings.items()},
+                label_source=CONFIG.label_source,
+            )
+            cache_manager = CacheManager()
+            variable_key = generate_enhanced_variable_key(
+                selected_variables=[VARIABLE], is_merged=False, sample_size=SAMPLE_SIZE,
+            )
+            cache_manager.save_metadata_to_cache(
+                metadata=taxonomy_cache_obj,
+                filename=FILENAME, step="taxonomy", variable_key=variable_key,
+            )
+            print("Taxonomy results cached")
+
+            # Cache MECE results (taxonomy + codes)
             pydantic_results = cache_mece_results(
                 partition_set, label_mappings, pipeline_result,
             )
 
-            # Run code assignment (optional)
-            if RUN_ASSIGNMENT:
-                extraction_metadata = load_extraction_metadata()
-                # Collect attribute_assignments from pipeline
-                all_attr_assignments = {}
-                for domain_result in pipeline_result.partition_results.values():
-                    all_attr_assignments.update(domain_result.attribute_assignments)
-                assigned_results = run_code_assignment(
-                    ideas_models=ideas_models,
-                    mece_results=pydantic_results,
-                    partition_set=partition_set,
-                    extraction_metadata=extraction_metadata,
-                    prompt_printer=prompt_printer,
-                    codes=pipeline_result.codes,
-                    attribute_assignments=all_attr_assignments,
-                )
-            else:
-                print("\n  Category assignment skipped (RUN_ASSIGNMENT = False)")
+            # Run code assignment
+            extraction_metadata = load_extraction_metadata()
+            all_attr_assignments = {}
+            for domain_result in pipeline_result.partition_results.values():
+                all_attr_assignments.update(domain_result.attribute_assignments)
+            assigned_results = run_code_assignment(
+                ideas_models=ideas_models,
+                mece_results=pydantic_results,
+                partition_set=partition_set,
+                extraction_metadata=extraction_metadata,
+                prompt_printer=prompt_printer,
+                codes=pipeline_result.codes,
+                attribute_assignments=all_attr_assignments,
+            )
+
+        else:
+            print(f"ERROR: Unknown RUN_MODE '{RUN_MODE}'")
+            print("Valid options: 'taxonomy', 'codebook', 'assignment', 'all'")
+            prompt_printer = PromptPrinter()
 
         # =====================================================================
-        # Save captured prompts to JSON (split by phase)
+        # Save captured prompts to JSON (3-way split)
         # =====================================================================
         if prompt_printer.prompts:
             variable_key = generate_enhanced_variable_key(
@@ -638,11 +903,24 @@ if __name__ == "__main__":
             prompts_dir = project_root / "exports" / "prompts"
             prompts_dir.mkdir(parents=True, exist_ok=True)
 
-            # Split prompts into pipeline (generation) vs assignment
+            # 3-way prompt split by stage
+            TAXONOMY_TYPES = {
+                "facet_discovery", "facet_consolidation", "facet_assignment",
+                "attribute_discovery", "attribute_chunk_consolidation",
+                "attribute_consolidation", "attribute_assignment",
+            }
+            CODEBOOK_TYPES = {
+                "code_generation_from_attributes", "codebook_consolidation",
+            }
             ASSIGNMENT_TYPES = {"code_assignment", "dual_assignment"}
-            generation_prompts = [
+
+            taxonomy_prompts = [
                 p for p in prompt_printer.prompts
-                if p.get("prompt_type") not in ASSIGNMENT_TYPES
+                if p.get("prompt_type") in TAXONOMY_TYPES
+            ]
+            codebook_prompts = [
+                p for p in prompt_printer.prompts
+                if p.get("prompt_type") in CODEBOOK_TYPES
             ]
             assignment_prompts = [
                 p for p in prompt_printer.prompts
@@ -650,10 +928,14 @@ if __name__ == "__main__":
             ]
 
             base = f"step4_classNcoder_{variable_key}"
-            if generation_prompts:
-                pp_generation = PromptPrinter(enabled=True)
-                pp_generation.prompts = generation_prompts
-                pp_generation.save_prompts(str(prompts_dir / f"{base}_generation.json"))
+            if taxonomy_prompts:
+                pp_tax = PromptPrinter(enabled=True)
+                pp_tax.prompts = taxonomy_prompts
+                pp_tax.save_prompts(str(prompts_dir / f"{base}_taxonomy.json"))
+            if codebook_prompts:
+                pp_code = PromptPrinter(enabled=True)
+                pp_code.prompts = codebook_prompts
+                pp_code.save_prompts(str(prompts_dir / f"{base}_codebook.json"))
             if assignment_prompts:
                 pp_assign = PromptPrinter(enabled=True)
                 pp_assign.prompts = assignment_prompts
