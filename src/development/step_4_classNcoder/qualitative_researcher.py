@@ -837,6 +837,20 @@ class QualitativeResearcher:
             print(f"\n  Phase 4 done in {t_phase4:.1f}s → {len(all_codes)} raw codes "
                   f"from {len(p4_tasks)} calls")
 
+        # Compute idea frequencies per code (from attribute assignments)
+        # Each code has source_attributes; count how many ideas map to those attrs
+        attr_to_count: Dict[str, int] = {}
+        for attr_name in attribute_assignments.values():
+            attr_to_count[attr_name] = attr_to_count.get(attr_name, 0) + 1
+
+        code_frequencies: Dict[int, int] = {}
+        for idx, code in enumerate(all_codes):
+            freq = sum(
+                attr_to_count.get(attr, 0)
+                for attr in (code.source_attributes or [])
+            )
+            code_frequencies[idx] = freq
+
         # =================================================================
         # PHASE 4.5: Cross-domain Codebook Consolidation
         # =================================================================
@@ -847,7 +861,8 @@ class QualitativeResearcher:
 
         if len(all_codes) > 0:
             consolidation_result = await self._consolidate_codebook(
-                all_codes, code_provenance, prompt_context
+                all_codes, code_provenance, prompt_context,
+                code_frequencies=code_frequencies,
             )
             all_codes = consolidation_result.codes
             codebook_narratives.append(
@@ -1737,6 +1752,7 @@ class QualitativeResearcher:
         raw_codes: list,
         code_provenance: dict,
         prompt_context: PromptContext,
+        code_frequencies: Optional[Dict[int, int]] = None,
     ) -> CodebookConsolidationResult:
         """Consolidate per-domain codes into a final parsimonious codebook."""
         prompt = build_codebook_consolidation_prompt(
@@ -1747,6 +1763,7 @@ class QualitativeResearcher:
             dimension_description=prompt_context.dimension_description,
             raw_codes=raw_codes,
             code_provenance=code_provenance,
+            code_frequencies=code_frequencies,
         )
 
         # Prompt capture

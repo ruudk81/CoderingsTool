@@ -1276,24 +1276,28 @@ def build_codebook_consolidation_prompt(
     dimension_name: str,
     dimension_description: str,
     raw_codes: List[CodeFromAttributes],
-    code_provenance: Dict[int, str],  # code index -> "domain::valence"
+    code_provenance: Dict[int, str],
+    code_frequencies: Optional[Dict[int, int]] = None,
 ) -> str:
     """Consolidate per-domain codes into a final parsimonious, MECE codebook.
 
     Args:
         raw_codes: All codes from P4 (per-domain)
         code_provenance: Maps code index to domain_name
+        code_frequencies: Maps code index to approximate idea count
     """
-    # Format raw codes with domain provenance tags
+    # Format raw codes with domain provenance tags and frequency
     code_lines = []
     for i, code in enumerate(raw_codes):
         provenance = code_provenance.get(i, "")
         domain_tag = f"({provenance}) " if provenance else ""
+        freq = code_frequencies.get(i, 0) if code_frequencies else 0
+        freq_tag = f" (~{freq} ideas)" if freq > 0 else ""
 
         attrs = ", ".join(code.source_attributes[:5]) if code.source_attributes else "—"
         indicators = "; ".join(code.typical_indicators[:3]) if code.typical_indicators else "—"
         code_lines.append(
-            f"[C{i+1}] {domain_tag}{code.code_name}\n"
+            f"[C{i+1}] {domain_tag}{code.code_name}{freq_tag}\n"
             f"      Definition: {code.definition}\n"
             f"      Indicators: {indicators}\n"
             f"      Source attributes: {attrs}"
@@ -1319,15 +1323,16 @@ Dimension: {dimension_name} — {dimension_description}
 </candidate_codes>
 
 ## CRITICAL OBJECTIVE
-Create the fewest codes needed for full coverage, without conceptual overlap or semantic ambiguity.
+Create a parsimonious codebook that preserves all distinct phenomena, without conceptual overlap or semantic ambiguity.
 The result must be conceptually clean, mutually exclusive, and easy for human coders to apply consistently.
 
 <core_principles>
 
-### 1. MAXIMAL REDUCTION
-- Merge all codes that express the same underlying idea
-- Ignore wording differences and examples
-- Stop only when further merging would collapse clearly different dimensions
+### 1. BALANCED PARSIMONY
+- Merge codes that describe the SAME underlying phenomenon — not merely related phenomena
+- Two codes are duplicates only if a human coder could not reliably distinguish them
+- Stop merging when each surviving code represents a clearly distinct aspect of the dimension
+- Preserve codes that cover distinct topics, even if they seem thematically related
 - IMPORTANT: only merge codes that share the same valence — see Principle 2
 
 ### 2. VALENCE STRUCTURE (HARD CONSTRAINT)
@@ -1350,8 +1355,9 @@ The result must be conceptually clean, mutually exclusive, and easy for human co
 - If they answer different questions → **keep them separate**
 
 ### 5. NEIGHBOURS CHECK
-- If a human coder would hesitate between two codes for the same response, they should be one code
-- Merge codes that are too similar to be distinctively applied
+- If a human coder would hesitate between two codes, first try to sharpen the definitions to make them distinguishable
+- Only merge if the distinction cannot be made conceptually — not just because the codes seem related
+- Prefer refining boundaries over merging
 
 ### 6. APPROPRIATE ABSTRACTION LEVEL
 - Codes must be at the right level of abstraction for the dimension: {dimension_description}
@@ -1371,6 +1377,29 @@ The result must be conceptually clean, mutually exclusive, and easy for human co
 - Codes from DIFFERENT domains that share similar names represent DIFFERENT phenomena
 - Do NOT merge codes across domains unless they are truly identical in meaning
 - Example: "Betrouwbaarheid" from customer service domain ≠ "Betrouwbaarheid" from brand identity domain
+
+### 10. ATTRIBUTE TYPE SEPARATION
+- Codes that differ in underlying mechanism must remain separate, even if they co-occur in responses
+- Maintain separation between different types of attributes, such as:
+  - Values-based attributes (ethics, sustainability, social responsibility)
+  - Functional attributes (products, usability, pricing, service quality)
+  - Perceptual attributes (image, recognition, personality, reputation)
+- Do NOT merge across attribute types into a single code
+
+### 11. COVERAGE GUARD
+- Each code must be specific enough that a human coder can confidently apply it
+- If a code's definition requires listing many unrelated phenomena, it is too broad — split it
+- Test: can you describe what this code covers in ONE sentence without using "and/or" more than once? If not, split it
+- Codes backed by many ideas carry more analytical value — do not merge them away lightly
+
+### 12. DO-NOT-MERGE DISTINCTIONS
+- The following types of distinctions must be preserved (do NOT merge):
+  - Ethics vs Trust (different underlying mechanisms)
+  - Service quality vs Usability (experience vs interface)
+  - Brand image vs Brand awareness (perception vs knowledge)
+  - Financial attractiveness vs Product availability (value vs range)
+  - General sentiment vs Specific attributes (vague vs concrete)
+- When in doubt whether two codes differ: they probably do — keep them separate
 
 </core_principles>
 
