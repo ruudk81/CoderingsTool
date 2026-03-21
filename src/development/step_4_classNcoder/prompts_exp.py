@@ -388,8 +388,8 @@ class FacetAssignment(BaseModel):
     idea_id: str = Field(
         ..., description="The EXACT idea_id from the input. Do not modify."
     )
-    instance: str = Field(
-        ..., description="Echo back the EXACT instance text from the input for this idea_id."
+    idea: str = Field(
+        ..., description="Echo back the EXACT idea text from the input for this idea_id."
     )
     assigned_facet_id: str = Field(
         ..., description=(
@@ -443,19 +443,15 @@ def _valence_display(idea) -> str:
 
 
 def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
-    """Format ideas for facet assignment prompt."""
+    """Format ideas for assignment prompts — idea text only, no ladder."""
     lines = []
     for idea in ideas:
-        interpretation = getattr(idea, 'interpretation', '') or ''
-        abstraction = getattr(idea, 'abstraction', '') or ''
-        instance = getattr(idea, 'instance', '') or ''
+        idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
         valence = _valence_display(idea)
         lines.append(
             f"- idea_id: {idea.idea_id}\n"
-            f"  valence: {valence}\n"
-            f"  instance: {instance}\n"
-            f"  interpretation: {interpretation}\n"
-            f"  abstraction: {abstraction}"
+            f"  idea: {idea_text}\n"
+            f"  valence: {valence}"
         )
     return "\n".join(lines)
 
@@ -516,7 +512,7 @@ Assign each idea to exactly ONE of these facets:
 
 <instructions>
 For each idea:
-1. Read the idea's instance, interpretation, and abstraction.
+1. Read the idea text.
 2. Determine which facet best answers the question: {facet_question}
 3. Assign exactly ONE facet per idea. Return the facet ID from [F#] brackets (e.g. "F1", "F3"). Do NOT return the facet name.
 4. Assign "{other_label_display}" ONLY if no facet fits at all.
@@ -538,8 +534,8 @@ class AttributeAssignment(BaseModel):
     idea_id: str = Field(
         ..., description="The EXACT idea_id from the input. Do not modify."
     )
-    instance: str = Field(
-        ..., description="Echo back the EXACT instance text from the input for this idea_id."
+    idea: str = Field(
+        ..., description="Echo back the EXACT idea text from the input for this idea_id."
     )
     assigned_attribute_id: str = Field(
         ..., description=(
@@ -633,7 +629,7 @@ Assign each idea to exactly ONE of these attributes within the facet above:
 
 <instructions>
 For each idea:
-1. Read the idea's instance, interpretation, and abstraction.
+1. Read the idea text.
 2. Determine which attribute best answers the question: {attr_question}
 3. Assign exactly ONE attribute per idea. Return the attribute ID from [A#] brackets (e.g. "A1", "A3"). Do NOT return the attribute name.
 4. Rate your confidence (0.0 to 1.0).
@@ -1532,15 +1528,11 @@ def build_single_dual_assignment_prompt(
 
     # Format single idea
     valence = getattr(idea, 'valence', '') or '0'
-    interpretation = getattr(idea, 'interpretation', '') or ''
-    abstraction = getattr(idea, 'abstraction', '') or ''
     facet = (facet_lookup or {}).get(idea.idea_id, '') or getattr(idea, 'facet', '') or ''
     domain = getattr(idea, 'domain', '') or ''
 
     idea_block = (
         f"idea: {idea.idea}\n"
-        f"interpretation: {interpretation}\n"
-        f"abstraction: {abstraction}\n"
         f"domain: {domain}\n"
         f"facet: {facet}\n"
         f"valence: {valence}"
@@ -1565,7 +1557,7 @@ Language: {language}
 </idea>
 
 <instructions>
-1. Read the idea's text, interpretation, facet, and valence.
+1. Read the idea text, domain, facet, and valence.
 2. Find the code whose definition best matches what the respondent is expressing.
 3. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
 4. Assign "{other_label_display}" only if NO code fits at all.

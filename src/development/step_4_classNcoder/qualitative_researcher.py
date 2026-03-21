@@ -1295,16 +1295,16 @@ class QualitativeResearcher:
                     continue
 
                 # Content cross-validation: compare returned instance vs original
-                original_instance = getattr(original_idea, 'instance', '') or ''
-                returned_instance = getattr(assignment, 'instance', '') or ''
-                if original_instance and returned_instance:
+                original_text = getattr(original_idea, 'idea', '') or getattr(original_idea, 'instance', '') or ''
+                returned_text = getattr(assignment, 'idea', '') or ''
+                if original_text and returned_text:
                     similarity = SequenceMatcher(
-                        None, returned_instance.lower(), original_instance.lower()
+                        None, returned_text.lower(), original_text.lower()
                     ).ratio()
                     if similarity < 0.7:
                         print(f"    CONTENT DRIFT: idea '{original_idea.idea_id}' — "
-                              f"returned instance '{returned_instance}' doesn't match "
-                              f"original '{original_instance}' (similarity: {similarity:.2f}) — skipping")
+                              f"returned '{returned_text}' doesn't match "
+                              f"original '{original_text}' (similarity: {similarity:.2f}) — skipping")
                         continue
 
                 # Fix 2 (BP6): Reject invalid facet_id — no raw string fallback
@@ -1439,16 +1439,16 @@ class QualitativeResearcher:
                     continue
 
                 # Content cross-validation: compare returned instance vs original
-                original_instance = getattr(original_idea, 'instance', '') or ''
-                returned_instance = getattr(assignment, 'instance', '') or ''
-                if original_instance and returned_instance:
+                original_text = getattr(original_idea, 'idea', '') or getattr(original_idea, 'instance', '') or ''
+                returned_text = getattr(assignment, 'idea', '') or ''
+                if original_text and returned_text:
                     similarity = SequenceMatcher(
-                        None, returned_instance.lower(), original_instance.lower()
+                        None, returned_text.lower(), original_text.lower()
                     ).ratio()
                     if similarity < 0.7:
                         print(f"    CONTENT DRIFT: idea '{original_idea.idea_id}' — "
-                              f"returned instance '{returned_instance}' doesn't match "
-                              f"original '{original_instance}' (similarity: {similarity:.2f}) — skipping")
+                              f"returned '{returned_text}' doesn't match "
+                              f"original '{original_text}' (similarity: {similarity:.2f}) — skipping")
                         continue
 
                 # Fix 6 (BP6): Reject invalid attribute_id — no raw string fallback
