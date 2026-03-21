@@ -74,6 +74,10 @@ def print_prompt(prompt_entry: dict, index: int, total: int):
 
     if "model" in metadata:
         print(f"Model:          {metadata['model']}")
+    if "temperature" in metadata:
+        print(f"Temperature:    {metadata['temperature']}")
+    if "max_tokens" in metadata:
+        print(f"Max tokens:     {metadata['max_tokens']}")
     if "language" in metadata:
         print(f"Language:       {metadata['language']}")
     if "partition_name" in metadata:

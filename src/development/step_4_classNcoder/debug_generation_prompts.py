@@ -32,7 +32,10 @@ try:
         FacetDiscoveryResult,
         FacetConsolidatedResponse,
         FacetAssignmentBatch,
+        AttributeAssignmentBatch,
         AttributeDiscoveryResult,
+        AttributeChunkConsolidatedResponse,
+        AttributeConsolidatedResponse,
         CodeGenerationFromAttributesResult,
         CodebookConsolidationResult,
         CodeAssignmentBatch,
@@ -43,7 +46,10 @@ except ImportError:
         FacetDiscoveryResult,
         FacetConsolidatedResponse,
         FacetAssignmentBatch,
+        AttributeAssignmentBatch,
         AttributeDiscoveryResult,
+        AttributeChunkConsolidatedResponse,
+        AttributeConsolidatedResponse,
         CodeGenerationFromAttributesResult,
         CodebookConsolidationResult,
         CodeAssignmentBatch,
@@ -65,7 +71,10 @@ STATIC_PROMPT_MODELS = {
     "facet_discovery": FacetDiscoveryResult,
     "facet_consolidation": FacetConsolidatedResponse,
     "facet_assignment": FacetAssignmentBatch,
+    "attribute_assignment": AttributeAssignmentBatch,
     "attribute_discovery": AttributeDiscoveryResult,
+    "attribute_chunk_consolidation": AttributeChunkConsolidatedResponse,
+    "attribute_consolidation": AttributeConsolidatedResponse,
     "code_generation_from_attributes": CodeGenerationFromAttributesResult,
     "codebook_consolidation": CodebookConsolidationResult,
     "code_assignment": CodeAssignmentBatch,
@@ -142,6 +151,10 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
     print(f"Step:           {prompt_entry.get('step_name', 'unknown')}")
     if "model" in metadata:
         print(f"Model:          {metadata['model']}")
+    if "temperature" in metadata:
+        print(f"Temperature:    {metadata['temperature']}")
+    if "max_tokens" in metadata:
+        print(f"Max tokens:     {metadata['max_tokens']}")
     if "language" in metadata:
         print(f"Language:       {metadata['language']}")
     if "partition_name" in metadata:
@@ -169,7 +182,8 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
 
     # Other metadata
     other_meta = {k: v for k, v in metadata.items()
-                  if k not in ("model", "language", "partition_name",
+                  if k not in ("model", "temperature", "max_tokens",
+                               "language", "partition_name",
                                "dimension_name",
                                "batch_number", "total_batches",
                                "n_batches", "n_clusters", "n_codes",

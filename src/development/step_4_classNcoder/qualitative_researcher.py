@@ -77,7 +77,6 @@ from .prompts_exp import (
     build_code_from_attributes_prompt,
     CodeGenerationFromAttributesResult,
     CodeFromAttributes,
-    FormalCode,
     # P4.5: Codebook Consolidation
     build_codebook_consolidation_prompt,
     CodebookConsolidationResult,
@@ -810,7 +809,6 @@ class QualitativeResearcher:
 
             p4_tasks[domain_name] = self._run_code_generation_from_attributes(
                 {domain_name: domain_attrs}, prompt_context,
-                valence_label="",
                 attribute_assignments=domain_attr_assigns,
             )
 
@@ -1012,6 +1010,8 @@ class QualitativeResearcher:
                     prompt_type="facet_discovery",
                     metadata={
                         "model": self._model_p1,
+                        "temperature": self._temperature,
+                        "max_tokens": self._max_tokens_facet_discovery,
                         "language": prompt_context.language,
                         "partition_name": partition_name,
                         "batch_number": chunk_idx + 1,
@@ -1093,6 +1093,8 @@ class QualitativeResearcher:
                 prompt_type="facet_consolidation",
                 metadata={
                     "model": self._model_p1_5,
+                    "temperature": 0.0,
+                    "max_tokens": self._max_tokens_facet_discovery,
                     "language": prompt_context.language,
                     "partition_name": partition_name,
                     "dimension_name": prompt_context.dimension_name,
@@ -1250,6 +1252,8 @@ class QualitativeResearcher:
                     prompt_type="facet_assignment",
                     metadata={
                         "model": self._model_p2,
+                        "temperature": self._temperature,
+                        "max_tokens": self._max_tokens_facet_assignment,
                         "language": prompt_context.language,
                         "partition_name": domain_name,
                         "batch_number": batch_idx + 1,
@@ -1392,6 +1396,8 @@ class QualitativeResearcher:
                     prompt_type="attribute_assignment",
                     metadata={
                         "model": self._model_p2,
+                        "temperature": self._temperature,
+                        "max_tokens": self._max_tokens_facet_assignment,
                         "language": prompt_context.language,
                         "partition_name": domain_name,
                         "facet_name": facet_name,
@@ -1588,6 +1594,8 @@ class QualitativeResearcher:
                     prompt_type="attribute_discovery",
                     metadata={
                         "model": self._model_p3,
+                        "temperature": self._temperature,
+                        "max_tokens": self._max_tokens_attribute_discovery,
                         "language": prompt_context.language,
                         "partition_name": domain_name,
                         "facet_name": facet_name,
@@ -1674,6 +1682,8 @@ class QualitativeResearcher:
                 prompt_type="attribute_chunk_consolidation",
                 metadata={
                     "model": self._model_p1_5,
+                    "temperature": 0.0,
+                    "max_tokens": self._max_tokens_attribute_discovery,
                     "language": prompt_context.language,
                     "domain_name": domain_name,
                     "facet_name": facet_name,
@@ -1762,6 +1772,8 @@ class QualitativeResearcher:
                 prompt_type="attribute_consolidation",
                 metadata={
                     "model": self._model_p3,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_attribute_discovery,
                     "language": prompt_context.language,
                     "domain_name": domain_name,
                     "n_facets": len(facet_attributes),
@@ -1787,10 +1799,9 @@ class QualitativeResearcher:
         self,
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
         prompt_context: PromptContext,
-        valence_label: str = "",
         attribute_assignments: Optional[Dict[str, str]] = None,
     ) -> CodeGenerationFromAttributesResult:
-        """Generate codes from an attribute inventory (per-domain, valence-scoped)."""
+        """Generate codes from an attribute inventory (per-domain)."""
         prompt = build_code_from_attributes_prompt(
             survey_question=prompt_context.survey_question,
             language=prompt_context.language,
@@ -1798,13 +1809,12 @@ class QualitativeResearcher:
             dimension_name=prompt_context.dimension_name,
             dimension_description=prompt_context.dimension_description,
             domain_attributes=domain_facet_attributes,
-            valence_label=valence_label,
             attribute_assignments=attribute_assignments,
         )
 
         # Prompt capture
         domain_key = "::".join(domain_facet_attributes.keys())
-        gate_key = f"qr_code_gen_{domain_key}_{valence_label}"
+        gate_key = f"qr_code_gen_{domain_key}"
         if (self._prompt_printer is not None
                 and gate_key not in self._captured_gates):
             total_attrs = sum(
@@ -1819,10 +1829,11 @@ class QualitativeResearcher:
                 prompt_type="code_generation_from_attributes",
                 metadata={
                     "model": self._model_p4,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_code_from_attributes,
                     "language": prompt_context.language,
                     "n_domains": len(domain_facet_attributes),
                     "n_total_attributes": total_attrs,
-                    "valence": valence_label or "all",
                     "dimension_name": prompt_context.dimension_name,
                 }
             )
@@ -1868,6 +1879,8 @@ class QualitativeResearcher:
                 prompt_type="codebook_consolidation",
                 metadata={
                     "model": self._model_p4,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_codebook_consolidation,
                     "language": prompt_context.language,
                     "n_raw_codes": len(raw_codes),
                     "dimension_name": prompt_context.dimension_name,

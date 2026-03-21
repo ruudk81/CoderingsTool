@@ -674,6 +674,8 @@ class CodeAssigner:
                 prompt_type="dual_assignment",
                 metadata={
                     "model": self._config.assignment_model,
+                    "temperature": self._config.assignment_temperature,
+                    "max_tokens": self._config.assignment_max_tokens,
                     "language": (
                         self._extraction_metadata.lang
                         if self._extraction_metadata else "Dutch"
