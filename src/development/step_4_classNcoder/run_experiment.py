@@ -602,17 +602,22 @@ def cache_taxonomy_results(
     # Build per-domain pydantic results
     pydantic_results = {}
     for name in taxonomy_result.partition_facets:
-        domain_facet_ids = set(taxonomy_result.partition_assignments.get(name, {}).keys())
+        # Filter out None values from assignments (ideas that weren't assigned)
+        facet_assigns = {
+            k: v for k, v in taxonomy_result.partition_assignments.get(name, {}).items()
+            if v is not None
+        }
+        domain_facet_ids = set(facet_assigns.keys())
         domain_attr_assigns = {
             iid: aname for iid, aname in taxonomy_result.attribute_assignments.items()
-            if iid in domain_facet_ids
+            if iid in domain_facet_ids and aname is not None
         }
         pydantic_results[name] = DomainResultModel(
             partition_name=name,
             n_labels=taxonomy_result.partition_n_labels.get(name, 0),
             n_batches=taxonomy_result.partition_n_batches.get(name, 0),
             facets=[f.model_dump() for f in taxonomy_result.partition_facets.get(name, [])],
-            facet_assignments=taxonomy_result.partition_assignments.get(name, {}),
+            facet_assignments=facet_assigns,
             attributes={
                 facet_name: [a.model_dump() for a in attrs]
                 for facet_name, attrs in taxonomy_result.partition_attributes.get(name, {}).items()
