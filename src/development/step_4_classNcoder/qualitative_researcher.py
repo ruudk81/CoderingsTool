@@ -552,11 +552,21 @@ class QualitativeResearcher:
 
         t_phase3 = time.time()
 
+        # Per-phase gate: estimate total batches across all domains
+        total_p3_ideas = sum(
+            len(label_mappings[name].ideas)
+            for name in partition_facets
+            if partition_facets[name] and label_mappings[name].ideas
+        )
+        est_p3_batches = max(1, total_p3_ideas // self._facet_assignment_batch_size)
+        p3_gate = asyncio.Semaphore(min(est_p3_batches, 40))
+
         assignment_tasks = {
             name: self._run_facet_assignment(
                 name, partition_facets[name],
                 label_mappings[name].ideas,
                 partition_contexts[name], prompt_context,
+                gate=p3_gate,
             )
             for name in sorted(partition_facets.keys())
             if partition_facets[name] and label_mappings[name].ideas
@@ -685,6 +695,15 @@ class QualitativeResearcher:
 
         t_phase6 = time.time()
 
+        # Per-phase gate: estimate total batches across all facets
+        total_p6_ideas = sum(
+            len(domain_facet_ideas.get((dn, fn), []))
+            for dn, fa in domain_facet_attributes.items()
+            for fn in fa
+        )
+        est_p6_batches = max(1, total_p6_ideas // self._facet_assignment_batch_size)
+        p6_gate = asyncio.Semaphore(min(est_p6_batches, 40))
+
         # Assign attributes to ideas, grouped by facet
         attribute_assignments: Dict[str, str] = {}  # idea_id -> attribute_name
         assign_tasks = {}
@@ -720,6 +739,7 @@ class QualitativeResearcher:
                     ideas=facet_ideas,
                     part_context=partition_contexts[domain_name],
                     prompt_context=prompt_context,
+                    gate=p6_gate,
                 )
 
         if assign_tasks:
@@ -1300,6 +1320,7 @@ class QualitativeResearcher:
         ideas: List,
         part_context: DomainContext,
         prompt_context: PromptContext,
+        gate=None,
     ) -> Dict[str, str]:
         """Assign all ideas in a domain to discovered facets.
 
@@ -1358,7 +1379,7 @@ class QualitativeResearcher:
             try:
                 result = await self._llm_call(
                     prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment,
-                    model=self._model_p3, timeout=60.0,
+                    model=self._model_p3, timeout=60.0, gate=gate,
                 )
                 return result.assignments
             except Exception as e:
@@ -1473,6 +1494,7 @@ class QualitativeResearcher:
         ideas: List,
         part_context: 'DomainContext',
         prompt_context: 'PromptContext',
+        gate=None,
     ) -> Dict[str, str]:
         """Assign each idea to an attribute within its facet.
 
@@ -1532,7 +1554,7 @@ class QualitativeResearcher:
                 result = await self._llm_call(
                     prompt, AttributeAssignmentBatch,
                     self._max_tokens_facet_assignment,
-                    model=self._model_p6, timeout=60.0,
+                    model=self._model_p6, timeout=60.0, gate=gate,
                 )
                 return result.assignments
             except Exception as e:
@@ -2150,15 +2172,19 @@ class QualitativeResearcher:
 
     async def _llm_call(self, prompt: str, response_model, max_tokens: int,
                         temperature: float | None = None, model: str | None = None,
-                        timeout: float = 120.0):
-        """Make a rate-limited LLM call through the shared semaphore.
+                        timeout: float = 120.0, gate=None):
+        """Make a rate-limited LLM call with optional per-phase concurrency gate.
 
-        Timeout is a generous safety net (default 120s for batched prompts).
-        Only catches truly stuck requests — not slow-but-legitimate responses.
+        Args:
+            gate: Optional concurrency gate (asyncio.Semaphore or similar).
+                  If provided, used instead of self._semaphore.
+                  Allows per-phase concurrency control.
+            timeout: Generous safety net (60s for standard, 120s for reasoning).
         """
         use_model = model or self._model_p1
         client = self._clients[use_model]
-        async with self._semaphore:
+        concurrency_ctx = gate if gate is not None else self._semaphore
+        async with concurrency_ctx:
             async with self._rate_limiter:
                 return await asyncio.wait_for(
                     llm_create_async(
