@@ -49,12 +49,21 @@ def _build_exclusion_block(
     """
     if not items:
         return ""
-    lines = [f"- {name} — {definition}" for name, definition in items]
+    lines = [f"- {name} -- {definition}" for name, definition in items]
     content = "\n".join(lines)
     return (
         f"\nYou must NOT include categories that belong to these excluded areas:\n"
         f"<{tag_name}>\n{content}\n</{tag_name}>\n"
     )
+
+
+def _build_exclusion_block_light(
+    items: List[Tuple[str, str]],
+) -> str:
+    """Build a short name-only exclusion list for use in scratchpad steps."""
+    if not items:
+        return "(none)"
+    return "\n".join(f"- {name}" for name, _ in items)
 
 
 def _build_exclusion__light_block(
