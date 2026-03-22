@@ -2706,18 +2706,94 @@ class IdeaExtractor:
         t_main_done = time.time()
         print(f"⏱ T+{t_main_done - t_phase_start:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred")
 
-        # === TIMED OUT TASKS: create fallback (no retry — these are outliers) ===
+        # === RETRY PASS: retry timed-out + failed tasks with reduced concurrency ===
+        # Collect all failed tasks: timed-out (from worker) + exceptions (from failure_log)
+        failed_tasks_for_retry = []
+
+        # Timed-out tasks (returned None from process_task)
         if timed_out:
-            print(f"\n{len(timed_out)} timed out → fallback (no retry)")
             for task_index, task_data in timed_out:
-                self.stats['tasks_failed'] += 1
-                self.failure_log.append({
-                    'respondent_id': task_data.get('respondent_id', 'unknown'),
-                    'reason': 'timeout',
-                    'error_type': 'Timeout',
-                    'response_preview': task_data.get('response', '')[:80]
-                })
-                results[task_index] = self.create_fallback_response(task_data, reason='timeout')
+                failed_tasks_for_retry.append((task_index, task_data, 'timeout'))
+
+        # Exception failures (from failure_log, already have fallback in results)
+        if self.failure_log:
+            failed_ids = {str(f['respondent_id']) for f in self.failure_log}
+            for i, task in enumerate(tasks):
+                if str(task.get('respondent_id', '')) in failed_ids:
+                    failed_tasks_for_retry.append((i, task, 'exception'))
+
+        if failed_tasks_for_retry:
+            print(f"\n[RETRY PASS] Retrying {len(failed_tasks_for_retry)} failed tasks with reduced concurrency...")
+
+            # Save pre-retry state
+            pre_retry_failure_log = list(self.failure_log)
+            pre_retry_timed_out_count = len(timed_out)
+            self.failure_log.clear()
+
+            # Reduced concurrency: 10% of workers, min 5
+            retry_workers_count = max(5, min(len(failed_tasks_for_retry), num_workers // 10))
+
+            # Generous timeout for retry
+            self.latency_tracker.retry_mode = True
+
+            retry_queue = asyncio.Queue()
+            retry_timed_out = []
+            retry_results_map = {}  # task_index -> result
+
+            for orig_index, task_data, reason in failed_tasks_for_retry:
+                await retry_queue.put((orig_index, task_data))
+
+            retry_worker_tasks = []
+            for _ in range(retry_workers_count):
+                w = asyncio.create_task(self.worker(retry_queue, results, retry_timed_out))
+                retry_worker_tasks.append(w)
+
+            await retry_queue.join()
+            for _ in retry_worker_tasks:
+                await retry_queue.put(None)
+            await asyncio.gather(*retry_worker_tasks)
+
+            self.latency_tracker.retry_mode = False
+
+            # Count recoveries: check if result is a real response (not fallback with PROCESSING_ERROR)
+            def _is_fallback(result):
+                if result is None:
+                    return True
+                ideas = getattr(result, 'response_ideas', [])
+                return any(getattr(idea, 'idea', '').startswith('PROCESSING_ERROR') for idea in ideas)
+
+            recovered = 0
+            for orig_index, task_data, reason in failed_tasks_for_retry:
+                result = results[orig_index]
+                if not _is_fallback(result):
+                    recovered += 1
+
+            # Create permanent fallback for tasks still failed after retry (including retry timed-out)
+            for task_index, task_data in retry_timed_out:
+                if results[task_index] is None:
+                    self.stats['tasks_failed'] += 1
+                    self.failure_log.append({
+                        'respondent_id': task_data.get('respondent_id', 'unknown'),
+                        'reason': 'timeout_after_retry',
+                        'error_type': 'Timeout',
+                        'response_preview': task_data.get('response', '')[:80]
+                    })
+                    results[task_index] = self.create_fallback_response(task_data, reason='timeout')
+
+            # Fallback for originally timed-out tasks that weren't recovered
+            for orig_index, task_data, reason in failed_tasks_for_retry:
+                if results[orig_index] is None:
+                    self.stats['tasks_failed'] += 1
+                    results[orig_index] = self.create_fallback_response(task_data, reason=reason)
+
+            still_failed = len(self.failure_log)
+            print(f"[RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
+            if still_failed > 0:
+                failed_ids_list = sorted(str(f['respondent_id']) for f in self.failure_log)
+                print(f"[RETRY PASS] Permanently failed IDs: {failed_ids_list[:20]}{'...' if still_failed > 20 else ''}")
+        else:
+            # No failures — create fallback for any remaining None results (shouldn't happen)
+            pass
 
         elapsed = time.time() - start_time
         print(f"\nCompleted {len(tasks)} tasks in {elapsed:.1f}s")
@@ -2726,7 +2802,7 @@ class IdeaExtractor:
         print(f"- Rate limits: {self.stats['rate_limits']}")
         timeouts = self.stats['timeouts']
         if timeouts > 0:
-            print(f"- Timeouts: {timeouts} (fallback, no retry)")
+            print(f"- Timeouts: {timeouts}")
         print(f"- Average: {elapsed/len(tasks):.2f}s/task")
         if self._warm_up_calibrated:
             print(f"- Token calibration: after {self._warm_up_target_samples} samples")

@@ -454,36 +454,67 @@ class CodeAssigner:
 
         elapsed = time.time() - start_time
 
-        # ── Phase 7: Retry timed-out tasks (BP5) ───────────────────────────
+        # ── Phase 7: Retry pass for true failures (timeouts + exceptions) ──
 
-        if timed_out:
-            if verbose:
-                print(f"\n  Retrying {len(timed_out)} timed-out tasks...")
-            retried = 0
-            for idx, task in timed_out:
-                try:
-                    result = await self._process_task_with_retry(task)
-                    if result is not None:
-                        results[idx] = result
-                        retried += 1
-                        self._stats['tasks_successful'] += 1
+        # Collect all failed tasks: timed-out + exception failures
+        retry_tasks = []
+        for idx, task in timed_out:
+            retry_tasks.append((idx, task))
+        for entry in self._failure_log:
+            retry_tasks.append((entry['result_index'], entry['task']))
 
-                        # Per-task resolution for retried tasks
+        if retry_tasks:
+            print(f"\n  [RETRY PASS] Retrying {len(retry_tasks)} failed tasks "
+                  f"({len(timed_out)} timeouts, {len(self._failure_log)} exceptions)...")
+
+            # Clear failure tracking for retry pass
+            pre_retry_failure_log = list(self._failure_log)
+            self._failure_log.clear()
+
+            # Generous timeout for retry
+            self._latency_tracker.retry_mode = True
+
+            # Queue-based retry with reduced concurrency
+            retry_queue = asyncio.Queue()
+            retry_timed_out = []
+            retry_workers_count = max(5, min(len(retry_tasks), num_workers // 10))
+
+            for idx, task in retry_tasks:
+                task['result_index'] = idx  # Preserve original index
+                await retry_queue.put(task)
+
+            retry_worker_list = [
+                asyncio.create_task(self._worker(retry_queue, results, retry_timed_out))
+                for _ in range(retry_workers_count)
+            ]
+
+            await retry_queue.join()
+            for _ in retry_worker_list:
+                await retry_queue.put(None)
+            await asyncio.gather(*retry_worker_list)
+
+            self._latency_tracker.retry_mode = False
+
+            # Count recoveries and handle per-task resolution for recovered tasks
+            recovered = 0
+            for idx, task in retry_tasks:
+                result = results[idx]
+                if result is not None and not isinstance(result, Exception):
+                    # Check if this was actually recovered (successful assignment)
+                    if hasattr(result, 'assignments') and result.assignments:
+                        # Per-task resolution for recovered tasks
                         task_id_map = task.get('task_id_to_label')
-                        if task_id_map and result.assignments:
+                        if task_id_map:
                             idea = task['idea']
                             raw_id = result.assignments[0].assigned_code_id or ''
                             cat_id = self._normalize_id(raw_id)
                             label = task_id_map.get(cat_id)
                             if label:
                                 self._per_task_resolutions[idea.idea_id] = label
-                except Exception as e:
-                    if verbose:
-                        print(f"    Retry failed for idea "
-                              f"'{task['idea'].idea_id}': {type(e).__name__}")
-            if verbose:
-                still_failed = len(timed_out) - retried
-                print(f"    Retried: {retried} recovered, {still_failed} still failed")
+                        recovered += 1
+
+            still_failed = len(self._failure_log) + len(retry_timed_out)
+            print(f"  [RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
 
         # ── Phase 8: Collect assignments ─────────────────────────────────────
 
@@ -627,7 +658,9 @@ class CodeAssigner:
                     self._failure_log.append({
                         'partition': task['partition_name'],
                         'batch_idx': task['batch_idx'],
+                        'result_index': task['result_index'],
                         'error_type': error_type,
+                        'task': task,  # Preserve full task for retry pass
                     })
                 finally:
                     self._stats['tasks_processed'] += 1
