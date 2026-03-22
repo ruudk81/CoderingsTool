@@ -592,9 +592,6 @@ def build_facet_assignment_prompt(
     survey_question: str,
     language: str,
     dataset_context_section: str,
-    dimension_def: Optional[DimensionDefinition],
-    dimension_name: str,
-    dimension_description: str,
     domain_name: str,
     domain_definition: str,
     facets: List[DiscoveredFacet],
@@ -602,26 +599,11 @@ def build_facet_assignment_prompt(
     ideas: List,
 ) -> str:
     """Build prompt for assigning ideas to discovered facets (L3)."""
-    taxonomy_block = build_dimension_context_block(
-        dimension_def=dimension_def,
-        dimension_name=dimension_name,
-        dimension_description=dimension_description,
-        domain_name=domain_name,
-        domain_definition=domain_definition,
-    )
-
     facet_codebook = _build_facet_codebook_block(facets, other_label)
     ideas_block = _build_ideas_block_for_facet_assignment(ideas)
-
-    # Dimension-specific facet question
-    if dimension_def:
-        facet_question = dimension_def.prompt_rules.facet_diagnostic
-    else:
-        facet_question = "What specific aspect or viewpoint does this represent?"
-
     other_label_display = other_label or "Other"
 
-    return f"""You are a qualitative coding assistant assigning survey response ideas to discovered facets.
+    return f"""You are a qualitative coding assistant. Your task is to assign survey response ideas to specific facets within a domain. Each idea represents a distinct concept extracted from a survey response, and you must determine which facet best captures the type of quality being described.
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -629,31 +611,47 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-{taxonomy_block}
+<domain_context>
+Domain: {domain_name} -- {domain_definition}
+</domain_context>
+
+Here are the facets available for assignment. Each idea must be assigned to exactly ONE of these facets:
 
 <facets>
-Assign each idea to exactly ONE of these facets:
-
 {facet_codebook}
 </facets>
+
+Here are the ideas you need to assign to facets:
 
 <ideas_to_assign>
 {ideas_block}
 </ideas_to_assign>
 
-<instructions>
-For each idea:
-1. Read the idea text and valence ([+] positive, [-] negative, [0] neutral).
-2. Determine which facet best answers the question: {facet_question}
-3. Assign exactly ONE facet per idea. Return the facet ID from [F#] brackets (e.g. "F1", "F3"). Do NOT return the facet name.
-4. Assign "{other_label_display}" ONLY if no facet fits at all.
-5. Rate your confidence (0.0 to 1.0).
+For each idea in the list, follow these steps:
 
-All output MUST be in {language}.
+1. Read the idea text carefully, noting the valence tag ([+] positive, [-] negative, [0] neutral) and what type of quality is being expressed.
 
-Provide output as valid JSON following the response schema provided.
-</instructions>
-"""
+2. Compare the idea against each available facet. Ask yourself: "Which facet best captures the type of quality being described in this idea?" Consider:
+   - The core meaning of the idea text
+   - The descriptions provided for each facet
+   - The examples given for each facet
+   - Semantic similarity between the idea and facet descriptions
+
+3. Assign the idea to exactly ONE facet. You must return only the facet ID (the code in [F#] brackets, such as "F1" or "F2"). Do NOT return the facet name or description. Assign "{other_label_display}" ONLY if no facet fits at all.
+
+4. Rate your confidence in this assignment on a scale from 0.0 to 1.0, where:
+   - 1.0 = completely certain this is the correct facet
+   - 0.7-0.9 = confident but some ambiguity exists
+   - 0.5-0.6 = moderate confidence, could reasonably fit multiple facets
+   - Below 0.5 = low confidence, significant ambiguity
+
+Important requirements:
+- Assign each idea to exactly ONE facet
+- Return only the facet ID (e.g., "F1"), not the facet name
+- Echo back the exact idea_id and idea text from the input without modification
+- All output must be in {language}
+
+Provide your response as valid JSON matching the schema provided."""
 
 class FacetAssignment(BaseModel):
     """Single idea-to-facet assignment."""
