@@ -27,13 +27,13 @@ class PreclusterResult:
 
 
 def _compute_ladder(idea) -> str:
-    """Compute 'instance → concept → concept_type → concept_type_definition'.
+    """Compute 'instance → interpretation → abstraction'.
 
     Mirrors step 4 embedder's ladder format. Falls back to idea.idea
     if all component fields are empty.
     """
     parts = []
-    for field in ('instance', 'concept', 'concept_type', 'concept_type_definition'):
+    for field in ('instance', 'interpretation', 'abstraction'):
         val = (getattr(idea, field, '') or '').strip()
         if val:
             parts.append(val)
@@ -41,12 +41,12 @@ def _compute_ladder(idea) -> str:
 
 
 def _compute_idea_concept_defined(idea) -> str:
-    """Compute 'idea → concept → concept_type_definition'.
+    """Compute 'idea → interpretation → abstraction'.
 
     Mirrors step 4 embedder's idea_concept_defined format.
     """
     parts = []
-    for field in ('idea', 'concept', 'concept_type_definition'):
+    for field in ('idea', 'interpretation', 'abstraction'):
         val = (getattr(idea, field, '') or '').strip()
         if val:
             parts.append(val)
@@ -58,14 +58,14 @@ def format_label(idea, label_source: str, label_prefix: str = "") -> str:
 
     Args:
         idea: Idea object with taxonomy fields (idea, instance, concept,
-              concept_type, concept_type_definition)
+              domain, abstraction)
         label_source: Stored field name or composite format key.
             Stored fields: "idea", "instance", "concept",
-                           "concept_type", "concept_type_definition"
+                           "domain", "abstraction"
             Computed composites (assembled from stored fields):
-                "ladder"               — instance → concept → concept_type → concept_type_definition
-                "idea_concept_defined" — idea → concept → concept_type_definition
-        label_prefix: Optional prefix. "{concept_type}: " substitutes idea.concept_type.
+                "ladder"               — instance → interpretation → abstraction
+                "idea_concept_defined" — idea → interpretation → abstraction
+        label_prefix: Optional prefix. "{domain}: " substitutes idea.domain.
 
     Returns:
         Formatted label string, or empty string if all fields are empty.
@@ -84,9 +84,9 @@ def format_label(idea, label_source: str, label_prefix: str = "") -> str:
     if not label_prefix:
         return raw
 
-    # Dynamic substitution: replace {concept_type}, {concept}, etc.
+    # Dynamic substitution: replace {domain}, {interpretation}, etc.
     prefix = label_prefix
-    for field_name in ('concept_type', 'concept', 'concept_type_definition'):
+    for field_name in ('domain', 'interpretation', 'abstraction'):
         placeholder = '{' + field_name + '}'
         if placeholder in prefix:
             val = (getattr(idea, field_name, '') or '').strip()
@@ -97,7 +97,7 @@ def format_label(idea, label_source: str, label_prefix: str = "") -> str:
 
 def collect_unique_labels(
     ideas: list,
-    label_source: str = "concept_type_definition",
+    label_source: str = "abstraction",
     label_prefix: str = "",
 ) -> List[str]:
     """Collect unique label strings from a list of idea objects.

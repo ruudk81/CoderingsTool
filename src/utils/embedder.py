@@ -5,9 +5,8 @@ Generate embeddings for survey response ideas with configurable text formats
 and quality analysis.
 
 Supports:
-- 8 single-pass text formats: "idea", "idea_bare", "concept", "concept_type",
-  "concept_defined", "concept_typed", "idea_concept_defined", "ladder"
-- Multi-pass modes: "default" (4 passes), "all" (4 passes) via MULTI_PASS_SPECS
+- 4 single-pass text formats: "idea", "idea_bare", "interpretation", "abstraction", "ladder"
+- Multi-pass modes: "default" (3 passes), "all" (4 passes) via MULTI_PASS_SPECS
 - Batch processing with configurable concurrency
 - Text deduplication for efficiency
 - Embedding quality analysis (norms, pairwise similarity)
@@ -69,16 +68,13 @@ class Embedder:
     Single-pass formats (stored in idea_embedding):
         "idea"            — idea text as-is (natural sentence incl. template_prefix)
         "idea_bare"       — idea with template_prefix stripped
-        "concept"         — canonical concept noun phrase
-        "concept_type"    — discovered concept type
-        "concept_defined"      — concept → concept_type_definition
-        "concept_typed"        — concept (concept_type)
-        "idea_concept_defined" — idea → concept → concept_type_definition
-        "ladder"               — instance → concept → concept_type → concept_type_definition
+        "interpretation"  — interpretation (ladder rung 2)
+        "abstraction"     — abstraction (ladder rung 3)
+        "ladder"          — instance → interpretation → abstraction
 
     Multi-pass formats (each pass stored in its own field):
-        "default"         — 4 passes: idea, ladder, concept_defined, idea_concept_defined
-        "all"             — 4 passes: idea, concept, concept_type, ladder
+        "default"         — 3 passes: idea, ladder, interpretation
+        "all"             — 4 passes: idea, interpretation, abstraction, ladder
 
     Args:
         config: EmbedderConfig with all embedder settings
@@ -133,12 +129,12 @@ class Embedder:
     # =========================================================================
 
     def _format_ladder_text(self, idea) -> str:
-        """Format abstraction ladder: instance → concept → concept_type → concept_type_definition.
+        """Format abstraction ladder: instance → interpretation → abstraction.
 
         Falls back to idea.idea when all ladder fields are empty.
         """
         parts = []
-        for field in ('instance', 'concept', 'concept_type', 'concept_type_definition'):
+        for field in ('instance', 'interpretation', 'abstraction'):
             val = (getattr(idea, field, '') or '').strip()
             if val:
                 parts.append(val)
@@ -160,37 +156,13 @@ class Embedder:
                     return stripped if stripped else idea.idea
             return idea.idea
 
-        if fmt == "concept":
-            val = (getattr(idea, 'concept', '') or '').strip()
+        if fmt == "interpretation":
+            val = (getattr(idea, 'interpretation', '') or '').strip()
             return val if val else idea.idea
 
-        if fmt == "concept_type":
-            val = (getattr(idea, 'concept_type', '') or '').strip()
+        if fmt == "abstraction":
+            val = (getattr(idea, 'abstraction', '') or '').strip()
             return val if val else idea.idea
-
-        if fmt == "concept_typed":
-            concept = (getattr(idea, 'concept', '') or '').strip()
-            concept_type = (getattr(idea, 'concept_type', '') or '').strip()
-            if concept and concept_type:
-                return f"{concept} ({concept_type})"
-            return concept or idea.idea
-
-        if fmt == "concept_defined":
-            concept = (getattr(idea, 'concept', '') or '').strip()
-            definition = (getattr(idea, 'concept_type_definition', '') or '').strip()
-            if concept and definition:
-                return f"{concept} → {definition}"
-            return concept or idea.idea
-
-        if fmt == "idea_concept_defined":
-            concept = (getattr(idea, 'concept', '') or '').strip()
-            definition = (getattr(idea, 'concept_type_definition', '') or '').strip()
-            parts = [idea.idea]
-            if concept:
-                parts.append(concept)
-            if definition:
-                parts.append(definition)
-            return " → ".join(parts)
 
         if fmt == "ladder":
             return self._format_ladder_text(idea)
@@ -209,12 +181,9 @@ class Embedder:
         format_labels = {
             "idea":            "idea (natural sentence incl. template_prefix)",
             "idea_bare":       "idea (template_prefix stripped)",
-            "concept":         "concept (canonical noun phrase)",
-            "concept_type":    "concept_type (discovered type)",
-            "concept_defined":      "concept → concept_type_definition",
-            "concept_typed":        "concept (concept_type)",
-            "idea_concept_defined": "idea → concept → concept_type_definition",
-            "ladder":               "abstraction ladder (instance → concept → concept_type → concept_type_definition)",
+            "interpretation":  "interpretation (ladder rung 2)",
+            "abstraction":     "abstraction (ladder rung 3)",
+            "ladder":          "abstraction ladder (instance → interpretation → abstraction)",
         }
         label = format_labels.get(self.embedding_text_format, self.embedding_text_format)
         self.verbose_reporter.stat_line(f"Embedding format: {label}")
@@ -425,9 +394,11 @@ class Embedder:
                         'idea_id': response_idea.idea_id,
                         'idea': response_idea.idea,
                         'instance': getattr(response_idea, 'instance', '') or '',
-                        'concept': getattr(response_idea, 'concept', '') or '',
-                        'concept_type': getattr(response_idea, 'concept_type', '') or '',
-                        'concept_type_definition': getattr(response_idea, 'concept_type_definition', '') or '',
+                        'interpretation': getattr(response_idea, 'interpretation', '') or '',
+                        'abstraction': getattr(response_idea, 'abstraction', '') or '',
+                        'domain': getattr(response_idea, 'domain', '') or '',
+                        'facet': getattr(response_idea, 'facet', '') or '',
+                        'attribute': getattr(response_idea, 'attribute', '') or '',
                         'valence': getattr(response_idea, 'valence', '') or '',
                     }
                     if key in embedding_lookup:

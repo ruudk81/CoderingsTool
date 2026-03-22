@@ -39,7 +39,7 @@ from config_steps.config_preprocess import (
 )
 
 # === PROMPTS + RESPONSE MODELS ========================================================================================================
-from prompts import SPELLCHECK_INSTRUCTIONS, CorrectionItem, LLMCorrectionResponse
+from prompts_steps.prompts_spellChecker import SPELLCHECK_INSTRUCTIONS, CorrectionItem, LLMCorrectionResponse
 
 logger = logging.getLogger(__name__)
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH

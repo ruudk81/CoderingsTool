@@ -42,7 +42,7 @@ from config import (
 )
 
 from config_steps.config_categories import CategoriesConfig
-from .domain_discoverer import PartitionLabelMapping
+from .partition_discoverer import PartitionLabelMapping
 from .partition_labels import PreclusterResult, build_cluster_hints
 from prompts import (
     MAP_CATEGORIES_PROMPT,
@@ -190,8 +190,8 @@ class MapReduceMECE:
         survey_question: str = "",
         language: str = "Dutch",
         dataset_context: Optional[Dict[str, str]] = None,
-        primary_facet: Optional[str] = None,
-        facet_description: Optional[str] = None,
+        primary_dimension: Optional[str] = None,
+        dimension_description: Optional[str] = None,
         grouping_instructions: Optional[Dict[str, str]] = None,
         precluster_results: Optional[Dict[str, PreclusterResult]] = None,
         verbose: bool = False,
@@ -208,8 +208,8 @@ class MapReduceMECE:
             survey_question: The survey question for prompt context
             language: Language for output (default: Dutch)
             dataset_context: Optional dict with domain, entity, topic, etc.
-            primary_facet: Optional primary facet from step 3
-            facet_description: Optional primary facet description
+            primary_dimension: Optional primary dimension from step 3
+            dimension_description: Optional primary dimension description
             grouping_instructions: Optional dict of partition_name → instruction
             precluster_results: Optional dict of partition_name → PreclusterResult
             verbose: Print progress info
@@ -224,7 +224,7 @@ class MapReduceMECE:
         # Build shared prompt context
         dataset_context_section = self._build_dataset_context_section(dataset_context)
         taxonomy_context = self._build_taxonomy_context(
-            primary_facet, facet_description,
+            primary_dimension, dimension_description,
         )
 
         prompt_context = PromptContext(
@@ -914,18 +914,18 @@ class MapReduceMECE:
 
     @staticmethod
     def _build_taxonomy_context(
-        primary_facet: Optional[str],
-        facet_description: Optional[str],
+        primary_dimension: Optional[str],
+        dimension_description: Optional[str],
     ) -> str:
         """Build taxonomy context block for prompts from ExtractionMetadata fields."""
-        if not primary_facet:
+        if not primary_dimension:
             return ""
 
-        desc = facet_description or "Not specified"
+        desc = dimension_description or "Not specified"
         return (
             f"<taxonomy_context>\n"
-            f"Primary coding facet (applies across all concept types): {primary_facet}\n"
+            f"Primary coding dimension (applies across all domains): {primary_dimension}\n"
             f"Definition in survey language: {desc}\n"
-            f"Categories must describe content within this facet ONLY.\n"
+            f"Categories must describe content within this dimension ONLY.\n"
             f"</taxonomy_context>"
         )

@@ -2440,7 +2440,7 @@ def show_clustering_page():
     """
     Step 5: Category Discovery & Assignment
 
-    Partitions ideas by concept_type, discovers MECE categories, and assigns each idea.
+    Partitions ideas by domain, discovers MECE categories, and assigns each idea.
 
     Pipeline function: step_4_classNcoder
     Cache name: code_assignment

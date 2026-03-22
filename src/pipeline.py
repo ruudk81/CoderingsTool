@@ -658,7 +658,7 @@ def step_3_extract_ideas(
                 var_lab=var_lab
             )
             if verbose:
-                verbose_reporter.stat_line(f"Cached extraction metadata: facet={extraction_metadata.primary_facet}, template='{extraction_metadata.template_prefix}'")
+                verbose_reporter.stat_line(f"Cached extraction metadata: dimension={extraction_metadata.primary_dimension}, template='{extraction_metadata.template_prefix}'")
 
         print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
 
@@ -790,7 +790,7 @@ def step_4_generate_embeddings(
             1 for resp in embedded_text
             if resp.response_ideas
             for idea in resp.response_ideas
-            if getattr(idea, 'concept_embedding', None) is not None
+            if getattr(idea, 'interpretation_embedding', None) is not None
         )
 
         # Print final statistics (matching experiment runner output)
@@ -839,12 +839,12 @@ def step_4_classNcoder(
 ):
     """Step 5: Category Discovery & Assignment
 
-    Partitions ideas by concept_type, discovers MECE coding categories per
+    Partitions ideas by domain, discovers MECE coding categories per
     partition via MAP/REDUCE/MECE, then assigns each idea to exactly one
     category.
 
     Three stages:
-      1. Partition Discovery: group by concept_type, collect unique labels
+      1. Partition Discovery: group by domain, collect unique labels
       2. Map-Reduce MECE: discover categories per partition (concurrent)
       3. Category Assignment: assign ideas to categories (concurrent)
 
@@ -915,7 +915,7 @@ def step_4_classNcoder(
         )
         if extraction_metadata and verbose:
             print(f"   Loaded extraction metadata "
-                  f"(primary_facet: {extraction_metadata.primary_facet})")
+                  f"(primary_dimension: {extraction_metadata.primary_dimension})")
     except Exception as e:
         if verbose:
             print(f"   Note: Could not load extraction metadata: {e}")
@@ -941,8 +941,8 @@ def step_4_classNcoder(
     survey_question = var_lab or ""
     language = "Dutch"
     dataset_context = None
-    primary_facet = None
-    facet_description = None
+    primary_dimension = None
+    dimension_description = None
 
     if extraction_metadata:
         meta = extraction_metadata
@@ -954,8 +954,8 @@ def step_4_classNcoder(
             val = getattr(meta, f, None)
             if val:
                 dataset_context[f] = val
-        primary_facet = getattr(meta, 'primary_facet', None)
-        facet_description = getattr(meta, 'primary_facet_description', None)
+        primary_dimension = getattr(meta, 'primary_dimension', None)
+        dimension_description = getattr(meta, 'primary_dimension_description', None)
 
     processor = MapReduceMECE(categories_config)
     mece_results = processor.process_all_partitions(
@@ -964,8 +964,8 @@ def step_4_classNcoder(
         survey_question=survey_question,
         language=language,
         dataset_context=dataset_context,
-        primary_facet=primary_facet,
-        facet_description=facet_description,
+        primary_dimension=primary_dimension,
+        dimension_description=dimension_description,
         grouping_instructions=grouping_instructions,
         precluster_results=precluster_results,
         verbose=verbose,

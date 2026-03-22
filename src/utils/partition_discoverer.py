@@ -1,12 +1,12 @@
 """
 Partition Discoverer for Category Discovery.
 
-Partitions ideas by concept_type (data-driven groups from step 3),
+Partitions ideas by domain (data-driven groups from step 3),
 collects unique concepts per partition, and optionally pre-clusters
 them via UMAP+HDBSCAN for Mode B.
 
-- Dynamic partitions from concept_type
-- Partition descriptions from concept_types metadata in ExtractionMetadata
+- Dynamic partitions from domain
+- Partition descriptions from domains metadata in ExtractionMetadata
 - Configurable label_source and label_prefix
 - Optional pre-clustering for Mode B
 """
@@ -44,7 +44,7 @@ class PartitionLabelMapping:
 
 class DomainDiscoverer:
     """
-    Partitions ideas by concept_type and collects unique labels
+    Partitions ideas by domain and collects unique labels
     per partition. Optionally pre-clusters labels for Mode B.
     """
 
@@ -55,17 +55,17 @@ class DomainDiscoverer:
     ):
         self._config = config
         self._extraction_metadata = extraction_metadata
-        self._primary_facet = (
-            getattr(extraction_metadata, 'primary_facet', '')
+        self._primary_dimension = (
+            getattr(extraction_metadata, 'primary_dimension', '')
             if extraction_metadata else ''
         )
-        # Build concept_types lookup: {key: {label, definition}} from metadata
-        self._concept_types_lookup: Dict[str, Dict[str, str]] = {}
-        if extraction_metadata and hasattr(extraction_metadata, 'concept_types'):
-            for ct in extraction_metadata.concept_types:
-                key = ct.get('key', '')
+        # Build domains lookup: {key: {label, definition}} from metadata
+        self._domains_lookup: Dict[str, Dict[str, str]] = {}
+        if extraction_metadata and hasattr(extraction_metadata, 'domains'):
+            for d in extraction_metadata.domains:
+                key = d.get('key', '')
                 if key:
-                    self._concept_types_lookup[key] = ct
+                    self._domains_lookup[key] = d
 
         self._populated_partitions: Dict[str, List] = {}
 
@@ -81,7 +81,7 @@ class DomainDiscoverer:
         """
         instructions = {}
         for ct_key in self._populated_partitions:
-            ct_info = self._concept_types_lookup.get(ct_key, {})
+            ct_info = self._domains_lookup.get(ct_key, {})
             definition = ct_info.get('definition', '')
             label = ct_info.get('label', ct_key)
             if definition:
@@ -101,7 +101,7 @@ class DomainDiscoverer:
         embeddings_models: List[models.EmbeddingsModel],
     ) -> Tuple[DomainSet, Dict[str, PartitionLabelMapping], Optional[Dict[str, PreclusterResult]]]:
         """
-        Partition ideas by concept_type and collect labels.
+        Partition ideas by domain and collect labels.
 
         Returns:
             (partition_set, label_mappings, precluster_results)
@@ -114,11 +114,11 @@ class DomainDiscoverer:
         print(f"  Label source: {self._config.label_source}")
         if self._config.label_prefix:
             print(f"  Label prefix: \"{self._config.label_prefix}\"")
-        if self._primary_facet:
-            print(f"  Primary facet: {self._primary_facet}")
+        if self._primary_dimension:
+            print(f"  Primary dimension: {self._primary_dimension}")
 
-        # Step 1: Partition ideas by concept_type
-        partitioned_ideas = self._partition_by_concept_type(embeddings_models)
+        # Step 1: Partition ideas by domain
+        partitioned_ideas = self._partition_by_domain(embeddings_models)
 
         # Filter empty partitions
         populated = {k: v for k, v in partitioned_ideas.items() if v}
@@ -174,11 +174,11 @@ class DomainDiscoverer:
     # PARTITIONING
     # =========================================================================
 
-    def _partition_by_concept_type(
+    def _partition_by_domain(
         self,
         embeddings_models: List[models.EmbeddingsModel],
     ) -> Dict[str, List]:
-        """Group idea objects by their concept_type field.
+        """Group idea objects by their domain field.
 
         Returns:
             Dict mapping concept_type \u2192 list of idea objects
@@ -321,12 +321,12 @@ class DomainDiscoverer:
         return DomainSet(partitions=partitions)
 
     def _build_partition_description(self, ct_key: str) -> DomainDescription:
-        """Build DomainDescription for a concept_type partition.
+        """Build DomainDescription for a domain partition.
 
-        Uses concept_types metadata from ExtractionMetadata when available,
+        Uses domains metadata from ExtractionMetadata when available,
         falls back to a generic description based on the partition name.
         """
-        ct_info = self._concept_types_lookup.get(ct_key, {})
+        ct_info = self._domains_lookup.get(ct_key, {})
         label = ct_info.get('label', ct_key)
         definition = ct_info.get('definition', '')
 
@@ -338,7 +338,7 @@ class DomainDiscoverer:
         )
 
     def _build_inclusion_definition(self, label: str, definition: str) -> str:
-        """Build inclusion_definition from concept_type metadata."""
+        """Build inclusion_definition from domain metadata."""
         if definition:
             return (
                 f'Labels of type "{label}": {definition}. '
@@ -347,13 +347,13 @@ class DomainDiscoverer:
         return f"Labels related to the concept type '{label}'."
 
     def _build_boundary_test(self, label: str, definition: str) -> str:
-        """Derive boundary_test from concept_type metadata."""
+        """Derive boundary_test from domain metadata."""
         if definition:
             return f"Does this label describe a '{label}' concept ({definition})?"
         return f"Does this label relate to '{label}'?"
 
     def _build_diagnostic_signals(self, label: str, definition: str) -> List[str]:
-        """Build diagnostic signals from concept_type label and definition."""
+        """Build diagnostic signals from domain label and definition."""
         signals = [label.lower()]
         if definition:
             words = [

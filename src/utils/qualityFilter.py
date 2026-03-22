@@ -38,7 +38,7 @@ from config_steps.config_qualityFilter import (
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
 
 # === PROMPTS + RESPONSE MODELS ========================================================================================================
-from prompts import GRADER_INSTRUCTIONS, QualityFilterLLMResponse
+from prompts_steps.prompts_qualityFilter import GRADER_INSTRUCTIONS, QualityFilterLLMResponse
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats

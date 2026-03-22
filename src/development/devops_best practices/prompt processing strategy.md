@@ -86,7 +86,43 @@ The system manages four independent constraints:
 
 Little's Law (`N = λ × W`) computes the optimal concurrency from arrival rate and latency. We use it as an **upper bound**, not a target, because it assumes constant latency — which breaks under server-side queuing.
 
-### Completion-based ramp (ConcurrencyRamp)
+### Concurrency initialization: two options
+
+There are two mutually exclusive strategies for initializing concurrency. Choose one, not both.
+
+#### Option A: Bootstrap
+
+Make 3 probe calls upfront, measure latency and tokens, compute Little's Law, start at full computed concurrency.
+
+```
+Phase 1: 3 serial probe calls → measure avg latency + avg tokens
+Phase 2: Compute Little's Law → set concurrency, workers, rate limiters
+Phase 3: Start processing at full computed concurrency
+```
+
+**Strengths:**
+- Fast startup — no warm-up phase, peak throughput from the first real task
+- Simple to implement — one-shot calculation, no recalibration logic
+
+**Risks:**
+- 3 probe calls may not be representative of real workload (different prompt lengths, response complexity)
+- If probes underestimate latency → concurrency too high → server-side queuing → throughput drop
+- If probes overestimate latency → concurrency too low → underutilization for the entire run
+- No self-correction — bootstrap values are used for the entire batch
+
+**Best for:** Small batches (<100 tasks) where warm-up overhead is disproportionate, or deployments with highly predictable latency.
+
+#### Option B: Warm-up with conservative ramp (preferred)
+
+Skip probes. Start conservatively, let real production completions calibrate the system, then ramp toward optimal.
+
+```
+Phase 1: Theoretical Little's Law estimate (from model limits + tiktoken token estimates)
+Phase 2: Start at 50% of estimate (conservative)
+Phase 3: Process real tasks, collect latency data
+Phase 4: After 15-30 completions, recalibrate with measured P10 latency
+Phase 5: Ramp linearly toward 90% of recalibrated Little's Law
+```
 
 Concurrency scales linearly with completion progress:
 
@@ -104,11 +140,53 @@ This replaces time-based ramping which failed when processing completed faster t
 
 After warm-up calibration, Little's Law is recalculated with measured latency (P10, to avoid queuing-inflated values). The ramp adjusts start/target but **preserves congestion detection state** so ongoing throughput decline isn't forgotten.
 
+**Strengths:**
+- Self-correcting — real production data replaces theoretical estimates
+- Conservative start protects against overloading the API
+- Ramp ensures concurrency tracks actual capacity, not assumptions
+- Works regardless of how representative initial estimates are
+
+**Risks:**
+- Slower to reach peak throughput — first 15-30 completions run at reduced concurrency
+- On slow deployments (low TPM/RPM quotas), the conservative 50% start could mean a very slow first phase, and the 15-30 completion recalibration window could take significantly longer to reach
+
+**Best for:** Large batches (100+ tasks) where the warm-up cost is negligible relative to total processing time, and where robust self-correction matters more than fast startup.
+
+**Current preference: Option B.** Validated on high-throughput deployments (150M TPM, 30K RPM). Not yet tested on slow deployments with significantly lower quotas — this is an open area for future validation. On such deployments, the conservative 50% start may need a higher `start_fraction` or a smaller recalibration window to avoid excessive warm-up time.
+
+#### When neither option applies: small batches
+
+For small batches (<30 tasks), **neither bootstrap nor warm-up is appropriate**:
+
+- **Bootstrap overhead is disproportionate.** 3 probe calls at ~8s each = 24s of measurement overhead for a phase that might only take 30s to process. You're spending nearly as much time calibrating as executing.
+- **Warm-up never completes.** Option B needs 15-30 completions to recalibrate. If the total batch is 9-30 tasks, the warm-up window covers most or all of the work — the system never reaches its calibrated state, so you get the slow conservative start without the payoff of optimized throughput afterward.
+
+**Recommendation for small batches:** Use a sensible static semaphore (e.g., 10-20) and a rate limiter. No bootstrap, no warm-up. Just run the tasks. The overhead of any calibration strategy exceeds the total phase runtime.
+
+This is particularly relevant for **multi-phase pipelines** where a single bootstrap is shared across phases with very different characteristics. For example, in a pipeline with:
+- Phase 1: 9 tasks (facet discovery per domain)
+- Phase 3: 844 tasks (facet assignment per idea)
+- Phase 4: 30 tasks (attribute discovery per facet)
+- Phase 6: 844 tasks (attribute assignment per idea)
+
+A bootstrap calibrated on Phase 1's prompt latency is:
+- **Wasted** for Phase 1 itself (9 tasks — just run them)
+- **Miscalibrated** for Phase 3/6 (different prompt type, different latency profile)
+- **Wasted** for Phase 4 (30 tasks — borderline, but bootstrap overhead is still ~80% of phase runtime)
+
+The correct approach is to **match the strategy to the phase**:
+
+| Batch size | Strategy | Rationale |
+|-----------|----------|-----------|
+| <30 tasks | Static semaphore (10-20) + rate limiter | Calibration overhead exceeds processing time |
+| 30-100 tasks | Option A (Bootstrap) | Enough tasks to amortize 3 probes, too few for warm-up to complete |
+| 100+ tasks | Option B (Warm-up ramp) | Enough volume for warm-up to recalibrate and self-correct |
+
 ### Worker scaling
 
-- **Initial:** workers = ramp target (90% of Little's Law)
-- **After warm-up:** if recalculated ramp target is higher, extra workers are spawned
-- Workers cycle through the task queue — a finished worker picks the next task
+- **Option A:** workers = computed optimal concurrency (static for entire run)
+- **Option B:** workers = ramp target (90% of Little's Law); after warm-up recalibration, if ramp target increases, extra workers are spawned
+- In both options, workers cycle through the task queue — a finished worker picks the next task
 
 ### Circuit breaker (safety net)
 
@@ -121,6 +199,8 @@ RECOVERING: Cooldown expired, rate OK. Ramp +10% per 30s toward baseline.
 ```
 
 With 60s timeouts, the circuit breaker should rarely trip. If it does, something is genuinely wrong (network issues, API degradation).
+
+Applicable to both Option A and Option B, though more valuable with Option B where concurrency changes over time.
 
 ---
 
@@ -180,23 +260,29 @@ The PID controller adjusts the AsyncLimiter's arrival rate based on real-time TP
 ### Phase 1: Fetch API rate limits
 Minimal API call → read `x-ratelimit-limit-tokens` / `x-ratelimit-limit-requests` from headers.
 
-### Phase 2: Conservative initialization
-Conservative rate limiters for context extraction (concurrency=10, 50% headroom).
+### Phase 2: Concurrency initialization
 
-### Phase 3: Context extraction
-Discovers specifiers, primary dimension, domains with conservative limiters.
+**If using Option A (Bootstrap):**
+- 3 serial probe calls → measure avg latency + avg tokens
+- Compute Little's Law → set concurrency, workers, rate limiters at full computed value
+- Proceed to Phase 3
 
-### Phase 4: Recalculate token estimates
-Tiktoken-based avg_tokens with real context (local calculation, no API calls).
-
-### Phase 5: Production rate limiting initialization
+**If using Option B (Warm-up with conservative ramp):**
+- Theoretical Little's Law estimate from model limits + tiktoken token estimates
 - Arrival rate from `min(RPM, TPM)` with headroom (PID adjusts this)
-- Little's Law as upper bound
 - ConcurrencyGate starts at 50% of Little's Law
 - Workers = ramp target (90% of Little's Law)
 - Circuit breaker, PID controller, TPM/RPM trackers initialized
+- Proceed to Phase 3
 
-### Phase 6: Main processing loop
+### Phase 3: Context extraction (if applicable)
+Discovers specifiers, primary dimension, domains with conservative limiters. (Step-specific — not all utilities need this phase.)
+
+### Phase 4: Main processing loop
+
+**Option A (Bootstrap):** Straightforward — all tasks processed at the static concurrency computed during bootstrap. No ramp, no recalibration.
+
+**Option B (Warm-up with conservative ramp):**
 
 ```
 Every 0.1s:
@@ -206,7 +292,7 @@ Every 0.1s:
 Every 68 completions OR 2s:
   progress report (TPM%, RPM%, Concurrency%, ramp status, deferred count)
 
-After 30 completions:
+After 15-30 completions:
   _calibrate_from_warm_up()            ← update tokens + arrival rate
                                        ← recalibrate ramp (new Little's Law with P10 latency)
                                        ← spawn extra workers if ramp target increased
@@ -216,10 +302,10 @@ Every 20s:
   OR _apply_pid_adjustment()           ← PID arrival rate fine-tuning
 ```
 
-### Phase 7: Cleanup
+### Phase 5: Cleanup
 Timed-out tasks (if any) get fallback responses.
 
-### Phase 8: Retry pass for true failures
+### Phase 6: Retry pass for true failures
 
 After the main batch completes, any tasks that experienced a true process failure (API timeout, 429, connection error, internal server error) are retried once with reduced concurrency. This is distinct from the earlier "batch retry" approach that was removed — that retried aggressively-timed-out tasks that were likely just slow. This phase only targets tasks where the API call genuinely did not return a usable response.
 
@@ -390,7 +476,7 @@ These are implementation choices — the default (same timeout, one pass, reduce
 | `sliding_window_seconds` | 60.0 | Track over last 60s |
 | `target_utilization` | 0.80 | Target 80% TPM utilization |
 
-### Warm-up calibration
+### Warm-up calibration (Option B only)
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
 | `sample_min` | 15 | Min completions before calibration |
@@ -450,12 +536,26 @@ Having 1000 workers for 450 concurrency slots means 550 workers queue at the sem
 ### Cold-start timeout must be generous
 All workers acquire semaphore slots simultaneously at T+0. They all compute timeout before any latency data exists. A 10s cold-start timeout caused ~5% of the first batch to be deferred. Solution: compute timeout AFTER semaphore, and use 60s cold start.
 
+### Match calibration strategy to batch size
+Bootstrap and warm-up both have overhead. For small batches (<30 tasks), that overhead is disproportionate — you spend more time calibrating than processing. A static semaphore with a rate limiter is sufficient. This is especially important in multi-phase pipelines: don't run a shared bootstrap that calibrates against one phase's prompts and then applies that calibration to a different phase with entirely different latency characteristics.
+
 ### Measure latency at the right scope
 Latency fed into the tracker must measure only API response time (after semaphore + token bucket), not total task time including queue wait. Otherwise, queuing time inflates the latency estimate, inflating Little's Law, creating a positive feedback loop.
 
 ---
 
 ## Changelog
+
+### 2026-03-22: Batch size guidance — when calibration is overhead
+
+**Problem:** In multi-phase pipelines (e.g., qualitative_researcher), a single bootstrap was run once and shared across all phases. The bootstrap was calibrated against Phase 1 (facet discovery, ~9 tasks with 7.67s avg latency), but the same semaphore (58) was used for Phase 3 (facet assignment, 844 tasks) and Phase 6 (attribute assignment, 844 tasks) which have completely different prompt types and latency profiles. The 23s bootstrap overhead was also disproportionate for the small phases it was supposedly calibrating.
+
+**Fix:** Added batch-size-based strategy guidance:
+- <30 tasks: static semaphore + rate limiter (no calibration)
+- 30-100 tasks: Option A (bootstrap — enough to amortize 3 probes)
+- 100+ tasks: Option B (warm-up ramp — enough for recalibration to pay off)
+
+**Key insight:** Calibration has a cost. 3 probe calls at ~8s each = 24s overhead. For a 9-task phase completing in 33s, that's 73% overhead. For an 844-task phase, it's <3%. Match the strategy to the workload, not the pipeline.
 
 ### 2026-03-22: Failure tracking and retry pass
 

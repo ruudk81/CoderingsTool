@@ -28,7 +28,7 @@ import models
 from prompts import MECECode
 from config_steps.config_categories import get_other_category_label
 from config_steps.config_embedder import format_idea_text
-from facet_data import get_facet
+from utils.dimension_data import get_dimension
 # Config - generic/universal
 from config import (
     OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig,
@@ -1309,7 +1309,7 @@ class InductiveCodeGenerator:
         mece_topics: Optional[Dict[int, dict]] = None,  # MECE Phase A output per cluster (legacy)
         mece_results_cache: Optional['CodingResultsCache'] = None,  # step_4_classNcoder MECE cache
         category_assigned_data: Optional[List['CodeAssignedModel']] = None,  # step_4_classNcoder assignments
-        embedding_text_format: str = "cached",  # "cached" | "idea" | "ladder" | "concept+concept_type" | etc.
+        embedding_text_format: str = "cached",  # "cached" | "idea" | "ladder" | "interpretation" | etc.
         embedding_separator: str = " → ",  # separator for multi-field/composite formats
         **kwargs  # For backward compatibility
     ):
@@ -1476,7 +1476,7 @@ class InductiveCodeGenerator:
         return []
 
     def _get_context_specifier_params(self) -> Dict[str, str]:
-        """Build prompt-variable dict from extraction metadata + facet_data lookup.
+        """Build prompt-variable dict from extraction metadata + dimension_data lookup.
 
         Returns a dict with all context specifier fields that can be merged into
         prompt params dicts. If extraction_metadata is not available, returns
@@ -1485,23 +1485,23 @@ class InductiveCodeGenerator:
         Used by: CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
                  CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
 
-        Facet fields (facet_valid_labels, facet_invalid_labels) are looked up
-        from facet_data.py using meta.primary_facet as the key.
+        Dimension fields are looked up from dimension_data.py using
+        meta.primary_dimension as the key.
         """
         if self._extraction_metadata:
             meta = self._extraction_metadata
-            facet = get_facet(meta.primary_facet) if meta.primary_facet else None
+            dim = get_dimension(meta.primary_dimension) if meta.primary_dimension else None
             return {
                 'lang': meta.lang or "",
-                'domain': meta.domain or "",
+                'domain': meta.sector or "",
                 'topic': meta.topic or "",
                 'perspective': meta.perspective or "",
                 'entity': meta.entity or "",
                 'intent': meta.intent or "",
-                'facet_name': facet.noun_phrase_descriptor if facet else "",
-                'facet_description': facet.dimension_description if facet else (getattr(meta, 'primary_facet_description', None) or ""),
-                'facet_valid_labels': ", ".join(facet.allowed_concepts) if facet else "",
-                'facet_invalid_labels': "; ".join(facet.exclusions) if facet else "",
+                'facet_name': dim.noun_phrase_descriptor if dim else "",
+                'facet_description': dim.dimension_description if dim else (getattr(meta, 'primary_dimension_description', None) or ""),
+                'facet_valid_labels': ", ".join(dim.allowed_concepts) if dim else "",
+                'facet_invalid_labels': "; ".join(dim.exclusions) if dim else "",
             }
         return {
             'lang': "",
@@ -2090,16 +2090,15 @@ class InductiveCodeGenerator:
 
 
     # Map format names to cached embedding field names on EmbeddingsSubmodel.
-    # Step 4 "default" multi-pass stores: idea_embedding, ladder_embedding,
-    # concept_embedding (from concept_defined), idea_concept_defined_embedding.
+    # Step 4 stores: idea_embedding, ladder_embedding,
+    # interpretation_embedding, abstraction_embedding, domain_embedding, facet_embedding.
     _FORMAT_TO_CACHED_FIELD = {
         "idea":                  "idea_embedding",
         "ladder":                "ladder_embedding",
-        "concept_defined":       "concept_embedding",
-        "idea_concept_defined":  "idea_concept_defined_embedding",
-        # Only cached in step 4 "all" mode:
-        "concept":               "concept_embedding",
-        "concept_type":          "concept_type_embedding",
+        "interpretation":        "interpretation_embedding",
+        "abstraction":           "abstraction_embedding",
+        "domain":                "domain_embedding",
+        "facet":                 "facet_embedding",
     }
 
     def _prepare_idea_embeddings(self):
@@ -3611,7 +3610,7 @@ class InductiveCodeGenerator:
 
         Args:
             category: MECECode object from step_4_classNcoder
-            partition_name: Name of the concept_type partition this category belongs to
+            partition_name: Name of the domain partition this category belongs to
             valence_group: "pos", "neg", or "" — controls directional scope note
         """
         sections = []

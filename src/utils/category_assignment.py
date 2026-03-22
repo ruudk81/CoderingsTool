@@ -1,11 +1,11 @@
 """
 Category Assignment for MECE Categories.
 
-Assigns each idea to exactly one MECE category within its concept_type
+Assigns each idea to exactly one MECE category within its domain
 partition. All partitions are processed concurrently with shared rate limiting.
 
 Pipeline:
-  1. Group ideas by partition (concept_type)
+  1. Group ideas by partition (domain)
   2. Bootstrap: fetch rate limits + probe calls for latency/token measurement
   3. Little's Law → optimal concurrency
   4. Batch ideas per partition, submit all batches concurrently
@@ -61,7 +61,7 @@ nest_asyncio.apply()
 
 class CodeAssigner:
     """
-    Assigns each idea to exactly one MECE category within its concept_type
+    Assigns each idea to exactly one MECE category within its domain
     partition. All partitions are processed concurrently through a shared
     semaphore and rate limiter.
     """
@@ -111,7 +111,7 @@ class CodeAssigner:
             model=self._config.assignment_model, async_mode=True
         )
 
-        # 2. Group all ideas by partition (concept_type)
+        # 2. Group all ideas by partition (domain)
         partition_ideas = self._group_ideas_by_partition()
         total_ideas = sum(len(ideas) for ideas in partition_ideas.values())
 
@@ -426,8 +426,8 @@ class CodeAssigner:
             lines.append(
                 f"- idea_id: {idea.idea_id}\n"
                 f"  idea: {idea.idea}\n"
-                f"  concept: {idea.concept}\n"
-                f"  concept_type_definition: {idea.concept_type_definition}"
+                f"  interpretation: {idea.interpretation}\n"
+                f"  abstraction: {idea.abstraction}"
             )
         return "\n".join(lines)
 
@@ -438,13 +438,13 @@ class CodeAssigner:
     def _group_ideas_by_partition(
         self,
     ) -> Dict[str, List[models.EmbeddingsSubmodel]]:
-        """Group all ideas by their concept_type (= partition)."""
+        """Group all ideas by their domain (= partition)."""
         partitions: Dict[str, List] = {}
         for resp in self._embeddings_models:
             if not resp.response_ideas:
                 continue
             for idea in resp.response_ideas:
-                ct = (idea.concept_type or '').strip().lower()
+                ct = (idea.domain or '').strip().lower()
                 if not ct:
                     continue
                 if ct not in partitions:
@@ -476,7 +476,7 @@ class CodeAssigner:
             if resp.response_ideas:
                 for idea in resp.response_ideas:
                     assignment = assignment_lookup.get(idea.idea_id)
-                    ct = (idea.concept_type or '').strip().lower()
+                    ct = (idea.domain or '').strip().lower()
 
                     # Build CodeAssignedSubmodel from EmbeddingsSubmodel
                     idea_data = idea.model_dump()

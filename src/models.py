@@ -6,34 +6,36 @@ import numpy.typing as npt
 # ===  METADATA MODEL ========================================================================================================
 
 class ExtractionMetadata(BaseModel):
+    """Extraction-level metadata from step 3 (applies to entire dataset, not per-idea).
+
+    Taxonomy: Dimension (L1) > Domain (L2) > Facet (L3) > Attribute (L4).
+    """
+
     # File/variable info
     filename: str = ""
     var_name: str = ""
     var_lab: str = ""                     # Survey question
 
     # Template
-    template_prefix: str = ""             # e.g., "Merk X has the association"
+    template_prefix: str = ""             # e.g., "Merk X heeft de associatie"
 
-    # Context specifiers (6 fields)
+    # Context specifiers (6 fields from GenericSpecifierGroup1/2Response)
     lang: str = ""                        # e.g., "nl-NL"
-    domain: str = ""                      # e.g., "finance"
+    sector: str = ""                      # e.g., "finance" (industry/sector)
     topic: str = ""                       # e.g., "brand_association"
     perspective: str = ""                 # e.g., "consumer"
     entity: str = ""                      # e.g., "merk_x"
     intent: str = ""                      # e.g., "evaluate"
 
-    # Primary facet (v5: 10 MECE facets with decision-tree ordering)
-    primary_facet: str = ""               # e.g., "EVALUATION_PRIORITIZATION"
-    primary_facet_description: str = ""   # Context-specific description of the facet
-    decision_tree_stop_position: int = 0  # 1-10, which decision tree step triggered facet selection
-    # Concept types (data-driven)
-    concept_types: List[Dict[str, str]] = Field(
+    # Primary dimension (L1 in taxonomy: Dimension > Domain > Facet > Attribute)
+    primary_dimension: str = ""               # e.g., "EVALUATION_PRIORITIZATION"
+    primary_dimension_description: str = ""   # Context-specific description of the dimension
+    decision_tree_stop_position: int = 0      # 1-10, which decision tree step triggered selection
+    # Domains (L2, data-driven)
+    domains: List[Dict[str, str]] = Field(
         default_factory=list,
-        description="Data-driven concept types [{key, label, definition}, ...]"
+        description="Data-driven domains [{key, label, definition}, ...]"
     )
-
-    # Timestamp
-    extraction_timestamp: Optional[str] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -57,21 +59,29 @@ class PreprocessedModel(ResponseModel):
 class QualityFilteredModel(PreprocessedModel):
     pass
 
-# QualityFilterLLMResponse moved to prompts.py (co-located with GRADER_INSTRUCTIONS)
+# QualityFilterLLMResponse moved to prompts_steps/prompts_qualityFilter.py
 
 class IdeasExtractedSubmodel(BaseModel):
     """Per-idea data from step 3 extraction.
 
-    Hierarchy: instance → concept → concept_type → primary_facet (dataset-level)
-    Secondary facets: valence
+    Taxonomy fields: domain (L2), facet (L3), attribute (L4).
+    - Domain assigned by step 3; facet partially populated by step 3.
+    - Facet and attribute completed by step 5.
+
+    Abstraction ladder (extraction metadata): instance → interpretation → abstraction.
     """
     idea_id: str                          # Format: {respondent_id}_{sequence_number}
     idea: str                             # Clean text (starts with template prefix)
-    instance: str = ""                    # Verbatim span from response
-    concept: str = ""                     # Canonical, reusable concept (noun phrase)
-    concept_type: str = ""                # Discovered concept type (e.g., "recommendation")
-    concept_type_definition: str = ""     # High-level framing of concept_type in survey context
-    valence: str = ""                     # positive / negative / neutral_mixed
+    # --- Abstraction ladder (extraction metadata, NOT taxonomy levels) ---
+    instance: str = ""                    # Rung 1: verbatim span from response
+    interpretation: str = ""              # Rung 2: concrete meaning (survey language)
+    abstraction: str = ""                 # Rung 3: broader significance (survey language)
+    # --- Taxonomy levels ---
+    domain: str = ""                      # Domain (L2): thematic domain
+    facet: str = ""                       # Facet (L3): analytical lens (step 3 hint; completed by step 5)
+    attribute: str = ""                   # Attribute (L4): named observable property (assigned by step 5)
+    # --- Classification metadata ---
+    valence: str = ""                     # Directional effect: +, -, or 0
     model_config = ConfigDict(arbitrary_types_allowed=True)   
     
 class IdeasExtractedModel(QualityFilteredModel):
@@ -80,11 +90,12 @@ class IdeasExtractedModel(QualityFilteredModel):
     template_prefix: Optional[str] = None  # Canonical phrasing prefix for embedding text extraction
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
-    idea_embedding: Optional[npt.NDArray[np.float32]] = None        # idea (natural sentence incl. template_prefix)
-    concept_embedding: Optional[npt.NDArray[np.float32]] = None      # concept → concept_type_definition
-    concept_type_embedding: Optional[npt.NDArray[np.float32]] = None  # concept_type
-    ladder_embedding: Optional[npt.NDArray[np.float32]] = None      # instance → concept → concept_type → concept_type_definition
-    idea_concept_defined_embedding: Optional[npt.NDArray[np.float32]] = None  # idea → concept → concept_type_definition
+    idea_embedding: Optional[npt.NDArray[np.float32]] = None               # idea (natural sentence incl. template_prefix)
+    interpretation_embedding: Optional[npt.NDArray[np.float32]] = None     # Ladder rung 2: interpretation
+    abstraction_embedding: Optional[npt.NDArray[np.float32]] = None        # Ladder rung 3: abstraction
+    facet_embedding: Optional[npt.NDArray[np.float32]] = None              # Facet (L3)
+    domain_embedding: Optional[npt.NDArray[np.float32]] = None             # Domain (L2)
+    ladder_embedding: Optional[npt.NDArray[np.float32]] = None             # instance → interpretation → abstraction
 
 class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
@@ -94,13 +105,13 @@ class CodeAssignedSubmodel(EmbeddingsSubmodel):
     """Per-idea data with MECE category assignment.
 
     Extends EmbeddingsSubmodel (not ClusterSubmodel) since category
-    assignment operates on ideas partitioned by concept_type, independent
+    assignment operates on ideas partitioned by domain, independent
     of clustering.
     """
     assigned_category: Optional[str] = None        # MECECode.category_label
     category_confidence: Optional[float] = None    # 0.0 - 1.0
     category_rationale: Optional[str] = None       # LLM reasoning
-    partition_name: Optional[str] = None           # concept_type partition
+    partition_name: Optional[str] = None           # domain partition
     # Bridge fields for step 6 codeGenerator compatibility (set at runtime)
     initial_cluster: Optional[Union[int, str]] = None
     expanded_cluster: Optional[str] = None

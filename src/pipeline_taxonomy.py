@@ -605,7 +605,7 @@ def step_3_extract_ideas(
                 var_lab=var_lab
             )
             if verbose:
-                verbose_reporter.stat_line(f"Cached extraction metadata: facet={extraction_metadata.primary_facet}, template='{extraction_metadata.template_prefix}'")
+                verbose_reporter.stat_line(f"Cached extraction metadata: dimension={extraction_metadata.primary_dimension}, template='{extraction_metadata.template_prefix}'")
 
         print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
 
@@ -628,7 +628,7 @@ def step_4_classNcoder(
     """Step 4: Category Discovery & Code Assignment (taxonomy-based)
 
     Uses the qualitative-researcher pipeline (no embeddings needed):
-      1. Domain Discovery: partition ideas by concept_type
+      1. Domain Discovery: partition ideas by domain
       2. Qualitative Researcher: facets → attributes → codes per domain
       3. Code Assignment: assign each idea to exactly one code
 

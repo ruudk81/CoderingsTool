@@ -1,7 +1,7 @@
 """
 Configuration for Category Discovery.
 
-Partitions by concept_type (data-driven from step 3), then processes
+Partitions by domain (data-driven from step 3), then processes
 with MAP/REDUCE/MECE.
 
 Two processing modes:
@@ -29,7 +29,7 @@ class CategoriesConfig:
     # PARTITION SOURCE
     # ==========================================================================
 
-    PARTITION_SOURCE = "concept_type"
+    PARTITION_SOURCE = "domain"
 
     # ==========================================================================
     # LABEL SOURCE
@@ -38,20 +38,20 @@ class CategoriesConfig:
     # Which text to collect as "labels" for MAP/REDUCE/MECE input.
     #
     # Stored fields (direct attributes on EmbeddingsSubmodel):
-    #   "concept_type_definition" — concept type framing
-    #   "concept"                 — canonical noun phrase
-    #   "concept_type"            — e.g., "recommendation"
-    #   "idea"                    — full idea text incl. template prefix
-    #   "instance"                — verbatim span from response
+    #   "abstraction"          — broader significance
+    #   "interpretation"       — concrete meaning
+    #   "domain"               — thematic domain
+    #   "idea"                 — full idea text incl. template prefix
+    #   "instance"             — verbatim span from response
     #
     # Computed composites (assembled from stored fields by format_label()):
-    #   "ladder"               — instance → concept → concept_type → concept_type_definition
-    #   "idea_concept_defined" — idea → concept → concept_type_definition
-    label_source: str = "idea_concept_defined"
+    #   "ladder"               — instance → interpretation → abstraction
+    #   "idea_interpretation"  — idea → interpretation → abstraction
+    label_source: str = "idea_interpretation"
 
     # Optional prefix prepended to each label string before processing.
     # "" = no prefix (default)
-    # "{concept_type}: " = dynamic prefix from idea.concept_type field
+    # "{domain}: " = dynamic prefix from idea.domain field
     # Any literal string = static prefix for all labels
     label_prefix: str = ""
 
