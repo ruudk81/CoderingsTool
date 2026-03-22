@@ -1013,7 +1013,7 @@ class QualitativeResearcher:
                 for code in result.codes:
                     code_provenance[len(all_codes)] = key
                     all_codes.append(code)
-                codebook_narratives.append(f"[{key}] {result.evaluation}")
+                codebook_narratives.append(f"[{key}] {result.scratchpad}")
                 if verbose:
                     print(f"    {key}: {len(result.codes)} codes")
 

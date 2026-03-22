@@ -115,26 +115,6 @@ Taxonomy levels for this dimension:
 # §2 FACET DISCOVERY (P1) — per-domain chunked pattern extraction
 # =============================================================================
 
-class DiscoveredFacet(BaseModel):
-    """A facet (L3) discovered from observations within a domain."""
-    facet_name: str = Field(
-        ..., description="Short descriptive name for the facet (2-5 words)"
-    )
-    facet_description: str = Field(
-        ..., description="What this facet captures — the specific viewpoint or aspect (1-2 sentences)"
-    )
-    example_observations: List[str] = Field(
-        ..., description="3-5 representative observations from the input"
-    )
-
-
-class FacetDiscoveryResult(BaseModel):
-    """P1 output: facets discovered in observations."""
-    facets: List[DiscoveredFacet] = Field(
-        ..., description="Facets identified in the observations"
-    )
-
-
 def build_facet_discovery_prompt(
     *,
     survey_question: str,
@@ -271,16 +251,29 @@ Provide output as valid JSON following the response schema provided.
 - All output must be in {language}
 </key_reminders>"""
 
+class DiscoveredFacet(BaseModel):
+    """A facet (L3) discovered from observations within a domain."""
+    facet_name: str = Field(
+        ..., description="Short descriptive name for the facet (2-5 words)"
+    )
+    facet_description: str = Field(
+        ..., description="What this facet captures — the specific viewpoint or aspect (1-2 sentences)"
+    )
+    example_observations: List[str] = Field(
+        ..., description="3-5 representative observations from the input"
+    )
+
+
+class FacetDiscoveryResult(BaseModel):
+    """P1 output: facets discovered in observations."""
+    facets: List[DiscoveredFacet] = Field(
+        ..., description="Facets identified in the observations"
+    )
+
 
 # =============================================================================
 # §3 FACET CONSOLIDATION (P1.5) — merge chunk-level facets into coherent set
 # =============================================================================
-
-class FacetConsolidatedResponse(BaseModel):
-    """Consolidated facets after merging chunk-level discoveries."""
-    facets: List[DiscoveredFacet] = Field(
-        ..., description="Fewest mutually exclusive facets needed for full coverage, consolidated from all chunks"
-    )
 
 
 def build_facet_consolidation_prompt(
@@ -421,34 +414,17 @@ All facet names and descriptions must be in {language}.
 
 Provide output as valid JSON following the response schema provided."""
 
+
+class FacetConsolidatedResponse(BaseModel):
+    """Consolidated facets after merging chunk-level discoveries."""
+    facets: List[DiscoveredFacet] = Field(
+        ..., description="Fewest mutually exclusive facets needed for full coverage, consolidated from all chunks"
+    )
+
+
 # =============================================================================
 # §4 FACET ASSIGNMENT (P2) — per-domain batched assignment
 # =============================================================================
-
-class FacetAssignment(BaseModel):
-    """Single idea-to-facet assignment."""
-    idea_id: str = Field(
-        ..., description="The EXACT idea_id from the input. Do not modify."
-    )
-    idea: str = Field(
-        ..., description="Echo back the EXACT idea text from the input for this idea_id."
-    )
-    assigned_facet_id: str = Field(
-        ..., description=(
-            "The facet ID from the [F#] prefix (e.g. 'F1', 'F3'). "
-            "Return ONLY the ID, not the facet name."
-        )
-    )
-    confidence: float = Field(
-        ..., description="Confidence in the assignment (0.0 to 1.0)"
-    )
-
-
-class FacetAssignmentBatch(BaseModel):
-    """Batch of facet assignments for multiple ideas."""
-    assignments: List[FacetAssignment] = Field(
-        ..., description="One assignment per idea in the input batch"
-    )
 
 
 def _build_facet_codebook_block(
@@ -566,33 +542,36 @@ Provide output as valid JSON following the response schema provided.
 </instructions>
 """
 
+class FacetAssignment(BaseModel):
+    """Single idea-to-facet assignment."""
+    idea_id: str = Field(
+        ..., description="The EXACT idea_id from the input. Do not modify."
+    )
+    idea: str = Field(
+        ..., description="Echo back the EXACT idea text from the input for this idea_id."
+    )
+    assigned_facet_id: str = Field(
+        ..., description=(
+            "The facet ID from the [F#] prefix (e.g. 'F1', 'F3'). "
+            "Return ONLY the ID, not the facet name."
+        )
+    )
+    confidence: float = Field(
+        ..., description="Confidence in the assignment (0.0 to 1.0)"
+    )
+
+
+class FacetAssignmentBatch(BaseModel):
+    """Batch of facet assignments for multiple ideas."""
+    assignments: List[FacetAssignment] = Field(
+        ..., description="One assignment per idea in the input batch"
+    )
+
+
 
 # =============================================================================
 # §5 ATTRIBUTE DISCOVERY (P3) — per facet within domain
 # =============================================================================
-
-class DiscoveredAttribute(BaseModel):
-    """A concrete attribute (L4) discovered within a facet."""
-    attribute_name: str = Field(
-        ..., description="Short descriptive name for the attribute (2-5 words)"
-    )
-    attribute_description: str = Field(
-        ..., description="What this attribute captures — a concrete, observable property (1-2 sentences)"
-    )
-    parent_facet: str = Field(
-        ..., description="The facet this attribute belongs to"
-    )
-    example_observations: List[str] = Field(
-        ..., description="2-3 representative observations from the input"
-    )
-
-
-class AttributeDiscoveryResult(BaseModel):
-    """P3 output: attributes discovered within a facet."""
-    attributes: List[DiscoveredAttribute] = Field(
-        ..., description="Concrete attributes identified within the facet"
-    )
-
 
 def build_attribute_discovery_prompt(
     *,
@@ -733,15 +712,32 @@ Provide output as valid JSON following the response schema provided.
 </key_reminders>"""
 
 
+class DiscoveredAttribute(BaseModel):
+    """A concrete attribute (L4) discovered within a facet."""
+    attribute_name: str = Field(
+        ..., description="Short descriptive name for the attribute (2-5 words)"
+    )
+    attribute_description: str = Field(
+        ..., description="What this attribute captures — a concrete, observable property (1-2 sentences)"
+    )
+    parent_facet: str = Field(
+        ..., description="The facet this attribute belongs to"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-3 representative observations from the input"
+    )
+
+
+class AttributeDiscoveryResult(BaseModel):
+    """P3 output: attributes discovered within a facet."""
+    attributes: List[DiscoveredAttribute] = Field(
+        ..., description="Concrete attributes identified within the facet"
+    )
+
+
 # =============================================================================
 # §6 ATTRIBUTE CHUNK CONSOLIDATION (P3.25) — merge chunk-level attributes within facet
 # =============================================================================
-
-class AttributeChunkConsolidatedResponse(BaseModel):
-    """Consolidated attributes after merging chunk-level discoveries within a facet."""
-    attributes: List[DiscoveredAttribute] = Field(
-        ..., description="Fewest mutually exclusive attributes needed for full coverage, consolidated from all chunks"
-    )
 
 
 def build_attribute_chunk_consolidation_prompt(
@@ -888,35 +884,15 @@ All attribute names and descriptions must be in {language}.
 
 Provide output as valid JSON following the response schema provided."""
 
+class AttributeChunkConsolidatedResponse(BaseModel):
+    """Consolidated attributes after merging chunk-level discoveries within a facet."""
+    attributes: List[DiscoveredAttribute] = Field(
+        ..., description="Fewest mutually exclusive attributes needed for full coverage, consolidated from all chunks"
+    )
 
 # =============================================================================
 # §7 ATTRIBUTE ASSIGNMENT (P4a) — per facet
 # =============================================================================
-
-class AttributeAssignment(BaseModel):
-    """Single idea-to-attribute assignment."""
-    idea_id: str = Field(
-        ..., description="The EXACT idea_id from the input. Do not modify."
-    )
-    idea: str = Field(
-        ..., description="Echo back the EXACT idea text from the input for this idea_id."
-    )
-    assigned_attribute_id: str = Field(
-        ..., description=(
-            "The attribute ID from the [A#] prefix (e.g. 'A1', 'A3'). "
-            "Return ONLY the ID, not the attribute name."
-        )
-    )
-    confidence: float = Field(
-        ..., description="Confidence in the assignment (0.0 to 1.0)"
-    )
-
-
-class AttributeAssignmentBatch(BaseModel):
-    """Batch of attribute assignments for multiple ideas."""
-    assignments: List[AttributeAssignment] = Field(
-        ..., description="One assignment per idea in the input batch"
-    )
 
 
 def _build_attribute_codebook_block(
@@ -1004,37 +980,36 @@ Provide output as valid JSON following the response schema provided.
 </instructions>
 """
 
+class AttributeAssignment(BaseModel):
+    """Single idea-to-attribute assignment."""
+    idea_id: str = Field(
+        ..., description="The EXACT idea_id from the input. Do not modify."
+    )
+    idea: str = Field(
+        ..., description="Echo back the EXACT idea text from the input for this idea_id."
+    )
+    assigned_attribute_id: str = Field(
+        ..., description=(
+            "The attribute ID from the [A#] prefix (e.g. 'A1', 'A3'). "
+            "Return ONLY the ID, not the attribute name."
+        )
+    )
+    confidence: float = Field(
+        ..., description="Confidence in the assignment (0.0 to 1.0)"
+    )
+
+
+class AttributeAssignmentBatch(BaseModel):
+    """Batch of attribute assignments for multiple ideas."""
+    assignments: List[AttributeAssignment] = Field(
+        ..., description="One assignment per idea in the input batch"
+    )
+
+
 
 # =============================================================================
 # §8 ATTRIBUTE CONSOLIDATION (P3.5) — cross-facet dedup within domain
 # =============================================================================
-
-class ConsolidatedAttribute(BaseModel):
-    """An attribute assigned to its best-fitting facet after cross-facet consolidation."""
-    attribute_name: str = Field(
-        ..., description="Short descriptive name for the attribute (2-5 words)"
-    )
-    attribute_description: str = Field(
-        ..., description="What this attribute captures (1-2 sentences)"
-    )
-    parent_facet: str = Field(
-        ..., description="The facet name this attribute best belongs to"
-    )
-    example_observations: List[str] = Field(
-        ..., description="2-3 representative observations from the input"
-    )
-    source_attributes: List[str] = Field(
-        default_factory=list,
-        description="Original attribute names that were merged into this consolidated attribute"
-    )
-
-
-class AttributeConsolidatedResponse(BaseModel):
-    """Consolidated attributes after cross-facet deduplication within a domain."""
-    attributes: List[ConsolidatedAttribute] = Field(
-        ..., description="Deduplicated attributes, each assigned to its best-fitting facet"
-    )
-
 
 def build_attribute_consolidation_prompt(
     *,
@@ -1185,46 +1160,35 @@ All output MUST be in {language}.
 Provide output as valid JSON following the response schema provided."""
 
 
-# =============================================================================
-# §9 CODE GENERATION FROM ATTRIBUTES (P4) — cross-domain
-# =============================================================================
-
-class CodeFromAttributes(BaseModel):
-    """A formal qualitative code derived from attributes."""
-    code_name: str = Field(
-        ..., description="Short code name (3-5 word noun phrase)"
+class ConsolidatedAttribute(BaseModel):
+    """An attribute assigned to its best-fitting facet after cross-facet consolidation."""
+    attribute_name: str = Field(
+        ..., description="Short descriptive name for the attribute (2-5 words)"
     )
-    definition: str = Field(
-        ..., description="Clear definition of what this code covers (1-2 sentences)"
+    attribute_description: str = Field(
+        ..., description="What this attribute captures (1-2 sentences)"
     )
-    typical_indicators: List[str] = Field(
-        ..., description="Words or phrases that signal this code"
+    parent_facet: str = Field(
+        ..., description="The facet name this attribute best belongs to"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-3 representative observations from the input"
     )
     source_attributes: List[str] = Field(
         default_factory=list,
-        description="Attribute names this code is derived from"
+        description="Original attribute names that were merged into this consolidated attribute"
     )
 
 
-
-class CodeGenerationFromAttributesResult(BaseModel):
-    """P4 output: codes derived from attributes."""
-    scratchpad: str = Field(
-        ..., description=(
-            "Step-by-step reasoning before deriving codes: "
-            "(1) identify underlying phenomena by grouping attributes, "
-            "(2) check for valence distinctions, "
-            "(3) name each phenomenon, "
-            "(4) verify parsimony and coverage"
-        )
-    )
-    evaluation: str = Field(
-        ..., description="Brief evaluation of how codes were derived from attributes — what was merged and why"
-    )
-    codes: List[CodeFromAttributes] = Field(
-        ..., description="Formal codes derived from the attribute inventory"
+class AttributeConsolidatedResponse(BaseModel):
+    """Consolidated attributes after cross-facet deduplication within a domain."""
+    attributes: List[ConsolidatedAttribute] = Field(
+        ..., description="Deduplicated attributes, each assigned to its best-fitting facet"
     )
 
+# =============================================================================
+# §9 CODE GENERATION FROM ATTRIBUTES (P4)  
+# =============================================================================
 
 def build_code_from_attributes_prompt(
     *,
@@ -1270,11 +1234,16 @@ def build_code_from_attributes_prompt(
             for excl_name, excl_def in excluded_domains
         ]
         excluded_block = (
-            "\nYou must NOT include categories that belong to these excluded domains:\n"
+            "\nYou must NOT include codes that belong to these excluded domains:\n"
             "<excluded_domains>\n"
             + "\n\n".join(excl_lines)
             + "\n</excluded_domains>"
         )
+    # Excluded domains block - "light" (names only, no definitions)
+    excluded_block_light = ""
+    if excluded_domains:
+        excl_names = [excl_name for excl_name, _ in excluded_domains]
+        excluded_block_light = "\n".join(f"- {name}" for name in excl_names)
 
     # Compute attribute frequencies
     attr_counts: Dict[str, int] = {}
@@ -1286,7 +1255,6 @@ def build_code_from_attributes_prompt(
     facet_attrs = next(iter(domain_attributes.values()), {})
     inventory_lines = []
     for facet_name, attributes in sorted(facet_attrs.items()):
-        inventory_lines.append(f"\n{facet_name}")
         for attr in attributes:
             examples = "; ".join(attr.example_observations[:2])
             count = attr_counts.get(attr.attribute_name, 0)
@@ -1296,6 +1264,8 @@ def build_code_from_attributes_prompt(
                 line += f" (e.g., {examples})"
             inventory_lines.append(line)
     inventory_block = "\n".join(inventory_lines)
+
+
 
     return f"""You are tasked with deriving a PARSIMONIOUS codebook with MUTUALLY EXCLUSIVE and COLLECTIVELY EXHAUSTIVE codes that represent conceptually and semantically distinct PHENOMENA from a taxonomy inventory of attributes. These attributes were derived from written responses to a survey question.
 
@@ -1314,8 +1284,7 @@ This is the structure:
 <taxonomy_structure>
 - Dimension (L1): {dimension_name}: {noun_phrase}
 - Domain (L2): {domain_key_idea}
-- Facet (L3): {facet_key_idea}
-- Attribute (L4): {attribute_key_idea}
+- Attribute (L3): {attribute_key_idea}
 </taxonomy_structure>
 
 You are working within this dimension:
@@ -1341,43 +1310,38 @@ The inventory below is organized by Facet > Attribute
 
 **Attributes** are specific observations or qualities mentioned in responses. They represent individual data points.
 
-**Phenomena** are underlying conceptual patterns that multiple attributes may indicate. A phenomenon is the broader experience, perception, or association that manifests through various specific attributes.
+**Phenomena** are underlying conceptual patterns that multiple attributes may indicate. A phenomenon is an underlying pattern that can manifest through multiple specific attributes.
 
 Your task is to identify phenomena, NOT to create one code per attribute.
 
 # Code Derivation Rules
 
 ## 1. Phenomenon Rule
-Codes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying experience, perception, or association MUST be merged into a single code.
+Codes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying phenomenon MUST be merged into a single code.
 
-## 2. Specificity Rule
+## 2. Dimension Rule
+Only include codes that belong to this domain:
+{domain_name} — {domain_definition}
+
+Do not include codes that belong to these excluded domains:
+{excluded_block_light}
+
+## 3. Specificity Rule
 Do NOT create separate codes simply because attributes differ in specificity. General statements and specific examples should be treated as indicators of the same phenomenon.
 
 Example: "The train was delayed by 20 minutes" and "public transport is often late" both indicate unreliable punctuality and should be coded under the same broader phenomenon.
 
-## 3. Example-Level Rule
-Do NOT create codes that represent specific items or examples. These should be treated as indicators of broader phenomena.
+## 4. Parsimony Rule
+Use the smallest number of codes that still capture all distinct phenomena present in the inventory.
 
-## 4. Attribute Mapping Rule
-Do NOT create a separate code for each attribute. Attributes are observations that may belong to the same phenomenon.
-
-## 5. Minimum Coverage Rule
-Each code should ideally cover multiple attributes. Only create a single-attribute code if the phenomenon is clearly distinct and cannot be meaningfully merged with others.
-
-## 6. Parsimony Rule
-Prefer broader phenomenon-based codes over narrow attribute-based codes. Use the smallest number of codes that still capture all distinct phenomena present in the inventory.
-
-## 7. Expected Code Range
-The final codebook should normally contain 3–5 codes unless the attributes clearly describe more distinct phenomena.
-
-## 8. Mutual Exclusivity Rule
+## 5. Mutual Exclusivity Rule
 Codes must represent clearly different phenomena so that responses can be coded consistently without ambiguity.
 
-## 9. Valence Sensitivity Rule
+## 6. Valence Sensitivity Rule
 Generate separate codes for positive and negative phenomena. Do NOT combine praise and criticism into a single code. If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
 
-## 10. Hierarchy Rule
-Only use attribute content to derive codes. Do NOT create codes directly from domain or facet labels. Facets are organizational structures; your codes should emerge from the actual attribute patterns.
+## 9. Hierarchy Rule
+Derive codes from attribute content rather than copying domain or facet labels directly. Domain context should be used only to determine relevance and scope.
 
 # Required Process
 
@@ -1386,14 +1350,17 @@ Before writing your final output, think through your analysis in the scratchpad 
 **Step 1 — Identify Underlying Phenomena**
 Review all attributes across all facets. Look for patterns where multiple attributes describe different manifestations of the same underlying phenomenon. Group attributes that share the same conceptual core.
 
-**Step 2 — Check for Valence Distinctions**
+**Step 2 — Ensure Domain Relevance**  
+Ensure that each phenomenon group belongs to the included domain and not to any excluded domain.
+
+**Step 3 — Check for Valence Distinctions**
 Within each phenomenon group, check whether positive and negative valences are present. If so, split into separate codes.
 
-**Step 3 — Name Each Phenomenon**
+**Step 4 — Name Each Phenomenon**
 Assign a descriptive name (3-5 word noun phrase in {language}) to each distinct phenomenon.
 
-**Step 4 — Verify Parsimony and Coverage**
-Ensure you have the minimum number of codes needed while covering all attributes. Aim for 3-5 codes unless the data clearly requires more.
+**Step 5 — Verify Parsimony and Coverage**
+Ensure you have the minimum number of codes needed while covering all attributes. 
 
 # Output Requirements
 
@@ -1407,51 +1374,46 @@ All output (code names, definitions, typical indicators, and evaluation) must be
 
 Remember: You are creating a PARSIMONIOUS codebook. Resist the temptation to create one code per attribute or per facet. Look for the deeper phenomena that connect multiple attributes together. Your goal is conceptual clarity with minimal redundancy.
 
-Begin your analysis now."""
+Begin now by applying the required process and then return only valid JSON."""
 
 
-# =============================================================================
-# §10 CODEBOOK CONSOLIDATION (P4.5) — cross-domain review & merge
-# =============================================================================
-
-class ConsolidatedCode(BaseModel):
-    """A consolidated code with diagnostic test for MECE verification."""
+class CodeFromAttributes(BaseModel):
+    """A formal qualitative code derived from attributes."""
     code_name: str = Field(
         ..., description="Short code name (3-5 word noun phrase)"
     )
     definition: str = Field(
-        ..., description=(
-            "A short interpretive claim that reads like an analyst conclusion. "
-            "Avoid vague abstract phrasing — be concrete and specific."
-        )
-    )
-    diagnostic_test: str = Field(
-        ..., description=(
-            "Completes the sentence: 'This is about whether ...' — "
-            "must be unique per code and must not overlap with other codes."
-        )
-    )
-    valence: str = Field(
-        ..., description="One of: 'positive', 'negative', 'neutral'"
+        ..., description="Clear definition of what this code covers (1-2 sentences)"
     )
     typical_indicators: List[str] = Field(
         ..., description="Words or phrases that signal this code"
     )
     source_attributes: List[str] = Field(
         default_factory=list,
-        description="Attribute names this code is derived from (from all merged codes)"
+        description="Attribute names this code is derived from"
     )
 
 
-class CodebookConsolidationResult(BaseModel):
-    """P4.5 output: consolidated codebook."""
-    evaluation: str = Field(
-        ..., description="Brief analysis of what was merged/removed and why"
+class CodeGenerationFromAttributesResult(BaseModel):
+    """P4 output: codes derived from attributes."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning before deriving codes: "
+            "(1) identify underlying phenomena by grouping attributes, "
+            "(2) check for domain relevance - don't include codes that belong to excluded domains, "
+            "(3) check for valence distinctions, "
+            "(4) name each phenomenon, "
+            "(5) verify parsimony and coverage"
+        )
     )
-    codes: List[ConsolidatedCode] = Field(
-        ..., description="Final MECE codebook"
+    codes: List[CodeFromAttributes] = Field(
+        ..., description="Formal codes derived from the attribute inventory"
     )
 
+
+# =============================================================================
+# §10 CODEBOOK CONSOLIDATION (P4.5) — cross-domain review & merge
+# =============================================================================
 
 def build_codebook_consolidation_prompt(
     *,
@@ -1629,6 +1591,43 @@ Include a brief evaluation of what was merged, removed, or preserved and why.
 
 Provide output as valid JSON following the response schema provided."""
 
+class ConsolidatedCode(BaseModel):
+    """A consolidated code with diagnostic test for MECE verification."""
+    code_name: str = Field(
+        ..., description="Short code name (3-5 word noun phrase)"
+    )
+    definition: str = Field(
+        ..., description=(
+            "A short interpretive claim that reads like an analyst conclusion. "
+            "Avoid vague abstract phrasing — be concrete and specific."
+        )
+    )
+    diagnostic_test: str = Field(
+        ..., description=(
+            "Completes the sentence: 'This is about whether ...' — "
+            "must be unique per code and must not overlap with other codes."
+        )
+    )
+    valence: str = Field(
+        ..., description="One of: 'positive', 'negative', 'neutral'"
+    )
+    typical_indicators: List[str] = Field(
+        ..., description="Words or phrases that signal this code"
+    )
+    source_attributes: List[str] = Field(
+        default_factory=list,
+        description="Attribute names this code is derived from (from all merged codes)"
+    )
+
+
+class CodebookConsolidationResult(BaseModel):
+    """P4.5 output: consolidated codebook."""
+    evaluation: str = Field(
+        ..., description="Brief analysis of what was merged/removed and why"
+    )
+    codes: List[ConsolidatedCode] = Field(
+        ..., description="Final MECE codebook"
+    )
 
 
 # =============================================================================
@@ -1637,22 +1636,6 @@ Provide output as valid JSON following the response schema provided."""
 
 # Re-export data-flow wrapper models (canonical definition in models_exp.py)
 from .models_exp import CodeAssignment, CodeAssignmentBatch
-
-
-class CodeAttributeAssignment(BaseModel):
-    """Single idea → code assignment."""
-    assigned_code_id: str = Field(
-        ...,
-        description="The code ID from the [C#] prefix (e.g. 'C1', 'C7'). Return ONLY the ID."
-    )
-    confidence: float = Field(
-        ...,
-        description="Confidence in the assignment (0.0 to 1.0)"
-    )
-    rationale: str = Field(
-        ...,
-        description="Brief rationale for the code choice"
-    )
 
 
 def _build_codes_block(
@@ -1739,3 +1722,20 @@ All output MUST be in {language}.
 Provide output as valid JSON following the response schema provided.
 </instructions>
 """
+
+
+class CodeAttributeAssignment(BaseModel):
+    """Single idea → code assignment."""
+    assigned_code_id: str = Field(
+        ...,
+        description="The code ID from the [C#] prefix (e.g. 'C1', 'C7'). Return ONLY the ID."
+    )
+    confidence: float = Field(
+        ...,
+        description="Confidence in the assignment (0.0 to 1.0)"
+    )
+    rationale: str = Field(
+        ...,
+        description="Brief rationale for the code choice"
+    )
+
