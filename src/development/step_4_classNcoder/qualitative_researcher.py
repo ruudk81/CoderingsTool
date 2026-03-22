@@ -40,7 +40,7 @@ import nest_asyncio
 from aiolimiter import AsyncLimiter
 
 from utils.llm import (
-    create_client, llm_create_async, ProbeResponse, RateLimits,
+    create_client, llm_create_async, RateLimits,
     extract_rate_limits_from_response,
 )
 from config import (
@@ -100,13 +100,6 @@ nest_asyncio.apply()
 # =============================================================================
 
 @dataclass
-class ApiLimits:
-    """API limits structure for bootstrap calculations."""
-    tokens_per_minute: int
-    requests_per_minute: int
-
-
-@dataclass
 class PromptContext:
     """Shared context passed to all prompt formatting methods."""
     survey_question: str
@@ -153,50 +146,6 @@ class PipelineResult:
     partition_results: Dict[str, DomainResult]
     codebook_narrative: str
     codes: List[ConsolidatedCode]
-
-
-# =============================================================================
-# BOOTSTRAP UTILITIES
-# =============================================================================
-
-def compute_optimal_concurrency(
-    limits: ApiLimits,
-    latency_seconds: float,
-    avg_tokens: float,
-    processing_config: Optional[ProcessingConfig] = None,
-    cap: Optional[int] = None,
-    min_conc: Optional[int] = None,
-    headroom: Optional[float] = None,
-) -> int:
-    """Compute optimal concurrency using Little's Law."""
-    config = processing_config or DEFAULT_PROCESSING_CONFIG
-    cap = cap if cap is not None else config.concurrency_cap_default
-    min_conc = min_conc if min_conc is not None else config.concurrency_min_default
-    headroom = headroom if headroom is not None else config.rate_limit_headroom
-
-    latency_seconds = max(float(latency_seconds or 0.5), 0.05)
-    avg_tokens = max(float(avg_tokens or 1.0), 1.0)
-
-    rpm_throughput = limits.requests_per_minute * headroom / 60
-    tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
-    allowed_rps = max(min(rpm_throughput, tpm_throughput), 0.0)
-    target = allowed_rps * latency_seconds  # Little's Law
-
-    return int(max(min(target, cap), min_conc))
-
-
-async def bootstrap_measure_async(call_fn, n_probes: int = 3):
-    """Run n_probes serial calls and return (avg_latency_s, avg_tokens)."""
-    latencies, tokens = [], []
-    for _ in range(n_probes):
-        t0 = time.perf_counter()
-        usage = await call_fn()
-        t1 = time.perf_counter()
-        latencies.append(max(t1 - t0, 0.001))
-        pt = int(usage.get("prompt_tokens", 0))
-        ct = int(usage.get("completion_tokens", 0))
-        tokens.append(max(pt + ct, 1))
-    return sum(latencies) / len(latencies), sum(tokens) / len(tokens)
 
 
 # =============================================================================
@@ -447,25 +396,6 @@ class QualitativeResearcher:
     # ASYNC ORCHESTRATION
     # =========================================================================
 
-    async def _probe_call(self, prompt: str):
-        """Probe call for bootstrap measurement — returns usage dict."""
-        resp = await llm_create_async(
-            client=self._clients[self._model_p1],
-            model=self._model_p1,
-            prompt=prompt,
-            response_model=ProbeResponse,
-            temperature=self._temperature,
-            track_usage=False,
-        )
-        u = getattr(resp, "_raw_response", None)
-        if u:
-            u = getattr(u, "usage", None)
-        if not u:
-            u = getattr(resp, "usage", None)
-        input_tokens = getattr(u, "input_tokens", 0) or getattr(u, "prompt_tokens", 0)
-        output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
-        return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
-
     async def _initialize_async_resources(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
@@ -473,7 +403,13 @@ class QualitativeResearcher:
         prompt_context: PromptContext,
         verbose: bool,
     ):
-        """Bootstrap: create clients, probe rate limits, set up concurrency."""
+        """Initialize clients and rate limiters. No bootstrap — uses static semaphore.
+
+        Per strategy doc: bootstrap is wasted for small phases (<30 tasks) and
+        miscalibrated for large phases (different prompt types). Instead, use a
+        static semaphore (15) as a default fallback + rate limiter from API limits.
+        Per-phase gates (Group 3) will override this for phases that need it.
+        """
         # Create one client per unique model
         unique_models = {self._model_p1, self._model_p2, self._model_p3, self._model_p4, self._model_p5, self._model_p6, self._model_p7, self._model_p8, self._model_p9}
         self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
@@ -498,73 +434,16 @@ class QualitativeResearcher:
             print(f"  Fetched from API: TPM={limits.tokens_per_minute:,}, "
                   f"RPM={limits.requests_per_minute:,}")
 
-        # --- Bootstrap probe calls to measure latency + token usage ---
-        first_name = next(iter(sorted(label_mappings.keys())))
-        first_mapping = label_mappings[first_name]
-        first_labels = first_mapping.labels
-        probe_batch_size = self._compute_batch_size(len(first_labels))
-        probe_n = min(probe_batch_size, len(first_labels))
-        probe_batch = first_labels[:probe_n]
-        first_part_ctx = partition_contexts[first_name]
-        probe_prompt = build_facet_discovery_prompt(
-            survey_question=prompt_context.survey_question,
-            language=prompt_context.language,
-            dataset_context_section=prompt_context.dataset_context_section,
-            dimension_def=prompt_context.dimension_def,
-            dimension_name=prompt_context.dimension_name,
-            dimension_description=prompt_context.dimension_description,
-            partition_name=first_part_ctx.partition_name,
-            partition_definition=first_part_ctx.partition_definition,
-            observations=probe_batch,
-        )
-
-        if verbose:
-            print("  Running bootstrap measurement (3 probe calls)...")
-
-        probe_start = time.time()
-
-        async def probe_fn():
-            return await self._probe_call(probe_prompt)
-
-        avg_latency_s, avg_tokens = await bootstrap_measure_async(probe_fn, n_probes=3)
-
-        if verbose:
-            print(f"  Probe time: {time.time() - probe_start:.1f}s")
-            print(f"  Bootstrap: {avg_latency_s:.2f}s avg latency, "
-                  f"{avg_tokens:.0f} avg tokens")
-
-        # --- Compute optimal concurrency via Little's Law ---
-        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        little_law_conc = compute_optimal_concurrency(
-            api_limits, avg_latency_s, avg_tokens,
-            processing_config=processing_config,
-            cap=processing_config.concurrency_cap_permissive,
-            min_conc=processing_config.concurrency_min_permissive,
-        )
-
-        max_concurrency = processing_config.concurrency_cap_default
-        adaptive_min = min(
-            processing_config.concurrency_min_default,
-            max(little_law_conc * 3, 5),
-        )
-        optimal = min(max_concurrency, max(little_law_conc, adaptive_min))
-
+        # --- Static concurrency + rate limiter from API limits ---
+        est_avg_tokens = 3000  # Conservative estimate for rate limiter computation
         rpm_throughput = limits.requests_per_minute * headroom / 60
-        tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
+        tpm_throughput = limits.tokens_per_minute * headroom / est_avg_tokens / 60
         arrival_rate = min(rpm_throughput, tpm_throughput)
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
 
-        # Estimate total tasks across all phases
-        total_p1_chunks = sum(
-            len(self._create_batches(m.labels))
-            for m in label_mappings.values()
-        )
-        n_domains = len(label_mappings)
-        est_p3_batches = n_domains * 3
-        est_p4_tasks = n_domains * 5
-        total_tasks = total_p1_chunks + est_p3_batches + est_p4_tasks + 1
-
-        self._semaphore = asyncio.Semaphore(min(total_tasks, optimal))
+        # Static semaphore (15) — per strategy doc recommendation for small batches.
+        # Large phases (P3, P6) will get per-phase gates in Group 3.
+        self._semaphore = asyncio.Semaphore(15)
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
 
         if verbose:
@@ -578,8 +457,7 @@ class QualitativeResearcher:
             print(f"  TPM: {limits.tokens_per_minute:,} "
                   f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
             print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
-            print(f"  Optimal by Little's Law: {little_law_conc}")
-            print(f"  Concurrency (semaphore): {min(total_tasks, optimal)}")
+            print(f"  Default concurrency (semaphore): 15 (static, per-phase gates override)")
 
     async def _process_all_async(
         self,
