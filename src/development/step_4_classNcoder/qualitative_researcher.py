@@ -985,9 +985,19 @@ class QualitativeResearcher:
                 if iid in domain_facet_ids
             }
 
+            # Build excluded domains: all other domains
+            excluded = [
+                (other_name, partition_contexts[other_name].partition_definition)
+                for other_name in partition_contexts
+                if other_name != domain_name
+            ]
+
             p4_tasks[domain_name] = self._run_code_generation_from_attributes(
                 {domain_name: domain_attrs}, prompt_context,
                 attribute_assignments=domain_attr_assigns,
+                domain_name=domain_name,
+                domain_definition=partition_contexts[domain_name].partition_definition,
+                excluded_domains=excluded,
             )
 
         p4_results = await asyncio.gather(*p4_tasks.values(), return_exceptions=True)
@@ -1978,16 +1988,23 @@ class QualitativeResearcher:
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
         prompt_context: PromptContext,
         attribute_assignments: Optional[Dict[str, str]] = None,
+        domain_name: str = "",
+        domain_definition: str = "",
+        excluded_domains: Optional[List[tuple]] = None,
     ) -> CodeGenerationFromAttributesResult:
         """Generate codes from an attribute inventory (per-domain)."""
         prompt = build_code_from_attributes_prompt(
             survey_question=prompt_context.survey_question,
             language=prompt_context.language,
             dataset_context_section=prompt_context.dataset_context_section,
+            dimension_def=prompt_context.dimension_def,
             dimension_name=prompt_context.dimension_name,
             dimension_description=prompt_context.dimension_description,
+            domain_name=domain_name,
+            domain_definition=domain_definition,
             domain_attributes=domain_facet_attributes,
             attribute_assignments=attribute_assignments,
+            excluded_domains=excluded_domains,
         )
 
         # Prompt capture

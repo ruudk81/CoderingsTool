@@ -10,6 +10,7 @@ import sys
 import json
 from pathlib import Path
 from typing import Optional, Tuple, Type
+from instructor.function_calls import openai_schema
 
 src_dir = Path(__file__).parent.parent.parent
 project_root = src_dir.parent
@@ -131,9 +132,9 @@ def print_full_prompt(prompt_entry: dict, index: int, total: int) -> None:
     schema_str = ""
     if model is not None:
         try:
-            schema = model.model_json_schema()
+            schema = openai_schema(model).openai_schema
             schema_str = json.dumps(schema, indent=2)
-            print(f"\n[JSON Schema (what instructor injects as tool definition)]")
+            print(f"\n[OpenAI Tool Definition (exact schema injected by instructor)]")
             print("-" * 100)
             print(schema_str)
             print("-" * 100)

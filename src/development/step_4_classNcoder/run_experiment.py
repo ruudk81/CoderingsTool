@@ -53,7 +53,7 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-RUN_MODE = "taxonomy"  # "taxonomy" | "codebook" | "assignment" | "all"
+RUN_MODE = "codebook"  # "taxonomy" | "codebook" | "assignment" | "all"
 EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 

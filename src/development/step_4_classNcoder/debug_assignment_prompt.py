@@ -30,6 +30,7 @@ except ImportError:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
+from instructor.function_calls import openai_schema
 from development.step_4_classNcoder.prompts_exp import CodeAttributeAssignment
 
 # Configuration
@@ -102,7 +103,7 @@ def print_response_schema():
     print(f"\n{'='*100}")
     print(f"RESPONSE MODEL: CodeAttributeAssignment")
     print(f"{'='*100}")
-    schema = CodeAttributeAssignment.model_json_schema()
+    schema = openai_schema(CodeAttributeAssignment).openai_schema
     schema_str = json.dumps(schema, indent=2)
     print(schema_str)
     print(f"\n  Schema: {len(schema_str):,} chars (~{len(schema_str) // 4:,} tokens)")
