@@ -882,6 +882,11 @@ class QualitativeResearcher:
                 iid: aname for iid, aname in attribute_assignments.items()
                 if iid in domain_facet_ids
             }
+            excluded = [
+                (other_name, partition_contexts[other_name].partition_definition)
+                for other_name in partition_contexts
+                if other_name != domain_name
+            ]
             consolidation_tasks[domain_name] = self._consolidate_domain_attributes(
                 domain_name=domain_name,
                 facet_attributes=facet_attrs,
@@ -889,6 +894,7 @@ class QualitativeResearcher:
                 part_context=partition_contexts[domain_name],
                 prompt_context=prompt_context,
                 attribute_assignments=domain_attr_assigns,
+                excluded_domains=excluded,
             )
 
         if consolidation_tasks:
@@ -1952,6 +1958,7 @@ class QualitativeResearcher:
         part_context: DomainContext,
         prompt_context: PromptContext,
         attribute_assignments: Optional[Dict[str, str]] = None,
+        excluded_domains: Optional[List[tuple]] = None,
     ) -> List[ConsolidatedAttribute]:
         """Consolidate attributes across facets within a domain.
 
@@ -1999,6 +2006,7 @@ class QualitativeResearcher:
             domain_name=domain_name,
             domain_definition=part_context.partition_definition,
             facet_attributes_block=facet_attributes_block,
+            excluded_domains=excluded_domains,
         )
 
         # Prompt capture

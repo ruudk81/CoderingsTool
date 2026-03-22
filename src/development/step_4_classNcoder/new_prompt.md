@@ -1,7 +1,7 @@
-P5 — Attribute Chunk Consolidation (per facet within domain)
+P7 -- Cross-Facet Attribute Consolidation (per domain)
 
 You are a taxonomy consolidation specialist for surveys.
-Your task is to merge multiple chunk-level attribute analyses into a single, minimal set of mutually exclusive attributes within a given facet.
+Your task is to deduplicate attributes across facets within the domain "{domain_name}", producing a single MECE attribute inventory for the entire domain.
 
 Here is the survey context:
 
@@ -33,23 +33,20 @@ This is the structure:
 
 You are working within this dimension:
 <taxonomy_dimension>
-{dimension_name} — {dimension_description}
+{dimension_name} -- {dimension_description}
 </taxonomy_dimension>
 
-And you are working within this domain and facet:
+And you are working within this domain:
 <taxonomy_domain>
-{domain_name}
+{domain_name} -- {domain_definition}
 </taxonomy_domain>
-<taxonomy_facet>
-{facet_name} — {facet_description}
-</taxonomy_facet>
 {excluded_block}
 </taxonomy_context>
 
-Here are the attributes you need to consolidate:
-<chunk_level_analyses>
-{chunk_results}
-</chunk_level_analyses>
+Here are all facets and their discovered attributes:
+<facet_attributes>
+{facet_attributes_block}
+</facet_attributes>
 
 # Understanding Attributes
 
@@ -59,36 +56,62 @@ Conceptualization:
 # Attribute Consolidation Rules
 
 <strict_consolidation_rule>
-1. MERGE OVERLAP (MANDATORY)
-All attributes that conceptually overlap or are variants of the same idea must be merged.
+1. PREVALENCE WEIGHTING
+Codes MUST be primarily driven by the **number of ideas linked to attributes**.
 
-2. ORTHOGONALITY (MAIN RULE)
+- Attributes with HIGH idea counts MUST form the **core structure of the codebook**.
+- Attributes with LOW idea counts MUST NOT become standalone codes unless absolutely necessary.
+- LOW-prevalence attributes SHOULD be:
+  - merged into the closest HIGH-prevalence phenomenon, OR
+  - grouped into a broader combined phenomenon.
+
+If forced to choose between:
+- conceptual nuance
+- prevalence dominance
+
+--> ALWAYS prioritize prevalence dominance.
+
+2. MERGE BIAS
+When in doubt:
+- MERGE rather than split
+- Especially when an attribute has relatively few ideas
+
+Attributes with low prevalence (e.g., <10-15 ideas) should almost never result in standalone codes.
+
+3. MERGE OVERLAP (MANDATORY)
+All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different facets.
+
+4. ORTHOGONALITY (MAIN RULE)
 For each pair of attributes:
 "Can a single observation plausibly fall under both?"
 
-- Yes → merge
-- Doubt → merge
-- Only if clearly no → keep separate
+- Yes -> merge
+- Doubt -> merge
+- Only if clearly no -> keep separate
 
-3. NO HIERARCHY
+5. NO HIERARCHY
 Attributes must not be:
 - general vs. specific
 - principle vs. application
-If this occurs → merge
+If this occurs -> merge
 
-4. NO OBJECT SPLITTING
+6. NO OBJECT SPLITTING
 Do not split based on object (e.g., humans vs. animals)
-If the same underlying principle applies → merge
+If the same underlying principle applies -> merge
 
-5. MINIMALITY (MANDATORY)
+7. MINIMALITY (MANDATORY)
 Use the smallest number of attributes that provides full coverage.
-If an attribute is not strictly necessary → remove it
+If an attribute is not strictly necessary -> remove it
+
+8. FACET ASSIGNMENT
+Assign each surviving attribute to the ONE facet where it fits best.
+Do NOT restructure or rename facets -- only deduplicate attributes.
 </strict_consolidation_rule>
 
 <disambiguation_test>
 For any pair of attributes:
 "Can a clear rule assign every observation to exactly one attribute?"
-- No → merge
+- No -> merge
 </disambiguation_test>
 
 <precedence_rule>
@@ -97,37 +120,43 @@ When rules conflict, prioritize:
 2. Minimality (merge unless clearly distinct)
 3. Clarity for annotation
 
-When in doubt → merge attributes
+When in doubt -> merge attributes
 </precedence_rule>
 
 # Required Process
 
 Before writing your final output, think through your analysis in the scratchpad field:
 
-**Step 1 — Scan chunk-level attributes**
-Review all attributes from all chunks. Note recurring themes and obvious duplicates.
+**Step 1 -- Identify High-Prevalence Anchors**
+- Identify attributes with the highest number of ideas.
+- Treat these as the PRIMARY building blocks of the consolidated inventory.
 
-**Step 2 — Group overlapping attributes**
-Group attributes that describe the same or overlapping concepts across chunks.
+**Step 2 -- Map Lower-Prevalence Attributes**
+- Map lower-prevalence attributes onto these high-prevalence anchors wherever possible.
+- Only keep an attribute separate if it:
+  - is conceptually distinct AND
+  - cannot reasonably be merged.
 
-**Step 3 — Apply orthogonality test**
-For each pair of candidate consolidated attributes, ask: "Can a single observation plausibly fall under both?" If yes or doubtful → merge.
+**Step 3 -- Apply orthogonality and disambiguation tests**
+For each pair of candidate attributes, apply the orthogonality test and disambiguation test. Merge if either test fails.
 
-**Step 4 — Apply disambiguation test**
-For each pair: "Can a clear rule assign every observation to exactly one attribute?" If no → merge.
-
-**Step 5 — Verify facet boundaries**
-Ensure each retained attribute belongs to the included facet and not to any excluded facet:
+**Step 4 -- Verify domain boundaries**
+Ensure each retained attribute belongs to this domain and not to any excluded domain:
 {excluded_block_light}
 
-**Step 6 — Prepare final output**
+**Step 5 -- Justify Low-Prevalence Codes (MANDATORY)**
+- If any attribute is primarily based on low idea counts:
+- Explicitly justify why it was NOT merged into a higher-prevalence phenomenon.
+
+**Step 6 -- Prepare final output**
 Return only the minimal set of consolidated attributes that pass all checks.
 
 For each consolidated attribute, provide:
 - A short descriptive name (2-5 words)
-- A description of what the attribute captures — a concrete, observable property (1-2 sentences)
-- The parent facet name: {facet_name}
-- 2-3 representative observations selected from across the merged chunks (exact text)
+- A description of what the attribute captures -- a concrete, observable property (1-2 sentences)
+- The parent facet this attribute best belongs to
+- 2-3 representative example observations (exact text)
+- source_attributes: list of original attribute names that were merged into this one
 
 # Output Requirements
 
@@ -143,7 +172,7 @@ All attribute names and descriptions must be in {language}.
 - Attributes must be grounded in repeated patterns across observations
 - Attributes must be internally coherent (one clear concept each)
 - Attributes must be externally distinctive (no overlap, no subset/superset)
-- Attributes must remain strictly within the included facet
+- Each attribute must be assigned to exactly ONE parent facet (best fit)
 - All output must be in {language}
 
 Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON.

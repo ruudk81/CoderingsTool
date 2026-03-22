@@ -1243,6 +1243,7 @@ def build_attribute_consolidation_prompt(
     domain_name: str,
     domain_definition: str,
     facet_attributes_block: str,
+    excluded_domains: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
     """Consolidate attributes across facets within a domain into a MECE set.
 
@@ -1258,31 +1259,27 @@ def build_attribute_consolidation_prompt(
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
-
-        example_block = ""
-        if dimension_def.examples:
-            ex = dimension_def.examples[0]
-            example_block = f"""
-Example (from a different survey):
-  Survey: {ex.survey_context}
-  Response: "{ex.response}"
-  Domain: {ex.domain}
-  Facet: {ex.facet}
-  Instance: {ex.instance}
-"""
     else:
         attribute_guidance = (
             "An attribute identifies the specific observable property or feature being described. "
-            "It is a named property — not a verbatim span from the response."
+            "It is a named property -- not a verbatim span from the response."
         )
         attribute_key_idea = "the specific observable property being described"
         facet_key_idea = "the analytical lens applied to the subject"
         noun_phrase = dimension_name
         domain_key_idea = "the subject the statement refers to"
-        example_block = ""
 
-    return f"""You are a taxonomy consolidation specialist.
+    excluded_block = _build_exclusion_block(
+        excluded_domains or [], "excluded_domains"
+    )
+    excluded_block_light = _build_exclusion_block_light(
+        excluded_domains or []
+    )
+
+    return f"""You are a taxonomy consolidation specialist for surveys.
 Your task is to deduplicate attributes across facets within the domain "{domain_name}", producing a single MECE attribute inventory for the entire domain.
+
+Here is the survey context:
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -1290,74 +1287,107 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-You are working within this domain:
-<domain>
-{domain_name} — {domain_definition}
-</domain>
+Use the survey context to:
 
-Here are all facets and their discovered attributes:
-<facet_attributes>`
-{facet_attributes_block}
-</facet_attributes>
+<survey_context_usage>
+- Interpret the meaning of attributes relative to the survey question
+- Ensure consolidated attributes are directly relevant to what is being asked
+- Preserve terminology and phrasing appropriate to the survey language
+- Avoid introducing attributes that are not grounded in the question intent
+</survey_context_usage>
 
-<attribute_definition_guidance>
-Dimension: {dimension_name} — {dimension_description}
+Here is the taxonomy context you are working within:
 
-Taxonomy levels for this dimension:
-- Dimension (L1): {noun_phrase}
+<taxonomy_context>
+This is the structure:
+<taxonomy_structure>
+- Dimension (L1): {dimension_name}: {noun_phrase}
 - Domain (L2): {domain_key_idea}
 - Facet (L3): {facet_key_idea}
 - Attribute (L4): {attribute_key_idea}
-{example_block}
-Target abstraction level: ATTRIBUTE (L4)
+</taxonomy_structure>
 
+You are working within this dimension:
+<taxonomy_dimension>
+{dimension_name} -- {dimension_description}
+</taxonomy_dimension>
+
+And you are working within this domain:
+<taxonomy_domain>
+{domain_name} -- {domain_definition}
+</taxonomy_domain>
+{excluded_block}
+</taxonomy_context>
+
+Here are all facets and their discovered attributes:
+<facet_attributes>
+{facet_attributes_block}
+</facet_attributes>
+
+# Understanding Attributes
+
+Conceptualization:
 {attribute_guidance}
 
-Each attribute must be:
-- **Ontologically distinct** — no two attributes may share conceptual space, even across different facets. An attribute must not be a subset of another attribute, and two attributes must not be two different lenses on the same phenomenon.
-- **Semantically distant** — someone coding a response should clearly know which attribute applies, with no "could go either way" situations.
-- Assigned to exactly ONE parent facet (the best fit)
-</attribute_definition_guidance>
-
-## YOUR TASK
-Deduplicate the attributes listed above. The same concept may have been discovered independently under multiple facets. Your job is to produce the fewest mutually exclusive attributes that cover all concepts, with each attribute assigned to its single best-fitting parent facet.
-
-Do NOT restructure or rename facets — only deduplicate attributes.
+# Attribute Consolidation Rules
 
 <strict_consolidation_rule>
-1. MERGE OVERLAP (MANDATORY)
+1. PREVALENCE WEIGHTING
+Codes MUST be primarily driven by the **number of ideas linked to attributes**.
+
+- Attributes with HIGH idea counts MUST form the **core structure of the codebook**.
+- Attributes with LOW idea counts MUST NOT become standalone codes unless absolutely necessary.
+- LOW-prevalence attributes SHOULD be:
+  - merged into the closest HIGH-prevalence phenomenon, OR
+  - grouped into a broader combined phenomenon.
+
+If forced to choose between:
+- conceptual nuance
+- prevalence dominance
+
+--> ALWAYS prioritize prevalence dominance.
+
+2. MERGE BIAS
+When in doubt:
+- MERGE rather than split
+- Especially when an attribute has relatively few ideas
+
+Attributes with low prevalence (e.g., <10-15 ideas) should almost never result in standalone codes.
+
+3. MERGE OVERLAP (MANDATORY)
 All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different facets.
 
-2. ORTHOGONALITY (MAIN RULE)
+4. ORTHOGONALITY (MAIN RULE)
 For each pair of attributes:
 "Can a single observation plausibly fall under both?"
 
-- Yes → merge
-- Doubt → merge
-- Only if clearly no → keep separate
+- Yes -> merge
+- Doubt -> merge
+- Only if clearly no -> keep separate
 
-3. NO HIERARCHY
+5. NO HIERARCHY
 Attributes must not be:
 - general vs. specific
 - principle vs. application
-If this occurs → merge
+If this occurs -> merge
 
-4. NO OBJECT SPLITTING
+6. NO OBJECT SPLITTING
 Do not split based on object (e.g., humans vs. animals)
-If the same underlying principle applies → merge
+If the same underlying principle applies -> merge
 
-5. MINIMALITY (MANDATORY)
+7. MINIMALITY (MANDATORY)
 Use the smallest number of attributes that provides full coverage.
-If an attribute is not strictly necessary → remove it
+If an attribute is not strictly necessary -> remove it
 
-6. FACET ASSIGNMENT
+8. FACET ASSIGNMENT
 Assign each surviving attribute to the ONE facet where it fits best.
+Do NOT restructure or rename facets -- only deduplicate attributes.
 </strict_consolidation_rule>
 
 <disambiguation_test>
 For any pair of attributes:
 "Can a clear rule assign every observation to exactly one attribute?"
-- No → merge
+- No -> merge
 </disambiguation_test>
 
 <precedence_rule>
@@ -1366,19 +1396,62 @@ When rules conflict, prioritize:
 2. Minimality (merge unless clearly distinct)
 3. Clarity for annotation
 
-When in doubt → merge attributes
+When in doubt -> merge attributes
 </precedence_rule>
+
+# Required Process
+
+Before writing your final output, think through your analysis in the scratchpad field:
+
+**Step 1 -- Identify High-Prevalence Anchors**
+- Identify attributes with the highest number of ideas.
+- Treat these as the PRIMARY building blocks of the consolidated inventory.
+
+**Step 2 -- Map Lower-Prevalence Attributes**
+- Map lower-prevalence attributes onto these high-prevalence anchors wherever possible.
+- Only keep an attribute separate if it:
+  - is conceptually distinct AND
+  - cannot reasonably be merged.
+
+**Step 3 -- Apply orthogonality and disambiguation tests**
+For each pair of candidate attributes, apply the orthogonality test and disambiguation test. Merge if either test fails.
+
+**Step 4 -- Verify domain boundaries**
+Ensure each retained attribute belongs to this domain and not to any excluded domain:
+{excluded_block_light}
+
+**Step 5 -- Justify Low-Prevalence Codes (MANDATORY)**
+- If any attribute is primarily based on low idea counts:
+- Explicitly justify why it was NOT merged into a higher-prevalence phenomenon.
+
+**Step 6 -- Prepare final output**
+Return only the minimal set of consolidated attributes that pass all checks.
 
 For each consolidated attribute, provide:
 - A short descriptive name (2-5 words)
-- A description of what the attribute captures (1-2 sentences)
+- A description of what the attribute captures -- a concrete, observable property (1-2 sentences)
 - The parent facet this attribute best belongs to
 - 2-3 representative example observations (exact text)
 - source_attributes: list of original attribute names that were merged into this one
 
-All output MUST be in {language}.
+# Output Requirements
 
-Provide output as valid JSON following the response schema provided."""
+Provide output as valid JSON following the response schema provided.
+
+# Language Requirement
+
+All attribute names and descriptions must be in {language}.
+
+# Final Notes
+
+- Attributes must be descriptive, not evaluative
+- Attributes must be grounded in repeated patterns across observations
+- Attributes must be internally coherent (one clear concept each)
+- Attributes must be externally distinctive (no overlap, no subset/superset)
+- Each attribute must be assigned to exactly ONE parent facet (best fit)
+- All output must be in {language}
+
+Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
 
 
 class ConsolidatedAttribute(BaseModel):
@@ -1403,6 +1476,17 @@ class ConsolidatedAttribute(BaseModel):
 
 class AttributeConsolidatedResponse(BaseModel):
     """Consolidated attributes after cross-facet deduplication within a domain."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning before consolidating attributes: "
+            "(1) identify high-prevalence anchors from idea counts, "
+            "(2) map lower-prevalence attributes onto anchors, "
+            "(3) apply orthogonality and disambiguation tests, "
+            "(4) verify domain boundaries -- exclude attributes belonging to other domains, "
+            "(5) justify any low-prevalence attributes kept separate, "
+            "(6) prepare final minimal set of consolidated attributes"
+        )
+    )
     attributes: List[ConsolidatedAttribute] = Field(
         ..., description="Deduplicated attributes, each assigned to its best-fitting facet"
     )
@@ -1609,7 +1693,7 @@ Assign a descriptive name (3-5 word noun phrase in {language}) to each distinct 
 **Step 6 — Validate Parsimony and Dominance**
 - Ensure the codebook is dominated by high-prevalence phenomena
 - Ensure low-prevalence attributes are absorbed rather than overrepresented
-- Keep total number of codes minimal (target: 5–8)
+- Keep total number of codes minimal 
 
 **Step 7 — Justify Low-Prevalence Codes (MANDATORY)**
 If any code is primarily based on attributes with low idea counts:
