@@ -1136,35 +1136,16 @@ def build_attribute_assignment_prompt(
     survey_question: str,
     language: str,
     dataset_context_section: str,
-    dimension_def: Optional[DimensionDefinition],
-    dimension_name: str,
-    dimension_description: str,
-    domain_name: str,
-    domain_definition: str,
     facet_name: str,
     facet_description: str,
     attributes: List['DiscoveredAttribute'],
     ideas: List,
 ) -> str:
     """Build prompt for assigning ideas to discovered attributes (L4) within a facet."""
-    taxonomy_block = build_dimension_context_block(
-        dimension_def=dimension_def,
-        dimension_name=dimension_name,
-        dimension_description=dimension_description,
-        domain_name=domain_name,
-        domain_definition=domain_definition,
-    )
-
     attribute_codebook = _build_attribute_codebook_block(attributes)
     ideas_block = _build_ideas_block_for_facet_assignment(ideas)
 
-    # Dimension-specific attribute question
-    if dimension_def:
-        attr_question = dimension_def.prompt_rules.attribute_diagnostic
-    else:
-        attr_question = "What specific quality or trait is being described?"
-
-    return f"""You are a qualitative coding assistant assigning survey response ideas to discovered attributes within a facet.
+    return f"""You are a qualitative coding assistant. Your task is to assign survey response ideas to specific attributes within a facet. Each idea represents a distinct concept extracted from a survey response, and you must determine which attribute best captures the specific quality being described.
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -1172,34 +1153,47 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-{taxonomy_block}
-
 <facet_context>
-Facet: {facet_name} — {facet_description}
+Facet: {facet_name} -- {facet_description}
 </facet_context>
 
-<attributes>
-Assign each idea to exactly ONE of these attributes within the facet above:
+Here are the attributes available for assignment. Each idea must be assigned to exactly ONE of these attributes:
 
+<attributes>
 {attribute_codebook}
 </attributes>
+
+Here are the ideas you need to assign to attributes:
 
 <ideas_to_assign>
 {ideas_block}
 </ideas_to_assign>
 
-<instructions>
-For each idea:
-1. Read the idea text  
-2. Determine which attribute best answers the question: {attr_question}
-3. Assign exactly ONE attribute per idea. Return the attribute ID from [A#] brackets (e.g. "A1", "A3"). Do NOT return the attribute name.
-4. Rate your confidence (0.0 to 1.0).
+For each idea in the list, follow these steps:
 
-All output MUST be in {language}.
+1. Read the idea text carefully, noting what specific quality is being expressed.
 
-Provide output as valid JSON following the response schema provided.
-</instructions>
-"""
+2. Compare the idea against each available attribute. Ask yourself: "Which attribute best captures the specific quality being described in this idea?" Consider:
+   - The core meaning of the idea text
+   - The descriptions provided for each attribute
+   - The examples given for each attribute
+   - Semantic similarity between the idea and attribute descriptions
+
+3. Assign the idea to exactly ONE attribute. You must return only the attribute ID (the code in [A#] brackets, such as "A1" or "A2"). Do NOT return the attribute name or description.
+
+4. Rate your confidence in this assignment on a scale from 0.0 to 1.0, where:
+   - 1.0 = completely certain this is the correct attribute
+   - 0.7-0.9 = confident but some ambiguity exists
+   - 0.5-0.6 = moderate confidence, could reasonably fit multiple attributes
+   - Below 0.5 = low confidence, significant ambiguity
+
+Important requirements:
+- Assign each idea to exactly ONE attribute
+- Return only the attribute ID (e.g., "A1"), not the attribute name
+- Echo back the exact idea_id and idea text from the input without modification
+- All output must be in {language}
+
+Provide your response as valid JSON matching the schema provided."""
 
 class AttributeAssignment(BaseModel):
     """Single idea-to-attribute assignment."""

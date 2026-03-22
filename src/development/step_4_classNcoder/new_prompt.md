@@ -1,9 +1,6 @@
-P7 -- Cross-Facet Attribute Consolidation (per domain)
+P6
 
-You are a taxonomy consolidation specialist for surveys.
-Your task is to deduplicate attributes across facets within the domain "{domain_name}", producing a single MECE attribute inventory for the entire domain.
-
-Here is the survey context:
+You are a qualitative coding assistant. Your task is to assign survey response ideas to specific attributes within a facet. Each idea represents a distinct concept extracted from a survey response, and you must determine which attribute best captures the specific quality being described.
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -11,168 +8,47 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-Use the survey context to:
+<facet_context>
+Facet: {facet_name} — {facet_description}
+</facet_context>
 
-<survey_context_usage>
-- Interpret the meaning of attributes relative to the survey question
-- Ensure consolidated attributes are directly relevant to what is being asked
-- Preserve terminology and phrasing appropriate to the survey language
-- Avoid introducing attributes that are not grounded in the question intent
-</survey_context_usage>
+Here are the attributes available for assignment. Each idea must be assigned to exactly ONE of these attributes:
 
-Here is the taxonomy context you are working within:
+<attributes>
+{attribute_codebook}
+</attributes>
 
-<taxonomy_context>
-This is the structure:
-<taxonomy_structure>
-- Dimension (L1): {dimension_name}: {noun_phrase}
-- Domain (L2): {domain_key_idea}
-- Facet (L3): {facet_key_idea}
-- Attribute (L4): {attribute_key_idea}
-</taxonomy_structure>
+Here are the ideas you need to assign to attributes:
 
-You are working within this dimension:
-<taxonomy_dimension>
-{dimension_name} -- {dimension_description}
-</taxonomy_dimension>
+<ideas_to_assign>
+{ideas_block}
+</ideas_to_assign>
 
-And you are working within this domain:
-<taxonomy_domain>
-{domain_name} -- {domain_definition}
-</taxonomy_domain>
-{excluded_block}
-</taxonomy_context>
+For each idea in the list, follow these steps:
 
-Here are all facets and their discovered attributes:
-<facet_attributes>
-{facet_attributes_block}
-</facet_attributes>
+1. Read the idea text carefully, noting what specific quality or association is being expressed about the entity.
 
-# Understanding Attributes
+2. Compare the idea against each available attribute. Ask yourself: "Which attribute best captures the specific quality being described in this idea?" Consider:
+   - The core meaning of the idea text
+   - The descriptions provided for each attribute
+   - The examples given for each attribute
+   - Semantic similarity between the idea and attribute descriptions
 
-Conceptualization:
-{attribute_guidance}
+3. Assign the idea to exactly ONE attribute. You must return only the attribute ID (the code in [A#] brackets, such as "A1" or "A2"). Do NOT return the attribute name or description.
 
-# Attribute Consolidation Rules
+4. Rate your confidence in this assignment on a scale from 0.0 to 1.0, where:
+   - 1.0 = completely certain this is the correct attribute
+   - 0.7-0.9 = confident but some ambiguity exists
+   - 0.5-0.6 = moderate confidence, could reasonably fit multiple attributes
+   - Below 0.5 = low confidence, significant ambiguity
 
-<strict_consolidation_rule>
-1. PREVALENCE WEIGHTING
-Codes MUST be primarily driven by the **number of ideas linked to attributes**.
-
-- Attributes with HIGH idea counts MUST form the **core structure of the codebook**.
-- Attributes with LOW idea counts MUST NOT become standalone codes unless absolutely necessary.
-- LOW-prevalence attributes SHOULD be:
-  - merged into the closest HIGH-prevalence phenomenon, OR
-  - grouped into a broader combined phenomenon.
-
-If forced to choose between:
-- conceptual nuance
-- prevalence dominance
-
---> ALWAYS prioritize prevalence dominance.
-
-2. MERGE BIAS
-When in doubt:
-- MERGE rather than split
-- Especially when an attribute has relatively few ideas
-
-Attributes with low prevalence (e.g., <10-15 ideas) should almost never result in standalone codes.
-
-3. MERGE OVERLAP (MANDATORY)
-All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different facets.
-
-4. ORTHOGONALITY (MAIN RULE)
-For each pair of attributes:
-"Can a single observation plausibly fall under both?"
-
-- Yes -> merge
-- Doubt -> merge
-- Only if clearly no -> keep separate
-
-5. NO HIERARCHY
-Attributes must not be:
-- general vs. specific
-- principle vs. application
-If this occurs -> merge
-
-6. NO OBJECT SPLITTING
-Do not split based on object (e.g., humans vs. animals)
-If the same underlying principle applies -> merge
-
-7. MINIMALITY (MANDATORY)
-Use the smallest number of attributes that provides full coverage.
-If an attribute is not strictly necessary -> remove it
-
-8. FACET ASSIGNMENT
-Assign each surviving attribute to the ONE facet where it fits best.
-Do NOT restructure or rename facets -- only deduplicate attributes.
-</strict_consolidation_rule>
-
-<disambiguation_test>
-For any pair of attributes:
-"Can a clear rule assign every observation to exactly one attribute?"
-- No -> merge
-</disambiguation_test>
-
-<precedence_rule>
-When rules conflict, prioritize:
-1. Non-overlap (orthogonality)
-2. Minimality (merge unless clearly distinct)
-3. Clarity for annotation
-
-When in doubt -> merge attributes
-</precedence_rule>
-
-# Required Process
-
-Before writing your final output, think through your analysis in the scratchpad field:
-
-**Step 1 -- Identify High-Prevalence Anchors**
-- Identify attributes with the highest number of ideas.
-- Treat these as the PRIMARY building blocks of the consolidated inventory.
-
-**Step 2 -- Map Lower-Prevalence Attributes**
-- Map lower-prevalence attributes onto these high-prevalence anchors wherever possible.
-- Only keep an attribute separate if it:
-  - is conceptually distinct AND
-  - cannot reasonably be merged.
-
-**Step 3 -- Apply orthogonality and disambiguation tests**
-For each pair of candidate attributes, apply the orthogonality test and disambiguation test. Merge if either test fails.
-
-**Step 4 -- Verify domain boundaries**
-Ensure each retained attribute belongs to this domain and not to any excluded domain:
-{excluded_block_light}
-
-**Step 5 -- Justify Low-Prevalence Codes (MANDATORY)**
-- If any attribute is primarily based on low idea counts:
-- Explicitly justify why it was NOT merged into a higher-prevalence phenomenon.
-
-**Step 6 -- Prepare final output**
-Return only the minimal set of consolidated attributes that pass all checks.
-
-For each consolidated attribute, provide:
-- A short descriptive name (2-5 words)
-- A description of what the attribute captures -- a concrete, observable property (1-2 sentences)
-- The parent facet this attribute best belongs to
-- 2-3 representative example observations (exact text)
-- source_attributes: list of original attribute names that were merged into this one
-
-# Output Requirements
-
-Provide output as valid JSON following the response schema provided.
-
-# Language Requirement
-
-All attribute names and descriptions must be in {language}.
-
-# Final Notes
-
-- Attributes must be descriptive, not evaluative
-- Attributes must be grounded in repeated patterns across observations
-- Attributes must be internally coherent (one clear concept each)
-- Attributes must be externally distinctive (no overlap, no subset/superset)
-- Each attribute must be assigned to exactly ONE parent facet (best fit)
+Important requirements:
+- Assign each idea to exactly ONE attribute
+- Return only the attribute ID (e.g., "A1"), not the attribute name
+- Echo back the exact idea_id and idea text from the input without modification
 - All output must be in {language}
+- Provide your response as valid JSON matching the schema provided
 
-Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON.
+Your response must follow this JSON structure:
+- A root object with an "assignments" array
+- Each assignment must include: idea_id (exact string from input), idea (exact text from input), assigned_attribute_id (only the ID like "A1"), and confidence (number between 0.0 and 1.0)
