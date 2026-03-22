@@ -1,13 +1,19 @@
 """
 Inductive Code Generation pipeline for Category Discovery v3.
 
-Pipeline:
-  P1. Facet Discovery (chunked, per domain) — dimension-specific semantics
-  P2. Facet Assignment (batched, per domain) — assign ideas to discovered facets
-  P3. Attribute Discovery (per facet within domain) — concrete observables
-  P4. Code Generation from Attributes (cross-domain) — derive codebook codes
+Pipeline (10 stages):
+  P1.  Facet Discovery (chunked, per domain) — dimension-specific semantics
+  P2.  Facet Consolidation (per domain, hierarchical merge)
+  P3.  Facet Assignment (batched, per domain) — assign ideas to discovered facets
+  P4.  Attribute Discovery (per facet within domain) — concrete observables
+  P5.  Attribute Chunk Consolidation (per facet, hierarchical merge)
+  P6.  Attribute Assignment (per facet) — assign ideas to discovered attributes
+  P7.  Cross-facet Attribute Consolidation (per domain) — dedup across facets
+  P8.  Code Generation from Attributes (per domain) — derive codebook codes
+  P9.  Codebook Consolidation (cross-domain) — merge into final MECE codebook
+  P10. Code Assignment (per idea) — assign codes to ideas
 
-Per-domain steps (P1, P2, P3) run CONCURRENTLY. P4 is sequential.
+Per-domain steps (P1–P7) run CONCURRENTLY. P8–P9 are sequential.
 
 Usage:
     from .qualitative_researcher import QualitativeResearcher
@@ -55,31 +61,31 @@ from .prompts_exp import (
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
     DiscoveredFacet,
-    # P1.5: Facet Consolidation
+    # P2: Facet Consolidation
     build_facet_consolidation_prompt,
     FacetConsolidatedResponse,
-    # P2: Facet Assignment
+    # P3: Facet Assignment
     build_facet_assignment_prompt,
     FacetAssignmentBatch,
-    # P3.5 (Step 4a): Attribute Assignment
-    build_attribute_assignment_prompt,
-    AttributeAssignmentBatch,
-    # P3: Attribute Discovery
+    # P4: Attribute Discovery
     build_attribute_discovery_prompt,
     AttributeDiscoveryResult,
     DiscoveredAttribute,
-    # P3 chunk consolidation
+    # P5: Attribute Chunk Consolidation
     build_attribute_chunk_consolidation_prompt,
     AttributeChunkConsolidatedResponse,
-    # P3.5: Attribute Consolidation (cross-facet within domain)
+    # P6: Attribute Assignment
+    build_attribute_assignment_prompt,
+    AttributeAssignmentBatch,
+    # P7: Cross-facet Attribute Consolidation
     build_attribute_consolidation_prompt,
     AttributeConsolidatedResponse,
     ConsolidatedAttribute,
-    # P4: Code Generation from Attributes
+    # P8: Code Generation from Attributes
     build_code_from_attributes_prompt,
     CodeGenerationFromAttributesResult,
     CodeFromAttributes,
-    # P4.5: Codebook Consolidation
+    # P9: Codebook Consolidation
     build_codebook_consolidation_prompt,
     CodebookConsolidationResult,
     ConsolidatedCode,
@@ -132,7 +138,7 @@ class DomainResult:
 
 @dataclass
 class TaxonomyResult:
-    """Output of taxonomy stages P1-P3.5."""
+    """Output of taxonomy stages P1-P7."""
     partition_n_labels: Dict[str, int]
     partition_n_batches: Dict[str, int]
     partition_facets: Dict[str, List[DiscoveredFacet]]
@@ -201,20 +207,29 @@ class QualitativeResearcher:
     """
     Inductive Code Generation pipeline for Category Discovery v3.
 
-    Pipeline:
-    P1. FACET DISCOVERY:        Per domain, chunked with overlap (concurrent)
-    P1b. PROGRAMMATIC DEDUP:    Per domain, case-insensitive facet name merge (no LLM)
-    P2. FACET ASSIGNMENT:       Per domain, assign ideas to facets (concurrent)
-    P3. ATTRIBUTE DISCOVERY:    Per (domain, facet), discover attributes (concurrent)
-    P4. CODE GENERATION:        Cross-domain, derive codes from attributes
+    Pipeline (10 stages):
+    P1.  FACET DISCOVERY:                   Per domain, chunked with overlap (concurrent)
+    P2.  FACET CONSOLIDATION:               Per domain, hierarchical merge
+    P3.  FACET ASSIGNMENT:                  Per domain, assign ideas to facets (concurrent)
+    P4.  ATTRIBUTE DISCOVERY:               Per (domain, facet), discover attributes (concurrent)
+    P5.  ATTRIBUTE CHUNK CONSOLIDATION:     Per facet, hierarchical merge
+    P6.  ATTRIBUTE ASSIGNMENT:              Per facet, assign ideas to attributes (concurrent)
+    P7.  CROSS-FACET ATTR CONSOLIDATION:    Per domain, dedup across facets
+    P8.  CODE GENERATION:                   Per domain, derive codes from attributes
+    P9.  CODEBOOK CONSOLIDATION:            Cross-domain, merge into MECE codebook
+    P10. CODE ASSIGNMENT:                   Per idea, assign codes (separate module)
     """
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None):
         self._model_p1 = config.qr_model_p1
-        self._model_p1_5 = config.qr_model_p1_5
         self._model_p2 = config.qr_model_p2
         self._model_p3 = config.qr_model_p3
         self._model_p4 = config.qr_model_p4
+        self._model_p5 = config.qr_model_p5
+        self._model_p6 = config.qr_model_p6
+        self._model_p7 = config.qr_model_p7
+        self._model_p8 = config.qr_model_p8
+        self._model_p9 = config.qr_model_p9
         self._temperature = config.qr_temperature
         self._max_tokens_facet_discovery = config.qr_max_tokens_facet_discovery
         self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
@@ -232,11 +247,11 @@ class QualitativeResearcher:
         self._consolidation_max_items_per_call = config.consolidation_max_items_per_call
         self._consolidation_max_rounds = config.consolidation_max_rounds
 
-        # Batch sizing — P3 (attribute discovery)
-        self._p3_batch_size_min = config.p3_batch_size_min
-        self._p3_batch_size_max = config.p3_batch_size_max
-        self._p3_target_batches = config.p3_target_batches
-        self._p3_chunk_overlap = config.p3_chunk_overlap
+        # Batch sizing — P4 (attribute discovery)
+        self._p4_batch_size_min = config.p4_batch_size_min
+        self._p4_batch_size_max = config.p4_batch_size_max
+        self._p4_target_batches = config.p4_target_batches
+        self._p4_chunk_overlap = config.p4_chunk_overlap
 
         # Label source for observation formatting
         self._label_source = config.label_source
@@ -311,7 +326,7 @@ class QualitativeResearcher:
         dimension_description: str = "",
         verbose: bool = False,
     ) -> PipelineResult:
-        """Run full pipeline: taxonomy (P1-P3.5) + codebook (P4-P4.5)."""
+        """Run full pipeline: taxonomy (P1-P7) + codebook (P8-P9)."""
         print(f"\n{'='*70}")
         print(f"INDUCTIVE CODE GENERATION v3: Category Discovery")
         print(f"{'='*70}")
@@ -327,7 +342,7 @@ class QualitativeResearcher:
             n_partitions = len(active_partitions)
             print(f"  Processing {n_partitions} domains concurrently "
                   f"({total_labels} observations, {total_ideas} ideas)")
-            print(f"  Pipeline: P1-P3.5 taxonomy → P4-P4.5 codebook")
+            print(f"  Pipeline: P1-P7 taxonomy → P8-P9 codebook")
 
         return asyncio.run(
             self._process_all_async(
@@ -1471,6 +1486,22 @@ class QualitativeResearcher:
             for i, batch in enumerate(idea_batches)
         ))
 
+        # Retry pass: re-run failed batches (returned empty [])
+        failed_batch_indices = [i for i, r in enumerate(batch_results) if len(r) == 0 and len(idea_batches[i]) > 0]
+        if failed_batch_indices:
+            print(f"    [RETRY PASS] Retrying {len(failed_batch_indices)} failed batches (facet assignment)...")
+            retry_results = await asyncio.gather(*(
+                process_batch(i, idea_batches[i])
+                for i in failed_batch_indices
+            ))
+            recovered = 0
+            for orig_idx, retry_result in zip(failed_batch_indices, retry_results):
+                if len(retry_result) > 0:
+                    batch_results[orig_idx] = retry_result
+                    recovered += 1
+            still_failed = len(failed_batch_indices) - recovered
+            print(f"    [RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
+
         # BP1: Build original idea lookup per batch for validation + content cross-check
         from difflib import SequenceMatcher
         batch_idea_lookups = [
@@ -1694,13 +1725,13 @@ class QualitativeResearcher:
         chunk is processed independently, and results are consolidated
         via an LLM merge pass.
         """
-        # Step 0: Create overlapping batches using P3-specific sizing
+        # Step 0: Create overlapping batches using P4-specific sizing
         batches = self._create_batches(
             observations,
-            size_min=self._p3_batch_size_min,
-            size_max=self._p3_batch_size_max,
-            target=self._p3_target_batches,
-            overlap=self._p3_chunk_overlap,
+            size_min=self._p4_batch_size_min,
+            size_max=self._p4_batch_size_max,
+            target=self._p4_target_batches,
+            overlap=self._p4_chunk_overlap,
         )
         n_batches = len(batches)
 
