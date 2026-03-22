@@ -1284,8 +1284,8 @@ class QualitativeResearcher:
             dimension_def=prompt_context.dimension_def,
             dimension_name=prompt_context.dimension_name,
             dimension_description=prompt_context.dimension_description,
-            partition_name=part_context.partition_name,
-            partition_definition=part_context.partition_definition,
+            domain_name=part_context.partition_name,
+            domain_definition=part_context.partition_definition,
             chunk_results="\n\n".join(formatted_chunks),
             excluded_domains=excluded_domains,
         )

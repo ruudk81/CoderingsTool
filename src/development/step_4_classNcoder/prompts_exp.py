@@ -344,8 +344,8 @@ def build_facet_consolidation_prompt(
     dimension_def: Optional[DimensionDefinition],
     dimension_name: str,
     dimension_description: str,
-    partition_name: str,
-    partition_definition: str,
+    domain_name: str,
+    domain_definition: str,
     chunk_results: str,
     excluded_domains: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
@@ -358,32 +358,24 @@ def build_facet_consolidation_prompt(
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
-
-        example_block = ""
-        if dimension_def.examples:
-            ex = dimension_def.examples[0]
-            example_block = f"""
-Example (from a different survey):
-  Survey: {ex.survey_context}
-  Response: "{ex.response}"
-  Domain: {ex.domain}
-  Facet: {ex.facet}
-  Instance: {ex.instance}
-"""
     else:
         facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
         facet_key_idea = "the analytical lens applied to the subject"
         attribute_key_idea = "the specific observable property being described"
         noun_phrase = dimension_name
         domain_key_idea = "the subject the statement refers to"
-        example_block = ""
 
     excluded_block = _build_exclusion_block(
         excluded_domains or [], "excluded_domains"
     )
+    excluded_block_light = _build_exclusion_block_light(
+        excluded_domains or []
+    )
 
-    return f"""You are a taxonomy consolidation specialist.
+    return f"""You are a taxonomy consolidation specialist for surveys.
 Your task is to merge multiple chunk-level facet analyses into a single, minimal set of mutually exclusive facets within a given domain.
+
+Here is the survey context:
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -391,39 +383,49 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-You are working within this domain:
-<domain>
-{partition_name} — {partition_definition}
-</domain>
+Use the survey context to:
+
+<survey_context_usage>
+- Interpret the meaning of facets relative to the survey question
+- Ensure consolidated facets are directly relevant to what is being asked
+- Preserve terminology and phrasing appropriate to the survey language
+- Avoid introducing facets that are not grounded in the question intent
+</survey_context_usage>
+
+Here is the taxonomy context you are working within:
+
+<taxonomy_context>
+This is the structure:
+<taxonomy_structure>
+- Dimension (L1): {dimension_name}: {noun_phrase}
+- Domain (L2): {domain_key_idea}
+- Facet (L3): {facet_key_idea}
+- Attribute (L4): {attribute_key_idea}
+</taxonomy_structure>
+
+You are working within this dimension:
+<taxonomy_dimension>
+{dimension_name} — {dimension_description}
+</taxonomy_dimension>
+
+And you are working within this domain:
+<taxonomy_domain>
+{domain_name} — {domain_definition}
+</taxonomy_domain>
 {excluded_block}
+</taxonomy_context>
+
 Here are the facets you need to consolidate:
 <chunk_level_analyses>
 {chunk_results}
 </chunk_level_analyses>
 
-<facet_definition_guidance>
-Dimension: {dimension_name} — {dimension_description}
+# Understanding Facets
 
-Target abstraction level: FACET (L3)
+Conceptualization:
 {facet_guidance}
 
-Each facet must:
-- Be a descriptive, data-grounded category based on shared meaning across multiple attributes
-- Be non-evaluative (no judgment, sentiment, or valence)
-- Stay strictly within the domain boundaries
-- Be internally coherent (one clear underlying concept)
-- Be externally distinctive:
-  * Ontologically distinct (no overlap, no subset/superset, no reframing of same phenomenon)
-  * Semantically separable (no ambiguity in coding; no "could go either way")
-- Be non-redundant (adds unique conceptual value; no duplicate concepts)
-- Be grounded in the data (supported by multiple attributes or repeated patterns)
-
-Within this taxonomy:
-- Dimension (L1): {noun_phrase}
-- Domain (L2): {domain_key_idea}
-- Facet (L3): {facet_key_idea}
-- Attribute (L4): {attribute_key_idea}
-</facet_definition_guidance>
+# Facet Consolidation Rules
 
 <strict_consolidation_rule>
 1. MERGE OVERLAP (MANDATORY)
@@ -454,7 +456,7 @@ If a facet is not strictly necessary → remove it
 
 <disambiguation_test>
 For any pair of facets:
-“Can a clear rule assign every observation to exactly one facet?”
+"Can a clear rule assign every observation to exactly one facet?"
 - No → merge
 </disambiguation_test>
 
@@ -467,18 +469,67 @@ When rules conflict, prioritize:
 When in doubt → merge facets
 </precedence_rule>
 
+# Required Process
+
+Before writing your final output, think through your analysis in the scratchpad field:
+
+**Step 1 — Scan chunk-level facets**
+Review all facets from all chunks. Note recurring themes and obvious duplicates.
+
+**Step 2 — Group overlapping facets**
+Group facets that describe the same or overlapping concepts across chunks.
+
+**Step 3 — Apply orthogonality test**
+For each pair of candidate consolidated facets, ask: "Can a single observation plausibly fall under both?" If yes or doubtful → merge.
+
+**Step 4 — Apply disambiguation test**
+For each pair: "Can a clear rule assign every observation to exactly one facet?" If no → merge.
+
+**Step 5 — Verify domain boundaries**
+Ensure each retained facet belongs to the included domain and not to any excluded domain:
+{excluded_block_light}
+
+**Step 6 — Prepare final output**
+Return only the minimal set of consolidated facets that pass all checks.
+
 For each consolidated facet, provide:
 - A short descriptive name (2-5 words)
 - A description of what the facet captures (1-2 sentences)
 - 3-5 representative observations selected from across the merged chunks (exact text)
 
+# Output Requirements
+
+Provide output as valid JSON following the response schema provided.
+
+# Language Requirement
+
 All facet names and descriptions must be in {language}.
 
-Provide output as valid JSON following the response schema provided."""
+# Final Notes
+
+- Facets must be descriptive, not evaluative
+- Facets must be grounded in repeated patterns across observations
+- Facets must be internally coherent (one clear concept each)
+- Facets must be externally distinctive (no overlap, no subset/superset)
+- Facets must remain strictly within the included domain
+- All output must be in {language}
+
+Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
 
 
 class FacetConsolidatedResponse(BaseModel):
     """Consolidated facets after merging chunk-level discoveries."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning before consolidating facets: "
+            "(1) scan chunk-level facets for recurring themes and duplicates, "
+            "(2) group overlapping facets across chunks, "
+            "(3) apply orthogonality test — merge if observation could fall under both, "
+            "(4) apply disambiguation test — merge if no clear assignment rule, "
+            "(5) verify domain boundaries — exclude facets belonging to other domains, "
+            "(6) prepare final minimal set of consolidated facets"
+        )
+    )
     facets: List[DiscoveredFacet] = Field(
         ..., description="Fewest mutually exclusive facets needed for full coverage, consolidated from all chunks"
     )
@@ -976,7 +1027,7 @@ If an attribute is not strictly necessary → remove it
 
 <disambiguation_test>
 For any pair of attributes:
-“Can a clear rule assign every observation to exactly one attribute?”
+"Can a clear rule assign every observation to exactly one attribute?"
 - No → merge
 </disambiguation_test>
 
@@ -1083,7 +1134,7 @@ Assign each idea to exactly ONE of these attributes within the facet above:
 
 <instructions>
 For each idea:
-1. Read the idea text and valence ([+] positive, [-] negative, [0] neutral).
+1. Read the idea text  
 2. Determine which attribute best answers the question: {attr_question}
 3. Assign exactly ONE attribute per idea. Return the attribute ID from [A#] brackets (e.g. "A1", "A3"). Do NOT return the attribute name.
 4. Rate your confidence (0.0 to 1.0).
