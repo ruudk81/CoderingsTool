@@ -873,8 +873,7 @@ class QualitativeResearcher:
 
         consolidation_tasks = {}
         for domain_name, facet_attrs in domain_facet_attributes.items():
-            # Only consolidate if domain has 2+ facets with attributes
-            if len(facet_attrs) < 2:
+            if not facet_attrs:
                 continue
             # Filter attribute_assignments to this domain
             domain_facet_ids = set(partition_assignments.get(domain_name, {}).keys())
@@ -1160,10 +1159,9 @@ class QualitativeResearcher:
         n_raw = sum(len(cf) for cf in chunk_facets)
         non_empty_chunks = [cf for cf in chunk_facets if cf]
 
-        # Step 2: Consolidation (hierarchical when needed)
-        if len(non_empty_chunks) <= 1:
-            # Single chunk: use directly, no consolidation needed
-            facets = non_empty_chunks[0] if non_empty_chunks else []
+        # Step 2: Consolidation (always run for quality refinement)
+        if not non_empty_chunks:
+            facets = []
         else:
             async def _facet_consolidate_fn(chunks):
                 return await self._consolidate_facets(
@@ -1763,10 +1761,9 @@ class QualitativeResearcher:
         n_raw = sum(len(ca) for ca in chunk_attributes)
         non_empty_chunks = [ca for ca in chunk_attributes if ca]
 
-        # Step 2: Consolidation (hierarchical when needed)
-        if len(non_empty_chunks) <= 1:
-            # Single chunk or no results: use directly
-            attributes = non_empty_chunks[0] if non_empty_chunks else []
+        # Step 2: Consolidation (always run for quality refinement)
+        if not non_empty_chunks:
+            attributes = []
         else:
             async def _attr_consolidate_fn(chunks):
                 return await self._consolidate_attribute_chunks(
