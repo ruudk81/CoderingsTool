@@ -45,7 +45,7 @@ def _build_exclusion_block(
 
     Args:
         items: list of (name, definition) tuples to exclude.
-        tag_name: XML tag name, e.g. 'excluded_domains' or 'excluded_facets'.grea
+        tag_name: XML tag name, e.g. 'excluded_domains' or 'excluded_facets'.
     """
     if not items:
         return ""
@@ -54,6 +54,23 @@ def _build_exclusion_block(
     return (
         f"\nYou must NOT include categories that belong to these excluded areas:\n"
         f"<{tag_name}>\n{content}\n</{tag_name}>\n"
+    )
+
+
+def _build_exclusion__light_block(
+    items: List[Tuple[str, str]],
+) -> str:
+    """Build an exclusion block for domains or facets without XML tags
+
+    Args:
+        items: lightweight list of (name, definition) tuples to exclude.
+    """
+    if not items:
+        return ""
+    lines = [f"- {name} — {definition}" for name, definition in items]
+    content = "\n".join(lines)
+    return (
+        f"{content}"
     )
 
 
@@ -129,46 +146,34 @@ def build_facet_discovery_prompt(
     excluded_domains: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
     """Discover facets (L3) from a chunk of observations within a domain."""
-    observations_block = "\n".join(
-        f"{i}. {obs}" for i, obs in enumerate(observations, 1)
-    )
+    observations_block = "\n".join(f"{i}. {obs}" for i, obs in enumerate(observations, 1))
 
     # Dimension-specific guidance
     if dimension_def:
         rules = dimension_def.prompt_rules
         facet_guidance = rules.facet_instruction
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
-        facet_question_stem = rules.facet_diagnostic.rstrip("?")
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
-
-        # Build worked example
-        example_block = ""
-        if dimension_def.examples:
-            ex = dimension_def.examples[0]
-            example_block = f"""
-Example (from a different survey):
-  Survey: {ex.survey_context}
-  Response: "{ex.response}"
-  Domain: {ex.domain}
-  Facet: {ex.facet}
-  Instance: {ex.instance}
-"""
     else:
         facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
         facet_key_idea = "the analytical lens applied to the subject"
-        facet_question_stem = "What specific aspect or viewpoint does this represent"
         attribute_key_idea = "the specific observable property being described"
         noun_phrase = dimension_name
         domain_key_idea = "the subject the statement refers to"
-        example_block = ""
 
     excluded_block = _build_exclusion_block(
         excluded_domains or [], "excluded_domains"
     )
 
-    return f"""You are assisting with qualitative analysis of survey responses. Your task is to identify the fewest recurring facets that provide full coverage of a set of observations.
+    excluded_block_light = _build_exclusion__light_block(
+        excluded_domains or [] 
+    )
+
+    return f"""You are a qualitative research analyst specializing in survey response analysis. Your task is to identify the fewest recurring facets that provide full coverage of a set of observations from a survey.
+
+Here is the survey context:
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -176,80 +181,124 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-You are working within this domain:
-<domain>
-{partition_name} — {partition_definition}
-</domain>
-{excluded_block}
-Here are the observations you need to analyze:
-<observations>
-{observations_block}
-</observations>
+Here is the taxonomy context you are working within:
 
-<facet_definition_guidance>
-Dimension: {dimension_name} — {dimension_description}
-
-Taxonomy levels for this dimension:
+<taxonomy_context>
+This is the structure:
+<taxonomy_structure>
 - Dimension (L1): {noun_phrase}
 - Domain (L2): {domain_key_idea}
 - Facet (L3): {facet_key_idea}
 - Attribute (L4): {attribute_key_idea}
-{example_block}
-Target abstraction level: FACET (L3)
+</taxonomy_structure>
 
+You are working within this dimension:
+<taxonomy_dimension>
+{dimension_name} — {dimension_description}
+</taxonomy_dimension>
+
+And you are working within this domain:
+<taxonomy_domain>
+{partition_name} — {partition_definition}
+</taxonomy_domain>
+{excluded_block}
+
+Here is guidance on what facets are and how they should be defined:
+
+<facet_definition_guidance>
+Target abstraction level: FACET (L3)
 {facet_guidance}
 
-Each facet must be:
-- **Ontologically distinct** — no two facets may share conceptual space. A facet must not be a subset of another facet, and two facets must not be two different lenses on the same phenomenon.
-- **Semantically distant** — someone coding a response should clearly know which facet applies, with no "could go either way" situations.
-- Focused on ONE specific aspect (not a compound list of multiple concerns)
-- A natural grouping of related phenomena within the domain
-- Strictly within the boundaries of the included domain described above
+Each facet must:
+- Be a descriptive, data-grounded category based on shared meaning across multiple attributes
+- Be non-evaluative (no judgment, sentiment, or valence)
+- Stay strictly within the domain boundaries
+- Be internally coherent (one clear underlying concept)
+- Be externally distinctive:
+  * Ontologically distinct (no overlap, no subset/superset, no reframing of same phenomenon)
+  * Semantically separable (no ambiguity in coding; no "could go either way")
+- Be non-redundant (adds unique conceptual value; no duplicate concepts)
+- Be grounded in the data (supported by multiple attributes or repeated patterns)
 </facet_definition_guidance>
+</taxonomy_context>
 
-<task_instructions>
-Follow these steps to complete your analysis:
+Here are the observations you need to analyze:
+
+<observations>
+{observations_block}
+</observations>
+
+# Instructions
+
+Before writing your final output, think through your analysis in the scratchpad field:
 
 **Step 1: Cluster observations**
-Mentally group similar observations together. Look for recurring patterns and themes. Note which observations share the same {facet_key_idea}.
+Group similar observations together based on shared descriptive meaning. Identify recurring patterns in what is being said about {partition_name}.
+
+Focus on the type of quality, characteristic, principle, or practice being described.
 
 **Step 2: Identify candidate facets**
-Based on your clustering, identify potential facets. For each candidate facet, write:
-- The facet name
-- {facet_question_stem} for this facet
-- Which observation numbers support it
-- Whether it is ontologically distinct from other candidates
+Based on these clusters, identify candidate facets.
 
-**Step 3: Distinguish dominant from minor facets**
-- Dominant facets = supported by multiple observations (3+) and represent recurring patterns
-- Minor facets = supported by only 1-2 observations
+For each candidate facet, assess:
+- the facet name
+- the underlying type of quality or attribute it captures
+- which observations support it
+- whether it is internally coherent
+- whether it is ontologically distinct from other candidate facets
 
-Only dominant facets should be included in your final output.
+Remember: a facet identifies the analytical lens through which descriptive qualities are grouped. A facet captures a type of meaning, not a single concrete observation.
+
+**Step 3: Verify internal coherence**
+Check whether each candidate facet captures one clear underlying concept.
+
+Reject or split candidate facets that:
+- combine multiple different kinds of phenomena
+- mix descriptive content with evaluation
+- are too broad to support clear coding
 
 **Step 4: Verify distinctness**
-Check each pair of dominant facets to ensure they are:
-- Ontologically distinct (not overlapping in conceptual space)
-- Semantically distant (a coder would clearly know which to choose)
-- Not two lenses on the same phenomenon
+Check each pair of candidate facets to ensure they are:
+- ontologically distinct (not overlapping in conceptual space; one is not a subset of another)
+- semantically separable (someone coding a response would clearly know which facet applies, with no "could go either way" situations)
+- not two different lenses on the same phenomenon
 
-If two facets fail this test, consolidate them into one.
+If two facets fail this test, consolidate them into one broader facet or redefine the boundaries more clearly.
 
-**Step 5: Provide final output**
-For each dominant facet, provide:
-- A short descriptive name (2-5 words)
-- A description of what the facet captures (1-2 sentences)
-- 3-5 representative observations from the input (exact text, not numbers)
+**Step 5: Verify domain boundaries**
+Check that each retained facet falls strictly within the included domain of {partition_name}.
+
+Exclude facets that belong more naturally to other domains, including:
+{excluded_block_light}
+
+**Step 6: Prepare final output**
+Return only the dominant facets that pass all checks above.
+
+For each facet, provide:
+- a short descriptive name in {language} (2-5 words)
+- a description in {language} of what the facet captures (1-2 sentences)
+- 3-5 representative observations from the input, using the exact observation text
+
+# Output Requirements
 
 Provide output as valid JSON following the response schema provided.
-</task_instructions>
 
-<key_reminders>
-- Return ONLY dominant facets (3+ observations)
-- Ensure facets are ontologically distinct and semantically distant
-- Each facet should capture ONE {facet_key_idea}, not multiple
-- All facets must fall within the included domain, not the excluded domains
+# Language Requirement
+
+All output (facet names, descriptions, and example observations) must be written in {language}.
+
+# Final Notes
+
+- Facets must be descriptive, not evaluative
+- Facets must be grounded in repeated patterns across observations
+- Facets must be internally coherent
+- Facets must be externally distinctive
+- Facets must remain strictly within the included domain
+- Each facet must capture one type of quality, not multiple
 - All output must be in {language}
-</key_reminders>"""
+- Use exact observation text in the examples, not observation numbers
+
+Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
 
 class DiscoveredFacet(BaseModel):
     """A facet (L3) discovered from observations within a domain."""
@@ -266,6 +315,17 @@ class DiscoveredFacet(BaseModel):
 
 class FacetDiscoveryResult(BaseModel):
     """P1 output: facets discovered in observations."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning before identifying facets: "
+            "(1) cluster observations by shared descriptive meaning, "
+            "(2) identify candidate facets and assess coherence and distinctness, "
+            "(3) verify internal coherence — one clear concept per facet, "
+            "(4) verify distinctness — ontologically distinct and semantically separable, "
+            "(5) verify domain boundaries — exclude facets belonging to other domains, "
+            "(6) prepare final output with only dominant facets that pass all checks"
+        )
+    )
     facets: List[DiscoveredFacet] = Field(
         ..., description="Facets identified in the observations"
     )
@@ -453,9 +513,9 @@ def _build_facet_codebook_block(
 def _valence_display(idea) -> str:
     """Map idea.valence to a readable tag for prompts."""
     val = str(getattr(idea, 'valence', '') or '0').strip()
-    if val in ('1', '+1', 'positive'):
+    if val in ('+', '1', '+1', 'positive'):
         return '[+]'
-    if val in ('-1', 'negative'):
+    if val in ('-', '-1', 'negative'):
         return '[-]'
     return '[0]'
 
@@ -1236,9 +1296,10 @@ def build_code_from_attributes_prompt(
         excluded_block = (
             "\nYou must NOT include codes that belong to these excluded domains:\n"
             "<excluded_domains>\n"
-            + "\n\n".join(excl_lines)
+            + "\n".join(excl_lines)
             + "\n</excluded_domains>"
         )
+    
     # Excluded domains block - "light" (names only, no definitions)
     excluded_block_light = ""
     if excluded_domains:
@@ -1264,8 +1325,6 @@ def build_code_from_attributes_prompt(
                 line += f" (e.g., {examples})"
             inventory_lines.append(line)
     inventory_block = "\n".join(inventory_lines)
-
-
 
     return f"""You are tasked with deriving a PARSIMONIOUS codebook with MUTUALLY EXCLUSIVE and COLLECTIVELY EXHAUSTIVE codes that represent conceptually and semantically distinct PHENOMENA from a taxonomy inventory of attributes. These attributes were derived from written responses to a survey question.
 
@@ -1299,12 +1358,10 @@ And you are working within this domain:
 {excluded_block}
 </taxonomy_context>
 
-Here is the taxonomy inventory of attributes organized by facet:
-
-<taxonomy_inventory>
-The inventory below is organized by Facet > Attribute
+Here is the inventory of attributes for you to analyze:
+<attribute_inventory>
 {inventory_block}
-</taxonomy_inventory>
+</attribute_inventory>
 
 # Understanding Phenomena vs Attributes
 
@@ -1331,13 +1388,35 @@ Do NOT create separate codes simply because attributes differ in specificity. Ge
 
 Example: "The train was delayed by 20 minutes" and "public transport is often late" both indicate unreliable punctuality and should be coded under the same broader phenomenon.
 
-## 4. Parsimony Rule
+## 4. Prevalence Weighting Rule (CRITICAL)
+Codes MUST be primarily driven by the **number of ideas linked to attributes**.
+
+- Attributes with HIGH idea counts MUST form the **core structure of the codebook**.
+- Attributes with LOW idea counts MUST NOT become standalone codes unless absolutely necessary.
+- LOW-prevalence attributes SHOULD be:
+  - merged into the closest HIGH-prevalence phenomenon, OR
+  - grouped into a broader combined phenomenon.
+
+If forced to choose between:
+- conceptual nuance  
+- prevalence dominance  
+
+➡️ ALWAYS prioritize prevalence dominance.
+
+## 5. Merge Bias Rule
+When in doubt:
+- MERGE rather than split
+- Especially when an attribute has relatively few ideas
+
+Attributes with low prevalence (e.g., <10–15 ideas) should almost never result in standalone codes.
+
+## 6. Parsimony Rule
 Use the smallest number of codes that still capture all distinct phenomena present in the inventory.
 
-## 5. Mutual Exclusivity Rule
+## 7. Mutual Exclusivity Rule
 Codes must represent clearly different phenomena so that responses can be coded consistently without ambiguity.
 
-## 6. Valence Sensitivity Rule
+## 8. Valence Sensitivity Rule
 Generate separate codes for positive and negative phenomena. Do NOT combine praise and criticism into a single code. If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
 
 ## 9. Hierarchy Rule
@@ -1347,20 +1426,33 @@ Derive codes from attribute content rather than copying domain or facet labels d
 
 Before writing your final output, think through your analysis in the scratchpad field:
 
-**Step 1 — Identify Underlying Phenomena**
-Review all attributes across all facets. Look for patterns where multiple attributes describe different manifestations of the same underlying phenomenon. Group attributes that share the same conceptual core.
+**Step 1 — Identify High-Prevalence Anchors**
+- Identify attributes with the highest number of ideas.
+- Treat these as the PRIMARY building blocks of the codebook.
 
-**Step 2 — Ensure Domain Relevance**  
+**Step 2 — Map Lower-Prevalence Attributes**
+- Map lower-prevalence attributes onto these high-prevalence anchors wherever possible.
+- Only create a new code if the attribute:
+  - is conceptually distinct AND
+  - cannot reasonably be merged.
+
+**Step 3 — Ensure Domain Relevance**  
 Ensure that each phenomenon group belongs to the included domain and not to any excluded domain.
 
-**Step 3 — Check for Valence Distinctions**
-Within each phenomenon group, check whether positive and negative valences are present. If so, split into separate codes.
+**Step 4 — Check for Valence Distinctions**
+Split positive and negative variants into separate codes where relevant.
 
-**Step 4 — Name Each Phenomenon**
+**Step 5 — Name Each Phenomenon**
 Assign a descriptive name (3-5 word noun phrase in {language}) to each distinct phenomenon.
 
-**Step 5 — Verify Parsimony and Coverage**
-Ensure you have the minimum number of codes needed while covering all attributes. 
+**Step 6 — Validate Parsimony and Dominance**
+- Ensure the codebook is dominated by high-prevalence phenomena
+- Ensure low-prevalence attributes are absorbed rather than overrepresented
+- Keep total number of codes minimal (target: 5–8)
+
+**Step 7 — Justify Low-Prevalence Codes (MANDATORY)**
+If any code is primarily based on attributes with low idea counts:
+- Explicitly justify why it was NOT merged into a higher-prevalence phenomenon
 
 # Output Requirements
 
@@ -1372,7 +1464,12 @@ All output (code names, definitions, typical indicators, and evaluation) must be
 
 # Final Notes
 
-Remember: You are creating a PARSIMONIOUS codebook. Resist the temptation to create one code per attribute or per facet. Look for the deeper phenomena that connect multiple attributes together. Your goal is conceptual clarity with minimal redundancy.
+Remember:
+- This is a **frequency-weighted abstraction task**, not a conceptual listing task.
+- Dominant patterns should shape the codebook.
+- Rare attributes should be absorbed unless absolutely necessary.
+
+Your goal is a **lean, high-signal codebook** that reflects the strongest patterns in the data.
 
 Begin now by applying the required process and then return only valid JSON."""
 
@@ -1399,15 +1496,21 @@ class CodeGenerationFromAttributesResult(BaseModel):
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before deriving codes: "
-            "(1) identify underlying phenomena by grouping attributes, "
-            "(2) check for domain relevance - don't include codes that belong to excluded domains, "
-            "(3) check for valence distinctions, "
-            "(4) name each phenomenon, "
-            "(5) verify parsimony and coverage"
+            "(1) identify high-prevalence attributes (largest idea counts) and treat them as anchors, "
+            "(2) group attributes into underlying phenomena with priority given to high-prevalence clusters, "
+            "    - map low-prevalence attributes onto these dominant phenomena wherever possible, "
+            "    - only create a separate code for low-prevalence attributes if they are conceptually distinct and cannot be merged, "
+            "(3) check for domain relevance - exclude any phenomena outside the allowed domain, "
+            "(4) check for valence distinctions and split positive vs negative where needed, "
+            "(5) name each phenomenon (3–5 word noun phrase), "
+            "(5) verify parsimony - ensure the codebook is dominated by high-prevalence phenomena and contains a minimal number of codes (typically 5–8), "
+            "(7) explicitly justify any code that is primarily based on low-prevalence attributes instead of merging it"
         )
     )
     codes: List[CodeFromAttributes] = Field(
-        ..., description="Formal codes derived from the attribute inventory"
+        ..., description=(
+            "Formal codes derived from the attribute inventory. "
+            "Codes should reflect dominant, high-prevalence phenomena, with low-prevalence attributes absorbed into broader codes where possible.")
     )
 
 

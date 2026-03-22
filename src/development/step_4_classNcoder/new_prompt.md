@@ -1,14 +1,7 @@
-# P4: Code Generation from Attributes — New Prompt
+P1
 
-This file contains the complete specification: function, prompt template, and response schema.
-Review all three before migrating to `prompts_exp.py`.
-
----
-
-## 1. Prompt Template
-
-```
-You are tasked with deriving a PARSIMONIOUS codebook with MUTUALLY EXCLUSIVE and COLLECTIVELY EXHAUSTIVE codes that represent conceptually and semantically distinct PHENOMENA from a taxonomy inventory of attributes. These attributes were derived from written responses to a survey question.
+You are a qualitative research analyst specializing in survey response analysis. 
+Your task is to identify the fewest recurring facets that provide full coverage of a set of observations from a survey.
 
 Here is the survey context:
 
@@ -23,7 +16,7 @@ Here is the taxonomy context you are working within:
 <taxonomy_context>
 This is the structure:
 <taxonomy_structure>
-- Dimension (L1): {dimension_name}: {noun_phrase}
+- Dimension (L1): {noun_phrase}
 - Domain (L2): {domain_key_idea}
 - Facet (L3): {facet_key_idea}
 - Attribute (L4): {attribute_key_idea}
@@ -39,72 +32,84 @@ And you are working within this domain:
 {domain_name} — {domain_definition}
 </taxonomy_domain>
 {excluded_block}
+
+Here is guidance on what facets are and how they should be defined:
+
+<facet_definition_guidance>
+Target abstraction level: FACET (L3)
+{facet_guidance}
+
+Each facet must:
+- Be a descriptive, data-grounded category based on shared meaning across multiple attributes
+- Be non-evaluative (no judgment, sentiment, or valence)
+- Stay strictly within the domain boundaries
+- Be internally coherent (one clear underlying concept)
+- Be externally distinctive:
+* Ontologically distinct (no overlap, no subset/superset, no reframing of same phenomenon)
+* Semantically separable (no ambiguity in coding; no “could go either way”)
+- Be non-redundant (adds unique conceptual value; no duplicate concepts)
+- Be grounded in the data (supported by multiple attributes or repeated patterns)
+</facet_definition_guidance>
 </taxonomy_context>
 
-Here is the taxonomy inventory of attributes organized by facet:
+Here are the observations you need to analyze:
 
-<taxonomy_inventory>
-The inventory below is organized by Facet > Attribute
-{inventory_block}
-</taxonomy_inventory>
+<observations>
+{observations_block}
+</observations>
 
-# Understanding Phenomena vs Attributes
+# Instructions
 
-**Attributes** are specific observations or qualities mentioned in responses. They represent individual data points.
+Before writing your final output, think through your analysis for the scratchpad field:
 
-**Phenomena** are underlying conceptual patterns that multiple attributes may indicate. A phenomenon is the broader experience, perception, or association that manifests through various specific attributes.
+<scratchpad_field>
+## Step 1: Cluster observations
+Group similar observations together based on shared descriptive meaning. Identify recurring patterns in what is being said about {domain_name}.
 
-Your task is to identify phenomena, NOT to create one code per attribute.
+Focus on the type of quality, characteristic, principle, or practice being described.
 
-# Code Derivation Rules
+## Step 2: Identify candidate facets
+Based on these clusters, identify candidate facets.
 
-## 1. Phenomenon Rule
-Codes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying experience, perception, or association MUST be merged into a single code.
+For each candidate facet, assess:
+- the facet name
+- the underlying type of quality or attribute it captures
+- which observations support it
+- whether it is internally coherent
+- whether it is ontologically distinct from other candidate facets
 
-## 2. Specificity Rule
-Do NOT create separate codes simply because attributes differ in specificity. General statements and specific examples should be treated as indicators of the same phenomenon.
+Remember: a facet identifies the analytical lens through which descriptive qualities are grouped. A facet captures a type of meaning, not a single concrete observation.
 
-Example: "The train was delayed by 20 minutes" and "public transport is often late" both indicate unreliable punctuality and should be coded under the same broader phenomenon.
+## Step 3: Verify internal coherence
+Check whether each candidate facet captures one clear underlying concept.
 
-## 3. Example-Level Rule
-Do NOT create codes that represent specific items or examples. These should be treated as indicators of broader phenomena.
+Reject or split candidate facets that:
+- combine multiple different kinds of phenomena
+- mix descriptive content with evaluation
+- are too broad to support clear coding
 
-## 4. Attribute Mapping Rule
-Do NOT create a separate code for each attribute. Attributes are observations that may belong to the same phenomenon.
+## Step 4: Verify distinctness
+Check each pair of candidate facets to ensure they are:
+- ontologically distinct (not overlapping in conceptual space; one is not a subset of another)
+- semantically separable (someone coding a response would clearly know which facet applies, with no “could go either way” situations)
+- not two different lenses on the same phenomenon
 
-## 5. Minimum Coverage Rule
-Each code should ideally cover multiple attributes. Only create a single-attribute code if the phenomenon is clearly distinct and cannot be meaningfully merged with others.
+If two facets fail this test, consolidate them into one broader facet or redefine the boundaries more clearly.
 
-## 6. Parsimony Rule
-Prefer broader phenomenon-based codes over narrow attribute-based codes. Use the smallest number of codes that still capture all distinct phenomena present in the inventory.
+## Step 5: Verify domain boundaries
+Check that each retained facet falls strictly within the included domain of {domain_name}.
 
-## 7. Expected Code Range
-The final codebook should normally contain 3–5 codes unless the attributes clearly describe more distinct phenomena.
+Exclude facets that belong more naturally to other domains, including:
+{excluded_block_light}
 
-## 8. Mutual Exclusivity Rule
-Codes must represent clearly different phenomena so that responses can be coded consistently without ambiguity.
+## Step 6: Prepare final output
+Return only the dominant facets that pass all checks above.
 
-## 9. Valence Sensitivity Rule
-Generate separate codes for positive and negative phenomena. Do NOT combine praise and criticism into a single code. If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
-
-## 10. Hierarchy Rule
-Only use attribute content to derive codes. Do NOT create codes directly from domain or facet labels. Facets are organizational structures; your codes should emerge from the actual attribute patterns.
-
-# Required Process
-
-Before writing your final output, think through your analysis in the scratchpad field:
-
-**Step 1 — Identify Underlying Phenomena**
-Review all attributes across all facets. Look for patterns where multiple attributes describe different manifestations of the same underlying phenomenon. Group attributes that share the same conceptual core.
-
-**Step 2 — Check for Valence Distinctions**
-Within each phenomenon group, check whether positive and negative valences are present. If so, split into separate codes.
-
-**Step 3 — Name Each Phenomenon**
-Assign a descriptive name (3-5 word noun phrase in {language}) to each distinct phenomenon.
-
-**Step 4 — Verify Parsimony and Coverage**
-Ensure you have the minimum number of codes needed while covering all attributes. Aim for 3-5 codes unless the data clearly requires more.
+For each facet, provide:
+- a short descriptive name in {language} (2-5 words)
+- a description in {language} of what the facet captures (1-2 sentences)
+- 3-5 representative observations from the input, using the exact observation text
+<scratchpad_field>
 
 # Output Requirements
 
@@ -112,146 +117,19 @@ Provide output as valid JSON following the response schema provided.
 
 # Language Requirement
 
-All output (code names, definitions, typical indicators, and evaluation) must be written in {language}.
+All output (facet names, descriptions, and example observations) must be written in {language}.
 
 # Final Notes
 
-Remember: You are creating a PARSIMONIOUS codebook. Resist the temptation to create one code per attribute or per facet. Look for the deeper phenomena that connect multiple attributes together. Your goal is conceptual clarity with minimal redundancy.
+- Facets must be descriptive, not evaluative
+- Facets must be grounded in repeated patterns across observations
+- Facets must be internally coherent
+- Facets must be externally distinctive
+- Facets must remain strictly within the included domain
+- Each facet must capture one type of quality, not multiple
+- All output must be {language}
+- Use exact observation text in the examples, not observation numbers
 
-Begin your analysis now.
-```
-
----
-
-## 2. Function
-
-```python
-def build_code_from_attributes_prompt(
-    *,
-    survey_question: str,
-    language: str,
-    dataset_context_section: str,
-    dimension_def: Optional['DimensionDefinition'],
-    dimension_name: str,
-    dimension_description: str,
-    domain_name: str,
-    domain_definition: str,
-    domain_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
-    attribute_assignments: Optional[Dict[str, str]] = None,
-    excluded_domains: Optional[List[Tuple[str, str]]] = None,
-) -> str:
-    """Generate codebook codes from a structured attribute inventory.
-
-    Args:
-        dimension_def: DimensionDefinition for taxonomy structure lines (or None for fallback)
-        domain_name: Name of the domain being processed
-        domain_definition: Inclusion definition of the domain
-        domain_attributes: {domain_name: {facet_name: [DiscoveredAttribute, ...]}}
-        attribute_assignments: idea_id -> attribute_name, for frequency display
-        excluded_domains: list of (name, definition) for other domains
-    """
-    # Dimension-specific taxonomy structure
-    if dimension_def:
-        noun_phrase = dimension_def.noun_phrase_descriptor
-        domain_key_idea = _extract_key_idea(dimension_def.prompt_rules.domain_instruction)
-        facet_key_idea = _extract_key_idea(dimension_def.prompt_rules.facet_instruction)
-        attribute_key_idea = _extract_key_idea(dimension_def.prompt_rules.attribute_instruction)
-    else:
-        noun_phrase = dimension_name
-        domain_key_idea = "the subject the statement refers to"
-        facet_key_idea = "the analytical lens applied to the subject"
-        attribute_key_idea = "the specific observable property being described"
-
-    # Excluded domains block
-    excluded_block = ""
-    if excluded_domains:
-        excl_lines = [
-            f"- {excl_name} — {excl_def}"
-            for excl_name, excl_def in excluded_domains
-        ]
-        excluded_block = (
-            "\nYou must NOT include categories that belong to these excluded domains:\n"
-            "<excluded_domains>\n"
-            + "\n\n".join(excl_lines)
-            + "\n</excluded_domains>"
-        )
-
-    # Compute attribute frequencies
-    attr_counts: Dict[str, int] = {}
-    if attribute_assignments:
-        for attr_name in attribute_assignments.values():
-            attr_counts[attr_name] = attr_counts.get(attr_name, 0) + 1
-
-    # Build inventory: Facet > Attribute (single domain)
-    facet_attrs = next(iter(domain_attributes.values()), {})
-    inventory_lines = []
-    for facet_name, attributes in sorted(facet_attrs.items()):
-        inventory_lines.append(f"\n{facet_name}")
-        for attr in attributes:
-            examples = "; ".join(attr.example_observations[:2])
-            count = attr_counts.get(attr.attribute_name, 0)
-            freq_tag = f" [{count} ideas]" if attr_counts else ""
-            line = f"- {attr.attribute_name}{freq_tag}: {attr.attribute_description}"
-            if examples:
-                line += f" (e.g., {examples})"
-            inventory_lines.append(line)
-    inventory_block = "\n".join(inventory_lines)
-
-    return f"""<PROMPT TEMPLATE FROM SECTION 1>"""
-```
-
----
-
-## 3. Response Schema (Pydantic models)
-
-```python
-class CodeFromAttributes(BaseModel):
-    """A formal qualitative code derived from attributes."""
-    code_name: str = Field(
-        ..., description="Short code name (3-5 word noun phrase)"
-    )
-    definition: str = Field(
-        ..., description="Clear definition of what this code covers (1-2 sentences)"
-    )
-    typical_indicators: List[str] = Field(
-        ..., description="Words or phrases that signal this code"
-    )
-    source_attributes: List[str] = Field(
-        default_factory=list,
-        description="Attribute names this code is derived from (exactly as they appear in the inventory)"
-    )
+Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON.
 
 
-class CodeGenerationFromAttributesResult(BaseModel):
-    """P4 output: codes derived from attributes."""
-    scratchpad: str = Field(
-        ..., description=(
-            "Step-by-step reasoning before deriving codes: "
-            "(1) identify underlying phenomena by grouping attributes, "
-            "(2) check for valence distinctions, "
-            "(3) name each phenomenon, "
-            "(4) verify parsimony and coverage"
-        )
-    )
-    evaluation: str = Field(
-        ..., description="Brief evaluation of how codes were derived from attributes — what was merged and why"
-    )
-    codes: List[CodeFromAttributes] = Field(
-        ..., description="Formal codes derived from the attribute inventory"
-    )
-```
-
----
-
-## 4. Caller Changes Required
-
-**`_run_code_generation_from_attributes()`** — add parameters:
-- `domain_name: str`
-- `domain_definition: str`
-- `excluded_domains: Optional[List[Tuple[str, str]]]`
-
-**`_process_codebook_async()`** — at the call site, provide:
-- `domain_name=domain_name`
-- `domain_definition=partition_contexts[domain_name].partition_definition`
-- `excluded_domains=[(n, partition_contexts[n].partition_definition) for n in partition_contexts if n != domain_name]`
-- `dimension_def=prompt_context.dimension_def`
