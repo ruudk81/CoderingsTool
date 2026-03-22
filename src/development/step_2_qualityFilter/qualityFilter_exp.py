@@ -5,8 +5,7 @@ import asyncio
 import math
 import time
 import logging
-import itertools
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 from collections import deque
 from dataclasses import dataclass
 import numpy as np
@@ -32,6 +31,10 @@ try:
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
         PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
         THROUGHPUT_ADJUSTMENT_THRESHOLD, THROUGHPUT_ADJUSTMENT_MIN_SAMPLES, ADJUSTMENT_INTERVAL,
+        # Ramp-up and warm-up configs (from config_ideaExtractor)
+        RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
+        CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
+        WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
     )
     from .prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 except ImportError:
@@ -46,10 +49,14 @@ except ImportError:
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
         PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
         THROUGHPUT_ADJUSTMENT_THRESHOLD, THROUGHPUT_ADJUSTMENT_MIN_SAMPLES, ADJUSTMENT_INTERVAL,
+        # Ramp-up and warm-up configs (from config_ideaExtractor)
+        RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
+        CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
+        WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
     )
     from prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 
-from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
+from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
@@ -135,14 +142,18 @@ class TokenBucket:
             logger.debug(f"[TOKEN BUCKET] No reconciliation needed for +{delta_tokens} tokens (underestimated)")
 
 
+TIMEOUT_FLOOR_SECONDS = 20.0  # qualityFilter-specific: 1 prompt per call, lower than ideaExtractor's 60s
+
+
 class LatencyTracker:
-    """Simple EMA tracker for latencies"""
+    """EMA tracker for latencies with generous timeout strategy"""
     def __init__(self, processing_config: Optional[ProcessingConfig] = None):
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.ema = None
         self.alpha = self.processing_config.latency_tracker_ema_alpha
         self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
-    
+        self.retry_mode = False  # When True, use very generous timeout for retry pass
+
     def add(self, value):
         """Add a latency measurement"""
         self.values.append(value)
@@ -150,22 +161,19 @@ class LatencyTracker:
             self.ema = value
         else:
             self.ema = self.alpha * value + (1 - self.alpha) * self.ema
-    
-    def get_timeout(self, est_tokens):
-        """Calculate timeout based on EMA and token count with configurable bounds"""
-        config = self.processing_config
-        if not self.values:
-            return max(config.adaptive_timeout_min_seconds, DEFAULT_TIMEOUT_SECONDS)
 
-        # Use P95 latency as base
-        p95 = np.percentile(list(self.values), 95)
-        # Simple linear scaling with token count
-        # Assume ~100ms per 1000 tokens as baseline
-        token_factor = est_tokens / 1000
-        timeout = p95 + (token_factor * 0.1)
-        # Apply margin and configurable bounds
-        return max(config.adaptive_timeout_min_seconds, min(config.adaptive_timeout_max_seconds, timeout * config.adaptive_timeout_margin))
-    
+    def get_timeout(self, est_tokens):
+        """Calculate timeout: generous safety net, not aggressive cutoff"""
+        config = self.processing_config
+        if self.retry_mode:
+            return 120.0  # Very generous for retry pass
+        if not self.values:
+            return max(TIMEOUT_FLOOR_SECONDS, DEFAULT_TIMEOUT_SECONDS)  # Cold start: 30s
+
+        # P95 × margin as safety net, bounded by floor and ceiling
+        p95 = float(np.percentile(list(self.values), 95))
+        return max(TIMEOUT_FLOOR_SECONDS, min(config.adaptive_timeout_max_seconds, p95 * config.adaptive_timeout_margin))
+
     def get_avg_latency(self):
         """Get average latency for concurrency calculations"""
         if not self.values:
@@ -173,11 +181,328 @@ class LatencyTracker:
         return self.ema if self.ema is not None else DEFAULT_LATENCY_SECONDS
 
 
-# === BOOTSTRAP MEASUREMENT SYSTEM ========================================================================================================
+# === CONCURRENCY GATE (replaces asyncio.Semaphore) ========================================================================================================
+
+class ConcurrencyGate:
+    """Concurrency limiter that tracks exact active count and supports
+    both increase and decrease at runtime.
+
+    When limit decreases: in-flight requests drain naturally (no cancellation),
+    but new requests block until active < limit.
+    When limit increases: blocked requests wake immediately.
+
+    Uses asyncio futures for zero-overhead waiting (no polling/busy-wait).
+    asyncio is single-threaded (cooperative), so no locks needed.
+    """
+
+    def __init__(self, limit: int):
+        self._limit = limit
+        self._active = 0
+        self._waiters: deque = deque()  # asyncio.Future objects
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+    def set_limit(self, new_limit: int):
+        """Change limit (up or down). Wakes blocked waiters if room opened."""
+        self._limit = max(1, new_limit)
+        self._wake_waiters()
+
+    def _wake_waiters(self):
+        """Wake waiting coroutines that can now proceed."""
+        while self._waiters and self._active < self._limit:
+            fut = self._waiters.popleft()
+            if not fut.done():
+                self._active += 1
+                fut.set_result(True)
+
+    async def acquire(self):
+        """Acquire a concurrency slot. Blocks if at limit."""
+        if self._active < self._limit:
+            self._active += 1
+            return
+        # At limit — create a future and wait
+        fut = asyncio.get_event_loop().create_future()
+        self._waiters.append(fut)
+        try:
+            await fut
+        except asyncio.CancelledError:
+            if fut.done() and not fut.cancelled():
+                # We were granted a slot but got cancelled — release it
+                self._active -= 1
+                self._wake_waiters()
+            else:
+                try:
+                    self._waiters.remove(fut)
+                except ValueError:
+                    pass
+            raise
+
+    def release(self):
+        """Release a concurrency slot and wake next waiter."""
+        self._active -= 1
+        self._wake_waiters()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *args):
+        self.release()
+
+
+# === CONCURRENCY RAMP (LINEAR WITH CONGESTION DETECTION) ========================================================================================================
+
+class ConcurrencyRamp:
+    """Completion-based concurrency ramp with congestion detection.
+
+    Concurrency scales linearly with completion progress:
+      0% complete → start (50% of Little's Law)
+      100% complete → target (90% of Little's Law)
+
+    Checks for two stop signals:
+      1. Throughput drop — completion rate declining vs previous window
+      2. Queue backing up — timeout rate >5% in a window
+
+    After warm-up calibration, Little's Law is recalculated and the ramp
+    adjusts start/target but preserves congestion detection state.
+    """
+    def __init__(self, config: 'RampUpConfig', little_law_cap: int, num_tasks: int):
+        self.config = config
+        self._num_tasks = num_tasks
+        self._done = False
+        self._stopped_concurrency = None
+        self._stop_reason = None
+
+        # Compute start and target from Little's Law
+        self._little_law_cap = little_law_cap
+        start = max(config.min_initial, int(little_law_cap * config.start_fraction))
+        target = min(int(little_law_cap * config.target_fraction), num_tasks)
+        self._start = start
+        self._target = max(target, start)  # target >= start
+        self._current = start
+
+        # Throughput tracking (rolling window)
+        self._prev_throughput = None
+        self._declining_steps = 0
+
+        # Queue depth tracking
+        self._prev_completions_total = 0
+        self._prev_timeouts_total = 0
+
+    @property
+    def cap(self) -> int:
+        return self._target
+
+    def current_target(self) -> int:
+        return self._current
+
+    def is_done(self) -> bool:
+        return self._done
+
+    def stopped_concurrency(self) -> Optional[int]:
+        return self._stopped_concurrency
+
+    def recalibrate(self, new_little_law_cap: int):
+        """Called after warm-up calibration with updated Little's Law.
+
+        Updates start/target from new cap. Preserves congestion detection
+        state (_prev_throughput, _declining_steps) so that ongoing throughput
+        decline is not forgotten across recalibration.
+        """
+        self._little_law_cap = new_little_law_cap
+        new_start = max(self.config.min_initial, int(new_little_law_cap * self.config.start_fraction))
+        new_target = min(int(new_little_law_cap * self.config.target_fraction), self._num_tasks)
+        self._start = new_start
+        self._target = max(new_target, new_start)
+        self._current = new_start
+        self._done = False
+        self._stopped_concurrency = None
+        self._stop_reason = None
+        # NOTE: _prev_throughput and _declining_steps intentionally preserved
+        print(f"RAMP RECALIBRATED: {new_start} → {self._target} "
+              f"(Little's Law: {new_little_law_cap})")
+
+    def record_measurement(self, throughput: float, tpm_pct: float, rpm_pct: float,
+                           completions_total: int, timeouts_total: int, duration: float):
+        """Called every measurement window with current metrics."""
+        if self._done:
+            return
+
+        # --- Stop signal 1: throughput dropping ---
+        if self._prev_throughput is not None and self._prev_throughput > 0:
+            growth = (throughput - self._prev_throughput) / self._prev_throughput
+            if growth < -0.10:  # throughput dropped >10%
+                self._declining_steps += 1
+            else:
+                self._declining_steps = max(0, self._declining_steps - 1)
+
+            if self._declining_steps >= 2:  # 2 consecutive drops
+                self._stop('throughput_drop', self._current)
+                return
+
+        # --- Stop signal 2: queue congestion (timeouts appearing) ---
+        new_timeouts = timeouts_total - self._prev_timeouts_total
+        new_completions = completions_total - self._prev_completions_total
+        if new_timeouts > 0 and new_completions > 0:
+            timeout_rate = new_timeouts / (new_completions + new_timeouts)
+            if timeout_rate > 0.05:  # >5% of this window timed out
+                self._stop('queue_congestion', self._current)
+                return
+
+        self._prev_throughput = throughput
+        self._prev_completions_total = completions_total
+        self._prev_timeouts_total = timeouts_total
+
+        # --- Completion-based ramp: advance proportional to progress ---
+        ramp_fraction = min(completions_total / self._num_tasks, 1.0)
+        new_conc = int(self._start + (self._target - self._start) * ramp_fraction)
+        new_conc = max(new_conc, self._current)  # never decrease during ramp
+
+        if new_conc >= self._target:
+            self._current = self._target
+            self._done = True
+            self._stopped_concurrency = self._target
+            self._stop_reason = 'target_reached'
+            print(f"RAMP COMPLETE: concurrency {self._target} "
+                  f"({self.config.target_fraction*100:.0f}% of Little's Law {self._little_law_cap})")
+        else:
+            self._current = new_conc
+
+    def _stop(self, reason: str, concurrency: int):
+        """Stop ramping due to congestion signal."""
+        self._done = True
+        self._stopped_concurrency = concurrency
+        self._stop_reason = reason
+        label = 'THROUGHPUT DROP' if reason == 'throughput_drop' else 'QUEUE CONGESTION'
+        print(f"RAMP STOPPED ({label}): locking concurrency at {concurrency} "
+              f"(was ramping toward {self._target})")
+
+
+# === CIRCUIT BREAKER ========================================================================================================
+
+class ConcurrencyCircuitBreaker:
+    """Monitors timeout rate in sliding window. Only adjusts concurrency on sustained pressure.
+
+    State machine:
+      CLOSED     — Normal operation. Monitoring timeout rate.
+      OPEN       — Tripped. Concurrency reduced. In cooldown (no further changes).
+      RECOVERING — Cooldown expired, rate OK. Gradually ramping back to baseline.
+
+    Individual timeouts are invisible — tenacity retries them.
+    Only the RATE of timeouts in the window triggers action.
+    """
+
+    def __init__(self, config, gate: ConcurrencyGate, baseline: int):
+        self.config = config
+        self.gate = gate
+        self.baseline = baseline
+        self._events: deque = deque()  # (timestamp, 'ok'|'timeout')
+        self._state = 'CLOSED'
+        self._last_trip_time: Optional[float] = None
+        self._last_recovery_check: Optional[float] = None
+        self._trip_count: int = 0
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def trip_count(self) -> int:
+        return self._trip_count
+
+    def record_completion(self):
+        self._events.append((time.monotonic(), 'ok'))
+        self._prune_window()
+
+    def record_timeout(self):
+        self._events.append((time.monotonic(), 'timeout'))
+        self._prune_window()
+
+    def _prune_window(self):
+        cutoff = time.monotonic() - self.config.window_seconds
+        while self._events and self._events[0][0] < cutoff:
+            self._events.popleft()
+
+    def _get_timeout_rate(self) -> Tuple[float, int]:
+        """Returns (timeout_rate, total_events) in current window."""
+        self._prune_window()
+        total = len(self._events)
+        if total == 0:
+            return 0.0, 0
+        timeouts = sum(1 for _, t in self._events if t == 'timeout')
+        return timeouts / total, total
+
+    def check_and_adjust(self) -> Optional[str]:
+        """Called every tick. Returns 'tripped', 'recovering', 'recovered', or None."""
+        now = time.monotonic()
+        rate, total = self._get_timeout_rate()
+
+        if self._state == 'CLOSED':
+            if total >= self.config.min_events_to_trip and rate > self.config.trip_threshold:
+                return self._trip(now, rate, total)
+            return None
+
+        elif self._state == 'OPEN':
+            elapsed = now - self._last_trip_time if self._last_trip_time else 0
+            if elapsed < self.config.cooldown_seconds:
+                return None  # Still in cooldown
+            # Cooldown expired — check if still bad
+            if total >= self.config.min_events_to_trip and rate > self.config.trip_threshold:
+                return self._trip(now, rate, total)
+            # Rate normalized — enter recovery
+            self._state = 'RECOVERING'
+            self._last_recovery_check = now
+            return 'recovering'
+
+        elif self._state == 'RECOVERING':
+            if now - (self._last_recovery_check or now) < self.config.recovery_interval_seconds:
+                return None
+            self._last_recovery_check = now
+            # Check if rate spiked again
+            if total >= self.config.min_events_to_trip and rate > self.config.trip_threshold:
+                return self._trip(now, rate, total)
+            # Rate is good — step up toward baseline
+            current = self.gate.limit
+            target = min(self.baseline, int(current * (1.0 + self.config.recovery_step_pct)))
+            target = max(target, current + 1)  # At least +1
+            if target >= self.baseline:
+                self.gate.set_limit(self.baseline)
+                self._state = 'CLOSED'
+                self._trip_count = 0
+                print(f"Circuit breaker recovered: concurrency restored to {self.baseline}")
+                return 'recovered'
+            self.gate.set_limit(target)
+            print(f"Circuit breaker recovering: {current} -> {target} (target: {self.baseline})")
+            return 'recovering'
+
+        return None
+
+    def _trip(self, now: float, rate: float, total: int) -> str:
+        pre_trip = self.gate.limit
+        new_limit = max(self.config.min_concurrency,
+                        int(self.gate.limit * self.config.reduction_factor))
+        self.gate.set_limit(new_limit)
+        self._state = 'OPEN'
+        self._last_trip_time = now
+        self._trip_count += 1
+        print(f"CIRCUIT BREAKER TRIPPED: timeout rate {rate:.1%} "
+              f"({total} events in {self.config.window_seconds}s) | "
+              f"concurrency {pre_trip} -> {new_limit} "
+              f"(cooldown {self.config.cooldown_seconds}s)")
+        return 'tripped'
+
+
+# === CONCURRENCY INITIALIZATION ========================================================================================================
 
 @dataclass
 class ApiLimits:
-    """API limits structure for bootstrap calculations"""
+    """API limits structure for Little's Law calculations"""
     tokens_per_minute: int
     requests_per_minute: int
 
@@ -200,19 +525,6 @@ def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_t
 
     return int(max(min(target, cap), min_conc))
 
-
-async def bootstrap_measure_async(call_fn, n_probes: int = 3):
-    """Run n_probes serial calls and return (avg_latency_s, avg_tokens). call_fn() -> usage dict."""
-    latencies, tokens = [], []
-    for _ in range(n_probes):
-        t0 = time.perf_counter()
-        usage = await call_fn()  # Let tenacity handle timeouts and retries
-        t1 = time.perf_counter()
-        latencies.append(max(t1 - t0, 0.001))
-        pt = int(usage.get("prompt_tokens", 0))
-        ct = int(usage.get("completion_tokens", 0))
-        tokens.append(max(pt + ct, 1))
-    return sum(latencies)/len(latencies), sum(tokens)/len(tokens)
 
 
 # === MAIN GRADER CLASS ========================================================================================================
@@ -291,12 +603,22 @@ class Grader:
         self.failure_log = []  # List of {respondent_id, reason, error_type, response_preview}
 
         # Throughput adjustment state
-        self.current_arrival_rate = None      # Set after bootstrap, updated on adjustment
-        self.bootstrap_avg_tokens = None      # Preserved original bootstrap value for diagnostics
+        self.current_arrival_rate = None      # Set during initialization, updated on adjustment
+        self.bootstrap_avg_tokens = None      # Preserved original estimate for diagnostics
         self.adjustment_stats = {
             'adjustments_made': 0,
             'last_avg_tokens': None,
         }
+
+        # Warm-up ramp configuration (Option B)
+        self.ramp_up_config = DEFAULT_RAMP_UP_CONFIG
+        self.circuit_breaker_config = DEFAULT_CIRCUIT_BREAKER_CONFIG
+        self.warm_up_config = DEFAULT_WARM_UP_CONFIG
+        self.circuit_breaker = None
+        self._concurrency_ramp = None
+        self._ramp_complete = True  # No ramp until initialized
+        self._warm_up_calibrated = False
+        self._warm_up_target_samples = 15
 
     def _calculate_avg_tokens(self) -> int:
         """Calculate average token count for requests"""
@@ -461,6 +783,176 @@ class Grader:
 
         return True
 
+# --- OPTION B: WARM-UP + CONSERVATIVE RAMP METHODS ---
+
+    def _initialize_rate_limiters(self, limits: RateLimits, num_tasks: int) -> int:
+        """Initialize rate limiting with gradual ramp-up (Option B).
+
+        Layer 1: RPM — AsyncLimiter
+        Layer 2: TPM — TokenBucket
+        Layer 3: Concurrency — ConcurrencyGate via Little's Law, starting at 50%
+        Layer 4: Circuit breaker — monitors timeout rate
+
+        Returns little_law_cap (what we're ramping toward).
+        """
+        headroom = self.processing_config.rate_limit_headroom
+
+        # Layer 1: RPM
+        arrival_rate = min(
+            limits.requests_per_minute * headroom / 60,
+            limits.tokens_per_minute * headroom / self.avg_tokens / 60
+        )
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0 / arrival_rate)
+        self.current_arrival_rate = arrival_rate
+
+        # Layer 2: TPM
+        self.tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
+
+        # Layer 3: Concurrency — start at 50% of theoretical Little's Law
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        little_law = compute_optimal_concurrency(
+            api_limits, DEFAULT_LATENCY_SECONDS, self.avg_tokens,
+            processing_config=self.processing_config,
+        )
+        little_law_cap = min(little_law, num_tasks)
+
+        initial = max(
+            self.ramp_up_config.min_initial,
+            int(little_law_cap * self.ramp_up_config.start_fraction)
+        )
+        initial = min(initial, num_tasks)
+        self.semaphore = ConcurrencyGate(initial)
+        self.optimal_concurrency = initial
+
+        # Completion-based ramp
+        self._concurrency_ramp = ConcurrencyRamp(
+            self.ramp_up_config, little_law_cap, num_tasks
+        )
+        self._ramp_complete = False
+
+        # Layer 4: Circuit breaker
+        self.circuit_breaker = ConcurrencyCircuitBreaker(
+            config=self.circuit_breaker_config,
+            gate=self.semaphore,
+            baseline=initial
+        )
+
+        return little_law_cap
+
+    def _calculate_warm_up_sample_size(self, num_tasks: int) -> int:
+        """Adaptive sample size: more samples for larger datasets, capped."""
+        if num_tasks <= 50:
+            return self.warm_up_config.sample_min
+        elif num_tasks >= 500:
+            return self.warm_up_config.sample_max
+        else:
+            fraction = (num_tasks - 50) / (500 - 50)
+            return int(self.warm_up_config.sample_min + fraction * (self.warm_up_config.sample_max - self.warm_up_config.sample_min))
+
+    def _calibrate_from_warm_up(self, num_tasks: int) -> None:
+        """One-shot calibration: update token estimate AND recompute Little's Law concurrency.
+
+        Fires once after enough warm-up completions. Uses measured latency and
+        token counts to recalculate optimal concurrency and arrival rate.
+        """
+        measured_avg_tokens = int(np.mean(list(self.actual_total_tokens)))
+        # P10 latency: avoids queuing-inflated values that would inflate Little's Law
+        measured_latency = float(np.percentile(list(self.latency_tracker.values), 10))
+
+        old_avg = self.avg_tokens
+        self.avg_tokens = measured_avg_tokens
+        self.bootstrap_avg_tokens = measured_avg_tokens
+
+        # Recalculate Little's Law with measured data
+        api_limits = ApiLimits(
+            self.rate_limits.tokens_per_minute,
+            self.rate_limits.requests_per_minute
+        )
+        new_little_law = compute_optimal_concurrency(
+            api_limits, measured_latency, measured_avg_tokens,
+            processing_config=self.processing_config,
+        )
+        new_little_law_cap = min(new_little_law, num_tasks)
+
+        # Recalibrate ramp: reset to 50% of new Little's Law, ramp toward 90%
+        if self._concurrency_ramp and not self._ramp_complete:
+            self._concurrency_ramp.recalibrate(new_little_law_cap)
+            new_start = self._concurrency_ramp.current_target()
+            self.semaphore.set_limit(new_start)
+            self.optimal_concurrency = new_start
+            if self.circuit_breaker:
+                self.circuit_breaker.baseline = new_start
+
+        # Recalculate arrival rate (tokens changed, so TPM rail changes)
+        headroom = self.processing_config.rate_limit_headroom
+        new_arrival_rate = min(
+            self.rate_limits.requests_per_minute * headroom / 60,
+            self.rate_limits.tokens_per_minute * headroom / measured_avg_tokens / 60
+        )
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0 / new_arrival_rate)
+        self.current_arrival_rate = new_arrival_rate
+
+        conc_target = self._concurrency_ramp.cap if self._concurrency_ramp else self.optimal_concurrency
+        print(f"\n{'='*60}")
+        print(f"WARM-UP CALIBRATION (from {len(self.actual_total_tokens)} samples)")
+        print(f"   Latency: {measured_latency:.1f}s (P10 measured)")
+        print(f"   avg_tokens: {old_avg} (tiktoken) -> {measured_avg_tokens} (measured)")
+        print(f"   Little's Law: {new_little_law_cap}")
+        print(f"   Concurrency: reset to {self.optimal_concurrency} (50%), ramping -> {conc_target} (90%)")
+        print(f"   Arrival rate: {new_arrival_rate:.2f}/s")
+        print(f"{'='*60}")
+
+        self._warm_up_calibrated = True
+
+    async def _check_ramp_up(self):
+        """Completion-based ramp with congestion detection.
+
+        Called every 0.1s. Every measurement_window (0.5s), feeds throughput and
+        timeout count to ConcurrencyRamp. Concurrency advances with completion progress.
+        """
+        if self._ramp_complete:
+            return
+
+        now = time.monotonic()
+        if not hasattr(self, '_ramp_last_check_time'):
+            self._ramp_last_check_time = now
+            self._ramp_last_completions = self.stats['tasks_successful']
+            return
+
+        elapsed = now - self._ramp_last_check_time
+        if elapsed < self.ramp_up_config.measurement_window_seconds:
+            return
+
+        completions_this_window = self.stats['tasks_successful'] - self._ramp_last_completions
+        if completions_this_window < self.ramp_up_config.min_completions_per_step:
+            return  # extend window — not enough data yet
+
+        throughput = completions_this_window / elapsed
+
+        # Feed to ramp (no TPM/RPM % tracking for qualityFilter)
+        self._concurrency_ramp.record_measurement(
+            throughput, 0.0, 0.0,
+            completions_total=self.stats['tasks_successful'],
+            timeouts_total=self.stats['timeouts'],
+            duration=elapsed,
+        )
+
+        # Reset window
+        self._ramp_last_check_time = now
+        self._ramp_last_completions = self.stats['tasks_successful']
+
+        if self._concurrency_ramp.is_done():
+            final = self._concurrency_ramp.stopped_concurrency()
+            self.semaphore.set_limit(final)
+            self.optimal_concurrency = final
+            self._ramp_complete = True
+            if self.circuit_breaker:
+                self.circuit_breaker.baseline = final
+        else:
+            next_conc = self._concurrency_ramp.current_target()
+            self.semaphore.set_limit(next_conc)
+            self.optimal_concurrency = next_conc
+
     @retry(
         retry=retry_if_exception_type((
             RateLimitError,
@@ -508,11 +1000,10 @@ class Grader:
                     }
                 )
            
-            # Calculate dynamic timeout BEFORE entering rate-limited section
-            timeout = self.latency_tracker.get_timeout(est_tokens)
-
             # Semaphore FIRST to prevent convoy effect, then token bucket, then rate limiter
             async with self.semaphore:
+                # Compute timeout AFTER semaphore: uses current latency data, not stale cold-start
+                timeout = self.latency_tracker.get_timeout(est_tokens)
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
                 async with self.rate_limiter:
                     
@@ -650,35 +1141,6 @@ class Grader:
 
         return "\n".join(lines)
 
-    async def probe_call_no_structured(self, task_dict):
-        """Probe call with minimal response model for bootstrap measurement"""
-        prompt = self._build_individual_prompt(
-            task_dict.get('var_lab', self.question),
-            task_dict['task_id'],
-            task_dict['response_text']
-        )
-
-        # Use minimal ProbeResponse model for Azure compatibility (instructor requires response_model)
-        resp = await llm_create_async(
-            client=self.client,
-            model=self.model,
-            prompt=prompt,
-            response_model=ProbeResponse,
-            temperature=self.config.temperature,
-            track_usage=False,  # Manual tracking for probes
-        )
-
-        # Extract usage from instructor's _raw_response
-        u = getattr(resp, "_raw_response", None)
-        if u:
-            u = getattr(u, "usage", None)
-        if not u:
-            u = getattr(resp, "usage", None)
-        # Handle both Responses API (input_tokens) and Chat API (prompt_tokens)
-        input_tokens = getattr(u, "input_tokens", 0) or getattr(u, "prompt_tokens", 0)
-        output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
-        return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
-
     async def worker(self, queue: asyncio.Queue, results: List) -> None:
         """Worker coroutine that processes tasks from queue"""
         while True:
@@ -691,7 +1153,16 @@ class Grader:
                 try:
                     result = await self.process_task(task)
                     results[task['result_index']] = result
+                    if self.circuit_breaker:
+                        self.circuit_breaker.record_completion()
                 except Exception as e:
+                    # Record timeout for circuit breaker
+                    if isinstance(e, (asyncio.TimeoutError, APITimeoutError)):
+                        if self.circuit_breaker:
+                            self.circuit_breaker.record_timeout()
+                    elif self.circuit_breaker:
+                        self.circuit_breaker.record_completion()  # Non-timeout failures are not congestion
+
                     # Extract concise error info for rate limit errors
                     error_str = str(e)
                     error_type = type(e).__name__
@@ -754,19 +1225,18 @@ class Grader:
         return extract_rate_limits_from_response(response)
 
     async def process_all_tasks_async(self, tasks: List[Dict]) -> List[Optional[models.QualityFilteredModel]]:
-        """Process all tasks using queue + workers pattern with bootstrap measurement."""
+        """Process all tasks using Option B: warm-up with conservative ramp."""
         if not tasks:
             return []
 
         self.verbose_reporter.step_start("Quality Assessment")
 
-        # Fetch rate limits dynamically from API response headers
+        # Phase 1: Fetch rate limits from API
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line("Fetching rate limits from API...")
 
         limits = await self._fetch_rate_limits_from_api()
 
-        # Fallback if headers not available
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line(f"Warning: Using fallback rate limits (TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
@@ -779,185 +1249,114 @@ class Grader:
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line(f"Fetched from API: TPM={limits.tokens_per_minute:,}, RPM={limits.requests_per_minute:,}")
 
-        # Store rate limits on self for use in diagnostics/reporting
         self.rate_limits = limits
 
-        # Bootstrap measurement with probe calls
-        sample_tasks = tasks[:min(3, len(tasks))]
-        if len(sample_tasks) < 3:
-            sample_tasks = sample_tasks * 3
-            sample_tasks = sample_tasks[:3]
+        # Phase 2: Initialize rate limiters with conservative ramp (Option B — no probes)
+        self.bootstrap_avg_tokens = self.avg_tokens  # Preserve tiktoken estimate for diagnostics
+        little_law_cap = self._initialize_rate_limiters(limits, len(tasks))
+        self._warm_up_target_samples = self._calculate_warm_up_sample_size(len(tasks))
+        self._warm_up_calibrated = False
 
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
+        # Workers = ramp target (90% of theoretical Little's Law)
+        ramp_target = self._concurrency_ramp.cap
+        num_workers = min(ramp_target, len(tasks))
+        num_workers = max(num_workers, 5)  # Floor of 5 workers
 
-        start_time = time.time()
-        task_cycle = itertools.cycle(sample_tasks)
-
-        async def probe_with_different_tasks():
-            return await self.probe_call_no_structured(next(task_cycle))
-
-        avg_latency_s, avg_tokens = await bootstrap_measure_async(probe_with_different_tasks, n_probes=3)
-
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"Probe time: {time.time() - start_time:.3f}s")
-            self.verbose_reporter.stat_line(f"Bootstrap results: {avg_latency_s:.3f}s avg latency, {avg_tokens:.0f} avg tokens")
-
-        # Initialize latency tracker with bootstrap measurements
-        for i in range(3):
-            self.latency_tracker.add(avg_latency_s)
-
-        # Update avg_tokens with bootstrap measurement
-        self.avg_tokens = int(avg_tokens)
-        self.bootstrap_avg_tokens = self.avg_tokens
-
-        # Calculate optimal concurrency using Little's Law
-        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        little_law_concurrency = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
-
-        # Adaptive minimum: don't force high minimum when RPM-limited
-        # (e.g., when Little's Law says 1-5, forcing 100 causes 429s)
-        # Pattern from ideaExtractor_exp.py: 3x calculated optimal for burst headroom, floor of 5
-        max_concurrency = self.processing_config.concurrency_cap_default
-        adaptive_min = min(
-            self.processing_config.concurrency_min_default,
-            max(little_law_concurrency * 3, 5)
-        )
-        optimal = min(max_concurrency, max(little_law_concurrency, adaptive_min))
-
-        # Initialize rate limiting components
-        arrival_rate = min(
-            limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
-            limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60
-        )
-
-        self.rate_limiter = AsyncLimiter(1, time_period=1.0/arrival_rate)
-
-        self.semaphore = asyncio.Semaphore(min(len(tasks), optimal))
-        self.optimal_concurrency = min(len(tasks), optimal)
-        self.current_arrival_rate = arrival_rate
-
-        # Re-initialize TokenBucket with actual rate limits
-        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
-
-        print("[RATE LIMITING SETUP]")
-        print(f"- Model: {self.model}")
-        print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
-        print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
-        print(f"- Bootstrap measured avg_tokens: {self.avg_tokens}")
-
-        # Show expected throughput breakdown
-        rpm_throughput = limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
-        tpm_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
+        headroom = self.processing_config.rate_limit_headroom
+        rpm_throughput = limits.requests_per_minute * headroom / 60
+        tpm_throughput = limits.tokens_per_minute * headroom / self.avg_tokens / 60
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
+
+        print("[RATE LIMITING SETUP] - Warm-up + Conservative Ramp (Option B)")
+        print(f"- Model: {self.model}")
+        print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * headroom:,.0f} with headroom)")
+        print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * headroom:,.0f} with headroom)")
+        print(f"- Tiktoken avg_tokens: {self.avg_tokens}")
         print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
-        print(f"- Optimal by Little's law: {little_law_concurrency}")
-        print(f"- Constrained optimum: {optimal} (adaptive_min={adaptive_min}, max={max_concurrency})")
-
+        print(f"- Little's Law (theoretical): {little_law_cap}")
+        print(f"- Ramp: {self.optimal_concurrency} (50%) -> {ramp_target} (90%) proportional to completions")
+        print(f"- Warm-up calibration after {self._warm_up_target_samples} completions")
+        print(f"- Timeout: {TIMEOUT_FLOOR_SECONDS}s floor (generous safety net)")
         print(f"- Processing {len(tasks):,} tasks")
+        print(f"- Workers: {num_workers}")
 
-        # Calculate number of workers using ProcessingConfig bounds
-        expected_throughput = min(rpm_throughput, tpm_throughput)
-        max_workers = self.processing_config.max_workers if hasattr(self.processing_config, 'max_workers') else 200
-        # Adaptive min workers: 2x optimal concurrency as floor (at least 10)
-        adaptive_min_workers = max(10, optimal * 2)
-        num_workers = min(max_workers, max(adaptive_min_workers, int(expected_throughput * avg_latency_s * 2.0)))
-       
-        print(f"- Workers launched: (concurrent subroutines): {num_workers}")
-        print(f"- API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
-        
         # Create queue and results list
         queue = asyncio.Queue()
         results = [None] * len(tasks)
-        
-        # Add tasks to queue with result indices
+
         for i, task in enumerate(tasks):
             task['result_index'] = i
             task['task_index'] = i
             await queue.put(task)
-        
+
         # Start workers
         workers = []
         for _ in range(num_workers):
             w = asyncio.create_task(self.worker(queue, results))
             workers.append(w)
-        
-        # Progress monitoring with diagnostics
+
+        # Phase 4: Main processing loop (0.1s tick for ramp responsiveness)
         start_time = time.time()
         last_report = start_time
-        last_diagnostics = start_time
         last_adjustment = start_time
 
         while not queue.empty():
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.1)
             now = time.time()
+
+            # Circuit breaker (every tick)
+            if self.circuit_breaker:
+                action = self.circuit_breaker.check_and_adjust()
+                if action in ('tripped', 'recovering', 'recovered'):
+                    self.optimal_concurrency = self.semaphore.limit
+
+            # Ramp check (completion-based)
+            await self._check_ramp_up()
+
+            # Warm-up calibration (one-shot after N completions)
+            if (not self._warm_up_calibrated
+                    and len(self.actual_total_tokens) >= self._warm_up_target_samples
+                    and len(self.latency_tracker.values) >= self._warm_up_target_samples):
+                self._calibrate_from_warm_up(len(tasks))
+                # Spawn extra workers if ramp target increased
+                new_target = self._concurrency_ramp.cap
+                if new_target > num_workers:
+                    extra = new_target - num_workers
+                    for _ in range(extra):
+                        w = asyncio.create_task(self.worker(queue, results))
+                        workers.append(w)
+                    num_workers = new_target
+                    print(f"Workers: {num_workers} (+{extra} after calibration)")
 
             # Throughput adjustment check
             if now - last_adjustment >= ADJUSTMENT_INTERVAL:
                 self._adjust_throughput_if_needed()
                 last_adjustment = now
 
-            # Regular progress report
-            if now - last_report >= PROGRESS_REPORT_INTERVAL:
+            # Progress report (every 2s)
+            if now - last_report >= 2.0:
                 completed = self.stats['tasks_processed']
-                remaining = queue.qsize()
                 elapsed = now - start_time
                 rate = completed / elapsed if elapsed > 0 else 0
-                
-                print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%), "
-                      f"Rate: {rate:.1f}/s, Queue: {remaining}")
+                active = self.semaphore.active
+                limit = self.optimal_concurrency
+                ramp_info = f" ramp:{limit}->{self._concurrency_ramp.cap}" if not self._ramp_complete else ""
+                cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
+                print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%) "
+                      f"Rate: {rate:.1f}/s | Conc:{active}/{limit} CB:{cb_state}{ramp_info}")
                 last_report = now
-            
-            # Diagnostic report (if verbose)
-            if self.verbose_reporter.enabled and now - last_diagnostics >= DIAGNOSTIC_INTERVAL:
-                bucket_status = self.get_token_bucket_status()
-                token_stats = self.get_token_estimation_stats()
-                
-                # Token bucket diagnostics
-                if bucket_status['low_tokens']:
-                    self.verbose_reporter.stat_line(f"⚠️ Token bucket low: {bucket_status['available_tokens']:,} tokens ({bucket_status['utilization_pct']:.1f}% utilized)")
-                
-                # Token estimation diagnostics
-                if token_stats['status'] == 'learning' and token_stats['samples'] >= 5:
-                    self.verbose_reporter.stat_line(f"Token estimation: {token_stats['avg_estimation_error']:.0f} avg error, "
-                                                  f"Input: {token_stats['avg_input_tokens']:.0f} avg ({token_stats['input_samples']}/3), "
-                                                  f"Output: {token_stats['avg_output_tokens']:.0f} avg ({token_stats['output_samples']}/5)")
-                    
-                    # Show comparison of initial vs learned average tokens
-                    if token_stats['actual_samples'] >= 10:
-                        actual_avg = token_stats['avg_actual_total_tokens']
-                        initial_avg = token_stats['initial_avg_tokens']
-                        current_avg = token_stats['current_avg_tokens']
-                        difference = actual_avg - current_avg
 
-                        learned_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
-                        current_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(current_avg, 1) / 60
-
-                        pct_change = (difference / current_avg * 100) if current_avg > 0 else 0
-                        threshold_pct = int((THROUGHPUT_ADJUSTMENT_THRESHOLD - 1) * 100)
-                        threshold_note = f"below {threshold_pct}% threshold" if abs(pct_change) <= threshold_pct else f"exceeds {threshold_pct}% threshold"
-                        if token_stats['adjustments_made'] > 0:
-                            self.verbose_reporter.stat_line(f"Token usage: Bootstrap {initial_avg:.0f}, Adjusted {current_avg:.0f}, Actual {actual_avg:.0f} "
-                                                          f"({difference:+.0f} from current, {pct_change:+.1f}%) — {threshold_note}")
-                            self.verbose_reporter.stat_line(f"Throughput: pacing at {current_throughput:.1f}/s (adjusted from {self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60:.1f}/s bootstrap)")
-                        else:
-                            self.verbose_reporter.stat_line(f"Token usage: Initial estimate {initial_avg:.0f}, Learned average {actual_avg:.0f} "
-                                                          f"({difference:+.0f} tokens, {pct_change:+.1f}%) — {threshold_note}")
-                            self.verbose_reporter.stat_line(f"Throughput: pacing at {current_throughput:.1f}/s (bootstrap), optimal {learned_throughput:.1f}/s (learned)")
-                
-                last_diagnostics = now
-        
         # Wait for all tasks to complete
         await queue.join()
-        
+
         # Stop workers
         for _ in workers:
             await queue.put(None)
         await asyncio.gather(*workers)
-        
-        # Final stats with diagnostics
+
+        # Phase 5: Stats after main pass
         elapsed = time.time() - start_time
-        print(f"\nCompleted {len(tasks)} tasks in {elapsed:.1f}s")
+        print(f"\nMain batch: {len(tasks)} tasks in {elapsed:.1f}s")
         print(f"- Successful: {self.stats['tasks_successful']}")
         print(f"- Failed: {self.stats['tasks_failed']}")
         print(f"- Rate limits: {self.stats['rate_limits']}")
@@ -965,44 +1364,70 @@ class Grader:
         print(f"- Average: {elapsed/len(tasks):.2f}s/task")
         if self.adjustment_stats['adjustments_made'] > 0:
             print(f"- Throughput adjustments: {self.adjustment_stats['adjustments_made']}")
-            print(f"  - Bootstrap avg_tokens: {self.bootstrap_avg_tokens}, Final avg_tokens: {self.avg_tokens}")
 
-        # Failure report
+        # Phase 6: Retry pass for true failures
+        if self.failure_log:
+            failed_tasks = []
+            failed_ids = {str(f['respondent_id']) for f in self.failure_log}
+            for task in tasks:
+                if str(task['task_id']) in failed_ids:
+                    failed_tasks.append(task)
+
+            if failed_tasks:
+                print(f"\n[RETRY PASS] Retrying {len(failed_tasks)} failed tasks with reduced concurrency...")
+
+                pre_retry_failure_log = list(self.failure_log)
+                self.failure_log.clear()
+
+                # Reduced concurrency: 10% of workers, min 5
+                retry_workers = max(5, min(len(failed_tasks), num_workers // 10))
+
+                # Generous timeout for retry
+                self.latency_tracker.retry_mode = True
+
+                retry_queue = asyncio.Queue()
+                retry_results = [None] * len(failed_tasks)
+
+                for i, task in enumerate(failed_tasks):
+                    task['result_index'] = i
+                    await retry_queue.put(task)
+
+                retry_worker_tasks = []
+                for _ in range(retry_workers):
+                    w = asyncio.create_task(self.worker(retry_queue, retry_results))
+                    retry_worker_tasks.append(w)
+
+                await retry_queue.join()
+                for _ in retry_worker_tasks:
+                    await retry_queue.put(None)
+                await asyncio.gather(*retry_worker_tasks)
+
+                self.latency_tracker.retry_mode = False
+
+                # Merge retry results back into main results
+                recovered = 0
+                for i, task in enumerate(failed_tasks):
+                    retry_result = retry_results[i]
+                    if retry_result and getattr(retry_result, 'quality_filter_code', -1) != -1:
+                        # Find original index and overwrite fallback
+                        original_idx = next(
+                            j for j, t in enumerate(tasks) if str(t['task_id']) == str(task['task_id'])
+                        )
+                        results[original_idx] = retry_result
+                        recovered += 1
+
+                still_failed = len(self.failure_log)
+                print(f"[RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
+                if still_failed > 0:
+                    failed_ids_list = sorted(str(f['respondent_id']) for f in self.failure_log)
+                    print(f"[RETRY PASS] Permanently failed IDs: {failed_ids_list[:20]}{'...' if still_failed > 20 else ''}")
+
+        # Failure report (if any remain after retry)
         if self.failure_log:
             print(f"\n{'='*70}")
             print(self.get_failure_report(total_responses=len(tasks)))
             print(f"{'='*70}")
 
-        # Final diagnostic summary (if verbose)
-        if self.verbose_reporter.enabled:
-            token_stats = self.get_token_estimation_stats()
-
-            if token_stats['status'] == 'learning':
-                accuracy = max(0, 100 - (token_stats['avg_estimation_error'] / max(1, token_stats['avg_input_tokens'] + token_stats['avg_output_tokens']) * 100))
-                self.verbose_reporter.stat_line(f"Token estimation accuracy: {accuracy:.1f}% (avg error: {token_stats['avg_estimation_error']:.0f} tokens)")
-                self.verbose_reporter.stat_line(f"Learned averages - Input: {token_stats['avg_input_tokens']:.0f}, Output: {token_stats['avg_output_tokens']:.0f}")
-                
-                # Final comparison of initial vs learned token usage
-                if token_stats['actual_samples'] >= 10:
-                    actual_avg = token_stats['avg_actual_total_tokens']
-                    initial_avg = token_stats['initial_avg_tokens']
-                    current_avg = token_stats['current_avg_tokens']
-                    difference = actual_avg - initial_avg
-
-                    optimal_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
-                    initial_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
-
-                    pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
-                    threshold_pct = int((THROUGHPUT_ADJUSTMENT_THRESHOLD - 1) * 100)
-                    residual = actual_avg - current_avg
-                    residual_pct = (residual / current_avg * 100) if current_avg > 0 else 0
-                    residual_note = f"below {threshold_pct}% threshold" if abs(residual_pct) <= threshold_pct else f"exceeds {threshold_pct}% threshold"
-                    self.verbose_reporter.stat_line(f"Token usage summary: Bootstrap {initial_avg:.0f} -> Actual {actual_avg:.0f} "
-                                                  f"({difference:+.0f} tokens, {pct_change:+.1f}%)")
-                    if token_stats['adjustments_made'] > 0:
-                        self.verbose_reporter.stat_line(f"Adjustments applied: {token_stats['adjustments_made']} (final avg_tokens: {current_avg}, residual drift {residual_pct:+.1f}% — {residual_note})")
-                    self.verbose_reporter.stat_line(f"Throughput analysis: Bootstrap {initial_throughput:.1f}/s -> Optimal {optimal_throughput:.1f}/s with perfect estimation")
-        
         return results
 
     def _prepare_individual_tasks(self) -> List[Dict]:
