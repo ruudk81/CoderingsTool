@@ -53,8 +53,8 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-RUN_MODE = "taxonomy"  # "taxonomy" | "codebook" | "assignment" | "all"
-EXPERIMENT_N = 500  # Limit number of responses for a test run (None = use all)
+RUN_MODE = "codebook"  # "taxonomy" | "codebook" | "assignment" | "all"
+EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 
 # =============================================================================
@@ -246,12 +246,6 @@ def print_codebook_results(pipeline_result: PipelineResult):
         print(f"        Indicators: {indicators}")
         print(f"        Source attributes: {sources}")
 
-    if pipeline_result.codebook_narrative:
-        print(f"\n{'='*80}")
-        print(f"CODE GENERATION EVALUATION")
-        print(f"{'='*80}")
-        print(f"  {pipeline_result.codebook_narrative}")
-
     print(f"\n{'='*80}")
     print(f"Total codes: {len(pipeline_result.codes)}")
     print(f"{'='*80}\n")
@@ -339,12 +333,6 @@ def print_results(
         print(f"        Definition: {code.definition}")
         print(f"        Indicators: {indicators}")
         print(f"        Source attributes: {sources}")
-
-    # --- Evaluation ---
-    print(f"\n{'='*80}")
-    print(f"CODE GENERATION EVALUATION")
-    print(f"{'='*80}")
-    print(f"  {pipeline_result.codebook_narrative}")
 
     # --- Grand summary ---
     total_labels = sum(m.label_count for m in label_mappings.values())
