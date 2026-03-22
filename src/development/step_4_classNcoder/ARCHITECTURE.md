@@ -40,7 +40,7 @@ The dimension determines what facet and attribute _mean_. These semantics are de
 
 ## Pipeline Overview
 
-The pipeline has three stages: **partition discovery**, the **QualitativeResearcher pipeline** (P1–P4.5), and **code assignment**.
+The pipeline has three stages: **partition discovery**, the **QualitativeResearcher pipeline** (P1–P9), and **code assignment**.
 
 ```
 Stage 0: Partition Discovery
@@ -48,39 +48,42 @@ Stage 0: Partition Discovery
   dimension_data.py --> DimensionDefinition (prompt_rules, examples, etc.)
   Ideas --> group by domain (L2) --> DomainSet + PartitionLabelMapping[]
 
-Stage 1: QualitativeResearcher Pipeline (P1–P4.5)
+Stage 1: QualitativeResearcher Pipeline (P1–P9)
 
   P1: Facet Discovery (per domain, chunked, concurrent)
     Observations --> discover facets using dimension-specific semantics
                  --> programmatic dedup
 
-  P1.5: Facet Consolidation (per domain, hierarchical)
+  P2: Facet Consolidation (per domain, hierarchical)
     Chunk facets --> LLM consolidation (recursive if >6 chunks or >150 items)
                  --> consolidated facet set per domain
 
-  P2: Facet Assignment (per domain, batched, concurrent)
+  P3: Facet Assignment (per domain, batched, concurrent)
     Ideas + facet set --> assign each idea to a facet (L3)
                       --> ideas now have domain (L2) + facet (L3)
 
-  P3: Attribute Discovery (per facet within domain, chunked, concurrent)
+  P4: Attribute Discovery (per facet within domain, chunked, concurrent)
     Ideas grouped by facet --> discover attributes (L4) within each facet
                            --> chunk consolidation within facet if >100 observations
 
-  P4a: Attribute Assignment (per facet, concurrent)
+  P5: Attribute Chunk Consolidation (per facet, hierarchical)
+    Chunk attributes --> merge chunk-level attributes within facet
+
+  P6: Attribute Assignment (per facet, concurrent)
     Ideas + attributes per facet --> assign each idea to an attribute (L4)
                                  --> ideas now have domain + facet + attribute
 
-  P3.5: Cross-facet Attribute Consolidation (per domain)
+  P7: Cross-facet Attribute Consolidation (per domain)
     Attributes per facet + assignment frequencies
       --> deduplicate across facets within same domain
       --> remap idea assignments to consolidated names
       --> consolidated attribute inventory with frequency data
 
-  P4: Code Generation (per domain, sequential)
+  P8: Code Generation (per domain, sequential)
     Frequency-weighted attribute inventory --> derive codes from attributes
                                            --> codes grounded in L4 attributes
 
-  P4.5: Codebook Consolidation (cross-domain, hierarchical)
+  P9: Codebook Consolidation (cross-domain, hierarchical)
     All codes + code frequencies --> merge across domains
                                  --> final MECE codebook (ConsolidatedCode list)
 
@@ -115,40 +118,45 @@ All prompt builders live in `prompts_exp.py`.
 - **Output**: candidate facets with descriptions and example observations
 - **Runs**: N chunks per domain (overlapping), all concurrent
 
-### P1.5: Facet Consolidation — `build_facet_consolidation_prompt()`
+### P2: Facet Consolidation — `build_facet_consolidation_prompt()`
 - **Input**: facets from multiple chunks within one domain
 - **Output**: deduplicated, consolidated facet set
 - **Runs**: hierarchical (max 6 chunks, max 150 items per consolidation call)
 
-### P2: Facet Assignment — `build_facet_assignment_prompt()`
+### P3: Facet Assignment — `build_facet_assignment_prompt()`
 - **Input**: ideas within one domain + discovered facet set
 - **Dimension-specific**: uses `facet_diagnostic` to frame the assignment question
 - **Output**: each idea assigned to exactly one facet
 - **Runs**: batched per domain (configurable batch size), concurrent
 
-### P3: Attribute Discovery — `build_attribute_discovery_prompt()`
+### P4: Attribute Discovery — `build_attribute_discovery_prompt()`
 - **Input**: ideas within one facet, formatted as labels
 - **Dimension-specific**: uses attribute-level semantics from the dimension
 - **Output**: `DiscoveredAttribute` list per facet
 - **Runs**: per facet within domain, concurrent; chunked with `build_attribute_chunk_consolidation_prompt()` if >100 observations
 
-### P4a: Attribute Assignment — `build_attribute_assignment_prompt()`
+### P5: Attribute Chunk Consolidation — `build_attribute_chunk_consolidation_prompt()`
+- **Input**: attributes from multiple chunks within one facet
+- **Output**: deduplicated, consolidated attribute set per facet
+- **Runs**: hierarchical, within facet
+
+### P6: Attribute Assignment — `build_attribute_assignment_prompt()`
 - **Input**: ideas assigned to a facet + discovered attributes for that facet
 - **Output**: each idea assigned to exactly one attribute
 - **Runs**: per facet, concurrent; small candidate set (~5–15 attributes) so no embedding pre-filter needed
 
-### P3.5: Cross-facet Attribute Consolidation — `build_attribute_consolidation_prompt()`
+### P7: Cross-facet Attribute Consolidation — `build_attribute_consolidation_prompt()`
 - **Input**: attributes per facet + assignment frequency counts
 - **Output**: consolidated attribute inventory; remap dict for merged names
 - **Runs**: per domain (only if 2+ facets with attributes)
 - **Purpose**: deduplicate semantically similar attributes across facets, informed by frequency
 
-### P4: Code Generation — `build_code_from_attributes_prompt()`
+### P8: Code Generation — `build_code_from_attributes_prompt()`
 - **Input**: consolidated attribute inventory per domain with frequencies
 - **Output**: `CodeFromAttributes` list — codes derived from attributes with `source_attributes`
 - **Runs**: per domain, sequential
 
-### P4.5: Codebook Consolidation — `build_codebook_consolidation_prompt()`
+### P9: Codebook Consolidation — `build_codebook_consolidation_prompt()`
 - **Input**: all codes across domains + code frequencies (derived from attribute assignment counts)
 - **Output**: `ConsolidatedCode` list — final MECE codebook
 - **Runs**: cross-domain; hierarchical if many codes
@@ -157,7 +165,7 @@ All prompt builders live in `prompts_exp.py`.
 - **Input**: single idea + codebook (optionally pre-filtered by embeddings)
 - **Output**: `CodeAttributeAssignment` — code ID + confidence + rationale
 - **Runs**: per idea, concurrent via queue-based workers in `CodeAssigner`
-- **Note**: despite the legacy "dual" name, this assigns codes only; attributes are already assigned in P4a
+- **Note**: despite the legacy "dual" name, this assigns codes only; attributes are already assigned in P6
 
 ## Data Flow: What Step 3 Provides
 
@@ -169,8 +177,8 @@ All prompt builders live in `prompts_exp.py`.
 
 Per idea (`IdeasExtractedSubmodel`):
 - `domain` — Domain (L2) assignment
-- `facet` — Facet (L3): step 3 hint; overwritten by P2 assignment
-- `attribute` — Attribute (L4): populated by P4a assignment
+- `facet` — Facet (L3): step 3 hint; overwritten by P3 assignment
+- `attribute` — Attribute (L4): populated by P6 assignment
 - `instance` — abstraction ladder rung 1: verbatim span
 - `interpretation` — abstraction ladder rung 2: concrete meaning
 - `abstraction` — abstraction ladder rung 3: broader significance
@@ -217,7 +225,7 @@ class PipelineResult:
 ```python
 class CodeAssignedSubmodel(IdeasExtractedSubmodel):
     assigned_code: Optional[str]       # code name
-    assigned_attribute: Optional[str]  # attribute name (from P4a)
+    assigned_attribute: Optional[str]  # attribute name (from P6)
     confidence: Optional[float]
     rationale: Optional[str]
     partition_name: Optional[str]
@@ -237,7 +245,7 @@ Configurable in `CategoriesConfig.label_source`. Labels are formatted by `partit
 
 ## Concurrency & Rate Limiting
 
-Bootstrap pattern shared across P1–P4a:
+Bootstrap pattern shared across P1–P6:
 1. Fetch real rate limits from API response headers
 2. Run 3 probe calls to measure avg latency and token usage
 3. Compute optimal concurrency via Little's Law
@@ -258,13 +266,17 @@ Code assignment (`CodeAssigner`) has its own rate-limiting stack:
 | `label_source` | `"ladder"` | Which fields to use as observations |
 | `include_valence` | `False` | Prepend valence tags |
 | `qr_model_p1` | `gpt-4.1-mini` | P1: Facet Discovery |
-| `qr_model_p1_5` | `gpt-4.1` | P1.5: Facet Consolidation |
-| `qr_model_p2` | `gpt-4.1-nano` | P2: Facet Assignment |
-| `qr_model_p3` | `gpt-4.1-mini` | P3: Attribute Discovery |
-| `qr_model_p4` | `gpt-4.1` | P4: Code Generation + P4.5 Consolidation |
+| `qr_model_p2` | `gpt-4.1` | P2: Facet Consolidation |
+| `qr_model_p3` | `gpt-4.1-nano` | P3: Facet Assignment |
+| `qr_model_p4` | `gpt-4.1-mini` | P4: Attribute Discovery |
+| `qr_model_p5` | `gpt-4.1` | P5: Attribute Chunk Consolidation |
+| `qr_model_p6` | `gpt-4.1-nano` | P6: Attribute Assignment |
+| `qr_model_p7` | `gpt-4.1` | P7: Cross-facet Attribute Consolidation |
+| `qr_model_p8` | `gpt-4.1` | P8: Code Generation |
+| `qr_model_p9` | `gpt-4.1` | P9: Codebook Consolidation |
 | `batch_size_min/max` | 100/150 | P1 chunk sizing |
-| `p3_batch_size_min/max` | 100/150 | P3 chunk sizing |
-| `facet_assignment_batch_size` | 10 | P2 ideas per LLM call |
+| `p4_batch_size_min/max` | 100/150 | P4 chunk sizing |
+| `facet_assignment_batch_size` | 10 | P3 ideas per LLM call |
 
 ### AssignmentConfig (config_classNcoder_exp.py)
 
@@ -280,7 +292,7 @@ Code assignment (`CodeAssigner`) has its own rate-limiting stack:
 
 | File | Purpose |
 |------|---------|
-| `qualitative_researcher.py` | Main orchestrator: P1–P4.5 pipeline with async concurrency |
+| `qualitative_researcher.py` | Main orchestrator: P1–P9 pipeline with async concurrency |
 | `prompts_exp.py` | All prompt builders + Pydantic response models (DiscoveredFacet, DiscoveredAttribute, CodeFromAttributes, ConsolidatedCode, CodeAttributeAssignment, etc.) |
 | `code_assignment.py` | Code assignment orchestrator (Stage 2) with queue-based workers, embedding pre-filter, 4-layer rate limiting |
 | `domain_discoverer.py` | Partition ideas by domain, collect unique labels per partition (`DomainDiscoverer`, `PartitionLabelMapping`) |

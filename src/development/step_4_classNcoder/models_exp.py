@@ -69,7 +69,7 @@ class DomainResultModel(BaseModel):
 
 
 class TaxonomyResultsCache(BaseModel):
-    """Cache for taxonomy results (P1-P3.5): domains, facets, attributes."""
+    """Cache for taxonomy results (P1-P7): domains, facets, attributes."""
     partition_set: DomainSet
     partition_results: Dict[str, DomainResultModel]
     label_counts: Dict[str, int] = Field(default_factory=dict)

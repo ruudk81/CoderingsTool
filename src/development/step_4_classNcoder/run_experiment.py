@@ -53,8 +53,8 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-RUN_MODE = "codebook"  # "taxonomy" | "codebook" | "assignment" | "all"
-EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
+RUN_MODE = "taxonomy"  # "taxonomy" | "codebook" | "assignment" | "all"
+EXPERIMENT_N = 500  # Limit number of responses for a test run (None = use all)
 
 
 # =============================================================================
@@ -145,7 +145,7 @@ def print_taxonomy_results(
     label_mappings: Dict[str, PartitionLabelMapping],
     taxonomy_result: TaxonomyResult,
 ):
-    """Print taxonomy results (P1-P3.5): domains, facets, attributes."""
+    """Print taxonomy results (P1-P7): domains, facets, attributes."""
     print(f"\n{'='*80}")
     print(f"TAXONOMY RESULTS "
           f"({len(partition_set.partitions)} domains)")
@@ -219,14 +219,14 @@ def print_taxonomy_results(
     print(f"  Domains:                 {len(partition_set.partitions)}")
     print(f"  Total Observations:      {total_labels}")
     print(f"  Facets (P1):             {total_facets}")
-    print(f"  Ideas assigned (P2):     {total_assignments}")
-    print(f"  Attributes (P3):         {total_attributes}")
-    print(f"  Ideas with attrs (P4a):  {total_attr_assigned}")
+    print(f"  Ideas assigned (P3):     {total_assignments}")
+    print(f"  Attributes (P4):         {total_attributes}")
+    print(f"  Ideas with attrs (P6):  {total_attr_assigned}")
     print(f"{'='*80}\n")
 
 
 def print_codebook_results(pipeline_result: PipelineResult):
-    """Print codebook results (P4-P4.5): codes with definitions and source attributes."""
+    """Print codebook results (P8-P9): codes with definitions and source attributes."""
     print(f"\n{'='*80}")
     print(f"CODEBOOK "
           f"({len(pipeline_result.codes)} codes)")
@@ -367,9 +367,9 @@ def print_results(
     print(f"  Domains:                 {len(partition_set.partitions)}")
     print(f"  Total Observations:      {total_labels}")
     print(f"  Facets (P1):             {total_facets}")
-    print(f"  Ideas assigned (P2):     {total_assignments}")
-    print(f"  Attributes (P3):         {total_attributes}")
-    print(f"  Codes (P4):              {n_codes}")
+    print(f"  Ideas assigned (P3):     {total_assignments}")
+    print(f"  Attributes (P4):         {total_attributes}")
+    print(f"  Codes (P8):              {n_codes}")
     print(f"{'='*80}\n")
 
 
@@ -591,7 +591,7 @@ def cache_taxonomy_results(
     sample_size: Optional[int] = SAMPLE_SIZE,
     variable_key: Optional[str] = None,
 ) -> Dict[str, DomainResultModel]:
-    """Cache taxonomy results (P1-P3.5) for later use by codebook generation."""
+    """Cache taxonomy results (P1-P7) for later use by codebook generation."""
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -819,9 +819,9 @@ def _load_and_discover(extraction_metadata=None):
 
 
 def run_taxonomy():
-    """Run taxonomy stages only (P1-P3.5): facets, attributes, assignments."""
+    """Run taxonomy stages only (P1-P7): facets, attributes, assignments."""
     print("=" * 70)
-    print("TAXONOMY ONLY MODE (P1-P3.5)")
+    print("TAXONOMY ONLY MODE (P1-P7)")
     print("=" * 70)
     print(f"\nDataset: {FILENAME}")
     print(f"Variable: {VARIABLE}")
@@ -858,9 +858,9 @@ def run_taxonomy():
 
 
 def run_codebook_from_cache():
-    """Run codebook generation (P4-P4.5) from cached taxonomy results."""
+    """Run codebook generation (P8-P9) from cached taxonomy results."""
     print("=" * 70)
-    print("CODEBOOK ONLY MODE (P4-P4.5, loading taxonomy from cache)")
+    print("CODEBOOK ONLY MODE (P8-P9, loading taxonomy from cache)")
     print("=" * 70)
 
     extraction_metadata = load_extraction_metadata()
@@ -1008,14 +1008,14 @@ if __name__ == "__main__":
     try:
         if RUN_MODE == "taxonomy":
             # =================================================================
-            # Taxonomy only: P1-P3.5
+            # Taxonomy only: P1-P7
             # =================================================================
             partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer = run_taxonomy()
             cache_taxonomy_results(partition_set, label_mappings, taxonomy_result)
 
         elif RUN_MODE == "codebook":
             # =================================================================
-            # Codebook only: P4-P4.5 from cached taxonomy
+            # Codebook only: P8-P9 from cached taxonomy
             # =================================================================
             result = run_codebook_from_cache()
             if result:
@@ -1033,7 +1033,7 @@ if __name__ == "__main__":
 
         elif RUN_MODE == "assignment":
             # =================================================================
-            # Assignment only: P5 from cached codebook
+            # Assignment only: P10 from cached codebook
             # =================================================================
             result = run_assignment_only()
             if result:

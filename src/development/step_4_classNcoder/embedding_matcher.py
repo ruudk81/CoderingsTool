@@ -1,8 +1,8 @@
 """
-Embedding-based code pre-filtering for P5 assignment.
+Embedding-based code pre-filtering for P10 assignment.
 
 Embeds ideas and codes, computes cosine similarity, and returns
-top-N candidate code indices per idea. Used to scope the P5
+top-N candidate code indices per idea. Used to scope the P10
 assignment prompt to a small subset of relevant codes.
 """
 

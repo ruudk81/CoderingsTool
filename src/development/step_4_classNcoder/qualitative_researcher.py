@@ -699,21 +699,21 @@ class QualitativeResearcher:
                     n_ideas = len(label_mappings[name].ideas)
                     print(f"    {name}: {n_assigned}/{n_ideas} ideas assigned")
 
-        t_phase3 = time.time() - t_phase2
+        t_phase3 = time.time() - t_phase3
         if verbose:
             total_assigned = sum(len(a) for a in partition_assignments.values())
-            print(f"  Phase 2 done in {t_phase2:.1f}s → "
+            print(f"  Phase 3 done in {t_phase3:.1f}s → "
                   f"{total_assigned} ideas assigned to facets")
 
         # =================================================================
-        # PHASE 3 (P3): Per-facet Attribute Discovery (concurrent)
+        # PHASE 4 (P4): Per-facet Attribute Discovery (concurrent)
         # =================================================================
         if verbose:
-            print(f"\n  Phase 3: Per-facet Attribute Discovery...")
+            print(f"\n  Phase 4: Per-facet Attribute Discovery...")
 
-        t_phase3 = time.time()
+        t_phase4 = time.time()
 
-        # Group ideas by (domain, facet) using P2 assignments
+        # Group ideas by (domain, facet) using P3 assignments
         domain_facet_ideas = self._group_ideas_by_facet(
             label_mappings, partition_facets, partition_assignments
         )
@@ -785,24 +785,24 @@ class QualitativeResearcher:
                     print(f"    {domain_name}/{facet_name}: "
                           f"{len(result)} attributes")
 
-        t_phase3 = time.time() - t_phase3
+        t_phase4 = time.time() - t_phase4
         if verbose:
             total_attrs = sum(
                 len(attrs)
                 for facet_attrs in domain_facet_attributes.values()
                 for attrs in facet_attrs.values()
             )
-            print(f"  Phase 3 done in {t_phase3:.1f}s → "
+            print(f"  Phase 4 done in {t_phase4:.1f}s → "
                   f"{total_attrs} attributes across "
                   f"{len(attr_tasks)} facets")
 
         # =================================================================
-        # PHASE 4a: Per-facet Attribute Assignment
+        # PHASE 6 (P6): Per-facet Attribute Assignment
         # =================================================================
         if verbose:
-            print(f"\n  Phase 4a: Per-facet Attribute Assignment...")
+            print(f"\n  Phase 6: Per-facet Attribute Assignment...")
 
-        t_phase4a = time.time()
+        t_phase6 = time.time()
 
         # Assign attributes to ideas, grouped by facet
         attribute_assignments: Dict[str, str] = {}  # idea_id -> attribute_name
@@ -857,19 +857,19 @@ class QualitativeResearcher:
                         print(f"    {domain_name}/{facet_name}: "
                               f"{len(result)} ideas assigned")
 
-        t_phase4a = time.time() - t_phase4a
+        t_phase6 = time.time() - t_phase6
         if verbose:
-            print(f"  Phase 4a done in {t_phase4a:.1f}s → "
+            print(f"  Phase 6 done in {t_phase6:.1f}s → "
                   f"{len(attribute_assignments)} ideas with attributes")
 
         # =================================================================
-        # PHASE 3.5 (P3.5): Cross-facet Attribute Consolidation per domain
+        # PHASE 7 (P7): Cross-facet Attribute Consolidation per domain
         # (now with frequency data from attribute assignments)
         # =================================================================
         if verbose:
-            print(f"\n  Phase 3.5: Cross-facet Attribute Consolidation...")
+            print(f"\n  Phase 7: Cross-facet Attribute Consolidation...")
 
-        t_phase35 = time.time()
+        t_phase7 = time.time()
 
         consolidation_tasks = {}
         for domain_name, facet_attrs in domain_facet_attributes.items():
@@ -900,7 +900,7 @@ class QualitativeResearcher:
                 consolidation_tasks.keys(), consolidation_results
             ):
                 if isinstance(result, Exception):
-                    print(f"  P3.5 '{domain_name}' FAILED: "
+                    print(f"  P7 '{domain_name}' FAILED: "
                           f"{type(result).__name__}: {result}")
                     continue
 
@@ -944,19 +944,19 @@ class QualitativeResearcher:
                           f"{after_count} attributes "
                           f"({len(new_facet_attrs)} facets{remap_msg})")
 
-        t_phase35 = time.time() - t_phase35
+        t_phase7 = time.time() - t_phase7
         if verbose:
             total_attrs_after = sum(
                 len(attrs)
                 for facet_attrs in domain_facet_attributes.values()
                 for attrs in facet_attrs.values()
             )
-            print(f"  Phase 3.5 done in {t_phase35:.1f}s → "
+            print(f"  Phase 7 done in {t_phase7:.1f}s → "
                   f"{total_attrs_after} consolidated attributes")
 
         taxonomy_elapsed = time.time() - start_time
         if verbose:
-            print(f"\n  Taxonomy (P1-P3.5) complete in {taxonomy_elapsed:.1f}s")
+            print(f"\n  Taxonomy (P1-P7) complete in {taxonomy_elapsed:.1f}s")
 
         return TaxonomyResult(
             partition_n_labels=partition_n_labels,
@@ -974,7 +974,7 @@ class QualitativeResearcher:
         prompt_context: PromptContext,
         verbose: bool,
     ) -> PipelineResult:
-        """Codebook stages P4-P4.5: code generation + consolidation."""
+        """Codebook stages P8-P9: code generation + consolidation."""
         # Unpack taxonomy result
         partition_facets = taxonomy.partition_facets
         partition_assignments = taxonomy.partition_assignments
@@ -984,15 +984,15 @@ class QualitativeResearcher:
         start_time = time.time()
 
         # =================================================================
-        # PHASE 4 (P4): Per-domain Code Generation
+        # PHASE 8 (P8): Per-domain Code Generation
         # =================================================================
         if verbose:
-            print(f"\n  Phase 4: Per-domain Code Generation...")
+            print(f"\n  Phase 8: Per-domain Code Generation...")
 
-        t_phase4 = time.time()
+        t_phase8 = time.time()
 
         # Build one task per domain (no valence split — codes emerge naturally)
-        p4_tasks = {}
+        p8_tasks = {}
         for domain_name in domain_facet_attributes:
             domain_attrs = domain_facet_attributes.get(domain_name, {})
             if not domain_attrs:
@@ -1012,7 +1012,7 @@ class QualitativeResearcher:
                 if other_name != domain_name
             ]
 
-            p4_tasks[domain_name] = self._run_code_generation_from_attributes(
+            p8_tasks[domain_name] = self._run_code_generation_from_attributes(
                 {domain_name: domain_attrs}, prompt_context,
                 attribute_assignments=domain_attr_assigns,
                 domain_name=domain_name,
@@ -1020,15 +1020,15 @@ class QualitativeResearcher:
                 excluded_domains=excluded,
             )
 
-        p4_results = await asyncio.gather(*p4_tasks.values(), return_exceptions=True)
+        p8_results = await asyncio.gather(*p8_tasks.values(), return_exceptions=True)
 
         # Collect all codes with provenance tracking
         all_codes = []
         code_provenance = {}  # code index -> domain_name
         codebook_narratives = []
-        for key, result in zip(p4_tasks.keys(), p4_results):
+        for key, result in zip(p8_tasks.keys(), p8_results):
             if isinstance(result, Exception):
-                print(f"  P4 '{key}' FAILED: {type(result).__name__}: {result}")
+                print(f"  P8 '{key}' FAILED: {type(result).__name__}: {result}")
             else:
                 for code in result.codes:
                     code_provenance[len(all_codes)] = key
@@ -1037,11 +1037,11 @@ class QualitativeResearcher:
                 if verbose:
                     print(f"    {key}: {len(result.codes)} codes")
 
-        t_phase4 = time.time() - t_phase4
+        t_phase8 = time.time() - t_phase8
 
         if verbose:
-            print(f"\n  Phase 4 done in {t_phase4:.1f}s → {len(all_codes)} raw codes "
-                  f"from {len(p4_tasks)} calls")
+            print(f"\n  Phase 8 done in {t_phase8:.1f}s → {len(all_codes)} raw codes "
+                  f"from {len(p8_tasks)} calls")
 
         # Compute idea frequencies per code (from attribute assignments)
         # Each code has source_attributes; count how many ideas map to those attrs
@@ -1058,12 +1058,12 @@ class QualitativeResearcher:
             code_frequencies[idx] = freq
 
         # =================================================================
-        # PHASE 4.5: Cross-domain Codebook Consolidation
+        # PHASE 9 (P9): Cross-domain Codebook Consolidation
         # =================================================================
         if verbose:
-            print(f"\n  Phase 4.5: Codebook Consolidation...")
+            print(f"\n  Phase 9: Codebook Consolidation...")
 
-        t_phase45 = time.time()
+        t_phase9 = time.time()
 
         if len(all_codes) > 0:
             consolidation_result = await self._consolidate_codebook(
@@ -1077,17 +1077,17 @@ class QualitativeResearcher:
 
         codebook_narrative = "\n".join(codebook_narratives)
 
-        t_phase45 = time.time() - t_phase45
+        t_phase9 = time.time() - t_phase9
 
         if verbose:
-            print(f"\n  Phase 4.5 done in {t_phase45:.1f}s → {len(all_codes)} codes "
+            print(f"\n  Phase 9 done in {t_phase9:.1f}s → {len(all_codes)} codes "
                   f"(after consolidation)")
             for i, code in enumerate(all_codes, 1):
                 print(f"    {i}. {code.code_name}: {code.definition}")
 
         codebook_elapsed = time.time() - start_time
         if verbose:
-            print(f"\n  Codebook (P4-P4.5) complete in {codebook_elapsed:.1f}s")
+            print(f"\n  Codebook (P8-P9) complete in {codebook_elapsed:.1f}s")
 
         # Build DomainResult for each domain
         partition_results = {}
@@ -1247,7 +1247,7 @@ class QualitativeResearcher:
         return [r.facets for r in results if r is not None]
 
     # =========================================================================
-    # PHASE 1.5: FACET CONSOLIDATION (per-domain, LLM-based)
+    # PHASE 2 (P2): FACET CONSOLIDATION (per-domain, LLM-based)
     # =========================================================================
 
     async def _consolidate_facets(
@@ -1300,7 +1300,7 @@ class QualitativeResearcher:
                 prompt_content=prompt,
                 prompt_type="facet_consolidation",
                 metadata={
-                    "model": self._model_p1_5,
+                    "model": self._model_p2,
                     "temperature": 0.0,
                     "max_tokens": self._max_tokens_facet_discovery,
                     "language": prompt_context.language,
@@ -1312,12 +1312,12 @@ class QualitativeResearcher:
 
         result = await self._llm_call(
             prompt, FacetConsolidatedResponse, self._max_tokens_facet_discovery,
-            temperature=0.0, model=self._model_p1_5,
+            temperature=0.0, model=self._model_p2,
         )
         return result.facets
 
     # =========================================================================
-    # HIERARCHICAL CONSOLIDATION (shared by P1.5 and P3.25)
+    # HIERARCHICAL CONSOLIDATION (shared by P2 and P5)
     # =========================================================================
 
     async def _hierarchical_consolidate(
@@ -1333,8 +1333,8 @@ class QualitativeResearcher:
         consolidates each group concurrently, then recurses on the
         intermediate results until everything fits in a single call.
 
-        Works for both DiscoveredFacet (P1.5) and DiscoveredAttribute
-        (P3.25) via the callback pattern — consolidate_fn encapsulates
+        Works for both DiscoveredFacet (P2) and DiscoveredAttribute
+        (P5) via the callback pattern — consolidate_fn encapsulates
         the prompt-building and LLM call logic.
 
         Args:
@@ -1404,7 +1404,7 @@ class QualitativeResearcher:
         )
 
     # =========================================================================
-    # PHASE 2 (P2): PER-DOMAIN FACET ASSIGNMENT
+    # PHASE 3 (P3): PER-DOMAIN FACET ASSIGNMENT
     # =========================================================================
 
     async def _run_facet_assignment(
@@ -1459,7 +1459,7 @@ class QualitativeResearcher:
                     prompt_content=prompt,
                     prompt_type="facet_assignment",
                     metadata={
-                        "model": self._model_p2,
+                        "model": self._model_p3,
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_facet_assignment,
                         "language": prompt_context.language,
@@ -1475,7 +1475,7 @@ class QualitativeResearcher:
             try:
                 result = await self._llm_call(
                     prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment,
-                    model=self._model_p2,
+                    model=self._model_p3,
                 )
                 return result.assignments
             except Exception as e:
@@ -1561,7 +1561,7 @@ class QualitativeResearcher:
         return all_assignments
 
     # =========================================================================
-    # PHASE 4a: PER-FACET ATTRIBUTE ASSIGNMENT
+    # PHASE 6 (P6): PER-FACET ATTRIBUTE ASSIGNMENT
     # =========================================================================
 
     async def _assign_attributes_to_ideas(
@@ -1619,7 +1619,7 @@ class QualitativeResearcher:
                     prompt_content=prompt,
                     prompt_type="attribute_assignment",
                     metadata={
-                        "model": self._model_p2,
+                        "model": self._model_p6,
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_facet_assignment,
                         "language": prompt_context.language,
@@ -1637,7 +1637,7 @@ class QualitativeResearcher:
                 result = await self._llm_call(
                     prompt, AttributeAssignmentBatch,
                     self._max_tokens_facet_assignment,
-                    model=self._model_p2,
+                    model=self._model_p6,
                 )
                 return result.assignments
             except Exception as e:
@@ -1724,7 +1724,7 @@ class QualitativeResearcher:
         return all_assignments
 
     # =========================================================================
-    # PHASE 3 (P3): PER-FACET ATTRIBUTE DISCOVERY
+    # PHASE 4 (P4): PER-FACET ATTRIBUTE DISCOVERY
     # =========================================================================
 
     async def _discover_facet_attributes(
@@ -1833,7 +1833,7 @@ class QualitativeResearcher:
                     prompt_content=prompt,
                     prompt_type="attribute_discovery",
                     metadata={
-                        "model": self._model_p3,
+                        "model": self._model_p4,
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_attribute_discovery,
                         "language": prompt_context.language,
@@ -1851,7 +1851,7 @@ class QualitativeResearcher:
                 result = await self._llm_call(
                     prompt, AttributeDiscoveryResult,
                     self._max_tokens_attribute_discovery,
-                    model=self._model_p3,
+                    model=self._model_p4,
                 )
                 results[chunk_idx] = result.attributes
             except Exception as e:
@@ -1921,7 +1921,7 @@ class QualitativeResearcher:
                 prompt_content=prompt,
                 prompt_type="attribute_chunk_consolidation",
                 metadata={
-                    "model": self._model_p1_5,
+                    "model": self._model_p5,
                     "temperature": 0.0,
                     "max_tokens": self._max_tokens_attribute_discovery,
                     "language": prompt_context.language,
@@ -1936,12 +1936,12 @@ class QualitativeResearcher:
         result = await self._llm_call(
             prompt, AttributeChunkConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            temperature=0.0, model=self._model_p1_5,
+            temperature=0.0, model=self._model_p5,
         )
         return result.attributes
 
     # =========================================================================
-    # PHASE 3.5 (P3.5): CROSS-FACET ATTRIBUTE CONSOLIDATION
+    # PHASE 7 (P7): CROSS-FACET ATTRIBUTE CONSOLIDATION
     # =========================================================================
 
     async def _consolidate_domain_attributes(
@@ -2011,7 +2011,7 @@ class QualitativeResearcher:
                 prompt_content=prompt,
                 prompt_type="attribute_consolidation",
                 metadata={
-                    "model": self._model_p3,
+                    "model": self._model_p7,
                     "temperature": self._temperature,
                     "max_tokens": self._max_tokens_attribute_discovery,
                     "language": prompt_context.language,
@@ -2027,12 +2027,12 @@ class QualitativeResearcher:
         result = await self._llm_call(
             prompt, AttributeConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            model=self._model_p3,
+            model=self._model_p7,
         )
         return result.attributes
 
     # =========================================================================
-    # PHASE 4 (P4): CODE GENERATION FROM ATTRIBUTES
+    # PHASE 8 (P8): CODE GENERATION FROM ATTRIBUTES
     # =========================================================================
 
     @staticmethod
@@ -2112,7 +2112,7 @@ class QualitativeResearcher:
                 prompt_content=prompt,
                 prompt_type="code_generation_from_attributes",
                 metadata={
-                    "model": self._model_p4,
+                    "model": self._model_p8,
                     "temperature": self._temperature,
                     "max_tokens": self._max_tokens_code_from_attributes,
                     "language": prompt_context.language,
@@ -2126,11 +2126,11 @@ class QualitativeResearcher:
         return await self._llm_call(
             prompt, response_model,
             self._max_tokens_code_from_attributes,
-            model=self._model_p4,
+            model=self._model_p8,
         )
 
     # =========================================================================
-    # PHASE 4.5: CODEBOOK CONSOLIDATION
+    # PHASE 9 (P9): CODEBOOK CONSOLIDATION
     # =========================================================================
 
     async def _consolidate_codebook(
@@ -2162,7 +2162,7 @@ class QualitativeResearcher:
                 prompt_content=prompt,
                 prompt_type="codebook_consolidation",
                 metadata={
-                    "model": self._model_p4,
+                    "model": self._model_p9,
                     "temperature": self._temperature,
                     "max_tokens": self._max_tokens_codebook_consolidation,
                     "language": prompt_context.language,
@@ -2175,7 +2175,7 @@ class QualitativeResearcher:
         return await self._llm_call(
             prompt, CodebookConsolidationResult,
             self._max_tokens_codebook_consolidation,
-            model=self._model_p4,
+            model=self._model_p9,
         )
 
     # =========================================================================
@@ -2302,7 +2302,7 @@ class QualitativeResearcher:
         partition_facets: Dict[str, List[DiscoveredFacet]],
         partition_assignments: Dict[str, Dict[str, str]],
     ) -> Dict[tuple, List]:
-        """Group ideas by (domain, facet) using P2 assignments.
+        """Group ideas by (domain, facet) using P3 assignments.
 
         Returns: {(domain_name, facet_name): [idea_objects]}
         """

@@ -171,7 +171,8 @@ def build_facet_discovery_prompt(
         excluded_domains or [] 
     )
 
-    return f"""You are a qualitative research analyst specializing in survey response analysis. Your task is to identify the fewest recurring facets that provide full coverage of a set of observations from a survey.
+    return f"""You are a qualitative research analyst specializing in survey response analysis. 
+Your task is to identify the fewest recurring facets that provide full coverage of a set of observations from a survey.
 
 Here is the survey context:
 
@@ -202,7 +203,6 @@ And you are working within this domain:
 {partition_name} — {partition_definition}
 </taxonomy_domain>
 {excluded_block}
-
 Here is guidance on what facets are and how they should be defined:
 
 <facet_definition_guidance>
@@ -395,9 +395,7 @@ You are working within this domain:
 <domain>
 {partition_name} — {partition_definition}
 </domain>
-
 {excluded_block}
-
 Here are the facets you need to consolidate:
 <chunk_level_analyses>
 {chunk_results}
@@ -409,12 +407,16 @@ Dimension: {dimension_name} — {dimension_description}
 Target abstraction level: FACET (L3)
 {facet_guidance}
 
-Each facet must be:
-- **Ontologically distinct** — each facet represents a fundamentally different underlying property, not a different framing of the same principle. Facets must not be subsets of one another and must not overlap in a way that creates ambiguity in classification.
-- **Minimally ambiguous in application** — a coder should be able to assign an observation to exactly one facet in most cases. Edge cases are acceptable but must be resolvable through clear decision rules.
-- **Focused on ONE specific aspect** — a facet captures a single distinguishable property, not a bundle of loosely related concerns.
-- **A natural grouping** — the facet may group closely related phenomena, but only when they clearly stem from the same underlying principle.
-- **Strictly within domain scope** — the facet must stay fully within the conceptual boundaries of the defined domain and not leak into adjacent domains.
+Each facet must:
+- Be a descriptive, data-grounded category based on shared meaning across multiple attributes
+- Be non-evaluative (no judgment, sentiment, or valence)
+- Stay strictly within the domain boundaries
+- Be internally coherent (one clear underlying concept)
+- Be externally distinctive:
+  * Ontologically distinct (no overlap, no subset/superset, no reframing of same phenomenon)
+  * Semantically separable (no ambiguity in coding; no "could go either way")
+- Be non-redundant (adds unique conceptual value; no duplicate concepts)
+- Be grounded in the data (supported by multiple attributes or repeated patterns)
 
 Within this taxonomy:
 - Dimension (L1): {noun_phrase}

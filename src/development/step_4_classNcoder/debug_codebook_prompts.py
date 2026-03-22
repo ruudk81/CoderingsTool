@@ -1,7 +1,7 @@
 #%%
 #
 """
-Debug script for Step 5 Codebook prompts (P4-P4.5): Full LLM Request Inspector
+Debug script for Step 5 Codebook prompts (P8-P9): Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
 """
@@ -158,7 +158,7 @@ def main():
     prompts_file = get_prompts_file()
 
     print("=" * 100)
-    print("DEBUG: Step 5 Codebook Prompt Inspector (P4-P4.5)")
+    print("DEBUG: Step 5 Codebook Prompt Inspector (P8-P9)")
     print("Shows prompt text + Pydantic response model schemas (as seen by instructor)")
     print("=" * 100)
     print(f"Variable:     {VAR_NAME}")
