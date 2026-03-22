@@ -2,17 +2,17 @@
 Prompts and Pydantic response models for Category Discovery v3.
 
 Organized in pipeline processing order:
-  §1   Dimension Context Block (shared helper)
-  §2   Facet Discovery (P1: per-domain, chunked)
-  §3   Facet Consolidation (P1.5: merge chunk-level facets)
-  §4   Facet Assignment (P2: per-domain, batched)
-  §5   Attribute Discovery (P3: per facet within domain)
-  §6   Attribute Chunk Consolidation (P3.25: merge chunk-level attributes)
-  §7   Attribute Assignment (P4a: per facet)
-  §8   Attribute Consolidation (P3.5: cross-facet dedup within domain)
-  §9   Code Generation from Attributes (P4: cross-domain)
-  §10  Codebook Consolidation (P4.5: cross-domain merge)
-  §11  Code Assignment (P5: single idea)
+  §0   Dimension Context Block (shared helper)
+  §1   Facet Discovery (P1: per-domain, chunked)
+  §2   Facet Consolidation (P2: merge chunk-level facets)
+  §3   Facet Assignment (P3: per-domain, batched)
+  §4   Attribute Discovery (P4: per facet within domain)
+  §5   Attribute Chunk Consolidation (P5: merge chunk-level attributes)
+  §6   Attribute Assignment (P6: per facet)
+  §7   Attribute Consolidation (P7: cross-facet dedup within domain)
+  §8   Code Generation from Attributes (P8: per domain)
+  §9   Codebook Consolidation (P9: cross-domain merge)
+  §10  Code Assignment (P10: single idea)
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# §1 DIMENSION CONTEXT BLOCK — shared helper for all prompts
+# §0 DIMENSION CONTEXT BLOCK — shared helper for all prompts
 # =============================================================================
 
 def _extract_key_idea(instruction: str) -> str:
@@ -129,7 +129,7 @@ Taxonomy levels for this dimension:
 
 
 # =============================================================================
-# §2 FACET DISCOVERY (P1) — per-domain chunked pattern extraction
+# §1 FACET DISCOVERY (P1) — per-domain chunked pattern extraction
 # =============================================================================
 
 def build_facet_discovery_prompt(
@@ -332,7 +332,7 @@ class FacetDiscoveryResult(BaseModel):
 
 
 # =============================================================================
-# §3 FACET CONSOLIDATION (P1.5) — merge chunk-level facets into coherent set
+# §2 FACET CONSOLIDATION (P2) — merge chunk-level facets into coherent set
 # =============================================================================
 
 
@@ -483,7 +483,7 @@ class FacetConsolidatedResponse(BaseModel):
 
 
 # =============================================================================
-# §4 FACET ASSIGNMENT (P2) — per-domain batched assignment
+# §3 FACET ASSIGNMENT (P3) — per-domain batched assignment
 # =============================================================================
 
 
@@ -630,7 +630,7 @@ class FacetAssignmentBatch(BaseModel):
 
 
 # =============================================================================
-# §5 ATTRIBUTE DISCOVERY (P3) — per facet within domain
+# §4 ATTRIBUTE DISCOVERY (P4) — per facet within domain
 # =============================================================================
 
 def build_attribute_discovery_prompt(
@@ -830,7 +830,7 @@ class DiscoveredAttribute(BaseModel):
 
 
 class AttributeDiscoveryResult(BaseModel):
-    """P3 output: attributes discovered within a facet."""
+    """P4 output: attributes discovered within a facet."""
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before identifying attributes: "
@@ -848,7 +848,7 @@ class AttributeDiscoveryResult(BaseModel):
 
 
 # =============================================================================
-# §6 ATTRIBUTE CHUNK CONSOLIDATION (P3.25) — merge chunk-level attributes within facet
+# §5 ATTRIBUTE CHUNK CONSOLIDATION (P5) — merge chunk-level attributes within facet
 # =============================================================================
 
 
@@ -1003,7 +1003,7 @@ class AttributeChunkConsolidatedResponse(BaseModel):
     )
 
 # =============================================================================
-# §7 ATTRIBUTE ASSIGNMENT (P4a) — per facet
+# §6 ATTRIBUTE ASSIGNMENT (P6) — per facet
 # =============================================================================
 
 
@@ -1120,7 +1120,7 @@ class AttributeAssignmentBatch(BaseModel):
 
 
 # =============================================================================
-# §8 ATTRIBUTE CONSOLIDATION (P3.5) — cross-facet dedup within domain
+# §7 ATTRIBUTE CONSOLIDATION (P7) — cross-facet dedup within domain
 # =============================================================================
 
 def build_attribute_consolidation_prompt(
@@ -1137,7 +1137,7 @@ def build_attribute_consolidation_prompt(
 ) -> str:
     """Consolidate attributes across facets within a domain into a MECE set.
 
-    P3.5: after P3 discovers attributes per facet independently, this step
+    P7: after P4 discovers attributes per facet independently, this step
     deduplicates overlapping attributes across facets and assigns each
     surviving attribute to its best-fitting facet.
     """
@@ -1299,7 +1299,7 @@ class AttributeConsolidatedResponse(BaseModel):
     )
 
 # =============================================================================
-# §9 CODE GENERATION FROM ATTRIBUTES (P4)  
+# §8 CODE GENERATION FROM ATTRIBUTES (P8)
 # =============================================================================
 
 def build_code_from_attributes_prompt(
@@ -1544,7 +1544,7 @@ class CodeFromAttributes(BaseModel):
 
 
 class CodeGenerationFromAttributesResult(BaseModel):
-    """P4 output: codes derived from attributes."""
+    """P8 output: codes derived from attributes."""
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before deriving codes: "
@@ -1567,7 +1567,7 @@ class CodeGenerationFromAttributesResult(BaseModel):
 
 
 # =============================================================================
-# §10 CODEBOOK CONSOLIDATION (P4.5) — cross-domain review & merge
+# §9 CODEBOOK CONSOLIDATION (P9) — cross-domain review & merge
 # =============================================================================
 
 def build_codebook_consolidation_prompt(
@@ -1584,7 +1584,7 @@ def build_codebook_consolidation_prompt(
     """Consolidate per-domain codes into a final parsimonious, MECE codebook.
 
     Args:
-        raw_codes: All codes from P4 (per-domain)
+        raw_codes: All codes from P8 (per-domain)
         code_provenance: Maps code index to domain_name
         code_frequencies: Maps code index to approximate idea count
     """
@@ -1776,7 +1776,7 @@ class ConsolidatedCode(BaseModel):
 
 
 class CodebookConsolidationResult(BaseModel):
-    """P4.5 output: consolidated codebook."""
+    """P9 output: consolidated codebook."""
     evaluation: str = Field(
         ..., description="Brief analysis of what was merged/removed and why"
     )
@@ -1786,7 +1786,7 @@ class CodebookConsolidationResult(BaseModel):
 
 
 # =============================================================================
-# §11 CODE ASSIGNMENT (P5) — single idea
+# §10 CODE ASSIGNMENT (P10) — single idea
 # =============================================================================
 
 # Re-export data-flow wrapper models (canonical definition in models_exp.py)
@@ -1822,7 +1822,7 @@ def _build_codes_block(
     return "\n\n".join(lines)
 
 
-def build_single_dual_assignment_prompt(
+def build_code_assignment_prompt(
     *,
     survey_question: str,
     language: str,
@@ -1879,7 +1879,7 @@ Provide output as valid JSON following the response schema provided.
 """
 
 
-class CodeAttributeAssignment(BaseModel):
+class CodeAssignmentResponse(BaseModel):
     """Single idea → code assignment."""
     assigned_code_id: str = Field(
         ...,

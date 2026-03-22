@@ -31,7 +31,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 from instructor.function_calls import openai_schema
-from development.step_4_classNcoder.prompts_exp import CodeAttributeAssignment
+from development.step_4_classNcoder.prompts_exp import CodeAssignmentResponse
 
 # Configuration
 FILENAME = TEST_DATA.filename
@@ -101,9 +101,9 @@ def print_prompt(prompt_entry: dict, index: int, total: int):
 def print_response_schema():
     """Display the Pydantic response model schema."""
     print(f"\n{'='*100}")
-    print(f"RESPONSE MODEL: CodeAttributeAssignment")
+    print(f"RESPONSE MODEL: CodeAssignmentResponse")
     print(f"{'='*100}")
-    schema = openai_schema(CodeAttributeAssignment).openai_schema
+    schema = openai_schema(CodeAssignmentResponse).openai_schema
     schema_str = json.dumps(schema, indent=2)
     print(schema_str)
     print(f"\n  Schema: {len(schema_str):,} chars (~{len(schema_str) // 4:,} tokens)")

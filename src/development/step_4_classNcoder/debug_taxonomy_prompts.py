@@ -1,7 +1,7 @@
 #%%
 #
 """
-Debug script for Step 5 Taxonomy prompts (P1-P3.5): Full LLM Request Inspector
+Debug script for Step 5 Taxonomy prompts (P1-P7): Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
 """
@@ -40,7 +40,7 @@ try:
         CodeGenerationFromAttributesResult,
         CodebookConsolidationResult,
         CodeAssignmentBatch,
-        CodeAttributeAssignment,
+        CodeAssignmentResponse,
     )
 except ImportError:
     from prompts_exp import (
@@ -54,7 +54,7 @@ except ImportError:
         CodeGenerationFromAttributesResult,
         CodebookConsolidationResult,
         CodeAssignmentBatch,
-        CodeAttributeAssignment,
+        CodeAssignmentResponse,
     )
 
 
@@ -79,7 +79,7 @@ STATIC_PROMPT_MODELS = {
     "code_generation_from_attributes": CodeGenerationFromAttributesResult,
     "codebook_consolidation": CodebookConsolidationResult,
     "code_assignment": CodeAssignmentBatch,
-    "dual_assignment": CodeAttributeAssignment,
+    "dual_assignment": CodeAssignmentResponse,
 }
 
 
@@ -278,9 +278,9 @@ def main():
         print("\nNo prompts found in files.")
         return
 
-    # Exclude P5 assignment prompts (handled by debug_assignment_prompt.py)
-    P5_TYPES = {"code_assignment", "dual_assignment"}
-    prompts = [p for p in prompts if p.get("prompt_type", "") not in P5_TYPES]
+    # Exclude P10 assignment prompts (handled by debug_assignment_prompt.py)
+    P10_TYPES = {"code_assignment", "dual_assignment"}
+    prompts = [p for p in prompts if p.get("prompt_type", "") not in P10_TYPES]
 
     # Group by prompt_type, keeping first instance of each
     by_type = {}

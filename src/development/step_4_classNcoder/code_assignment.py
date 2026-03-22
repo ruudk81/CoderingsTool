@@ -82,10 +82,10 @@ from config_steps.config_ideaExtractor import (
 from .config_classNcoder_exp import AssignmentConfig, get_other_category_label
 from .models_exp import DomainSet, DomainResultModel, CodeAssignedSubmodel, CodeAssignedModel
 from .prompts_exp import (
-    build_single_dual_assignment_prompt,
+    build_code_assignment_prompt,
     CodeAssignment,
     CodeAssignmentBatch,
-    CodeAttributeAssignment,
+    CodeAssignmentResponse,
     CodeFromAttributes,
 )
 
@@ -221,7 +221,7 @@ class CodeAssigner:
             model=self._config.assignment_model, async_mode=True
         )
 
-        # 1b. Build global facet lookup from P2 facet assignments
+        # 1b. Build global facet lookup from P3 facet assignments
         self._facet_lookup: Dict[str, str] = {}
         for name, mece_res in self._mece_results.items():
             if mece_res.facet_assignments:
@@ -694,7 +694,7 @@ class CodeAssigner:
         candidate_codes = task.get('candidate_codes', self._codes)
         task_id_to_label = task.get('task_id_to_label', self._id_to_label)
         prompt = self._build_dual_assignment_prompt(idea, codes=candidate_codes)
-        response_model = CodeAttributeAssignment
+        response_model = CodeAssignmentResponse
 
         # Prompt capture (first task per partition)
         _assign_key = f"assign_{partition_name}"
@@ -1117,7 +1117,7 @@ class CodeAssigner:
 
         other_label = get_other_category_label(language)
 
-        return build_single_dual_assignment_prompt(
+        return build_code_assignment_prompt(
             survey_question=survey_question,
             language=language,
             dataset_context_section=dataset_context_section,
