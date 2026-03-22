@@ -658,41 +658,30 @@ def build_attribute_discovery_prompt(
         rules = dimension_def.prompt_rules
         attribute_guidance = rules.attribute_instruction
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
-        attribute_question_stem = rules.attribute_diagnostic.rstrip("?")
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
-
-        example_block = ""
-        if dimension_def.examples:
-            ex = dimension_def.examples[0]
-            example_block = f"""
-Example (from a different survey):
-  Survey: {ex.survey_context}
-  Response: "{ex.response}"
-  Domain: {ex.domain}
-  Facet: {ex.facet}
-  Instance: {ex.instance}
-"""
     else:
         attribute_guidance = (
             "An attribute identifies the specific observable property or feature being described. "
             "It is a named property — not a verbatim span from the response."
         )
         attribute_key_idea = "the specific observable property being described"
-        attribute_question_stem = "What specific feature or property is described"
         facet_key_idea = "the analytical lens applied to the subject"
         noun_phrase = dimension_name
         domain_key_idea = "the subject the statement refers to"
-        example_block = ""
 
     excluded_block = _build_exclusion_block(
         excluded_facets or [], "excluded_facets"
     )
 
-    return f"""You are assisting with qualitative analysis.
+    excluded_block_light = _build_exclusion__light_block(
+        excluded_facets or []
+    )
 
-The observations below all belong to a specific facet within a domain. Your task is to identify the concrete attributes (L4) within this facet.
+    return f"""You are a qualitative research analyst specializing in survey response analysis. Your task is to identify the fewest recurring attributes that provide full coverage of a set of observations within a specific facet.
+
+Here is the survey context:
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -700,76 +689,128 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-You are working within this domain and facet:
-<domain>
-{domain_name} — {domain_definition}
-</domain>
-<facet>
-{facet_name} — {facet_description}
-</facet>
-{excluded_block}
-Here are the observations you need to analyze:
-<observations>
-{observations_block}
-</observations>
+Here is the taxonomy context you are working within:
 
-<attribute_definition_guidance>
-Dimension: {dimension_name} — {dimension_description}
-
-Taxonomy levels for this dimension:
+<taxonomy_context>
+This is the structure:
+<taxonomy_structure>
 - Dimension (L1): {noun_phrase}
 - Domain (L2): {domain_key_idea}
 - Facet (L3): {facet_key_idea}
 - Attribute (L4): {attribute_key_idea}
-{example_block}
-Target abstraction level: ATTRIBUTE (L4)
+</taxonomy_structure>
 
+You are working within this dimension:
+<taxonomy_dimension>
+{dimension_name} — {dimension_description}
+</taxonomy_dimension>
+
+And you are working within this domain and facet:
+<taxonomy_domain>
+{domain_name} — {domain_definition}
+</taxonomy_domain>
+<taxonomy_facet>
+{facet_name} — {facet_description}
+</taxonomy_facet>
+{excluded_block}
+
+Here is guidance on what attributes are and how they should be defined:
+
+<attribute_definition_guidance>
+Target abstraction level: ATTRIBUTE (L4)
 {attribute_guidance}
 
-Each attribute must be:
-- **Ontologically distinct** — no two attributes may share conceptual space. An attribute must not be a subset of another attribute, and two attributes must not be two different lenses on the same phenomenon.
-- **Semantically distant** — someone coding a response should clearly know which attribute applies, with no "could go either way" situations.
-- Focused on ONE specific aspect (not a compound list of multiple concerns)
-- A natural grouping of related phenomena within the facet
-- Strictly within the boundaries of the included facet described above
+Each attribute must:
+- Be a descriptive, data-grounded category based on shared meaning across multiple observations
+- Be non-evaluative (no judgment, sentiment, or valence)
+- Stay strictly within the facet boundaries
+- Be internally coherent (one clear underlying concept)
+- Be externally distinctive:
+  * Ontologically distinct (no overlap, no subset/superset, no reframing of same phenomenon)
+  * Semantically separable (no ambiguity in coding; no "could go either way")
+- Be non-redundant (adds unique conceptual value; no duplicate concepts)
+- Be grounded in the data (supported by multiple observations or repeated patterns)
 </attribute_definition_guidance>
+</taxonomy_context>
 
-<task_instructions>
-Follow these steps to complete your analysis:
+Here are the observations you need to analyze:
+
+<observations>
+{observations_block}
+</observations>
+
+# Instructions
+
+Before writing your final output, think through your analysis in the scratchpad field:
 
 **Step 1: Cluster observations**
-Mentally group similar observations together. Look for recurring patterns and themes. Note which observations share the same {attribute_key_idea}.
+Group similar observations together based on shared descriptive meaning. Identify recurring patterns in what is being said within {facet_name}.
+
+Focus on the specific quality, property, or feature being described.
 
 **Step 2: Identify candidate attributes**
-Based on your clustering, identify potential attributes. For each candidate attribute, write:
-- The attribute name
-- {attribute_question_stem} for this attribute
-- Which observation numbers support it
-- Whether it is ontologically distinct from other candidates
+Based on these clusters, identify candidate attributes.
 
-**Step 3: Verify distinctness**
-Ensure that each attribute is:
-- Ontologically distinct (not overlapping in conceptual space)
-- Semantically distant (a coder would clearly know which to choose)
-- Not two lenses on the same phenomenon
+For each candidate attribute, assess:
+- the attribute name
+- the specific observable property it captures
+- which observations support it
+- whether it is internally coherent
+- whether it is ontologically distinct from other candidate attributes
 
-If two attributes fail this test, consolidate them into one.
+Remember: an attribute names a specific quality or trait — a concrete, observable property, not a verbatim span from the response.
 
-**Step 4: Provide final output**
+**Step 3: Verify internal coherence**
+Check whether each candidate attribute captures one clear underlying concept.
+
+Reject or split candidate attributes that:
+- combine multiple different kinds of phenomena
+- mix descriptive content with evaluation
+- are too broad to support clear coding
+
+**Step 4: Verify distinctness**
+Check each pair of candidate attributes to ensure they are:
+- ontologically distinct (not overlapping in conceptual space; one is not a subset of another)
+- semantically separable (someone coding a response would clearly know which attribute applies, with no "could go either way" situations)
+- not two different lenses on the same phenomenon
+
+If two attributes fail this test, consolidate them into one broader attribute or redefine the boundaries more clearly.
+
+**Step 5: Verify facet boundaries**
+Check that each retained attribute falls strictly within the included facet of {facet_name}.
+
+Exclude attributes that belong more naturally to other facets, including:
+{excluded_block_light}
+
+**Step 6: Prepare final output**
+Return only the dominant attributes that pass all checks above.
+
 For each attribute, provide:
-- A short descriptive name (2-5 words)
-- A description of what the attribute captures — a concrete, observable property (1-2 sentences)
-- 2-3 representative observations from the input (exact text, not numbers)
+- a short descriptive name in {language} (2-5 words)
+- a description in {language} of what the attribute captures — a concrete, observable property (1-2 sentences)
+- the parent facet name: {facet_name}
+- 2-3 representative observations from the input, using the exact observation text
+
+# Output Requirements
 
 Provide output as valid JSON following the response schema provided.
-</task_instructions>
 
-<key_reminders>
-- Ensure attributes are ontologically distinct and semantically distant
-- Each attribute should capture ONE {attribute_key_idea}, not multiple
-- All attributes must fall within the included facet, not the excluded facets
+# Language Requirement
+
+All output (attribute names, descriptions, and example observations) must be written in {language}.
+
+# Final Notes
+
+- Attributes must be descriptive, not evaluative
+- Attributes must be grounded in repeated patterns across observations
+- Attributes must be internally coherent
+- Attributes must be externally distinctive
+- Attributes must remain strictly within the included facet
+- Each attribute must capture one specific quality, not multiple
 - All output must be in {language}
-</key_reminders>"""
+- Use exact observation text in the examples, not observation numbers
+
+Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
 
 
 class DiscoveredAttribute(BaseModel):
@@ -790,6 +831,17 @@ class DiscoveredAttribute(BaseModel):
 
 class AttributeDiscoveryResult(BaseModel):
     """P3 output: attributes discovered within a facet."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning before identifying attributes: "
+            "(1) cluster observations by shared descriptive meaning, "
+            "(2) identify candidate attributes and assess coherence and distinctness, "
+            "(3) verify internal coherence — one clear concept per attribute, "
+            "(4) verify distinctness — ontologically distinct and semantically separable, "
+            "(5) verify facet boundaries — exclude attributes belonging to other facets, "
+            "(6) prepare final output with only dominant attributes that pass all checks"
+        )
+    )
     attributes: List[DiscoveredAttribute] = Field(
         ..., description="Concrete attributes identified within the facet"
     )
