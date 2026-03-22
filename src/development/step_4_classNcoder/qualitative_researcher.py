@@ -262,6 +262,9 @@ class QualitativeResearcher:
         self._prompt_printer = prompt_printer
         self._captured_gates: Set[str] = set()
 
+        # Failure tracking for retry pass (P3, P6)
+        self.failed_task_ids: set = set()
+
         # Shared async resources — initialized in _process_all_async()
         self._client = None
         self._semaphore = None
@@ -1235,7 +1238,8 @@ class QualitativeResearcher:
 
             try:
                 result = await self._llm_call(
-                    prompt, FacetDiscoveryResult, self._max_tokens_facet_discovery
+                    prompt, FacetDiscoveryResult, self._max_tokens_facet_discovery,
+                    timeout=60.0,
                 )
                 results[chunk_idx] = result
             except Exception as e:
@@ -1316,7 +1320,7 @@ class QualitativeResearcher:
 
         result = await self._llm_call(
             prompt, FacetConsolidatedResponse, self._max_tokens_facet_discovery,
-            temperature=0.0, model=self._model_p2,
+            temperature=0.0, model=self._model_p2, timeout=60.0,
         )
         return result.facets
 
@@ -1476,26 +1480,41 @@ class QualitativeResearcher:
             try:
                 result = await self._llm_call(
                     prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment,
-                    model=self._model_p3,
+                    model=self._model_p3, timeout=60.0,
                 )
                 return result.assignments
             except Exception as e:
                 print(f"    FACET ASSIGNMENT '{domain_name}' batch "
                       f"{batch_idx + 1}/{len(idea_batches)} FAILED: "
                       f"{type(e).__name__}: {e}")
+                self.failed_task_ids.update(idea.idea_id for idea in batch_ideas)
                 return []
 
+        self.failed_task_ids.clear()  # Reset before main pass
         batch_results = await asyncio.gather(*(
             process_batch(i, batch)
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Retry pass: re-run failed batches (returned empty [])
-        failed_batch_indices = [i for i, r in enumerate(batch_results) if len(r) == 0 and len(idea_batches[i]) > 0]
+        # Retry pass: re-run truly failed batches with reduced concurrency
+        failed_batch_indices = [
+            i for i, batch in enumerate(idea_batches)
+            if any(idea.idea_id in self.failed_task_ids for idea in batch)
+        ]
         if failed_batch_indices:
             print(f"    [RETRY PASS] Retrying {len(failed_batch_indices)} failed batches (facet assignment)...")
+            pre_retry_failed = set(self.failed_task_ids)
+            self.failed_task_ids.clear()
+
+            # Reduced concurrency: 10% of total batches, min 5
+            retry_sem = asyncio.Semaphore(max(5, len(failed_batch_indices) // 10))
+
+            async def retry_batch(batch_idx, batch_ideas):
+                async with retry_sem:
+                    return await process_batch(batch_idx, batch_ideas)
+
             retry_results = await asyncio.gather(*(
-                process_batch(i, idea_batches[i])
+                retry_batch(i, idea_batches[i])
                 for i in failed_batch_indices
             ))
             recovered = 0
@@ -1505,6 +1524,8 @@ class QualitativeResearcher:
                     recovered += 1
             still_failed = len(failed_batch_indices) - recovered
             print(f"    [RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
+            if self.failed_task_ids:
+                print(f"    [RETRY PASS] Permanently failed ideas: {len(self.failed_task_ids)}")
 
         # BP1: Build original idea lookup per batch for validation + content cross-check
         from difflib import SequenceMatcher
@@ -1633,26 +1654,41 @@ class QualitativeResearcher:
                 result = await self._llm_call(
                     prompt, AttributeAssignmentBatch,
                     self._max_tokens_facet_assignment,
-                    model=self._model_p6,
+                    model=self._model_p6, timeout=60.0,
                 )
                 return result.assignments
             except Exception as e:
                 print(f"    ATTR ASSIGNMENT '{domain_name}/{facet_name}' "
                       f"batch {batch_idx + 1}/{len(idea_batches)} FAILED: "
                       f"{type(e).__name__}: {e}")
+                self.failed_task_ids.update(idea.idea_id for idea in batch_ideas)
                 return []
 
+        self.failed_task_ids.clear()  # Reset before main pass
         batch_results = await asyncio.gather(*(
             process_batch(i, batch)
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Retry pass: re-run failed batches (returned empty [])
-        failed_batch_indices = [i for i, r in enumerate(batch_results) if len(r) == 0 and len(idea_batches[i]) > 0]
+        # Retry pass: re-run truly failed batches with reduced concurrency
+        failed_batch_indices = [
+            i for i, batch in enumerate(idea_batches)
+            if any(idea.idea_id in self.failed_task_ids for idea in batch)
+        ]
         if failed_batch_indices:
             print(f"    [RETRY PASS] Retrying {len(failed_batch_indices)} failed batches (attribute assignment)...")
+            pre_retry_failed = set(self.failed_task_ids)
+            self.failed_task_ids.clear()
+
+            # Reduced concurrency: 10% of total batches, min 5
+            retry_sem = asyncio.Semaphore(max(5, len(failed_batch_indices) // 10))
+
+            async def retry_batch(batch_idx, batch_ideas):
+                async with retry_sem:
+                    return await process_batch(batch_idx, batch_ideas)
+
             retry_results = await asyncio.gather(*(
-                process_batch(i, idea_batches[i])
+                retry_batch(i, idea_batches[i])
                 for i in failed_batch_indices
             ))
             recovered = 0
@@ -1662,6 +1698,8 @@ class QualitativeResearcher:
                     recovered += 1
             still_failed = len(failed_batch_indices) - recovered
             print(f"    [RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
+            if self.failed_task_ids:
+                print(f"    [RETRY PASS] Permanently failed ideas: {len(self.failed_task_ids)}")
 
         # BP1: Build original idea lookup per batch for validation + content cross-check
         from difflib import SequenceMatcher
@@ -1846,7 +1884,7 @@ class QualitativeResearcher:
                 result = await self._llm_call(
                     prompt, AttributeDiscoveryResult,
                     self._max_tokens_attribute_discovery,
-                    model=self._model_p4,
+                    model=self._model_p4, timeout=60.0,
                 )
                 results[chunk_idx] = result.attributes
             except Exception as e:
@@ -1931,7 +1969,7 @@ class QualitativeResearcher:
         result = await self._llm_call(
             prompt, AttributeChunkConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            temperature=0.0, model=self._model_p5,
+            temperature=0.0, model=self._model_p5, timeout=60.0,
         )
         return result.attributes
 
@@ -2024,7 +2062,7 @@ class QualitativeResearcher:
         result = await self._llm_call(
             prompt, AttributeConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            model=self._model_p7,
+            model=self._model_p7, timeout=60.0,
         )
         return result.attributes
 
@@ -2120,11 +2158,22 @@ class QualitativeResearcher:
             )
             self._captured_gates.add(gate_key)
 
-        return await self._llm_call(
-            prompt, response_model,
-            self._max_tokens_code_from_attributes,
-            model=self._model_p8,
-        )
+        for attempt in range(2):
+            try:
+                return await self._llm_call(
+                    prompt, response_model,
+                    self._max_tokens_code_from_attributes,
+                    model=self._model_p8,
+                    timeout=120.0,
+                )
+            except Exception as e:
+                if attempt == 0:
+                    print(f"    P8 CODE GENERATION failed (attempt 1), retrying: "
+                          f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    P8 CODE GENERATION failed (attempt 2), returning empty: "
+                          f"{type(e).__name__}: {e}")
+                    return CodeGenerationFromAttributesResult(codes=[], evaluation="PROCESSING_ERROR")
 
     # =========================================================================
     # PHASE 9 (P9): CODEBOOK CONSOLIDATION
@@ -2169,11 +2218,22 @@ class QualitativeResearcher:
             )
             self._captured_gates.add(gate_key)
 
-        return await self._llm_call(
-            prompt, CodebookConsolidationResult,
-            self._max_tokens_codebook_consolidation,
-            model=self._model_p9,
-        )
+        for attempt in range(2):
+            try:
+                return await self._llm_call(
+                    prompt, CodebookConsolidationResult,
+                    self._max_tokens_codebook_consolidation,
+                    model=self._model_p9,
+                    timeout=120.0,
+                )
+            except Exception as e:
+                if attempt == 0:
+                    print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 1), retrying: "
+                          f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 2), returning raw codes: "
+                          f"{type(e).__name__}: {e}")
+                    raise  # Let caller handle fallback to raw codes
 
     # =========================================================================
     # DYNAMIC RATE LIMIT DISCOVERY
