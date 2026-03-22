@@ -450,6 +450,7 @@ class SpellChecker:
 
         self.hunspell_pool = None
         self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
+        self.failed_task_ids = set()  # Track respondent_ids of truly failed API calls
         self.stats = {
             'words_checked': 0,
             'oov_words_found': 0,
@@ -812,6 +813,7 @@ Suggested corrections: {task['suggestions']}
         """Native async OpenAI client with validation - optimized with word-to-response mapping"""
         
         self.var_lab = var_lab
+        self.failed_task_ids.clear()  # Reset failure tracking for this run
 
         oov_words = list(best_suggestions_dict.keys())
         
@@ -1205,15 +1207,45 @@ Suggested corrections: {task_dict['suggestions']}
         # Process tasks using queue-and-workers pattern (following qualityFilter.py)
         corrected_sentences_dict = await self._process_all_tasks_async(filtered_tasks, var_lab, num_workers)
         
-        # Calculate final stats
+        # Calculate stats after main pass
         successful_tasks = self.stats.get('llm_calls_successful', 0)
         failed_tasks = self.stats.get('llm_calls_failed', 0)
-        
+
         print(f"Processing individual tasks... {len(filtered_tasks)}/{len(filtered_tasks)} (100.0%)")
         print(f"- Successful: {successful_tasks}")
         print(f"- Failed: {failed_tasks}")
-        
-        
+
+        # --- RETRY PASS for truly failed tasks ---
+        if self.failed_task_ids:
+            failed_task_list = [
+                task for task in filtered_tasks
+                if task['respondent_id'] in self.failed_task_ids
+            ]
+
+            if failed_task_list:
+                print(f"\n[RETRY PASS] Retrying {len(failed_task_list)} failed tasks with reduced concurrency...")
+
+                # Reset failure tracking for retry pass
+                retry_failed_ids = set(self.failed_task_ids)  # Save for reporting
+                self.failed_task_ids.clear()
+
+                # Use conservative concurrency for retry (10% of original or min 5)
+                retry_workers = max(5, min(len(failed_task_list), num_workers // 10))
+
+                retry_results = await self._process_all_tasks_async(
+                    failed_task_list, var_lab, retry_workers
+                )
+
+                # Merge retry results (overwrite fallback originals with actual corrections)
+                corrected_sentences_dict.update(retry_results)
+
+                recovered = len(retry_failed_ids) - len(self.failed_task_ids)
+                still_failed = len(self.failed_task_ids)
+                print(f"[RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
+
+                if still_failed > 0:
+                    print(f"[RETRY PASS] Permanently failed respondent_ids: {sorted(self.failed_task_ids)[:20]}{'...' if still_failed > 20 else ''}")
+
         return corrected_sentences_dict
 
     async def _process_all_tasks_async(self, filtered_tasks: List[Dict], var_lab: str, num_workers: int) -> Dict[str, str]:
@@ -1309,8 +1341,9 @@ Suggested corrections: {task_dict['suggestions']}
                     # After all retries failed
                     logger.error(f"[DEBUG WORKER] Worker {worker_id} - Task for '{task['respondent_id']}' failed: {e}")
                     self.stats['llm_calls_failed'] += 1
-                    # Create fallback result
-                    results[task['result_index']] = {task['response']: task['response']}
+                    self.failed_task_ids.add(task['respondent_id'])
+                    # Create fallback result (maps respondent_id to original text)
+                    results[task['result_index']] = {task['respondent_id']: task['response']}
                 finally:
                     self.stats['llm_calls_attempted'] += 1
                     queue.task_done()
@@ -1389,22 +1422,28 @@ Suggested corrections: {task_dict['suggestions']}
                     api_latency = time.time() - api_start_time
                     logger.error(f"[API TIMEOUT] Task {respondent_id} timed out after {timeout_seconds:.1f}s")
                     self.stats['llm_calls_failed'] += 1
+                    self.failed_task_ids.add(respondent_id)
                     # Don't add timeout to latency tracker as it's not representative
                 except RateLimitError as e:
                     logger.error(f"[API] RATE LIMIT (429): {respondent_id} - {str(e)}")
                     self.stats['llm_calls_failed'] += 1
+                    self.failed_task_ids.add(respondent_id)
                 except APITimeoutError as e:
                     logger.error(f"[API] API TIMEOUT: {respondent_id} - {str(e)}")
                     self.stats['llm_calls_failed'] += 1
+                    self.failed_task_ids.add(respondent_id)
                 except APIConnectionError as e:
                     logger.error(f"[API] CONNECTION ERROR: {respondent_id} - {str(e)}")
                     self.stats['llm_calls_failed'] += 1
+                    self.failed_task_ids.add(respondent_id)
                 except InternalServerError as e:
                     logger.error(f"[API] INTERNAL SERVER ERROR: {respondent_id} - {str(e)}")
                     self.stats['llm_calls_failed'] += 1
+                    self.failed_task_ids.add(respondent_id)
                 except Exception as e:
                     logger.error(f"[API] UNKNOWN ERROR: {respondent_id} - {type(e).__name__}: {str(e)}")
                     self.stats['llm_calls_failed'] += 1
+                    self.failed_task_ids.add(respondent_id)
                     
                 # Track actual token usage for reconciliation (only if response exists)
                 if response and hasattr(response, '_raw_response'):
@@ -1429,7 +1468,7 @@ Suggested corrections: {task_dict['suggestions']}
 
                     corrected_text = correction.corrected_response
 
-        return {task_dict['response']: corrected_text}
+        return {task_dict['respondent_id']: corrected_text}
 
     def _count_task_tokens(self, task_dict: Dict[str, Any]) -> int:
         """Count tokens needed for individual task (input + estimated output)"""
@@ -1619,6 +1658,7 @@ Suggested corrections: {task_dict['suggestions']}
             # Pass the word_to_responses mapping for optimized task creation
             corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab, word_to_responses)
             corrected_sentences_dict = {k: v for k, v in corrected_sentences_dict.items() if v != '[NO RESPONSE]'}
+            # Note: corrected_sentences_dict is now keyed by respondent_id, not response text
          
         else:
             if self.verbose_reporter.enabled:
@@ -1633,7 +1673,7 @@ Suggested corrections: {task_dict['suggestions']}
         #print(f"[COUNTING DEBUG] Starting correction counting for {len(responses)} responses")
         
         for i, response in enumerate(responses):
-            corrected_response = corrected_sentences_dict.get(response.original_response, response.original_response)
+            corrected_response = corrected_sentences_dict.get(response.respondent_id, response.original_response)
 
             updated_response = SpellCheckModel(
                 respondent_id=response.respondent_id,
@@ -1676,9 +1716,13 @@ Suggested corrections: {task_dict['suggestions']}
         self.stats['corrections_rejected_validation'] = 0
         self.stats['corrections_no_response'] = 0
 
-        for original_response, candidate_correction in corrected_sentences_dict.items():
+        # Build a respondent_id -> original_response lookup for comparison
+        respondent_originals = {r.respondent_id: r.original_response for r in responses}
+
+        for resp_id, candidate_correction in corrected_sentences_dict.items():
             self.stats['corrections_attempted'] += 1
 
+            original_response = respondent_originals.get(resp_id, "")
             # Check for "[NO RESPONSE]" cases or no change
             if candidate_correction == "[NO RESPONSE]" or candidate_correction == original_response:
                 self.stats['corrections_no_response'] += 1
