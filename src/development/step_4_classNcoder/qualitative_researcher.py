@@ -26,7 +26,9 @@ Usage:
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Literal, Optional, Set
+
+from pydantic import BaseModel, Field, create_model
 
 import nest_asyncio
 from aiolimiter import AsyncLimiter
@@ -1983,6 +1985,39 @@ class QualitativeResearcher:
     # PHASE 4 (P4): CODE GENERATION FROM ATTRIBUTES
     # =========================================================================
 
+    @staticmethod
+    def _build_constrained_response_model(
+        attribute_names: List[str],
+    ):
+        """Build a CodeGenerationFromAttributesResult with source_attributes
+        constrained to an enum of valid attribute names."""
+        if not attribute_names:
+            return CodeGenerationFromAttributesResult
+
+        # Create Literal type from known attribute names
+        AttrLiteral = Literal[tuple(attribute_names)]
+
+        # Dynamic CodeFromAttributes with constrained source_attributes
+        ConstrainedCode = create_model(
+            "CodeFromAttributes",
+            code_name=(str, Field(..., description="Short code name (3-5 word noun phrase)")),
+            definition=(str, Field(..., description="Clear definition of what this code covers (1-2 sentences)")),
+            typical_indicators=(List[str], Field(..., description="Words or phrases that signal this code")),
+            source_attributes=(List[AttrLiteral], Field(
+                default_factory=list,
+                description="Attribute names this code is derived from (must be exact names from the inventory)",
+            )),
+        )
+
+        # Dynamic result model using the constrained code model
+        ConstrainedResult = create_model(
+            "CodeGenerationFromAttributesResult",
+            scratchpad=(str, CodeGenerationFromAttributesResult.model_fields["scratchpad"]),
+            codes=(List[ConstrainedCode], Field(..., description="Formal codes derived from the attribute inventory")),
+        )
+
+        return ConstrainedResult
+
     async def _run_code_generation_from_attributes(
         self,
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
@@ -2007,16 +2042,20 @@ class QualitativeResearcher:
             excluded_domains=excluded_domains,
         )
 
+        # Collect all attribute names for enum constraint
+        all_attr_names = [
+            attr.attribute_name
+            for facet_attrs in domain_facet_attributes.values()
+            for attrs in facet_attrs.values()
+            for attr in attrs
+        ]
+        response_model = self._build_constrained_response_model(all_attr_names)
+
         # Prompt capture
         domain_key = "::".join(domain_facet_attributes.keys())
         gate_key = f"qr_code_gen_{domain_key}"
         if (self._prompt_printer is not None
                 and gate_key not in self._captured_gates):
-            total_attrs = sum(
-                len(attrs)
-                for facet_attrs in domain_facet_attributes.values()
-                for attrs in facet_attrs.values()
-            )
             self._prompt_printer.capture_prompt(
                 step_name="qualitative_researcher",
                 utility_name="QualitativeResearcher",
@@ -2028,14 +2067,14 @@ class QualitativeResearcher:
                     "max_tokens": self._max_tokens_code_from_attributes,
                     "language": prompt_context.language,
                     "n_domains": len(domain_facet_attributes),
-                    "n_total_attributes": total_attrs,
+                    "n_total_attributes": len(all_attr_names),
                     "dimension_name": prompt_context.dimension_name,
                 }
             )
             self._captured_gates.add(gate_key)
 
         return await self._llm_call(
-            prompt, CodeGenerationFromAttributesResult,
+            prompt, response_model,
             self._max_tokens_code_from_attributes,
             model=self._model_p4,
         )
