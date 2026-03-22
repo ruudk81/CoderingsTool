@@ -37,6 +37,7 @@ Usage:
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 import time
 import statistics
 from collections import deque
@@ -89,10 +90,37 @@ from .prompts_exp import (
     CodeFromAttributes,
 )
 
-# Reuse Little's Law calculation from qualitative_researcher
-from .qualitative_researcher import (
-    ApiLimits, compute_optimal_concurrency,
-)
+@dataclass
+class ApiLimits:
+    """API limits for Little's Law calculations."""
+    tokens_per_minute: int
+    requests_per_minute: int
+
+
+def compute_optimal_concurrency(
+    limits: ApiLimits,
+    latency_seconds: float,
+    avg_tokens: float,
+    processing_config: Optional[ProcessingConfig] = None,
+    cap: Optional[int] = None,
+    min_conc: Optional[int] = None,
+    headroom: Optional[float] = None,
+) -> int:
+    """Compute optimal concurrency using Little's Law."""
+    config = processing_config or DEFAULT_PROCESSING_CONFIG
+    cap = cap if cap is not None else config.concurrency_cap_default
+    min_conc = min_conc if min_conc is not None else config.concurrency_min_default
+    headroom = headroom if headroom is not None else config.rate_limit_headroom
+
+    latency_seconds = max(float(latency_seconds or 0.5), 0.05)
+    avg_tokens = max(float(avg_tokens or 1.0), 1.0)
+
+    rpm_throughput = limits.requests_per_minute * headroom / 60
+    tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
+    allowed_rps = max(min(rpm_throughput, tpm_throughput), 0.0)
+    target = allowed_rps * latency_seconds  # Little's Law
+
+    return int(max(min(target, cap), min_conc))
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
 nest_asyncio.apply()
