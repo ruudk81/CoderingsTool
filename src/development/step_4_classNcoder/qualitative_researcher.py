@@ -361,9 +361,9 @@ class QualitativeResearcher:
         dimension_description: str = "",
         verbose: bool = False,
     ) -> TaxonomyResult:
-        """Run taxonomy stages only (P1-P3.5): facets, attributes, assignments."""
+        """Run taxonomy stages only (P1-P7): facets, attributes, assignments."""
         print(f"\n{'='*70}")
-        print(f"TAXONOMY DISCOVERY (P1-P3.5)")
+        print(f"TAXONOMY DISCOVERY (P1-P7)")
         print(f"{'='*70}")
 
         prompt_context, partition_contexts, active_partitions = self._prepare_context(
@@ -377,8 +377,8 @@ class QualitativeResearcher:
             n_partitions = len(active_partitions)
             print(f"  Processing {n_partitions} domains concurrently "
                   f"({total_labels} observations, {total_ideas} ideas)")
-            print(f"  Pipeline: P1 facet discovery → P2 facet assignment → "
-                  f"P3 attribute discovery → P3.5 consolidation")
+            print(f"  Pipeline: P1 facet discovery → P3 facet assignment → "
+                  f"P4 attribute discovery → P7 consolidation")
 
         async def _run():
             await self._initialize_async_resources(
@@ -402,9 +402,9 @@ class QualitativeResearcher:
         label_mappings: Optional[Dict[str, PartitionLabelMapping]] = None,
         verbose: bool = False,
     ) -> PipelineResult:
-        """Run codebook stages only (P4-P4.5) from a TaxonomyResult."""
+        """Run codebook stages only (P8-P9) from a TaxonomyResult."""
         print(f"\n{'='*70}")
-        print(f"CODEBOOK GENERATION (P4-P4.5)")
+        print(f"CODEBOOK GENERATION (P8-P9)")
         print(f"{'='*70}")
 
         # Need label_mappings for bootstrap; use empty if not provided
@@ -425,8 +425,9 @@ class QualitativeResearcher:
                 )
             else:
                 # No labels available — use fallback rate limits
-                unique_models = {self._model_p1, self._model_p1_5, self._model_p2,
-                                 self._model_p3, self._model_p4}
+                unique_models = {self._model_p1, self._model_p2, self._model_p3,
+                                 self._model_p4, self._model_p5, self._model_p6,
+                                 self._model_p7, self._model_p8, self._model_p9}
                 self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
                 self._semaphore = asyncio.Semaphore(5)
                 self._rate_limiter = AsyncLimiter(1, time_period=0.1)
@@ -471,7 +472,7 @@ class QualitativeResearcher:
     ):
         """Bootstrap: create clients, probe rate limits, set up concurrency."""
         # Create one client per unique model
-        unique_models = {self._model_p1, self._model_p1_5, self._model_p2, self._model_p3, self._model_p4}
+        unique_models = {self._model_p1, self._model_p2, self._model_p3, self._model_p4, self._model_p5, self._model_p6, self._model_p7, self._model_p8, self._model_p9}
         self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
 
         processing_config = DEFAULT_PROCESSING_CONFIG
@@ -556,17 +557,19 @@ class QualitativeResearcher:
             for m in label_mappings.values()
         )
         n_domains = len(label_mappings)
-        est_p2_batches = n_domains * 3
-        est_p3_tasks = n_domains * 5
-        total_tasks = total_p1_chunks + est_p2_batches + est_p3_tasks + 1
+        est_p3_batches = n_domains * 3
+        est_p4_tasks = n_domains * 5
+        total_tasks = total_p1_chunks + est_p3_batches + est_p4_tasks + 1
 
         self._semaphore = asyncio.Semaphore(min(total_tasks, optimal))
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
 
         if verbose:
             print(f"\n  [RATE LIMITING SETUP]")
-            print(f"  Models: P1={self._model_p1}, P1.5={self._model_p1_5}, "
-                  f"P2={self._model_p2}, P3={self._model_p3}, P4={self._model_p4}")
+            print(f"  Models: P1={self._model_p1}, P2={self._model_p2}, "
+                  f"P3={self._model_p3}, P4={self._model_p4}, P5={self._model_p5}, "
+                  f"P6={self._model_p6}, P7={self._model_p7}, P8={self._model_p8}, "
+                  f"P9={self._model_p9}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
             print(f"  TPM: {limits.tokens_per_minute:,} "
@@ -582,7 +585,7 @@ class QualitativeResearcher:
         prompt_context: PromptContext,
         verbose: bool,
     ) -> PipelineResult:
-        """Main async entry: runs taxonomy (P1-P3.5) then codebook (P4-P4.5)."""
+        """Main async entry: runs taxonomy (P1-P7) then codebook (P8-P9)."""
         await self._initialize_async_resources(
             label_mappings, partition_contexts, prompt_context, verbose
         )
@@ -610,7 +613,7 @@ class QualitativeResearcher:
         prompt_context: PromptContext,
         verbose: bool,
     ) -> TaxonomyResult:
-        """Taxonomy stages P1-P3.5: facets, attributes, assignments."""
+        """Taxonomy stages P1-P7: facets, attributes, assignments."""
         start_time = time.time()
 
         # =================================================================
@@ -661,12 +664,12 @@ class QualitativeResearcher:
                 print(f"    {name}: {facet_names}")
 
         # =================================================================
-        # PHASE 2 (P2): Per-domain Facet Assignment (concurrent)
+        # PHASE 3 (P3): Per-domain Facet Assignment (concurrent)
         # =================================================================
         if verbose:
-            print(f"\n  Phase 2: Per-domain Facet Assignment...")
+            print(f"\n  Phase 3: Per-domain Facet Assignment...")
 
-        t_phase2 = time.time()
+        t_phase3 = time.time()
 
         assignment_tasks = {
             name: self._run_facet_assignment(
@@ -696,7 +699,7 @@ class QualitativeResearcher:
                     n_ideas = len(label_mappings[name].ideas)
                     print(f"    {name}: {n_assigned}/{n_ideas} ideas assigned")
 
-        t_phase2 = time.time() - t_phase2
+        t_phase3 = time.time() - t_phase2
         if verbose:
             total_assigned = sum(len(a) for a in partition_assignments.values())
             print(f"  Phase 2 done in {t_phase2:.1f}s → "
@@ -1647,6 +1650,22 @@ class QualitativeResearcher:
             process_batch(i, batch)
             for i, batch in enumerate(idea_batches)
         ))
+
+        # Retry pass: re-run failed batches (returned empty [])
+        failed_batch_indices = [i for i, r in enumerate(batch_results) if len(r) == 0 and len(idea_batches[i]) > 0]
+        if failed_batch_indices:
+            print(f"    [RETRY PASS] Retrying {len(failed_batch_indices)} failed batches (attribute assignment)...")
+            retry_results = await asyncio.gather(*(
+                process_batch(i, idea_batches[i])
+                for i in failed_batch_indices
+            ))
+            recovered = 0
+            for orig_idx, retry_result in zip(failed_batch_indices, retry_results):
+                if len(retry_result) > 0:
+                    batch_results[orig_idx] = retry_result
+                    recovered += 1
+            still_failed = len(failed_batch_indices) - recovered
+            print(f"    [RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
 
         # BP1: Build original idea lookup per batch for validation + content cross-check
         from difflib import SequenceMatcher
