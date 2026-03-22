@@ -2164,19 +2164,27 @@ class QualitativeResearcher:
     # =========================================================================
 
     async def _llm_call(self, prompt: str, response_model, max_tokens: int,
-                        temperature: float | None = None, model: str | None = None):
-        """Make a rate-limited LLM call through the shared semaphore."""
+                        temperature: float | None = None, model: str | None = None,
+                        timeout: float = 120.0):
+        """Make a rate-limited LLM call through the shared semaphore.
+
+        Timeout is a generous safety net (default 120s for batched prompts).
+        Only catches truly stuck requests — not slow-but-legitimate responses.
+        """
         use_model = model or self._model_p1
         client = self._clients[use_model]
         async with self._semaphore:
             async with self._rate_limiter:
-                return await llm_create_async(
-                    client=client,
-                    model=use_model,
-                    prompt=prompt,
-                    response_model=response_model,
-                    temperature=temperature if temperature is not None else self._temperature,
-                    max_tokens=max_tokens,
+                return await asyncio.wait_for(
+                    llm_create_async(
+                        client=client,
+                        model=use_model,
+                        prompt=prompt,
+                        response_model=response_model,
+                        temperature=temperature if temperature is not None else self._temperature,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=timeout,
                 )
 
     # =========================================================================
