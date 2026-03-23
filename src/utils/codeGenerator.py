@@ -1,1571 +1,590 @@
+"""
+Codebook Generator: Code generation and consolidation pipeline (P8-P9).
 
-# === MODULES ========================================================================================================
+Pipeline (2 stages):
+  P8.  Code Generation from Attributes (per domain) — derive codebook codes
+  P9.  Codebook Consolidation (cross-domain) — merge into final MECE codebook
+
+Accepts taxonomy results from step_4_classifier as input.
+
+Usage:
+    from .codebook_generator import CodebookGenerator
+    from .config_codeGenerator import CodebookConfig
+
+    generator = CodebookGenerator(config)
+    result = generator.generate(
+        taxonomy_result=taxonomy_result,
+        extraction_metadata=extraction_metadata,
+    )
+"""
+
 import asyncio
 import time
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple, Union, Literal
-import json
 from collections import deque
-import itertools
-import logging
-from dataclasses import dataclass
-import difflib
+from dataclasses import dataclass, field
+from typing import Dict, List, Literal, Optional, Set
 
-from openai import OpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-from pydantic import BaseModel, ConfigDict, RootModel, Field, field_validator, model_validator
-import tiktoken
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type #wait_exponential
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, create_model
+
+import nest_asyncio
 from aiolimiter import AsyncLimiter
 
-import umap
-from hdbscan import HDBSCAN
-from sklearn.preprocessing import normalize 
-from sklearn.metrics.pairwise import cosine_similarity
-
-# === CONFIG & MODELS ========================================================================================================
-import models
-from prompts import MECECode
-from config_steps.config_categories import get_other_category_label
-from config_steps.config_embedder import format_idea_text
-from utils.dimension_data import get_dimension
-# Config - generic/universal
+from utils.llm import (
+    create_client, llm_create_async, RateLimits,
+    extract_rate_limits_from_response,
+)
 from config import (
-    OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig,
-    DEFAULT_PROCESSING_CONFIG, API_PROVIDER,
-    AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM,
-    DEFAULT_EMBEDDING_MODEL, DEFAULT_MODEL,
+    ProcessingConfig, DEFAULT_PROCESSING_CONFIG, OPENAI_API_KEY,
+    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params,
+)
+from utils.ideaExtractor import (
+    ConcurrencyGate, ConcurrencyRamp,
+    RealTimeTPMTracker, RealTimeRPMTracker,
+    ApiLimits, compute_optimal_concurrency,
+)
+from utils.qualityFilter import (
+    TokenBucket, LatencyTracker,
+)
+from utils.ideaExtractor import ConcurrencyCircuitBreaker
+from config_steps.config_ideaExtractor import (
+    RampUpConfig,
+    DEFAULT_CIRCUIT_BREAKER_CONFIG,
+)
+from utils.classifier import PhaseRampState
+
+from utils.dimension_data import (
+    get_dimension, DimensionDefinition,
 )
 
-# Config - step-specific
-from config_steps.config_codeGenerator import (
-    DEFAULT_CODEDESIGNER_CONFIG,
-    EXTRA_VERBOSE, STAGE1_TEXT_SOURCE, STAGE1_INPUT_SOURCE,
-    DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS, MIN_LATENCY_SECONDS,
-    TOKENS_FOR_BASELINE_LATENCY, TIMEOUT_PER_1000_TOKENS,
-    OUTPUT_TOKEN_ESTIMATE_MARGIN, FALLBACK_TOKEN_ESTIMATE,
-    DEFAULT_SIMILARITY_THRESHOLD, EMBEDDING_BATCH_SIZE, OPENAI_EMBEDDING_DIMENSION,
-    EXPONENTIAL_BACKOFF_BASE, PROGRESSIVE_SIMILARITY_THRESHOLDS,
-    FINAL_SIMILARITY_THRESHOLD, SIMILARITY_ANALYSIS_THRESHOLDS,
-    CONFLICT_THRESHOLD, DEFAULT_SUB_BATCH_MAX_SIZE,
-    MIN_WORKER_CONCURRENCY, MAX_WORKER_CONCURRENCY,
-    INPUT_TOKEN_ESTIMATE_MARGIN, OUTPUT_ESTIMATE_PCT_OF_INPUT,
-    FIRST_PROMPT_ALLOCATION_PCT, ASSUMED_LATENCY_PER_REQUEST,
-    BUCKET_STATUS_RECENT_SAMPLES, LOW_TOKEN_THRESHOLD_PCT,
-    PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_REPORT_INTERVAL,
-    MIN_GROUP_SIZE_FOR_THEME_EXTRACTION,
-)
-# Prompts + response models
-from prompts import (
-    CLUSTER_SUMMARY_PROMPT,
-    CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
-    HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
-    VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
-    MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
-    # Response models for Prompt 1 (Theme Extraction)
-    NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput,
-    # Response models for Prompt 2 (Coding Decision)
-    MatchedCandidate, ModifyParameters, CodingDecision, CodingDecisionOutput,
-    # Response models for Prompt 3 (Code Generation)
-    GeneratedCode, CodeGenerationOutput,
-    # Response models for Prompt 4 (Validation)
-    ValidatedCode, OriginalRecommendation, CodeValidation, ValidationResult,
-)
-from utils.verboseReporter import VerboseReporter
-from utils.llm import create_client, llm_create_sync, RateLimits, extract_rate_limits_from_response
-
-try:
-    import nest_asyncio
-    nest_asyncio.apply()
-except ImportError:
-    pass
-
-# Create sync client for codeGenerator (supports both OpenAI and Azure)
-# For Azure: uses AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER  
-# For OpenAI: uses the model name directly with responses API
-client = create_client(
-    model=DEFAULT_CODEDESIGNER_CONFIG.model,
-    async_mode=False,
-    azure_deployment=AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER if API_PROVIDER == "azure" else None
+from models import (
+    DomainSet, DomainResultModel, TaxonomyResultsCache, DomainDescription,
 )
 
-logger = logging.getLogger(__name__)
+from config_steps.config_codeGenerator import CodebookConfig
+from prompts_steps.prompts_codeGenerator import (
+    # P8: Code Generation from Attributes
+    build_code_from_attributes_prompt,
+    CodeGenerationFromAttributesResult,
+    CodeFromAttributes,
+    # P9: Codebook Consolidation
+    build_codebook_consolidation_prompt,
+    CodebookConsolidationResult,
+    ConsolidatedCode,
+    # Attribute types needed for P8 input formatting
+    DiscoveredAttribute,
+)
 
-# Configure logging based on EXTRA_VERBOSE
-if EXTRA_VERBOSE:
-    logging.basicConfig(level=logging.INFO)
-else:
-    logging.basicConfig(level=logging.CRITICAL)
+# Enable nested event loops (for VS Code interactive / notebook compatibility)
+nest_asyncio.apply()
 
-import warnings
 
-warnings.filterwarnings(
-    "ignore",
-    message=r".*n_jobs value 1 overridden to 1 by setting random_state.*",
-    category=UserWarning,
-    module=r"umap\.umap_" )
-
-# ============================================================================
-# INTERNAL DATA STRUCTURES
-# ============================================================================
+# =============================================================================
+# SHARED DATACLASSES
+# =============================================================================
 
 @dataclass
-class _ClusterData:
-    """Container for cluster data during theme extraction."""
-    cluster_id: Union[int, str]
-    ideas: List[Any]  # Full idea objects (ClusterSubmodel)
-    embeddings: List[np.ndarray]
-    idea_texts: List[str]  # Processed idea texts (with template prefix stripped)
+class PromptContext:
+    """Shared context passed to all prompt formatting methods."""
+    survey_question: str
+    language: str
+    dataset_context_section: str
+    dimension_name: str
+    dimension_description: str
+    dimension_def: Optional[DimensionDefinition] = None
 
-# ============================================================================
-# PYDANTIC MODELS FOR STRUCTURED OUTPUTS
-# ============================================================================
-# Note: Prompt 1-4 response models are now in prompts.py:
-# - Prompt 1: NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput
-# - Prompt 2: MatchedCandidate, ModifyParameters, CodingDecision, CodingDecisionOutput
-# - Prompt 3: GeneratedCode, CodeGenerationOutput
-# - Prompt 4: ValidatedCode, OriginalRecommendation, CodeValidation, ValidationResult
-
-"""Codebook with reasoning"""
-class CodeGeneratorReasoningResults(BaseModel):
-    cluster_results: List[Dict[str, Any]]  # Raw results from each cluster
-    
-    step1_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 1 received
-    step2_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 2 received
-    step3_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 3 received
-    step4_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 4 received
-    step3_validation_warnings: Dict[Union[int, str], List[Dict[str, Any]]] = {}  # Validation warnings
-    
-    step1_summaries: Dict[Union[int, str], Dict[str, Any]]  # ClusterThemeAnalysis: {cluster_summary, themes[]}
-    step2_analysis: Dict[Union[int, str], Dict[str, Any]]  # CodingDecisionOutput: {coding_decisions[]}
-    step3_recommendations: Dict[Union[int, str], Dict[str, Any]]  # CodeGenerationOutput: {generated_codes[]}  
-    step4_validations: Dict[Union[int, str], Dict[str, Any]]  # ValidationResult: {code_validations[]}
-    step4_validated_codes: Dict[Union[int, str], Dict[str, Any]] = {}  # Final validated codes from Step 4
-    
-    stats: Dict[str, Any]
-    generator_version: str
-    var_lab: str
-    total_clusters: int
-    total_ideas: int
-    processing_timestamp: str
-    
-    cluster_assignments: Dict[Union[int, str], Dict[str, Any]]
-    codebook: List[Dict[str, str]]   
-    cluster_data: Dict[Union[int, str], Dict[str, Any]]   
-    validation_details: Optional[Dict[Union[int, str], Any]] = None
-    redistribution_stats: Optional[Dict[str, Any]] = None  # Statistics from idea redistribution
-    multi_theme_mapping: Optional[Dict[int, List[str]]] = None  # {original_id: [sub_id_1, ...]}
-    
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    def get(self, key: str, default=None):
-        return getattr(self, key, default)
-
-# ============================================================================
-#  RATE LIMITING CLASSES 
-# ============================================================================
-
-class TokenBucket:
-    """Simple token bucket for TPM limiting"""
-    def __init__(self, tokens_per_minute):
-        self.tpm = tokens_per_minute
-        self.available = tokens_per_minute
-        self.last_update = time.monotonic()
-        self.lock = asyncio.Lock()
-    
-    async def acquire(self, tokens_needed):
-        """Acquire tokens, returning wait time if not available"""
-        async with self.lock:
-            now = time.monotonic()
-            elapsed = now - self.last_update
-            # Regenerate tokens based on time elapsed
-            self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
-            self.last_update = now
-            
-            if self.available >= tokens_needed:
-                self.available -= tokens_needed
-                return True
-            else:
-                # Calculate wait time
-                deficit = tokens_needed - self.available
-                wait_seconds = deficit * 60 / self.tpm
-                return wait_seconds
-    
-    async def wait_and_acquire(self, tokens_needed):
-        """Wait if necessary and acquire tokens"""
-        logger.debug(f"[TOKEN BUCKET] Requesting {tokens_needed} tokens")
-        
-        while True:
-            result = await self.acquire(tokens_needed)
-            if result is True:
-                logger.debug(f"[TOKEN BUCKET] Acquired {tokens_needed} tokens, {self.available:.0f} remaining")
-                return
-            else:
-                # result is wait_seconds
-                logger.debug(f"[TOKEN BUCKET] Insufficient tokens, waiting {result:.1f}s")
-                await asyncio.sleep(result)
-    
-    async def reconcile(self, delta_tokens):
-        """Reconcile actual vs estimated tokens"""
-        # If we overestimated (delta < 0), return tokens
-        # If we underestimated (delta > 0), we already used them
-        if delta_tokens < 0:
-            async with self.lock:
-                old_available = self.available
-                self.available = min(self.tpm, self.available - delta_tokens)
-                logger.debug(f"[TOKEN BUCKET] Reconciled {-delta_tokens} tokens back, {old_available:.0f} → {self.available:.0f}")
-        else:
-            logger.debug(f"[TOKEN BUCKET] No reconciliation needed for +{delta_tokens} tokens (underestimated)")
-
-class LatencyTracker:
-    """Simple EMA tracker for latencies"""
-    def __init__(self, processing_config: Optional[ProcessingConfig] = None):
-        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.ema = None
-        self.alpha = self.processing_config.latency_tracker_ema_alpha
-        self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
-
-    def add(self, value):
-        """Add a latency measurement"""
-        self.values.append(value)
-        if self.ema is None:
-            self.ema = value
-        else:
-            self.ema = self.alpha * value + (1 - self.alpha) * self.ema
-
-    def get_timeout(self, est_tokens):
-        """Calculate timeout based on EMA and token count with configurable bounds"""
-        config = self.processing_config
-        if not self.values:
-            return max(config.adaptive_timeout_min_seconds, DEFAULT_TIMEOUT_SECONDS)
-
-        # Use P95 latency as base
-        p95 = np.percentile(list(self.values), 95)
-        # Simple linear scaling with token count
-        # Assume additional timeout per 1000 tokens as baseline
-        token_factor = est_tokens / TOKENS_FOR_BASELINE_LATENCY
-        timeout = p95 + (token_factor * TIMEOUT_PER_1000_TOKENS)
-        # Apply margin and configurable bounds
-        return max(config.adaptive_timeout_min_seconds, min(config.adaptive_timeout_max_seconds, timeout * config.adaptive_timeout_margin))
-    
-    def get_avg_latency(self):
-        """Get average latency for concurrency calculations"""
-        if not self.values:
-            return ASSUMED_LATENCY_PER_REQUEST
-        return self.ema if self.ema is not None else ASSUMED_LATENCY_PER_REQUEST
-
-
-# ============================================================================
-# PROCESSING UTILITY FUNCTIONS 
-# ============================================================================
 
 @dataclass
-class ApiLimits:
-    """API limits structure for bootstrap calculations"""
-    tokens_per_minute: int
-    requests_per_minute: int
+class DomainContext:
+    """Partition-specific context."""
+    partition_name: str
+    partition_definition: str
 
 
-def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float, processing_config: Optional[ProcessingConfig] = None, cap: Optional[int] = None, min_conc: Optional[int] = None, headroom: Optional[float] = None) -> int:
-    """Compute optimal concurrency using Little's Law"""
-    config = processing_config or DEFAULT_PROCESSING_CONFIG
-    cap = cap if cap is not None else config.concurrency_cap_default
-    min_conc = min_conc if min_conc is not None else config.concurrency_min_default
-    headroom = headroom if headroom is not None else config.rate_limit_headroom
-
-    latency_seconds = max(float(latency_seconds or 0.5), 0.05)
-    avg_tokens = max(float(avg_tokens or 1.0), 1.0)
-
-    rpm_throughput = limits.requests_per_minute * headroom / 60
-    tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
-    candidates = [rpm_throughput, tpm_throughput]
-    allowed_rps = max(min(candidates), 0.0)
-    target = allowed_rps * latency_seconds   # Little's Law
-
-    return int(max(min(target, cap), min_conc))
+@dataclass
+class TaxonomyResult:
+    """Input from taxonomy stages P1-P7 (mirrors step_4_classifier.classifier.TaxonomyResult)."""
+    partition_n_labels: Dict[str, int]
+    partition_n_batches: Dict[str, int]
+    partition_facets: Dict[str, list]  # domain -> [DiscoveredFacet]
+    partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
+    partition_attributes: Dict[str, Dict[str, list]]  # domain -> {facet -> [DiscoveredAttribute]}
+    attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
 
 
-def normalize_usage(u) -> dict:
-    """Normalize OpenAI API usage data to handle different naming conventions"""
-    if not u:
-        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    
-    # Handle both dict-like and Pydantic model objects (ResponseUsage)
-    def safe_get(obj, key, default=None):
-        """Safely get value from dict or Pydantic model"""
-        if hasattr(obj, 'get'):
-            return obj.get(key, default)  # Dict-like access
-        else:
-            return getattr(obj, key, default)  # Attribute access for Pydantic models
-    
-    # Primary names (Responses API)
-    input_tok = safe_get(u, "input_tokens")
-    output_tok = safe_get(u, "output_tokens")
-    
-    # Back-compat aliases (Chat Completions API)
-    if input_tok is None:
-        input_tok = safe_get(u, "prompt_tokens", 0)
-    if output_tok is None:
-        output_tok = safe_get(u, "completion_tokens", 0)
-    
-    total = safe_get(u, "total_tokens", (input_tok or 0) + (output_tok or 0))
-    
-    # Optional breakdowns sometimes present on reasoning models
-    details = safe_get(u, "output_tokens_details") or {}
-    if details and hasattr(details, 'get'):
-        reasoning_tok = details.get("reasoning_tokens")
-    elif details:
-        reasoning_tok = getattr(details, "reasoning_tokens", None)
-    else:
-        reasoning_tok = safe_get(u, "reasoning_tokens")
-    
-    result = {
-        "prompt_tokens": input_tok or 0,
-        "completion_tokens": output_tok or 0,
-        "total_tokens": total or 0,
-    }
-    
-    # Add reasoning tokens if present
-    if reasoning_tok is not None:
-        result["reasoning_tokens"] = reasoning_tok
-    
-    return result
+@dataclass
+class DomainResult:
+    """Per-domain pipeline result (v3)."""
+    partition_name: str
+    n_labels: int
+    n_batches: int
+    facets: list
+    facet_assignments: Dict[str, str]  # idea_id -> facet_name
+    attributes: Dict[str, list]  # facet_name -> attributes
+    attribute_assignments: Dict[str, str] = field(default_factory=dict)  # idea_id -> attribute_name
 
 
-async def bootstrap_measure_async(call_fn, n_probes: int = 3):
-    """Run n_probes serial calls and return (avg_latency_s, avg_tokens). call_fn() -> usage dict."""
-    latencies, tokens = [], []
-    for _ in range(n_probes):
-        t0 = time.perf_counter()
-        usage = await call_fn()  # Let tenacity handle timeouts and retries
-        t1 = time.perf_counter()
-        latencies.append(max(t1 - t0, 0.001))
-        pt = int(usage.get("prompt_tokens", 0))
-        ct = int(usage.get("completion_tokens", 0))
-        tokens.append(max(pt + ct, 1))
-    return sum(latencies)/len(latencies), sum(tokens)/len(tokens)
+@dataclass
+class CodebookResult:
+    """Output of codebook stages P8-P9."""
+    codes: List[ConsolidatedCode]
+    codebook_narrative: str
 
-# ============================================================================
-# ASYNC API WRAPPERS & ERROR HANDLING
-# ============================================================================
 
-class RetryableError(Exception):
-    """Retryable API errors for tenacity"""
-    pass
+# =============================================================================
+# MAIN PROCESSOR
+# =============================================================================
 
-class JSONValidationError(Exception):
-    """JSON validation errors that should trigger retries with enhanced prompts"""
-    pass
-
-def extract_json_from_markdown(text: str) -> str:
-    """Extract JSON from markdown code blocks or embedded JSON in text.
-
-    Handles:
-    1. ```json ... ``` - JSON in markdown code block
-    2. ``` ... ``` - Code block without language identifier
-    3. Text with embedded JSON - Find first { and last } for JSON object extraction
+class CodebookGenerator:
     """
-    import re
+    Codebook Generator: Code generation and consolidation pipeline (P8-P9).
 
-    text = text.strip()
-
-    # Check for ```json ... ``` pattern
-    if text.startswith('```json') and text.endswith('```'):
-        lines = text.split('\n')
-        if len(lines) >= 3:
-            return '\n'.join(lines[1:-1])
-
-    # Check for ``` ... ``` pattern (without json identifier)
-    if text.startswith('```') and text.endswith('```'):
-        lines = text.split('\n')
-        if len(lines) >= 3:
-            return '\n'.join(lines[1:-1])
-
-    # Check for JSON code block anywhere in the text (not just at start/end)
-    json_block_match = re.search(r'```(?:json)?\s*\n(.*?)```', text, re.DOTALL)
-    if json_block_match:
-        return json_block_match.group(1).strip()
-
-    # Try to find embedded JSON object in text (useful when LLM outputs analysis text before JSON)
-    # Find the first { and last } which typically encloses the JSON object
-    first_brace = text.find('{')
-    last_brace = text.rfind('}')
-
-    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        potential_json = text[first_brace:last_brace + 1]
-        # Validate it's likely JSON by checking for basic structure
-        try:
-            import json
-            json.loads(potential_json)  # Validate it's parseable
-            return potential_json
-        except json.JSONDecodeError:
-            pass  # Fall through to return original
-
-    # Return original text if no JSON extraction possible
-    return text
-
-async def async_responses_create_with_json_retry(
-    model: str,
-    prompt: str,
-    response_model,
-    reasoning_effort: str = "minimal",
-    text_verbosity: str = "low",
-    semaphore=None,
-    rate_limiter=None,
-    tpm_bucket=None,
-    latency_tracker=None,
-    config=None,
-    max_retries: int = 3,
-    timeout: float = 30.0
-):
-    """Async wrapper that passes response_model to instructor for structured output.
-
-    Instructor handles:
-    - JSON validation against the Pydantic schema
-    - Automatic retries on validation errors (3x by default)
-    - Schema enforcement via Azure's TOOLS mode
-
-    Args:
-        response_model: Pydantic model for structured output validation
+    Pipeline (2 stages):
+    P8.  CODE GENERATION:                   Per domain, derive codes from attributes
+    P9.  CODEBOOK CONSOLIDATION:            Cross-domain, merge into MECE codebook
     """
-    # Pass response_model to instructor - it handles validation and retries
-    response = await async_responses_create_with_unified_limits(
-        model=model,
-        prompt=prompt,
-        semaphore=semaphore,
-        rate_limiter=rate_limiter,
-        tpm_bucket=tpm_bucket,
-        latency_tracker=latency_tracker,
-        config=config,
-        response_model=response_model,
-        reasoning_effort=reasoning_effort,
-        text_verbosity=text_verbosity
-    )
 
-    # Response is already a validated Pydantic model from instructor
-    return response
+    def __init__(self, config: CodebookConfig, prompt_printer=None):
+        self._model_p8 = config.model_p8
+        self._model_p9 = config.model_p9
+        self._temperature = config.temperature
+        self._max_tokens_code_from_attributes = config.max_tokens_code_from_attributes
+        self._max_tokens_codebook_consolidation = config.max_tokens_codebook_consolidation
 
-@retry(
-    reraise=True,
-    stop=stop_after_attempt(6),
-    wait=wait_exponential_jitter(initial=0.5, max=8),
-    retry=retry_if_exception_type(RetryableError)
-)
-def _sync_responses_create(model: str, prompt: str, response_model=None, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0, raw_input: bool = False):
-    """Sync wrapper for LLM calls with retry logic and adaptive timeout.
+        # Prompt capture (optional)
+        self._prompt_printer = prompt_printer
+        self._captured_gates: Set[str] = set()
 
-    Uses llm_create_sync() which handles provider differences:
-    - OpenAI: uses responses.create() with input= parameter
-    - Azure: uses chat.completions.create() with messages= parameter
+        # Concurrency ramp config
+        self._ramp_config = config.ramp_config
 
-    Args:
-        response_model: Pydantic model for structured output. Instructor handles validation.
+        # Shared async resources — initialized in generate()
+        self._clients = None
+        self._semaphore = None
+        self._rate_limiter = None
+        self._fetched_limits = None
 
-    Note: reasoning_effort and text_verbosity are only used for OpenAI GPT-5 reasoning models.
-    Azure uses chat completion without reasoning features.
-    """
-    # For Azure: the module-level client is locked to one deployment (gpt-4.1-mini).
-    # Override model to match the client's deployment to avoid DeploymentNotFound.
-    # For OpenAI: per-stage model selection works as-is (model param in body determines routing).
-    effective_model = DEFAULT_CODEDESIGNER_CONFIG.model if API_PROVIDER == "azure" else model
+    # =========================================================================
+    # PUBLIC API
+    # =========================================================================
 
-    try:
-        # Use llm_create_sync which handles OpenAI vs Azure differences
-        # Instructor with TOOLS mode validates response against the Pydantic model
-        return llm_create_sync(
-            client=client,
-            model=effective_model,
-            prompt=prompt,
-            response_model=response_model,  # Instructor handles validation and retries
-            temperature=0.0,  # Use deterministic output for code generation
-            track_usage=True
-        )
-    except asyncio.TimeoutError as e:
-        logger.error(f"[API TIMEOUT] Request timed out after {timeout:.1f}s - {str(e)}")
-        raise RetryableError(str(e)) from e
-    except RateLimitError as e:
-        logger.error(f"[RATE LIMIT] 429 error - {str(e)}")
-        raise RetryableError(str(e)) from e
-    except APITimeoutError as e:
-        logger.error(f"[API TIMEOUT] OpenAI timeout - {str(e)}")
-        raise RetryableError(str(e)) from e
-    except APIConnectionError as e:
-        logger.error(f"[CONNECTION ERROR] Network/connection issue - {str(e)}")
-        raise RetryableError(str(e)) from e
-    except InternalServerError as e:
-        logger.error(f"[INTERNAL SERVER ERROR] 5xx error - {str(e)}")
-        raise RetryableError(str(e)) from e
-    except Exception as e:
-        logger.error(f"[UNKNOWN ERROR] {type(e).__name__}: {str(e)}")
-        raise  # Re-raise non-retryable errors immediately
-
-async def async_responses_create(model: str, prompt: str, response_model=None, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0, raw_input: bool = False):
-    """Async wrapper using asyncio.to_thread for true concurrency with adaptive timeout"""
-    return await asyncio.to_thread(_sync_responses_create, model, prompt, response_model, reasoning_effort, text_verbosity, timeout, raw_input)
-
-async def async_responses_create_with_unified_limits(
-    model: str,
-    prompt: str,
-    semaphore: asyncio.Semaphore,
-    rate_limiter: AsyncLimiter,
-    tpm_bucket: TokenBucket,
-    latency_tracker: LatencyTracker,
-    config,
-    response_model=None,
-    reasoning_effort: str = "minimal",
-    text_verbosity: str = "low"
-):
-    """Async wrapper with unified rate limiting (following qualityFilter.py patterns)"""
-    # Estimate tokens for this request
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-        tokens_needed = int(len(encoding.encode(prompt)) * OUTPUT_TOKEN_ESTIMATE_MARGIN)
-    except Exception:
-        tokens_needed = FALLBACK_TOKEN_ESTIMATE
-
-    # Calculate adaptive timeout before rate limiting
-    timeout_seconds = latency_tracker.get_timeout(tokens_needed)
-
-    # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
-    # then acquire token bucket and rate limiter
-    async with semaphore:
-        await tpm_bucket.wait_and_acquire(tokens_needed)
-        async with rate_limiter:
-            response = await async_responses_create(model, prompt, response_model, reasoning_effort, text_verbosity, timeout_seconds)
-
-            # Token reconciliation (if possible)
-            # For instructor responses, check _raw_response for usage data
-            usage = None
-            if hasattr(response, '_raw_response') and response._raw_response:
-                usage = getattr(response._raw_response, 'usage', None)
-            if not usage and hasattr(response, 'usage'):
-                usage = response.usage
-
-            if usage:
-                actual_tokens = getattr(usage, 'total_tokens', 0) or (
-                    getattr(usage, 'prompt_tokens', 0) + getattr(usage, 'completion_tokens', 0)
-                )
-                if actual_tokens > 0:
-                    delta = actual_tokens - tokens_needed
-                    await tpm_bucket.reconcile(delta)
-
-            return response
-
-# ============================================================================
-# SHARED CODEBOOK 
-# ============================================================================
-
-class SharedCodebook:
-    """Thread-safe shared codebook with async lock and version tracking"""
-    
-    def __init__(self, initial_codes: List[Dict[str, str]], max_cached_versions: int = 5):
-        self._codes = initial_codes.copy()
-        self._lock = asyncio.Lock()
-        self._version = 0
-        self._update_log = []
-        self._embedding_cache = {}
-        self._max_cached_versions = max_cached_versions
-    
-    async def get_current_snapshot(self) -> Tuple[List[Dict[str, str]], int]:
-        """Get current codes and version atomically"""
-        async with self._lock:
-            return self._codes.copy(), self._version
-    
-    async def add_code_if_new(self, code: str, definition: str, cluster_id: Optional[Union[int, str]] = None) -> Tuple[bool, int]:
-        """Add a new code if it doesn't exist, return (added, new_version)"""
-        async with self._lock:
-            # Check if code already exists
-            for existing in self._codes:
-                if existing['code'].lower() == code.lower():
-                    return False, self._version
-            
-            # Add new code with cluster origin tracking
-            code_entry = {'code': code, 'definition': definition}
-            if cluster_id is not None:
-                code_entry['source_cluster_id'] = str(cluster_id)
-            
-            self._codes.append(code_entry)
-            self._version += 1
-            self._update_log.append({
-                'version': self._version,
-                'action': 'add',
-                'code': code,
-                'cluster_id': cluster_id,
-                'timestamp': time.time()
-            })
-            return True, self._version
-    
-    async def replace_code(self, original_code: str, new_code: str, new_definition: str, cluster_id: Optional[Union[int, str]] = None) -> Tuple[bool, int]:
-        """Replace an existing code with a modified version, return (replaced, new_version)"""
-        async with self._lock:
-            # Find and replace the original code
-            for i, existing in enumerate(self._codes):
-                if existing['code'].lower() == original_code.lower():
-                    # Preserve existing cluster_id if none provided, otherwise use new one
-                    existing_cluster_id = existing.get('source_cluster_id') if cluster_id is None else str(cluster_id)
-                    
-                    replacement_entry = {'code': new_code, 'definition': new_definition}
-                    if existing_cluster_id is not None:
-                        replacement_entry['source_cluster_id'] = existing_cluster_id
-                    
-                    self._codes[i] = replacement_entry
-                    self._version += 1
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'replace',
-                        'original_code': original_code,
-                        'new_code': new_code,
-                        'cluster_id': cluster_id,
-                        'timestamp': time.time()
-                    })
-                    return True, self._version
-            
-            # Original code not found - fail gracefully instead of creating duplicate
-            self._update_log.append({
-                'version': self._version,
-                'action': 'replace_failed',
-                'original_code': original_code,
-                'new_code': new_code,
-                'cluster_id': cluster_id,
-                'timestamp': time.time(),
-                'reason': 'original_code_not_found'
-            })
-            return False, self._version
-    
-    async def get_version_info(self) -> Dict[str, Any]:
-        """Get codebook version information"""
-        async with self._lock:
-            return {
-                'version': self._version,
-                'total_codes': len(self._codes),
-                'recent_updates': self._update_log[-5:] if self._update_log else []
-            }
-
-    async def get_code_with_examples(self, code_name: str) -> Optional[Dict[str, Any]]:
-        """Get a code entry including its assignment_examples
+    def generate(
+        self,
+        taxonomy_result: TaxonomyResult,
+        partition_set: DomainSet,
+        survey_question: str = "",
+        language: str = "Dutch",
+        dataset_context: Optional[Dict[str, str]] = None,
+        dimension_name: str = "",
+        dimension_description: str = "",
+        verbose: bool = False,
+        prompt_printer=None,
+    ) -> CodebookResult:
+        """Run codebook stages (P8-P9) from a TaxonomyResult.
 
         Args:
-            code_name: The code label to search for
-
-        Returns:
-            Full code dict with assignment_examples if found, None otherwise
+            taxonomy_result: Output from TaxonomyClassifier.process()
+            partition_set: Domain partition definitions
+            survey_question: The survey question being coded
+            language: Language of the survey responses
+            dataset_context: Optional dataset context dict
+            dimension_name: Name of the dimension being analyzed
+            dimension_description: Description of the dimension
+            verbose: Print progress information
+            prompt_printer: Optional prompt printer (overrides __init__ printer)
         """
-        async with self._lock:
-            for code in self._codes:
-                if self._is_duplicate(code['code'], code_name):
-                    # Return a copy to prevent external modification
-                    return code.copy()
-            return None
+        if prompt_printer is not None:
+            self._prompt_printer = prompt_printer
 
-    async def get_embeddings_for_version(self, version: int) -> Optional[List[np.ndarray]]:
-        """Get cached embeddings for a specific version"""
-        async with self._lock:
-            return self._embedding_cache.get(version)
-    
-    async def cache_embeddings(self, version: int, embeddings: List[np.ndarray]):
-        """Cache embeddings for a version with memory management"""
-        async with self._lock:
-            self._embedding_cache[version] = embeddings
-            
-            # Memory management: keep only recent versions
-            if len(self._embedding_cache) > self._max_cached_versions:
-                # Remove oldest cached version
-                oldest_version = min(self._embedding_cache.keys())
-                del self._embedding_cache[oldest_version]
-    
-    def _normalize_code_name(self, code: str) -> str:
-        """Normalize code name for consistent comparison"""
-        return code.strip().lower().replace('-', ' ').replace('_', ' ')
-    
-    def _is_duplicate(self, code1: str, code2: str) -> bool:
-        """Check if two codes are duplicates using normalized comparison"""
-        norm1 = self._normalize_code_name(code1)
-        norm2 = self._normalize_code_name(code2)
-        return norm1 == norm2
-    
-    async def batch_update(self, new_codes: List[Dict[str, str]], expected_base_version: int) -> bool:
-        """Phase 3: Batch update multiple codes atomically with comprehensive duplicate detection"""
-        async with self._lock:
-            # Version conflict check with retry logic
-            if self._version != expected_base_version:
-                version_conflict_info = {
-                    'expected_version': expected_base_version,
-                    'actual_version': self._version,
-                    'codes_to_add': len(new_codes),
-                    'timestamp': time.time()
-                }
-                
-                # Log version conflict
-                self._update_log.append({
-                    'version': self._version,
-                    'action': 'version_conflict_detected',
-                    **version_conflict_info
-                })
-                
-                # For safety, validate that proceeding won't cause issues
-                # Check if any of the new codes would conflict with recent additions
-                recent_adds = [log for log in self._update_log[-10:] 
-                              if log.get('action') in ['add', 'batch_add'] and 
-                              log.get('version', 0) > expected_base_version]
-                
-                potential_conflicts = 0
-                for code_dict in new_codes:
-                    for recent_add in recent_adds:
-                        if self._is_duplicate(code_dict['code'], recent_add.get('code', '')):
-                            potential_conflicts += 1
-                
-                if potential_conflicts > 0:
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'version_conflict_blocked',
-                        'potential_conflicts': potential_conflicts,
-                        **version_conflict_info
-                    })
-                    return False  # Refuse to proceed with conflicting update
-                else:
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'version_conflict_resolved',
-                        'reason': 'no_potential_conflicts',
-                        **version_conflict_info
-                    })
-            
-            # Batch add all new codes with enhanced duplicate detection
-            added_count = 0
-            duplicates_merged = 0  # Count of cluster IDs merged into existing codes
-            
-            for code_dict in new_codes:
-                code = code_dict['code']
-                definition = code_dict['definition']
-                cluster_id = code_dict.get('cluster_id', 'unknown')
-                assignment_examples = code_dict.get('assignment_examples', None)
+        print(f"\n{'='*70}")
+        print(f"CODEBOOK GENERATION (P8-P9)")
+        print(f"{'='*70}")
 
-                # Enhanced duplicate check - normalize and compare
-                is_duplicate = False
-                duplicate_of = None
-                duplicate_entry = None
+        # Resolve dimension definition
+        dimension_def = None
+        if dimension_name:
+            dimension_def = get_dimension(dimension_name)
+            if dimension_def and verbose:
+                print(f"  Dimension: {dimension_name}")
+            elif not dimension_def and verbose:
+                print(f"  WARNING: No DimensionDefinition found for '{dimension_name}'")
 
-                for existing in self._codes:
-                    if self._is_duplicate(existing['code'], code):
-                        is_duplicate = True
-                        duplicate_of = existing['code']
-                        duplicate_entry = existing  # Keep reference to merge into
-                        break
+        dataset_context_section = self._build_dataset_context_section(dataset_context)
 
-                if is_duplicate:
-                    # MERGE cluster IDs instead of preventing duplicate
-                    if cluster_id and cluster_id != 'unknown':
-                        existing_clusters = duplicate_entry.get('source_cluster_id', '')
-                        if existing_clusters:
-                            # Append new cluster ID to existing comma-separated list
-                            duplicate_entry['source_cluster_id'] = f"{existing_clusters},{cluster_id}"
-                        else:
-                            # First cluster ID for this code
-                            duplicate_entry['source_cluster_id'] = str(cluster_id)
-
-                    # Store assignment_examples if provided (will be updated by MODIFY path)
-                    if assignment_examples is not None:
-                        duplicate_entry['assignment_examples'] = assignment_examples
-
-                    duplicates_merged += 1
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'cluster_id_merged',
-                        'code': code,
-                        'cluster_id': cluster_id,
-                        'merged_into': duplicate_of,
-                        'timestamp': time.time()
-                    })
-                else:
-                    # New code - add normally
-                    code_entry = {'code': code, 'definition': definition}
-                    if cluster_id and cluster_id != 'unknown':
-                        code_entry['source_cluster_id'] = str(cluster_id)
-                    if assignment_examples is not None:
-                        code_entry['assignment_examples'] = assignment_examples
-
-                    self._codes.append(code_entry)
-                    added_count += 1
-                    self._update_log.append({
-                        'version': self._version + 1,
-                        'action': 'batch_add',
-                        'code': code,
-                        'cluster_id': cluster_id,
-                        'timestamp': time.time()
-                    })
-            
-            # Update version once for the entire batch
-            if added_count > 0:
-                self._version += 1
-            
-            # Log summary if cluster IDs were merged
-            if duplicates_merged > 0:
-                self._update_log.append({
-                    'version': self._version,
-                    'action': 'batch_summary',
-                    'added_count': added_count,
-                    'cluster_ids_merged': duplicates_merged,
-                    'timestamp': time.time()
-                })
-            
-            return added_count > 0
-
-
-# ============================================================================
-# THEME-BASED SIMILARITY ENGINE
-# ============================================================================
-
-class SimilarityEngine:
-    """Handles theme-based similarity calculation and batch formation"""
-    
-    def __init__(self, similarity_threshold: float = 0.7, verbose_reporter: VerboseReporter = None):
-        self.similarity_threshold = similarity_threshold
-        self.verbose_reporter = verbose_reporter or VerboseReporter(False)
-    
-    async def embed_themes(self, themes: Dict[str, ClusterSummaryOutput]) -> Dict[str, np.ndarray]:
-        """Generate embeddings for all theme names using efficient batch processing (like embedder.py)"""
-        self.verbose_reporter.step_start("Theme Embedding")
-        self.verbose_reporter.stat_line(f"Processing {len(themes)} theme names in batches")
-
-        # Prepare data for batch processing
-        cluster_ids = list(themes.keys())
-        # Get theme_labels - themes[cid] is ClusterSummaryOutput with root dict
-        theme_names = []
-        for cid in cluster_ids:
-            theme_output = themes[cid]
-            try:
-                # Access extracted_themes directly (flat format)
-                if theme_output.extracted_themes:
-                    theme_names.append(theme_output.extracted_themes[0].theme_label)
-                else:
-                    theme_names.append("Unknown")
-            except (AttributeError, IndexError):
-                theme_names.append("Unknown")   
-                      
-        # Process in batches (OpenAI supports up to 2048 inputs per call, but use smaller batches for reliability)
-        batch_size = EMBEDDING_BATCH_SIZE
-        theme_embeddings = {}
-        
-        try:
-            for i in range(0, len(theme_names), batch_size):
-                batch_statements = theme_names[i:i + batch_size]
-                batch_ids = cluster_ids[i:i + batch_size]
-                
-                self.verbose_reporter.stat_line(f"Processing batch {i//batch_size + 1}/{(len(theme_names) + batch_size - 1)//batch_size} ({len(batch_statements)} themes)")
-                
-                # Use efficient batch embedding like embedder.py
-                batch_embeddings = await self._embed_openai_batch(batch_statements)
-                
-                # Map embeddings back to cluster IDs
-                for cluster_id, embedding in zip(batch_ids, batch_embeddings):
-                    theme_embeddings[cluster_id] = embedding
-                    
-        except Exception as e:
-            self.verbose_reporter.error(f"Batch embedding failed: {e}")
-            # Fallback to individual processing if batch fails
-            self.verbose_reporter.warning("Falling back to individual embedding processing")
-
-            for cluster_id, theme in themes.items():
-                try:
-                    # Extract theme_label directly (flat format)
-                    if theme.extracted_themes:
-                        theme_label = theme.extracted_themes[0].theme_label
-                    else:
-                        theme_label = "Unknown"
-                    embedding = await self._get_embedding(theme_label)
-                    theme_embeddings[cluster_id] = embedding
-                except Exception as individual_error:
-                    self.verbose_reporter.error(f"Failed to embed theme for cluster {cluster_id}: {individual_error}")
-                    # Use zero vector as fallback
-                    theme_embeddings[cluster_id] = np.zeros(1536)
-
-        self.verbose_reporter.stat_line(f"Generated embeddings for {len(theme_embeddings)} themes")
-        self.verbose_reporter.step_complete("Theme Embedding")
-        return theme_embeddings
-    
-    async def _embed_openai_batch(self, batch_texts: List[str]) -> List[np.ndarray]:
-        """Batch embedding with retry logic"""
-        client = OpenAI(api_key=OPENAI_API_KEY)
-       
-        for attempt in range(3):
-            try:
-                response = client.embeddings.create(
-                    input=batch_texts,
-                    #model="text-embedding-3-large"
-                    model=DEFAULT_CODEDESIGNER_CONFIG.embedding_model
-                )
-                return [np.array(item.embedding, dtype=np.float32) for item in response.data]
-                
-            except Exception as e:
-                if attempt == 2:  # Last attempt
-                    raise
-                # Exponential backoff
-                wait_time = EXPONENTIAL_BACKOFF_BASE * (2 ** attempt)
-                self.verbose_reporter.warning(f"Embedding batch failed (attempt {attempt + 1}), retrying in {wait_time}s: {str(e)[:100]}")
-                await asyncio.sleep(wait_time)
-
-    async def _get_embedding(self, text: str) -> np.ndarray:
-        """Get embedding for single text"""
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.embeddings.create(
-            #model="text-embedding-3-large",
-            model=DEFAULT_CODEDESIGNER_CONFIG.embedding_model,
-            input=text
+        prompt_context = PromptContext(
+            survey_question=survey_question,
+            language=language,
+            dataset_context_section=dataset_context_section,
+            dimension_name=dimension_name,
+            dimension_description=dimension_description,
+            dimension_def=dimension_def,
         )
-        return np.array(response.data[0].embedding)
-    
-    def create_dissimilarity_batches(self, theme_embeddings: Dict[str, np.ndarray], themes: Dict = None) -> List[List[str]]:
-        """Create batches using Progressive Dispersion with Conflict Set Tracking"""
-        self.verbose_reporter.step_start("Progressive Dispersion Batching")
-        
-        cluster_ids = list(theme_embeddings.keys())
-        embeddings_matrix = np.array([theme_embeddings[cid] for cid in cluster_ids])
-        
-        # Calculate pairwise similarity matrix
-        similarity_matrix = cosine_similarity(embeddings_matrix)
-        
-        # Report similarity distribution (keep for comparison)
-        self._report_similarity_distribution(similarity_matrix)
-        
-        # Report hierarchical dissimilarity batching strategy
-        progressive_thresholds = PROGRESSIVE_SIMILARITY_THRESHOLDS
-        self.verbose_reporter.stat_line(f"Using hierarchical dissimilarity batching with max 0.80 similarity: {' → '.join(map(str, progressive_thresholds))}")
-        
-        # Hierarchical Dissimilarity Batching
-        # Create batches in order of increasing similarity tolerance
-        batches = []
-        unassigned_indices = set(range(len(cluster_ids)))
-        
-        for batch_num, threshold in enumerate(progressive_thresholds):
-            if not unassigned_indices:
-                break
-                
-            # Create batch with themes having max similarity < threshold
-            batch_indices = self._extract_similarity_constrained_batch(
-                similarity_matrix, list(unassigned_indices), threshold
+
+        partition_contexts = self._build_all_partition_contexts(partition_set)
+
+        async def _run():
+            await self._initialize_async_resources(verbose)
+            return await self._process_codebook_async(
+                taxonomy_result, partition_contexts, prompt_context, verbose
             )
-            
-            if batch_indices:
-                # Convert to cluster_ids and add to batches
-                batch_cluster_ids = [cluster_ids[i] for i in batch_indices]
-                batches.append(batch_cluster_ids)
-                
-                # Remove assigned themes
-                unassigned_indices -= set(batch_indices)
-                
-                self.verbose_reporter.stat_line(f"Batch {batch_num + 1} (threshold < {threshold}): {len(batch_indices)} themes")
-            else:
-                self.verbose_reporter.stat_line(f"Batch {batch_num + 1} (threshold < {threshold}): 0 themes (skipped)")
-        
-        # Handle any remaining themes that couldn't be batched within 0.85 similarity constraint
-        if unassigned_indices:
-            # Try to create final batches still respecting max 0.85 similarity
-            remaining_themes = list(unassigned_indices)
-            while remaining_themes:
-                # Extract one more batch at final threshold
-                final_batch_indices = self._extract_similarity_constrained_batch(
-                    similarity_matrix, remaining_themes, FINAL_SIMILARITY_THRESHOLD
-                )
-                if final_batch_indices:
-                    final_batch_cluster_ids = [cluster_ids[i] for i in final_batch_indices]
-                    batches.append(final_batch_cluster_ids)
-                    # Remove assigned themes
-                    for idx in final_batch_indices:
-                        remaining_themes.remove(idx)
-                    self.verbose_reporter.stat_line(f"Additional batch (max 0.85): {len(final_batch_indices)} themes")
-                else:
-                    # Force remaining themes into singletons if they can't be grouped at 0.85
-                    for idx in remaining_themes:
-                        singleton_cluster_id = [cluster_ids[idx]]
-                        batches.append(singleton_cluster_id)
-                        self.verbose_reporter.stat_line(f"Singleton batch: {cluster_ids[idx]} (couldn't group at 0.85)")
-                    break
-        
-        # Apply anti-greedy redistribution to balance batch sizes
-        batches = self._redistribute_to_anti_greedy_pattern(batches, similarity_matrix, cluster_ids, progressive_thresholds)
-        
-        # Report final batch statistics
-        for batch_idx, batch_cluster_ids in enumerate(batches):
-            # Convert cluster_ids back to indices for similarity calculation
-            batch_indices = [cluster_ids.index(cid) for cid in batch_cluster_ids]
-            
-            # Calculate batch statistics
-            batch_similarities = []
-            for i, idx_i in enumerate(batch_indices):
-                for j in range(i + 1, len(batch_indices)):
-                    idx_j = batch_indices[j]
-                    batch_similarities.append(similarity_matrix[idx_i, idx_j])
-            
-            avg_sim = np.mean(batch_similarities) if batch_similarities else 0
-            max_sim = max(batch_similarities) if batch_similarities else 0
-            
-            self.verbose_reporter.stat_line(
-                f"Final Batch {batch_idx + 1}: {len(batch_cluster_ids)} themes, "
-                f"avg_sim={avg_sim:.3f}, max_sim={max_sim:.3f}"
+
+        return asyncio.run(_run())
+
+    # =========================================================================
+    # ASYNC ORCHESTRATION
+    # =========================================================================
+
+    async def _initialize_async_resources(self, verbose: bool):
+        """Initialize clients and rate limiters for P8-P9 models."""
+        unique_models = {self._model_p8, self._model_p9}
+        self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
+
+        processing_config = DEFAULT_PROCESSING_CONFIG
+        headroom = processing_config.rate_limit_headroom
+
+        if verbose:
+            print("  Fetching rate limits from API...")
+        limits = await self._fetch_rate_limits_from_api()
+
+        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+            if verbose:
+                print(f"  WARNING: Using fallback rate limits "
+                      f"(TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+            limits = RateLimits(
+                tokens_per_minute=FALLBACK_TPM,
+                requests_per_minute=FALLBACK_RPM,
             )
-        
-        # VERBOSE: Final batch assignments summary
-        self.verbose_reporter.stat_line("\n=== FINAL BATCH ASSIGNMENTS ===")
-        for batch_idx, batch_cluster_ids in enumerate(batches):
-            theme_labels = []
-            if themes:
-                for cid in batch_cluster_ids:
-                    if cid in themes:
-                        theme_output = themes[cid]
-                        # Access extracted_themes directly (flat format)
-                        if theme_output.extracted_themes:
-                            theme_label = theme_output.extracted_themes[0].theme_label
-                            theme_labels.append(f"C{cid}: '{theme_label}'")
-                        else:
-                            theme_labels.append(f"C{cid}: 'unknown'")
-                    else:
-                        theme_labels.append(f"C{cid}: unknown")
-            else:
-                theme_labels = [f"C{cid}" for cid in batch_cluster_ids]
-            
-            #self.verbose_reporter.stat_line(f"Batch {batch_idx + 1}: {', '.join(theme_labels)}")
-            self.verbose_reporter.stat_line(f"Batch {batch_idx + 1}:\n" + "\n".join(theme_labels))
-            
-        
-        # Final reporting
-        self._report_batch_quality(batches, similarity_matrix, cluster_ids)
-        self.verbose_reporter.step_complete("Progressive Dispersion Batching")
-        return batches
-    
-    def _report_similarity_distribution(self, similarity_matrix: np.ndarray):
-        """Report similarity distribution statistics"""
-        n_clusters = similarity_matrix.shape[0]
-        similarities = similarity_matrix[np.triu_indices(n_clusters, k=1)]
-        
-        self.verbose_reporter.stat_line(f"Analyzing similarity distribution for {n_clusters} themes:")
-        
-        thresholds = SIMILARITY_ANALYSIS_THRESHOLDS
-        for threshold in thresholds:
-            count = np.sum(similarities < threshold)
-            percentage = count / len(similarities) * 100 if len(similarities) > 0 else 0
-            self.verbose_reporter.stat_line(
-                f"  Similarity < {threshold}: {count} pairs ({percentage:.1f}%)"
-            )
-    
-    def _report_batch_quality(self, batches, similarity_matrix, cluster_ids):
-        """Report detailed batch quality metrics"""
-        self.verbose_reporter.empty_line()
-        self.verbose_reporter.stat_line("=== Batch Quality Report ===")
-        self.verbose_reporter.stat_line(f"Total batches created: {len(batches)}")
-        
-        # Check if any high-similarity pairs ended up in same batch
-        violations = 0
-        conflict_threshold = CONFLICT_THRESHOLD
-        
-        for batch_idx, batch in enumerate(batches):
-            batch_indices = [cluster_ids.index(cid) for cid in batch]
-            for i, idx_i in enumerate(batch_indices):
-                for j in range(i + 1, len(batch_indices)):
-                    idx_j = batch_indices[j]
-                    if similarity_matrix[idx_i, idx_j] > conflict_threshold:
-                        violations += 1
-                        self.verbose_reporter.warning(
-                            f"High similarity ({similarity_matrix[idx_i, idx_j]:.3f}) "
-                            f"in batch {batch_idx + 1}"
-                        )
-        
-        if violations == 0:
-            self.verbose_reporter.stat_line("✓ No high-similarity conflicts in any batch")
-        else:
-            self.verbose_reporter.warning(f"⚠ Found {violations} high-similarity pairs in same batch")
-        
-        # Report batch size distribution
-        batch_sizes = [len(batch) for batch in batches]
-        self.verbose_reporter.stat_line(f"Batch sizes: min={min(batch_sizes)}, max={max(batch_sizes)}, avg={np.mean(batch_sizes):.1f}")
-    
-    def create_sub_batches(self, batch: List[int], max_size: int = 10) -> List[List[int]]:
-        """Split large batch into sub-batches for rate limiting"""
-        if len(batch) <= max_size:
-            return [batch]
-        
-        sub_batches = []
-        for i in range(0, len(batch), max_size):
-            sub_batch = batch[i:i + max_size]
-            sub_batches.append(sub_batch)
-        
-        return sub_batches
-    
-    def _extract_similarity_constrained_batch(self, similarity_matrix: np.ndarray, available_indices: List[int], max_similarity_threshold: float) -> List[int]:
-        """Extract single largest batch from available indices where max similarity < threshold"""
-        if not available_indices:
-            return []
-        
-        # Greedy approach: start with first theme, add compatible themes
-        batch_indices = [available_indices[0]]
-        remaining = set(available_indices[1:])
-        
-        # Keep adding themes that don't violate similarity constraint
-        added_theme = True
-        while added_theme and remaining:
-            added_theme = False
-            
-            # Try each remaining theme
-            for candidate_idx in list(remaining):
-                # Check if candidate is compatible with all themes in current batch
-                can_add = True
-                for batch_member_idx in batch_indices:
-                    if similarity_matrix[candidate_idx, batch_member_idx] >= max_similarity_threshold:
-                        can_add = False
-                        break
-                
-                if can_add:
-                    batch_indices.append(candidate_idx)
-                    remaining.remove(candidate_idx)
-                    added_theme = True
-                    break  # Start over to find next compatible theme
-        
-        return batch_indices
+        elif verbose:
+            print(f"  Fetched from API: TPM={limits.tokens_per_minute:,}, "
+                  f"RPM={limits.requests_per_minute:,}")
 
-    def _redistribute_to_anti_greedy_pattern(self, batches: List[List[str]], 
-                                           similarity_matrix: np.ndarray, 
-                                           cluster_ids: List[str], 
-                                           progressive_thresholds: List[float]) -> List[List[str]]:
-        """Redistribute clusters to achieve anti-greedy pattern (increasing batch sizes)"""
-        if not batches or len(batches) <= 1:
-            return batches
-            
-        self.verbose_reporter.step_start("Anti-Greedy Batch Redistribution")
-        
-        # Calculate original distribution
-        original_sizes = [len(batch) for batch in batches]
-        total_clusters = sum(original_sizes)
-        
-        self.verbose_reporter.stat_line(f"Original batch sizes: {original_sizes} (total: {total_clusters})")
-        
-        # Calculate target anti-greedy distribution (increasing sizes)
-        target_sizes = self._calculate_anti_greedy_targets(total_clusters, len(batches))
-        self.verbose_reporter.stat_line(f"Target batch sizes: {target_sizes}")
-        
-        # Identify moveable clusters between adjacent batches
-        moveable_clusters = self._identify_moveable_clusters(batches, similarity_matrix, cluster_ids, progressive_thresholds)
-        
-        # Perform redistribution
-        redistributed_batches = self._perform_redistribution(batches, target_sizes, moveable_clusters, similarity_matrix, cluster_ids, progressive_thresholds)
-        
-        # Report results
-        final_sizes = [len(batch) for batch in redistributed_batches]
-        self.verbose_reporter.stat_line(f"Final batch sizes: {final_sizes}")
-        
-        moved_count = sum(abs(final_sizes[i] - original_sizes[i]) for i in range(len(final_sizes))) // 2
-        self.verbose_reporter.stat_line(f"Clusters redistributed: {moved_count}")
-        
-        self.verbose_reporter.step_complete("Anti-Greedy Batch Redistribution")
-        
-        return redistributed_batches
+        self._fetched_limits = limits
+        cfg = self._ramp_config
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        little_law = compute_optimal_concurrency(
+            api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
+        )
 
-    def _calculate_anti_greedy_targets(self, total_clusters: int, num_batches: int) -> List[int]:
-        """Calculate target batch sizes for anti-greedy pattern (increasing sizes)"""
-        if num_batches <= 1:
-            return [total_clusters]
-        
-        # Create increasing pattern: start small, end large
-        # Use arithmetic progression with positive common difference
-        base_size = total_clusters // num_batches
-        remainder = total_clusters % num_batches
-        
-        # Create increasing sequence
-        targets = []
-        adjustment = -(num_batches - 1) // 2  # Start below average
-        
-        for i in range(num_batches):
-            target = base_size + adjustment
-            if i < remainder:  # Distribute remainder across later batches
-                target += 1
-            targets.append(max(1, target))  # Ensure minimum size of 1
-            adjustment += 1  # Increase for next batch
-        
-        # Adjust if total doesn't match (due to minimum size constraints)
-        current_total = sum(targets)
-        if current_total != total_clusters:
-            # Add/remove from last batch
-            targets[-1] += (total_clusters - current_total)
-        
-        return targets
+        est_avg_tokens = cfg.estimated_avg_tokens
+        rpm_throughput = limits.requests_per_minute * headroom / 60
+        tpm_throughput = limits.tokens_per_minute * headroom / est_avg_tokens / 60
+        arrival_rate = min(rpm_throughput, tpm_throughput)
+        bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
 
-    def _identify_moveable_clusters(self, batches: List[List[str]], 
-                                  similarity_matrix: np.ndarray,
-                                  cluster_ids: List[str],
-                                  progressive_thresholds: List[float]) -> Dict[int, Dict[int, List[str]]]:
-        """Identify clusters that can be moved between adjacent batches while respecting similarity constraints"""
-        moveable = {}  # {from_batch: {to_batch: [cluster_ids]}}
-        
-        for from_idx in range(len(batches) - 1):  # Don't check last batch
-            to_idx = from_idx + 1
-            to_threshold = progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else FINAL_SIMILARITY_THRESHOLD
-            
-            # Find clusters in from_batch that could move to to_batch
-            moveable_to_next = []
-            
-            for cluster_id in batches[from_idx]:
-                # Check if this cluster could fit in the next batch without violating similarity constraints
-                if self._can_cluster_join_batch(cluster_id, batches[to_idx], similarity_matrix, cluster_ids, to_threshold):
-                    moveable_to_next.append(cluster_id)
-            
-            if moveable_to_next:
-                if from_idx not in moveable:
-                    moveable[from_idx] = {}
-                moveable[from_idx][to_idx] = moveable_to_next
-        
-        return moveable
+        default_conc = max(cfg.min_initial, int(little_law * cfg.start_fraction))
+        self._semaphore = asyncio.Semaphore(default_conc)
+        self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
 
-    def _can_cluster_join_batch(self, cluster_id: str, target_batch: List[str], 
-                              similarity_matrix: np.ndarray, cluster_ids: List[str], 
-                              threshold: float) -> bool:
-        """Check if a cluster can join a batch without violating similarity constraints"""
-        if not target_batch:
-            return True
-        
-        try:
-            cluster_idx = cluster_ids.index(cluster_id)
-        except ValueError:
-            return False
-        
-        # Check similarity with all clusters in target batch
-        for target_cluster_id in target_batch:
-            try:
-                target_idx = cluster_ids.index(target_cluster_id)
-                similarity = similarity_matrix[cluster_idx, target_idx]
-                if similarity >= threshold:
-                    return False  # Would violate similarity constraint
-            except ValueError:
-                continue
-        
-        return True
+        if verbose:
+            print(f"\n  [RATE LIMITING SETUP]")
+            print(f"  Models: P8={self._model_p8}, P9={self._model_p9}")
+            print(f"  RPM: {limits.requests_per_minute:,} "
+                  f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
+            print(f"  TPM: {limits.tokens_per_minute:,} "
+                  f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
+            print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
+            print(f"  Little's Law: {little_law} | "
+                  f"Default concurrency: {default_conc} (P9 consolidation)")
 
-    def _perform_redistribution(self, batches: List[List[str]], target_sizes: List[int],
-                              moveable_clusters: Dict[int, Dict[int, List[str]]],
-                              similarity_matrix: np.ndarray, cluster_ids: List[str],
-                              progressive_thresholds: List[float]) -> List[List[str]]:
-        """Perform the actual redistribution of clusters"""
-        # Create mutable copies
-        redistributed = [batch.copy() for batch in batches]
-        #current_sizes = [len(batch) for batch in redistributed]
-        
-        # Redistribute from early batches to later batches
-        for from_idx in range(len(redistributed) - 1):
-            if from_idx not in moveable_clusters:
-                continue
-                
-            current_size = len(redistributed[from_idx])
-            target_size = target_sizes[from_idx]
-            
-            # If this batch is larger than target, try to move clusters to later batches
-            if current_size > target_size:
-                excess = current_size - target_size
-                
-                # Try to move to each possible later batch
-                for to_idx, moveable_list in moveable_clusters[from_idx].items():
-                    if excess <= 0:
-                        break
-                    
-                    current_to_size = len(redistributed[to_idx])
-                    target_to_size = target_sizes[to_idx]
-                    
-                    # If target batch has room, move some clusters
-                    if current_to_size < target_to_size:
-                        can_accept = target_to_size - current_to_size
-                        to_move = min(excess, can_accept, len(moveable_list))
-                        
-                        # Move clusters
-                        for i in range(to_move):
-                            cluster_to_move = moveable_list[i]
-                            if cluster_to_move in redistributed[from_idx]:
-                                # Verify one more time before moving
-                                if self._can_cluster_join_batch(cluster_to_move, redistributed[to_idx],
-                                                              similarity_matrix, cluster_ids,
-                                                              progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else FINAL_SIMILARITY_THRESHOLD):
-                                    redistributed[from_idx].remove(cluster_to_move)
-                                    redistributed[to_idx].append(cluster_to_move)
-                                    excess -= 1
-        
-        return redistributed
-
-
-# ============================================================================
-# MAIN CODEDESIGNER CLASS
-# ============================================================================
-
-class InductiveCodeGenerator:
-    """CodeDesigner: Theme-based similarity processing with 4-stage pipeline"""
-    
-    def __init__(
+    async def _process_codebook_async(
         self,
-        cluster_results: List[Any],  # CodeAssignedModel or empty in MECE route
-        starter_codes: List[Dict[str, str]],
-        var_lab: str,
-        verbose: bool = False,
-        verbose_detailed: bool = False,
-        prompt_printer = None,
-        config = None,
-        processing_config: Optional[ProcessingConfig] = None,
-        verbose_reporter: Optional['VerboseReporter'] = None,
-        stages_to_run: str = 'all',  # 'all' or 'theme_extraction_only'
-        extraction_metadata = None,  # ExtractionMetadata for experimental theme extraction
-        mece_topics: Optional[Dict[int, dict]] = None,  # MECE Phase A output per cluster (legacy)
-        mece_results_cache: Optional['CodingResultsCache'] = None,  # step_4_classNcoder MECE cache
-        category_assigned_data: Optional[List['CodeAssignedModel']] = None,  # step_4_classNcoder assignments
-        embedding_text_format: str = "cached",  # "cached" | "idea" | "ladder" | "interpretation" | etc.
-        embedding_separator: str = " → ",  # separator for multi-field/composite formats
-        **kwargs  # For backward compatibility
-    ):
-        self.cluster_results = cluster_results
-        self._extraction_metadata = extraction_metadata  # For experimental theme extraction
-        self._mece_topics = mece_topics  # Pre-extracted MECE topics (legacy alternative Phase 1 input)
-        self._mece_results_cache = mece_results_cache  # step_4_classNcoder: CodingResultsCache
-        self._category_assigned_data = category_assigned_data  # step_4_classNcoder: List[CodeAssignedModel]
-        self._embedding_text_format = embedding_text_format
-        self._embedding_separator = embedding_separator
-                
-        self.starter_codes = starter_codes
-        self.var_lab = var_lab
-        self.verbose = verbose
-        self.verbose_detailed = verbose_detailed
-        self.prompt_printer = prompt_printer
-        # Track which stages have captured their first prompt (for displaying sample prompts)
-        self._prompt_captured = {
-            'stage1_theme': False,
-            'stage2_decision': False,
-            'stage3_generation': False,
-            'stage4_validation': False
-        }
-        self.config = config or DEFAULT_CODEDESIGNER_CONFIG
-        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.stages_to_run = stages_to_run
-        
-        # Sampling statistics tracking
-        self.sampling_stats = {
-            'clusters_processed': 0,
-            'clusters_sampled': 0,
-            'total_original_ideas': 0,
-            'total_sampled_ideas': 0
-        }
-        
-        # Initialize components
-        self.model_config = kwargs.get('model_config') or ModelConfig()
-        self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)
-        
-        # Initialize config-aware concurrency control
-        self.concurrency_semaphore = asyncio.Semaphore(self.config.async_concurrency_limit)
-        
-        # Initialize embedding client (sync client is used via async_responses_create wrapper)
-        self.embedding_client = OpenAI()
-        
-        # Initialize tokenizer with proper model mapping
-        try:
-            self.encoding = tiktoken.encoding_for_model(self.config.model)
-        except KeyError:
-            # Map newer model names to their tiktoken-compatible equivalents
-            tiktoken_model_mapping = {
-                'gpt-4.1-mini': 'gpt-4o-mini',
-                'gpt-4.1': 'gpt-4o', 
-                'gpt-4.1-turbo': 'gpt-4o'}
-            
-            tiktoken_model = tiktoken_model_mapping.get(self.config.model) 
-            if tiktoken_model:
-                try:
-                    self.encoding = tiktoken.encoding_for_model(tiktoken_model)
-                    # This is expected behavior, not a fallback
-                except KeyError:
-                    # Only this is truly a fallback
-                    self.encoding = tiktoken.get_encoding("cl100k_base")
-                    self.verbose_reporter.warning(f"Fallback to cl100k_base encoding for {self.config.model}")
-            else:
-                self.encoding = tiktoken.get_encoding("cl100k_base")
-                self.verbose_reporter.warning(f"Fallback to cl100k_base encoding for {self.config.model}")
-        
-        # Initialize unified rate limiting system - use fallback values for initial setup
-        # Actual rate limits will be fetched from API during async_initialize
-        self.rate_limits = RateLimits(
-            tokens_per_minute=FALLBACK_TPM,
-            requests_per_minute=FALLBACK_RPM,
-            tokens_per_day=FALLBACK_TPM * 60 * 24
-        )
+        taxonomy: TaxonomyResult,
+        partition_contexts: Dict[str, DomainContext],
+        prompt_context: PromptContext,
+        verbose: bool,
+    ) -> CodebookResult:
+        """Codebook stages P8-P9: code generation + consolidation."""
+        partition_facets = taxonomy.partition_facets
+        partition_assignments = taxonomy.partition_assignments
+        domain_facet_attributes = taxonomy.partition_attributes
+        attribute_assignments = taxonomy.attribute_assignments
 
-        # Initialize bootstrap attributes (will be populated by async_initialize)
-        self.bootstrap_latency = None
-        self.bootstrap_tokens = None
-        self._bootstrap_completed = False
+        start_time = time.time()
 
-        # Calculate average tokens for rate limiting (fallback until bootstrap completes)
-        self.avg_tokens = self._calculate_avg_tokens()
+        # =================================================================
+        # PHASE 8 (P8): Per-domain Code Generation
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 8: Per-domain Code Generation...")
 
-        # Create unified rate limiting system (will be re-initialized with actual limits during bootstrap)
-        self.tpm_bucket = TokenBucket(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
+        t_phase8 = time.time()
 
-        # Add AsyncLimiter for unified rate limiting (following qualityFilter pattern)
-        arrival_rate = min(
-            self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
-            self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
-        )
-        if arrival_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
-        else:
-            self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
+        p8_tasks = {}
+        for domain_name in domain_facet_attributes:
+            domain_attrs = domain_facet_attributes.get(domain_name, {})
+            if not domain_attrs:
+                continue
 
-        # Calculate optimal concurrency based on API limits and latency
-        rpm_concurrency = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60 * 2.0  # Assume 2s avg latency
-        tpm_concurrency = (self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens) * 2.0
-        optimal_concurrency = min(rpm_concurrency, tpm_concurrency, self.config.async_concurrency_limit)
-
-        self.concurrency_semaphore = asyncio.Semaphore(int(optimal_concurrency))
-
-        # Store limits for reporting
-        self.rpm_limit = self.rate_limits.requests_per_minute
-        self.tpm_limit = self.rate_limits.tokens_per_minute
-        
-        # Initialize latency tracking (following qualityFilter pattern)
-        self.latency_tracker = LatencyTracker()
-        
-        # Bootstrap measurement attributes (from qualityFilter.py)
-        # Adaptive token estimation
-        self.input_token_history = deque(maxlen=3)  # First 3 input token counts
-        self.output_token_history = deque(maxlen=5)  # First 5 output token counts
-        self.estimation_errors = deque(maxlen=50)  # Track accuracy
-        self.first_prompt_tokens = None  # Cache first prompt calculation
-        self.actual_total_tokens = deque(maxlen=50)  # Track actual total usage
-        
-        # Initialize components
-        self.similarity_engine = SimilarityEngine(similarity_threshold=self.config.similarity_threshold, verbose_reporter=self.verbose_reporter)
-        self.shared_codebook = SharedCodebook(starter_codes)
-        
-        # Results storage
-        self._results = []
-        self._processing_stats = {}
-        
-        # Initialize prompt tracking for CodeGeneratorReasoningResults
-        self.step1_inputs = {}           # Theme extraction inputs
-        self.step2_inputs = {}           # Candidate code selection inputs
-        self.step3_inputs = {}           # Code generation inputs
-        self.step4_inputs = {}           # Validation inputs
-        self.step1_summaries = {}        # Theme extraction results
-        self.step2_analysis = {}         # Candidate codes
-        self.step3_recommendations = {}  # Code generation results
-        self.step4_validations = {}      # Validation results
-        self.step4_validated_codes = {}  # Final validated codes
-        self.cluster_assignments = {}    # Cluster-to-code mappings
-        
-        # Initialize modification leak collection for race condition recovery
-        self.modification_leaks = []      # Failed MODIFY operations for retry
-        self.error_leaks = []             # Failed operations with retryable errors for retry
-
-        # Initialize redistribution statistics
-        self._redistribution_stats = {
-            'clusters_redistributed': [],
-            'redistribution_details': {}
-        }
-
-        # Multi-theme mapping: {original_id: [sub_id_1, sub_id_2, ...]}
-        # Stored for downstream use (step 8 family codes)
-        self._multi_theme_mapping: Dict[int, List[str]] = {}
-
-        # Category ID mapping (populated by extract_category_data)
-        self._category_id_map: Dict[int, str] = {}  # numeric_id → composite_key
-
-    @property
-    def _idea_source(self):
-        """Return idea-bearing response models for the active pipeline path."""
-        if self.cluster_results:
-            return self.cluster_results
-        if self._category_assigned_data:
-            return self._category_assigned_data
-        return []
-
-    def _get_context_specifier_params(self) -> Dict[str, str]:
-        """Build prompt-variable dict from extraction metadata + dimension_data lookup.
-
-        Returns a dict with all context specifier fields that can be merged into
-        prompt params dicts. If extraction_metadata is not available, returns
-        empty strings for all fields.
-
-        Used by: CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
-                 CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
-
-        Dimension fields are looked up from dimension_data.py using
-        meta.primary_dimension as the key.
-        """
-        if self._extraction_metadata:
-            meta = self._extraction_metadata
-            dim = get_dimension(meta.primary_dimension) if meta.primary_dimension else None
-            return {
-                'lang': meta.lang or "",
-                'domain': meta.sector or "",
-                'topic': meta.topic or "",
-                'perspective': meta.perspective or "",
-                'entity': meta.entity or "",
-                'intent': meta.intent or "",
-                'facet_name': dim.noun_phrase_descriptor if dim else "",
-                'facet_description': dim.dimension_description if dim else (getattr(meta, 'primary_dimension_description', None) or ""),
-                'facet_valid_labels': ", ".join(dim.allowed_concepts) if dim else "",
-                'facet_invalid_labels': "; ".join(dim.exclusions) if dim else "",
+            domain_facet_ids = set(partition_assignments.get(domain_name, {}).keys())
+            domain_attr_assigns = {
+                iid: aname for iid, aname in attribute_assignments.items()
+                if iid in domain_facet_ids
             }
-        return {
-            'lang': "",
-            'domain': "",
-            'topic': "",
-            'perspective': "",
-            'entity': "",
-            'intent': "",
-            'facet_name': "",
-            'facet_description': "",
-            'facet_valid_labels': "",
-            'facet_invalid_labels': "",
-        }
 
-    # -----------------------------------------------------------------
-    # Route-specific prompt params for the unified CLUSTER_SUMMARY_PROMPT
-    # -----------------------------------------------------------------
+            excluded = [
+                (other_name, partition_contexts[other_name].partition_definition)
+                for other_name in partition_contexts
+                if other_name != domain_name
+            ]
 
-    CLUSTER_PROMPT_PARAMS: Dict[str, str] = {
-        'data_unit': 'cluster',
-        'evidence_source': 'the provided key expressions',
-        'data_description': (
-            "Each topic in the cluster includes:\n"
-            "- A topic label\n"
-            "- An inclusion definition\n"
-            "- Key expressions from original responses\n\n"
-            "Use these as your ONLY evidence base. Do not introduce concepts not present in this data."
-        ),
-        'analysis_step_2': 'Explain whether you kept, split, or merged topics -- and why',
-        'analysis_step_3': 'Note any themes you discarded due to weak grounding in the data',
-    }
+            p8_tasks[domain_name] = self._run_code_generation_from_attributes(
+                {domain_name: domain_attrs}, prompt_context,
+                attribute_assignments=domain_attr_assigns,
+                domain_name=domain_name,
+                domain_definition=partition_contexts[domain_name].partition_definition,
+                excluded_domains=excluded,
+            )
 
-    CATEGORY_PROMPT_PARAMS: Dict[str, str] = {
-        'data_unit': 'category',
-        'evidence_source': 'the assigned ideas',
-        'data_description': (
-            "The category data above contains two sections:\n\n"
-            "**Category metadata** -- the structured MECE category definition including:\n"
-            "- Category label and inclusion definition (what belongs here)\n"
-            "- Boundary test (a yes/no question for membership)\n"
-            "- Diagnostic signals (trigger words/phrases)\n"
-            "- Key expressions (representative labels from the data)\n"
-            "- Tiebreaker rules (how to resolve ambiguous cases with other categories)\n"
-            "- Directional scope (if present): whether this group contains only reinforcing/"
-            "neutral ideas or only undermining ideas — respect this scope strictly\n\n"
-            "**Assigned ideas** -- actual survey response ideas assigned to this category, "
-            "sampled for diversity.\n\n"
-            "Use the category metadata to understand the intended scope and boundaries. "
-            "Use the assigned ideas as your evidence base for theme identification."
-        ),
-        'analysis_step_2': (
-            "Explain how the category's boundary test and diagnostic signals informed your "
-            "theme identification; if a directional scope is stated, confirm that your themes "
-            "reflect only that direction"
-        ),
-        'analysis_step_3': 'Note any sub-themes you identified, split, or merged -- and why',
-    }
+        p8_state = self._create_phase_ramp("P8", len(p8_tasks), model=self._model_p8)
+        p8_results = await self._run_with_ramp(p8_tasks.values(), p8_state)
+
+        all_codes = []
+        code_provenance = {}
+        codebook_narratives = []
+        for key, result in zip(p8_tasks.keys(), p8_results):
+            if isinstance(result, Exception):
+                print(f"  P8 '{key}' FAILED: {type(result).__name__}: {result}")
+            else:
+                for code in result.codes:
+                    code_provenance[len(all_codes)] = key
+                    all_codes.append(code)
+                codebook_narratives.append(f"[{key}] {result.scratchpad}")
+                if verbose:
+                    print(f"    {key}: {len(result.codes)} codes")
+
+        t_phase8 = time.time() - t_phase8
+
+        if verbose:
+            print(f"\n  Phase 8 done in {t_phase8:.1f}s → {len(all_codes)} raw codes "
+                  f"from {len(p8_tasks)} calls")
+
+        attr_to_count: Dict[str, int] = {}
+        for attr_name in attribute_assignments.values():
+            attr_to_count[attr_name] = attr_to_count.get(attr_name, 0) + 1
+
+        code_frequencies: Dict[int, int] = {}
+        for idx, code in enumerate(all_codes):
+            freq = sum(
+                attr_to_count.get(attr, 0)
+                for attr in (code.source_attributes or [])
+            )
+            code_frequencies[idx] = freq
+
+        # =================================================================
+        # PHASE 9 (P9): Cross-domain Codebook Consolidation
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 9: Codebook Consolidation...")
+
+        t_phase9 = time.time()
+
+        if len(all_codes) > 0:
+            consolidation_result = await self._consolidate_codebook(
+                all_codes, code_provenance, prompt_context,
+                code_frequencies=code_frequencies,
+            )
+            all_codes = consolidation_result.codes
+            codebook_narratives.append(
+                f"[consolidation] {consolidation_result.scratchpad}"
+            )
+
+        codebook_narrative = "\n".join(codebook_narratives)
+
+        t_phase9 = time.time() - t_phase9
+
+        if verbose:
+            print(f"\n  Phase 9 done in {t_phase9:.1f}s → {len(all_codes)} codes "
+                  f"(after consolidation)")
+            for i, code in enumerate(all_codes, 1):
+                print(f"    {i}. {code.code_name}: {code.definition}")
+
+        codebook_elapsed = time.time() - start_time
+        if verbose:
+            print(f"\n  Codebook (P8-P9) complete in {codebook_elapsed:.1f}s")
+
+        return CodebookResult(
+            codes=all_codes,
+            codebook_narrative=codebook_narrative,
+        )
+
+    # =========================================================================
+    # PHASE 8 (P8): CODE GENERATION FROM ATTRIBUTES
+    # =========================================================================
+
+    @staticmethod
+    def _build_constrained_response_model(
+        attribute_names: List[str],
+    ):
+        """Build a CodeGenerationFromAttributesResult with source_attributes
+        constrained to an enum of valid attribute names."""
+        if not attribute_names:
+            return CodeGenerationFromAttributesResult
+
+        AttrLiteral = Literal[tuple(attribute_names)]
+
+        ConstrainedCode = create_model(
+            "CodeFromAttributes",
+            code_name=(str, Field(..., description="Short code name (3-5 word noun phrase)")),
+            definition=(str, Field(..., description="Clear definition of what this code covers (1-2 sentences)")),
+            typical_indicators=(List[str], Field(..., description="Words or phrases that signal this code")),
+            source_attributes=(List[AttrLiteral], Field(
+                default_factory=list,
+                description="Attribute names this code is derived from (must be exact names from the inventory)",
+            )),
+        )
+
+        ConstrainedResult = create_model(
+            "CodeGenerationFromAttributesResult",
+            scratchpad=(str, CodeGenerationFromAttributesResult.model_fields["scratchpad"]),
+            codes=(List[ConstrainedCode], Field(..., description="Formal codes derived from the attribute inventory")),
+        )
+
+        return ConstrainedResult
+
+    async def _run_code_generation_from_attributes(
+        self,
+        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+        prompt_context: PromptContext,
+        attribute_assignments: Optional[Dict[str, str]] = None,
+        domain_name: str = "",
+        domain_definition: str = "",
+        excluded_domains: Optional[List[tuple]] = None,
+    ) -> CodeGenerationFromAttributesResult:
+        """Generate codes from an attribute inventory (per-domain)."""
+        prompt = build_code_from_attributes_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_def=prompt_context.dimension_def,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            domain_name=domain_name,
+            domain_definition=domain_definition,
+            domain_attributes=domain_facet_attributes,
+            attribute_assignments=attribute_assignments,
+            excluded_domains=excluded_domains,
+        )
+
+        all_attr_names = [
+            attr.attribute_name
+            for facet_attrs in domain_facet_attributes.values()
+            for attrs in facet_attrs.values()
+            for attr in attrs
+        ]
+        response_model = self._build_constrained_response_model(all_attr_names)
+
+        domain_key = "::".join(domain_facet_attributes.keys())
+        gate_key = f"qr_code_gen_{domain_key}"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="code_generation_from_attributes",
+                metadata={
+                    "model": self._model_p8,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_code_from_attributes,
+                    "language": prompt_context.language,
+                    "n_domains": len(domain_facet_attributes),
+                    "n_total_attributes": len(all_attr_names),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        for attempt in range(2):
+            try:
+                return await self._llm_call(
+                    prompt, response_model,
+                    self._max_tokens_code_from_attributes,
+                    model=self._model_p8,
+                    timeout=180.0,
+                )
+            except Exception as e:
+                if attempt == 0:
+                    print(f"    P8 CODE GENERATION failed (attempt 1), retrying: "
+                          f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    P8 CODE GENERATION failed (attempt 2), returning empty: "
+                          f"{type(e).__name__}: {e}")
+                    return CodeGenerationFromAttributesResult(codes=[], evaluation="PROCESSING_ERROR")
+
+    # =========================================================================
+    # PHASE 9 (P9): CODEBOOK CONSOLIDATION
+    # =========================================================================
+
+    async def _consolidate_codebook(
+        self,
+        raw_codes: list,
+        code_provenance: dict,
+        prompt_context: PromptContext,
+        code_frequencies: Optional[Dict[int, int]] = None,
+    ) -> CodebookConsolidationResult:
+        """Consolidate per-domain codes into a final parsimonious codebook."""
+        prompt = build_codebook_consolidation_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            dimension_def=prompt_context.dimension_def,
+            raw_codes=raw_codes,
+            code_provenance=code_provenance,
+            code_frequencies=code_frequencies,
+        )
+
+        gate_key = "qr_codebook_consolidation"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="codebook_consolidation",
+                metadata={
+                    "model": self._model_p9,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_codebook_consolidation,
+                    "language": prompt_context.language,
+                    "n_raw_codes": len(raw_codes),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        for attempt in range(2):
+            try:
+                return await self._llm_call(
+                    prompt, CodebookConsolidationResult,
+                    self._max_tokens_codebook_consolidation,
+                    model=self._model_p9,
+                    timeout=180.0,
+                )
+            except Exception as e:
+                if attempt == 0:
+                    print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 1), retrying: "
+                          f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 2), returning raw codes: "
+                          f"{type(e).__name__}: {e}")
+                    raise
+
+    # =========================================================================
+    # DYNAMIC RATE LIMIT DISCOVERY
+    # =========================================================================
 
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
         """Make a minimal API call to fetch rate limits from response headers."""
         from openai import AsyncOpenAI
-        from config import AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
 
         if API_PROVIDER == "azure":
+            from config import (
+                AZURE_OPENAI_ENDPOINT,
+                AZURE_OPENAI_API_KEY,
+                AZURE_OPENAI_DEPLOYMENT_NAME,
+            )
             client = AsyncOpenAI(
                 api_key=AZURE_OPENAI_API_KEY,
                 base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
@@ -1574,4873 +593,256 @@ class InductiveCodeGenerator:
             model = AZURE_OPENAI_DEPLOYMENT_NAME
         else:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            model = self.config.model
+            model = self._model_p8
 
-        # Make minimal API call with raw response to get headers
         response = await client.chat.completions.with_raw_response.create(
             model=model,
             messages=[{"role": "user", "content": "Hi"}],
-            max_tokens=5
+            max_tokens=5,
         )
-
         return extract_rate_limits_from_response(response)
 
-    async def async_initialize(self):
-        """Initialize bootstrap measurement and update rate limiting with real API performance data"""
-        if self._bootstrap_completed:
-            return
+    # =========================================================================
+    # 4-LAYER RATE LIMITING (per-phase)
+    # =========================================================================
 
-        # Fetch rate limits dynamically from API response headers
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Fetching rate limits from API...")
+    def _create_phase_ramp(self, phase_name: str, num_tasks: int,
+                           model: str = None) -> PhaseRampState:
+        """Create per-phase 4-layer rate limiting stack."""
+        cfg = self._ramp_config
+        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
+        api_limits = ApiLimits(
+            self._fetched_limits.tokens_per_minute,
+            self._fetched_limits.requests_per_minute,
+        )
+        little_law = compute_optimal_concurrency(
+            api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
+        )
+        little_law_cap = min(little_law, num_tasks)
 
-        limits = await self._fetch_rate_limits_from_api()
+        ramp_up_cfg = RampUpConfig(
+            start_fraction=cfg.start_fraction,
+            target_fraction=cfg.target_fraction,
+            min_initial=cfg.min_initial,
+            measurement_window_seconds=cfg.monitor_poll_interval,
+            min_completions_per_step=cfg.min_completions_per_step,
+        )
 
-        # Fallback if headers not available
-        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Warning: Using fallback rate limits (TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
-            limits = RateLimits(
-                tokens_per_minute=FALLBACK_TPM,
-                requests_per_minute=FALLBACK_RPM,
-                tokens_per_day=FALLBACK_TPM * 60 * 24
+        # Capacity-relative starting
+        half_little_law = int(little_law * cfg.start_fraction)
+        initial = max(half_little_law, num_tasks)
+        initial = min(initial, num_tasks)
+        target = min(int(little_law_cap * cfg.target_fraction), num_tasks)
+
+        gate = ConcurrencyGate(initial)
+        ramp = ConcurrencyRamp(ramp_up_cfg, little_law_cap, num_tasks)
+        is_large = num_tasks >= cfg.circuit_breaker_min_tasks
+
+        token_bucket = None
+        if is_large:
+            token_bucket = TokenBucket(int(self._fetched_limits.tokens_per_minute * headroom))
+
+        latency_tracker = None
+        if is_large:
+            latency_tracker = LatencyTracker(
+                DEFAULT_PROCESSING_CONFIG,
+                timeout_floor=cfg.timeout_floor_seconds,
+                default_timeout=cfg.default_timeout_seconds,
             )
-        else:
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Fetched from API: TPM={limits.tokens_per_minute:,}, RPM={limits.requests_per_minute:,}")
 
-        # Store rate limits on self for use in all rate limiting
-        self.rate_limits = limits
-        self.rpm_limit = limits.requests_per_minute
-        self.tpm_limit = limits.tokens_per_minute
+        circuit_breaker = None
+        if cfg.circuit_breaker_enabled and is_large:
+            circuit_breaker = ConcurrencyCircuitBreaker(
+                DEFAULT_CIRCUIT_BREAKER_CONFIG, gate, initial,
+            )
 
-        # Re-initialize TokenBucket with actual rate limits
-        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
+        mode = "4-layer" if is_large else "light"
+        print(f"    [{phase_name}] Little's Law: {little_law} | "
+              f"Start: {initial} → Target: {target} ({num_tasks} tasks, {mode})")
 
-        # Bootstrap is needed for all modes to properly configure rate limiting
+        return PhaseRampState(
+            gate=gate, ramp=ramp,
+            rpm_tracker=RealTimeRPMTracker(window_seconds=60.0),
+            tpm_tracker=RealTimeTPMTracker(window_seconds=60.0),
+            phase_name=phase_name,
+            total_tasks=num_tasks,
+            token_bucket=token_bucket,
+            latency_tracker=latency_tracker,
+            circuit_breaker=circuit_breaker,
+            estimated_avg_tokens=cfg.estimated_avg_tokens,
+        )
 
-        # Bootstrap measurement for real API performance data (following qualityFilter.py pattern)
-        if self.cluster_results and len(self.cluster_results) > 0:
-            try:
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
-                
-                # Prepare sample clusters for probing
-                sample_clusters = self.cluster_results[:min(1, len(self.cluster_results))]
-                if len(sample_clusters) < 3:
-                    # Duplicate clusters if we have fewer than 3
-                    sample_clusters = sample_clusters * 3
-                    sample_clusters = sample_clusters[:3]
-                
-                cluster_cycle = itertools.cycle(sample_clusters)
-                
-                async def probe_bootstrap_call():
-                    cluster_data = next(cluster_cycle)
-                    ideas_list = cluster_data.response_ideas or []
+    async def _phase_monitor(self, state: PhaseRampState):
+        """Background monitor: ramp + circuit breaker + progress."""
+        start_time = time.monotonic()
+        last_report_time = start_time
+        last_reported_completions = -1
 
-                    # Create probe task with idea objects (not strings)
-                    probe_task = {
-                        'cluster_id': 'bootstrap_probe',
-                        'ideas': ideas_list[:10]
-                    }
-                    return await self.probe_call_theme_extraction(probe_task)
-                
-                # Run bootstrap measurement
-                start_bootstrap = time.time()
-                self.bootstrap_latency, self.bootstrap_tokens = await bootstrap_measure_async(
-                    probe_bootstrap_call, n_probes=3
+        while not state.done:
+            await asyncio.sleep(self._ramp_config.monitor_poll_interval)
+            now = time.monotonic()
+            elapsed = now - start_time
+
+            if state.circuit_breaker:
+                state.circuit_breaker.check_and_adjust()
+
+            if not state.ramp.is_done() and state.completions >= self._ramp_config.min_completions_per_step:
+                rate = state.completions / elapsed if elapsed > 0 else 0
+                state.ramp.record_measurement(
+                    throughput=rate, tpm_pct=0, rpm_pct=0,
+                    completions_total=state.completions,
+                    timeouts_total=state.timeouts, duration=elapsed,
                 )
-                bootstrap_time = time.time() - start_bootstrap
-                
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.stat_line(f"Bootstrap results: {self.bootstrap_latency:.3f}s avg latency, {self.bootstrap_tokens:.0f} avg tokens ({bootstrap_time:.1f}s)")
-                
-                # Update avg_tokens with bootstrap data
-                self.avg_tokens = int(self.bootstrap_tokens)
-                
-                # Initialize LatencyTracker with bootstrap values (3 samples for stability)
-                for _ in range(3):
-                    self.latency_tracker.add(self.bootstrap_latency)
-                
-                # Initialize progressive token estimation with bootstrap
-                self.first_prompt_tokens = int(self.bootstrap_tokens * 0.85)  # Input portion
-                
-                self._bootstrap_completed = True
-                
-            except Exception as e:
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.warning(f"Bootstrap measurement failed: {e}")
-                # Use fallback values
-                self.bootstrap_latency = 2.0
-                self.bootstrap_tokens = float(self.avg_tokens)
-                self._bootstrap_completed = True
-        else:
-            # No clusters available for bootstrap - use static fallback
-            self.bootstrap_latency = 2.0
-            self.bootstrap_tokens = float(self.avg_tokens)
-            self._bootstrap_completed = True
-        
-        # Update rate limiting with bootstrap data
-        await self._update_rate_limiting_with_bootstrap()
-
-    async def _update_rate_limiting_with_bootstrap(self):
-        """Update rate limiting components using bootstrap measurement data"""
-        if not self._bootstrap_completed:
-            return
-
-        # Use dynamically fetched rate limits stored on self
-        rate_limits = self.rate_limits
-
-        # Recalculate arrival_rate using bootstrap-measured tokens
-        arrival_rate = min(
-            rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
-            rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
-        )
-
-        # Update AsyncLimiter with new arrival rate
-        if arrival_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
-        else:
-            self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
-
-        # Calculate optimal concurrency using Little's Law with bootstrap-measured latency
-        optimal_concurrency = compute_optimal_concurrency(
-            ApiLimits(rate_limits.tokens_per_minute, rate_limits.requests_per_minute),
-            self.bootstrap_latency,
-            self.avg_tokens,
-            self.processing_config,
-            cap=self.config.async_concurrency_limit,
-            min_conc=3,  # Low floor — trust Little's Law calculation for Azure rate limits
-            headroom=self.processing_config.rate_limit_headroom
-        )
-
-        # Update concurrency semaphore — use work-item count (categories or clusters)
-        n_work_items = len(self.cluster_results)
-        if not n_work_items and self._category_assigned_data:
-            # mece_categories path: count unique categories as work items
-            cats = set()
-            for resp in self._category_assigned_data:
-                for idea in (resp.response_ideas or []):
-                    if idea.assigned_category and idea.partition_name:
-                        cats.add(f"{idea.partition_name}::{idea.assigned_category}")
-            n_work_items = len(cats) or 1
-        n_work_items = max(n_work_items, 1)  # never 0
-        self.concurrency_semaphore = asyncio.Semaphore(min(n_work_items, optimal_concurrency))
-        
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"Rate limiting updated - arrival rate: {arrival_rate:.2f}/s, concurrency: {optimal_concurrency}")
-
-    def _calculate_avg_tokens(self) -> int:
-        """Calculate average token count for requests (following qualityFilter.py pattern)"""
-        # Sample a few clusters to estimate average token usage
-        sample_size = min(5, len(self.cluster_results))
-        if sample_size == 0:
-            return 400  # Default estimate for code generation tasks
-        
-        total_tokens = 0
-        for i in range(sample_size):
-            cluster_result = self.cluster_results[i]
-            ideas_list = cluster_result.response_ideas or []
-            ideas_text = "\n".join([f"- {self._get_stage1_idea_text(idea)}" for idea in ideas_list[:10]])  # Sample first 10 ideas
-            
-            # Estimate tokens for typical cluster summary prompt (including context specifiers)
-            sample_prompt = CLUSTER_SUMMARY_PROMPT.format(
-                cluster_id="sample",
-                survey_question=self.var_lab or "sample question",
-                language=DEFAULT_LANGUAGE,
-                cluster_text=ideas_text,
-                **self.CLUSTER_PROMPT_PARAMS,
-                **self._get_context_specifier_params()
-            )
-            total_tokens += len(self.encoding.encode(sample_prompt))
-        
-        avg_input = total_tokens / sample_size
-        # Add margin for output estimation
-        return int(avg_input * OUTPUT_TOKEN_ESTIMATE_MARGIN)
-
-    def estimate_tokens(self, prompt: str) -> int:
-        """Estimate total tokens using adaptive strategy (from qualityFilter.py)"""
-        actual_input_tokens = len(self.encoding.encode(prompt))
-        
-        # Input estimation: first prompt + margin, then average of first 3
-        if self.first_prompt_tokens is None:
-            # First prompt: use actual + margin
-            self.first_prompt_tokens = actual_input_tokens
-            estimated_input = int(actual_input_tokens * INPUT_TOKEN_ESTIMATE_MARGIN)
-        elif len(self.input_token_history) < 3:
-            # Still collecting data: use actual + margin
-            estimated_input = int(actual_input_tokens * INPUT_TOKEN_ESTIMATE_MARGIN)
-        else:
-            # Use average of first 3 actual inputs
-            avg_input = sum(self.input_token_history) / len(self.input_token_history)
-            estimated_input = int(avg_input)
-        
-        # Track input tokens for learning
-        if len(self.input_token_history) < 3:
-            self.input_token_history.append(actual_input_tokens)
-        
-        # Output estimation: % of input for reasoning models, then average of first 5 responses
-        if len(self.output_token_history) < 5:
-            # Use % of input as estimate (higher for reasoning models)
-            estimated_output = int(estimated_input * OUTPUT_ESTIMATE_PCT_OF_INPUT)
-        else:
-            # Use average of first 5 actual outputs
-            avg_output = sum(self.output_token_history) / len(self.output_token_history)
-            estimated_output = int(avg_output)
-        
-        # Ensure we don't exceed max_tokens if configured
-        if hasattr(self.config, 'max_tokens') and self.config.max_tokens:
-            estimated_output = min(self.config.max_tokens, estimated_output)
-        
-        total_estimate = estimated_input + estimated_output
-        
-        return total_estimate
-
-    def get_token_bucket_status(self) -> dict:
-        """Get current token bucket status with utilization calculation"""
-        available_pct = (self.tpm_bucket.available / self.tpm_bucket.tpm) * 100
-        
-        # Calculate real utilization based on consumption rate vs capacity
-        if len(self.actual_total_tokens) >= BUCKET_STATUS_RECENT_SAMPLES:
-            # Use actual consumption rate over last N samples
-            recent_avg = sum(list(self.actual_total_tokens)[-BUCKET_STATUS_RECENT_SAMPLES:]) / BUCKET_STATUS_RECENT_SAMPLES
-            # Convert to per-second rate (assuming default latency per request for rough estimate)
-            consumption_rate_per_sec = recent_avg / ASSUMED_LATENCY_PER_REQUEST
-            # Calculate utilization as percentage of per-second capacity
-            real_utilization_pct = (consumption_rate_per_sec / (self.tpm_bucket.tpm / 60)) * 100
-        else:
-            # Fallback to bucket level method for early samples
-            real_utilization_pct = 100 - available_pct
-        
-        return {
-            'available_tokens': int(self.tpm_bucket.available),
-            'capacity': int(self.tpm_bucket.tpm),
-            'available_pct': available_pct,
-            'utilization_pct': real_utilization_pct,
-            'low_tokens': self.tpm_bucket.available < self.tpm_bucket.tpm * LOW_TOKEN_THRESHOLD_PCT
-        }
-    
-    def get_token_estimation_stats(self) -> dict:
-        """Get token estimation accuracy statistics"""
-        if not self.estimation_errors:
-            return {"status": "collecting_data", "samples": 0}
-        
-        avg_error = sum(self.estimation_errors) / len(self.estimation_errors)
-        avg_input = sum(self.input_token_history) / len(self.input_token_history) if self.input_token_history else 0
-        avg_output = sum(self.output_token_history) / len(self.output_token_history) if self.output_token_history else 0
-        avg_actual_total = sum(self.actual_total_tokens) / len(self.actual_total_tokens) if self.actual_total_tokens else 0
-        
-        return {
-            "status": "learning",
-            "samples": len(self.estimation_errors),
-            "avg_estimation_error": avg_error,
-            "avg_input_tokens": avg_input,
-            "avg_output_tokens": avg_output,
-            "avg_actual_total_tokens": avg_actual_total,
-            "initial_avg_tokens": self.avg_tokens,
-            "input_samples": len(self.input_token_history),
-            "output_samples": len(self.output_token_history),
-            "actual_samples": len(self.actual_total_tokens)
-        }
-
-    def update_token_usage(self, estimated_tokens: int, actual_usage: Dict):
-        """Update token history with actual usage data for progressive learning"""
-        if not actual_usage:
-            return
-            
-        # Extract token counts
-        actual_input = actual_usage.get('prompt_tokens', 0)
-        actual_output = actual_usage.get('completion_tokens', 0)
-        actual_total = actual_usage.get('total_tokens', actual_input + actual_output)
-        
-        # Update output token history (first 5 samples)
-        if len(self.output_token_history) < 5 and actual_output > 0:
-            self.output_token_history.append(actual_output)
-        
-        # Track actual total tokens
-        if actual_total > 0:
-            self.actual_total_tokens.append(actual_total)
-        
-        # Calculate and track estimation error
-        if estimated_tokens > 0 and actual_total > 0:
-            error = abs(estimated_tokens - actual_total) / actual_total
-            self.estimation_errors.append(error)
-
-    async def probe_call_theme_extraction(self, cluster_data: Dict) -> Dict:
-        """Probe call with EXACT same structure as production for accurate bootstrap measurement"""
-        # Extract sample ideas for probe - same logic as production
-        ideas = cluster_data.get('ideas', ['sample idea'])[:10]  # Limit to 10 ideas for probe
-        ideas_text = "\n".join([f"- {self._get_stage1_idea_text(idea)}" for idea in ideas])
-        
-        # Build prompt - EXACT same as production (including context specifiers)
-        prompt = CLUSTER_SUMMARY_PROMPT.format(
-            cluster_id=cluster_data.get('cluster_id', 'probe'),
-            survey_question=self.var_lab,
-            language=DEFAULT_LANGUAGE,
-            cluster_text=ideas_text,
-            **self.CLUSTER_PROMPT_PARAMS,
-            **self._get_context_specifier_params()
-        )
-        
-        # Use EXACT same adaptive timeout as production
-        adaptive_timeout = self._get_adaptive_timeout()
-        
-        try:
-            # Use EXACT same wrapper as production with structured output
-            response = await async_responses_create_with_json_retry(
-                model=self.model_config.get_model_for_stage('theme_extraction'),  # Same model selection
-                prompt=prompt,
-                response_model=ClusterSummaryOutput,  # Same structured output
-                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('theme_extraction'),
-                text_verbosity=self.model_config.get_text_verbosity_for_stage('theme_extraction'),
-                semaphore=self.concurrency_semaphore,  # Same rate limiting
-                rate_limiter=self.rate_limiter,        # Same rate limiting  
-                tpm_bucket=self.tpm_bucket,           # Same rate limiting
-                latency_tracker=self.latency_tracker, # Same timing tracking
-                config=self.config,
-                timeout=adaptive_timeout              # Same adaptive timeout
-            )
-            
-            # Extract usage from structured response
-            usage_data = getattr(response, "usage", None)
-            if hasattr(response, 'response') and hasattr(response.response, 'usage'):
-                usage_data = response.response.usage
-            
-            normalized_usage = normalize_usage(usage_data)
-            
-            # If no real usage data was available, normalized_usage will have zeros
-            if normalized_usage["total_tokens"] == 0:
-                # Fallback with realistic structured output token counts
-                return {"prompt_tokens": 400, "completion_tokens": 150, "total_tokens": 550}
-            
-            return normalized_usage
-            
-        except Exception as e:
-            # Fallback with realistic structured output token counts on error
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.warning(f"Bootstrap probe failed: {e}")
-            return {"prompt_tokens": 400, "completion_tokens": 150, "total_tokens": 550}
-   
-    def _get_adaptive_timeout(self) -> float:
-        """Get adaptive timeout based on latency tracking (following qualityFilter pattern)"""
-        if self.latency_tracker.ema is None:
-            return 30.0  # Default timeout
-        
-        # Use 95th percentile + 50% margin for timeouts
-        if len(self.latency_tracker.values) >= 10:
-            import numpy as np
-            p95 = np.percentile(self.latency_tracker.values, 95)
-            return min(max(p95 * 1.5, 15.0), 120.0)  # Between 15s and 120s
-        else:
-            # Use EMA + 50% margin for early stages
-            return min(max(self.latency_tracker.ema * 1.5, 15.0), 60.0)  # Between 15s and 60s
-    
-    def _capture_prompt_params(self, cluster_id: Union[int, str], step: str, **kwargs):
-        """Capture exact parameters used in prompt.format() for debugging/testing"""
-        # Convert cluster_id to string for consistent dict key format
-        key = str(cluster_id)
-        if step == "step1":
-            self.step1_inputs[key] = kwargs
-        elif step == "step2":
-            self.step2_inputs[key] = kwargs
-        elif step == "step3":
-            self.step3_inputs[key] = kwargs
-        elif step == "step4":
-            self.step4_inputs[key] = kwargs
-    
-    def _get_theme_id(self, theme_data) -> int:
-        """Extract theme_id from theme data structure"""
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            return theme_data.extracted_themes[0].theme_id
-        return 1  # Default fallback
-    
-    def _find_closest_code(self, llm_code_name: str, available_codes: List[str], threshold: float = 0.8) -> Optional[str]:
-        """Find closest matching code using fuzzy string matching"""
-        if not llm_code_name or not available_codes:
-            return None
-        
-        # Try exact match first (fastest)
-        if llm_code_name in available_codes:
-            return llm_code_name
-        
-        # Case-insensitive exact match
-        for code in available_codes:
-            if llm_code_name.lower() == code.lower():
-                return code
-        
-        # Fuzzy matching with difflib
-        matches = difflib.get_close_matches(
-            llm_code_name, 
-            available_codes, 
-            n=1, 
-            cutoff=threshold
-        )
-        
-        return matches[0] if matches else None
-    
-    def _format_theme_for_prompt(self, theme_data) -> str:
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            theme = theme_data.extracted_themes[0]
-            return f"{theme.theme_label}"
-        return "Unknown theme"
-    
-    def _get_theme_statement(self, theme_data) -> str:
-        """Safely get theme statement from theme data"""
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            return theme_data.extracted_themes[0].theme_clarification
-        return "Unknown theme"
-    
-    def _get_theme_name(self, theme_data) -> str:
-        """Safely get theme name from theme data"""
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            return f"{theme_data.extracted_themes[0].theme_label}"
-        return "Unknown theme"
-    
-    def _get_theme_description(self, theme_data) -> str:
-        """Safely get theme description from theme data"""
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            return f"{theme_data.extracted_themes[0].theme_clarification}"
-        return "No theme description"
-
-    def _get_abstraction_level(self, theme_data) -> str:
-        """Extract abstraction level from theme data.
-        Returns Literal values matching ClusterThemeItem.abstraction_level:
-        'concrete-experiential' or 'interpretive-pattern'."""
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            theme = theme_data.extracted_themes[0]
-            if hasattr(theme, 'abstraction_level'):
-                return theme.abstraction_level
-        return "concrete-experiential"
-
-    def _get_inclusion_examples(self, theme_data) -> str:
-        """Extract and format inclusion examples from theme data"""
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            theme = theme_data.extracted_themes[0]
-            if hasattr(theme, 'assignment_examples'):
-                examples = theme.assignment_examples.inclusion
-                return "\n".join([f"• {example}" for example in examples])
-        return "No inclusion examples specified"
-
-    def _get_exclusion_examples(self, theme_data) -> str:
-        """Extract and format exclusion examples from theme data"""
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            theme = theme_data.extracted_themes[0]
-            if hasattr(theme, 'assignment_examples'):
-                examples = theme.assignment_examples.exclusion
-                return "\n".join([f"• {example}" for example in examples])
-        return "No exclusion examples specified"
-
-    def _get_near_neighbor(self, theme_data) -> str:
-        """Extract and format near neighbor info from theme data"""
-        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
-            theme = theme_data.extracted_themes[0]
-            if hasattr(theme, 'assignment_examples') and theme.assignment_examples is not None:
-                neighbor = theme.assignment_examples.near_neighbor
-                return f"{neighbor.label} (Tell apart: {neighbor.tell_apart_rule})"
-        return "Unknown"
-
-    def _calculate_cosine_similarities(
-        self,
-        theme_embedding: np.ndarray,
-        candidate_codes: List[Dict[str, str]],
-        all_codes: List[Dict[str, str]],
-        code_embeddings: List[np.ndarray]
-    ) -> Dict[str, float]:
-       
-        similarities = {}
-
-        for candidate in candidate_codes:
-            # Find index of this code in the full codebook
-            try:
-                code_idx = next(
-                    i for i, c in enumerate(all_codes)
-                    if c['code'] == candidate['code']
-                )
-            except StopIteration:
-                # Code not found (shouldn't happen, but handle gracefully)
-                similarities[candidate['code']] = 0.0
-                continue
-
-            # Calculate cosine similarity
-            similarity = cosine_similarity(
-                theme_embedding.reshape(1, -1),
-                code_embeddings[code_idx].reshape(1, -1)
-            )[0][0]
-
-            similarities[candidate['code']] = round(float(similarity), 3)
-
-        return similarities
-
-    def _format_codes_with_cosine(
-        self,
-        candidate_codes: List[Dict[str, str]],
-        cosine_scores: Dict[str, float]
-    ) -> str:
-       
-        formatted_lines = []
-
-        for code in candidate_codes:
-            code_label = code['code']
-            cosine = cosine_scores.get(code_label, 0.0)
-            # line = f"- {code_label} (cosine: {cosine:.2f})"  # With cosine score
-            line = f"- {code_label}"  # Without cosine score
-            formatted_lines.append(line)
-
-        return "\n".join(formatted_lines)
-
-
-    # Map format names to cached embedding field names on EmbeddingsSubmodel.
-    # Step 4 stores: idea_embedding, ladder_embedding,
-    # interpretation_embedding, abstraction_embedding, domain_embedding, facet_embedding.
-    _FORMAT_TO_CACHED_FIELD = {
-        "idea":                  "idea_embedding",
-        "ladder":                "ladder_embedding",
-        "interpretation":        "interpretation_embedding",
-        "abstraction":           "abstraction_embedding",
-        "domain":                "domain_embedding",
-        "facet":                 "facet_embedding",
-    }
-
-    def _prepare_idea_embeddings(self):
-        """Set idea_embedding on all ideas based on the configured embedding format.
-
-        Strategy (in order):
-        1. "cached" → no-op, use whatever idea_embedding step 4 stored
-        2. Format has a matching cached field (e.g. "ladder" → ladder_embedding)
-           and the field is populated → copy to idea_embedding (no API calls)
-        3. Otherwise → compute on-the-fly via format_idea_text() + OpenAI API
-
-        Sets idea.idea_embedding in-place so all downstream methods (sampling,
-        redistribution, etc.) pick it up automatically.
-        """
-        if self._embedding_text_format == "cached":
-            return  # Use pre-computed idea_embedding from step 4
-
-        # Collect ALL idea objects from whichever input source is active
-        all_ideas = []
-        for result in self._idea_source:
-            all_ideas.extend(result.response_ideas or [])
-
-        if not all_ideas:
-            return
-
-        # --- Try cached field first ---
-        cached_field = self._FORMAT_TO_CACHED_FIELD.get(self._embedding_text_format)
-        if cached_field and cached_field != "idea_embedding":
-            # Check if the first idea has this field populated
-            sample = all_ideas[0]
-            cached_val = getattr(sample, cached_field, None)
-            if cached_val is not None:
-                # Count how many have it
-                n_cached = sum(
-                    1 for idea in all_ideas
-                    if getattr(idea, cached_field, None) is not None
-                )
-                if n_cached == len(all_ideas):
-                    # All ideas have the cached embedding — just copy to idea_embedding
-                    for idea in all_ideas:
-                        idea.idea_embedding = getattr(idea, cached_field)
-                    self.verbose_reporter.stat_line(
-                        f"Embedding: using cached {cached_field} for {len(all_ideas)} ideas (no API calls)"
-                    )
-                    return
-                else:
-                    self.verbose_reporter.stat_line(
-                        f"Embedding: {cached_field} only cached for {n_cached}/{len(all_ideas)} ideas — computing on-the-fly"
-                    )
-
-        # --- On-the-fly computation ---
-        self.verbose_reporter.step_start("Computing Idea Embeddings On-the-Fly")
-        self.verbose_reporter.stat_line(
-            f"Format: {self._embedding_text_format!r}, separator: {self._embedding_separator!r}"
-        )
-
-        # Resolve template_prefix for "idea_bare" format
-        template_prefix = None
-        if self._extraction_metadata and hasattr(self._extraction_metadata, 'template_prefix'):
-            template_prefix = self._extraction_metadata.template_prefix
-
-        # Format text for each idea
-        texts = [
-            format_idea_text(idea, self._embedding_text_format, self._embedding_separator, template_prefix)
-            for idea in all_ideas
-        ]
-
-        # Deduplicate: unique text → embedding, then map back
-        unique_texts = list(dict.fromkeys(texts))  # preserves order, removes dupes
-        text_to_idx = {t: i for i, t in enumerate(unique_texts)}
-
-        self.verbose_reporter.stat_line(
-            f"Ideas: {len(all_ideas)}, unique texts: {len(unique_texts)}"
-        )
-
-        # Batch embed using existing sync OpenAI client
-        unique_embeddings = []
-        batch_size = EMBEDDING_BATCH_SIZE  # 100, from step_6 config_exp.py
-        for i in range(0, len(unique_texts), batch_size):
-            batch = unique_texts[i:i + batch_size]
-            response = self.embedding_client.embeddings.create(
-                model=self.config.embedding_model,
-                input=batch,
-            )
-            unique_embeddings.extend(
-                np.array(item.embedding, dtype=np.float32)
-                for item in response.data
-            )
-
-        # Map back to ideas, setting idea_embedding in-place
-        for idea, text in zip(all_ideas, texts):
-            idx = text_to_idx[text]
-            idea.idea_embedding = unique_embeddings[idx]
-
-        self.verbose_reporter.step_complete(
-            f"Computed {len(all_ideas)} embeddings ({len(unique_texts)} unique)"
-        )
-
-    def extract_cluster_data(self) -> Dict[Union[int, str], Dict[str, Any]]:
-        """Extract cluster data using expanded_cluster when available.
-
-        Works with both cluster_results (cluster path) and _category_assigned_data
-        (categories path) via _idea_source property.
-        """
-        clusters = {}
-
-        for result in self._idea_source:
-            ideas_list = result.response_ideas or []
-            
-            for idea in ideas_list:
-                # Use expanded_cluster if available, otherwise fall back to initial_cluster
-                cluster_id = idea.expanded_cluster if idea.expanded_cluster is not None else str(idea.initial_cluster) if idea.initial_cluster is not None else None
-                
-                if cluster_id is not None and cluster_id != "-1":
-                    # Create cluster entry if it doesn't exist
-                    if cluster_id not in clusters:
-                        clusters[cluster_id] = {
-                            'cluster_id': cluster_id,
-                            'ideas': [],
-                            'embeddings': [],
-                            'respondent_ids': []
-                        }
-                    
-                    # Add idea data - store the full object to preserve embeddings
-                    clusters[cluster_id]['ideas'].append(idea)
-                    clusters[cluster_id]['respondent_ids'].append(idea.idea_id)  # Using idea_id as respondent identifier
-                    
-                    # Add embedding if available (kept for backward compatibility)
-                    if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                        clusters[cluster_id]['embeddings'].append(idea.idea_embedding)
-        
-        # Filter out empty clusters
-        return {cid: cdata for cid, cdata in clusters.items() if len(cdata['embeddings']) > 0}
-
-    def extract_category_data(self) -> Dict[int, Dict[str, Any]]:
-        """Extract data organized by MECE category with sequential numeric IDs,
-        split by individual valence direction (+, -, 0).
-
-        Every (base_key, valence) combination with at least 1 idea gets its own
-        numeric ID.  No folding, no threshold filtering — the caller decides
-        which groups go through theme extraction vs direct "other" assignment.
-
-        Ideas whose (partition_name, assigned_category) is not in the MECE
-        results cache (e.g. "overig/anders" catch-all) are included with
-        category=None so the caller can route them to the "other" path.
-
-        Sets idea.initial_cluster on every idea for downstream compat.
-
-        Returns dict: numeric_id -> {
-            'cluster_id': int,
-            'category_key': str,              # "{partition}::{label} [+]" / "[-]" / "[0]"
-            'partition_name': str,
-            'category': MECECode | None,  # None for overig/anders ideas
-            'valence_sign': str,              # raw valence: "+", "-", or "0"
-            'ideas': List[CodeAssignedSubmodel],
-            'embeddings': List[ndarray],
-            'idea_texts': List[str],
-            'respondent_ids': List[str],
-        }
-        """
-        if not self._mece_results_cache or not self._category_assigned_data:
-            return {}
-
-        # --- Pass 1: build MECECode lookup ---
-        category_lookup: Dict[tuple, 'MECECode'] = {}
-        for part_name, part_result in self._mece_results_cache.partition_results.items():
-            for cat in part_result.categories:
-                category_lookup[(part_name, cat.category_label)] = cat
-
-        # --- Pass 2: count ideas per (base_key, valence) and assign IDs ---
-        # Three-way split: "+", "-", "0" — each gets its own group.
-        cat_val_counts: Dict[str, Dict[str, int]] = {}
-        for resp in self._category_assigned_data:
-            for idea in (resp.response_ideas or []):
-                if not idea.assigned_category or not idea.partition_name:
-                    continue
-                base_key = f"{idea.partition_name}::{idea.assigned_category}"
-                val = getattr(idea, 'valence', '') or "+"
-                if val not in ("+", "-", "0"):
-                    val = "+"
-                cat_val_counts.setdefault(base_key, {"+": 0, "-": 0, "0": 0})
-                cat_val_counts[base_key][val] += 1
-
-        # Assign sequential numeric IDs for every non-empty (base_key, valence)
-        cat_val_to_id: Dict[tuple, int] = {}
-        next_id = 1
-        for base_key, counts in cat_val_counts.items():
-            for val_sign in ("+", "-", "0"):
-                if counts[val_sign] > 0:
-                    cat_val_to_id[(base_key, val_sign)] = next_id
-                    next_id += 1
-
-        # Store inverse for logging
-        self._category_id_map = {v: k for k, v in cat_val_to_id.items()}
-
-        # --- Pass 3: group ideas by numeric ID, stamp initial_cluster ---
-        categories: Dict[int, Dict[str, Any]] = {}
-
-        for resp in self._category_assigned_data:
-            for idea in (resp.response_ideas or []):
-                if not idea.assigned_category or not idea.partition_name:
-                    continue
-
-                base_key = f"{idea.partition_name}::{idea.assigned_category}"
-                val = getattr(idea, 'valence', '') or "+"
-                if val not in ("+", "-", "0"):
-                    val = "+"
-
-                numeric_id = cat_val_to_id[(base_key, val)]
-
-                # Stamp bridge field for downstream compat
-                idea.initial_cluster = numeric_id
-
-                if numeric_id not in categories:
-                    mece_cat = category_lookup.get(
-                        (idea.partition_name, idea.assigned_category)
-                    )
-                    categories[numeric_id] = {
-                        'cluster_id': numeric_id,
-                        'category_key': f"{base_key} [{val}]",
-                        'partition_name': idea.partition_name,
-                        'category': mece_cat,
-                        'valence_sign': val,
-                        'ideas': [],
-                        'embeddings': [],
-                        'idea_texts': [],
-                        'respondent_ids': [],
-                    }
-
-                categories[numeric_id]['ideas'].append(idea)
-                text = self._get_stage1_idea_text(idea)
-                categories[numeric_id]['idea_texts'].append(text)
-                categories[numeric_id]['respondent_ids'].append(idea.idea_id)
-
-                if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                    categories[numeric_id]['embeddings'].append(idea.idea_embedding)
-
-        # --- Verbose logging ---
-        if self.verbose_reporter.enabled:
-            n_plus = sum(1 for v in categories.values() if v['valence_sign'] == "+")
-            n_minus = sum(1 for v in categories.values() if v['valence_sign'] == "-")
-            n_zero = sum(1 for v in categories.values() if v['valence_sign'] == "0")
-            n_no_mece = sum(1 for v in categories.values() if v['category'] is None)
-            total_ideas = sum(len(v['ideas']) for v in categories.values())
-            self.verbose_reporter.stat_line(
-                f"  Valence groups: {n_plus} [+], {n_minus} [\u2212], {n_zero} [0] "
-                f"({len(categories)} total, {total_ideas} ideas)"
-            )
-            if n_no_mece > 0:
-                n_no_mece_ideas = sum(
-                    len(v['ideas']) for v in categories.values() if v['category'] is None
-                )
-                self.verbose_reporter.stat_line(
-                    f"  {n_no_mece} groups ({n_no_mece_ideas} ideas) have no MECE category "
-                    f"(overig/anders \u2192 direct 'other' code)"
-                )
-
-        return categories
-
-    def _separate_other_groups(
-        self,
-        categories: Dict[int, Dict[str, Any]],
-        min_size: int = 3
-    ) -> tuple:
-        """Split category groups into normal (theme extraction) and other (direct code).
-
-        A group goes to 'other' if:
-          - category is None (overig/anders — no MECE metadata), OR
-          - len(ideas) < min_size (too few for meaningful theme extraction)
-
-        For normal groups, + and 0 valence groups from the same
-        (partition, category) are merged into a single 'pos' group for theme
-        extraction.  '-' groups stay separate as 'neg'.
-
-        Returns (normal_groups, other_groups) — both are dicts keyed by
-        numeric ID with the same structure as the input.  normal_groups
-        entries gain a 'valence_group' field ("pos" or "neg") used by the
-        existing theme extraction + prompt formatting code.
-        """
-        other_groups: Dict[int, Dict[str, Any]] = {}
-        mergeable: Dict[int, Dict[str, Any]] = {}  # candidates for +/0 merge
-
-        for num_id, entry in categories.items():
-            if entry['category'] is None or len(entry['ideas']) < min_size:
-                other_groups[num_id] = entry
-            else:
-                mergeable[num_id] = entry
-
-        # --- Merge + and 0 groups from the same (partition, category) ---
-        # Build lookup: (partition, category_label) → list of group entries
-        merge_key_to_groups: Dict[tuple, list] = {}
-        neg_groups: Dict[int, Dict[str, Any]] = {}
-
-        for num_id, entry in mergeable.items():
-            if entry['valence_sign'] == "-":
-                # Negative groups stay as-is
-                entry['valence_group'] = "neg"
-                neg_groups[num_id] = entry
-            else:
-                # + and 0 groups — collect for merging
-                cat_label = entry['category'].category_label if entry['category'] else ""
-                merge_key = (entry['partition_name'], cat_label)
-                merge_key_to_groups.setdefault(merge_key, []).append((num_id, entry))
-
-        # Build merged pos groups with fresh sequential IDs
-        normal_groups: Dict[int, Dict[str, Any]] = {}
-        next_merged_id = max(categories.keys(), default=0) + 1
-
-        for merge_key, group_list in merge_key_to_groups.items():
-            if len(group_list) == 1:
-                # Only one group (either + or 0) — use as-is
-                num_id, entry = group_list[0]
-                entry['valence_group'] = "pos"
-                # Re-stamp display key
-                base_key = f"{entry['partition_name']}::{entry['category'].category_label}"
-                entry['category_key'] = f"{base_key} [+/0]"
-                normal_groups[num_id] = entry
-            else:
-                # Merge + and 0 groups into one pos group
-                merged_id = next_merged_id
-                next_merged_id += 1
-                first_entry = group_list[0][1]
-                base_key = f"{first_entry['partition_name']}::{first_entry['category'].category_label}"
-
-                merged = {
-                    'cluster_id': merged_id,
-                    'category_key': f"{base_key} [+/0]",
-                    'partition_name': first_entry['partition_name'],
-                    'category': first_entry['category'],
-                    'valence_group': "pos",
-                    'valence_sign': "+",  # representative sign for the merged group
-                    'ideas': [],
-                    'embeddings': [],
-                    'idea_texts': [],
-                    'respondent_ids': [],
-                }
-                for _, entry in group_list:
-                    merged['ideas'].extend(entry['ideas'])
-                    merged['embeddings'].extend(entry['embeddings'])
-                    merged['idea_texts'].extend(entry['idea_texts'])
-                    merged['respondent_ids'].extend(entry['respondent_ids'])
-
-                # Re-stamp initial_cluster on merged ideas
-                for idea in merged['ideas']:
-                    idea.initial_cluster = merged_id
-
-                normal_groups[merged_id] = merged
-
-        # Add negative groups
-        for num_id, entry in neg_groups.items():
-            base_key = f"{entry['partition_name']}::{entry['category'].category_label}"
-            entry['category_key'] = f"{base_key} [\u2212]"
-            normal_groups[num_id] = entry
-
-        if self.verbose_reporter.enabled:
-            n_other_ideas = sum(len(v['ideas']) for v in other_groups.values())
-            n_normal_ideas = sum(len(v['ideas']) for v in normal_groups.values())
-            self.verbose_reporter.stat_line(
-                f"  Separated: {len(normal_groups)} groups ({n_normal_ideas} ideas) "
-                f"\u2192 theme extraction, {len(other_groups)} groups ({n_other_ideas} ideas) "
-                f"\u2192 partition 'other' code"
-            )
-
-        return normal_groups, other_groups
-
-    async def _assign_partition_other_codes(
-        self,
-        other_groups: Dict[int, Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Assign partition-level 'other' codes to ideas in small/unassigned groups.
-
-        Creates one code per unique (partition_name, valence_sign) combination:
-            "{partition_name} — overig/anders (+)"   (Dutch)
-            "{partition_name} — other/miscellaneous (-)"  (English)
-            etc.
-
-        Sets expanded_cluster and cluster_theme on each idea.
-        Returns result dicts compatible with generate_async() codebook assembly.
-        """
-        # Resolve language-specific "other" label
-        language = (
-            self._extraction_metadata.lang
-            if self._extraction_metadata and self._extraction_metadata.lang
-            else DEFAULT_LANGUAGE
-        )
-        other_label = get_other_category_label(language)
-
-        # Group ideas by (partition_name, valence_sign)
-        pv_buckets: Dict[tuple, list] = {}  # (partition, valence) → list of ideas
-        for entry in other_groups.values():
-            pv_key = (entry['partition_name'], entry['valence_sign'])
-            pv_buckets.setdefault(pv_key, []).extend(entry['ideas'])
-
-        results = []
-        codes_created = 0
-        total_ideas = 0
-
-        for (partition, val_sign), ideas in pv_buckets.items():
-            code_label = f"{partition} \u2014 {other_label} ({val_sign})"
-            code_definition = (
-                f"Ideas within the '{partition}' partition that could not be "
-                f"assigned a specific code (valence: {val_sign})."
-            )
-            cluster_key = f"other_{partition}_{val_sign}"
-
-            # NOT added to SharedCodebook — "other" codes are excluded from
-            # the 4-chain process so Prompt 2 never sees them as USE/MODIFY
-            # candidates. They are injected into all_results after batch
-            # processing for final codebook assembly only.
-            codes_created += 1
-
-            # Stamp idea attributes for downstream compat (step 8 routing)
-            for idea in ideas:
-                idea.expanded_cluster = cluster_key
-                idea.cluster_theme = code_label
-            total_ideas += len(ideas)
-
-            # Result dict for codebook assembly in generate_async()
-            results.append({
-                'cluster_id': cluster_key,
-                'final_code': code_label,
-                'final_definition': code_definition,
-                'decision': 'DIRECT_OTHER',
-                'ideas_count': len(ideas),
-            })
-
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(
-                f"  Partition 'other' codes: {codes_created} codes created, "
-                f"{total_ideas} ideas assigned"
-            )
+                new_target = state.ramp.current_target()
+                if new_target != state.gate.limit:
+                    state.gate.set_limit(new_target)
+                    if state.circuit_breaker:
+                        state.circuit_breaker.baseline = new_target
+
+            if now - last_report_time >= 2.0:
+                if state.completions != last_reported_completions:
+                    last_report_time = now
+                    last_reported_completions = state.completions
+                    rate = state.completions / elapsed if elapsed > 0 else 0
+                    current_tpm = await state.tpm_tracker.get_current_tpm()
+                    current_rpm = await state.rpm_tracker.get_current_rpm()
+                    timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
+                    cb_info = ""
+                    if state.circuit_breaker and state.circuit_breaker.state != 'CLOSED':
+                        cb_info = f" CB:{state.circuit_breaker.state}"
+                    print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
+                          f"({rate:.1f}/s) | TPM:{current_tpm:,.0f} RPM:{current_rpm:.0f} "
+                          f"Conc:{state.gate.active}/{state.gate.limit}→{state.ramp._target}"
+                          f"{timeout_info}{cb_info}")
+
+    async def _run_with_ramp(self, coros, state: PhaseRampState):
+        """Run coroutines via gather with a background ramp monitor."""
+        async def _work():
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            state.done = True
+            return results
+
+        results, _ = await asyncio.gather(_work(), self._phase_monitor(state))
+
+        if state.latency_tracker and state.latency_tracker.values:
+            vals = list(state.latency_tracker.values)
+            p50 = float(np.percentile(vals, 50))
+            p95 = float(np.percentile(vals, 95))
+            avg_tok = int(np.mean(list(state.actual_total_tokens))) if state.actual_total_tokens else 0
+            print(f"    [{state.phase_name}] Latency: P50={p50:.1f}s P95={p95:.1f}s | "
+                  f"avg_tokens={avg_tok:,} | "
+                  f"{state.completions} ok, {state.timeouts} timeouts")
 
         return results
 
-    def _format_theme_only_results(self, themes: Dict[int, ClusterSummaryOutput]) -> List[Dict[str, Any]]:
-        """Format theme extraction results for early return without 4-prompt chain processing"""
-        results = []
-        for cluster_id, theme_output in themes.items():
-            # Extract theme information from ClusterSummaryOutput (flat format)
-            if theme_output.extracted_themes:
-                for theme in theme_output.extracted_themes:
-                    results.append({
-                        'cluster_id': cluster_id,
-                        'theme_id': theme.theme_id,
-                        'theme_label': theme.theme_label,
-                        'theme_clarification': theme.theme_clarification,
-                        'stage': 'theme_extraction_only'
-                    })
-        return results
-    
-    async def extract_themes_from_categories(
-        self,
-        categories: Dict[int, Dict[str, Any]]
-    ) -> Dict[int, ClusterSummaryOutput]:
-        """Stage 1: Extract themes from MECE categories using queue-worker pattern.
+    # =========================================================================
+    # SHARED LLM CALL
+    # =========================================================================
 
-        Same concurrency and rate-limiting pattern as extract_themes(), but
-        processes MECE categories instead of clusters.
+    async def _llm_call(self, prompt: str, response_model, max_tokens: int,
+                        temperature: float | None = None, model: str | None = None,
+                        timeout: float = 180.0, gate=None, phase_state: PhaseRampState = None):
+        """Make a rate-limited LLM call through the 4-layer stack."""
+        use_model = model or self._model_p8
+        client = self._clients[use_model]
+        concurrency_ctx = gate if gate is not None else self._semaphore
 
-        Args:
-            categories: Output of extract_category_data() — keyed by
-                        sequential numeric IDs.
-        """
-        if not categories:
-            return {}
+        est_tokens = max_tokens
+        if phase_state and phase_state.estimated_avg_tokens:
+            est_tokens = phase_state.estimated_avg_tokens
 
-        self.verbose_reporter.step_start("Theme Extraction (MECE Categories)")
-        self.verbose_reporter.stat_line(f"Processing {len(categories)} MECE categories")
+        async with concurrency_ctx:
+            effective_timeout = timeout
+            if phase_state and phase_state.latency_tracker:
+                effective_timeout = phase_state.latency_tracker.get_timeout()
 
-        # Calculate workers (same logic as extract_themes)
-        rate_limits = self.rate_limits
-        rpm_throughput = rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
-        tpm_throughput = rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
-        expected_throughput = min(rpm_throughput, tpm_throughput)
-        avg_latency_s = self.latency_tracker.get_avg_latency()
-        num_workers = min(200, max(50, int(expected_throughput * avg_latency_s * 2.0)))
+            if phase_state and phase_state.token_bucket:
+                await phase_state.token_bucket.wait_and_acquire(est_tokens)
 
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Theme extraction setup:")
-            self.verbose_reporter.stat_line(f"- Workers: {num_workers} concurrent subroutines")
-            self.verbose_reporter.stat_line(f"- Semaphore limit: {self.concurrency_semaphore._value} (API calls in flight)")
-
-        # Queue + results
-        queue = asyncio.Queue()
-        theme_results: Dict[int, ClusterSummaryOutput] = {}
-        failed_categories = []
-
-        for numeric_id, cat_data in categories.items():
-            composite_key = cat_data.get('category_key', str(numeric_id))
-            await queue.put({
-                'numeric_id': numeric_id,
-                'category_key': composite_key,
-                'category_data': cat_data,
-            })
-
-        async def worker():
-            while True:
+            async with self._rate_limiter:
+                task_start = time.monotonic()
                 try:
-                    task = await queue.get()
-                    if task is None:
-                        break
-                    try:
-                        result = await self._extract_single_theme_from_category(
-                            task['category_key'],
-                            task['category_data'],
-                            numeric_id=task['numeric_id']
-                        )
-                        if result is not None:
-                            theme_results[task['numeric_id']] = result
+                    result = await asyncio.wait_for(
+                        llm_create_async(
+                            client=client,
+                            model=use_model,
+                            prompt=prompt,
+                            response_model=response_model,
+                            temperature=temperature if temperature is not None else self._temperature,
+                            max_tokens=max_tokens,
+                            **get_reasoning_params(use_model),
+                        ),
+                        timeout=effective_timeout,
+                    )
+
+                    elapsed = time.monotonic() - task_start
+                    if phase_state and phase_state.latency_tracker:
+                        phase_state.latency_tracker.add(elapsed)
+                    if phase_state and phase_state.circuit_breaker:
+                        phase_state.circuit_breaker.record_completion()
+
+                    if phase_state is not None:
+                        phase_state.completions += 1
+                        await phase_state.rpm_tracker.record()
+                        raw = getattr(result, '_raw_response', None)
+                        usage = getattr(raw, 'usage', None) if raw else None
+                        actual_tokens = None
+                        if usage:
+                            actual_tokens = (
+                                getattr(usage, 'prompt_tokens', 0)
+                                + getattr(usage, 'completion_tokens', 0)
+                                + getattr(usage, 'input_tokens', 0)
+                                + getattr(usage, 'output_tokens', 0)
+                            )
+                            await phase_state.tpm_tracker.record(actual_tokens)
                         else:
-                            failed_categories.append(task['numeric_id'])
-                    except Exception as e:
-                        error_msg = str(e).replace('\U0001f916', '[BOT]').replace('\uFE0F', '')
-                        self.verbose_reporter.error(
-                            f"Theme extraction failed for category {task['category_key']}: {error_msg}"
-                        )
-                        failed_categories.append(task['numeric_id'])
-                    finally:
-                        queue.task_done()
-                except Exception as e:
-                    logger.error(f"Worker error in category theme extraction: {e}")
-                    break
+                            await phase_state.tpm_tracker.record(max_tokens)
+
+                        if actual_tokens and phase_state.actual_total_tokens is not None:
+                            phase_state.actual_total_tokens.append(actual_tokens)
+                        if actual_tokens and phase_state.token_bucket:
+                            delta = actual_tokens - est_tokens
+                            if delta != 0:
+                                await phase_state.token_bucket.reconcile(delta)
 
-        workers = []
-        for _ in range(num_workers):
-            w = asyncio.create_task(worker())
-            workers.append(w)
-
-        # Progress monitoring
-        start_time = time.time()
-        last_report = start_time
-        initial_queue_size = queue.qsize()
-
-        while not queue.empty():
-            await asyncio.sleep(1)
-            now = time.time()
-            if now - last_report >= PROGRESS_REPORT_INTERVAL:
-                completed = initial_queue_size - queue.qsize()
-                elapsed = now - start_time
-                rate = completed / elapsed if elapsed > 0 else 0
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.stat_line(
-                        f"Progress: {completed}/{initial_queue_size} "
-                        f"({completed / initial_queue_size * 100:.1f}%), "
-                        f"Rate: {rate:.1f}/s, Queue: {queue.qsize()}"
-                    )
-                last_report = now
-
-        await queue.join()
-
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers)
-
-        self.verbose_reporter.stat_line(f"Extracted {len(theme_results)} themes from categories")
-        if failed_categories:
-            self.verbose_reporter.stat_line(f"Failed categories: {len(failed_categories)}")
-
-        self.verbose_reporter.step_complete("Theme Extraction (MECE Categories)")
-        return theme_results
-
-    async def extract_themes(self, clusters: Dict[int, Dict[str, Any]]) -> Dict[int, ClusterSummaryOutput]:
-        """Stage 1: Extract themes from all clusters using queue-worker pattern with proper rate limiting"""
-        if not clusters:
-            return {}
-        
-        self.verbose_reporter.step_start("Theme Extraction")
-        self.verbose_reporter.stat_line(f"Processing {len(clusters)} clusters")
-        
-        # Use dynamically fetched rate limits stored on self
-        rate_limits = self.rate_limits
-
-        # Calculate number of workers based on rate limits and latency
-        rpm_throughput = rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
-        tpm_throughput = rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
-        expected_throughput = min(rpm_throughput, tpm_throughput)
-        
-        # Get average latency for worker calculation
-        avg_latency_s = self.latency_tracker.get_avg_latency()
-        num_workers = min(200, max(50, int(expected_throughput * avg_latency_s * 2.0)))
-        
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Theme extraction setup:")
-            self.verbose_reporter.stat_line(f"- Workers: {num_workers} concurrent subroutines")
-            self.verbose_reporter.stat_line(f"- Semaphore limit: {self.concurrency_semaphore._value} (API calls in flight)")
-            self.verbose_reporter.stat_line(f"- Rate limits: {rpm_throughput:.1f} req/s, {tpm_throughput:.1f} tok/s")
-        
-        # Create queue and results dict
-        queue = asyncio.Queue()
-        theme_results = {}
-        failed_clusters = []
-        
-        # Add tasks to queue
-        for cluster_id, cluster_data in clusters.items():
-            await queue.put({
-                'cluster_id': cluster_id,
-                'ideas': cluster_data['ideas'],
-                'cluster_data': cluster_data  # Pass full data for experimental mode
-            })
-
-        # Create worker tasks
-        async def worker():
-            while True:
-                try:
-                    task = await queue.get()
-                    if task is None:  # Sentinel value
-                        break
-
-                    try:
-                        result = await self._extract_single_theme(
-                            task['cluster_id'],
-                            task['cluster_data']
-                        )
-                        if result is not None:
-                            theme_results[task['cluster_id']] = result
-                        else:
-                            failed_clusters.append(task['cluster_id'])
-                    except Exception as e:
-                        # Sanitize exception message for Windows console
-                        error_msg = str(e).replace('🤖', '[BOT]').replace('\uFE0F', '')
-                        self.verbose_reporter.error(f"Theme extraction failed for cluster {task['cluster_id']}: {error_msg}")
-                        failed_clusters.append(task['cluster_id'])
-                    finally:
-                        queue.task_done()
-                        
-                except Exception as e:
-                    logger.error(f"Worker error in theme extraction: {e}")
-                    break
-        
-        # Start workers
-        workers = []
-        for _ in range(num_workers):
-            w = asyncio.create_task(worker())
-            workers.append(w)
-        
-        # Progress monitoring with diagnostics
-        start_time = time.time()
-        last_report = start_time
-        last_diagnostics = start_time
-        initial_queue_size = queue.qsize()
-        
-        while not queue.empty():
-            await asyncio.sleep(1)
-            now = time.time()
-            
-            # Progress report every 5s
-            if now - last_report >= 5:
-                completed = initial_queue_size - queue.qsize()
-                remaining = queue.qsize()
-                elapsed = now - start_time
-                rate = completed / elapsed if elapsed > 0 else 0
-                
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.stat_line(
-                        f"Progress: {completed}/{initial_queue_size} ({completed/initial_queue_size*100:.1f}%), "
-                        f"Rate: {rate:.1f}/s, Queue: {remaining}"
-                    )
-                last_report = now
-            
-            # Diagnostic report every 30s (if verbose)
-            if self.verbose_reporter.enabled and now - last_diagnostics >= 30:
-                # Token bucket diagnostics
-                bucket_status = self.get_token_bucket_status()
-                if bucket_status['low_tokens']:
-                    self.verbose_reporter.stat_line(
-                        f"⚠️ Token bucket low: {bucket_status['available_tokens']:,} tokens "
-                        f"({bucket_status['utilization_pct']:.1f}% utilized)"
-                    )
-                
-                # Token estimation diagnostics  
-                token_stats = self.get_token_estimation_stats()
-                if token_stats['status'] == 'learning' and token_stats['samples'] >= 5:
-                    self.verbose_reporter.stat_line(
-                        f"Token estimation: {token_stats['avg_estimation_error']:.0f} avg error, "
-                        f"Input: {token_stats['avg_input_tokens']:.0f} avg ({token_stats['input_samples']}/3), "
-                        f"Output: {token_stats['avg_output_tokens']:.0f} avg ({token_stats['output_samples']}/5)"
-                    )
-                
-                # Latency tracking diagnostics
-                if len(self.latency_tracker.values) >= 10:
-                    p95_latency = np.percentile(list(self.latency_tracker.values), 95)
-                    self.verbose_reporter.stat_line(
-                        f"Latency: {self.latency_tracker.get_avg_latency():.1f}s avg, {p95_latency:.1f}s P95"
-                    )
-                
-                last_diagnostics = now
-        
-        # Wait for all tasks to complete
-        await queue.join()
-        
-        # Send sentinel values to stop workers
-        for _ in workers:
-            await queue.put(None)
-        
-        # Wait for workers to finish
-        await asyncio.gather(*workers)
-        
-        self.verbose_reporter.stat_line(f"Extracted {len(theme_results)} themes successfully")
-        if failed_clusters:
-            self.verbose_reporter.stat_line(f"Failed clusters: {len(failed_clusters)}")
-        
-        # Report sampling summary
-        if self.sampling_stats['clusters_sampled'] > 0:
-            reduction_ratio = (self.sampling_stats['total_original_ideas'] - self.sampling_stats['total_sampled_ideas']) / self.sampling_stats['total_original_ideas'] * 100
-            self.verbose_reporter.stat_line(f"Idea Sampling Summary: {self.sampling_stats['clusters_sampled']}/{self.sampling_stats['clusters_processed']} clusters sampled, {self.sampling_stats['total_original_ideas']}→{self.sampling_stats['total_sampled_ideas']} ideas ({reduction_ratio:.1f}% reduction)")
-        else:
-            self.verbose_reporter.stat_line(f"Idea Sampling: No large clusters found, all {self.sampling_stats['clusters_processed']} clusters used complete idea sets")
-            
-        self.verbose_reporter.step_complete("Theme Extraction")
-        return theme_results
-    
-    def expand_multi_theme_clusters(self, themes: Dict[Union[int, str], ClusterSummaryOutput], clusters: Dict[Union[int, str], Dict[str, Any]]) -> Tuple[Dict[str, ClusterSummaryOutput], Dict[str, Dict[str, Any]], Dict[int, List[str]]]:
-        """Expand multi-theme clusters into sub-clusters for independent processing
-        Returns: (expanded_themes, expanded_clusters, multi_theme_mapping)
-        """
-        self.verbose_reporter.step_start("Multi-Theme Cluster Expansion")
-        
-        expanded_themes = {}
-        expanded_clusters = {}
-        multi_theme_mapping = {}  # Maps original cluster_id to list of sub_cluster_ids
-        
-        # Also expand step1_summaries and step1_inputs to match the new sub-cluster structure
-        expanded_step1_summaries = {}
-        expanded_step1_inputs = {}
-        
-
-        for cluster_id, theme_data in themes.items():
-            # Skip already-expanded clusters
-            if isinstance(cluster_id, str) and '-' in str(cluster_id):
-                # This is already a sub-cluster, add it as-is
-                string_cluster_id = str(cluster_id)
-                expanded_themes[string_cluster_id] = theme_data
-                
-                # Handle cluster data if available
-                if cluster_id in clusters:
-                    expanded_clusters[string_cluster_id] = clusters[cluster_id].copy()
-                
-                # Handle step1_summaries for consistency (same as single-theme logic)
-                if theme_data.extracted_themes:
-                    theme_item = theme_data.extracted_themes[0]
-                    expanded_step1_summaries[string_cluster_id] = {
-                        'analysis': theme_data.analysis,
-                        'cluster_summary': theme_item.theme_clarification,
-                        'themes': theme_data.extracted_themes,
-                        'theme_id': theme_item.theme_id,
-                        'theme_label': theme_item.theme_label,
-                        'theme_description': theme_item.theme_clarification
-                    }
-                
-                # Handle step1_inputs
-                if str(cluster_id) in self.step1_inputs:
-                    expanded_step1_inputs[string_cluster_id] = self.step1_inputs[str(cluster_id)]
-                
-                continue
-            # theme_data is a ClusterSummaryOutput with flat structure
-            if theme_data.extracted_themes and len(theme_data.extracted_themes) > 1:
-                # Multi-theme cluster: create sub-clusters
-                self.verbose_reporter.stat_line(f"Expanding cluster {cluster_id} into {len(theme_data.extracted_themes)} sub-clusters")
-
-                sub_cluster_ids = []
-                for i, theme_item in enumerate(theme_data.extracted_themes, 1):
-                    sub_cluster_id = f"{cluster_id}-{i}"
-                    sub_cluster_ids.append(sub_cluster_id)
-                    # Create ClusterSummaryOutput with flat structure for single theme
-                    single_theme_data = ClusterSummaryOutput(
-                        cluster_id=sub_cluster_id,
-                        analysis=theme_data.analysis,
-                        extracted_themes=[theme_item]
-                    )
-                    expanded_themes[sub_cluster_id] = single_theme_data
-
-                    # Temporarily duplicate cluster data - will be redistributed later
-                    if cluster_id in clusters:
-                        expanded_clusters[sub_cluster_id] = clusters[cluster_id].copy()
-
-                    # Create step1_summary for this sub-cluster with only its single theme
-                    expanded_step1_summaries[sub_cluster_id] = {
-                        'analysis': theme_data.analysis,
-                        'cluster_summary': theme_item.theme_clarification,
-                        'themes': [theme_item],
-                        'theme_id': theme_item.theme_id,
-                        'theme_label': theme_item.theme_label,
-                        'theme_description': theme_item.theme_clarification
-                    }
-                    # Duplicate step1_inputs for each sub-cluster to maintain key alignment
-                    if str(cluster_id) in self.step1_inputs:
-                        expanded_step1_inputs[sub_cluster_id] = self.step1_inputs[str(cluster_id)].copy()
-
-                # Track multi-theme mapping for later redistribution
-                multi_theme_mapping[cluster_id] = sub_cluster_ids
-                    
-            else:
-                # Single-theme cluster: keep as-is but convert to string ID for consistency
-                string_cluster_id = str(cluster_id)
-                expanded_themes[string_cluster_id] = theme_data
-
-                if cluster_id in clusters:
-                    expanded_clusters[string_cluster_id] = clusters[cluster_id].copy()
-
-                # Also convert step1_summaries to string ID
-                if theme_data.extracted_themes:
-                    theme_item = theme_data.extracted_themes[0]  # First (and only) theme
-                    expanded_step1_summaries[string_cluster_id] = {
-                        'analysis': theme_data.analysis,
-                        'cluster_summary': theme_item.theme_clarification,
-                        'themes': theme_data.extracted_themes,
-                        'theme_id': theme_item.theme_id,
-                        'theme_label': theme_item.theme_label,
-                        'theme_description': theme_item.theme_clarification
-                    }
-
-                # Also convert step1_inputs to string ID for consistency
-                if str(cluster_id) in self.step1_inputs:
-                    expanded_step1_inputs[string_cluster_id] = self.step1_inputs[str(cluster_id)]
-        
-        # Replace the original step1_summaries and step1_inputs with the expanded versions
-        self.step1_summaries = expanded_step1_summaries
-        self.step1_inputs = expanded_step1_inputs
-        
-        self.verbose_reporter.stat_line(f"Expanded {len(themes)} clusters into {len(expanded_themes)} processing units")
-        if multi_theme_mapping:
-            self.verbose_reporter.stat_line(f"Found {len(multi_theme_mapping)} multi-theme clusters (mapping stored for step 8)")
-        self.verbose_reporter.step_complete("Multi-Theme Cluster Expansion")
-        
-        return expanded_themes, expanded_clusters, multi_theme_mapping
-
-    def _create_expanded_cluster_to_theme_mapping(self) -> Dict[str, str]:
-        """
-        Create mapping from expanded_cluster IDs to theme labels.
-
-        Uses step1_summaries which contains theme extraction results where:
-        - Single-theme clusters: cluster_id → one theme
-        - Multi-theme clusters: sub-cluster IDs (e.g., "12-1", "12-2") → individual themes
-
-        Returns:
-            Dict mapping expanded_cluster ID (e.g., "12-1") to theme_label (e.g., "Customer Service")
-        """
-        mapping = {}
-        for cluster_id, summary in self.step1_summaries.items():
-            # cluster_id is already the expanded_cluster ID after expansion
-            theme_label = summary.get('theme_label', '')
-            if theme_label:
-                mapping[str(cluster_id)] = theme_label
-
-        return mapping
-
-    async def redistribute_ideas_to_subthemes(self, original_cluster_id: int, sub_cluster_ids: List[str],  original_cluster_data: Dict, sub_themes: Dict[str, ClusterSummaryOutput],theme_embeddings: Dict[str, np.ndarray]) -> Dict[str, Dict]:
-        """Redistribute ideas from original cluster to sub-clusters based on embedding similarity"""
-        #self.verbose_reporter.step_start(f"Redistributing ideas for cluster {original_cluster_id}")
-        
-        # Initialize empty cluster data for each sub-cluster
-        redistributed_clusters = {
-            sub_id: {
-                'cluster_id': sub_id,
-                'ideas': [],
-                'embeddings': [],
-                'respondent_ids': []
-            } for sub_id in sub_cluster_ids
-        }
-        
-        # Track redistribution statistics
-        redistribution_detail = {
-            'original_cluster_id': original_cluster_id,
-            'sub_clusters': sub_cluster_ids,
-            'original_idea_count': len(original_cluster_data.get('ideas', [])),
-            'redistribution': {},
-            'similarity_scores': [],
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        # Process each idea
-        ideas = original_cluster_data.get('ideas', [])
-        embeddings = original_cluster_data.get('embeddings', [])
-        respondent_ids = original_cluster_data.get('respondent_ids', [])
-        
-        if not embeddings or len(embeddings) != len(ideas):
-            self.verbose_reporter.warning(f"Missing or mismatched embeddings for cluster {original_cluster_id}, using duplication fallback")
-            # Fallback: duplicate all ideas to all sub-clusters
-            for sub_id in sub_cluster_ids:
-                redistributed_clusters[sub_id] = original_cluster_data.copy()
-            return redistributed_clusters
-        
-        # Calculate similarities and assign ideas
-        for idx, (idea, idea_embedding, respondent_id) in enumerate(zip(ideas, embeddings, respondent_ids)):
-            # Calculate similarity to each sub-theme
-            similarities = []
-            for sub_id in sub_cluster_ids:
-                if sub_id in theme_embeddings:
-                    theme_embedding = theme_embeddings[sub_id]
-                    # Calculate cosine similarity
-                    similarity = cosine_similarity(
-                        idea_embedding.reshape(1, -1),
-                        theme_embedding.reshape(1, -1)
-                    )[0, 0]
-                    similarities.append((sub_id, similarity))
-                else:
-                    similarities.append((sub_id, 0.0))
-            
-            # Find best matching sub-theme
-            if similarities:
-                best_sub_id, best_similarity = max(similarities, key=lambda x: x[1])
-                
-                # Assign idea to best matching sub-cluster
-                redistributed_clusters[best_sub_id]['ideas'].append(idea)
-                redistributed_clusters[best_sub_id]['embeddings'].append(idea_embedding)
-                redistributed_clusters[best_sub_id]['respondent_ids'].append(respondent_id)
-                
-                # Track similarity scores for statistics
-                redistribution_detail['similarity_scores'].append({
-                    'idea_idx': idx,
-                    'assigned_to': best_sub_id,
-                    'similarity': float(best_similarity),
-                    'all_similarities': {sub_id: float(sim) for sub_id, sim in similarities}
-                })
-        
-        # Calculate final redistribution statistics
-        for sub_id in sub_cluster_ids:
-            count = len(redistributed_clusters[sub_id]['ideas'])
-            avg_similarity = 0.0
-            if count > 0:
-                # Calculate average similarity for ideas assigned to this sub-cluster
-                sub_similarities = [
-                    score['similarity']
-                    for score in redistribution_detail['similarity_scores']
-                    if score['assigned_to'] == sub_id
-                ]
-                avg_similarity = np.mean(sub_similarities) if sub_similarities else 0.0
-
-            redistribution_detail['redistribution'][sub_id] = {
-                'count': count,
-                'avg_similarity': float(avg_similarity)
-            }
-
-        # Log redistribution summary
-        counts = {sub_id: redistribution_detail['redistribution'][sub_id]['count'] for sub_id in sub_cluster_ids}
-        avg_sims = {sub_id: redistribution_detail['redistribution'][sub_id]['avg_similarity'] for sub_id in sub_cluster_ids}
-        parts = [f"{sub_id}={counts[sub_id]} (avg_sim={avg_sims[sub_id]:.3f})" for sub_id in sub_cluster_ids]
-        empty = [sub_id for sub_id, c in counts.items() if c == 0]
-        line = f"  Cluster {original_cluster_id}: {redistribution_detail['original_idea_count']} ideas → {', '.join(parts)}"
-        if empty:
-            line += f"  ⚠ EMPTY: {empty}"
-        self.verbose_reporter.stat_line(line)
-
-        # Store detailed statistics
-        self._redistribution_stats['clusters_redistributed'].append(original_cluster_id)
-        self._redistribution_stats['redistribution_details'][str(original_cluster_id)] = redistribution_detail
-
-        #self.verbose_reporter.step_complete(f"Idea redistribution for cluster {original_cluster_id}")
-
-        return redistributed_clusters
-    
-    async def _update_cluster_models_with_redistribution(self, multi_theme_mapping: Dict[int, List[str]], original_clusters: Dict, themes: Dict[str, ClusterSummaryOutput],theme_embeddings: Dict[str, np.ndarray]):
-        """Update ClusterModel objects with expanded_cluster and cluster_theme assignments based on similarity"""
-
-        # Create expanded_cluster → theme_label mapping
-        expanded_cluster_to_theme = self._create_expanded_cluster_to_theme_mapping()
-
-        # For each multi-theme cluster
-        for orig_cluster_id, sub_cluster_ids in multi_theme_mapping.items():
-            if orig_cluster_id not in original_clusters:
-                continue
-                
-            # Get original cluster data
-            original_cluster_data = original_clusters[orig_cluster_id]
-            
-            # Redistribute ideas to get assignments
-            redistributed_data = await self.redistribute_ideas_to_subthemes(
-                orig_cluster_id,
-                sub_cluster_ids,
-                original_cluster_data,
-                themes,
-                theme_embeddings
-            )
-            
-            # Create a mapping of idea_id to expanded_cluster
-            idea_to_expanded_cluster = {}
-            for sub_id, sub_data in redistributed_data.items():
-                for respondent_id in sub_data['respondent_ids']:
-                    idea_to_expanded_cluster[respondent_id] = sub_id
-            
-            
-            # Update ClusterModel objects
-            updated_ideas_count = 0
-            #sample_idea_ids = []
-            total_ideas_checked = 0
-            matching_cluster_ideas = 0
-            
-            
-            for result in self._idea_source:
-                if result.response_ideas:
-                    for idea in result.response_ideas:
-                        total_ideas_checked += 1
-
-
-                        # Check if this idea belongs to the original cluster - ensure type consistency
-                        if idea.initial_cluster == orig_cluster_id or str(idea.initial_cluster) == str(orig_cluster_id):
-                            matching_cluster_ideas += 1
-                            
-                            # Find its expanded cluster assignment
-                            if idea.idea_id in idea_to_expanded_cluster:
-                                idea.expanded_cluster = idea_to_expanded_cluster[idea.idea_id]
-                                updated_ideas_count += 1
-
-                                # Set cluster_theme from mapping
-                                if idea.expanded_cluster in expanded_cluster_to_theme:
-                                    idea.cluster_theme = expanded_cluster_to_theme[idea.expanded_cluster]
-            
-        
-        # For single-theme clusters, set expanded_cluster to string version of initial_cluster
-        single_theme_updates = 0
-        for result in self._idea_source:
-            if result.response_ideas:
-                for idea in result.response_ideas:
-                    if idea.expanded_cluster is None and idea.initial_cluster is not None:
-                        # Single-theme cluster: expanded_cluster = str(initial_cluster)
-                        # Check both integer and string forms for type consistency
-                        if (idea.initial_cluster not in multi_theme_mapping and
-                            str(idea.initial_cluster) not in multi_theme_mapping):
-                            idea.expanded_cluster = str(idea.initial_cluster)
-                            single_theme_updates += 1
-
-                            # Set cluster_theme for single-theme clusters
-                            if idea.expanded_cluster in expanded_cluster_to_theme:
-                                idea.cluster_theme = expanded_cluster_to_theme[idea.expanded_cluster]
-        
-    #########################################################################################################
-    # IDEA SAMPLING METHODS — UMAP(10D) + HDBSCAN (euclidean), noise excluded
-    #########################################################################################################
-    
-    def _sample_representative_ideas(
-        self,
-        ideas: List,
-        max_ideas: int = None,
-        provided_embeddings: Optional[List[np.ndarray]] = None
-    ) -> List[str]:
-
-        """Return up to max_ideas that are balanced across sub-clusters (HDBSCAN) or
-        the 'best' representatives by centroid similarity, depending on config.
-    
-        Behaviour:
-          - If n <= max_ideas (or n <= 30), return all (no clustering).
-          - Else:
-              UMAP (10D, metric='cosine') -> HDBSCAN (euclidean).
-              Exclude noise (-1). Allocate ∝ cluster size (stable rounding).
-              Within each sub-cluster: random sample.  (idea_sampling_mode='balanced')
-              Or pick global top-k by cosine-to-centroid. (idea_sampling_mode='best')
-        """
-        
-        from sklearn.metrics.pairwise import cosine_similarity
-        import numpy as np
-        import random
-    
-        # Use config value if not specified
-        if max_ideas is None:
-            max_ideas = self.config.max_ideas_per_cluster
-    
-        # Prepare inputs
-        original_count = len(ideas)
-        self.sampling_stats['clusters_processed'] += 1
-        self.sampling_stats['total_original_ideas'] += original_count
-    
-        # Helper: normalize to texts + embeddings
-        idea_texts: List[str] = []
-        embeddings: List[np.ndarray] = []
-    
-        if ideas and isinstance(ideas[0], str):
-            idea_texts = list(ideas)
-            # Use provided embeddings if available (from probability band sampling)
-            if provided_embeddings is not None and len(provided_embeddings) == len(ideas):
-                embeddings = [
-                    np.asarray(e, dtype=np.float32) if e is not None else None
-                    for e in provided_embeddings
-                ]
-        else:
-            for idea in ideas:
-                txt = idea.idea if hasattr(idea, "idea") else str(idea)
-                idea_texts.append(txt)
-                if hasattr(idea, "idea_embedding") and idea.idea_embedding is not None:
-                    embeddings.append(np.asarray(idea.idea_embedding, dtype=np.float32))
-                else:
-                    embeddings.append(None)
-    
-        n = len(idea_texts)
-    
-        # Early exit: small clusters — keep existing behaviour (no clustering/noise filtering)
-        if n <= max_ideas or n <= 50:
-            self.sampling_stats['clusters_sampled'] += 1
-            self.sampling_stats['total_sampled_ideas'] += n
-            if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Idea Sampling (Small/Direct): {n}→{n} (no clustering)")
-            return idea_texts
-    
-        # If we cannot cluster (missing embeddings), use a simple spacing or random fallback
-        # Note: len(embeddings) > 0 check prevents vacuous truth (all() returns True for empty list)
-        have_dense_embeddings = len(embeddings) > 0 and all(e is not None for e in embeddings)
-        if not have_dense_embeddings:
-            k = min(max_ideas, n)
-            sampled = random.sample(idea_texts, k)
-            self.sampling_stats['clusters_sampled'] += 1
-            self.sampling_stats['total_sampled_ideas'] += len(sampled)
-            if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(
-                    f"Idea Sampling (Fallback: no embeddings): {n}→{len(sampled)} (random)"
-                )
-            return sampled
-    
-        emb = np.vstack(embeddings).astype(np.float32)
-        L2_emb = normalize(emb, norm="l2", copy=False)
-        
-        reducer = umap.UMAP(n_components=10, n_neighbors=5, metric="cosine", random_state=42)
-        emb_10 = reducer.fit_transform(L2_emb)
-    
-        # Heuristic: min_cluster_size grows sublinearly with n
-        min_cluster_size = max(5, int(np.sqrt(n)))
-        hdb = HDBSCAN(min_cluster_size=min_cluster_size,
-                      min_samples=None,
-                      metric="euclidean",
-                      cluster_selection_method="eom",
-                      allow_single_cluster=False)
-        labels = hdb.fit_predict(emb_10)
-    
-        # Build clusters excluding noise (-1)
-        clusters: Dict[int, List[int]] = {}
-        for i, lbl in enumerate(labels):
-            if lbl == -1:
-                continue  # exclude noise completely
-            clusters.setdefault(int(lbl), []).append(i)
-    
-        total_non_noise = sum(len(v) for v in clusters.values())
-    
-        # If HDBSCAN yielded only noise or a degenerate result, fall back to centroid top-k
-        if total_non_noise == 0:
-            centroid = emb.mean(axis=0, keepdims=True)
-            sims = cosine_similarity(emb, centroid).ravel()
-            top_idx = np.argsort(sims)[-max_ideas:][::-1]
-            picked = [idea_texts[i] for i in top_idx]
-            self.sampling_stats['clusters_sampled'] += 1
-            self.sampling_stats['total_sampled_ideas'] += len(picked)
-            if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(
-                    f"Idea Sampling (Fallback: all-noise): {n}→{len(picked)} (centroid top-k)"
-                )
-            return picked
-    
-        # Equal allocation: every sub-cluster gets the same base share.
-        # Small clusters that can't fill their share release residual budget,
-        # which is redistributed proportionally among clusters with surplus ideas.
-        budget = min(max_ideas, total_non_noise)
-
-        sizes = {cid: len(idxs) for cid, idxs in clusters.items()}
-        n_clusters = len(sizes)
-
-        # Round 1: equal share, capped at actual cluster size
-        equal_share = budget // n_clusters
-        allocation = {cid: min(equal_share, sizes[cid]) for cid in sizes}
-        residual = budget - sum(allocation.values())
-
-        # Round 2+: distribute residual proportionally among clusters with surplus
-        while residual > 0:
-            surplus = {cid: sizes[cid] - allocation[cid]
-                       for cid in sizes if sizes[cid] > allocation[cid]}
-            if not surplus:
-                break  # all clusters fully allocated
-            total_surplus = sum(surplus.values())
-            distributed = 0
-            for cid in sorted(surplus, key=lambda c: surplus[c], reverse=True):
-                extra = max(1, round(residual * surplus[cid] / total_surplus))
-                extra = min(extra, surplus[cid], residual - distributed)
-                allocation[cid] += extra
-                distributed += extra
-                if distributed >= residual:
-                    break
-            residual -= distributed
-    
-        # Sample within each cluster
-        sampled_indices: List[int] = []
-        for cid, idxs in clusters.items():
-            k = min(len(idxs), allocation.get(cid, 0))
-            if k > 0:
-                sampled_indices.extend(random.sample(idxs, k))
-    
-        # Safety: cap to budget and map to texts
-        sampled_indices = sampled_indices[:budget]
-        sampled_texts = [idea_texts[i] for i in sampled_indices]
-    
-        # Stats + verbose
-        self.sampling_stats['clusters_sampled'] += 1
-        self.sampling_stats['total_sampled_ideas'] += len(sampled_texts)
-    
-        if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-            alloc_str = ", ".join(f"{cid}:{allocation[cid]}" for cid in sorted(allocation))
-            self.verbose_reporter.stat_line(
-                f"Idea Sampling (Balanced/HDBSCAN): {n}→{len(sampled_texts)} "
-                f"clusters={len(clusters)} (noise excluded), allocation: [{alloc_str}]"
-            )
-    
-        return sampled_texts
-
-    #########################################################################################################
-    # THEME EXTRACTION HELPER METHODS - Probability Band Sampling
-    #########################################################################################################
-
-    def _strip_template_prefix(self, text: str) -> str:
-        """Remove template prefix from idea text."""
-        if self._extraction_metadata and self._extraction_metadata.template_prefix:
-            prefix = self._extraction_metadata.template_prefix
-            if text.startswith(prefix):
-                return text[len(prefix):].strip()
-        return text
-
-    def _get_stage1_idea_text(self, idea) -> str:
-        """Get idea text for Stage 1.
-
-        Returns idea text with template prefix stripping applied.
-        Only affects Stage 1 (theme extraction with CLUSTER_SUMMARY_PROMPT).
-        """
-        idea_text = getattr(idea, 'idea', '') or str(idea)
-        return self._strip_template_prefix(idea_text)
-
-    def _get_starter_code_for_cluster(self, cluster_id: Union[int, str]) -> Optional[Dict[str, str]]:
-        """Look up the Step 5 starter code for a cluster.
-
-        For pure-core clusters (all members have prob >= 0.8), we use the
-        Step 5 label directly instead of re-extracting themes.
-        """
-        cluster_id_str = str(cluster_id)
-        for starter in self.starter_codes:
-            if str(starter.get('cluster_id', '')) == cluster_id_str:
-                return starter
-        return None
-
-    def _create_theme_from_starter_code(
-        self,
-        cluster_id: Union[int, str],
-        starter_code: Dict[str, str],
-        ideas: List
-    ) -> ClusterSummaryOutput:
-        """Create theme extraction result directly from Step 5 starter code.
-
-        For pure-core clusters where all members have probability >= 0.8,
-        we skip LLM theme extraction and use the Step 5 label directly.
-        This label was already derived from core members during clustering.
-        """
-        # Sample ideas for assignment examples
-        idea_texts = [idea.idea if hasattr(idea, 'idea') else str(idea) for idea in ideas[:5]]
-
-        # Ensure we have enough examples
-        if len(idea_texts) < 3:
-            idea_texts = idea_texts + ["(see cluster ideas)"] * (3 - len(idea_texts))
-
-        theme = ClusterThemeItem(
-            theme_id=1,  # Single theme for pure-core cluster
-            theme_label=starter_code['code'][:60],  # Max 60 chars
-            theme_clarification=starter_code.get('definition', starter_code['code'])[:250],
-            abstraction_level="concrete-experiential",  # Default for starter codes
-            assignment_examples=AssignmentExamples(
-                inclusion=idea_texts[:3],
-                exclusion=["(not applicable - pure core cluster)"],
-                near_neighbor=NearNeighbor(label="Unknown", tell_apart_rule="")
-            )
-        )
-
-        analysis = f"Pure-core cluster with {len(ideas)} ideas (all prob >= 0.8). Using Step 5 label."
-
-        # Store in step1_summaries for downstream processing
-        self.step1_summaries[cluster_id] = {
-            'analysis': analysis,
-            'cluster_summary': theme.theme_clarification,
-            'themes': [theme],
-        }
-
-        return ClusterSummaryOutput(
-            cluster_id=str(cluster_id),
-            analysis=analysis,
-            extracted_themes=[theme]
-        )
-
-    def _sample_ideas_by_probability_band(
-        self,
-        cluster_data: _ClusterData,
-        total_budget: int = None
-    ) -> Dict[str, List[str]]:
-        """
-        Group ideas by probability bands and sample within each band.
-
-        Returns dict: band_name -> list of sampled idea texts
-        Only non-empty bands are included.
-
-        Budget is split evenly across non-empty bands.
-        Within each band, HDBSCAN sampling is applied via _sample_representative_ideas.
-        """
-        import random
-
-        if total_budget is None:
-            total_budget = self.config.total_sample_budget
-
-        probability_bands = self.config.probability_bands
-
-        # Group ideas by probability band
-        bands: Dict[str, Tuple[List[str], List[np.ndarray]]] = {
-            'inner':  ([], []),
-            'border': ([], []),
-            'fringe': ([], []),
-        }
-
-        for i, idea in enumerate(cluster_data.ideas):
-            prob = idea.cluster_probability or 0.0
-            text = cluster_data.idea_texts[i]
-            emb = cluster_data.embeddings[i] if i < len(cluster_data.embeddings) else None
-
-            # Determine which band this idea belongs to
-            for band_name, (low, high) in probability_bands.items():
-                if low <= prob < high:
-                    bands[band_name][0].append(text)
-                    if emb is not None:
-                        bands[band_name][1].append(emb)
-                    break
-
-        # Filter to non-empty bands
-        non_empty_bands = {name: data for name, data in bands.items() if len(data[0]) > 0}
-
-        if not non_empty_bands:
-            return {}
-
-        # Split budget evenly across non-empty bands
-        n_bands = len(non_empty_bands)
-        per_band_budget = total_budget // n_bands
-        remainder = total_budget % n_bands
-
-        # Allocate budget (give remainder to bands in order: inner, border, fringe)
-        band_budgets = {}
-        remainder_idx = 0
-        for band_name in ['inner', 'border', 'fringe']:
-            if band_name in non_empty_bands:
-                extra = 1 if remainder_idx < remainder else 0
-                band_budgets[band_name] = per_band_budget + extra
-                remainder_idx += 1
-
-        # Sample within each band
-        result: Dict[str, List[str]] = {}
-
-        for band_name in ['inner', 'border', 'fringe']:
-            if band_name not in non_empty_bands:
-                continue
-
-            texts, embeddings = non_empty_bands[band_name]
-            budget = band_budgets[band_name]
-
-            # For small bands, return all; for larger, use HDBSCAN sampling
-            if len(texts) <= budget:
-                result[band_name] = texts
-            else:
-                # Pass embeddings to enable HDBSCAN-based representative sampling
-                sampled = self._sample_representative_ideas(
-                    texts, budget, provided_embeddings=embeddings
-                )
-                result[band_name] = sampled
-
-        return result
-
-    def _sample_ideas_by_confidence_band(
-        self,
-        ideas: List[Any],
-        idea_texts: List[str],
-        embeddings: List[np.ndarray],
-        total_budget: int = None
-    ) -> Dict[str, List[str]]:
-        """Group ideas by category_confidence bands and sample within each band.
-
-        Same logic as _sample_ideas_by_probability_band but reads
-        category_confidence instead of cluster_probability, and takes
-        explicit lists instead of a _ClusterData object.
-
-        Returns dict: band_name -> list of sampled idea texts.
-        Only non-empty bands are included.
-        """
-        import random
-
-        if total_budget is None:
-            total_budget = self.config.total_sample_budget
-
-        probability_bands = self.config.probability_bands
-
-        # Group ideas by confidence band
-        bands: Dict[str, Tuple[List[str], List[np.ndarray]]] = {
-            'inner':  ([], []),
-            'border': ([], []),
-            'fringe': ([], []),
-        }
-
-        for i, idea in enumerate(ideas):
-            conf = getattr(idea, 'category_confidence', None) or 0.0
-            text = idea_texts[i] if i < len(idea_texts) else str(getattr(idea, 'idea', ''))
-            emb = embeddings[i] if i < len(embeddings) else None
-
-            for band_name, (low, high) in probability_bands.items():
-                if low <= conf < high:
-                    bands[band_name][0].append(text)
-                    if emb is not None:
-                        bands[band_name][1].append(np.asarray(emb, dtype=np.float32))
-                    break
-
-        # Filter to non-empty bands
-        non_empty_bands = {name: data for name, data in bands.items() if len(data[0]) > 0}
-
-        if not non_empty_bands:
-            return {}
-
-        # Split budget evenly across non-empty bands
-        n_bands = len(non_empty_bands)
-        per_band_budget = total_budget // n_bands
-        remainder = total_budget % n_bands
-
-        # Allocate budget (give remainder to bands in order: inner, border, fringe)
-        band_budgets = {}
-        remainder_idx = 0
-        for band_name in ['inner', 'border', 'fringe']:
-            if band_name in non_empty_bands:
-                extra = 1 if remainder_idx < remainder else 0
-                band_budgets[band_name] = per_band_budget + extra
-                remainder_idx += 1
-
-        # Sample within each band
-        result: Dict[str, List[str]] = {}
-
-        for band_name in ['inner', 'border', 'fringe']:
-            if band_name not in non_empty_bands:
-                continue
-
-            texts, band_embeddings = non_empty_bands[band_name]
-            budget = band_budgets[band_name]
-
-            if len(texts) <= budget:
-                result[band_name] = texts
-            else:
-                sampled = self._sample_representative_ideas(
-                    texts, budget, provided_embeddings=band_embeddings
-                )
-                result[band_name] = sampled
-
-        return result
-
-    def _format_cluster_text_by_bands(self, sampled_bands: Dict[str, List[str]]) -> str:
-        """
-        Format sampled ideas grouped by probability bands.
-
-        Output format:
-            inner members:
-            - idea 1
-            - idea 2
-
-            border members:
-            - idea 3
-            - idea 4
-
-            fringe members:
-            - idea 5
-            - idea 6
-        """
-        band_labels = self.config.band_labels
-        sections = []
-
-        for band_name in ['inner', 'border', 'fringe']:
-            if band_name not in sampled_bands or not sampled_bands[band_name]:
-                continue
-
-            label = band_labels[band_name]
-            ideas_list = "\n".join([f"- {idea}" for idea in sampled_bands[band_name]])
-            sections.append(f"{label}:\n{ideas_list}")
-
-        return "\n\n".join(sections)
-
-    def _format_mece_topics_as_cluster_text(self, mece_data: dict) -> str:
-        """Format MECE Phase A output for a single cluster as structured text for the prompt.
-
-        Args:
-            mece_data: Dict from ClusterMECETopics.model_dump() with keys:
-                - semantic_theme: str
-                - topics: List[dict] with topic_label, inclusion_definition, key_expressions
-        """
-        semantic_theme = mece_data.get('semantic_theme', 'Unknown')
-        topics = mece_data.get('topics', [])
-
-        sections = [f"Cluster Theme: {semantic_theme}"]
-
-        for i, topic in enumerate(topics, 1):
-            label = topic.get('topic_label', f'Topic {i}')
-            definition = topic.get('inclusion_definition', '')
-            expressions = topic.get('key_expressions', [])
-
-            topic_section = f"\nTopic {i}: {label}"
-            if definition:
-                topic_section += f"\n  Definition: {definition}"
-            if expressions:
-                expr_str = "; ".join(expressions[:5])
-                topic_section += f"\n  Key expressions: {expr_str}"
-
-            sections.append(topic_section)
-
-        return "\n".join(sections)
-
-    def _format_category_metadata_as_text(
-        self,
-        category: 'MECECode',
-        partition_name: str = "",
-        valence_group: str = ""
-    ) -> str:
-        """Format full MECE category metadata as structured text for the prompt.
-
-        Args:
-            category: MECECode object from step_4_classNcoder
-            partition_name: Name of the domain partition this category belongs to
-            valence_group: "pos", "neg", or "" — controls directional scope note
-        """
-        sections = []
-
-        if partition_name:
-            sections.append(f"Partition (concept type): {partition_name}")
-
-        sections.append(f"Category: {category.category_label}")
-        sections.append(f"Inclusion definition: {category.inclusion_definition}")
-        sections.append(f"Boundary test: {category.boundary_test}")
-
-        if category.diagnostic_signals:
-            signals = "; ".join(category.diagnostic_signals)
-            sections.append(f"Diagnostic signals: {signals}")
-
-        if category.key_expressions:
-            exprs = "; ".join(category.key_expressions[:5])
-            sections.append(f"Key expressions: {exprs}")
-
-        if category.tiebreaker_rules:
-            rules = "\n  ".join(category.tiebreaker_rules)
-            sections.append(f"Tiebreaker rules:\n  {rules}")
-
-        if valence_group == "pos":
-            sections.append(
-                "Directional scope: This group contains REINFORCING and NEUTRAL ideas "
-                "only (valence '+' or '0'). Ideas that undermine or negate the concept "
-                "are excluded. Codes derived from this data must not reflect negation "
-                "or insufficiency."
-            )
-        elif valence_group == "neg":
-            sections.append(
-                "Directional scope: This group contains UNDERMINING ideas only "
-                "(valence '\u2212'). Codes derived from this data should reflect "
-                "negation, absence, or insufficiency of the concept."
-            )
-
-        return "\n".join(sections)
-
-    #########################################################################################################
-    # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -
-    #########################################################################################################
-
-    async def _extract_single_theme_from_category(
-        self,
-        category_key: str,
-        category_data: Dict[str, Any],
-        numeric_id: Optional[int] = None
-    ):
-        """Extract theme for a single MECE category using confidence-band sampling.
-
-        Args:
-            category_key: Composite key "{partition_name}::{category_label}" (for prompt context)
-            category_data: Dict with 'category' (MECECode), 'ideas', 'embeddings',
-                           'idea_texts', 'partition_name'
-            numeric_id: Sequential integer ID for dict keying (matches initial_cluster)
-        """
-        dict_key = numeric_id if numeric_id is not None else category_key
-        category: 'MECECode' = category_data['category']
-        ideas = category_data['ideas']
-        embeddings = category_data['embeddings']
-        idea_texts = category_data['idea_texts']
-        partition_name = category_data['partition_name']
-        valence_group = category_data.get('valence_group', '')
-
-        if not ideas:
-            self.verbose_reporter.error(f"No ideas in category {category_key}")
-            return None
-
-        # Format category metadata (includes directional scope note if valence-split)
-        category_metadata_text = self._format_category_metadata_as_text(
-            category, partition_name=partition_name, valence_group=valence_group
-        )
-
-        # Sample ideas using UMAP+HDBSCAN diversity sampling (no confidence bands —
-        # category_confidence is LLM self-reported and concentrates in the 0.8-1.0 range,
-        # making band-based stratification ineffective for the mece_categories path)
-        sampled = self._sample_representative_ideas(
-            idea_texts, self.config.total_sample_budget,
-            provided_embeddings=embeddings
-        )
-        ideas_section = "\n".join([f"- {t}" for t in sampled])
-
-        # Combine category metadata + sampled ideas into cluster_text
-        ideas_text = f"{category_metadata_text}\n\n--- Assigned Ideas ---\n\n{ideas_section}"
-
-        input_source_label = "mece_categories"
-
-        # --- Common path: prompt construction + LLM call ---
-        language = (self._extraction_metadata.lang
-                    if self._extraction_metadata and self._extraction_metadata.lang
-                    else DEFAULT_LANGUAGE)
-
-        params = {
-            'cluster_id': category_key,  # composite key for meaningful LLM context
-            'survey_question': self.var_lab,
-            'language': language,
-            'cluster_text': ideas_text,
-            **self.CATEGORY_PROMPT_PARAMS,
-            **self._get_context_specifier_params()
-        }
-
-        prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
-
-        # Capture prompt parameters (keyed by str for expand_multi_theme_clusters compat)
-        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
-        self._capture_prompt_params(str(dict_key), "step1", **params_for_capture)
-
-        # Capture first prompt with prompt_printer if available
-        if self.prompt_printer and not self._prompt_captured['stage1_theme']:
-            self._prompt_captured['stage1_theme'] = True
-            self.prompt_printer.capture_prompt(
-                step_name=f"Stage 1: Theme Extraction ({input_source_label})",
-                utility_name="codeGenerator",
-                prompt_content=prompt,
-                prompt_type=f"cluster_summary_{input_source_label}",
-                metadata={
-                    "category_key": category_key,
-                    "partition_name": partition_name,
-                    "category_label": category.category_label,
-                    "valence_group": valence_group,
-                    "model": self.config.model,
-                    "ideas_count": len(ideas),
-                    "input_source": input_source_label,
-                }
-            )
-
-        try:
-            adaptive_timeout = self._get_adaptive_timeout()
-
-            response = await async_responses_create_with_json_retry(
-                model=self.model_config.get_model_for_stage('theme_extraction'),
-                prompt=prompt,
-                response_model=ClusterSummaryOutput,
-                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('theme_extraction'),
-                text_verbosity=self.model_config.get_text_verbosity_for_stage('theme_extraction'),
-                semaphore=self.concurrency_semaphore,
-                rate_limiter=self.rate_limiter,
-                tpm_bucket=self.tpm_bucket,
-                latency_tracker=self.latency_tracker,
-                config=self.config,
-                timeout=adaptive_timeout
-            )
-
-            if hasattr(response, '__await__'):
-                self.verbose_reporter.error(
-                    f"Response is still a coroutine for category {category_key}: {type(response)}"
-                )
-                return None
-
-            if isinstance(response, ClusterSummaryOutput):
-                if response.extracted_themes:
-                    first_theme = response.extracted_themes[0]
-                    self.step1_summaries[dict_key] = {
-                        'analysis': response.analysis,
-                        'cluster_summary': first_theme.theme_clarification,
-                        'themes': response.extracted_themes,
-                    }
-                return response
-            else:
-                self.verbose_reporter.error(
-                    f"Unexpected response type for category {category_key}: {type(response)}"
-                )
-                return None
-
-        except Exception as e:
-            error_msg = str(e).replace('\U0001f916', '[BOT]').replace('\uFE0F', '')
-            self.verbose_reporter.error(
-                f"Theme extraction failed for category {category_key}: {error_msg}"
-            )
-            return None
-
-    async def _extract_single_theme(self, cluster_id: Union[int, str], cluster_data: Dict[str, Any]):
-        """Extract theme for single cluster using probability band sampling.
-
-        Args:
-            cluster_id: Cluster identifier
-            cluster_data: Cluster data dict with 'ideas' and 'embeddings'
-        """
-        # Extract ideas and embeddings from cluster_data
-        ideas = cluster_data.get('ideas', [])
-        embeddings = cluster_data.get('embeddings', [])
-
-        if not ideas:
-            self.verbose_reporter.error(f"No ideas in cluster {cluster_id}")
-            return None
-
-        # --- MECE topics input path ---
-        # When STAGE1_INPUT_SOURCE is "mece_topics" and topics are available,
-        # use pre-extracted MECE topics instead of sampling raw ideas.
-        use_mece = False
-        if STAGE1_INPUT_SOURCE == "mece_topics" and self._mece_topics:
-            mece_key = int(cluster_id) if str(cluster_id).isdigit() else cluster_id
-            mece_data = self._mece_topics.get(mece_key)
-            if mece_data and mece_data.get('topics'):
-                use_mece = True
-                ideas_text = self._format_mece_topics_as_cluster_text(mece_data)
-                input_source_label = "mece_topics"
-
-        # --- Standard ideas input path ---
-        if not use_mece:
-            input_source_label = "ideas"
-
-            # Build ClusterData with idea texts (template prefix stripped)
-            idea_texts = []
-            idea_embeddings = []
-
-            for i, idea in enumerate(ideas):
-                text = self._get_stage1_idea_text(idea)
-                idea_texts.append(text)
-
-                # Collect embeddings
-                if i < len(embeddings):
-                    idea_embeddings.append(np.asarray(embeddings[i], dtype=np.float32))
-                elif hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                    idea_embeddings.append(np.asarray(idea.idea_embedding, dtype=np.float32))
-
-            # Build ClusterData for sampling
-            temp_cluster_data = _ClusterData(
-                cluster_id=cluster_id,
-                ideas=ideas,
-                embeddings=idea_embeddings,
-                idea_texts=idea_texts
-            )
-
-            # Sample using probability bands
-            sampled_bands = self._sample_ideas_by_probability_band(temp_cluster_data)
-
-            # Format ideas text
-            if sampled_bands and sum(len(v) for v in sampled_bands.values()) > 0:
-                ideas_text = self._format_cluster_text_by_bands(sampled_bands)
-            else:
-                # Pure-core cluster (all members have prob >= 0.8)
-                # Use Step 5 starter_code label directly instead of re-extracting
-                starter_code = self._get_starter_code_for_cluster(cluster_id)
-                if starter_code:
-                    self.verbose_reporter.stat_line(
-                        f"Cluster {cluster_id}: Pure-core cluster, using Step 5 label: '{starter_code['code']}'"
-                    )
-                    return self._create_theme_from_starter_code(cluster_id, starter_code, ideas)
-
-                # Fallback: random sample if no starter code available
-                import random
-                k = min(self.config.max_ideas_per_cluster, len(idea_texts))
-                sampled_ideas = random.sample(idea_texts, k) if len(idea_texts) > k else idea_texts
-                ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
-
-        # --- Common path: prompt construction + LLM call ---
-        # Determine language
-        language = self._extraction_metadata.lang if self._extraction_metadata and self._extraction_metadata.lang else DEFAULT_LANGUAGE
-
-        # Build prompt with context specifiers + route params
-        params = {
-            'cluster_id': str(cluster_id),
-            'survey_question': self.var_lab,
-            'language': language,
-            'cluster_text': ideas_text,
-            **self.CLUSTER_PROMPT_PARAMS,
-            **self._get_context_specifier_params()
-        }
-
-        prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
-
-        # Capture prompt parameters
-        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
-        self._capture_prompt_params(cluster_id, "step1", **params_for_capture)
-
-        # Capture first prompt with prompt_printer if available
-        if self.prompt_printer and not self._prompt_captured['stage1_theme']:
-            self._prompt_captured['stage1_theme'] = True
-            self.prompt_printer.capture_prompt(
-                step_name=f"Stage 1: Theme Extraction ({input_source_label})",
-                utility_name="codeGenerator",
-                prompt_content=prompt,
-                prompt_type=f"cluster_summary_{input_source_label}",
-                metadata={
-                    "cluster_id": cluster_id,
-                    "model": self.config.model,
-                    "ideas_count": len(ideas),
-                    "input_source": input_source_label,
-                }
-            )
-
-        try:
-            adaptive_timeout = self._get_adaptive_timeout()
-
-            response = await async_responses_create_with_json_retry(
-                model=self.model_config.get_model_for_stage('theme_extraction'),
-                prompt=prompt,
-                response_model=ClusterSummaryOutput,
-                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('theme_extraction'),
-                text_verbosity=self.model_config.get_text_verbosity_for_stage('theme_extraction'),
-                semaphore=self.concurrency_semaphore,
-                rate_limiter=self.rate_limiter,
-                tpm_bucket=self.tpm_bucket,
-                latency_tracker=self.latency_tracker,
-                config=self.config,
-                timeout=adaptive_timeout
-            )
-
-            # Handle response
-            if hasattr(response, '__await__'):
-                self.verbose_reporter.error(f"Response is still a coroutine for cluster {cluster_id}: {type(response)}")
-                return None
-
-            if isinstance(response, ClusterSummaryOutput):
-                # Flat format - access fields directly
-                if response.extracted_themes:
-                    first_theme = response.extracted_themes[0]
-                    self.step1_summaries[cluster_id] = {
-                        'analysis': response.analysis,
-                        'cluster_summary': first_theme.theme_clarification,
-                        'themes': response.extracted_themes,
-                    }
-                return response
-            else:
-                self.verbose_reporter.error(f"Unexpected response type for cluster {cluster_id}: {type(response)}")
-                return None
-
-        except Exception as e:
-            error_msg = str(e).replace('🤖', '[BOT]').replace('\uFE0F', '')
-            self.verbose_reporter.error(f"Theme extraction failed for cluster {cluster_id}: {error_msg}")
-            return None
-        
-    async def _measure_code_generation_tokens(self, clusters: Dict[int, Dict[str, Any]], themes: Dict[int, ClusterSummaryOutput]) -> Dict[str, float]:
-        """Measure real token usage for all 3 code generation steps (like qualityFilter approach)"""
-        self.verbose_reporter.step_start("Code Generation Token Measurement")
-
-        # Sample first 5-10 themes for measurement (balance accuracy vs speed)
-        sample_size = min(8, len(themes))
-        sample_theme_ids = list(themes.keys())[:sample_size]
-
-        token_measurements = {
-            'candidate_selection': [],
-            'code_generation': [],
-            'validation': []
-        }
-
-        # Get current codebook state for realistic measurements
-        current_codes, version = await self.shared_codebook.get_current_snapshot()
-
-        for cluster_id in sample_theme_ids:
-                
-            theme_data = themes[cluster_id]
-            #ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-            
-            # PROMPT2 Candidate Selection prompt
-            codes_text = "\n".join([f"-{code['code']}" for code in current_codes[:5]])  # Limit like the real implementation
-            
-            # Get theme_id for the measurement prompt
-            theme_id = self._get_theme_id(theme_data)
-            
-            candidate_prompt = CODING_DECISION_PROMPT.format(
-                survey_question=self.var_lab,
-                language=DEFAULT_LANGUAGE,
-                theme_name=self._get_theme_name(theme_data),
-                theme_description=self._get_theme_statement(theme_data),
-                abstraction_level=self._get_abstraction_level(theme_data),
-                inclusion=self._get_inclusion_examples(theme_data),
-                exclusion=self._get_exclusion_examples(theme_data),
-                near_neighbor=self._get_near_neighbor(theme_data),
-                code_text=codes_text,
-                theme_id=theme_id,
-                **self._get_context_specifier_params()  # Add context specifiers
-            )
-            candidate_tokens = len(self.encoding.encode(candidate_prompt)) + 200  # + completion estimate
-            token_measurements['candidate_selection'].append(candidate_tokens)
-
-            code_gen_prompt = CODE_CREATION_PROMPT.format(
-                language=DEFAULT_LANGUAGE,
-                survey_question=self.var_lab,
-                theme_name=self._get_theme_name(theme_data),
-                theme_description=self._get_theme_statement(theme_data),
-                abstraction_level=self._get_abstraction_level(theme_data),
-                inclusion=self._get_inclusion_examples(theme_data),
-                exclusion=self._get_exclusion_examples(theme_data),
-                near_neighbor=self._get_near_neighbor(theme_data),
-                theme_id=theme_id,
-                cluster_summary=self._get_theme_name(theme_data),
-                coding_decision="CREATE",
-                source_code="null",
-                source_definition=None,
-                **self._get_context_specifier_params()  # Add context specifiers
-            )
-            code_gen_tokens = len(self.encoding.encode(code_gen_prompt)) + 150  # + completion estimate
-            token_measurements['code_generation'].append(code_gen_tokens)
-            
-            # PROMPT4 Validation prompt
-            validation_codes_text = "\n".join([f"-{code['code']}" for code in current_codes[:5]])  # Limited like real implementation
-            
-            validation_prompt = VALIDATION_PROMPT.format(
-                language=DEFAULT_LANGUAGE,
-                survey_question=self.var_lab,
-                theme_name=self._get_theme_name(theme_data),
-                theme_description=self._get_theme_statement(theme_data),
-                code_text=validation_codes_text,
-                step3_recommendation='{"generated_code": {"theme_number": 1, "theme_name": "Example theme", "code_label": "Example code", "code_definition": "Example definition"}}',
-                theme_id=theme_id,
-                cluster_summary=self._get_theme_name(theme_data),
-                source_code="Null",
-                inclusion_examples="  • Example inclusion 1\n  • Example inclusion 2",
-                exclusion_examples="  • Example exclusion",
-                near_neighbor_label="Example neighbor",
-                tell_apart_rule="Example distinction rule",
-                validation_instructions=CREATE_VALIDATION_INSTRUCTIONS,  # Default for token measurement
-                **self._get_context_specifier_params()  # Add context specifiers
-            )
-            validation_tokens = len(self.encoding.encode(validation_prompt)) + 100  # + completion estimate
-            token_measurements['validation'].append(validation_tokens)
-        
-        # Calculate averages
-        import statistics
-        measured_averages = {}
-        for step, token_list in token_measurements.items():
-            if token_list:
-                avg_tokens = statistics.mean(token_list)
-                measured_averages[step] = avg_tokens
-                self.verbose_reporter.stat_line(f"Measured {step} token usage: {avg_tokens:.0f} tokens/request (from {len(token_list)} samples)")
-            else:
-                # Fallback estimates
-                fallback_tokens = {'candidate_selection': 1200, 'code_generation': 1000, 'validation': 900}
-                measured_averages[step] = fallback_tokens[step]
-        
-        self.verbose_reporter.step_complete("Code Generation Token Measurement")
-        return measured_averages
-
-    async def _process_error_leaks_batch_concurrent(self, clusters: Dict, themes: Dict, theme_embeddings: Dict) -> List[Dict[str, Any]]:
-        """Process error leaks using re-processing of failed clusters
-
-        Similar to modification leak recovery but handles validation/generation failures
-        """
-        if not self.error_leaks:
-            return []
-
-        self.verbose_reporter.step_start("Error Leak Recovery")
-        self.verbose_reporter.stat_line(f"Processing {len(self.error_leaks)} error leaks")
-
-        all_recovery_results = []
-
-        # Process each error leak
-        for error_leak in self.error_leaks:
-            cluster_id = error_leak['cluster_id']
-            error_type = error_leak['error_type']
-
-            try:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: Retrying after {error_type}")
-
-                # Get fresh cluster and theme data
-                cluster_data = clusters.get(str(cluster_id), {})
-                theme_data = themes.get(str(cluster_id))
-
-                if not cluster_data or not theme_data:
-                    self.verbose_reporter.error(f"C{cluster_id}: Missing cluster/theme data for retry")
-                    continue
-
-                # Get fresh codebook snapshot
-                codebook_snapshot, base_version = await self.shared_codebook.get_current_snapshot()
-
-                # Re-run full processing with fresh data
-                result = await self._process_single_cluster_comprehensive(
-                    cluster_id, cluster_data, theme_data, codebook_snapshot, base_version
-                )
-
-                if result:
-                    all_recovery_results.append(result)
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: Successfully recovered")
-                else:
-                    self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - no result")
-
-            except Exception as e:
-                self.verbose_reporter.error(f"C{cluster_id}: Recovery exception: {e}")
-
-        # Apply successful recovery results to codebook
-        if all_recovery_results:
-            self.verbose_reporter.stat_line(f"Applying {len(all_recovery_results)} error recovery results to codebook")
-            await self._merge_codebook_updates(all_recovery_results, None)
-
-        # Clear error leaks after processing
-        self.error_leaks.clear()
-
-        self.verbose_reporter.step_complete(f"Error Leak Recovery ({len(all_recovery_results)}/{len(self.error_leaks)} recovered)")
-        return all_recovery_results
-
-    async def process_batches_sequentially(self, dissimilarity_batches: List[List[str]],
-                                         clusters: Dict, themes: Dict,
-                                         theme_embeddings: Dict) -> List[Dict[str, Any]]:
-        """Process Level 1 batches sequentially, Level 2 batches concurrently with staggering"""
-        self.verbose_reporter.step_start("Two-Level Batch Processing")
-        self.verbose_reporter.stat_line(f"Processing {len(dissimilarity_batches)} Level 1 batches sequentially")
-
-        # Store theme embeddings for use in candidate selection
-        self._theme_embeddings_cache = theme_embeddings
-
-        # Measure token usage for code generation steps
-        self.code_gen_token_measurements = await self._measure_code_generation_tokens(clusters, themes)
-
-        # Calculate global rate limiting strategy
-        composite_tokens = (
-            self.code_gen_token_measurements.get('candidate_selection', 1200) +
-            self.code_gen_token_measurements.get('code_generation', 1000) +
-            self.code_gen_token_measurements.get('validation', 900)
-        )
-
-        total_clusters = sum(len(batch) for batch in dissimilarity_batches)
-        self.verbose_reporter.stat_line(f"Total clusters to process: {total_clusters}")
-        self.verbose_reporter.stat_line(f"Composite tokens per cluster: {composite_tokens}")
-
-        # Initialize instance variable to track all results (needed for MODIFY updates)
-        self.all_results = []
-        all_results = []
-        total_batches = len(dissimilarity_batches)
-        
-        for batch_idx, dissimilarity_batch in enumerate(dissimilarity_batches):
-            self.verbose_reporter.step_start(f"Level 1 Batch {batch_idx + 1}/{total_batches}")
-            self.verbose_reporter.stat_line(f"Processing {len(dissimilarity_batch)} clusters")
-            
-            # Create Level 2 sub-batches
-            if len(dissimilarity_batch) > self.config.max_sub_batch_size:
-                sub_batches = self.similarity_engine.create_sub_batches(dissimilarity_batch, self.config.max_sub_batch_size)
-            else:
-                sub_batches = [dissimilarity_batch]  # Single sub-batch
-             
-            # Process Level 2 sub-batches concurrently with staggering
-            sub_batch_tasks = []
-            for i, sub_batch in enumerate(sub_batches):
-                stagger_delay = i * 0.5  # 500ms between sub-batch starts for smooth distribution
-                task = self._process_sub_batch_with_stagger(
-                    sub_batch, clusters, themes, stagger_delay
-                )
-                sub_batch_tasks.append(task)
-            
-            # Wait for ALL sub-batches to complete before next Level 1 batch
-            batch_results = await asyncio.gather(*sub_batch_tasks)
-            
-            # Flatten and collect results
-            for sub_batch_result in batch_results:
-                all_results.extend(sub_batch_result)
-                self.all_results.extend(sub_batch_result)  # Keep instance variable in sync
-            
-            # Level 1 batch complete - codebook is updated
-            version_info = await self.shared_codebook.get_version_info()
-            self.verbose_reporter.stat_line(f"Codebook version: {version_info['version']}, total codes: {version_info['total_codes']}")
-            self.verbose_reporter.step_complete(f"Level 1 Batch {batch_idx + 1} completed")
-            # Next Level 1 batch starts immediately (if API limits allow)
-        
-        self.verbose_reporter.step_complete("Two-Level Batch Processing")
-        
-        # Process modification leaks recovery batch if any were collected
-        if self.modification_leaks:
-            if self.config.enable_concurrent_leak_recovery:
-                recovery_results = await self._process_modification_leaks_batch_concurrent(clusters, themes, theme_embeddings)
-            else:
-                recovery_results = await self._process_modification_leak_recovery(clusters, themes, theme_embeddings)
-
-            # REPLACE failed results instead of adding duplicates
-            replaced_count = 0
-            appended_count = 0
-            for recovery_result in recovery_results:
-                recovered_cluster_id = str(recovery_result.get('cluster_id', ''))
-
-                # Find the original failed result
-                original_idx = None
-                for idx, result in enumerate(all_results):
-                    if str(result.get('cluster_id', '')) == recovered_cluster_id:
-                        original_idx = idx
-                        break
-
-                if original_idx is not None:
-                    # Replace failed result with successful recovery
-                    all_results[original_idx] = recovery_result
-                    replaced_count += 1
-                    self.verbose_reporter.stat_line(f"[FIX] C{recovered_cluster_id}: Replaced failed result with recovery result")
-                else:
-                    # No original found (shouldn't happen, but handle gracefully)
-                    all_results.append(recovery_result)
-                    appended_count += 1
-                    self.verbose_reporter.warning(f"[FIX] C{recovered_cluster_id}: No original result found, appending recovery result")
-
-            # Sync instance variable
-            self.all_results = all_results.copy()
-
-        # Process error leaks recovery if any were collected
-        if self.error_leaks:
-            error_recovery_results = await self._process_error_leaks_batch_concurrent(clusters, themes, theme_embeddings)
-
-            # REPLACE failed results instead of adding duplicates
-            replaced_count = 0
-            appended_count = 0
-            for recovery_result in error_recovery_results:
-                recovered_cluster_id = str(recovery_result.get('cluster_id', ''))
-
-                # Find the original failed result
-                original_idx = None
-                for idx, result in enumerate(all_results):
-                    if str(result.get('cluster_id', '')) == recovered_cluster_id:
-                        original_idx = idx
-                        break
-
-                if original_idx is not None:
-                    # Replace failed result with successful recovery
-                    all_results[original_idx] = recovery_result
-                    replaced_count += 1
-                    self.verbose_reporter.stat_line(f"[FIX] C{recovered_cluster_id}: Replaced failed error result with recovery result")
-                else:
-                    # No original found (shouldn't happen, but handle gracefully)
-                    all_results.append(recovery_result)
-                    appended_count += 1
-                    self.verbose_reporter.warning(f"[FIX] C{recovered_cluster_id}: No original error result found, appending recovery result")
-
-            # Sync instance variable
-            self.all_results = all_results.copy()
-
-        return all_results
-    
-    async def _process_modification_leak_recovery(self, clusters: Dict, themes: Dict, theme_embeddings: Dict) -> List[Dict[str, Any]]:
-        """Process modification leaks sequentially to avoid race conditions"""
-        self.verbose_reporter.step_start("Modification Leak Recovery")
-        self.verbose_reporter.stat_line(f"Processing {len(self.modification_leaks)} modification leaks sequentially")
-        
-        recovery_results = []
-        recovery_stats = {'resolved': 0, 'failed': 0, 'changed_decision': 0}
-        
-        for leak_data in self.modification_leaks:
-            cluster_id = leak_data['cluster_id']
-            original_result = leak_data.get('full_result')
-            
-            if not original_result:
-                self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - missing original result data")
-                recovery_stats['failed'] += 1
-                continue
-            
-            try:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: Recovering modification leak - re-running candidate selection")
-                
-                # Re-run candidate selection with current codebook state
-                cluster_data = clusters.get(cluster_id, {})
-                theme_data = themes.get(cluster_id)
-                
-                if not cluster_data or not theme_data:
-                    self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - missing cluster or theme data")
-                    recovery_stats['failed'] += 1
-                    continue
-                
-                # Re-run the full processing pipeline for this cluster
-                result = await self._process_single_cluster_comprehensive(cluster_id, cluster_data, theme_data, theme_embeddings.get(cluster_id))
-                
-                if result:
-                    # Check if the new decision is different (due to codebook changes)
-                    if result.get('candidate_selection') and hasattr(result['candidate_selection'], 'coding_decision'):
-                        new_decision = result['candidate_selection'].coding_decision.decision.lower()
-                        
-                        if new_decision != 'modify':
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: Decision changed from MODIFY to {new_decision.upper()} after recovery")
-                            recovery_stats['changed_decision'] += 1
-                        else:
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY decision maintained after recovery")
-                            recovery_stats['resolved'] += 1
-                    
-                    recovery_results.append(result)
-                    
-                    # Apply codebook updates for this single cluster immediately
-                    await self._merge_codebook_updates([result], None)
-                    
-                else:
-                    recovery_stats['failed'] += 1
-                    
-            except Exception as e:
-                self.verbose_reporter.error(f"C{cluster_id}: Recovery failed with error: {e}")
-                recovery_stats['failed'] += 1
-        
-        # Report recovery results
-        total_processed = sum(recovery_stats.values())
-        if total_processed > 0:
-            self.verbose_reporter.stat_line(f"Recovery summary: RESOLVED={recovery_stats['resolved']}, DECISION_CHANGED={recovery_stats['changed_decision']}, FAILED={recovery_stats['failed']}")
-        
-        # Clear modification leaks after processing
-        self.modification_leaks.clear()
-        
-        self.verbose_reporter.step_complete("Modification Leak Recovery")
-        return recovery_results
-    
-    async def _process_modification_leaks_batch_concurrent(self, clusters: Dict, themes: Dict, theme_embeddings: Dict) -> List[Dict[str, Any]]:
-        """Process modification leaks concurrently using batch processing patterns"""
-        self.verbose_reporter.step_start("Concurrent Modification Leak Recovery")
-        self.verbose_reporter.stat_line(f"Processing {len(self.modification_leaks)} modification leaks in concurrent batches")
-        
-        if not self.modification_leaks:
-            return []
-        
-        # Group modification leaks into batches for concurrent processing
-        leak_batches = self._create_modification_leak_batches(self.modification_leaks)
-        self.verbose_reporter.stat_line(f"Created {len(leak_batches)} batches for concurrent processing")
-        
-        all_recovery_results = []
-        all_recovery_stats = {'resolved': 0, 'failed': 0, 'changed_decision': 0}
-        
-        # Process batches sequentially (level 1), each batch processed concurrently (level 2)
-        for batch_idx, leak_batch in enumerate(leak_batches, 1):
-            self.verbose_reporter.stat_line(f"[START] Recovery Batch {batch_idx}/{len(leak_batches)} - Processing {len(leak_batch)} leaks concurrently")
-            
-            # Process this batch of leaks concurrently
-            batch_results, batch_stats = await self._process_leak_batch_concurrent(
-                leak_batch, clusters, themes, theme_embeddings, batch_idx
-            )
-            
-            # Accumulate results and stats
-            all_recovery_results.extend(batch_results)
-            for key in all_recovery_stats:
-                all_recovery_stats[key] += batch_stats.get(key, 0)
-                
-            self.verbose_reporter.stat_line(f"[COMPLETE] Recovery Batch {batch_idx}/{len(leak_batches)} - Results: {len(batch_results)} recovered, Stats: {batch_stats}")
-        
-        # Apply all successful recovery results atomically to the codebook
-        if all_recovery_results:
-            self.verbose_reporter.stat_line(f"Applying {len(all_recovery_results)} recovery results to codebook atomically")
-            await self._merge_codebook_updates(all_recovery_results, None)
-        
-        # Report overall recovery results
-        total_processed = sum(all_recovery_stats.values())
-        if total_processed > 0:
-            self.verbose_reporter.stat_line(f"Concurrent recovery summary: RESOLVED={all_recovery_stats['resolved']}, DECISION_CHANGED={all_recovery_stats['changed_decision']}, FAILED={all_recovery_stats['failed']}")
-        
-        # Clear modification leaks after processing
-        self.modification_leaks.clear()
-        
-        self.verbose_reporter.step_complete("Concurrent Modification Leak Recovery")
-        return all_recovery_results
-    
-    def _create_modification_leak_batches(self, leaks: List[Dict]) -> List[List[Dict]]:
-        """Create batches of modification leaks for concurrent processing"""
-        # Configurable batching strategy aligned with existing batch processing
-        batch_size = min(self.config.modification_leak_batch_size, len(leaks))
-        
-        batches = []
-        for i in range(0, len(leaks), batch_size):
-            batch = leaks[i:i + batch_size]
-            batches.append(batch)
-        
-        return batches
-    
-    async def _process_leak_batch_concurrent(self, leak_batch: List[Dict], clusters: Dict, themes: Dict, theme_embeddings: Dict, batch_idx: int) -> Tuple[List[Dict], Dict]:
-        """Process a single batch of modification leaks concurrently"""
-        # Use existing concurrency control patterns
-        semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)  # Reuse existing config
-        
-        async def process_single_leak(leak_data: Dict) -> Optional[Dict]:
-            async with semaphore:
-                cluster_id = leak_data['cluster_id']
-                
-                try:
-                    # Validate leak data
-                    original_result = leak_data.get('full_result')
-                    if not original_result:
-                        self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - missing original result data")
-                        return None
-                    
-                    # Get theme data (cluster_data used only for reporting, not required)
-                    cluster_data = clusters.get(cluster_id, {})
-                    theme_data = themes.get(cluster_id)
-
-                    if not theme_data:
-                        self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - missing theme data")
-                        return None
-                    
-                    if self.verbose_detailed:
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: Batch {batch_idx} - Recovering modification leak concurrently")
-                    
-                    # Re-run the full processing pipeline for this cluster
-                    result = await self._process_single_cluster_comprehensive(cluster_id, cluster_data, theme_data, theme_embeddings.get(cluster_id))
-                    
                     return result
-                    
-                except Exception as e:
-                    self.verbose_reporter.error(f"C{cluster_id}: Batch {batch_idx} - Recovery failed with error: {e}")
-                    return None
-        
-        # Process all leaks in this batch concurrently
-        leak_tasks = [process_single_leak(leak) for leak in leak_batch]
-        leak_results = await asyncio.gather(*leak_tasks, return_exceptions=True)
-        
-        # Collect successful results and compute stats
-        batch_results = []
-        batch_stats = {'resolved': 0, 'failed': 0, 'changed_decision': 0}
-        
-        for i, result in enumerate(leak_results):
-            cluster_id = leak_batch[i]['cluster_id']
-            
-            if isinstance(result, Exception):
-                self.verbose_reporter.error(f"C{cluster_id}: Batch {batch_idx} - Recovery failed with exception: {result}")
-                batch_stats['failed'] += 1
-            elif result is None:
-                batch_stats['failed'] += 1
-            else:
-                # Check if the new decision is different (due to codebook changes)
-                if result.get('candidate_selection') and hasattr(result['candidate_selection'], 'coding_decision'):
-                    new_decision = result['candidate_selection'].coding_decision.decision.lower()
-                    
-                    if new_decision != 'modify':
-                        if self.verbose_detailed:
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: Batch {batch_idx} - Decision changed from MODIFY to {new_decision.upper()}")
-                        batch_stats['changed_decision'] += 1
-                    else:
-                        if self.verbose_detailed:
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: Batch {batch_idx} - MODIFY decision maintained")
-                        batch_stats['resolved'] += 1
-                
-                batch_results.append(result)
-        
-        return batch_results, batch_stats
-    
-    async def _process_sub_batch_with_stagger(self, sub_batch: List[str], clusters: Dict, themes: Dict, 
-                                            stagger_delay: float) -> List[Dict[str, Any]]:
-        """Process sub-batch with optimized concurrency, rate limiting, and bootstrap measurement"""
-        
-        # Apply stagger delay for smooth distribution
-        if stagger_delay > 0:
-            await asyncio.sleep(stagger_delay)
-        
-        if not sub_batch:
-            return []
-        
-        # Use dynamically fetched rate limits stored on self
-        limits = self.rate_limits
 
-        # Ensure bootstrap measurement has been completed
-        if not self._bootstrap_completed:
-            self.verbose_reporter.warning("Bootstrap measurement not completed for cluster processing - using fallback")
+                except asyncio.TimeoutError:
+                    if phase_state and phase_state.circuit_breaker:
+                        phase_state.circuit_breaker.record_timeout()
+                    if phase_state is not None:
+                        phase_state.timeouts += 1
+                    raise
 
-        # Calculate stage-specific optimal concurrency for the 3-prompt chain
-        # Use bootstrap data but adjust for the complexity of the 3-prompt chain
-        chain_latency = self.bootstrap_latency * 3  # Approximate latency for 3-prompt sequence
-        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        Little = compute_optimal_concurrency(api_limits, chain_latency, self.avg_tokens, self.processing_config, cap=self.processing_config.concurrency_cap_default, min_conc=self.processing_config.concurrency_min_conservative)
-        optimal = min(100, max(Little, 20))  # Constrained for complex chain processing
+    # =========================================================================
+    # HELPERS
+    # =========================================================================
 
-        # Create stage-specific rate limiting (adjusted for 3-prompt chain)
-        arrival_rate = min(
-            limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60 / 3,  # Divided by 3 for 3-prompt chain
-            limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
-        )
-        
-        # Handle edge case where arrival_rate < 1 to avoid "Can't acquire more than maximum capacity" error
-        if arrival_rate < 1:
-            limiter = AsyncLimiter(1, time_period=1/arrival_rate)
-        else:
-            limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
-        semaphore = asyncio.Semaphore(optimal)
-        tpm_bucket = self.tpm_bucket  # Use shared TPM bucket
-        
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"Cluster chain setup: {optimal} concurrent, adjusted latency {chain_latency:.3f}s (3x bootstrap)")
-            self.verbose_reporter.stat_line(f"Chain arrival rate: {arrival_rate:.1f}/s (RPM/3 for 3-prompt sequence)")
-        
-        # Get current codebook snapshot for consistent processing
-        codebook_snapshot, base_version = await self.shared_codebook.get_current_snapshot()
-        
-        # PRE-COMPUTE: Ensure codebook embeddings exist for this version before cluster processing
-        # This prevents multiple clusters from generating the same embeddings simultaneously
-        cached_embeddings = await self.shared_codebook.get_embeddings_for_version(base_version)
-        if cached_embeddings is None and codebook_snapshot:
-            code_texts = [f"{code['code']}" for code in codebook_snapshot]
-            try:
-                code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
-                await self.shared_codebook.cache_embeddings(base_version, code_embeddings)
-                self.verbose_reporter.stat_line(f"Cached embeddings for version {base_version}")
-            except Exception as e:
-                self.verbose_reporter.error(f"Failed to pre-compute embeddings for version {base_version}: {e}")
-        
-        # Optimized cluster processing with rate limiting
-        async def process_cluster_with_limits(cluster_id):
-            async with semaphore, limiter:
-                # Build composite prompt for token estimation (3-prompt chain)
-                # Note: For Stage 2, we estimate based on the most token-heavy prompt (typically candidate selection)
-                if cluster_id in themes:
-                    theme_data = themes[cluster_id]
-                    
-                    # Estimate using candidate selection prompt as representative
-                    # Use proper template parameters that match CODING_DECISION_PROMPT (including context specifiers)
-                    theme_id = self._get_theme_id(theme_data)
-                    sample_prompt = CODING_DECISION_PROMPT.format(
-                        survey_question=self.var_lab,
-                        language=DEFAULT_LANGUAGE,
-                        theme_name=self._get_theme_name(theme_data),
-                        theme_description=self._get_theme_statement(theme_data),
-                        abstraction_level=self._get_abstraction_level(theme_data),
-                        inclusion=self._get_inclusion_examples(theme_data),
-                        exclusion=self._get_exclusion_examples(theme_data),
-                        near_neighbor=self._get_near_neighbor(theme_data),
-                        code_text="",  # Empty for estimation
-                        theme_id=theme_id,
-                        **self._get_context_specifier_params()  # Add context specifiers
-                    )
-                    
-                    # Use progressive estimation for the chain (multiply by 3 for 3 prompts)
-                    estimated_tokens = self.estimate_tokens(sample_prompt) * 3
-                else:
-                    # Fallback to average if cluster data not available
-                    estimated_tokens = int(self.avg_tokens)
-                
-                await tpm_bucket.wait_and_acquire(estimated_tokens)
-                
-                # Track latency for the full chain
-                start_time = time.perf_counter()
-                try:
-                    result = await self._process_single_cluster(
-                        cluster_id, clusters, themes, codebook_snapshot, base_version
-                    )
-                    # Track latency for continuous optimization
-                    latency = time.perf_counter() - start_time
-                    self.latency_tracker.add(latency)
-                    return result
-                except Exception as e:
-                    import traceback
-                    tb = traceback.format_exc()
-                    self.verbose_reporter.error(f"Cluster processing failed for {cluster_id}: {e}")
-                    self.verbose_reporter.error(f"Full traceback: {tb}")
-                    return None
-        
-        # Create optimized tasks
-        cluster_tasks = [
-            process_cluster_with_limits(cluster_id) 
-            for cluster_id in sub_batch
-        ]
-        
-        # Process with optimized concurrency and gather results  
-        results = []
-        completed_results = await asyncio.gather(*cluster_tasks, return_exceptions=True)
-        
-        for result in completed_results:
-            if isinstance(result, Exception):
-                import traceback
-                tb = ''.join(traceback.format_exception(type(result), result, result.__traceback__))
-                self.verbose_reporter.error(f"Cluster task failed: {result}")
-                self.verbose_reporter.error(f"Exception type: {type(result).__name__}")
-                self.verbose_reporter.error(f"Full exception traceback: {tb}")
-                continue
-            if result is not None:
-                results.append(result)
-        
-        # Update SharedCodebook with any new codes from this sub-batch
-        if results:
-            await self._merge_codebook_updates(results, base_version)
-            
-            # POST-PROCESS: Generate embeddings for any new codes added during batch processing
-            updated_codes, new_version = await self.shared_codebook.get_current_snapshot()
-            if new_version > base_version:
-                # Codebook was updated during processing, ensure embeddings exist for new version
-                cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
-                if cached_embeddings is None:
-                    # Generate embeddings for all codes in the updated codebook
-                    if self.verbose_detailed: 
-                        self.verbose_reporter.stat_line(f"Post-processing: Generating embeddings for updated codebook (version {new_version})")
-                    #code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
-                    code_texts = [f"{code['code']}" for code in updated_codes]
-                    try:
-                        code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
-                        await self.shared_codebook.cache_embeddings(new_version, code_embeddings)
-                        self.verbose_reporter.stat_line(f"Cached embeddings for updated version {new_version}")
-                    except Exception as e:
-                        self.verbose_reporter.error(f"Failed to generate embeddings for updated codebook (version {new_version}): {e}")
-        
-        return results
-    
-    async def _process_single_cluster_comprehensive(self, cluster_id: str, cluster_data: Dict, theme_data, theme_embedding) -> Optional[Dict[str, Any]]:
-        """Process single cluster comprehensively for modification leak recovery"""
-        
-        try:
-            # Step 1: Get current codebook for candidate selection (ensures latest codes are visible)
-            current_codes, _ = await self.shared_codebook.get_current_snapshot()
-            nearest_codes = await self._find_nearest_codes_by_theme(cluster_id, theme_data, current_codes, k=5)
-            
-            # Step 2: Candidate selection - re-run with current codebook state
-            candidate_selection = await self._select_candidate_codes(cluster_id, cluster_data, theme_data, nearest_codes)
-            
-            if not candidate_selection or not hasattr(candidate_selection, 'coding_decision'):
-                self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - no candidate selection result")
-                return None
-            
-            decision = candidate_selection.coding_decision.decision.lower()
-            
-            # OPTIMIZATION: Skip Steps 3 & 4 for USE decisions
-            if decision == "use":
-                if self.verbose_detailed:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision detected in recovery - skipping code generation and validation")
-
-                # Extract final code from candidate_selection for USE decisions
-                final_code = None
-                final_definition = None
-                if hasattr(candidate_selection, 'coding_decision'):
-                    decision_info = candidate_selection.coding_decision
-                    if decision_info.source_code:
-                        final_code = decision_info.source_code
-                        # For USE decisions, definition comes from existing codebook
-                        # We don't need to fetch it as the code already exists
-
-                # Return minimal result structure for USE decisions
-                return {
-                    'cluster_id': cluster_id,
-                    'candidate_selection': candidate_selection,
-                    'optimization': 'use_early_return',
-                    'final_code': final_code,
-                    'final_definition': final_definition,  # May be None for USE, but that's OK
-                    'valence_group': cluster_data.get('valence_group', ''),
-                }
-            
-            # Step 3: Code generation for CREATE/MODIFY decisions
-            code_generation = await self._generate_code(cluster_id, cluster_data, theme_data, candidate_selection)
-            
-            if not code_generation:
-                self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - no code generation result")
-                return None
-            
-            # Step 4: Validation
-            validation = await self._validate_code(cluster_id, cluster_data, theme_data, code_generation, nearest_codes)
-            
-            if not validation:
-                self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - no validation result")
-                return None
-
-            # Extract final code/definition from validation with fallback logic
-            final_code = None
-            final_definition = None
-
-            # Primary: Try validation.code_validation.validated_code
-            if validation and hasattr(validation, 'code_validation') and validation.code_validation:
-                code_validation = validation.code_validation
-                if code_validation.validated_code:
-                    final_code = code_validation.validated_code.code
-                    final_definition = code_validation.validated_code.definition
-
-            # Fallback 1: Try code_generation.generated_code
-            if not final_code and code_generation and hasattr(code_generation, 'generated_code'):
-                generated_code = code_generation.generated_code
-                if generated_code and hasattr(generated_code, 'code_label'):
-                    final_code = generated_code.code_label
-                    final_definition = generated_code.code_definition if hasattr(generated_code, 'code_definition') else None
-                    self.verbose_reporter.warning(f"C{cluster_id}: Using code_generation fallback for final_code")
-
-            # Fallback 2: Try candidate_selection.coding_decision.source_code (for USE decisions)
-            if not final_code and candidate_selection and hasattr(candidate_selection, 'coding_decision'):
-                coding_decision = candidate_selection.coding_decision
-                if coding_decision and hasattr(coding_decision, 'source_code') and coding_decision.source_code:
-                    final_code = coding_decision.source_code
-                    self.verbose_reporter.warning(f"C{cluster_id}: Using candidate_selection fallback for final_code")
-
-            # Log error if all fallbacks failed
-            if not final_code:
-                self.verbose_reporter.error(f"C{cluster_id}: All fallbacks failed - final_code remains None")
-
-            # Return complete result structure
-            return {
-                'cluster_id': cluster_id,
-                'candidate_selection': candidate_selection,
-                'code_generation': code_generation,
-                'validation': validation,
-                'final_code': final_code,
-                'final_definition': final_definition,
-                'valence_group': cluster_data.get('valence_group', ''),
-            }
-            
-        except Exception as e:
-            self.verbose_reporter.error(f"C{cluster_id}: Recovery processing failed with error: {e}")
-            return None
-   
-    async def _find_nearest_codes_by_theme(self, cluster_id: Union[int, str], theme_data, 
-                                          current_codes: List[Dict[str, str]], k: int = 5) -> List[Dict[str, str]]:
-        """Find k nearest codes to themes using cosine similarity - handles multiple themes per cluster"""
-        if not current_codes:
-            return []
-        
-        # Handle multiple themes per cluster (aggregate approach)
-        all_nearest_codes = []
-
-        # Check if theme_data has multiple themes
-        if hasattr(theme_data, 'extracted_themes') and len(theme_data.extracted_themes) > 1:
-            # Multiple themes: get k codes for each theme and aggregate
-            for theme_item in theme_data.extracted_themes:
-                theme_embedding = await self._get_theme_embedding_for_item(cluster_id, theme_item)
-                if theme_embedding is not None:
-                    nearest_codes = await self._get_nearest_codes_by_embedding(theme_embedding, current_codes, k)
-                    all_nearest_codes.extend(nearest_codes)
-        else:
-            # Single theme: use cached embedding
-            if not hasattr(self, '_theme_embeddings_cache'):
-                self.verbose_reporter.error(f"No theme embeddings found for cluster {cluster_id}")
-                return []
-
-            theme_embedding = self._theme_embeddings_cache.get(cluster_id)
-            if theme_embedding is None:
-                self.verbose_reporter.error(f"No theme embedding found for cluster {cluster_id}")
-                return []
-
-            all_nearest_codes = await self._get_nearest_codes_by_embedding(theme_embedding, current_codes, k)
-        
-        # Deduplicate by code name while preserving order
-        seen_codes = set()
-        deduplicated_codes = []
-        for code in all_nearest_codes:
-            code_key = code['code']
-            if code_key not in seen_codes:
-                seen_codes.add(code_key)
-                deduplicated_codes.append(code)
-        
-        return deduplicated_codes
-    
-    async def _get_theme_embedding_for_item(self, cluster_id: Union[int, str], theme_item) -> Optional[np.ndarray]:
-        """Get embedding for a specific theme item"""
-        try:
-            # Generate embedding for this specific theme
-            theme_text = theme_item.theme_clarification  # Using theme_clarification instead of theme_statement
-            embedding = await self.similarity_engine._get_embedding(theme_text)
-            return embedding
-        except Exception as e:
-            self.verbose_reporter.error(f"Failed to embed theme '{theme_item.theme_clarification}' for cluster {cluster_id}: {e}")
-            return None
-    
-    async def _get_nearest_codes_by_embedding(self, theme_embedding: np.ndarray, 
-                                            current_codes: List[Dict[str, str]], k: int) -> List[Dict[str, str]]:
-        """Get k nearest codes to a theme embedding using cosine similarity"""
-        # Get codebook version
-        _, version = await self.shared_codebook.get_current_snapshot()
-        
-        # Check for cached code embeddings
-        code_embeddings = await self.shared_codebook.get_embeddings_for_version(version)
-        
-        if code_embeddings is None:
-            # Generate embeddings for all codes
-            #self.verbose_reporter.stat_line(f"Generating embeddings for {len(current_codes)} codes (version {version})")
-            
-            # Format codes for embedding (same format as old codeGenerator)
-            #code_texts = [f"{code['code']}: {code['definition']}" for code in current_codes]
-            code_texts = [f"{code['code']}" for code in current_codes]
-            
-            # Batch embed all codes
-            try:
-                code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
-                # Cache the embeddings
-                await self.shared_codebook.cache_embeddings(version, code_embeddings)
-            except Exception as e:
-                self.verbose_reporter.error(f"Failed to generate code embeddings: {e}")
-                return []
-        
-        # Calculate cosine similarities
-        code_embeddings_array = np.array(code_embeddings)
-        theme_embedding_array = theme_embedding.reshape(1, -1)
-        similarities = cosine_similarity(theme_embedding_array, code_embeddings_array)[0]
-        
-        # Get top k indices
-        top_k_indices = np.argsort(similarities)[-k:][::-1]
-        
-        # Filter by similarity threshold and return the nearest codes
-        nearest_codes = []
-        min_similarity_threshold = 0.3  # Only consider codes with at least 30% similarity
-        for idx in top_k_indices:
-            if idx < len(current_codes) and similarities[idx] >= min_similarity_threshold:
-                nearest_codes.append(current_codes[idx])
-        
-        # Detailed verbodse: similarity score nearest codes to theme embedding
-        if self.verbose_detailed and nearest_codes:
-            similarity_values = [round(float(similarities[idx]), 3) for idx in top_k_indices]
-            codes_with_scores = [f"{code['code']} ({score})" for code, score in zip(nearest_codes, similarity_values)]
-            self.verbose_reporter.stat_line(f"Found {len(nearest_codes)} nearest codes with similarities: {codes_with_scores}")
-        
-        
-        return nearest_codes
-
-    
-    async def design(self) -> List[Dict[str, Any]]:
-        """Main method: Run complete 4-stage CodeDesigner pipeline with comprehensive error handling"""
-        start_time = time.time()
-        
-        # Initialize bootstrap measurement and rate limiting with real API performance data
-        await self.async_initialize()
-        
-        try:
-            # Initialize processing statistics
-            self._processing_stats = {
-                'start_time': start_time,
-                'clusters_found': 0,
-                'themes_extracted': 0,
-                'themes_embedded': 0,
-                'batches_created': 0,
-                'clusters_processed': 0,
-                'codes_added': 0,
-                'codes_modified': 0,
-                'validation_failures': 0,
-                'api_errors': 0,
-                'stage_times': {}
-                }
-            
-            # Pre-compute embeddings if non-cached format configured
-            self._prepare_idea_embeddings()
-
-            # Stage 0 + 1: Data extraction and theme extraction
-            # Branch: MECE categories path vs. cluster-based paths
-            _using_categories = (
-                STAGE1_INPUT_SOURCE == "mece_categories"
-                and self._mece_results_cache is not None
-                and self._category_assigned_data is not None
+    def _build_all_partition_contexts(
+        self,
+        partition_set: DomainSet,
+    ) -> Dict[str, DomainContext]:
+        """Build DomainContext for each partition."""
+        contexts = {}
+        for part in partition_set.partitions:
+            contexts[part.partition_name] = DomainContext(
+                partition_name=part.partition_name,
+                partition_definition=part.inclusion_definition,
             )
-
-            other_results = []  # populated only by _using_categories path
-
-            if _using_categories:
-                # --- MECE categories path (step_4_classNcoder) ---
-                stage_start = time.time()
-                try:
-                    all_categories = self.extract_category_data()
-                    self.verbose_reporter.stat_line(
-                        f"Extracted data from {len(all_categories)} valence groups"
-                    )
-                    if not all_categories:
-                        self.verbose_reporter.warning(
-                            "No valid MECE categories found - check step_4_classNcoder cache"
-                        )
-                        return []
-
-                    # Separate small/unassigned groups for direct "other" code
-                    clusters, other_groups = self._separate_other_groups(
-                        all_categories,
-                        min_size=MIN_GROUP_SIZE_FOR_THEME_EXTRACTION
-                    )
-                    if other_groups:
-                        other_results = await self._assign_partition_other_codes(other_groups)
-
-                    self._processing_stats['clusters_found'] = len(clusters)
-                except Exception as e:
-                    self.verbose_reporter.error(f"Failed to extract category data: {e}")
-                    return []
-
-                self._processing_stats['stage_times']['data_extraction'] = time.time() - stage_start
-
-                stage_start = time.time()
-                try:
-                    themes = await self.extract_themes_from_categories(clusters)
-                    self._processing_stats['themes_extracted'] = len(themes)
-                    if not themes:
-                        self.verbose_reporter.warning(
-                            "No themes extracted from categories - check API connectivity"
-                        )
-                        return []
-                except Exception as e:
-                    self.verbose_reporter.error(f"Critical failure in category theme extraction: {e}")
-                    self.verbose_reporter.warning("Attempting to continue with partial results...")
-                    themes = {}
-
-                self._processing_stats['stage_times']['theme_extraction'] = time.time() - stage_start
-
-            else:
-                # --- Cluster-based paths (mece_topics or raw ideas) ---
-                stage_start = time.time()
-                try:
-                    clusters = self.extract_cluster_data()
-                    self._processing_stats['clusters_found'] = len(clusters)
-                    self.verbose_reporter.stat_line(f"Extracted data from {len(clusters)} clusters")
-
-                    if not clusters:
-                        self.verbose_reporter.warning("No valid clusters found - check input data")
-                        return []
-
-                except Exception as e:
-                    self.verbose_reporter.error(f"Failed to extract cluster data: {e}")
-                    return []
-
-                self._processing_stats['stage_times']['data_extraction'] = time.time() - stage_start
-
-                stage_start = time.time()
-                try:
-                    themes = await self.extract_themes(clusters)
-                    self._processing_stats['themes_extracted'] = len(themes)
-
-                    if not themes:
-                        self.verbose_reporter.warning("No themes extracted - check cluster content or API connectivity")
-                        return []
-
-                except Exception as e:
-                    self.verbose_reporter.error(f"Critical failure in theme extraction: {e}")
-                    self.verbose_reporter.warning("Attempting to continue with partial results...")
-                    themes = {}
-
-                self._processing_stats['stage_times']['theme_extraction'] = time.time() - stage_start
-            
-            # Stage 1.5: Expand multi-theme clusters into sub-clusters
-            themes, clusters, multi_theme_mapping = self.expand_multi_theme_clusters(themes, clusters)
-
-            # Store multi-theme mapping for downstream use (step 8 family codes)
-            self._multi_theme_mapping = multi_theme_mapping
-
-            # Early return for theme extraction only mode
-            if self.stages_to_run == 'theme_extraction_only':
-                self.verbose_reporter.info("Theme extraction only mode - returning themes without further processing")
-                return self._format_theme_only_results(themes)
-
-            # Stage 2: Theme Embedding with fallback handling
-            stage_start = time.time()
-            try:
-                theme_embeddings = await self.similarity_engine.embed_themes(themes)
-                self._processing_stats['themes_embedded'] = len(theme_embeddings)
-
-                if not theme_embeddings:
-                    self.verbose_reporter.warning("No theme embeddings generated - check embedding API")
-                    return []
-
-            except Exception as e:
-                self.verbose_reporter.error(f"Critical failure in theme embedding: {e}")
-                return []
-
-            self._processing_stats['stage_times']['theme_embedding'] = time.time() - stage_start
-            
-            # Stage 3: Similarity-Based Batching with validation
-            stage_start = time.time()
-            try:
-                dissimilarity_batches = self.similarity_engine.create_dissimilarity_batches(theme_embeddings, themes)
-                self._processing_stats['batches_created'] = len(dissimilarity_batches)
-                
-                if not dissimilarity_batches:
-                    self.verbose_reporter.warning("No batches created - all themes may be too similar")
-                    # Create single large batch as fallback
-                    dissimilarity_batches = [list(theme_embeddings.keys())]
-                    
-            except Exception as e:
-                self.verbose_reporter.error(f"Failure in batch creation: {e}")
-                # Fallback: process all clusters individually
-                dissimilarity_batches = [[cid] for cid in theme_embeddings.keys()]
-                
-            self._processing_stats['stage_times']['batch_creation'] = time.time() - stage_start
-            
-            # Stage 4: Sequential Batch Processing with error recovery
-            stage_start = time.time()
-            try:
-                all_results = await self.process_batches_sequentially(
-                    dissimilarity_batches, clusters, themes, theme_embeddings
-                )
-                self._processing_stats['clusters_processed'] = len(all_results)
-                
-            except Exception as e:
-                # Enhanced error logging to identify exact failure point
-                error_msg = str(e).strip()
-                self.verbose_reporter.error(f"Critical failure in batch processing: {repr(error_msg)}")
-                self.verbose_reporter.error(f"Error type: {type(e).__name__}")
-                self.verbose_reporter.error(f"Error length: {len(error_msg)}")
-                
-                # Print the full stack trace to understand where exactly this is failing
-                import traceback
-                self.verbose_reporter.error("Full traceback:")
-                for line in traceback.format_exc().split('\n'):
-                    if line.strip():
-                        self.verbose_reporter.error(f"  {line}")
-                        
-                all_results = []
-                
-            self._processing_stats['stage_times']['batch_processing'] = time.time() - stage_start
-
-            # Merge partition "other" results (from _assign_partition_other_codes)
-            if _using_categories and other_results:
-                all_results.extend(other_results)
-
-            # Final statistics and validation
-            processing_time = time.time() - start_time
-            self._processing_stats['total_time'] = processing_time
-            
-            # Final codebook statistics
-            try:
-                final_version_info = await self.shared_codebook.get_version_info()
-                self._processing_stats['final_codebook_version'] = final_version_info['version']
-                self._processing_stats['final_codebook_size'] = final_version_info['total_codes']
-                self.verbose_reporter.stat_line(f"Final codebook: version {final_version_info['version']}, {final_version_info['total_codes']} codes")
-            except Exception as e:
-                self.verbose_reporter.error(f"Failed to get final codebook stats: {e}")
-            
-            # Comprehensive final reporting
-            self._generate_final_report(processing_time, len(all_results))
-            
-            self.verbose_reporter.step_complete("CodeDesigner Pipeline")
-            
-            self._results = all_results
-            return all_results
-            
-        except Exception as e:
-            # Ultimate fallback error handling
-            self.verbose_reporter.error(f"Critical pipeline failure: {e}")
-            processing_time = time.time() - start_time
-            self._processing_stats['total_time'] = processing_time
-            self._processing_stats['critical_failure'] = str(e)
-            
-            self.verbose_reporter.step_complete("CodeDesigner Pipeline (FAILED)")
-            return []
-    
-    def _generate_final_report(self, processing_time: float, clusters_processed: int):
-        """Generate comprehensive final processing report"""
-        self.verbose_reporter.step_start("Final Processing Report")
-        
-        # Performance metrics
-        self.verbose_reporter.stat_line(f"Total processing time: {processing_time:.1f}s")
-        self.verbose_reporter.stat_line(f"Clusters processed: {clusters_processed}")
-        
-        if 'stage_times' in self._processing_stats:
-            self.verbose_reporter.stat_line("Stage breakdown:")
-            for stage, duration in self._processing_stats['stage_times'].items():
-                percentage = (duration / processing_time) * 100 if processing_time > 0 else 0
-                self.verbose_reporter.stat_line(f"  {stage}: {duration:.1f}s ({percentage:.1f}%)")
-        
-        # Processing efficiency
-        if processing_time > 0:
-            clusters_per_second = clusters_processed / processing_time
-            self.verbose_reporter.stat_line(f"Processing rate: {clusters_per_second:.2f} clusters/second")
-        
-        # Success rates
-        clusters_found = self._processing_stats.get('clusters_found', 0)
-        themes_extracted = self._processing_stats.get('themes_extracted', 0)
-        
-        if clusters_found > 0:
-            theme_success_rate = (themes_extracted / clusters_found) * 100
-            processing_success_rate = (clusters_processed / clusters_found) * 100
-            
-            self.verbose_reporter.stat_line(f"Theme extraction success: {themes_extracted}/{clusters_found} ({theme_success_rate:.1f}%)")
-            self.verbose_reporter.stat_line(f"Overall processing success: {clusters_processed}/{clusters_found} ({processing_success_rate:.1f}%)")
-        
-        # Codebook growth and decision statistics
-        initial_codes = len(self.starter_codes)
-        final_codes = self._processing_stats.get('final_codebook_size', initial_codes)
-        codes_added = final_codes - initial_codes
-        
-        self.verbose_reporter.stat_line(f"Codebook growth: {initial_codes} → {final_codes} (+{codes_added} codes)")
-        
-        # Decision tracking statistics
-        codes_used = self._processing_stats.get('codes_used', 0)
-        codes_modified = self._processing_stats.get('codes_modified', 0)
-        codes_created = self._processing_stats.get('codes_added', 0)
-        total_decisions = codes_used + codes_modified + codes_created
-        
-        if total_decisions > 0:
-            self.verbose_reporter.stat_line("Decision breakdown:")
-            self.verbose_reporter.stat_line(f"  USE decisions: {codes_used} ({codes_used/total_decisions*100:.1f}%)")
-            self.verbose_reporter.stat_line(f"  MODIFY decisions: {codes_modified} ({codes_modified/total_decisions*100:.1f}%)")
-            self.verbose_reporter.stat_line(f"  CREATE decisions: {codes_created} ({codes_created/total_decisions*100:.1f}%)")
-        
-        # Quality indicators
-        validation_failures = self._processing_stats.get('validation_failures', 0)
-        api_errors = self._processing_stats.get('api_errors', 0)
-        
-        if validation_failures > 0 or api_errors > 0:
-            self.verbose_reporter.stat_line(f"Issues encountered: {validation_failures} validation failures, {api_errors} API errors")
-        else:
-            self.verbose_reporter.stat_line("Processing completed without major issues")
-        
-        self.verbose_reporter.step_complete("Final Processing Report")
-    
-    def generate(self) -> CodeGeneratorReasoningResults:
-        """Generate codes and return complete reasoning results"""
-        return asyncio.run(self.generate_async())
-    
-    async def generate_async(self) -> CodeGeneratorReasoningResults:
-        """Async method for code generation - returns proper CodeGeneratorReasoningResults"""
-        # Run the design pipeline
-        results = await self.design()
-
-        # Build codebook from cluster_results to preserve ALL cluster mappings
-        # (SharedCodebook only tracks last cluster per code, losing multi-cluster mappings)
-        code_to_clusters = {}
-        code_to_definition = {}
-        code_to_assignment_examples = {}  # NEW: Track assignment_examples
-        code_to_valence = {}  # Track valence_group per code for indicator appending
-
-        for cluster_result in results:
-            cluster_id = str(cluster_result.get('cluster_id', ''))
-            final_code = cluster_result.get('final_code', '')
-            final_definition = cluster_result.get('final_definition', '')
-
-            if final_code and cluster_id:
-                if final_code not in code_to_clusters:
-                    code_to_clusters[final_code] = []
-                    code_to_definition[final_code] = final_definition
-                else:
-                    # Update definition if current one is None/empty and we have a better one
-                    if final_definition and not code_to_definition[final_code]:
-                        code_to_definition[final_code] = final_definition
-
-                # Extract assignment_examples from validation result (only if not yet set for this code)
-                if final_code not in code_to_assignment_examples:
-                    validation = cluster_result.get('validation')
-                    if validation and hasattr(validation, 'code_validation'):
-                        code_validation = validation.code_validation
-                        if hasattr(code_validation, 'validated_code'):
-                            validated_code = code_validation.validated_code
-                            if hasattr(validated_code, 'assignment_examples') and validated_code.assignment_examples:
-                                assignment_ex = validated_code.assignment_examples
-                                code_to_assignment_examples[final_code] = {
-                                    'inclusion_examples': json.dumps(assignment_ex.inclusion) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else None,
-                                    'exclusion_examples': json.dumps(assignment_ex.exclusion) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else None,
-                                    'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'label') else None,
-                                    'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
-                                }
-
-                # Fallback: Extract from step3_recommendations if validation didn't provide assignment_examples
-                if final_code not in code_to_assignment_examples and cluster_id in self.step3_recommendations:
-                    recommendation = self.step3_recommendations[cluster_id]
-                    assignment_ex = recommendation.get('assignment_examples')
-                    if assignment_ex:
-                        code_to_assignment_examples[final_code] = {
-                            'inclusion_examples': json.dumps(assignment_ex.inclusion) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else None,
-                            'exclusion_examples': json.dumps(assignment_ex.exclusion) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else None,
-                            'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'label') else None,
-                            'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
-                        }
-
-                code_to_clusters[final_code].append(cluster_id)
-
-                # Track valence for this code
-                vg = cluster_result.get('valence_group', '')
-                if final_code not in code_to_valence:
-                    code_to_valence[final_code] = set()
-                if vg:
-                    code_to_valence[final_code].add(vg)
-
-            elif cluster_id and not final_code:
-                # Defensive logging: cluster has ID but no final_code
-                self.verbose_reporter.warning(f"C{cluster_id}: Has cluster_id but missing final_code - not mapped to codebook")
-
-        # Build cluster_assignments (inverse mapping: cluster_id → code info)
-        # This ensures all processed clusters are tracked for validation
-        for code_text, cluster_ids in code_to_clusters.items():
-            for cluster_id in cluster_ids:
-                self.cluster_assignments[cluster_id] = {
-                    'code': code_text,
-                    'definition': code_to_definition[code_text] or "",  # Ensure definition is never None
-                    'cluster_id': cluster_id
-                }
-
-        # Build final codebook with complete cluster mappings
-        final_codes = []
-        for code_text, cluster_ids in code_to_clusters.items():
-            # Append valence indicator programmatically
-            # Skip codes that already have a valence indicator (e.g., "other" codes)
-            display_code = code_text
-            if not any(code_text.endswith(f'({s})') for s in ('+', '-', '0')):
-                valence_set = code_to_valence.get(code_text, set())
-                if valence_set:
-                    # Map valence_group to indicator: "pos" → "+", "neg" → "-"
-                    indicators = sorted(
-                        '-' if v == 'neg' else '+' for v in valence_set
-                    )
-                    if len(indicators) > 1:
-                        # Code covers both positive and negative → mixed/neutral
-                        display_code = f"{code_text} (0)"
-                    else:
-                        display_code = f"{code_text} ({indicators[0]})"
-                else:
-                    # No valence tracked → neutral
-                    display_code = f"{code_text} (0)"
-
-            code_entry = {
-                'code': display_code,
-                'definition': code_to_definition[code_text] or "",  # Ensure definition is never None
-                'source_cluster_id': ','.join(cluster_ids)  # Preserve ALL cluster IDs
-            }
-
-            # NEW: Add assignment_examples if available
-            if code_text in code_to_assignment_examples:
-                code_entry.update(code_to_assignment_examples[code_text])
-
-            final_codes.append(code_entry)
-
-        # Get raw cluster data for stats calculations
-        cluster_data = self._prepare_cluster_data_for_results()
-
-
-        # Convert to CodeGeneratorReasoningResults format
-        return CodeGeneratorReasoningResults(
-            # Raw cluster results
-            cluster_results=results,
-
-            step1_inputs=self.step1_inputs,
-            step2_inputs=self.step2_inputs,
-            step3_inputs=self.step3_inputs,
-            step4_inputs=self.step4_inputs,
-
-            step1_summaries=self.step1_summaries,
-            step2_analysis=self.step2_analysis,
-            step3_recommendations=self.step3_recommendations,
-            step4_validations=self.step4_validations,
-            step4_validated_codes=self.step4_validated_codes,
-
-            # Processing metadata
-            stats=self.summary(),
-            generator_version="codeGenerator_4 chain prompt",
-            var_lab=self.var_lab,
-            total_clusters=len(self.cluster_assignments),
-            total_ideas=sum(len(cluster_data.get('ideas', [])) for cluster_data in cluster_data.values()) if cluster_data else 0,
-            processing_timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
-
-            # Cluster assignments for cross-reference
-            cluster_assignments=self.cluster_assignments,
-
-            # New fields for alignment with old codeGenerator
-            codebook=final_codes,  # Codebook built from cluster_results with ALL cluster mappings
-            cluster_data=cluster_data,  # Raw cluster data for stats calculations
-            validation_details=self.step4_validations,  # Detailed validation results
-            redistribution_stats=self._redistribution_stats if self._redistribution_stats['clusters_redistributed'] else None,
-            multi_theme_mapping=self._multi_theme_mapping if self._multi_theme_mapping else None
-        )
-    
-    def get_results(self) -> List[Dict[str, Any]]:
-        """Get processing results"""
-        return self._results
-    
-    def _prepare_cluster_data_for_results(self) -> Dict[Union[int, str], Dict[str, Any]]:
-        """Prepare cluster data from cluster_results/category data using expanded_cluster when available"""
-        clusters = {}
-
-        for result in self._idea_source:
-            ideas_list = result.response_ideas or []
-            
-            for idea in ideas_list:
-                # Use expanded_cluster if available, otherwise fall back to initial_cluster
-                cluster_id = idea.expanded_cluster if idea.expanded_cluster is not None else str(idea.initial_cluster) if idea.initial_cluster is not None else None
-                
-                if cluster_id is not None and cluster_id != "-1":
-                    if cluster_id not in clusters:
-                        clusters[cluster_id] = {
-                            'cluster_id': cluster_id,
-                            'ideas': [],
-                            'embeddings': [],
-                            'respondent_ids': []
-                        }
-                    
-                    # Add idea data - store the full object to preserve embeddings
-                    clusters[cluster_id]['ideas'].append(idea)
-                    clusters[cluster_id]['respondent_ids'].append(idea.idea_id)  # Using idea_id as respondent identifier
-                    
-                    # Add embedding if available (kept for backward compatibility)
-                    if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                        clusters[cluster_id]['embeddings'].append(idea.idea_embedding)
-        
-        return clusters
-    
-
-    async def _process_single_cluster(self, cluster_id: str, clusters: Dict, themes: Dict, codebook_snapshot: List[Dict], base_version: int) -> Optional[Dict[str, Any]]:
-        """Process single cluster/theme through the 3-prompt chain.
-
-        The chain operates on theme metadata only (label, clarification, examples).
-        clusters is used only for ideas_count reporting — not required.
-        """
-        if cluster_id not in themes:
-            return None
-
-        cluster_data = clusters.get(cluster_id, {})
-        theme_data = themes[cluster_id]
-        
-        try:
-            # Step 1: Get current codebook for candidate selection (ensures latest codes are visible)
-            current_codes, _ = await self.shared_codebook.get_current_snapshot()
-            nearest_codes = await self._find_nearest_codes_by_theme(cluster_id, theme_data, current_codes, k=5)
-            
-            # Step 1: Candidate selection - pure unlimited call
-            step1_start = time.time()
-            candidate_selection = await self._select_candidate_codes(cluster_id, cluster_data, theme_data, nearest_codes)
-            step1_duration = time.time() - step1_start
-            
-            # Check decision from Step 1 to optimize processing
-            decision = None
-            if candidate_selection and hasattr(candidate_selection, 'coding_decision'):
-                decision = candidate_selection.coding_decision.decision.lower()
-
-            # GUARD: Return early with error marker if STEP 1 failed (will be retried via error_leaks)
-            if not candidate_selection or not decision:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 failed - will retry in final batch")
-                return {
-                    'cluster_id': cluster_id,
-                    'candidate_selection': None,
-                    'code_generation': None,
-                    'validation': None,
-                    'decision': 'ERROR',
-                    'final_code': None,
-                    'error': 'STEP1_FAILED'
-                }
-
-            # Skip Steps 2 & 3 for USE decisions
-            if decision == "use":
-                if self.verbose_detailed:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision detected - skipping code generation and validation steps")
-                
-                # Populate step3_recommendations using step2 data for reporting consistency
-                coding_decision = candidate_selection.coding_decision
-                
-                # Find the selected candidate from matched_candidates
-                selected_candidate = None
-                if coding_decision.matched_candidates:
-                    for candidate in coding_decision.matched_candidates:
-                        if candidate.code == coding_decision.source_code:
-                            selected_candidate = candidate
-                            break
-                
-                # Use EXACT same format as  step3_recommendations
-                self.step3_recommendations[cluster_id] = {
-                    'coding_proposal': 'USE',
-                    'source_code': coding_decision.source_code,
-                    'code_label_proposal': selected_candidate.code if selected_candidate else coding_decision.source_code,
-                    'code_definition_proposal': selected_candidate.definition if selected_candidate else "Existing code definition"
-                }
-                
-                # For USE decisions, return early with minimal result structure
-                return {
-                    'cluster_id': cluster_id,
-                    'theme_name': self._get_theme_name(theme_data),
-                    'theme_description': self._get_theme_statement(theme_data),
-                    'ideas_count': len(cluster_data.get('ideas', [])),
-                    'valence_group': cluster_data.get('valence_group', ''),
-                    'candidate_selection': candidate_selection,
-                    'code_generation': None,  # Skipped for USE decisions
-                    'validation': None,       # Skipped for USE decisions
-                    'final_code': candidate_selection.coding_decision.source_code if hasattr(candidate_selection.coding_decision, 'source_code') else None,
-                    'final_definition': None,  # Will be populated from existing codebook during merge
-                    'base_version': base_version,
-                    'timing': {
-                        'step1_duration': step1_duration,
-                        'step2_duration': 0.0,  # Skipped
-                        'step3_duration': 0.0   # Skipped
-                    },
-                    'optimization': 'use_early_return'  # Flag to indicate this was optimized
-                }
-            
-            # For CREATE and MODIFY decisions, continue with full 3-step pipeline
-            # Step 2: Code generation - pure unlimited call
-            step2_start = time.time()
-            code_generation = await self._generate_code(
-                cluster_id, cluster_data, theme_data, candidate_selection
-            )
-            step2_duration = time.time() - step2_start
-            
-            # Step 3: Validation - pure unlimited call
-            step3_start = time.time()
-            validation = await self._validate_code(cluster_id, cluster_data, theme_data, code_generation, nearest_codes)
-            step3_duration = time.time() - step3_start
-            
-            # Extract final code/definition from validation
-            final_code = None
-            final_definition = None
-            if validation and hasattr(validation, 'code_validation') and validation.code_validation:
-                code_validation = validation.code_validation
-                if code_validation.validated_code:
-                    final_code = code_validation.validated_code.code
-                    final_definition = code_validation.validated_code.definition
-            
-            
-            return {
-                'cluster_id': cluster_id,
-                'theme_name': self._get_theme_name(theme_data),
-                'theme_description': self._get_theme_statement(theme_data),
-                'ideas_count': len(cluster_data.get('ideas', [])),
-                'valence_group': cluster_data.get('valence_group', ''),
-                'candidate_selection': candidate_selection,
-                'code_generation': code_generation,
-                'validation': validation,
-                'final_code': final_code,
-                'final_definition': final_definition,
-                'base_version': base_version,
-                'timing': {
-                    'step1_duration': step1_duration,
-                    'step2_duration': step2_duration,
-                    'step3_duration': step3_duration
-                }
-            }
-            
-        except Exception as e:
-            import traceback
-            self.verbose_reporter.error(f"Pipeline failed for cluster {cluster_id}: {e}")
-            self.verbose_reporter.error(f"Full traceback: {traceback.format_exc()}")
-            return None
-
-    def _is_retryable_error(self, error_type: str) -> bool:
-        """Determine if error should be retried or is a permanent failure
-
-        Retryable errors: Step 1 failures (rate limits), validation failures, incomplete prompt chains
-        Permanent errors: Empty results only
-        """
-        # DON'T retry: Only truly permanent failures
-        non_retryable = ['empty_result']
-
-        # DO retry: Step 1 failures (rate limits), Step 3/4 failures (validation, incomplete chains)
-        retryable = [
-            'missing_candidate_selection',      # Step 1 failure - retry after rate limit clears
-            'missing_coding_decision',          # Step 1 failure - retry after rate limit clears
-            'missing_validation_or_generation', # Step 3/4 failure
-            'missing_attributes',               # Step 3/4 failure
-            'unknown_decision'                  # Prompt issue - retry may help
-        ]
-
-        return error_type in retryable
-
-    async def _merge_codebook_updates(self, results: List[Dict[str, Any]], base_version: int):
-        """Merge all codebook updates from sub-batch atomically - respects USE/MODIFY/CREATE decisions"""
-        
-        # Collect updates by decision type
-        create_codes = []
-        modify_operations = []
-        #use_count = 0
-        decision_stats = {'use': 0, 'modify': 0, 'create': 0, 'errors': 0, 'modification_leaks': 0}
-        
-        for result in results:
-            cluster_id = result.get('cluster_id', 'unknown')
-            
-            # Debug: Check result structure
-            if not result:
-                self.verbose_reporter.error(f"C{cluster_id}: Empty result in merge_codebook_updates")
-                # Empty result is permanent failure - don't retry
-                decision_stats['errors'] += 1
-                continue
-            
-            # Must have candidate_selection for all decisions
-            if not result.get('candidate_selection'):
-                self.verbose_reporter.warning(f"C{cluster_id}: Missing candidate_selection — queued for retry")
-                # Step 1 failure - capture for retry (rate limits are temporary)
-                if self._is_retryable_error('missing_candidate_selection'):
-                    error_leak = {
-                        'cluster_id': cluster_id,
-                        'full_result': result,
-                        'error_type': 'missing_candidate_selection',
-                        'reason': 'step1_failed',
-                        'timestamp': time.time()
-                    }
-                    self.error_leaks.append(error_leak)
-                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
-                else:
-                    decision_stats['errors'] += 1
-                continue
-            
-            candidate_selection = result['candidate_selection']
-            
-            # Get the decision from step 1 (candidate_selection)
-            decision_info = None
-            if hasattr(candidate_selection, 'coding_decision'):
-                decision_info = candidate_selection.coding_decision
-            else:
-                self.verbose_reporter.error(f"C{cluster_id}: Missing coding_decision - adding to error_leaks for retry")
-                # Step 1 failure - capture for retry (rate limits are temporary)
-                if self._is_retryable_error('missing_coding_decision'):
-                    error_leak = {
-                        'cluster_id': cluster_id,
-                        'full_result': result,
-                        'error_type': 'missing_coding_decision',
-                        'reason': 'step1_failed',
-                        'timestamp': time.time()
-                    }
-                    self.error_leaks.append(error_leak)
-                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
-                else:
-                    decision_stats['errors'] += 1
-                continue
-            
-            decision = decision_info.decision.lower()
-            
-            # Handle USE decisions (optimized path - no validation/code_generation)
-            if decision == "use":
-                decision_stats['use'] += 1
-                if result.get('optimization') == 'use_early_return':
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision (optimized) - no codebook update for '{decision_info.source_code or 'unknown code'}'")
-                else:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision - no codebook update for '{decision_info.source_code or 'unknown code'}'")
-                continue  # USE decisions don't modify the codebook
-            
-            # For CREATE and MODIFY decisions, we need validation and code_generation
-            if not result.get('validation') or not result.get('code_generation'):
-                self.verbose_reporter.error(f"C{cluster_id}: {decision.upper()} decision missing validation or code_generation")
-
-                # This is retryable - Step 3/4 can be re-run
-                if self._is_retryable_error('missing_validation_or_generation'):
-                    error_leak = {
-                        'cluster_id': cluster_id,
-                        'full_result': result,  # Save partial result for recovery
-                        'error_type': 'missing_validation_or_generation',
-                        'reason': 'incomplete_prompt_chain',
-                        'timestamp': time.time()
-                    }
-                    self.error_leaks.append(error_leak)
-                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
-                else:
-                    decision_stats['errors'] += 1
-                continue
-                
-            validation = result['validation']
-            code_generation = result['code_generation']
-            
-            if not hasattr(validation, 'code_validation') or not hasattr(code_generation, 'generated_code'):
-                self.verbose_reporter.error(f"C{cluster_id}: Missing code_validation or generated_code for {decision.upper()} decision")
-
-                # This is retryable - validation/generation can be re-run
-                if self._is_retryable_error('missing_attributes'):
-                    error_leak = {
-                        'cluster_id': cluster_id,
-                        'full_result': result,
-                        'error_type': 'missing_attributes',
-                        'reason': 'incomplete_prompt_chain_attributes',
-                        'timestamp': time.time()
-                    }
-                    self.error_leaks.append(error_leak)
-                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
-                else:
-                    decision_stats['errors'] += 1
-                continue
-            
-            # Process the single validation with its corresponding decision
-            code_validation = validation.code_validation
-            # Use the single generated code
-            generated_code = code_generation.generated_code
-            
-            # CRITICAL CHANGE: Use Prompt 4's final decision instead of Prompt 2's decision
-            if hasattr(code_validation, 'validated_decision') and code_validation.validated_decision:
-                final_decision = code_validation.validated_decision.lower()
-                # Get source_code from validation (Prompt 4) if available, fallback to Prompt 2
-                final_source_code = code_validation.source_code if hasattr(code_validation, 'source_code') and code_validation.source_code else decision_info.source_code
-            else:
-                # Fallback to Prompt 2's decision if Prompt 4 validation failed
-                final_decision = decision
-                final_source_code = decision_info.source_code
-                self.verbose_reporter.warning(f"C{cluster_id}: Using Prompt 2 decision as fallback - Prompt 4 validation incomplete")
-            
-            if code_validation.validated_code and generated_code and decision_info:
-                validated_code = code_validation.validated_code
-
-                # Enforce first-letter capitalization (Dutch compounds use hyphens, so .title() is wrong)
-                if validated_code.code:
-                    validated_code.code = validated_code.code[0].upper() + validated_code.code[1:]
-
-                # Log both decisions for transparency
-                if final_decision != decision:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: Prompt 4 overrode Prompt 2: {decision.upper()} → {final_decision.upper()}")
-
-                if final_decision == "create":
-                    create_codes.append({
-                        'code': validated_code.code,
-                        'definition': validated_code.definition,
-                        'cluster_id': cluster_id,
-                        'assignment_examples': validated_code.assignment_examples
-                    })
-                    decision_stats['create'] += 1
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL CREATE decision - will add '{validated_code.code}'")
-
-                elif final_decision in ("modify", "modify_vertical", "modify_horizontal") and final_source_code:
-                    label_unchanged = validated_code.code.strip().lower() == final_source_code.strip().lower()
-
-                    if label_unchanged:
-                        # Label identical — check if definition changed
-                        current_codes, _ = await self.shared_codebook.get_current_snapshot()
-                        existing_def = next(
-                            (c['definition'] for c in current_codes
-                             if c['code'].lower() == final_source_code.strip().lower()),
-                            None
-                        )
-                        definition_unchanged = (
-                            existing_def is not None and
-                            validated_code.definition.strip().lower() == existing_def.strip().lower()
-                        )
-
-                        if definition_unchanged:
-                            # Nothing changed — convert to USE
-                            decision_stats['use'] += 1
-                            self.verbose_reporter.stat_line(
-                                f"C{cluster_id}: MODIFY→USE (label and definition unchanged: '{final_source_code}')"
-                            )
-                        else:
-                            # Definition broadened — keep MODIFY for the definition update
-                            modify_operations.append({
-                                'original_code': final_source_code,
-                                'new_code': validated_code.code,
-                                'new_definition': validated_code.definition,
-                                'cluster_id': cluster_id,
-                                'full_result': result
-                            })
-                            decision_stats['modify'] += 1
-                            self.verbose_reporter.stat_line(
-                                f"C{cluster_id}: FINAL MODIFY decision (definition update) - '{final_source_code}'"
-                            )
-                    else:
-                        # Normal MODIFY — label changed
-                        modify_operations.append({
-                            'original_code': final_source_code,
-                            'new_code': validated_code.code,
-                            'new_definition': validated_code.definition,
-                            'cluster_id': cluster_id,
-                            'full_result': result
-                        })
-                        decision_stats['modify'] += 1
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL MODIFY decision - will replace '{final_source_code}' with '{validated_code.code}'")
-                
-                elif final_decision == "use":
-                    # Validate USE decision - check if source_code actually exists in SharedCodebook
-                    current_codes, _ = await self.shared_codebook.get_current_snapshot()
-                    source_code_to_check = final_source_code or validated_code.code
-
-                    code_exists = any(
-                        code['code'].lower() == source_code_to_check.lower()
-                        for code in current_codes
-                    )
-
-                    if not code_exists:
-                        # Prompt 4 confused theme name with existing code - correct decision to CREATE
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: USE source_code '{source_code_to_check}' not found in codebook - correcting to CREATE")
-                        create_codes.append({
-                            'code': validated_code.code,
-                            'definition': validated_code.definition,
-                            'cluster_id': cluster_id,
-                            'assignment_examples': validated_code.assignment_examples
-                        })
-                        decision_stats['create'] += 1
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL CREATE decision (corrected) - will add '{validated_code.code}'")
-                    else:
-                        # Valid USE decision - code exists in SharedCodebook
-                        decision_stats['use'] += 1
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL USE decision (validated) - using '{source_code_to_check}'")
-                
-                else:
-                    self.verbose_reporter.error(f"C{cluster_id}: Unknown decision '{final_decision}' or missing source_code for modify")
-
-                    # Unknown decision is retryable - likely prompt issue
-                    if self._is_retryable_error('unknown_decision'):
-                        error_leak = {
-                            'cluster_id': cluster_id,
-                            'full_result': result,
-                            'error_type': 'unknown_decision',
-                            'reason': f"unknown_decision_{final_decision}",
-                            'timestamp': time.time()
-                        }
-                        self.error_leaks.append(error_leak)
-                        decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
-                    else:
-                        decision_stats['errors'] += 1
-            else:
-                self.verbose_reporter.error(f"C{cluster_id}: Missing validated_code, generated_code, or decision_info for {decision.upper()} decision")
-
-                # Missing critical data - retryable
-                if self._is_retryable_error('unknown_decision'):
-                    error_leak = {
-                        'cluster_id': cluster_id,
-                        'full_result': result,
-                        'error_type': 'unknown_decision',
-                        'reason': 'missing_validated_code_or_generated_code',
-                        'timestamp': time.time()
-                    }
-                    self.error_leaks.append(error_leak)
-                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
-                else:
-                    decision_stats['errors'] += 1
-        
-        # Execute batch operations with fresh version checking
-        updates_made = False
-        
-        # Process CREATE operations with fresh base version
-        if create_codes:
-            # Get fresh snapshot to ensure atomic operation
-            _, current_version = await self.shared_codebook.get_current_snapshot()
-            self.verbose_reporter.stat_line(f"Batch adding {len(create_codes)} new codes to SharedCodebook")
-            await self.shared_codebook.batch_update(create_codes, current_version)
-            updates_made = True
-
-            # SYNC: Update result dicts to match what was added to SharedCodebook
-            # This ensures codebook builder can properly map all clusters including recovered ones
-            for create_code in create_codes:
-                cluster_id = create_code['cluster_id']
-                final_code = create_code['code']
-                final_definition = create_code['definition']
-
-                # Find and update the corresponding result dict
-                for result_item in results:
-                    if str(result_item.get('cluster_id', '')) == str(cluster_id):
-                        result_item['final_code'] = final_code
-                        result_item['final_definition'] = final_definition
-                        break
-        
-        # Process MODIFY operations individually with validation
-        for modify_op in modify_operations:
-            # Get fresh snapshot before each modify to ensure consistency
-            current_codes, current_version = await self.shared_codebook.get_current_snapshot()
-            
-            replaced, new_version = await self.shared_codebook.replace_code(
-                modify_op['original_code'],
-                modify_op['new_code'],
-                modify_op['new_definition'],
-                modify_op['cluster_id']
-            )
-            if replaced:
-                updates_made = True
-                self.verbose_reporter.stat_line(f"C{modify_op['cluster_id']}: Replaced '{modify_op['original_code']}' with '{modify_op['new_code']}'")
-
-                # Update all_results: change any cluster with old code to new code
-                # This ensures pipeline.py groups correctly by final_code
-                updates_count = 0
-                for result_item in self.all_results:
-                    if result_item.get('final_code') == modify_op['original_code']:
-                        result_item['final_code'] = modify_op['new_code']
-                        updates_count += 1
-
-                # Also update the current batch results parameter
-                for result_item in results:
-                    if result_item.get('final_code') == modify_op['original_code']:
-                        result_item['final_code'] = modify_op['new_code']
-                        result_item['final_definition'] = modify_op['new_definition']
-
-                if updates_count > 0 and self.verbose_detailed:
-                    self.verbose_reporter.stat_line(f"  Updated {updates_count} cluster(s) to use new code name")
-
-                # Post-MODIFY validation: Check if new code creates duplicate
-                final_codes, _ = await self.shared_codebook.get_current_snapshot()
-                duplicate_count = sum(1 for code in final_codes 
-                                    if self.shared_codebook._is_duplicate(code['code'], modify_op['new_code']))
-                
-                if duplicate_count > 1:
-                    self.verbose_reporter.error(f"C{modify_op['cluster_id']}: MODIFY created duplicate! '{modify_op['new_code']}' now exists {duplicate_count} times")
-                
-            else:
-                # This is a modification leak - race condition where source code was already replaced
-                decision_stats['modification_leaks'] += 1
-                self.verbose_reporter.stat_line(f"C{modify_op['cluster_id']}: MODIFICATION LEAK - '{modify_op['original_code']}' already replaced by concurrent operation")
-                
-                # Collect modification leak data for recovery batch processing
-                leak_data = {
-                    'cluster_id': modify_op['cluster_id'],
-                    'original_code': modify_op['original_code'], 
-                    'new_code': modify_op['new_code'],
-                    'new_definition': modify_op['new_definition'],
-                    'full_result': modify_op.get('full_result'),  # Complete result for recovery
-                    'reason': 'concurrent_modification',
-                    'timestamp': time.time()
-                }
-                self.modification_leaks.append(leak_data)
-        
-        # Report decision statistics
-        total_decisions = sum(decision_stats.values())
-        if total_decisions > 0:
-            self.verbose_reporter.stat_line(f"Decision summary: USE={decision_stats['use']}, MODIFY={decision_stats['modify']}, CREATE={decision_stats['create']}, ERRORS={decision_stats['errors']}, MODIFICATION_LEAKS={decision_stats['modification_leaks']}")
-            
-            # Track in processing stats for global reporting
-            self._processing_stats['codes_used'] = self._processing_stats.get('codes_used', 0) + decision_stats['use']
-            self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + decision_stats['modify']  
-            self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + decision_stats['create']
-        
-        if not updates_made:
-            self.verbose_reporter.stat_line("No codebook updates needed from this sub-batch")
-    
-    #########################################################################################################
-    # Stage 2: Prompt Formatting & LLM Calling for CANDIDATE CODE SELECTION  
-    #########################################################################################################
-    
-    async def _select_candidate_codes(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, nearest_codes: List[Dict]):
-        """Select candidate codes with unlimited concurrency - pure API call"""
-        try:
-            # Build prompt directly
-            theme_id = self._get_theme_id(theme_data)
-            theme_name = self._get_theme_name(theme_data)
-            theme_description = self._get_theme_description(theme_data)
-
-            # Get embeddings for similarity calculation
-            theme_embedding = self._theme_embeddings_cache.get(cluster_id)
-            current_codes, version = await self.shared_codebook.get_current_snapshot()
-            code_embeddings = await self.shared_codebook.get_embeddings_for_version(version)
-
-            # Calculate similarity metrics if embeddings are available
-            if theme_embedding is not None and code_embeddings is not None:
-                # Calculate cosine similarities for nearest_codes
-                cosine_scores = self._calculate_cosine_similarities(
-                    theme_embedding=theme_embedding,
-                    candidate_codes=nearest_codes[:20],
-                    all_codes=current_codes,
-                    code_embeddings=code_embeddings
-                )
-
-                # Format codes with cosine similarity
-                codes_text = self._format_codes_with_cosine(
-                    candidate_codes=nearest_codes[:20],
-                    cosine_scores=cosine_scores
-                )
-            else:
-                # Fallback: use simple format without metrics
-                codes_text = "\n".join([f"-{code['code']}" for code in nearest_codes[:20]])
-                if self.verbose_detailed:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - No embeddings available, using simple code format")
-
-            # Prepare exact parameters for prompt (including context specifiers)
-            params = {
-                "survey_question": self.var_lab,
-                "language": DEFAULT_LANGUAGE,
-                "theme_name": theme_name,
-                "theme_description": theme_description,
-                "abstraction_level": self._get_abstraction_level(theme_data),
-                "inclusion": self._get_inclusion_examples(theme_data),
-                "exclusion": self._get_exclusion_examples(theme_data),
-                "near_neighbor": self._get_near_neighbor(theme_data),
-                "code_text": codes_text,
-                "theme_id": theme_id,
-                **self._get_context_specifier_params()  # Add context specifiers
-            }
-
-            prompt = CODING_DECISION_PROMPT.format(**params)
-
-            # Capture exact parameters used in prompt construction
-            self._capture_prompt_params(cluster_id, "step2", **params)
-
-            # Capture first prompt only with prompt_printer if available
-            if self.prompt_printer and not self._prompt_captured['stage2_decision']:
-                self._prompt_captured['stage2_decision'] = True
-                self.prompt_printer.capture_prompt(
-                    step_name="Stage 2: Candidate Selection",
-                    utility_name="codeGenerator",
-                    prompt_content=prompt,
-                    prompt_type="coding_decision",
-                    metadata={
-                        "cluster_id": cluster_id,
-                        "model": self.config.model,
-                        "available_codes": len(nearest_codes)
-                    }
-                )
-
-            if self.verbose_detailed: 
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Starting candidate selection API call")
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
-            
-            # Use async wrapper with JSON retry logic and adaptive timeout
-            adaptive_timeout = self._get_adaptive_timeout()
-            response = await async_responses_create_with_json_retry(
-                model=self.model_config.get_model_for_stage('candidate_selection'),
-                prompt=prompt,
-                response_model=CodingDecisionOutput,
-                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('candidate_selection'),
-                text_verbosity=self.model_config.get_text_verbosity_for_stage('candidate_selection'),
-                semaphore=self.concurrency_semaphore,
-                rate_limiter=self.rate_limiter,
-                tpm_bucket=self.tpm_bucket,
-                latency_tracker=self.latency_tracker,
-                config=self.config,
-                timeout=adaptive_timeout
-            )
-            
-            # FUZZY MATCHING: Correct source_code if needed
-            if response and response.coding_decision.source_code:
-                # Get current codebook codes
-                current_codes, _ = await self.shared_codebook.get_current_snapshot()
-                available_code_names = [code['code'] for code in current_codes]
-                
-                # Apply fuzzy matching to source_code
-                corrected_source = self._find_closest_code(
-                    response.coding_decision.source_code,
-                    available_code_names
-                )
-                
-                if corrected_source != response.coding_decision.source_code:
-                    if self.verbose_detailed:
-                        self.verbose_reporter.stat_line(
-                            f"C{cluster_id}: STEP1 - Corrected source_code: '{response.coding_decision.source_code}' → '{corrected_source}'"
-                        )
-                    # Update the response object
-                    response.coding_decision.source_code = corrected_source
-
-            # ENRICH matched_candidates with assignment_examples from SharedCodebook
-            if response and response.coding_decision.matched_candidates:
-                enriched_candidates = []
-                for candidate in response.coding_decision.matched_candidates:
-                    # Retrieve assignment_examples for this candidate
-                    code_entry = await self.shared_codebook.get_code_with_examples(candidate.code)
-                    if code_entry and 'assignment_examples' in code_entry:
-                        # Create enriched MatchedCandidate with assignment_examples
-                        enriched_candidate = MatchedCandidate(
-                            code=candidate.code,
-                            definition=candidate.definition,
-                            assignment_examples=code_entry['assignment_examples']
-                        )
-                        enriched_candidates.append(enriched_candidate)
-                    else:
-                        # Keep original candidate without assignment_examples
-                        enriched_candidates.append(candidate)
-
-                # Replace matched_candidates with enriched version
-                response.coding_decision.matched_candidates = enriched_candidates
-
-            # # Capture step2_analysis - the actual coding decisions used in pipeline
-            if response:
-                self.step2_analysis[cluster_id] = {
-                    "coding_decision": {
-                        "theme_number": response.coding_decision.theme_number,
-                        "theme_name": response.coding_decision.theme_name,
-                        "decision": response.coding_decision.decision,
-                        "source_code": response.coding_decision.source_code,  # Now corrected
-                        "modify_parameters": {
-                            "modify_instruction": response.coding_decision.modify_parameters.modify_instruction,
-                            "conceptual_family": response.coding_decision.modify_parameters.conceptual_family,
-                            "abstraction_level": response.coding_decision.modify_parameters.abstraction_level,
-                            "abstraction_level_action": response.coding_decision.modify_parameters.abstraction_level_action,
-                            "inclusion_update": response.coding_decision.modify_parameters.inclusion_update,
-                            "exclusion_update": response.coding_decision.modify_parameters.exclusion_update,
-                            "parent_theme_label": response.coding_decision.modify_parameters.parent_theme_label
-                        },
-                        "justification": response.coding_decision.justification,
-                        "matched_candidates": [
-                            {"code": candidate.code, "definition": candidate.definition}
-                            for candidate in response.coding_decision.matched_candidates
-                        ]
-                    }
-                }
-            
-            return response
-            
-        except Exception as e:
-            error_msg = str(e).strip()
-            # Suppress verbose output for rate limit errors — they'll be retried via error_leaks
-            if '429' in error_msg or 'RateLimitReached' in error_msg:
-                self.verbose_reporter.warning(f"C{cluster_id}: STEP1 rate-limited (429) — will retry via error_leaks")
-            else:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Candidate selection failed")
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error type: {type(e).__name__}")
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error message: '{error_msg[:200]}' (length: {len(error_msg)})")
-                if error_msg == '\n' or error_msg == '':
-                    self.verbose_reporter.error(f"C{cluster_id}: STEP1 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
-            return None  # Signal failure properly for retry mechanism
-    
-    #########################################################################################################
-    # Stage 3: Prompt Formatting & LLM Calling for GENERATE CODES
-    #########################################################################################################
-    
-    async def _generate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, candidate_selection):
-        """Generate code with unlimited concurrency - pure API call"""
-        try:
-            # Default values if candidate_selection is invalid
-            decision = "CREATE"
-            source_code = "null"
-            source_code_definition = None
-            CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
-
-            if candidate_selection and hasattr(candidate_selection, 'coding_decision'):
-                coding_decision_obj = candidate_selection.coding_decision
-                decision = coding_decision_obj.decision.upper()
-                source_code = coding_decision_obj.source_code
-
-                #get definition
-                if coding_decision_obj.matched_candidates: 
-                    for candidate in coding_decision_obj.matched_candidates: 
-                        if candidate.code == source_code: 
-                            source_code_definition = candidate.definition
-                            break
-                
-                # Fallback logic: if MODIFY decision but no source_code, fall back to CREATE
-                if decision in ("MODIFY_VERTICAL", "MODIFY_HORIZONTAL") and (not source_code or source_code.lower() in ['null', 'none', '']):
-                    if self.verbose_detailed:
-                        self.verbose_reporter.warning(f"C{cluster_id}: STEP2 - {decision} decision without source_code, falling back to CREATE")
-                    decision = "CREATE"
-                    source_code = "null"
-                    CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
-                elif decision in ("MODIFY_VERTICAL", "MODIFY_HORIZONTAL"):
-                    CODING_GENERATION_PROMPT = CODING_MODIFICATION_PROMPT
-                else:
-                    CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
-            else:
-                # No valid candidate_selection, default to CREATE
-                if self.verbose_detailed:
-                    self.verbose_reporter.warning(f"C{cluster_id}: STEP2 - No valid candidate_selection, defaulting to CREATE")
-
-            theme_id = self._get_theme_id(theme_data) 
-            theme_name = self._get_theme_name(theme_data)
-            theme_description = self._get_theme_description(theme_data)
-           
-            # Prepare exact parameters for prompt (including context specifiers)
-            params = {
-                "language": DEFAULT_LANGUAGE,
-                "survey_question": self.var_lab,
-                "theme_name": theme_name,
-                "theme_description": theme_description,
-                "coding_decision": decision,
-                "theme_id": theme_id,
-                "cluster_summary": theme_name,
-                "source_code": source_code,
-                "source_definition": source_code_definition,
-                "inclusion": self._get_inclusion_examples(theme_data),
-                "exclusion": self._get_exclusion_examples(theme_data),
-                "abstraction_level": self._get_abstraction_level(theme_data),
-                "near_neighbor": self._get_near_neighbor(theme_data),
-                **self._get_context_specifier_params()  # Add context specifiers
-            }
-
-            # Add modify parameters only if we have valid candidate_selection
-            if candidate_selection and hasattr(candidate_selection, 'coding_decision'):
-                modify_instr = coding_decision_obj.modify_parameters.modify_instruction
-
-                # Select appropriate modification instructions based on type
-                if modify_instr == "vertical_broaden_same_level":
-                    modification_instructions = HORIZONTAL_INSTRUCTIONS
-                elif modify_instr == "hierarchical_parent_diff_level":
-                    VERTICAL_INSTRUCTIONS_FORMATTED = VERTICAL_INSTRUCTIONS.replace("{parent_theme_label}", coding_decision_obj.modify_parameters.parent_theme_label)
-                    modification_instructions = VERTICAL_INSTRUCTIONS_FORMATTED
-                else:
-                    modification_instructions = ""  # Fallback for "none"
-
-                # Retrieve existing code's assignment_examples from SharedCodebook for MODIFY path
-                existing_code_entry = await self.shared_codebook.get_code_with_examples(source_code) if source_code else None
-                if existing_code_entry and 'assignment_examples' in existing_code_entry:
-                    existing_examples = existing_code_entry['assignment_examples']
-                    # Extract fields from AssignmentExamples object or dict
-                    if hasattr(existing_examples, 'inclusion'):
-                        current_inclusion_list = existing_examples.inclusion
-                    elif isinstance(existing_examples, dict) and 'inclusion' in existing_examples:
-                        current_inclusion_list = existing_examples['inclusion']
-                    else:
-                        current_inclusion_list = []
-
-                    if hasattr(existing_examples, 'exclusion'):
-                        current_exclusion_list = existing_examples.exclusion
-                    elif isinstance(existing_examples, dict) and 'exclusion' in existing_examples:
-                        current_exclusion_list = existing_examples['exclusion']
-                    else:
-                        current_exclusion_list = []
-
-                    if hasattr(existing_examples, 'near_neighbor'):
-                        near_neighbor_obj = existing_examples.near_neighbor
-                        if near_neighbor_obj is not None and hasattr(near_neighbor_obj, 'label') and hasattr(near_neighbor_obj, 'tell_apart_rule'):
-                            current_near_neighbor_str = f"{near_neighbor_obj.label}: {near_neighbor_obj.tell_apart_rule}"
-                        else:
-                            current_near_neighbor_str = ""
-                    elif isinstance(existing_examples, dict) and 'near_neighbor' in existing_examples:
-                        nn = existing_examples['near_neighbor']
-                        if isinstance(nn, dict) and 'label' in nn and 'tell_apart_rule' in nn:
-                            current_near_neighbor_str = f"{nn['label']}: {nn['tell_apart_rule']}"
-                        else:
-                            current_near_neighbor_str = ""
-                    else:
-                        current_near_neighbor_str = ""
-
-                    current_inclusion = '\n'.join(f"  • {ex}" for ex in current_inclusion_list) if current_inclusion_list else ""
-                    current_exclusion = '\n'.join(f"  • {ex}" for ex in current_exclusion_list) if current_exclusion_list else ""
-                    current_near_neighbor = current_near_neighbor_str
-                else:
-                    # Fallback: use NEW cluster's theme_data if existing code not found
-                    current_inclusion = self._get_inclusion_examples(theme_data)
-                    current_exclusion = self._get_exclusion_examples(theme_data)
-                    current_near_neighbor = self._get_near_neighbor(theme_data)
-
-                params.update({
-                    "modification_instructions": modification_instructions,
-                    "inclusion_update": coding_decision_obj.modify_parameters.inclusion_update or "",
-                    "exclusion_update": coding_decision_obj.modify_parameters.exclusion_update or "",
-                    "current_inclusion": current_inclusion,
-                    "current_exclusion": current_exclusion,
-                    "current_near_neighbor": current_near_neighbor
-                })
-            else:
-                # Fallback values for when candidate_selection is invalid
-                params.update({
-                    "modification_instructions": "",
-                    "inclusion_update": "",
-                    "exclusion_update": "",
-                    "current_inclusion": "",
-                    "current_exclusion": "",
-                    "current_near_neighbor": ""
-                })
-            
-            prompt = CODING_GENERATION_PROMPT.format(**params)
-
-            # Capture exact parameters used in prompt construction
-            self._capture_prompt_params(cluster_id, "step3", **params)
-
-            # Capture first prompt only with prompt_printer if available
-            if self.prompt_printer and not self._prompt_captured['stage3_generation']:
-                self._prompt_captured['stage3_generation'] = True
-                self.prompt_printer.capture_prompt(
-                    step_name="Stage 3: Code Generation",
-                    utility_name="codeGenerator",
-                    prompt_content=prompt,
-                    prompt_type="code_creation" if decision == "CREATE" else "code_modification",
-                    metadata={
-                        "cluster_id": cluster_id,
-                        "model": self.config.model,
-                        "decision": decision
-                    }
-                )
-
-            if self.verbose_detailed:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection.coding_decision.matched_candidates) if candidate_selection and hasattr(candidate_selection, 'coding_decision') else 0}")
-            
-            # Use async wrapper with JSON retry logic and adaptive timeout
-            adaptive_timeout = self._get_adaptive_timeout()
-            response = await async_responses_create_with_json_retry(
-                model=self.model_config.get_model_for_stage('code_recommendation'),
-                prompt=prompt,
-                response_model=CodeGenerationOutput,
-                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('code_recommendation'),
-                text_verbosity=self.model_config.get_text_verbosity_for_stage('code_recommendation'),
-                semaphore=self.concurrency_semaphore,
-                rate_limiter=self.rate_limiter,
-                tpm_bucket=self.tpm_bucket,
-                latency_tracker=self.latency_tracker,
-                config=self.config,
-                timeout=adaptive_timeout
-            )
-                
-            # Capture step3_recommendations (code generation results)
-            if response and hasattr(response, 'generated_code'):
-                self.step3_recommendations[cluster_id] = {
-                #'theme_number': response.generated_code.theme_number,
-                #'theme_name': response.generated_code.theme_name,
-                'coding_proposal': decision,
-                **({'source_code': response.generated_code.source_code} if decision.lower() in ("use", "modify") else {}),
-                'code_label_proposal': response.generated_code.code_label,
-                'code_definition_proposal': response.generated_code.code_definition,
-                'assignment_examples': response.generated_code.assignment_examples
-            }
-
-            # Debug: Log what Chain 3 actually returned
-            if self.verbose_detailed:
-                if response and hasattr(response, 'generated_code'):
-                    gen_code = response.generated_code
-
-                    # Check if assignment_examples exists and is populated
-                    if hasattr(gen_code, 'assignment_examples'):
-                        if gen_code.assignment_examples is None:
-                            self.verbose_reporter.warning(
-                                f"C{cluster_id}: STEP3 - assignment_examples is None (LLM didn't return it)"
-                            )
-                        else:
-                            # Log what we got
-                            ae = gen_code.assignment_examples
-                            inclusion_count = len(ae.inclusion) if hasattr(ae, 'inclusion') and ae.inclusion else 0
-                            exclusion_count = len(ae.exclusion) if hasattr(ae, 'exclusion') and ae.exclusion else 0
-                            has_neighbor = hasattr(ae, 'near_neighbor') and ae.near_neighbor is not None
-
-                            self.verbose_reporter.stat_line(
-                                f"C{cluster_id}: STEP3 - assignment_examples received: "
-                                f"inclusion={inclusion_count}, exclusion={exclusion_count}, "
-                                f"near_neighbor={'YES' if has_neighbor else 'NO'}"
-                            )
-
-                            # Log the actual content
-                            if inclusion_count > 0:
-                                self.verbose_reporter.stat_line(
-                                    f"C{cluster_id}: STEP3 - inclusion examples: {ae.inclusion}"
-                                )
-                    else:
-                        self.verbose_reporter.error(
-                            f"C{cluster_id}: STEP3 - assignment_examples field missing from schema!"
-                        )
-                else:
-                    self.verbose_reporter.error(
-                        f"C{cluster_id}: STEP3 - No valid response from code generation"
-                    )
-
-            return response
-            
-        except Exception as e:
-            # Error logging with context
-            error_msg = str(e).strip()
-            self.verbose_reporter.error(f"C{cluster_id}: STEP2 - Code generation failed")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP2 - Error type: {type(e).__name__}")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP2 - Error message: '{error_msg}' (length: {len(error_msg)})")
-            if error_msg == '\n' or error_msg == '':
-                self.verbose_reporter.error(f"C{cluster_id}: STEP2 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
-            return None
-    
-    
-    #########################################################################################################
-    # Stage 4: Prompt Formatting & LLM Calling for VALIDATIONN
-    #########################################################################################################
-
-    async def _validate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, code_generation, nearest_codes):
-        """Validate code with unlimited concurrency - pure API call"""
-        try:
-            if len(nearest_codes) > 0:            
-                validation_codes_text = "\n".join([f"-{code['code']}" for code in nearest_codes[:10]])
-            else:
-                validation_codes_text = "No existing codes in the codebook"
-            
-            theme_id = self._get_theme_id(theme_data) 
-            theme_name = self._get_theme_name(theme_data)
-            theme_description = self._get_theme_description(theme_data)
-            
-            #step3_recommendation_json = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
-            step3_recommendation = self.step3_recommendations.get(cluster_id, {})
-            step3_recommendation_text = "No recommendations"  # Default value
-            if code_generation and step3_recommendation:
-                code_to_modify_str = ('' if step3_recommendation.get('coding_proposal', 'unknown').lower() != "modify" else f"-Code to modify: {step3_recommendation.get('source_code', 'None')}\n")
-                step3_recommendation_text = (
-                    f"-{step3_recommendation.get('coding_proposal', 'unknown')} code\n"
-                    f"{code_to_modify_str}"
-                    f"-Proposed new label: {step3_recommendation.get('code_label_proposal', 'unknown')}\n"
-                    f"-With the following description: {step3_recommendation.get('code_definition_proposal', 'unknown')}\n"
-                )
-            
-            source_code = self.step3_recommendations.get(cluster_id, {}).get('source_code', 'null')
-
-            # Extract assignment_examples from code_generation or fallback to theme_data
-            if code_generation and hasattr(code_generation, 'generated_code') and hasattr(code_generation.generated_code, 'assignment_examples') and code_generation.generated_code.assignment_examples:
-                assignment_ex = code_generation.generated_code.assignment_examples
-                inclusion_examples = "\n".join([f"  • {ex}" for ex in assignment_ex.inclusion]) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else "No specific examples provided"
-                exclusion_examples = "\n".join([f"  • {ex}" for ex in assignment_ex.exclusion]) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else "No specific examples provided"
-                near_neighbor_label = assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'label') else "Unknown"
-                tell_apart_rule = assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else "N/A"
-
-                # Debug: Log successful extraction from Chain 3
-                if self.verbose_detailed:
-                    self.verbose_reporter.stat_line(
-                        f"C{cluster_id}: STEP4 - Using assignment_examples from STEP3 (code_generation)"
-                    )
-                    self.verbose_reporter.stat_line(
-                        f"C{cluster_id}: STEP4 - inclusion count: {len(assignment_ex.inclusion) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else 0}"
-                    )
-            else:
-                # Fallback to original theme_data
-                inclusion_examples = self._get_inclusion_examples(theme_data)
-                exclusion_examples = self._get_exclusion_examples(theme_data)
-                near_neighbor = self._get_near_neighbor(theme_data)
-                near_neighbor_label = near_neighbor.split(" (Tell apart: ")[0] if near_neighbor else "Unknown"
-                tell_apart_rule = near_neighbor.split(" (Tell apart: ")[1].rstrip(")") if " (Tell apart: " in near_neighbor else "N/A"
-
-                # Debug: Log fallback to Chain 1
-                if self.verbose_detailed:
-                    self.verbose_reporter.warning(
-                        f"C{cluster_id}: STEP4 - Falling back to STEP1 theme_data for assignment_examples "
-                        f"(STEP3 didn't provide them)"
-                    )
-
-            # Select scenario-specific validation instructions based on decision type
-            coding_proposal = step3_recommendation.get('coding_proposal', 'CREATE').upper() if step3_recommendation else 'CREATE'
-
-            if coding_proposal == 'MODIFY':
-                # Check step2_analysis for MODIFY_VERTICAL vs MODIFY_HORIZONTAL
-                step2_decision = self.step2_analysis.get(cluster_id, {})
-                if hasattr(step2_decision, 'coding_decision'):
-                    original_decision = step2_decision.coding_decision.decision
-                elif isinstance(step2_decision, dict):
-                    original_decision = step2_decision.get('decision', 'MODIFY_VERTICAL')
-                else:
-                    original_decision = 'MODIFY_VERTICAL'
-
-                if original_decision == 'MODIFY_HORIZONTAL':
-                    validation_instructions = MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS
-                else:
-                    validation_instructions = MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS
-            elif coding_proposal == 'USE':
-                validation_instructions = USE_VALIDATION_INSTRUCTIONS
-            else:  # CREATE or unknown
-                validation_instructions = CREATE_VALIDATION_INSTRUCTIONS
-
-            # Prepare exact parameters for prompt (including context specifiers)
-            params = {
-                'language': DEFAULT_LANGUAGE,
-                'survey_question': self.var_lab,
-                'code_text': validation_codes_text,
-                "theme_name": theme_name,
-                "theme_description": theme_description,
-                'step3_recommendation': step3_recommendation_text,
-                'theme_id': theme_id,
-                'cluster_summary': theme_name,
-                "source_code": source_code,
-                "inclusion_examples": inclusion_examples,
-                "exclusion_examples": exclusion_examples,
-                "near_neighbor_label": near_neighbor_label,
-                "tell_apart_rule": tell_apart_rule,
-                "validation_instructions": validation_instructions,  # Scenario-specific instructions
-                **self._get_context_specifier_params()  # Add context specifiers
-            }
-
-            # Debug: Log Chain 4 prompt parameters
-            if self.verbose_detailed:
-                self.verbose_reporter.stat_line(
-                    f"C{cluster_id}: STEP4 - Validation prompt params:"
-                )
-                self.verbose_reporter.stat_line(
-                    f"  inclusion_examples: {inclusion_examples[:100]}..." if len(inclusion_examples) > 100 else f"  inclusion_examples: {inclusion_examples}"
-                )
-                self.verbose_reporter.stat_line(
-                    f"  exclusion_examples: {exclusion_examples[:100]}..." if len(exclusion_examples) > 100 else f"  exclusion_examples: {exclusion_examples}"
-                )
-                self.verbose_reporter.stat_line(
-                    f"  near_neighbor_label: {near_neighbor_label}"
-                )
-                self.verbose_reporter.stat_line(
-                    f"  tell_apart_rule: {tell_apart_rule}"
-                )
-
-                # Compare with step3_recommendations storage
-                if cluster_id in self.step3_recommendations:
-                    stored = self.step3_recommendations[cluster_id]
-                    if 'assignment_examples' in stored:
-                        self.verbose_reporter.stat_line(
-                            f"  ✓ step3_recommendations has assignment_examples stored"
-                        )
-                    else:
-                        self.verbose_reporter.warning(
-                            f"  ✗ step3_recommendations does NOT have assignment_examples stored"
-                        )
-
-            prompt = VALIDATION_PROMPT.format(**params)
-
-            # Capture exact parameters used in prompt construction
-            self._capture_prompt_params(cluster_id, "step4", **params)
-
-            # Capture first prompt only with prompt_printer if available
-            if self.prompt_printer and not self._prompt_captured['stage4_validation']:
-                self._prompt_captured['stage4_validation'] = True
-                self.prompt_printer.capture_prompt(
-                    step_name="Stage 4: Validation",
-                    utility_name="codeGenerator",
-                    prompt_content=prompt,
-                    prompt_type="validation",
-                    metadata={
-                        "cluster_id": cluster_id,
-                        "model": self.config.model
-                    }
-                )
-
-            # Use async wrapper with JSON retry logic and adaptive timeout
-            adaptive_timeout = self._get_adaptive_timeout()
-            response = await async_responses_create_with_json_retry(
-                model=self.model_config.get_model_for_stage('recommendation_validation'),
-                prompt=prompt,
-                response_model=ValidationResult,
-                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('recommendation_validation'),
-                text_verbosity=self.model_config.get_text_verbosity_for_stage('recommendation_validation'),
-                semaphore=self.concurrency_semaphore,
-                rate_limiter=self.rate_limiter,
-                tpm_bucket=self.tpm_bucket,
-                latency_tracker=self.latency_tracker,
-                config=self.config,
-                timeout=adaptive_timeout
-            )
-         
-            if response and hasattr(response, 'code_validation') and response.code_validation.source_code:
-                # Get current codebook codes
-                current_codes, _ = await self.shared_codebook.get_current_snapshot()
-                available_code_names = [code['code'] for code in current_codes]
-                
-                # Apply fuzzy matching to validation source_code
-                corrected_source = self._find_closest_code(
-                    response.code_validation.source_code,
-                    available_code_names
-                )
-                
-                if corrected_source != response.code_validation.source_code:
-                    if self.verbose_detailed:
-                        self.verbose_reporter.stat_line(
-                            f"C{cluster_id}: STEP3 - Corrected validation source_code: '{response.code_validation.source_code}' → '{corrected_source}'"
-                        )
-                    # Update the response object
-                    response.code_validation.source_code = corrected_source
-            
-            # Capture step4_validations
-            if response and hasattr(response, 'code_validation'):
-                self.step4_validations[cluster_id] = {
-                    'code_validation': {
-                        'theme_number': response.code_validation.theme_number,
-                        'theme_name': response.code_validation.theme_name,
-                        'original_recommendation': {
-                            'code': response.code_validation.original_recommendation.code,
-                            'definition': response.code_validation.original_recommendation.definition
-                        },
-                        'verdict': response.code_validation.verdict,  # APPROVE/REJECT (renamed from 'decision')
-                        'decision_rationale': response.code_validation.decision_rationale,
-                        'validated_decision': response.code_validation.validated_decision,  # USE/MODIFY/CREATE (NEW)
-                        'source_code': response.code_validation.source_code,  # NEW
-                        'validated_code': {
-                            'code': response.code_validation.validated_code.code,
-                            'definition': response.code_validation.validated_code.definition,
-                            'assignment_examples': response.code_validation.validated_code.assignment_examples
-                        }
-                    }
-                }
-            
-            
-            return response
-            
-        except Exception as e:
-            # Enhanced error logging with context
-            error_msg = str(e).strip()
-            self.verbose_reporter.error(f"C{cluster_id}: STEP3 - Code validation failed")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP3 - Error type: {type(e).__name__}")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP3 - Error message: '{error_msg}' (length: {len(error_msg)})")
-            if error_msg == '\n' or error_msg == '':
-                self.verbose_reporter.error(f"C{cluster_id}: STEP3 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
-            return None
-    
-
-    def summary(self) -> Dict[str, Any]:
-        """Get comprehensive processing summary statistics"""
-        clusters_found = self._processing_stats.get('clusters_found', 0)
-        themes_extracted = self._processing_stats.get('themes_extracted', 0)
-        clusters_processed = len(self._results)
-        
-        # Calculate success rates
-        theme_success_rate = (themes_extracted / clusters_found * 100) if clusters_found > 0 else 0
-        processing_success_rate = (clusters_processed / clusters_found * 100) if clusters_found > 0 else 0
-        
-        # Calculate processing efficiency
-        total_time = self._processing_stats.get('total_time', 0)
-        processing_rate = (clusters_processed / total_time) if total_time > 0 else 0
-        
-        # Codebook statistics
-        initial_codes = len(self.starter_codes)
-        final_codes = self._processing_stats.get('final_codebook_size', initial_codes)
-        
-        return {
-            # Core metrics
-            'total_clusters_processed': clusters_processed,
-            'clusters_found': clusters_found,
-            'themes_extracted': themes_extracted,
-            'processing_success_rate': round(processing_success_rate, 2),
-            'theme_extraction_success_rate': round(theme_success_rate, 2),
-            
-            # Performance metrics
-            'total_processing_time_seconds': round(total_time, 2),
-            'processing_rate_clusters_per_second': round(processing_rate, 3),
-            'stage_times': self._processing_stats.get('stage_times', {}),
-            
-            # Configuration
-            'similarity_threshold': self.config.similarity_threshold,
-            'model_used': self.config.model,
-            'max_sub_batch_size': self.config.max_sub_batch_size,
-            
-            # Codebook evolution
-            'initial_codebook_size': initial_codes,
-            'final_codebook_size': final_codes,
-            'codebook_growth': final_codes - initial_codes,
-            'final_codebook_version': self._processing_stats.get('final_codebook_version', 0),
-            
-            # Quality indicators
-            'batches_created': self._processing_stats.get('batches_created', 0),
-            'themes_embedded': self._processing_stats.get('themes_embedded', 0),
-            'validation_failures': self._processing_stats.get('validation_failures', 0),
-            'api_errors': self._processing_stats.get('api_errors', 0),
-            
-            # Pipeline health
-            'pipeline_completed_successfully': 'critical_failure' not in self._processing_stats,
-            'critical_failure': self._processing_stats.get('critical_failure'),
-            
-            # Raw processing stats
-            'raw_processing_stats': self._processing_stats
-        }
+        return contexts
+
+    @staticmethod
+    def _build_dataset_context_section(
+        dataset_context: Optional[Dict[str, str]],
+    ) -> str:
+        """Build dataset context block for prompts."""
+        if not dataset_context:
+            return ""
+        parts = []
+        for key in ["domain", "entity", "topic", "perspective", "intent"]:
+            value = dataset_context.get(key, "")
+            if value:
+                parts.append(f"{key.capitalize()}: {value}")
+        if not parts:
+            return ""
+        return "<dataset_context>\n" + "\n".join(parts) + "\n</dataset_context>"

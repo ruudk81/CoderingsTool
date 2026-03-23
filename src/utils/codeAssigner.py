@@ -1,634 +1,113 @@
-import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+"""
+Dual Assignment: Code + Attribute per Idea.
 
-# === MODULES ========================================================================================================
+Assigns each idea to exactly one MECE code and its best-matching attribute
+via a single LLM call. All partitions are processed concurrently with shared
+rate limiting.
+
+Rate limiting strategy (aligned with step 3 prompt processing strategy):
+  1. ConcurrencyGate: completion-based ramp from 50% → 90% of Little's Law
+  2. TokenBucket: TPM safety rail with reconciliation
+  3. AsyncLimiter: PID-adjusted RPM arrival rate
+  4. Timeout: generous safety net (60s floor, P95×3 adaptive)
+  + Circuit breaker: monitors timeout RATE, adjusts concurrency on sustained pressure
+  + Warm-up calibration: first 15-30 tasks calibrate tokens + latency → recalculate Little's Law
+
+Pipeline:
+  1. Group ideas by partition (domain)
+  2. Fetch rate limits + estimate tokens via tiktoken (no probe calls)
+  3. Initialize 4-layer rate limiting with ramp
+  4. Queue + workers with warm-up calibration trigger
+  5. Collect assignments, build CodeAssignedModel list
+
+Usage:
+    from .code_assignment import CodeAssigner
+    from .config_codeAssigner import AssignmentConfig
+
+    assigner = CodeAssigner(
+        config=AssignmentConfig(),
+        ideas_models=ideas_models,
+        mece_results=mece_results,
+        partition_set=partition_set,
+        extraction_metadata=extraction_metadata,
+    )
+    results = assigner.assign_all()
+"""
+
 import asyncio
-import time
 import logging
-import itertools
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
-from collections import deque, defaultdict
+import re
+from dataclasses import dataclass
+import time
+import statistics
+from collections import deque
+from typing import Dict, List, Optional
+
 import numpy as np
-
-from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
-from instructor.exceptions import InstructorRetryException
+import nest_asyncio
 from aiolimiter import AsyncLimiter
-from sklearn.metrics.pairwise import cosine_similarity
+from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+from instructor.exceptions import InstructorRetryException
 
-logger = logging.getLogger(__name__)
-
-# === MODELS ========================================================================================================
-from pydantic import BaseModel, field_validator
-import models
-
-# === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS, API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM
-from utils.llm import create_client, llm_create_async, create_embedding_client, ProbeResponse, RateLimits, extract_rate_limits_from_response
-from prompts import DEFAULT_CODE_EVALUATION_PROMPT, FAMILY_CODE_EVALUATION_PROMPT, FALLBACK_CODE_ASSIGNMENT_PROMPT
-
-# === UTILS ========================================================================================================
-from .verboseReporter import VerboseReporter, ProcessingStats
-from .cached_resources import get_openai_client, get_tiktoken_encoding
-
-try:
-    import nest_asyncio  # for Spyder
-    nest_asyncio.apply()
-except ImportError:
-    pass
-
-# === STEP-SPECIFIC CONFIG =============================================================================================
-from config_steps.config_codeAssigner import (
-    DEFAULT_TOKEN_HISTORY_CONFIG,
-    DEFAULT_TIKTOKEN_OFFSET_CONFIG,
-    DEFAULT_TIMEOUT_CONFIG,
-    DEFAULT_REPORTING_CONFIG,
-    DEFAULT_BOOTSTRAP_CONFIG,
-    DEFAULT_PID_CONTROLLER_CONFIG,
-    DEFAULT_TPM_TRACKING_CONFIG,
-    DEFAULT_THROUGHPUT_CONFIG,
-    DEFAULT_ADAPTIVE_THRESHOLD_CONFIG,
-    DEFAULT_DYNAMIC_TOPK_CONFIG,
-    DEFAULT_PATTERN_TRACKING_CONFIG,
+from utils.llm import (
+    create_client, llm_create_async,
+    RateLimits, extract_rate_limits_from_response,
+)
+from utils.cached_resources import get_tiktoken_encoding
+from config import (
+    ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+    OPENAI_API_KEY, API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+    get_reasoning_params,
 )
 
-# === CONSTANTS (from config_codeAssigner.py) =========================================================================
-# Token history windows
-INPUT_HISTORY_MAXLEN = DEFAULT_TOKEN_HISTORY_CONFIG.input_history_maxlen
-OUTPUT_HISTORY_MAXLEN = DEFAULT_TOKEN_HISTORY_CONFIG.output_history_maxlen
-OUTPUT_RATIO_HISTORY_MAXLEN = DEFAULT_TOKEN_HISTORY_CONFIG.output_ratio_history_maxlen
-DEFAULT_OUTPUT_RATIO = DEFAULT_TOKEN_HISTORY_CONFIG.default_output_ratio
-ERROR_WINDOW_SIZE = DEFAULT_TOKEN_HISTORY_CONFIG.error_window_size
-
-# Tiktoken → API token offset learning
-TIKTOKEN_API_OFFSET_DEFAULT = DEFAULT_TIKTOKEN_OFFSET_CONFIG.api_offset_default
-TIKTOKEN_OFFSET_HISTORY_MAXLEN = DEFAULT_TIKTOKEN_OFFSET_CONFIG.offset_history_maxlen
-TIKTOKEN_OFFSET_MIN_SAMPLES = DEFAULT_TIKTOKEN_OFFSET_CONFIG.offset_min_samples
-
-# Timeouts and latency
-DEFAULT_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_timeout_seconds
-DEFAULT_LATENCY_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_latency_seconds
-MAX_TOKEN_ACQUIRE_ATTEMPTS = DEFAULT_TIMEOUT_CONFIG.max_token_acquire_attempts
-BOOTSTRAP_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_CONFIG.bootstrap_timeout_seconds
-
-# Reporting intervals
-PROGRESS_REPORT_INTERVAL = DEFAULT_REPORTING_CONFIG.progress_report_interval
-DIAGNOSTIC_INTERVAL = DEFAULT_REPORTING_CONFIG.diagnostic_interval
-ADJUSTMENT_INTERVAL = DEFAULT_REPORTING_CONFIG.adjustment_interval
-
-# Bootstrap settings
-BOOTSTRAP_NUM_PROBES = DEFAULT_BOOTSTRAP_CONFIG.num_probes
-DEFAULT_AVG_TOKENS = DEFAULT_BOOTSTRAP_CONFIG.default_avg_tokens
-SAMPLE_SIZE_FOR_TOKEN_ESTIMATION = DEFAULT_BOOTSTRAP_CONFIG.sample_size_for_token_estimation
-
-# PID-style continuous adjustment (asymmetric gains)
-PID_KP_UP = DEFAULT_PID_CONTROLLER_CONFIG.kp_up
-PID_KP_DOWN = DEFAULT_PID_CONTROLLER_CONFIG.kp_down
-PID_KI = DEFAULT_PID_CONTROLLER_CONFIG.ki
-PID_KD = DEFAULT_PID_CONTROLLER_CONFIG.kd
-PID_MIN_ADJUSTMENT = DEFAULT_PID_CONTROLLER_CONFIG.min_adjustment
-PID_MAX_ADJUSTMENT = DEFAULT_PID_CONTROLLER_CONFIG.max_adjustment
-
-# Real-time TPM tracking
-TPM_SLIDING_WINDOW_SECONDS = DEFAULT_TPM_TRACKING_CONFIG.sliding_window_seconds
-TPM_SAMPLE_INTERVAL = DEFAULT_TPM_TRACKING_CONFIG.sample_interval
-TPM_TARGET_UTILIZATION = DEFAULT_TPM_TRACKING_CONFIG.target_utilization
-
-# Threshold-based adjustment (fallback to PID)
-THROUGHPUT_ADJUSTMENT_MIN_SAMPLES = DEFAULT_THROUGHPUT_CONFIG.adjustment_min_samples
-THROUGHPUT_ADJUSTMENT_THRESHOLD = DEFAULT_THROUGHPUT_CONFIG.adjustment_threshold
-
-
-# === RATE LIMITING HELPER CLASSES ========================================================================================================
-
-class TokenBucket:
-    """Simple token bucket for TPM limiting"""
-    def __init__(self, tokens_per_minute):
-        self.tpm = tokens_per_minute
-        self.available = tokens_per_minute
-        self.last_update = time.monotonic()
-        self.lock = asyncio.Lock()
-    
-    async def acquire(self, tokens_needed):
-        """Acquire tokens, returning wait time if not available"""
-        async with self.lock:
-            now = time.monotonic()
-            elapsed = now - self.last_update
-            # Regenerate tokens based on time elapsed
-            self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
-            self.last_update = now
-            
-            if self.available >= tokens_needed:
-                self.available -= tokens_needed
-                return True
-            else:
-                # Calculate wait time
-                deficit = tokens_needed - self.available
-                wait_seconds = deficit * 60 / self.tpm
-                return wait_seconds
-    
-    async def wait_and_acquire(self, tokens_needed):
-        """Wait if necessary and acquire tokens"""
-        logger.debug(f"[TOKEN BUCKET] Requesting {tokens_needed} tokens")
-        
-        while True:
-            result = await self.acquire(tokens_needed)
-            if result is True:
-                logger.debug(f"[TOKEN BUCKET] Acquired {tokens_needed} tokens, {self.available:.0f} remaining")
-                return
-            else:
-                # result is wait_seconds
-                logger.debug(f"[TOKEN BUCKET] Insufficient tokens, waiting {result:.1f}s")
-                await asyncio.sleep(result)
-    
-    async def reconcile(self, delta_tokens):
-        """Reconcile actual vs estimated tokens"""
-        # If we overestimated (delta < 0), return tokens
-        # If we underestimated (delta > 0), we already used them
-        if delta_tokens < 0:
-            async with self.lock:
-                old_available = self.available
-                self.available = min(self.tpm, self.available - delta_tokens)
-                logger.debug(f"[TOKEN BUCKET] Reconciled {-delta_tokens} tokens back, {old_available:.0f} → {self.available:.0f}")
-        else:
-            logger.debug(f"[TOKEN BUCKET] No reconciliation needed for +{delta_tokens} tokens (underestimated)")
-
-
-class LatencyTracker:
-    """Simple EMA tracker for latencies"""
-    def __init__(self, processing_config: Optional[ProcessingConfig] = None):
-        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.ema = None
-        self.alpha = self.processing_config.latency_tracker_ema_alpha
-        self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
-
-    def add(self, value):
-        """Add a latency measurement"""
-        self.values.append(value)
-        if self.ema is None:
-            self.ema = value
-        else:
-            self.ema = self.alpha * value + (1 - self.alpha) * self.ema
-
-    def get_timeout(self, est_tokens):
-        """Calculate timeout based on EMA and token count with configurable bounds"""
-        config = self.processing_config
-        if not self.values:
-            return max(config.adaptive_timeout_min_seconds, 30.0)
-
-        # Use P95 latency as base
-        p95 = np.percentile(list(self.values), 95)
-        # Simple linear scaling with token count
-        # Assume ~100ms per 1000 tokens as baseline
-        token_factor = est_tokens / 1000
-        timeout = p95 + (token_factor * 0.1)
-        # Apply margin and configurable bounds
-        return max(config.adaptive_timeout_min_seconds, min(config.adaptive_timeout_max_seconds, timeout * config.adaptive_timeout_margin))
-    
-    def get_avg_latency(self):
-        """Get average latency for concurrency calculations"""
-        if not self.values:
-            return 2.0  # Default 2s
-        return self.ema if self.ema is not None else 2.0
-
-
-# === V3 OPTIMAL STRATEGY CLASSES ========================================================================================================
-
-class TiktokenOffsetLearner:
-    """V3: Learns the offset between tiktoken counts and actual API token counts.
-
-    The API always reports more tokens than tiktoken because of:
-    - System messages added by the API
-    - Instructor/structured output overhead
-    - Message formatting tokens
-
-    This class learns the average offset and applies it to estimates.
-    """
-    def __init__(self, default_offset: int = 300, history_maxlen: int = 30, min_samples: int = 5):
-        self.default_offset = default_offset
-        self.offsets = deque(maxlen=history_maxlen)
-        self.min_samples = min_samples
-        self._learned_offset = None
-
-    def record(self, tiktoken_count: int, api_count: int):
-        """Record a tiktoken vs API count pair to learn the offset."""
-        offset = api_count - tiktoken_count
-        self.offsets.append(offset)
-
-        # Update learned offset when we have enough samples
-        if len(self.offsets) >= self.min_samples:
-            self._learned_offset = int(sum(self.offsets) / len(self.offsets))
-
-    def get_offset(self) -> int:
-        """Get the current offset to add to tiktoken counts."""
-        if self._learned_offset is not None:
-            return self._learned_offset
-        return self.default_offset
-
-    def is_learned(self) -> bool:
-        """Check if we have enough samples to trust the learned offset."""
-        return len(self.offsets) >= self.min_samples
-
-    def get_stats(self) -> dict:
-        """Get statistics about the offset learning."""
-        return {
-            "samples": len(self.offsets),
-            "learned_offset": self._learned_offset,
-            "using_offset": self.get_offset(),
-            "is_learned": self.is_learned(),
-            "min_offset": min(self.offsets) if self.offsets else None,
-            "max_offset": max(self.offsets) if self.offsets else None,
-        }
-
-
-class RealTimeTPMTracker:
-    """V3: Tracks actual TPM usage in a sliding window for real-time feedback.
-
-    Unlike the token bucket (which tracks available capacity), this tracks
-    actual consumption to provide accurate utilization metrics.
-    """
-    def __init__(self, window_seconds: float = 60.0):
-        self.window_seconds = window_seconds
-        self.samples = deque()  # (timestamp, tokens) pairs
-        self.lock = asyncio.Lock()
-
-    async def record(self, tokens: int):
-        """Record token usage at current time."""
-        async with self.lock:
-            now = time.monotonic()
-            self.samples.append((now, tokens))
-            self._prune_old_samples(now)
-
-    def _prune_old_samples(self, now: float):
-        """Remove samples outside the window."""
-        cutoff = now - self.window_seconds
-        while self.samples and self.samples[0][0] < cutoff:
-            self.samples.popleft()
-
-    async def get_current_tpm(self) -> float:
-        """Get current TPM rate based on sliding window."""
-        async with self.lock:
-            now = time.monotonic()
-            self._prune_old_samples(now)
-
-            if not self.samples:
-                return 0.0
-
-            total_tokens = sum(t for _, t in self.samples)
-            elapsed = now - self.samples[0][0] if self.samples else 1.0
-            elapsed = max(elapsed, 1.0)  # Avoid division by zero
-
-            # Extrapolate to per-minute rate
-            return (total_tokens / elapsed) * 60
-
-    async def get_utilization(self, tpm_limit: int) -> float:
-        """Get current TPM utilization as a percentage."""
-        current_tpm = await self.get_current_tpm()
-        return (current_tpm / tpm_limit) * 100 if tpm_limit > 0 else 0.0
-
-
-class PIDThroughputController:
-    """V3: PID controller for smooth, continuous throughput adjustment.
-
-    Instead of step-based threshold adjustments, this provides gradual
-    corrections that converge smoothly to optimal throughput.
-
-    Uses ASYMMETRIC gains:
-    - kp_up (0.4): Aggressive when under-utilizing (speed up faster)
-    - kp_down (0.2): Gentle when over-utilizing (slow down carefully)
-
-    The controller tracks:
-    - Error: difference between target and actual TPM utilization
-    - Integral: accumulated error over time (handles persistent bias)
-    - Derivative: rate of change (dampens oscillations)
-    """
-    def __init__(
-        self,
-        target_utilization: float = 0.85,
-        kp_up: float = 0.4,
-        kp_down: float = 0.2,
-        ki: float = 0.05,
-        kd: float = 0.1,
-        min_adjustment: float = 0.02,
-        max_adjustment: float = 0.15
-    ):
-        self.target = target_utilization
-        self.kp_up = kp_up      # Gain when under-utilizing (speed up)
-        self.kp_down = kp_down  # Gain when over-utilizing (slow down)
-        self.ki = ki
-        self.kd = kd
-        self.min_adjustment = min_adjustment
-        self.max_adjustment = max_adjustment
-
-        self.integral = 0.0
-        self.last_error = 0.0
-        self.last_time = None
-        self.adjustment_history = deque(maxlen=20)
-
-    def compute_adjustment(self, current_utilization: float) -> float:
-        """Compute throughput adjustment factor based on current utilization.
-
-        Args:
-            current_utilization: Current TPM utilization (0.0 to 1.0+)
-
-        Returns:
-            Adjustment factor to multiply current arrival rate by.
-            - >1.0 means speed up (under-utilizing)
-            - <1.0 means slow down (over-utilizing)
-            - 1.0 means no change
-        """
-        now = time.monotonic()
-
-        # Error: positive means under-utilizing, negative means over-utilizing
-        error = self.target - current_utilization
-
-        # Time delta for integral/derivative
-        dt = 1.0  # Default
-        if self.last_time is not None:
-            dt = max(now - self.last_time, 0.1)
-        self.last_time = now
-
-        # Integral term (accumulated error)
-        self.integral += error * dt
-        # Clamp integral to prevent windup
-        self.integral = max(-0.5, min(0.5, self.integral))
-
-        # Derivative term (rate of change)
-        derivative = (error - self.last_error) / dt if dt > 0 else 0.0
-        self.last_error = error
-
-        # Asymmetric proportional gain: aggressive up, gentle down
-        kp = self.kp_up if error > 0 else self.kp_down
-
-        # PID output
-        output = (kp * error) + (self.ki * self.integral) + (self.kd * derivative)
-
-        # Clamp to reasonable adjustment range
-        output = max(-self.max_adjustment, min(self.max_adjustment, output))
-
-        # Convert to multiplier (1.0 + output)
-        # Ignore tiny adjustments
-        if abs(output) < self.min_adjustment:
-            adjustment = 1.0
-        else:
-            adjustment = 1.0 + output
-
-        self.adjustment_history.append({
-            "time": now,
-            "utilization": current_utilization,
-            "error": error,
-            "output": output,
-            "adjustment": adjustment
-        })
-
-        return adjustment
-
-    def reset(self):
-        """Reset the controller state."""
-        self.integral = 0.0
-        self.last_error = 0.0
-        self.last_time = None
-
-    def get_stats(self) -> dict:
-        """Get controller statistics."""
-        recent = list(self.adjustment_history)[-5:] if self.adjustment_history else []
-        return {
-            "target_utilization": self.target,
-            "integral": self.integral,
-            "last_error": self.last_error,
-            "recent_adjustments": recent,
-            "kp_up": self.kp_up,
-            "kp_down": self.kp_down,
-            "ki": self.ki,
-            "kd": self.kd
-        }
-
-
-# === ADAPTIVE CONFIDENCE THRESHOLD CLASSES ========================================================================================================
-
-class ConfidenceTracker:
-    """Tracks running confidence distribution for adaptive thresholding.
-
-    Instead of a fixed 0.7 threshold, this collects Stage 1 confidence scores
-    and provides percentile-based adaptive thresholds.
-
-    Benefits:
-    - Adapts to codebook complexity (fine-grained codebooks naturally have lower confidence)
-    - Accounts for model uncertainty patterns
-    - Reduces unnecessary Stage 2 fallbacks when the codebook is working well
-    """
-
-    def __init__(
-        self,
-        percentile: int = 25,
-        floor: float = 0.5,
-        warmup: int = 20,
-        history_maxlen: int = 500
-    ):
-        self.percentile = percentile
-        self.floor = floor
-        self.warmup = warmup
-        self.confidences = deque(maxlen=history_maxlen)
-
-    def record(self, confidence: float):
-        """Record a confidence score from Stage 1 evaluation."""
-        self.confidences.append(confidence)
-
-    def get_adaptive_threshold(self, fixed_threshold: float) -> float:
-        """Get adaptive threshold based on distribution.
-
-        Returns fixed_threshold if warmup not complete.
-        Otherwise returns the percentile of the distribution, floored at self.floor.
-        """
-        if len(self.confidences) < self.warmup:
-            return fixed_threshold
-
-        percentile_value = np.percentile(list(self.confidences), self.percentile)
-        return max(self.floor, percentile_value)
-
-    def is_warmed_up(self) -> bool:
-        """Check if warmup period is complete."""
-        return len(self.confidences) >= self.warmup
-
-    def get_stats(self) -> dict:
-        """Get distribution statistics for diagnostics."""
-        if not self.confidences:
-            return {"samples": 0}
-
-        conf_list = list(self.confidences)
-        return {
-            "samples": len(conf_list),
-            "mean": float(np.mean(conf_list)),
-            "median": float(np.median(conf_list)),
-            "p25": float(np.percentile(conf_list, 25)),
-            "p75": float(np.percentile(conf_list, 75)),
-            "min": float(min(conf_list)),
-            "max": float(max(conf_list)),
-            "current_threshold": self.get_adaptive_threshold(0.7),
-            "is_warmed_up": self.is_warmed_up()
-        }
-
-
-# === PATTERN TRACKING CLASSES ========================================================================================================
-
-@dataclass
-class ClusterDiagnostics:
-    """Diagnostics for a single cluster."""
-    cluster_id: str
-    total_ideas: int = 0
-    used_default: int = 0
-    used_fallback: int = 0
-    confidences: List[float] = field(default_factory=list)
-
-    @property
-    def fallback_rate(self) -> float:
-        if self.total_ideas == 0:
-            return 0.0
-        return self.used_fallback / self.total_ideas
-
-    @property
-    def avg_confidence(self) -> float:
-        if not self.confidences:
-            return 0.0
-        return sum(self.confidences) / len(self.confidences)
-
-
-class PatternTracker:
-    """Tracks patterns for learning and diagnostics.
-
-    Provides insights on:
-    - Code co-occurrence patterns (which codes appear together for same respondent)
-    - Cluster-specific fallback rates (which clusters have poor default codes)
-    - Confidence calibration (distribution of confidence scores by bucket)
-    """
-
-    def __init__(self, enabled: bool = True):
-        self.enabled = enabled
-
-        # Code co-occurrence: {(code_a, code_b): count}
-        self.code_cooccurrence: Dict[Tuple[str, str], int] = defaultdict(int)
-
-        # Cluster diagnostics: {cluster_id: ClusterDiagnostics}
-        self.cluster_diagnostics: Dict[str, ClusterDiagnostics] = {}
-
-        # Confidence calibration buckets
-        self.confidence_buckets = {
-            "0.5-0.6": {"count": 0, "sum_confidence": 0.0},
-            "0.6-0.7": {"count": 0, "sum_confidence": 0.0},
-            "0.7-0.8": {"count": 0, "sum_confidence": 0.0},
-            "0.8-0.9": {"count": 0, "sum_confidence": 0.0},
-            "0.9-1.0": {"count": 0, "sum_confidence": 0.0},
-        }
-
-        # Assignment history for co-occurrence analysis
-        self._respondent_codes: Dict[str, List[str]] = defaultdict(list)
-
-    def record_assignment(
-        self,
-        respondent_id: str,
-        cluster_id: str,
-        assigned_code: str,
-        confidence: float,
-        used_default: bool,
-        fallback_triggered: bool
-    ):
-        """Record a code assignment for pattern tracking."""
-        if not self.enabled:
-            return
-
-        # Track cluster diagnostics
-        if cluster_id:
-            if cluster_id not in self.cluster_diagnostics:
-                self.cluster_diagnostics[cluster_id] = ClusterDiagnostics(cluster_id=cluster_id)
-            diag = self.cluster_diagnostics[cluster_id]
-            diag.total_ideas += 1
-            diag.confidences.append(confidence)
-            if used_default:
-                diag.used_default += 1
-            if fallback_triggered:
-                diag.used_fallback += 1
-
-        # Track confidence distribution
-        bucket = self._get_confidence_bucket(confidence)
-        if bucket:
-            self.confidence_buckets[bucket]["count"] += 1
-            self.confidence_buckets[bucket]["sum_confidence"] += confidence
-
-        # Track code co-occurrence (same respondent, multiple ideas)
-        self._respondent_codes[respondent_id].append(assigned_code)
-
-    def _get_confidence_bucket(self, confidence: float) -> Optional[str]:
-        if 0.5 <= confidence < 0.6:
-            return "0.5-0.6"
-        elif 0.6 <= confidence < 0.7:
-            return "0.6-0.7"
-        elif 0.7 <= confidence < 0.8:
-            return "0.7-0.8"
-        elif 0.8 <= confidence < 0.9:
-            return "0.8-0.9"
-        elif 0.9 <= confidence <= 1.0:
-            return "0.9-1.0"
-        return None
-
-    def finalize_cooccurrence(self):
-        """Calculate code co-occurrence after all assignments complete."""
-        from itertools import combinations
-
-        for respondent_id, codes in self._respondent_codes.items():
-            unique_codes = list(set(codes))
-            if len(unique_codes) >= 2:
-                for code_a, code_b in combinations(sorted(unique_codes), 2):
-                    self.code_cooccurrence[(code_a, code_b)] += 1
-
-    def get_problematic_clusters(self, fallback_threshold: float = 0.5, min_ideas: int = 3) -> List[Dict]:
-        """Identify clusters with high fallback rates."""
-        problematic = []
-        for cluster_id, diag in self.cluster_diagnostics.items():
-            if diag.total_ideas >= min_ideas and diag.fallback_rate >= fallback_threshold:
-                problematic.append({
-                    "cluster_id": cluster_id,
-                    "total_ideas": diag.total_ideas,
-                    "fallback_rate": diag.fallback_rate,
-                    "avg_confidence": diag.avg_confidence
-                })
-        return sorted(problematic, key=lambda x: x["fallback_rate"], reverse=True)
-
-    def get_top_cooccurrences(self, top_n: int = 10) -> List[Dict]:
-        """Get most common code co-occurrences."""
-        self.finalize_cooccurrence()
-        sorted_pairs = sorted(
-            self.code_cooccurrence.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:top_n]
-        return [
-            {"code_a": pair[0], "code_b": pair[1], "count": count}
-            for (pair, count) in sorted_pairs
-        ]
-
-    def get_confidence_calibration(self) -> Dict:
-        """Get confidence calibration statistics."""
-        result = {}
-        for bucket, data in self.confidence_buckets.items():
-            if data["count"] > 0:
-                result[bucket] = {
-                    "count": data["count"],
-                    "avg_confidence": data["sum_confidence"] / data["count"]
-                }
-        return result
-
-
-# === BOOTSTRAP MEASUREMENT SYSTEM ========================================================================================================
+import models
+from utils.ideaExtractor import (
+    TokenBucket,
+    ConcurrencyGate,
+    LatencyTracker,
+    TiktokenOffsetLearner,
+    ConcurrencyRamp,
+    RealTimeTPMTracker,
+    RealTimeRPMTracker,
+    PIDThroughputController,
+    ConcurrencyCircuitBreaker,
+)
+from config_steps.config_ideaExtractor import (
+    DEFAULT_RAMP_UP_CONFIG,
+    DEFAULT_CIRCUIT_BREAKER_CONFIG,
+    DEFAULT_PID_CONTROLLER_CONFIG,
+    DEFAULT_TPM_TRACKING_CONFIG,
+    DEFAULT_WARM_UP_CONFIG,
+)
+
+from config_steps.config_codeAssigner import AssignmentConfig, get_other_category_label
+from models import CodeAssignedSubmodel, CodeAssignedModel
+from models import DomainSet, DomainResultModel
+from prompts_steps.prompts_codeAssigner import (
+    build_code_assignment_prompt,
+    CodeAssignmentResponse,
+)
+from prompts_steps.prompts_codeGenerator import CodeFromAttributes
+from models import CodeAssignment, CodeAssignmentBatch
 
 @dataclass
 class ApiLimits:
-    """API limits structure for bootstrap calculations"""
+    """API limits for Little's Law calculations."""
     tokens_per_minute: int
     requests_per_minute: int
 
 
-def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float, processing_config: Optional[ProcessingConfig] = None, cap: Optional[int] = None, min_conc: Optional[int] = None, headroom: Optional[float] = None) -> int:
-    """Compute optimal concurrency using Little's Law"""
+def compute_optimal_concurrency(
+    limits: ApiLimits,
+    latency_seconds: float,
+    avg_tokens: float,
+    processing_config: Optional[ProcessingConfig] = None,
+    cap: Optional[int] = None,
+    min_conc: Optional[int] = None,
+    headroom: Optional[float] = None,
+) -> int:
+    """Compute optimal concurrency using Little's Law."""
     config = processing_config or DEFAULT_PROCESSING_CONFIG
     cap = cap if cap is not None else config.concurrency_cap_default
     min_conc = min_conc if min_conc is not None else config.concurrency_min_default
@@ -639,1016 +118,585 @@ def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_t
 
     rpm_throughput = limits.requests_per_minute * headroom / 60
     tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
-    candidates = [rpm_throughput, tpm_throughput]
-    allowed_rps = max(min(candidates), 0.0)
-    target = allowed_rps * latency_seconds   # Little's Law
+    allowed_rps = max(min(rpm_throughput, tpm_throughput), 0.0)
+    target = allowed_rps * latency_seconds  # Little's Law
 
     return int(max(min(target, cap), min_conc))
 
+# Enable nested event loops (for VS Code interactive / notebook compatibility)
+nest_asyncio.apply()
 
-async def bootstrap_measure_async(call_fn, n_probes: int = 3):
-    """Run n_probes serial calls and return (avg_latency_s, avg_tokens). call_fn() -> usage dict."""
-    latencies, tokens = [], []
-    for _ in range(n_probes):
-        t0 = time.perf_counter()
-        usage = await call_fn()  # Let tenacity handle timeouts and retries
-        t1 = time.perf_counter()
-        latencies.append(max(t1 - t0, 0.001))
-        pt = int(usage.get("prompt_tokens", 0))
-        ct = int(usage.get("completion_tokens", 0))
-        tokens.append(max(pt + ct, 1))
-    return sum(latencies)/len(latencies), sum(tokens)/len(tokens)
+logger = logging.getLogger(__name__)
 
+# Suppress verbose logging from external libraries during retries
+logging.getLogger("openai").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("instructor").setLevel(logging.ERROR)
 
-# === PYDANTIC MODELS ========================================================================================================
+# === PROCESSING CONSTANTS ===================================================
 
-class CodeAssignmentResponse(BaseModel):
-    idea_id: str
-    idea: str
-    assigned_codes: List[str]
-    assignment_confidence: float
-    assignment_rationale: str
-    assigned_themes: Optional[List[str]] = None
-
-class DefaultCodeEvaluationResponse(BaseModel):
-    """Stage 1: Evaluating default code from cluster"""
-    idea_id: str
-    confidence: float
-    rationale: str
-
-    @field_validator('confidence', mode='before')
-    @classmethod
-    def coerce_confidence(cls, v):
-        """Coerce string numbers to float (common with LLM JSON output)"""
-        if isinstance(v, str):
-            return float(v)
-        return v
-
-class FallbackCodeAssignmentResponse(BaseModel):
-    """Stage 2: Selecting from all codes"""
-    idea_id: str
-    assigned_codes: List[str]
-    assignment_confidence: float
-    assignment_rationale: str
-
-    @field_validator('assignment_confidence', mode='before')
-    @classmethod
-    def coerce_confidence(cls, v):
-        """Coerce string numbers to float (common with LLM JSON output)"""
-        if isinstance(v, str):
-            return float(v)
-        return v
-
-
-class CodeEvaluation(BaseModel):
-    """Single code evaluation within family evaluation"""
-    code: str
-    confidence: float
-    rationale: str
-
-    @field_validator('confidence', mode='before')
-    @classmethod
-    def coerce_confidence(cls, v):
-        """Coerce string numbers to float (common with LLM JSON output)"""
-        if isinstance(v, str):
-            return float(v)
-        return v
-
-
-class FamilyCodeEvaluationResponse(BaseModel):
-    """Stage 1b: Evaluating multiple codes from cluster family"""
-    idea_id: str
-    evaluations: List[CodeEvaluation]
-    best_match: CodeEvaluation
-
-    @field_validator('evaluations', mode='before')
-    @classmethod
-    def ensure_list(cls, v):
-        """Ensure evaluations is a list"""
-        if not isinstance(v, list):
-            return [v]
-        return v
+PROGRESS_REPORT_INTERVAL = 2           # Seconds between progress reports
+PID_ADJUSTMENT_INTERVAL = 20           # Seconds between PID adjustments
+THROUGHPUT_ADJUSTMENT_THRESHOLD = 1.3  # Trigger threshold-based adjustment
+THROUGHPUT_ADJUSTMENT_MIN_SAMPLES = 10 # Min data points before adjusting
+ERROR_WINDOW_SIZE = 100                # Rolling window for token tracking
+DEFAULT_LATENCY_SECONDS = 0.8          # Default latency for nano (before warm-up)
 
 
 class CodeAssigner:
     """
-    Two-stage code assignment using embedding-based similarity filtering.
-    Stage 2 presents top-10 most similar codes instead of entire codebook.
+    Assigns each idea to exactly one MECE category within its domain
+    partition. All partitions are processed concurrently through a shared
+    queue + workers pattern with TokenBucket, rate limiter, and retry.
     """
-    
+
     def __init__(
         self,
-        cluster_models: List[models.ClusterModel],
-        codebook: List[models.Codebook],
-        var_lab: str,
-        code_to_theme_mapping: Optional[Dict[str, str]] = None,
-        config: Optional[CodeAssignmentConfig] = None,
-        model_config: Optional[ModelConfig] = None,
-        processing_config: Optional[ProcessingConfig] = None,
-        adaptive_threshold_config = None,
-        dynamic_topk_config = None,
-        pattern_config = None,
-        verbose: bool = False,
-        prompt_printer = None):
+        config: AssignmentConfig,
+        ideas_models: List[models.IdeasExtractedModel],
+        mece_results: Dict[str, DomainResultModel],
+        partition_set: DomainSet,
+        extraction_metadata: Optional[models.ExtractionMetadata] = None,
+        prompt_printer=None,
+        codes: List[CodeFromAttributes] = None,
+        attribute_assignments: Optional[Dict[str, str]] = None,
+    ):
+        self._config = config
+        self._ideas_models = ideas_models
+        self._mece_results = mece_results
+        self._partition_set = partition_set
+        self._extraction_metadata = extraction_metadata
+        self._codes = codes or []
 
-        self.cluster_models = cluster_models
-        self.codebook = codebook
-        self.var_lab = var_lab
-        self.config = config or DEFAULT_CODE_ASSIGNMENT_CONFIG
-        self.model_config = model_config or ModelConfig()
-        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.model = self.model_config.get_model_for_stage('code_assignment')
-        self.language = DEFAULT_LANGUAGE
-        self._results: List[models.CodeAssignedModel] = []
-        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
-        self.prompt_printer = prompt_printer
-        self._captured_prompt = False
+        # Embedding pre-filter results (populated in Phase 3b if enabled)
+        self._idea_code_candidates: Optional[Dict[str, List[int]]] = None
+        self._per_task_resolutions: Dict[str, str] = {}
 
-        # Theme mapping for code-to-theme assignments
-        self.code_to_theme_mapping = code_to_theme_mapping or {}
+        # Prompt capture (optional — pass PromptPrinter to enable)
+        self._prompt_printer = prompt_printer
+        self._captured_assign_gates: set = set()
 
-        # Initialize tokenizer for token counting (cached)
-        self.encoding = get_tiktoken_encoding(self.model)
+        # Shared async resources — initialized in _assign_all_async()
+        self._client = None
+        self._rate_limiter = None
+        self._tpm_bucket = None
+        self._rate_limits = None
 
-        # Instructor-patched async client for structured output (Azure/OpenAI abstracted)
-        self.client = create_client(model=self.model, async_mode=True)
+        # 4-layer rate limiting components (initialized in _initialize_rate_limiters)
+        self._gate = None                   # ConcurrencyGate (replaces Semaphore)
+        self._latency_tracker = None        # LatencyTracker
+        self._tiktoken_learner = None       # TiktokenOffsetLearner
+        self._concurrency_ramp = None       # ConcurrencyRamp
+        self._tpm_tracker = None            # RealTimeTPMTracker
+        self._rpm_tracker = None            # RealTimeRPMTracker
+        self._pid_controller = None         # PIDThroughputController
+        self._circuit_breaker = None        # ConcurrencyCircuitBreaker
+        self._warm_up_done = False          # One-shot calibration flag
 
-        # Embedding client for code similarity (plain OpenAI client)
-        self.embedding_client = create_embedding_client(async_mode=False)
-        self.embedding_model = self.model_config.embedding_model
+        # Tokenizer for local token estimation
+        self._encoding = get_tiktoken_encoding(config.assignment_model)
 
-        # Rate limiting setup - use fallback values for initial setup
-        # Actual rate limits will be fetched from API during processing
-        self.rate_limits = RateLimits(
-            tokens_per_minute=FALLBACK_TPM,
-            requests_per_minute=FALLBACK_RPM,
-            tokens_per_day=FALLBACK_TPM * 60 * 24
-        )
+        # ID-based resolution maps — populated in _assign_all_async()
+        self._id_to_label: Dict[str, str] = {}
+        self._other_id: Optional[str] = None
+        self._other_label: Optional[str] = None
 
-        # Token bucket for TPM limiting (will be re-initialized with actual limits during bootstrap)
-        self.tpm_bucket = TokenBucket(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
+        # Pre-assigned attributes from pipeline step 4a (idea_id -> attribute name)
+        self._attribute_assignments: Dict[str, str] = attribute_assignments or {}
 
-        # Progressive token estimation (V3: updated to use config constants)
-        self.input_token_history = deque(maxlen=INPUT_HISTORY_MAXLEN)
-        self.output_token_history = deque(maxlen=OUTPUT_HISTORY_MAXLEN)
-        self.output_ratio_history = deque(maxlen=OUTPUT_RATIO_HISTORY_MAXLEN)  # V3: Track output/input ratios for learning
-        self.estimation_errors = deque(maxlen=ERROR_WINDOW_SIZE)
-        self.first_prompt_tokens = None  # Cache first prompt calculation
-
-        # Rolling average of actual total tokens for comparison
-        self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
-
-        # Latency tracking
-        self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
-
-        # === V3 OPTIMAL STRATEGY COMPONENTS ===
-        # Tiktoken→API offset learning (accounts for system overhead)
-        self.tiktoken_offset_learner = TiktokenOffsetLearner(
-            default_offset=TIKTOKEN_API_OFFSET_DEFAULT,
-            history_maxlen=TIKTOKEN_OFFSET_HISTORY_MAXLEN,
-            min_samples=TIKTOKEN_OFFSET_MIN_SAMPLES
-        )
-
-        # Real-time TPM tracking (sliding window)
-        self.tpm_tracker = RealTimeTPMTracker(window_seconds=TPM_SLIDING_WINDOW_SECONDS)
-
-        # PID throughput controller (continuous adjustment)
-        self.pid_controller = PIDThroughputController(
-            target_utilization=TPM_TARGET_UTILIZATION,
-            kp_up=PID_KP_UP,
-            kp_down=PID_KP_DOWN,
-            ki=PID_KI,
-            kd=PID_KD,
-            min_adjustment=PID_MIN_ADJUSTMENT,
-            max_adjustment=PID_MAX_ADJUSTMENT
-        )
-
-        # Track current arrival rate for PID adjustment
-        self.current_arrival_rate = None
-
-        # V3 stats tracking
-        self.v3_stats = {
-            'adjustments_made': 0,
-            'pid_adjustments': 0,
-            'threshold_adjustments': 0,
-            'max_tpm_utilization': 0.0,
-            'min_tpm_utilization': 100.0,
-        }
-
-        # === CODE ASSIGNMENT STRATEGY IMPROVEMENTS ===
-        # Store configs (use defaults if not provided)
-        self.adaptive_threshold_config = adaptive_threshold_config or DEFAULT_ADAPTIVE_THRESHOLD_CONFIG
-        self.dynamic_topk_config = dynamic_topk_config or DEFAULT_DYNAMIC_TOPK_CONFIG
-        self.pattern_config = pattern_config or DEFAULT_PATTERN_TRACKING_CONFIG
-
-        # Confidence tracker for adaptive threshold
-        self.confidence_tracker = ConfidenceTracker(
-            percentile=self.adaptive_threshold_config.adaptive_percentile,
-            floor=self.adaptive_threshold_config.adaptive_floor,
-            warmup=self.adaptive_threshold_config.warmup_samples
-        )
-
-        # Pattern tracker for diagnostics
-        self.pattern_tracker = PatternTracker(enabled=self.pattern_config.enabled)
-
-        # Track last similarity stats for diagnostics
-        self._last_selected_count = 0
-        self._last_top_similarity = 0.0
-        
-        # Calculate initial average tokens estimate for bootstrapping
-        self.avg_tokens = self._calculate_avg_tokens()
-        
-        # Rate limiting components (will be initialized after bootstrap)
-        self.rate_limiter = None
-        self.semaphore = None
-        self.optimal_concurrency = None
-        
-        # Stats
-        self._stats = ProcessingStats()
-        self.stats = {
+        # Processing stats
+        self._stats = {
             'tasks_processed': 0,
             'tasks_successful': 0,
             'tasks_failed': 0,
-            'retries': 0,
             'rate_limits': 0,
             'timeouts': 0,
-            'error_types': {}  # Track error types: {error_type: count}
         }
+        self._failure_log: List[Dict] = []
 
-        # Two-stage assignment stats
-        self.stage_1_calls = 0
-        self.stage_2_calls = 0
-        self.used_default_count = 0
-        self.used_fallback_count = 0
+        # Token tracking
+        self._actual_total_tokens: deque = deque(maxlen=ERROR_WINDOW_SIZE)
+        self._avg_tokens: int = 0
+        self._current_arrival_rate: float = 0.0
+        self._adjustment_count: int = 0
 
-        # Prompt/Response logging for debugging
-        self.prompt_responses = []
-        self.last_prompt = ""  # Track the last prompt used for assignment
-        self.verbose = verbose
+    # =========================================================================
+    # PUBLIC API
+    # =========================================================================
 
-        # Build cluster→codes mapping (exact cluster ID match)
-        self.cluster_to_codes = self._build_cluster_code_mapping()
+    @staticmethod
+    def _normalize_key(key: str) -> str:
+        """Canonical partition key: lowercase, underscores→spaces."""
+        return (key or '').strip().lower().replace('_', ' ')
 
-        # Build cluster family mapping (base cluster → all related codes)
-        # This groups codes from "12", "12-1", "12-2" etc. under base cluster "12"
-        self.cluster_family_codes = self._build_cluster_family_mapping()
+    def assign_all(self) -> List[CodeAssignedModel]:
+        """Sync entry point. Returns list of CodeAssignedModel."""
+        return asyncio.run(self._assign_all_async())
 
-        # Code embeddings for similarity filtering (lazy-load on first use)
-        self._code_embeddings = None
+    # =========================================================================
+    # ASYNC ORCHESTRATION
+    # =========================================================================
 
-        self.verbose_reporter.stat_line(f"Model: {self.model}")
-        self.verbose_reporter.stat_line(f"API Limits: {self.rate_limits.requests_per_minute} RPM, {self.rate_limits.tokens_per_minute:,} TPM")
+    async def _assign_all_async(self) -> List[CodeAssignedModel]:
+        """Main async orchestration with 4-layer rate limiting + warm-up calibration."""
+        verbose = self._config.verbose
+        processing_config = DEFAULT_PROCESSING_CONFIG
+        headroom = processing_config.rate_limit_headroom
 
-    def _calculate_avg_tokens(self) -> int:
-        """Calculate average token count for code assignment requests"""
-        if not self.cluster_models:
-            return 1500  # Default estimate
-        
-        sample_size = min(10, len(self.cluster_models))
-        total_tokens = 0
-        sample_count = 0
-        
-        for i in range(sample_size):
-            model = self.cluster_models[i]
-            if hasattr(model, 'response_ideas') and model.response_ideas:
-                for idea in model.response_ideas:
-                    if hasattr(idea, 'idea') and idea.idea:
-                        # Create sample prompt
-                        prompt = self._create_prompt_for_estimation(idea.idea_id, idea.idea)
-                        total_tokens += len(self.encoding.encode(prompt))
-                        sample_count += 1
-                        break  # Only sample first idea per model
-        
-        if sample_count == 0:
-            return 1500  # Fallback
-        
-        avg_input = total_tokens / sample_count
-        # Assume 15% output ratio initially
-        return int(avg_input * 1.15)
+        # ── Phase 1: Setup ──────────────────────────────────────────────────
 
-    def _build_cluster_code_mapping(self) -> Dict[str, List[models.Codebook]]:
-        """Build mapping from expanded_cluster ID to codes generated from that cluster"""
-        from collections import defaultdict
-        mapping = defaultdict(list)
-        merged_codes_count = 0
-
-        for code in self.codebook:
-            if hasattr(code, 'source_cluster') and code.source_cluster:
-                # Split comma-separated cluster IDs (e.g., "8,11,23" → ["8", "11", "23"])
-                cluster_ids = str(code.source_cluster).split(',')
-
-                # Log if multiple clusters share this code
-                if len(cluster_ids) > 1:
-                    merged_codes_count += 1
-                    # if self.verbose:
-                    #     cluster_list = [c.strip() for c in cluster_ids]
-                    #     #self.verbose_reporter.info(f"  Code '{code.code[:50]}...' mapped to {len(cluster_list)} clusters: {cluster_list}")
-
-                # Create mapping for each individual cluster ID
-                for cluster_id in cluster_ids:
-                    cluster_id = cluster_id.strip()  # Remove whitespace
-                    if cluster_id:  # Skip empty strings
-                        mapping[cluster_id].append(code)
-
-        # Convert to regular dict and log stats
-        cluster_dict = dict(mapping)
-        if self.verbose:
-            total_clusters_with_codes = len(cluster_dict)
-            avg_codes_per_cluster = sum(len(codes) for codes in cluster_dict.values()) / total_clusters_with_codes if total_clusters_with_codes > 0 else 0
-            self.verbose_reporter.stat_line(f"Cluster→Code mapping: {total_clusters_with_codes} clusters, avg {avg_codes_per_cluster:.1f} codes/cluster")
-            if merged_codes_count > 0:
-                self.verbose_reporter.stat_line(f"  {merged_codes_count} codes shared across multiple clusters")
-
-        return cluster_dict
-
-    def _get_base_cluster_id(self, cluster_id: str) -> str:
-        """Extract base cluster ID from expanded_cluster format.
-
-        Multi-theme clusters are split into sub-clusters with format "{base}-{index}".
-        This method extracts the base cluster ID for family grouping.
-
-        Examples:
-            "12" -> "12"     (single-theme cluster)
-            "12-1" -> "12"   (first sub-cluster of multi-theme cluster 12)
-            "12-2" -> "12"   (second sub-cluster of multi-theme cluster 12)
-        """
-        if '-' in str(cluster_id):
-            return str(cluster_id).split('-')[0]
-        return str(cluster_id)
-
-    def _build_cluster_family_mapping(self) -> Dict[str, List[models.Codebook]]:
-        """Build mapping from base cluster ID to ALL codes in the cluster family.
-
-        For a base cluster "12", this includes codes from:
-        - "12" (parent/single-theme cluster)
-        - "12-1", "12-2", "12-3", etc. (all sub-clusters from multi-theme expansion)
-
-        This allows Phase 1 to evaluate all related codes when an idea belongs to
-        any sub-cluster of a multi-theme cluster.
-
-        Returns:
-            Dict mapping base_cluster_id -> list of all related Codebook entries
-        """
-        from collections import defaultdict
-        family_mapping = defaultdict(list)
-        seen_codes = defaultdict(set)  # Track codes per family to avoid duplicates
-
-        for code in self.codebook:
-            if hasattr(code, 'source_cluster') and code.source_cluster:
-                # Handle comma-separated cluster IDs (merged codes)
-                cluster_ids = str(code.source_cluster).split(',')
-
-                for cluster_id in cluster_ids:
-                    cluster_id = cluster_id.strip()
-                    if not cluster_id:
-                        continue
-
-                    # Get the base cluster ID (e.g., "12-1" -> "12")
-                    base_id = self._get_base_cluster_id(cluster_id)
-
-                    # Add code to family if not already present (deduplicate)
-                    if code.code not in seen_codes[base_id]:
-                        family_mapping[base_id].append(code)
-                        seen_codes[base_id].add(code.code)
-
-        # Convert to regular dict and log stats
-        family_dict = dict(family_mapping)
-        if self.verbose:
-            total_families = len(family_dict)
-            families_with_multiple = sum(1 for codes in family_dict.values() if len(codes) > 1)
-            avg_codes_per_family = sum(len(codes) for codes in family_dict.values()) / total_families if total_families > 0 else 0
-            self.verbose_reporter.stat_line(f"Cluster family mapping: {total_families} families, avg {avg_codes_per_family:.1f} codes/family")
-            if families_with_multiple > 0:
-                self.verbose_reporter.stat_line(f"  {families_with_multiple} families with multiple codes")
-
-        return family_dict
-
-    def _create_prompt_for_estimation(self, idea_id: str, idea_text: str) -> str:
-        """Create prompt for token estimation using top-k codes"""
-        top_k = self.config.top_k_similar_codes
-        all_codes_text = "\n".join([
-            f"Code: {code.code}\nDefinition: {code.definition}\n"
-            for code in self.codebook[:top_k]
-        ])
-
-        unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
-
-        return FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
-            language=self.language,
-            var_lab=self.var_lab,
-            idea_id=idea_id,
-            idea_text=idea_text,
-            default_confidence=0.0,
-            all_codes=all_codes_text,
-            unknown_label=unknown_label
+        # 1a. Create async instructor client
+        self._client = create_client(
+            model=self._config.assignment_model, async_mode=True
         )
 
-    async def _fetch_rate_limits_from_api(self) -> RateLimits:
-        """Make a minimal API call to fetch rate limits from response headers."""
-        from openai import AsyncOpenAI
-        from config import AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+        # 1b. Build global facet lookup from P3 facet assignments
+        self._facet_lookup: Dict[str, str] = {}
+        for name, mece_res in self._mece_results.items():
+            if mece_res.facet_assignments:
+                self._facet_lookup.update(mece_res.facet_assignments)
 
-        if API_PROVIDER == "azure":
-            client = AsyncOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
-                default_query={"api-version": "2024-10-21"},
+        if verbose:
+            print(f"  Facet lookup: {len(self._facet_lookup)} entries")
+
+        # 1c. Group all ideas by partition (domain)
+        partition_ideas = self._group_ideas_by_partition()
+        total_ideas = sum(len(ideas) for ideas in partition_ideas.values())
+
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"CATEGORY ASSIGNMENT")
+            print(f"{'='*70}")
+            print(f"  Ideas: {total_ideas} across {len(partition_ideas)} partitions")
+            print(f"  Codebook: global")
+            print(f"  Model: {self._config.assignment_model}")
+
+        if total_ideas == 0:
+            print("  WARNING: No ideas to assign")
+            return self._build_output_models({}, {})
+
+        # 1e. Pre-build ID maps
+        self._build_id_maps()
+
+        # ── Phase 2: Fetch rate limits ───────────────────────────────────────
+
+        if verbose:
+            print("  Fetching rate limits from API...")
+        limits = await self._fetch_rate_limits()
+        self._rate_limits = limits
+
+        if verbose:
+            print(f"  Rate limits: TPM={limits.tokens_per_minute:,}, "
+                  f"RPM={limits.requests_per_minute:,}")
+
+        # ── Phase 3: Token estimation via tiktoken (no probe calls) ──────────
+
+        self._avg_tokens = self._estimate_avg_tokens(partition_ideas)
+        if verbose:
+            print(f"  Token estimate (tiktoken): {self._avg_tokens}")
+
+        # ── Phase 3b: Embedding pre-filtering ─────────────────────────────────
+
+        if self._config.use_embedding_prefilter and self._codes:
+            from .embedding_matcher import EmbeddingMatcher
+
+            matcher = EmbeddingMatcher(
+                model=self._config.embedding_model,
+                batch_size=self._config.embedding_batch_size,
+                max_concurrent=self._config.embedding_max_concurrent,
             )
-            model = AZURE_OPENAI_DEPLOYMENT_NAME
-        else:
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            model = self.model
 
-        # Make minimal API call with raw response to get headers
-        response = await client.chat.completions.with_raw_response.create(
-            model=model,
-            messages=[{"role": "user", "content": "Hi"}],
-            max_tokens=5
+            # Flatten all ideas in same order as Phase 4
+            all_ideas_flat = []
+            for pname in sorted(partition_ideas.keys()):
+                all_ideas_flat.extend(partition_ideas[pname])
+
+            idea_texts = [
+                matcher.build_idea_text(idea, self._facet_lookup)
+                for idea in all_ideas_flat
+            ]
+            code_texts = [
+                matcher.build_code_text(code)
+                for code in self._codes
+            ]
+
+            if verbose:
+                print(f"  Embedding pre-filter: embedding {len(idea_texts)} ideas "
+                      f"+ {len(code_texts)} codes...")
+
+            idea_embeddings = await matcher.embed_texts(idea_texts)
+            code_embeddings = await matcher.embed_texts(code_texts)
+
+            top_n = self._config.embedding_top_n
+            top_n_per_idea = matcher.compute_top_n(
+                idea_embeddings, code_embeddings, n=top_n,
+            )
+
+            self._idea_code_candidates = {
+                idea.idea_id: indices
+                for idea, indices in zip(all_ideas_flat, top_n_per_idea)
+            }
+
+            if verbose:
+                print(f"  Embedding pre-filter: top-{top_n} candidates per idea → "
+                      f"prompt codebook scoped from {len(self._codes)} to {top_n} codes")
+
+        # ── Phase 4: Build task list ─────────────────────────────────────────
+
+        if not self._codes:
+            if verbose:
+                print("  WARNING: No codes available, skipping assignment")
+            return []
+
+        task_list = []
+        for partition_name in sorted(partition_ideas.keys()):
+            ideas = partition_ideas[partition_name]
+
+            for idea_idx, idea in enumerate(ideas):
+                # Determine codes for this idea
+                if self._idea_code_candidates and idea.idea_id in self._idea_code_candidates:
+                    candidate_indices = self._idea_code_candidates[idea.idea_id]
+                    candidate_codes = [self._codes[idx] for idx in candidate_indices]
+                else:
+                    candidate_codes = self._codes
+
+                # Build per-task ID map (scoped C1..CN → code_name)
+                task_id_to_label = {}
+                for ci, code in enumerate(candidate_codes, 1):
+                    task_id_to_label[f"C{ci}"] = code.code_name
+                if self._config.include_other_category and self._other_label:
+                    task_id_to_label[f"C{len(candidate_codes) + 1}"] = self._other_label
+
+                task_list.append({
+                    'idea': idea,
+                    'partition_name': partition_name,
+                    'batch_idx': idea_idx,
+                    'n_batches': len(ideas),
+                    'candidate_codes': candidate_codes,
+                    'task_id_to_label': task_id_to_label,
+                })
+
+        total_batches = len(task_list)
+
+        # ── Phase 5: Initialize 4-layer rate limiting ────────────────────────
+
+        little_law_cap = self._initialize_rate_limiters(
+            limits, total_batches, headroom
         )
 
-        return extract_rate_limits_from_response(response)
+        # Workers = initial ramp target (not static 200)
+        initial_conc = self._concurrency_ramp.current_target()
+        num_workers = min(total_batches, initial_conc)
 
-    def estimate_tokens(self, prompt: str) -> int:
-        """V3: Estimate total tokens using optimal adaptive strategy.
+        # Warm-up target: 15-30 completions
+        warm_up_config = DEFAULT_WARM_UP_CONFIG
+        self._warm_up_target = min(
+            warm_up_config.sample_max,
+            max(warm_up_config.sample_min, total_batches // 10)
+        )
 
-        V3 Improvements:
-        - Applies learned tiktoken→API offset upfront
-        - Reduced safety margins (offset handles the gap)
-        - Uses output ratio learning for more accurate output estimation
-        - Weighted blend: 70% history, 30% current for stability
-        """
-        # Count tokens with tiktoken
-        tiktoken_count = len(self.encoding.encode(prompt))
+        rpm_throughput = limits.requests_per_minute * headroom / 60
+        tpm_throughput = limits.tokens_per_minute * headroom / max(self._avg_tokens, 1) / 60
+        arrival_rate = min(rpm_throughput, tpm_throughput)
+        bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
 
-        # V3: Apply learned offset (accounts for system overhead)
-        offset = self.tiktoken_offset_learner.get_offset()
-        actual_input_tokens = tiktoken_count + offset
+        if verbose:
+            print(f"\n  [RATE LIMITING SETUP] — Completion-Based Ramp + PID + Circuit Breaker")
+            print(f"  Model: {self._config.assignment_model}")
+            print(f"  RPM: {limits.requests_per_minute:,} "
+                  f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
+            print(f"  TPM: {limits.tokens_per_minute:,} "
+                  f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
+            print(f"  Token estimate (tiktoken): {self._avg_tokens}")
+            print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
+            print(f"  Little's Law cap: {little_law_cap}")
+            print(f"  Ramp: {initial_conc} (50%) → {self._concurrency_ramp.cap} (90%)")
+            print(f"  Timeout: 60s safety net (P95×3 adaptive)")
+            print(f"  Workers: {num_workers}")
+            print(f"  Warm-up: calibrate after {self._warm_up_target} completions")
+            print(f"  Total tasks: {total_batches}")
 
-        # V3: Reduced safety margins (offset already accounts for gap)
-        num_samples = len(self.estimation_errors)
-        if num_samples < 5:
-            safety_margin = 1.15  # V3: Reduced from higher margins (offset handles gap)
-        elif num_samples < 15:
-            safety_margin = 1.10  # V3: Reduced once we have some data
-        else:
-            safety_margin = 1.05  # V3: Tight when learned
+        # ── Phase 6: Queue + workers + main loop ─────────────────────────────
 
-        # Input estimation: use history average if available, blend with current
-        if len(self.input_token_history) >= 5:
-            avg_input = sum(self.input_token_history) / len(self.input_token_history)
-            # Weighted blend: 70% history, 30% current for stability
-            estimated_input = int(0.7 * avg_input + 0.3 * actual_input_tokens)
-        else:
-            # Early phase: use current with safety margin
-            estimated_input = int(actual_input_tokens * safety_margin)
+        queue = asyncio.Queue()
+        results = [None] * total_batches
+        timed_out = []  # (index, task) tuples
 
-        # Always update input history
-        self.input_token_history.append(actual_input_tokens)
+        for i, task in enumerate(task_list):
+            task['result_index'] = i
+            await queue.put(task)
 
-        # Output estimation: use learned ratio if available
-        if len(self.output_ratio_history) >= 5:
-            # Use learned output/input ratio
-            learned_ratio = sum(self.output_ratio_history) / len(self.output_ratio_history)
-            estimated_output = int(estimated_input * learned_ratio * safety_margin)
-        elif len(self.output_token_history) >= 3:
-            # Use output history average
-            avg_output = sum(self.output_token_history) / len(self.output_token_history)
-            estimated_output = int(avg_output * safety_margin)
-        else:
-            # Fallback to default ratio with safety margin
-            estimated_output = int(estimated_input * DEFAULT_OUTPUT_RATIO * safety_margin)
+        workers = [
+            asyncio.create_task(self._worker(queue, results, timed_out))
+            for _ in range(num_workers)
+        ]
 
-        # Cap output to max_tokens
-        estimated_output = min(self.config.max_tokens, estimated_output)
+        start_time = time.time()
+        last_report = start_time
+        last_pid = start_time
+        last_ramp = start_time
 
-        return estimated_input + estimated_output
+        while self._stats['tasks_processed'] < total_batches:
+            await asyncio.sleep(0.1)
+            now = time.time()
+            elapsed = now - start_time
+            completed = self._stats['tasks_processed']
 
-    def _assign_themes_to_codes(self, assigned_codes: List[str]) -> List[str]:
-        """Map assigned codes to their themes using cached mapping"""
-        themes = []
-        for code in assigned_codes:
-            theme = self.code_to_theme_mapping.get(code)
-            if theme and theme not in themes:
-                themes.append(theme)
-        return themes
+            # Every 1s: circuit breaker + ramp
+            if now - last_ramp >= 1.0:
+                if self._circuit_breaker:
+                    self._circuit_breaker.check_and_adjust()
+                self._check_ramp_up(completed, self._stats['timeouts'], elapsed)
+                last_ramp = now
 
-    def _build_general_codes(self) -> List[Dict[str, any]]:
-        """Build synthetic general codes for theme and category fallbacks"""
-        general_codes = []
-        general_label = GENERAL_CODE_LABELS.get(self.language, "overall")
+            # Progress report with constraint visibility
+            if now - last_report >= PROGRESS_REPORT_INTERVAL:
+                await self._print_progress(
+                    completed, total_batches, total_ideas, elapsed
+                )
+                last_report = now
 
-        # Theme-level general codes
-        unique_themes = set()
-        for code in self.codebook:
-            if hasattr(code, 'theme') and code.theme:
-                theme_desc = getattr(code, 'theme_description', code.theme)
-                unique_themes.add((code.theme, theme_desc))
+            # One-shot warm-up calibration
+            if (not self._warm_up_done
+                    and len(self._actual_total_tokens) >= self._warm_up_target
+                    and len(self._latency_tracker.values) >= self._warm_up_target):
+                extra = self._calibrate_from_warm_up(limits, headroom, total_batches)
+                if extra > 0 and extra > len(workers):
+                    new_count = extra - len(workers)
+                    for _ in range(new_count):
+                        workers.append(
+                            asyncio.create_task(self._worker(queue, results, timed_out))
+                        )
+                    if verbose:
+                        print(f"  Workers: {len(workers)} (+{new_count} after calibration)")
 
-        for theme, theme_desc in unique_themes:
-            # Collect specific codes in this theme for exclusion examples
-            specific_codes_in_theme = [code.code for code in self.codebook
-                                      if hasattr(code, 'theme') and code.theme == theme]
+            # Every 20s: PID adjustment
+            if now - last_pid >= PID_ADJUSTMENT_INTERVAL:
+                await self._apply_pid_adjustment(headroom)
+                last_pid = now
 
-            general_codes.append({
-                'code': f"{theme} - {general_label}",
-                'definition': f"Algemene verwijzing naar thema '{theme}': {theme_desc}",
-                'inclusion_examples': [
-                    f"Algemene of vage verwijzing naar {theme}",
-                    f"Niet-specifieke uitspraak over {theme}",
-                    f"Vaag verband met {theme} zonder concrete details"
-                ],
-                'exclusion_examples': specific_codes_in_theme,
-                'near_neighbor_label': "Specifieke codes binnen dit thema",
-                'tell_apart_rule': f"Gebruik deze algemene code alleen als geen enkele specifieke code past. Specifieke codes in dit thema: {', '.join(specific_codes_in_theme[:3])}{'...' if len(specific_codes_in_theme) > 3 else ''}",
-                'type': 'theme_general'
-            })
+        # Drain and stop workers
+        await queue.join()
+        for _ in workers:
+            await queue.put(None)
+        await asyncio.gather(*workers)
 
-        # Category-level general codes (if 3-level hierarchy exists)
-        unique_categories = set()
-        for code in self.codebook:
-            if hasattr(code, 'category') and code.category:
-                cat_desc = getattr(code, 'category_description', code.category)
-                theme = getattr(code, 'theme', '')
-                unique_categories.add((code.category, cat_desc, theme))
+        elapsed = time.time() - start_time
 
-        for category, cat_desc, theme in unique_categories:
-            # Collect specific codes in this category for exclusion examples
-            specific_codes_in_category = [code.code for code in self.codebook
-                                         if hasattr(code, 'category') and code.category == category]
+        # ── Phase 7: Retry pass for true failures (timeouts + exceptions) ──
 
-            general_codes.append({
-                'code': f"{category} - {general_label}",
-                'definition': f"Algemene verwijzing naar categorie '{category}' binnen {theme}: {cat_desc}",
-                'inclusion_examples': [
-                    f"Algemene of vage verwijzing naar {category}",
-                    f"Niet-specifieke uitspraak over {category} binnen {theme}",
-                    f"Vaag verband met {category} zonder concrete details"
-                ],
-                'exclusion_examples': specific_codes_in_category,
-                'near_neighbor_label': "Specifieke codes binnen deze categorie",
-                'tell_apart_rule': f"Gebruik deze algemene code alleen als geen enkele specifieke code past. Specifieke codes in deze categorie: {', '.join(specific_codes_in_category[:3])}{'...' if len(specific_codes_in_category) > 3 else ''}",
-                'type': 'category_general'
-            })
+        # Collect all failed tasks: timed-out + exception failures
+        retry_tasks = []
+        for idx, task in timed_out:
+            retry_tasks.append((idx, task))
+        for entry in self._failure_log:
+            retry_tasks.append((entry['result_index'], entry['task']))
 
-        return general_codes
+        if retry_tasks:
+            print(f"\n  [RETRY PASS] Retrying {len(retry_tasks)} failed tasks "
+                  f"({len(timed_out)} timeouts, {len(self._failure_log)} exceptions)...")
 
-    def _generate_code_embeddings(self) -> np.ndarray:
-        """Generate embeddings for all codes (code + definition)"""
-        code_texts = [f"Code: {code.code}. Definition: {code.definition}"
-                      for code in self.codebook]
+            # Clear failure tracking for retry pass
+            pre_retry_failure_log = list(self._failure_log)
+            self._failure_log.clear()
 
-        embeddings = []
-        for text in code_texts:
-            response = self.embedding_client.embeddings.create(
-                model=self.embedding_model,
-                input=text
-            )
-            embeddings.append(response.data[0].embedding)
+            # Generous timeout for retry
+            self._latency_tracker.retry_mode = True
 
-        return np.array(embeddings)
+            # Queue-based retry with reduced concurrency
+            retry_queue = asyncio.Queue()
+            retry_timed_out = []
+            retry_workers_count = max(5, min(len(retry_tasks), num_workers // 10))
 
-    @property
-    def code_embeddings(self):
-        """Lazy-load code embeddings on first use"""
-        if self._code_embeddings is None:
-            self._code_embeddings = self._generate_code_embeddings()
-        return self._code_embeddings
+            for idx, task in retry_tasks:
+                task['result_index'] = idx  # Preserve original index
+                await retry_queue.put(task)
 
-    def _find_similar_codes(self, idea_embedding: np.ndarray, top_k: int = 10) -> List[models.Codebook]:
-        """Find similar codes using configurable selection strategy.
+            retry_worker_list = [
+                asyncio.create_task(self._worker(retry_queue, results, retry_timed_out))
+                for _ in range(retry_workers_count)
+            ]
 
-        Supports three modes via dynamic_topk_config:
-        - "fixed": Return exactly top_k codes (default, backward compatible)
-        - "threshold": Return all codes above similarity_threshold
-        - "dropoff": Return codes until similarity drops significantly from best
-        """
-        similarities = cosine_similarity([idea_embedding], self.code_embeddings)[0]
-        sorted_indices = np.argsort(similarities)[::-1]
-        sorted_similarities = similarities[sorted_indices]
+            await retry_queue.join()
+            for _ in retry_worker_list:
+                await retry_queue.put(None)
+            await asyncio.gather(*retry_worker_list)
 
-        mode = self.dynamic_topk_config.mode
+            self._latency_tracker.retry_mode = False
 
-        if mode == "fixed":
-            # Original behavior: return exactly top_k
-            k = self.config.top_k_similar_codes
-            selected = sorted_indices[:k]
-        elif mode == "threshold":
-            # Return all codes above similarity threshold
-            above_threshold = sorted_similarities >= self.dynamic_topk_config.similarity_threshold
-            count = int(np.sum(above_threshold))
-            count = min(count, self.dynamic_topk_config.max_codes)
-            count = max(count, self.dynamic_topk_config.min_codes)
-            selected = sorted_indices[:count]
-        elif mode == "dropoff":
-            # Return codes until similarity drops significantly from best
-            best_sim = sorted_similarities[0]
-            cutoff = best_sim * self.dynamic_topk_config.dropoff_ratio
-            count = sum(1 for s in sorted_similarities if s >= cutoff)
-            count = max(count, self.dynamic_topk_config.min_codes)
-            count = min(count, self.dynamic_topk_config.max_codes)
-            selected = sorted_indices[:count]
-        else:
-            # Fallback to original behavior
-            selected = sorted_indices[:self.config.top_k_similar_codes]
+            # Count recoveries and handle per-task resolution for recovered tasks
+            recovered = 0
+            for idx, task in retry_tasks:
+                result = results[idx]
+                if result is not None and not isinstance(result, Exception):
+                    # Check if this was actually recovered (successful assignment)
+                    if hasattr(result, 'assignments') and result.assignments:
+                        # Per-task resolution for recovered tasks
+                        task_id_map = task.get('task_id_to_label')
+                        if task_id_map:
+                            idea = task['idea']
+                            raw_id = result.assignments[0].assigned_code_id or ''
+                            cat_id = self._normalize_id(raw_id)
+                            label = task_id_map.get(cat_id)
+                            if label:
+                                self._per_task_resolutions[idea.idea_id] = label
+                        recovered += 1
 
-        # Track for diagnostics
-        self._last_selected_count = len(selected)
-        self._last_top_similarity = float(sorted_similarities[0]) if len(sorted_similarities) > 0 else 0.0
+            still_failed = len(self._failure_log) + len(retry_timed_out)
+            print(f"  [RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
 
-        return [self.codebook[i] for i in selected]
+        # ── Phase 8: Collect assignments ─────────────────────────────────────
 
-    def _format_examples_list(self, examples: Optional[List[str]]) -> str:
-        """Format examples list for prompt display"""
-        if not examples:
-            return "No specific examples provided"
-        return "\n".join([f"  • {ex}" for ex in examples])
+        assignment_lookup = {}
+        for i, result in enumerate(results):
+            if result is None or isinstance(result, Exception):
+                continue
+            for assignment in result.assignments:
+                assignment_lookup[assignment.idea_id] = assignment
 
-    def _extract_all_ideas(self) -> List[tuple]:
-        """Extract all individual ideas for processing with expanded_cluster info"""
-        all_ideas = []
+        assigned_count = len(assignment_lookup)
 
-        for model in self.cluster_models:
-            if hasattr(model, 'response_ideas') and model.response_ideas:
-                for idea_submodel in model.response_ideas:
-                    if hasattr(idea_submodel, 'idea_embedding') and idea_submodel.idea_embedding is not None:
-                        # Extract expanded_cluster (fallback to initial_cluster if not available)
-                        expanded_cluster = getattr(idea_submodel, 'expanded_cluster', None) or \
-                                         getattr(idea_submodel, 'initial_cluster', None)
+        # Resolve category IDs to labels
+        # Per-task resolutions (from embedding pre-filter) take priority over global ID map
+        id_resolution: Dict[str, str] = {}
+        resolve_stats = {"resolved": 0, "fallback": 0, "unresolved": 0}
+        has_prefilter = bool(self._idea_code_candidates)
 
-                        all_ideas.append((
-                            model.respondent_id,
-                            idea_submodel.idea_id,
-                            idea_submodel.idea,
-                            idea_submodel.idea_embedding,
-                            expanded_cluster
-                        ))
-                    else:
-                        self.verbose_reporter.stat_line(f"Warning: No embedding for idea {idea_submodel.idea_id}")
+        for idea_id, assignment in assignment_lookup.items():
+            # Try per-task resolution first (scoped IDs from embedding pre-filter)
+            if idea_id in self._per_task_resolutions:
+                id_resolution[idea_id] = self._per_task_resolutions[idea_id]
+                resolve_stats["resolved"] += 1
+                continue
+
+            # Fix 8b (BP1): When pre-filter is active, do NOT fall back to global
+            # because scoped C1-C5 map to DIFFERENT codes than global C1-C22
+            if has_prefilter:
+                print(f"    WARNING: No scoped resolution for idea '{idea_id}' "
+                      f"with pre-filter active — unassigned")
+                resolve_stats["unresolved"] += 1
+                continue
+
+            # Global ID map (only when no pre-filter)
+            raw_id = getattr(assignment, 'assigned_code_id', '') or ''
+            cat_id = self._normalize_id(raw_id)
+            label = self._id_to_label.get(cat_id)
+            if label:
+                id_resolution[idea_id] = label
+                resolve_stats["resolved"] += 1
+            elif raw_id:
+                # BP6: Log the fallback explicitly
+                print(f"    WARNING: Code ID '{cat_id}' not in global map for "
+                      f"idea '{idea_id}' — assigning to 'other'")
+                id_resolution[idea_id] = self._other_label or ""
+                resolve_stats["fallback"] += 1
             else:
-                self.verbose_reporter.stat_line(f"Warning: No response_ideas found for respondent {model.respondent_id}")
-
-        return all_ideas
-
-    def _create_prompt(self, idea_id: str, idea_text: str) -> str:
-        """Create prompt for probe calls using Stage 2 (all codes) prompt"""
-        # Format all codes
-        all_codes_text = "\n".join([
-            f"Code: {code.code}\nDefinition: {code.definition}\n"
-            for code in self.codebook
-        ])
-
-        unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
-
-        prompt = FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
-            language=self.language,
-            var_lab=self.var_lab,
-            idea_id=idea_id,
-            idea_text=idea_text,
-            default_confidence=0.0,
-            all_codes=all_codes_text,
-            unknown_label=unknown_label
-        )
-
-        return prompt
-    
-    async def probe_call_no_structured(self, task_dict):
-        """Probe call with minimal response model for bootstrap measurement"""
-        idea_data = task_dict['idea_data']
-        respondent_id, idea_id, idea_text, idea_embedding, expanded_cluster = idea_data
-
-        prompt = self._create_prompt(idea_id, idea_text)
-
-        # Use minimal ProbeResponse model for Azure compatibility (instructor requires response_model)
-        resp = await llm_create_async(
-            client=self.client,
-            model=self.model,
-            prompt=prompt,
-            response_model=ProbeResponse,
-            temperature=self.config.temperature,
-            track_usage=False  # We're extracting usage manually for bootstrap
-        )
-
-        # Extract usage from instructor's _raw_response
-        u = getattr(resp, "_raw_response", None)
-        if u:
-            u = getattr(u, "usage", None)
-        if not u:
-            u = getattr(resp, "usage", None)
-        # Handle both Azure (prompt_tokens) and OpenAI (input_tokens) response formats
-        if u:
-            prompt_tokens = getattr(u, "prompt_tokens", None) or getattr(u, "input_tokens", 0)
-            completion_tokens = getattr(u, "completion_tokens", None) or getattr(u, "output_tokens", 0)
-            return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
-        return {"prompt_tokens": 0, "completion_tokens": 0}
-
-    async def evaluate_default_code(self, idea_id: str, idea_text: str, default_code: models.Codebook):
-        """Stage 1: Evaluate how well the default code from cluster fits the idea
-
-        Returns:
-            tuple: (DefaultCodeEvaluationResponse, str) - response and prompt used
-        """
-
-        prompt = DEFAULT_CODE_EVALUATION_PROMPT.format(
-            language=self.language,
-            var_lab=self.var_lab,
-            idea_id=idea_id,
-            idea_text=idea_text,
-            default_code=default_code.code,
-            default_definition=default_code.definition,
-            inclusion_examples=self._format_examples_list(default_code.inclusion_examples),
-            exclusion_examples=self._format_examples_list(default_code.exclusion_examples),
-            near_neighbor_label=default_code.near_neighbor_label or "Unknown",
-            tell_apart_rule=default_code.tell_apart_rule or "N/A"
-        )
-
-        self.last_prompt = prompt  # Store for backward compatibility
-
-        # Estimate tokens for rate limiting
-        est_tokens = self.estimate_tokens(prompt)
-
-        # Calculate adaptive timeout
-        timeout = self.latency_tracker.get_timeout(est_tokens)
-
-        # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
-        # then acquire token bucket and rate limiter
-        async with self.semaphore:
-            await self.tpm_bucket.wait_and_acquire(est_tokens)
-            async with self.rate_limiter:
-                start_time = time.perf_counter()
-
-                response = await asyncio.wait_for(
-                    llm_create_async(
-                        client=self.client,
-                        model=self.model,
-                        prompt=prompt,
-                        response_model=DefaultCodeEvaluationResponse,
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        track_usage=True
-                    ),
-                    timeout=timeout
-                )
-
-                # Track latency for adaptive timeout adjustment
-                latency = time.perf_counter() - start_time
-                self.latency_tracker.add(latency)
-
-                # Token reconciliation: reconcile actual vs estimated
-                if hasattr(response, '_raw_response'):
-                    usage = response._raw_response.usage
-                    if usage:
-                        actual_input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', 0)
-                        actual_output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', 0)
-                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (actual_input_tokens + actual_output_tokens)
-
-                        # Reconcile token bucket
-                        delta = actual_total_tokens - est_tokens
-                        await self.tpm_bucket.reconcile(delta)
-
-                        # V3: Track output tokens for learning
-                        self.output_token_history.append(actual_output_tokens)
-                        self.actual_total_tokens.append(actual_total_tokens)
-
-                        # V3: Track output ratio for learning
-                        if actual_input_tokens > 0:
-                            ratio = actual_output_tokens / actual_input_tokens
-                            self.output_ratio_history.append(ratio)
-
-                        # V3: Track estimation error
-                        estimation_error = abs(actual_total_tokens - est_tokens)
-                        self.estimation_errors.append(estimation_error)
-
-                        # V3: Record to TPM tracker (real-time sliding window)
-                        await self.tpm_tracker.record(actual_total_tokens)
-
-                        # V3: Learn tiktoken→API offset
-                        tiktoken_input = len(self.encoding.encode(prompt))
-                        self.tiktoken_offset_learner.record(tiktoken_input, actual_input_tokens)
-
-        self.stage_1_calls += 1
-        return response, prompt
-
-    async def evaluate_family_codes(self, idea_id: str, idea_text: str, family_codes: List[models.Codebook]):
-        """Stage 1b: Evaluate multiple codes from cluster family.
-
-        When an idea belongs to a multi-theme cluster (e.g., "12-1"), this method
-        evaluates ALL codes from the cluster family ("12", "12-1", "12-2", etc.)
-        in a single LLM call for comparative judgment.
-
-        Args:
-            idea_id: The idea identifier
-            idea_text: The idea text to evaluate
-            family_codes: List of all Codebook entries from the cluster family
-
-        Returns:
-            tuple: (FamilyCodeEvaluationResponse, str) - response and prompt used
-        """
-        # Format all candidate codes for the prompt
-        candidate_codes_text = "\n---\n".join([
-            f"Code: {code.code}\n"
-            f"Definition: {code.definition}\n"
-            f"Inclusion Examples (valid references for this code):\n    {self._format_examples_list(code.inclusion_examples)}\n"
-            f"Exclusion Examples (invalid references for this code):\n    {self._format_examples_list(code.exclusion_examples)}\n"
-            f"Boundary: Differs from '{code.near_neighbor_label or 'N/A'}' - {code.tell_apart_rule or 'N/A'}"
-            for code in family_codes
-        ])
-
-        prompt = FAMILY_CODE_EVALUATION_PROMPT.format(
-            language=self.language,
-            var_lab=self.var_lab,
-            idea_id=idea_id,
-            idea_text=idea_text,
-            candidate_codes_formatted=candidate_codes_text
-        )
-
-        self.last_prompt = prompt  # Store for backward compatibility
-
-        # Estimate tokens for rate limiting
-        est_tokens = self.estimate_tokens(prompt)
-
-        # Calculate adaptive timeout
-        timeout = self.latency_tracker.get_timeout(est_tokens)
-
-        # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
-        # then acquire token bucket and rate limiter
-        async with self.semaphore:
-            await self.tpm_bucket.wait_and_acquire(est_tokens)
-            async with self.rate_limiter:
-                start_time = time.perf_counter()
-
-                response = await asyncio.wait_for(
-                    llm_create_async(
-                        client=self.client,
-                        model=self.model,
-                        prompt=prompt,
-                        response_model=FamilyCodeEvaluationResponse,
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        track_usage=True
-                    ),
-                    timeout=timeout
-                )
-
-                # Track latency for adaptive timeout adjustment
-                latency = time.perf_counter() - start_time
-                self.latency_tracker.add(latency)
-
-                # Token reconciliation: reconcile actual vs estimated
-                if hasattr(response, '_raw_response'):
-                    usage = response._raw_response.usage
-                    if usage:
-                        actual_input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', 0)
-                        actual_output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', 0)
-                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (actual_input_tokens + actual_output_tokens)
-
-                        # Reconcile token bucket
-                        delta = actual_total_tokens - est_tokens
-                        await self.tpm_bucket.reconcile(delta)
-
-                        # V3: Track output tokens for learning
-                        self.output_token_history.append(actual_output_tokens)
-                        self.actual_total_tokens.append(actual_total_tokens)
-
-                        # V3: Track output ratio for learning
-                        if actual_input_tokens > 0:
-                            ratio = actual_output_tokens / actual_input_tokens
-                            self.output_ratio_history.append(ratio)
-
-                        # V3: Track estimation error
-                        estimation_error = abs(actual_total_tokens - est_tokens)
-                        self.estimation_errors.append(estimation_error)
-
-                        # V3: Record to TPM tracker (real-time sliding window)
-                        await self.tpm_tracker.record(actual_total_tokens)
-
-                        # V3: Learn tiktoken→API offset
-                        tiktoken_input = len(self.encoding.encode(prompt))
-                        self.tiktoken_offset_learner.record(tiktoken_input, actual_input_tokens)
-
-        self.stage_1_calls += 1
-        return response, prompt
-
-    async def assign_from_all_codes(self, idea_id: str, idea_text: str, idea_embedding: np.ndarray, default_confidence: float):
-
-        # Build list of codes: top-10 similar + general + unknown
-        all_codes_list = []
-
-        # 1. Add top-10 most similar codes using embeddings
-        top_k = self.config.top_k_similar_codes
-        similar_codes = self._find_similar_codes(idea_embedding, top_k=top_k)
-
-        for code in similar_codes:
-            all_codes_list.append({
-                'code': code.code,
-                'definition': code.definition,
-                'inclusion_examples': code.inclusion_examples,
-                'exclusion_examples': code.exclusion_examples,
-                'near_neighbor_label': code.near_neighbor_label,
-                'tell_apart_rule': code.tell_apart_rule,
-                'type': 'specific'
-            })
-
-        # 2. Add general codes (theme/category level)
-        all_codes_list.extend(self._build_general_codes())
-
-        # 3. Add unknown fallback
-        unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
-        all_codes_list.append({
-            'code': unknown_label,
-            'definition': "Geen duidelijke relatie met thema's in codebook",
-            'inclusion_examples': None,
-            'exclusion_examples': None,
-            'near_neighbor_label': None,
-            'tell_apart_rule': None,
-            'type': 'unknown'
-        })
-
-        # Format all codes for prompt
-        all_codes_text = "\n".join([
-            f"Code: {c['code']}\n"
-            f"Definition: {c['definition']}\n"
-            f"Include when: {self._format_examples_list(c.get('inclusion_examples'))}\n"
-            f"Exclude when: {self._format_examples_list(c.get('exclusion_examples'))}\n"
-            f"Boundary: Differs from '{c.get('near_neighbor_label') or 'N/A'}' - {c.get('tell_apart_rule') or 'N/A'}\n"
-            for c in all_codes_list
-        ])
-
-        prompt = FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
-            language=self.language,
-            var_lab=self.var_lab,
-            idea_id=idea_id,
-            idea_text=idea_text,
-            default_confidence=default_confidence,
-            all_codes=all_codes_text,
-            unknown_label=unknown_label
-        )
-
-        self.last_prompt = prompt  # Store for backward compatibility
-
-        # Estimate tokens for rate limiting
-        est_tokens = self.estimate_tokens(prompt)
-
-        # Calculate adaptive timeout
-        timeout = self.latency_tracker.get_timeout(est_tokens)
-
-        # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
-        # then acquire token bucket and rate limiter
-        async with self.semaphore:
-            await self.tpm_bucket.wait_and_acquire(est_tokens)
-            async with self.rate_limiter:
-                start_time = time.perf_counter()
-
-                response = await asyncio.wait_for(
-                    llm_create_async(
-                        client=self.client,
-                        model=self.model,
-                        prompt=prompt,
-                        response_model=FallbackCodeAssignmentResponse,
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        track_usage=True
-                    ),
-                    timeout=timeout
-                )
-
-                # Track latency for adaptive timeout adjustment
-                latency = time.perf_counter() - start_time
-                self.latency_tracker.add(latency)
-
-                # Token reconciliation: reconcile actual vs estimated
-                if hasattr(response, '_raw_response'):
-                    usage = response._raw_response.usage
-                    if usage:
-                        actual_input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', 0)
-                        actual_output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', 0)
-                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (actual_input_tokens + actual_output_tokens)
-
-                        # Reconcile token bucket
-                        delta = actual_total_tokens - est_tokens
-                        await self.tpm_bucket.reconcile(delta)
-
-                        # V3: Track output tokens for learning
-                        self.output_token_history.append(actual_output_tokens)
-                        self.actual_total_tokens.append(actual_total_tokens)
-
-                        # V3: Track output ratio for learning
-                        if actual_input_tokens > 0:
-                            ratio = actual_output_tokens / actual_input_tokens
-                            self.output_ratio_history.append(ratio)
-
-                        # V3: Track estimation error
-                        estimation_error = abs(actual_total_tokens - est_tokens)
-                        self.estimation_errors.append(estimation_error)
-
-                        # V3: Record to TPM tracker (real-time sliding window)
-                        await self.tpm_tracker.record(actual_total_tokens)
-
-                        # V3: Learn tiktoken→API offset
-                        tiktoken_input = len(self.encoding.encode(prompt))
-                        self.tiktoken_offset_learner.record(tiktoken_input, actual_input_tokens)
-
-        self.stage_2_calls += 1
-        return response, prompt
+                resolve_stats["unresolved"] += 1
+
+        # Final stats
+        if verbose:
+            print(f"\n  Completed {total_batches} tasks in {elapsed:.1f}s")
+            print(f"  - Successful: {self._stats['tasks_successful']}")
+            print(f"  - Failed: {self._stats['tasks_failed']}")
+            if self._stats['rate_limits']:
+                print(f"  - Rate limits hit: {self._stats['rate_limits']}")
+            if self._stats['timeouts']:
+                print(f"  - Timeouts: {self._stats['timeouts']} (fallback)")
+            print(f"  - Average: {elapsed / max(total_batches, 1):.2f}s/task")
+            print(f"  - Assigned: {assigned_count}/{total_ideas} ideas")
+            if self._adjustment_count > 0:
+                print(f"  - Throughput adjustments: {self._adjustment_count}")
+
+            print(f"\n  [ID RESOLUTION]")
+            print(f"    Resolved: {resolve_stats['resolved']}")
+            if resolve_stats['fallback']:
+                print(f"    Fallback (invalid ID): {resolve_stats['fallback']}")
+            if resolve_stats['unresolved']:
+                print(f"    Unresolved (no ID): {resolve_stats['unresolved']}")
+
+        if self._failure_log:
+            from collections import Counter
+            print(f"\n  PROCESSING ERRORS: {len(self._failure_log)} of {total_batches}")
+            for reason, count in Counter(f['error_type'] for f in self._failure_log).most_common():
+                print(f"    {count}x {reason}")
+
+        output = self._build_output_models(assignment_lookup, id_resolution)
+        if verbose:
+            self._print_assignment_summary(output)
+        return output
+
+    # =========================================================================
+    # WORKER
+    # =========================================================================
+
+    async def _worker(
+        self,
+        queue: asyncio.Queue,
+        results: List,
+        timed_out: List,
+    ) -> None:
+        """Worker coroutine: pulls tasks from queue, processes with retry."""
+        while True:
+            try:
+                task = await queue.get()
+                if task is None:  # Sentinel
+                    break
+
+                try:
+                    result = await self._process_task_with_retry(task)
+                    if result is None:
+                        # Timeout — collect for fallback
+                        timed_out.append((task['result_index'], task))
+                    else:
+                        results[task['result_index']] = result
+                        self._stats['tasks_successful'] += 1
+
+                        # Fix 8c: Assert single assignment per task
+                        if len(result.assignments) != 1:
+                            print(f"    WARNING: Expected 1 assignment, got "
+                                  f"{len(result.assignments)} for task "
+                                  f"{task['result_index']}")
+
+                        # Per-task ID resolution (for embedding pre-filter scoped IDs)
+                        task_id_map = task.get('task_id_to_label')
+                        if task_id_map and result.assignments:
+                            idea = task['idea']
+                            raw_id = result.assignments[0].assigned_code_id or ''
+                            cat_id = self._normalize_id(raw_id)
+                            label = task_id_map.get(cat_id)
+                            if label:
+                                self._per_task_resolutions[idea.idea_id] = label
+                            else:
+                                # Fix 8a (BP6): Log resolution failure
+                                print(f"    WARNING: Code ID '{cat_id}' not in scoped "
+                                      f"candidates for idea '{idea.idea_id}'")
+                except Exception as e:
+                    error_type = type(e).__name__
+                    error_str = str(e)
+
+                    if "429" in error_str or "RateLimitReached" in error_str:
+                        if "token rate limit" in error_str.lower():
+                            error_type = "RateLimit_TPM"
+                        elif "call rate limit" in error_str.lower():
+                            error_type = "RateLimit_RPM"
+                        else:
+                            error_type = "RateLimit"
+                        self._stats['rate_limits'] += 1
+
+                    self._stats['tasks_failed'] += 1
+                    self._failure_log.append({
+                        'partition': task['partition_name'],
+                        'batch_idx': task['batch_idx'],
+                        'result_index': task['result_index'],
+                        'error_type': error_type,
+                        'task': task,  # Preserve full task for retry pass
+                    })
+                finally:
+                    self._stats['tasks_processed'] += 1
+                    queue.task_done()
+
+            except asyncio.CancelledError:
+                break
 
     @retry(
         retry=retry_if_exception_type((
@@ -1657,849 +705,673 @@ class CodeAssigner:
             APITimeoutError,
             InternalServerError,
             InstructorRetryException,
-            asyncio.TimeoutError
         )),
         wait=wait_exponential_jitter(initial=2, max=60),
         stop=stop_after_attempt(5),
-        reraise=True
+        reraise=True,
     )
-    async def process_task(self, task: Dict) -> CodeAssignmentResponse:
-        """Two-stage code assignment: evaluate default from cluster, fallback to all codes if needed"""
-        #task_start = time.perf_counter()
+    async def _process_task_with_retry(
+        self,
+        task: Dict,
+    ) -> Optional[CodeAssignmentBatch]:
+        """Process a single idea with 4-layer rate limiting + timeout.
 
-        try:
-            idea_data = task['idea_data']
-            respondent_id, idea_id, idea_text, idea_embedding, expanded_cluster = idea_data
-
-            # Metadata for tracking default vs fallback
-            metadata = {
-                'used_default': False,
-                'fallback_triggered': False,
-                'default_confidence': None,
-                'expanded_cluster': expanded_cluster
-            }
-
-            # Local variable to capture the prompt for this specific task (avoid race conditions)
-            prompt_used = ""
-
-            # Get all codes from the cluster family (includes parent and all sub-clusters)
-            # For expanded_cluster="12-1", this gets codes from "12", "12-1", "12-2", etc.
-            base_cluster = self._get_base_cluster_id(str(expanded_cluster))
-            family_codes = self.cluster_family_codes.get(base_cluster, [])
-            metadata['base_cluster'] = base_cluster
-            metadata['family_codes_count'] = len(family_codes)
-
-            if not family_codes:
-                # No codes from this cluster family - go straight to fallback (Stage 2)
-                metadata['fallback_triggered'] = True
-                stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, idea_embedding, default_confidence=0.0)
-
-                assigned_code = stage_2_result.assigned_codes[0]
-                confidence = stage_2_result.assignment_confidence
-                rationale = f"No family codes available. {stage_2_result.assignment_rationale}"
-                self.used_fallback_count += 1
-
-            elif len(family_codes) == 1:
-                # Single code in family - use efficient single-code evaluation (Stage 1)
-                default_code = family_codes[0]
-                stage_1_result, prompt_used = await self.evaluate_default_code(idea_id, idea_text, default_code)
-
-                metadata['default_confidence'] = stage_1_result.confidence
-
-                # Record for adaptive threshold tracking
-                self.confidence_tracker.record(stage_1_result.confidence)
-
-                # Determine threshold (adaptive or fixed)
-                if self.adaptive_threshold_config.use_adaptive:
-                    threshold = self.confidence_tracker.get_adaptive_threshold(
-                        self.adaptive_threshold_config.fixed_threshold
-                    )
-                else:
-                    threshold = self.adaptive_threshold_config.fixed_threshold
-                metadata['threshold_used'] = threshold
-
-                if stage_1_result.confidence >= threshold:
-                    # Use default code
-                    metadata['used_default'] = True
-                    assigned_code = default_code.code
-                    confidence = stage_1_result.confidence
-                    rationale = stage_1_result.rationale
-                    self.used_default_count += 1
-
-                else:
-                    # Stage 2: Fallback to similar codes (dynamic top-k)
-                    metadata['fallback_triggered'] = True
-                    stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, idea_embedding, stage_1_result.confidence)
-
-                    assigned_code = stage_2_result.assigned_codes[0]
-                    confidence = stage_2_result.assignment_confidence
-                    rationale = f"Default: {stage_1_result.rationale} | Fallback: {stage_2_result.assignment_rationale}"
-                    self.used_fallback_count += 1
-
-            else:
-                # Multiple codes in family - evaluate all candidates (Stage 1b)
-                stage_1b_result, prompt_used = await self.evaluate_family_codes(idea_id, idea_text, family_codes)
-
-                # Record best match confidence for adaptive threshold tracking
-                best_confidence = stage_1b_result.best_match.confidence
-                metadata['default_confidence'] = best_confidence
-                self.confidence_tracker.record(best_confidence)
-
-                # Determine threshold (adaptive or fixed)
-                if self.adaptive_threshold_config.use_adaptive:
-                    threshold = self.confidence_tracker.get_adaptive_threshold(
-                        self.adaptive_threshold_config.fixed_threshold
-                    )
-                else:
-                    threshold = self.adaptive_threshold_config.fixed_threshold
-                metadata['threshold_used'] = threshold
-
-                # Check if best match meets threshold and is not "NONE"
-                if stage_1b_result.best_match.code != "NONE" and best_confidence >= threshold:
-                    # Use best matching family code
-                    metadata['used_default'] = True
-                    assigned_code = stage_1b_result.best_match.code
-                    confidence = best_confidence
-                    rationale = stage_1b_result.best_match.rationale
-                    self.used_default_count += 1
-
-                else:
-                    # Stage 2: Fallback to similar codes (dynamic top-k)
-                    metadata['fallback_triggered'] = True
-                    stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, idea_embedding, best_confidence)
-
-                    assigned_code = stage_2_result.assigned_codes[0]
-                    confidence = stage_2_result.assignment_confidence
-                    rationale = f"Family best: {stage_1b_result.best_match.rationale} | Fallback: {stage_2_result.assignment_rationale}"
-                    self.used_fallback_count += 1
-
-            # Create response
-            response = CodeAssignmentResponse(
-                idea_id=idea_id,
-                idea=idea_text,
-                assigned_codes=[assigned_code],
-                assignment_confidence=confidence,
-                assignment_rationale=rationale
-            )
-
-            # Add theme mapping
-            response.assigned_themes = self._assign_themes_to_codes([assigned_code])
-
-            # Record pattern for diagnostics
-            self.pattern_tracker.record_assignment(
-                respondent_id=respondent_id,
-                cluster_id=str(expanded_cluster) if expanded_cluster else "",
-                assigned_code=assigned_code,
-                confidence=confidence,
-                used_default=metadata.get('used_default', False),
-                fallback_triggered=metadata.get('fallback_triggered', False)
-            )
-
-            # Capture for debugging (only if verbose)
-            if self.verbose:
-                self.prompt_responses.append({
-                    'prompt': prompt_used,  # Use local variable to avoid race conditions with concurrent tasks
-                    'respondent_id': respondent_id,
-                    'idea_id': idea_id,
-                    'idea_text': idea_text,
-                    'expanded_cluster': expanded_cluster,
-                    'assigned_codes': [assigned_code],
-                    'confidence': confidence,
-                    'rationale': rationale,
-                    'metadata': metadata
-                })
-
-            self.stats['tasks_successful'] += 1
-            return response
-
-        except asyncio.TimeoutError:
-            self.stats['timeouts'] += 1
-            logger.warning(f"Task {task['task_id']} timed out")
-            raise  # Let tenacity retry
-
-        except RateLimitError:
-            self.stats['rate_limits'] += 1
-            logger.warning(f"Task {task['task_id']} hit rate limit")
-            raise  # Let tenacity retry
-
-        except Exception as e:
-            logger.error(f"Task {task['task_id']} failed: {type(e).__name__}: {e}")
-            raise  # Let tenacity retry
-    
-    def create_fallback_response(self, task: Dict) -> CodeAssignmentResponse:
-        """Create fallback response for failed tasks"""
-        idea_data = task['idea_data']
-        respondent_id, idea_id, idea_text, idea_embedding, expanded_cluster = idea_data
-        
-        # Return fallback response (first available code)
-        fallback_code = self.codebook[0].code if self.codebook else "Unknown"
-        fallback_themes = self._assign_themes_to_codes([fallback_code]) if fallback_code != "Unknown" else []
-        
-        return CodeAssignmentResponse(
-            idea_id=idea_id,
-            idea=idea_text,
-            assigned_codes=[fallback_code],
-            assigned_themes=fallback_themes,
-            assignment_confidence=0.1,
-            assignment_rationale="Processing failed, using fallback code"
-        )
-    
-    async def worker(self, queue: asyncio.Queue, results: List):
-        """Worker coroutine that processes tasks from queue"""
-        #worker_id = id(asyncio.current_task())
-        task_count = 0
-        
-        while True:
-            try:
-                task = await queue.get()
-                if task is None:  # Sentinel
-                    #print(f"[DEBUG] Worker {worker_id} received sentinel, processed {task_count} tasks")
-                    break
-                
-                task_count += 1
-                #print(f"[DEBUG] Worker {worker_id} processing task {task_count}: {task.get('task_id', 'unknown')}")
-                
-                try:
-                    result = await self.process_task(task)
-                    results[task['result_index']] = result
-                    #print(f"[DEBUG] Worker {worker_id} task {task_count} SUCCESS")
-                except Exception as e:
-                    # After all retries failed
-                    #print(f"[DEBUG] Worker {worker_id} task {task_count} FAILED: {type(e).__name__}: {e}")
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-
-                    # Track error types
-                    if error_type not in self.stats['error_types']:
-                        self.stats['error_types'][error_type] = {'count': 0, 'sample_messages': []}
-                    self.stats['error_types'][error_type]['count'] += 1
-                    # Store up to 3 sample error messages per type
-                    if len(self.stats['error_types'][error_type]['sample_messages']) < 3:
-                        self.stats['error_types'][error_type]['sample_messages'].append(error_msg[:200])
-
-                    logger.error(f"Task {task['task_id']} failed after retries: {error_type}: {e}")
-                    import traceback
-                    logger.error(f"Full traceback: {traceback.format_exc()}")
-                    self.stats['tasks_failed'] += 1
-                    results[task['result_index']] = self.create_fallback_response(task)
-                finally:
-                    self.stats['tasks_processed'] += 1
-                    queue.task_done()
-                    
-            except Exception as e:
-                logger.error(f"Worker error: {type(e).__name__}: {e}")
-                import traceback
-                logger.error(f"Worker traceback: {traceback.format_exc()}")
-                break
-
-    async def _process_single_idea(self, idea_data: tuple) -> CodeAssignmentResponse:
-        """Deprecated - use process_task instead"""
-        # This method is now deprecated - it's kept for compatibility
-        # All processing now goes through the worker queue pattern
-        pass
-
-    def _merge_results_into_models(self, assignment_results: List[CodeAssignmentResponse]) -> List[models.CodeAssignedModel]:
-        """Merge assignment results back into model structure"""
-
-        # Create lookup for assignments by idea_id
-        assignments_lookup = {result.idea_id: result for result in assignment_results}
-        
-        coded_models = []
-        
-        for original_model in self.cluster_models:
-            # Convert to CodeAssignedModel
-            coded_model = original_model.to_model(models.CodeAssignedModel)
-            
-            # Update response_ideas with assignments
-            if coded_model.response_ideas:
-                updated_ideas = []
-                for idea_submodel in coded_model.response_ideas:
-                    # Convert to AssignedIdeaSubmodel (preserve all inherited fields)
-                    assigned_idea = models.AssignedIdeaSubmodel(
-                        # From IdeasExtractedSubmodel
-                        idea_id=idea_submodel.idea_id,
-                        idea=idea_submodel.idea,
-                        taxonomy_phrase=getattr(idea_submodel, 'taxonomy_phrase', ''),
-                        instance=getattr(idea_submodel, 'instance', ''),
-                        node=getattr(idea_submodel, 'node', ''),
-                        category=getattr(idea_submodel, 'category', ''),
-                        root=getattr(idea_submodel, 'root', ''),
-                        sentiment=getattr(idea_submodel, 'sentiment', 'neutral'),
-                        sense=getattr(idea_submodel, 'sense', 'factual'),
-                        # From EmbeddingsSubmodel
-                        idea_embedding=getattr(idea_submodel, 'idea_embedding', None),
-                        node_embedding=getattr(idea_submodel, 'node_embedding', None),
-                        taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
-                        ontology_embedding=getattr(idea_submodel, 'ontology_embedding', None),
-                        # From ClusterSubmodel
-                        initial_cluster=getattr(idea_submodel, 'initial_cluster', None),
-                        cluster_probability=getattr(idea_submodel, 'cluster_probability', None),
-                        expanded_cluster=getattr(idea_submodel, 'expanded_cluster', None),
-                        cluster_theme=getattr(idea_submodel, 'cluster_theme', None)
-                    )
-                    
-                    # Add assignment data if available
-                    if idea_submodel.idea_id in assignments_lookup:
-                        assignment = assignments_lookup[idea_submodel.idea_id]
-                        assigned_idea.assigned_codes = assignment.assigned_codes
-                        assigned_idea.assigned_themes = assignment.assigned_themes
-                        assigned_idea.assignment_confidence = assignment.assignment_confidence
-                        assigned_idea.assignment_rationale = assignment.assignment_rationale
-                    else:
-                        # Fallback if no assignment found
-                        assigned_idea.assigned_codes = ["Unassigned"]
-                        assigned_idea.assigned_themes = []
-                        assigned_idea.assignment_confidence = 0.0
-                        assigned_idea.assignment_rationale = "No assignment found"
-                    
-                    updated_ideas.append(assigned_idea)
-                
-                coded_model.response_ideas = updated_ideas
-            
-            coded_models.append(coded_model)
-
-        return coded_models
-
-    def get_random_samples(self, n: int = 3, seed: int = None) -> List[Dict]:
+        Returns None on timeout (collected for fallback, no retry).
         """
-        Get n random prompt/response samples for inspection.
+        partition_name = task['partition_name']
+        idea = task['idea']
+        candidate_codes = task.get('candidate_codes', self._codes)
+        task_id_to_label = task.get('task_id_to_label', self._id_to_label)
+        prompt = self._build_dual_assignment_prompt(idea, codes=candidate_codes)
+        response_model = CodeAssignmentResponse
+
+        # Prompt capture (first task per partition)
+        _assign_key = f"assign_{partition_name}"
+        if (self._prompt_printer is not None
+                and _assign_key not in self._captured_assign_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="taxonomy_codes",
+                utility_name="CodeAssigner",
+                prompt_content=prompt,
+                prompt_type="dual_assignment",
+                metadata={
+                    "model": self._config.assignment_model,
+                    "temperature": self._config.assignment_temperature,
+                    "max_tokens": self._config.assignment_max_tokens,
+                    "language": (
+                        self._extraction_metadata.lang
+                        if self._extraction_metadata else "Dutch"
+                    ),
+                    "partition_name": partition_name,
+                    "n_codes": len(candidate_codes),
+                }
+            )
+            self._captured_assign_gates.add(_assign_key)
+
+        est_tokens = self._avg_tokens
+
+        # 4-layer rate limiting: Gate → TPM bucket → RPM limiter → Timeout
+        async with self._gate:
+            # Compute timeout AFTER gate (uses current latency data)
+            timeout = self._latency_tracker.get_timeout(est_tokens)
+            await self._tpm_bucket.wait_and_acquire(est_tokens)
+            api_start = time.perf_counter()
+
+            async with self._rate_limiter:
+                try:
+                    result = await asyncio.wait_for(
+                        llm_create_async(
+                            client=self._client,
+                            model=self._config.assignment_model,
+                            prompt=prompt,
+                            response_model=response_model,
+                            temperature=self._config.assignment_temperature,
+                            max_tokens=self._config.assignment_max_tokens,
+                            **get_reasoning_params(self._config.assignment_model),
+                        ),
+                        timeout=timeout,
+                    )
+                except asyncio.TimeoutError:
+                    self._stats['timeouts'] += 1
+                    if self._circuit_breaker:
+                        self._circuit_breaker.record_timeout()
+                    return None  # Collected for fallback
+
+                # Record latency
+                latency = time.perf_counter() - api_start
+                self._latency_tracker.add(latency)
+
+                # Circuit breaker feedback
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_completion()
+
+                # Track actual token usage + reconcile
+                usage = getattr(result, '_raw_response', None)
+                if usage:
+                    usage = getattr(usage, 'usage', None)
+                if not usage:
+                    usage = getattr(result, 'usage', None)
+
+                if usage:
+                    input_tokens = (
+                        getattr(usage, 'input_tokens', 0)
+                        or getattr(usage, 'prompt_tokens', 0)
+                    )
+                    output_tokens = (
+                        getattr(usage, 'output_tokens', 0)
+                        or getattr(usage, 'completion_tokens', 0)
+                    )
+                    actual_total = (
+                        getattr(usage, 'total_tokens', 0)
+                        or (input_tokens + output_tokens)
+                    )
+
+                    self._actual_total_tokens.append(actual_total)
+
+                    # Reconcile token bucket
+                    delta = actual_total - est_tokens
+                    await self._tpm_bucket.reconcile(delta)
+
+                    # Learn tiktoken→API offset
+                    tiktoken_count = len(self._encoding.encode(prompt))
+                    self._tiktoken_learner.record(tiktoken_count, input_tokens)
+
+                    # Feed PID trackers
+                    if self._tpm_tracker:
+                        await self._tpm_tracker.record(actual_total)
+                    if self._rpm_tracker:
+                        await self._rpm_tracker.record()
+
+                # BP6: Validate response before accessing fields
+                if result is None or not hasattr(result, 'assigned_code_id'):
+                    print(f"    WARNING: Empty or invalid response for idea "
+                          f"'{idea.idea_id}' — skipping")
+                    return None
+
+                if not result.assigned_code_id:
+                    print(f"    WARNING: No code_id in response for idea "
+                          f"'{idea.idea_id}' — skipping")
+                    return None
+
+                # Wrap into batch format (idea_id from original task, not LLM)
+                wrapped = CodeAssignmentBatch(
+                    assignments=[CodeAssignment(
+                        idea_id=idea.idea_id,
+                        assigned_code_id=result.assigned_code_id,
+                        confidence=result.confidence,
+                        rationale=result.rationale,
+                    )]
+                )
+                return wrapped
+
+    # =========================================================================
+    # RATE LIMITING: INITIALIZATION + CALIBRATION + ADJUSTMENT
+    # =========================================================================
+
+    def _estimate_avg_tokens(self, partition_ideas: Dict) -> int:
+        """Estimate avg tokens per request via tiktoken (no API calls)."""
+        # Sample up to 20 ideas across partitions
+        all_ideas = []
+        for ideas in partition_ideas.values():
+            all_ideas.extend(ideas)
+        sample = all_ideas[:min(20, len(all_ideas))]
+
+        if not sample:
+            return 3000  # Conservative fallback
+
+        token_counts = []
+        for idea in sample:
+            prompt = self._build_dual_assignment_prompt(idea)
+            prompt_tokens = len(self._encoding.encode(prompt))
+            # Estimate output at ~15% of input (structured JSON response)
+            completion_tokens = int(prompt_tokens * 0.15)
+            token_counts.append(prompt_tokens + completion_tokens)
+
+        return int(statistics.mean(token_counts))
+
+    def _initialize_rate_limiters(
+        self,
+        limits: RateLimits,
+        num_tasks: int,
+        headroom: float,
+    ) -> int:
+        """Set up 4-layer rate limiting with completion-based ramp.
+
+        Returns the Little's Law cap (target concurrency).
+        """
+        avg_tokens = max(self._avg_tokens, 1)
+
+        # Arrival rate from RPM and TPM
+        rpm_throughput = limits.requests_per_minute * headroom / 60
+        tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
+        arrival_rate = min(rpm_throughput, tpm_throughput)
+        self._current_arrival_rate = arrival_rate
+
+        # Layer 1: RPM (AsyncLimiter)
+        self._rate_limiter = AsyncLimiter(
+            1, time_period=1.0 / max(arrival_rate, 0.01)
+        )
+
+        # Layer 2: TPM (TokenBucket)
+        self._tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
+
+        # Little's Law cap
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        little_law_cap = compute_optimal_concurrency(
+            api_limits, DEFAULT_LATENCY_SECONDS, avg_tokens,
+            headroom=headroom,
+        )
+
+        # Layer 3: Concurrency (ConcurrencyGate + ramp)
+        initial_conc = max(5, int(little_law_cap * DEFAULT_RAMP_UP_CONFIG.start_fraction))
+        self._gate = ConcurrencyGate(initial_conc)
+        self._concurrency_ramp = ConcurrencyRamp(
+            DEFAULT_RAMP_UP_CONFIG, little_law_cap, num_tasks
+        )
+
+        # Layer 4: Circuit breaker
+        self._circuit_breaker = ConcurrencyCircuitBreaker(
+            DEFAULT_CIRCUIT_BREAKER_CONFIG, self._gate, initial_conc
+        )
+
+        # PID components
+        self._tpm_tracker = RealTimeTPMTracker(
+            window_seconds=DEFAULT_TPM_TRACKING_CONFIG.sliding_window_seconds
+        )
+        self._rpm_tracker = RealTimeRPMTracker(window_seconds=60.0)
+        self._pid_controller = PIDThroughputController(
+            target_utilization=DEFAULT_TPM_TRACKING_CONFIG.target_utilization,
+            kp_up=DEFAULT_PID_CONTROLLER_CONFIG.kp_up,
+            kp_down=DEFAULT_PID_CONTROLLER_CONFIG.kp_down,
+            ki=DEFAULT_PID_CONTROLLER_CONFIG.ki,
+            kd=DEFAULT_PID_CONTROLLER_CONFIG.kd,
+            min_adjustment=DEFAULT_PID_CONTROLLER_CONFIG.min_adjustment,
+            max_adjustment=DEFAULT_PID_CONTROLLER_CONFIG.max_adjustment,
+        )
+
+        # Latency + tiktoken offset
+        self._latency_tracker = LatencyTracker()
+        self._tiktoken_learner = TiktokenOffsetLearner()
+
+        return little_law_cap
+
+    def _calibrate_from_warm_up(
+        self,
+        limits: RateLimits,
+        headroom: float,
+        num_tasks: int,
+    ) -> int:
+        """One-shot calibration from first N real completions.
+
+        Returns new worker target (for spawning extra workers if needed).
+        """
+        self._warm_up_done = True
+
+        # Measured values
+        actual_avg_tokens = int(np.mean(list(self._actual_total_tokens)))
+        p10_latency = float(np.percentile(list(self._latency_tracker.values), 10))
+
+        # Recalculate Little's Law with measured data
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        new_cap = compute_optimal_concurrency(
+            api_limits, p10_latency, actual_avg_tokens,
+            headroom=headroom,
+        )
+
+        # Update token estimate
+        old_avg = self._avg_tokens
+        self._avg_tokens = actual_avg_tokens
+
+        # Recalibrate ramp
+        self._concurrency_ramp.recalibrate(new_cap)
+
+        # Update circuit breaker baseline
+        new_initial = self._concurrency_ramp.current_target()
+        self._circuit_breaker.baseline = new_initial
+
+        # Recalculate arrival rate
+        rpm_throughput = limits.requests_per_minute * headroom / 60
+        tpm_throughput = limits.tokens_per_minute * headroom / max(actual_avg_tokens, 1) / 60
+        new_arrival_rate = min(rpm_throughput, tpm_throughput)
+        self._current_arrival_rate = new_arrival_rate
+        self._rate_limiter = AsyncLimiter(
+            1, time_period=1.0 / max(new_arrival_rate, 0.01)
+        )
+
+        # Reset PID
+        self._pid_controller.reset()
+
+        if self._config.verbose:
+            print(f"\n  [WARM-UP CALIBRATION]")
+            print(f"    Tokens: {old_avg} → {actual_avg_tokens} (measured)")
+            print(f"    Latency P10: {p10_latency:.2f}s")
+            print(f"    Little's Law: {new_cap}")
+            print(f"    Arrival rate: {new_arrival_rate:.1f}/s")
+
+        # Return new ramp target for worker scaling
+        return min(num_tasks, self._concurrency_ramp.cap)
+
+    def _check_ramp_up(self, completions: int, timeouts: int, elapsed: float):
+        """Check and advance completion-based concurrency ramp."""
+        if self._concurrency_ramp is None or self._concurrency_ramp.is_done():
+            return
+
+        rate = completions / elapsed if elapsed > 0 else 0
+
+        self._concurrency_ramp.record_measurement(
+            throughput=rate,
+            tpm_pct=0,  # PID handles TPM, ramp uses throughput
+            rpm_pct=0,
+            completions_total=completions,
+            timeouts_total=timeouts,
+            duration=elapsed,
+        )
+
+        new_target = self._concurrency_ramp.current_target()
+        if new_target != self._gate.limit:
+            self._gate.set_limit(new_target)
+
+    async def _apply_pid_adjustment(self, headroom: float):
+        """PID-based arrival rate adjustment using real-time TPM utilization."""
+        if not self._tpm_tracker or not self._rate_limits:
+            return
+
+        current_tpm = await self._tpm_tracker.get_current_tpm()
+        tpm_limit = self._rate_limits.tokens_per_minute * headroom
+        if tpm_limit <= 0:
+            return
+
+        utilization = current_tpm / tpm_limit
+        adjustment = self._pid_controller.compute_adjustment(utilization)
+
+        if adjustment != 1.0:
+            self._current_arrival_rate *= adjustment
+            self._rate_limiter = AsyncLimiter(
+                1, time_period=1.0 / max(self._current_arrival_rate, 0.01)
+            )
+            self._adjustment_count += 1
+
+    async def _print_progress(
+        self,
+        completed: int,
+        total: int,
+        total_ideas: int,
+        elapsed: float,
+    ):
+        """Print progress with constraint visibility (TPM%, RPM%, Conc%)."""
+        rate = completed / elapsed if elapsed > 0 else 0
+        remaining = total - completed
+        eta_s = remaining / rate if rate > 0 else 0
+        eta_str = f"{eta_s / 60:.1f}m" if eta_s >= 60 else f"{eta_s:.0f}s"
+
+        # Constraint utilization
+        tpm_pct = rpm_pct = conc_pct = 0.0
+        if self._tpm_tracker and self._rate_limits:
+            current_tpm = await self._tpm_tracker.get_current_tpm()
+            tpm_limit = self._rate_limits.tokens_per_minute * DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
+            tpm_pct = (current_tpm / tpm_limit * 100) if tpm_limit > 0 else 0
+        if self._rpm_tracker and self._rate_limits:
+            current_rpm = await self._rpm_tracker.get_current_rpm()
+            rpm_limit = self._rate_limits.requests_per_minute * DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
+            rpm_pct = (current_rpm / rpm_limit * 100) if rpm_limit > 0 else 0
+        if self._gate:
+            conc_pct = (self._gate.active / max(self._gate.limit, 1) * 100)
+
+        cb_state = self._circuit_breaker.state if self._circuit_breaker else "N/A"
+
+        failed_str = (
+            f" Failed:{self._stats['tasks_failed']}"
+            if self._stats['tasks_failed'] else ""
+        )
+        deferred_str = (
+            f" Deferred:{self._stats['timeouts']}"
+            if self._stats['timeouts'] else ""
+        )
+
+        print(
+            f"  Progress: {completed}/{total} ({completed/total*100:.1f}%) "
+            f"Rate: {rate:.0f}/s | "
+            f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% "
+            f"Conc:{self._gate.active}/{self._gate.limit}({conc_pct:.0f}%) "
+            f"CB:{cb_state} "
+            f"ETA: {eta_str}{failed_str}{deferred_str}"
+        )
+
+    # =========================================================================
+    # ID-BASED RESOLUTION
+    # =========================================================================
+
+    _RE_NORMALIZE_ID = re.compile(r'\s+')
+
+    @staticmethod
+    def _normalize_id(raw_id: str) -> str:
+        """Normalize a raw category ID: 'c7' -> 'C7', '7' -> 'C7'."""
+        cat_id = CodeAssigner._RE_NORMALIZE_ID.sub('', raw_id.strip().upper())
+        if not cat_id.startswith('C') and cat_id.isdigit():
+            cat_id = f"C{cat_id}"
+        return cat_id
+
+    def _build_id_maps(self) -> None:
+        """Build ID-to-label maps from self._codes (ConsolidatedCode list).
+
+        Populates self._id_to_label, self._other_id, self._other_label.
+        """
+        id_to_label: Dict[str, str] = {}
+
+        for i, code in enumerate(self._codes, 1):
+            id_to_label[f"C{i}"] = code.code_name
+
+        # Add "other" as final entry
+        if self._config.include_other_category:
+            language = "Dutch"
+            if self._extraction_metadata:
+                language = getattr(self._extraction_metadata, 'lang', 'Dutch') or 'Dutch'
+            other_label = get_other_category_label(language)
+            other_id = f"C{len(self._codes) + 1}"
+            id_to_label[other_id] = other_label
+            self._other_id = other_id
+            self._other_label = other_label
+        else:
+            self._other_id = None
+            self._other_label = None
+
+        self._id_to_label = id_to_label
+
+    # =========================================================================
+    # PROMPT BUILDING
+    # =========================================================================
+
+    def _build_dual_assignment_prompt(self, idea, codes=None) -> str:
+        """Build prompt for dual assignment (code + attribute).
 
         Args:
-            n: Number of samples to return (default 3)
-            seed: Random seed for reproducibility (default None)
-
-        Returns:
-            List of dictionaries containing sample data
+            idea: The idea to assign.
+            codes: Optional subset of codes. Defaults to self._codes (all codes).
         """
-        if not self.prompt_responses:
-            return []
+        codes = codes if codes is not None else self._codes
 
-        # Use numpy random for consistent behavior
-        rng = np.random.default_rng(seed)
+        survey_question = ""
+        language = "Dutch"
+        dataset_context_section = ""
 
-        # Sample without replacement (or all if n > total)
-        n_samples = min(n, len(self.prompt_responses))
-        indices = rng.choice(len(self.prompt_responses), size=n_samples, replace=False)
+        if self._extraction_metadata:
+            survey_question = self._extraction_metadata.var_lab or ""
+            language = self._extraction_metadata.lang or "Dutch"
+            parts = []
+            for f in ('domain', 'entity', 'topic', 'perspective', 'intent'):
+                val = getattr(self._extraction_metadata, f, None)
+                if val:
+                    parts.append(f"{f.capitalize()}: {val}")
+            if parts:
+                dataset_context_section = "\n".join(parts)
 
-        samples = [self.prompt_responses[i] for i in indices]
-        return samples
+        other_label = get_other_category_label(language)
 
-    def print_samples(self, samples: List[Dict]):
-        """Pretty-print samples for inspection"""
-        if not samples:
-            print("\n⚠️ No samples available (verbose mode may be disabled)")
-            return
+        return build_code_assignment_prompt(
+            survey_question=survey_question,
+            language=language,
+            dataset_context_section=dataset_context_section,
+            codes=codes,
+            other_label=other_label if self._config.include_other_category else None,
+            idea=idea,
+            facet_lookup=self._facet_lookup,
+        )
 
-        print(f"\n{'='*80}")
-        print(f"RANDOM CODE ASSIGNMENT SAMPLES (n={len(samples)})")
-        print(f"{'='*80}")
+    # =========================================================================
+    # IDEA GROUPING & BATCHING
+    # =========================================================================
 
-        for i, sample in enumerate(samples, 1):
-            print(f"\n{'─'*80}")
-            print(f"SAMPLE #{i}")
-            print(f"{'─'*80}")
-            print(f"Respondent ID: {sample['respondent_id']}")
-            print(f"Idea ID: {sample['idea_id']}")
-            print("\nIdea Text:")
-            print(f"  {sample['idea_text']}")
-            print(f"\nAssigned Codes: {', '.join(sample['assigned_codes'])}")
-            print(f"Assigned Themes: {', '.join(sample['assigned_themes']) if sample['assigned_themes'] else 'None'}")
-            print(f"Confidence: {sample['confidence']:.2f}")
-            print("\nRationale:")
-            print(f"  {sample['rationale']}")
-            print(f"\n{'─'*40}")
-            print("FULL PROMPT:")
-            print(f"{'─'*40}")
-            print(sample['prompt'])
-            print(f"{'─'*80}\n")
+    def _group_ideas_by_partition(
+        self,
+    ) -> Dict[str, List[models.IdeasExtractedSubmodel]]:
+        """Group all ideas by their domain (= partition)."""
+        partitions: Dict[str, List] = {}
+        for resp in self._ideas_models:
+            if not resp.response_ideas:
+                continue
+            for idea in resp.response_ideas:
+                ct = self._normalize_key(idea.domain)
+                if not ct:
+                    continue
+                if ct not in partitions:
+                    partitions[ct] = []
+                partitions[ct].append(idea)
+        return partitions
 
-    def print_assignment_stats(self):
-        """Print detailed stats about default vs fallback usage"""
-        total = self.used_default_count + self.used_fallback_count
+    # =========================================================================
+    # OUTPUT MODEL CONSTRUCTION
+    # =========================================================================
 
-        if total == 0:
-            print("\n⚠️ No assignment stats available")
-            return
+    def _build_output_models(
+        self,
+        assignment_lookup: dict,
+        id_resolution: Dict[str, str],
+    ) -> List[CodeAssignedModel]:
+        """Build CodeAssignedModel list preserving response structure.
 
-        default_pct = (self.used_default_count / total) * 100
-        fallback_pct = (self.used_fallback_count / total) * 100
-
-        print(f"\n{'='*80}")
-        print("CODE ASSIGNMENT STRATEGY BREAKDOWN")
-        print(f"{'='*80}")
-        print(f"Total ideas processed: {total}")
-        print("")
-        print(f"Used default (cluster code): {self.used_default_count} ({default_pct:.1f}%)")
-        print(f"Used fallback (all codes):   {self.used_fallback_count} ({fallback_pct:.1f}%)")
-        print("")
-        print("API calls:")
-        print(f"  Stage 1 (evaluate default): {self.stage_1_calls}")
-        print(f"  Stage 2 (fallback):         {self.stage_2_calls}")
-        print(f"  Total API calls:            {self.stage_1_calls + self.stage_2_calls}")
-        print(f"  Avg calls per idea:         {(self.stage_1_calls + self.stage_2_calls) / total:.2f}")
-        print(f"{'='*80}\n")
-
-    def print_learning_insights(self):
-        """Print diagnostic insights from pattern tracking and adaptive threshold."""
-        if not self.pattern_config.enabled:
-            return
-
-        print(f"\n{'─'*60}")
-        print("PATTERN LEARNING INSIGHTS")
-        print(f"{'─'*60}")
-
-        # Adaptive threshold stats
-        if self.adaptive_threshold_config.use_adaptive:
-            stats = self.confidence_tracker.get_stats()
-            print(f"\n📊 Adaptive Threshold:")
-            print(f"   Current threshold: {stats.get('current_threshold', 0.7):.3f}")
-            print(f"   Samples collected: {stats.get('samples', 0)}")
-            print(f"   Warmed up: {'Yes' if stats.get('is_warmed_up', False) else 'No'}")
-            if stats.get('samples', 0) > 0:
-                print(f"   Confidence range: [{stats.get('min', 0):.3f}, {stats.get('max', 0):.3f}]")
-                print(f"   Mean confidence: {stats.get('mean', 0):.3f}")
-        else:
-            print(f"\n📊 Fixed Threshold: {self.adaptive_threshold_config.fixed_threshold}")
-
-        # Dynamic top-k mode info
-        print(f"\n🎯 Dynamic Top-K Mode: {self.dynamic_topk_config.mode}")
-        if self.dynamic_topk_config.mode == "threshold":
-            print(f"   Similarity threshold: {self.dynamic_topk_config.similarity_threshold}")
-        elif self.dynamic_topk_config.mode == "dropoff":
-            print(f"   Dropoff ratio: {self.dynamic_topk_config.dropoff_ratio}")
-
-        # Problematic clusters (high fallback rates)
-        if self.pattern_config.track_cluster_fallback:
-            problematic = self.pattern_tracker.get_problematic_clusters(fallback_threshold=0.5, min_ideas=3)
-            if problematic:
-                print(f"\n⚠️  Clusters with high fallback rates (>50%):")
-                for c in problematic[:5]:
-                    print(f"   • Cluster {c['cluster_id'][:30]}: {c['fallback_rate']*100:.0f}% fallback ({c['total_ideas']} ideas)")
-            else:
-                print(f"\n✅ No clusters with problematic fallback rates")
-
-        # Code co-occurrence patterns
-        if self.pattern_config.track_cooccurrence:
-            cooc = self.pattern_tracker.get_top_cooccurrences(top_n=5)
-            if cooc:
-                print(f"\n🔗 Top code co-occurrences (same respondent):")
-                for c in cooc:
-                    print(f"   • {c['code_a'][:25]} + {c['code_b'][:25]}: {c['count']}x")
-
-        # Confidence calibration
-        if self.pattern_config.track_confidence_calibration:
-            cal = self.pattern_tracker.get_confidence_calibration()
-            if cal:
-                print(f"\n📈 Confidence distribution:")
-                for bucket, data in sorted(cal.items()):
-                    if data['count'] > 0:
-                        print(f"   {bucket}: {data['count']} assignments")
-
-        print(f"{'─'*60}\n")
-
-    # === V3 THROUGHPUT ADJUSTMENT METHODS ========================================================================================================
-
-    async def _apply_pid_adjustment(self) -> bool:
-        """V3: Apply PID-style continuous throughput adjustment based on real-time TPM utilization.
-
-        This provides smooth, gradual adjustments that converge to optimal throughput
-        without the oscillations of threshold-based step changes.
-
-        Returns True if adjustment was applied, False otherwise.
+        BP3: Iterates ALL original ideas (not just successful assignments).
+        BP2: Creates fallback entries for unassigned ideas.
+        BP4: Logs count reconciliation.
         """
-        if self.current_arrival_rate is None:
-            return False
+        facet_lookup = self._facet_lookup
+        total_ideas = 0
+        unassigned_ideas = 0
 
-        # Get real-time TPM utilization
-        current_tpm = await self.tpm_tracker.get_current_tpm()
-        tpm_limit = self.rate_limits.tokens_per_minute
-        utilization = current_tpm / tpm_limit if tpm_limit > 0 else 0.0
+        output = []
+        for resp in self._ideas_models:
+            new_ideas = []
+            if resp.response_ideas:
+                for idea in resp.response_ideas:
+                    total_ideas += 1
+                    assignment = assignment_lookup.get(idea.idea_id)
+                    ct = self._normalize_key(idea.domain)
 
-        # Track min/max utilization for stats
-        self.v3_stats['max_tpm_utilization'] = max(self.v3_stats['max_tpm_utilization'], utilization * 100)
-        self.v3_stats['min_tpm_utilization'] = min(self.v3_stats['min_tpm_utilization'], utilization * 100)
+                    resolved_label = id_resolution.get(idea.idea_id)
 
-        # Compute PID adjustment
-        adjustment = self.pid_controller.compute_adjustment(utilization)
+                    # BP2: Create fallback for unassigned ideas
+                    if not resolved_label:
+                        unassigned_ideas += 1
+                        resolved_label = "__UNASSIGNED__"
 
-        # Skip if adjustment is negligible (1.0 = no change)
-        if abs(adjustment - 1.0) < 0.01:
-            return False
+                    idea_data = idea.model_dump()
+                    explicit_fields = {
+                        'assigned_code', 'confidence',
+                        'rationale', 'assigned_attribute',
+                        'partition_name', 'facet',
+                    }
+                    new_idea = CodeAssignedSubmodel(
+                        **{k: v for k, v in idea_data.items()
+                           if k in CodeAssignedSubmodel.model_fields
+                           and k not in explicit_fields},
+                        assigned_code=resolved_label,
+                        confidence=(
+                            assignment.confidence
+                            if assignment else 0.0
+                        ),
+                        rationale=(
+                            assignment.rationale
+                            if assignment else "No assignment from LLM"
+                        ),
+                        assigned_attribute=(
+                            self._attribute_assignments.get(idea.idea_id)
+                        ),
+                        partition_name=ct if ct else None,
+                        facet=facet_lookup.get(idea.idea_id, idea_data.get('facet', '')),
+                    )
+                    new_ideas.append(new_idea)
 
-        # Apply adjustment to arrival rate
-        old_rate = self.current_arrival_rate
-        new_rate = old_rate * adjustment
+            resp_data = resp.model_dump()
+            new_resp = CodeAssignedModel(
+                **{k: v for k, v in resp_data.items()
+                   if k in CodeAssignedModel.model_fields
+                   and k != 'response_ideas'},
+                response_ideas=new_ideas,
+            )
+            output.append(new_resp)
 
-        # Clamp to reasonable bounds
-        rpm_max = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
-        new_rate = max(0.5, min(rpm_max, new_rate))
+        # BP4: Count reconciliation
+        if unassigned_ideas > 0:
+            print(f"    WARNING: {unassigned_ideas}/{total_ideas} ideas have no code assignment "
+                  f"({unassigned_ideas/max(total_ideas,1)*100:.1f}%)")
 
-        # Only apply if change is meaningful
-        if abs(new_rate - old_rate) / old_rate < 0.02:
-            return False
+        return output
 
-        # Update rate limiter
-        if new_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/new_rate)
+    # =========================================================================
+    # RATE LIMIT HELPERS
+    # =========================================================================
+
+    async def _fetch_rate_limits(self) -> RateLimits:
+        """Fetch rate limits from API headers."""
+        from openai import AsyncOpenAI
+
+        if API_PROVIDER == "azure":
+            from config import (
+                AZURE_OPENAI_ENDPOINT,
+                AZURE_OPENAI_API_KEY,
+                AZURE_OPENAI_DEPLOYMENT_NAME,
+            )
+            client = AsyncOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                base_url=(
+                    f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/"
+                    f"{AZURE_OPENAI_DEPLOYMENT_NAME}/"
+                ),
+                default_query={"api-version": "2024-10-21"},
+            )
+            model = AZURE_OPENAI_DEPLOYMENT_NAME
         else:
-            self.rate_limiter = AsyncLimiter(int(new_rate), time_period=1.0)
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            model = self._config.assignment_model
 
-        self.current_arrival_rate = new_rate
-        self.v3_stats['pid_adjustments'] += 1
-        self.v3_stats['adjustments_made'] += 1
+        response = await client.chat.completions.with_raw_response.create(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=5,
+        )
+        limits = extract_rate_limits_from_response(response)
 
-        return True
+        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+            if self._config.verbose:
+                print(f"  WARNING: Using fallback rate limits "
+                      f"(TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+            return RateLimits(
+                tokens_per_minute=FALLBACK_TPM,
+                requests_per_minute=FALLBACK_RPM,
+            )
+        return limits
 
-    def _adjust_throughput_if_needed(self) -> bool:
-        """V3: Threshold-based adjustment (fallback for large corrections).
 
-        This is kept as a fallback for when the token estimate is significantly wrong
-        and a larger step correction is needed before PID can fine-tune.
+    # =========================================================================
+    # REPORTING
+    # =========================================================================
 
-        Returns True if adjustment was made, False otherwise.
-        """
-        # Need enough samples to make a reliable decision
-        if len(self.actual_total_tokens) < THROUGHPUT_ADJUSTMENT_MIN_SAMPLES:
-            return False
+    def _print_assignment_summary(
+        self,
+        output: List[CodeAssignedModel],
+    ):
+        """Print code-centric assignment summary with attribute breakdowns."""
+        # Collect stats per code
+        code_stats: Dict[str, Dict] = {}
+        total_ideas = 0
+        total_assigned = 0
 
-        actual_avg = sum(self.actual_total_tokens) / len(self.actual_total_tokens)
-        bootstrap_avg = self.avg_tokens
+        for resp in output:
+            if not resp.response_ideas:
+                continue
+            for idea in resp.response_ideas:
+                total_ideas += 1
+                if not idea.assigned_code:
+                    continue
+                total_assigned += 1
 
-        # Calculate ratio of actual to bootstrap
-        ratio = actual_avg / bootstrap_avg if bootstrap_avg > 0 else 1.0
+                code = idea.assigned_code
+                if code not in code_stats:
+                    code_stats[code] = {
+                        "count": 0,
+                        "confidences": [],
+                        "attributes": {},
+                    }
+                code_stats[code]["count"] += 1
+                code_stats[code]["confidences"].append(idea.confidence or 0.0)
 
-        # V3: Only trigger threshold adjustment for significant underestimation
-        # PID handles fine-tuning; this is for coarse correction
-        if ratio <= THROUGHPUT_ADJUSTMENT_THRESHOLD:
-            return False
-
-        # Calculate new arrival rate using actual tokens
-        old_tpm_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / bootstrap_avg / 60
-        new_tpm_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
-        rpm_throughput = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
-
-        new_arrival_rate = min(rpm_throughput, new_tpm_throughput)
-
-        # Reinstall rate limiter with adjusted rate
-        if new_arrival_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/new_arrival_rate)
-        else:
-            self.rate_limiter = AsyncLimiter(int(new_arrival_rate), time_period=1.0)
-
-        # V3: Track current arrival rate for PID
-        self.current_arrival_rate = new_arrival_rate
-
-        # Reinitialize token bucket with fresh state
-        old_bucket_available = self.tpm_bucket.available
-        self.tpm_bucket = TokenBucket(int(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom))
-
-        # Reset PID controller (we just made a step change)
-        self.pid_controller.reset()
-
-        # Update avg_tokens for future calculations
-        old_avg = self.avg_tokens
-        self.avg_tokens = int(actual_avg)
-
-        self.v3_stats['threshold_adjustments'] += 1
-        self.v3_stats['adjustments_made'] += 1
-
-        # Log the adjustment
-        print(f"\n⚡ THROUGHPUT ADJUSTMENT (threshold)")
-        print(f"   Actual tokens ({actual_avg:.0f}) exceeded bootstrap ({bootstrap_avg:.0f}) by {(ratio-1)*100:.0f}%")
-        print(f"   Arrival rate: {old_tpm_throughput:.2f}/s → {new_arrival_rate:.2f}/s")
-        print(f"   avg_tokens: {old_avg} → {self.avg_tokens}")
-        print(f"   Token bucket reset (was {old_bucket_available:,.0f} available)")
-        print(f"   Tiktoken offset: {self.tiktoken_offset_learner.get_offset()} (learned: {self.tiktoken_offset_learner.is_learned()})")
-
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"Threshold adjustment: {old_tpm_throughput:.2f}/s → {new_arrival_rate:.2f}/s")
-
-        return True
-
-    async def process_all_tasks_async(self, tasks: List[Dict]) -> List[CodeAssignmentResponse]:
-        """Process all tasks using queue + workers pattern with bootstrap measurement"""
-        if not tasks:
-            return []
-
-        try:
-            #print(f"[DEBUG] Starting process_all_tasks_async with {len(tasks)} tasks")
-
-            self.verbose_reporter.step_start("Code Assignment")
-
-            # Fetch rate limits dynamically from API response headers
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line("Fetching rate limits from API...")
-
-            limits = await self._fetch_rate_limits_from_api()
-
-            # Fallback if headers not available
-            if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.stat_line(f"Warning: Using fallback rate limits (TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
-                limits = RateLimits(
-                    tokens_per_minute=FALLBACK_TPM,
-                    requests_per_minute=FALLBACK_RPM,
-                    tokens_per_day=FALLBACK_TPM * 60 * 24
-                )
-            else:
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.stat_line(f"Fetched from API: TPM={limits.tokens_per_minute:,}, RPM={limits.requests_per_minute:,}")
-
-            # Store rate limits on self for use in diagnostics/reporting
-            self.rate_limits = limits
-
-            # Re-initialize TokenBucket with actual rate limits
-            self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
-
-            # Bootstrap measurement with probe calls (following qualityFilter.py pattern)
-            sample_tasks = tasks[:min(3, len(tasks))]
-            if len(sample_tasks) < 3:
-                # Duplicate tasks if we have fewer than 3
-                sample_tasks = sample_tasks * 3
-                sample_tasks = sample_tasks[:3]
-
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
-        
-            start_time = time.time()
-            task_cycle = itertools.cycle(sample_tasks)
-            
-            async def probe_with_different_tasks():
-                return await self.probe_call_no_structured(next(task_cycle))
-            
-            avg_latency_s, avg_tokens = await bootstrap_measure_async(probe_with_different_tasks, n_probes=3)
-        
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Probe time: {time.time() - start_time:.3f}s")
-                self.verbose_reporter.stat_line(f"Bootstrap results: {avg_latency_s:.3f}s avg latency, {avg_tokens:.0f} avg tokens")
-            
-            # Initialize latency tracker with bootstrap measurements
-            for i in range(3):  # Add 3 samples to get started
-                self.latency_tracker.add(avg_latency_s)
-            
-            # Update avg_tokens with bootstrap measurement
-            self.avg_tokens = int(avg_tokens)
-        
-            # Calculate optimal concurrency using Little's Law
-            api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-            Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
-            # Use ProcessingConfig for bounds instead of hardcoded constants
-            min_concurrency = self.processing_config.concurrency_min_default
-            max_concurrency = self.processing_config.concurrency_cap_default
-            optimal = min(max_concurrency, max(Little, min_concurrency))
-
-            # Initialize rate limiting components
-            arrival_rate = min(
-                limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
-                limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60
+                attr = idea.assigned_attribute or "(no attribute)"
+                code_stats[code]["attributes"][attr] = (
+                    code_stats[code]["attributes"].get(attr, 0) + 1
                 )
 
-            if arrival_rate < 1:
-                self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
-            else:
-                self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
+        # Build code order + valence lookup from self._codes
+        code_order = []
+        code_valence = {}
+        for code in self._codes:
+            code_order.append(code.code_name)
+            code_valence[code.code_name] = getattr(code, 'valence', '') or ''
 
-            self.semaphore = asyncio.Semaphore(min(len(tasks), optimal))
-            self.optimal_concurrency = min(len(tasks), optimal)
+        # Add any assigned codes not in the codebook (e.g., "overig/anders")
+        for code_name in code_stats:
+            if code_name not in code_valence:
+                code_order.append(code_name)
+                code_valence[code_name] = ''
 
-            # V3: Track current arrival rate for PID adjustment
-            self.current_arrival_rate = arrival_rate
+        print(f"\n  {'─'*60}")
+        print(f"  ASSIGNMENT SUMMARY ({total_assigned}/{total_ideas} ideas → "
+              f"{len(code_stats)} codes)")
+        print(f"  {'─'*60}")
 
-            print("[RATE LIMITING SETUP]")
-            print(f"- Model: {self.model}")
-            print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
-            print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
-            print(f"- Bootstrap measured avg_tokens: {self.avg_tokens}")
+        for i, code_name in enumerate(code_order, 1):
+            if code_name not in code_stats:
+                continue
+            stats = code_stats[code_name]
+            avg_conf = (
+                sum(stats["confidences"]) / len(stats["confidences"])
+                if stats["confidences"] else 0.0
+            )
+            valence = code_valence.get(code_name, '')
+            v_tag = {"positive": "+", "negative": "-", "neutral": "~"}.get(valence, "")
 
-            # Show expected throughput breakdown
-            rpm_throughput = limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
-            tpm_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
-            bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
-            print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
-            print(f"- Optimal by Little's law: {Little}")
-            print(f"- Constrained optimum: {optimal} (min={min_concurrency}, max={max_concurrency})")
+            print(f"\n  [{i}] ({v_tag}) {code_name} — {stats['count']} ideas "
+                  f"(conf {avg_conf:.2f})")
 
-            print(f"- Processing {len(tasks):,} tasks")
-
-            # Calculate number of workers using ProcessingConfig bounds
-            expected_throughput = min(rpm_throughput, tpm_throughput)
-            max_workers = self.processing_config.max_workers if hasattr(self.processing_config, 'max_workers') else 200
-            min_workers = self.processing_config.min_workers if hasattr(self.processing_config, 'min_workers') else 50
-            num_workers = min(max_workers, max(min_workers, int(expected_throughput * avg_latency_s * 2.0)))
-            
-            print(f"- Workers launched: (concurrent subroutines): {num_workers}")
-            print(f"- API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
-            
-            # Create queue and results list
-            queue = asyncio.Queue()
-            results = [None] * len(tasks)
-            
-            # Add tasks to queue with result indices
-            for i, task in enumerate(tasks):
-                task['result_index'] = i
-                task['task_index'] = i
-                task['task_id'] = task['idea_data'][1]  # idea_id
-                await queue.put(task)
-        
-            # Start workers
-            workers = []
-            #print(f"[DEBUG] Starting {num_workers} workers...")
-            for i in range(num_workers):
-                w = asyncio.create_task(self.worker(queue, results))
-                workers.append(w)
-            #print(f"[DEBUG] All {len(workers)} workers started")
-        
-            # Progress monitoring
-            start_time = time.time()
-            last_report = start_time
-            last_adjustment = start_time  # V3: Track last adjustment time
-
-            #print(f"[DEBUG] Starting progress monitoring, queue size: {queue.qsize()}")
-
-            # Monitor progress until all tasks are processed
-            while self.stats['tasks_processed'] < len(tasks):
-                await asyncio.sleep(1)
-                now = time.time()
-
-                # Regular progress report every 5s
-                if now - last_report >= PROGRESS_REPORT_INTERVAL:
-                    completed = self.stats['tasks_processed']
-                    remaining = queue.qsize()
-                    elapsed = now - start_time
-                    rate = completed / elapsed if elapsed > 0 else 0
-
-                    print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%), "
-                      f"Rate: {rate:.1f}/s, Queue: {remaining}")
-                    last_report = now
-
-                # V3: Apply PID adjustment periodically
-                if now - last_adjustment >= ADJUSTMENT_INTERVAL:
-                    await self._apply_pid_adjustment()
-                    last_adjustment = now
-
-                    # V3: Also check threshold-based adjustment (fallback for large corrections)
-                    if self.stats['tasks_processed'] >= THROUGHPUT_ADJUSTMENT_MIN_SAMPLES:
-                        self._adjust_throughput_if_needed()
-
-                # Check if queue is empty but not all tasks processed (potential deadlock)
-                if queue.empty() and self.stats['tasks_processed'] < len(tasks):
-                    #print(f"[DEBUG] Queue empty but only {self.stats['tasks_processed']}/{len(tasks)} processed")
-                    break
-        
-            #print("[DEBUG] Progress monitoring complete, waiting for queue.join()")
-        
-            # Wait for all tasks to complete
-            await queue.join()
-        
-            #print("[DEBUG] Queue.join() complete")
-        
-            # Stop workers
-            for _ in workers:
-                await queue.put(None)
-            await asyncio.gather(*workers)
-        
-            # Final stats
-            elapsed = time.time() - start_time
-            print(f"\nCompleted {len(tasks)} tasks in {elapsed:.1f}s")
-            print(f"- Successful: {self.stats['tasks_successful']}")
-            print(f"- Failed: {self.stats['tasks_failed']}")
-            print(f"- Rate limits: {self.stats['rate_limits']}")
-            print(f"- Timeouts: {self.stats['timeouts']}")
-            print(f"- Average: {elapsed/len(tasks):.2f}s/task")
-
-            # Report error types if any failures occurred
-            if self.stats['error_types']:
-                print(f"\nError Types ({len(self.stats['error_types'])} unique):")
-                for error_type, error_data in sorted(self.stats['error_types'].items(),
-                                                     key=lambda x: x[1]['count'], reverse=True):
-                    print(f"  - {error_type}: {error_data['count']} occurrences")
-                    if error_data['sample_messages']:
-                        print("    Sample errors:")
-                        for i, msg in enumerate(error_data['sample_messages'], 1):
-                            print(f"      {i}. {msg}")
-
-            # V3: Report V3 stats
-            if self.v3_stats['adjustments_made'] > 0 or self.tiktoken_offset_learner.is_learned():
-                print(f"\nV3 Rate Limiting Stats:")
-                print(f"- PID adjustments: {self.v3_stats['pid_adjustments']}")
-                print(f"- Threshold adjustments: {self.v3_stats['threshold_adjustments']}")
-                if self.v3_stats['max_tpm_utilization'] > 0:
-                    print(f"- TPM utilization range: {self.v3_stats['min_tpm_utilization']:.1f}% - {self.v3_stats['max_tpm_utilization']:.1f}%")
-                offset_stats = self.tiktoken_offset_learner.get_stats()
-                print(f"- Tiktoken offset: {offset_stats['using_offset']} (learned: {offset_stats['is_learned']}, samples: {offset_stats['samples']})")
-
-            return results
-        
-        except Exception as e:
-            logger.error(f"[CRITICAL ERROR] process_all_tasks_async failed: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
-            print(f"\n❌ CODE ASSIGNMENT FAILED: {type(e).__name__}: {e}")
-            print("Returning fallback responses for all tasks...\n")
-            fallback_results = []
-            for task in tasks:
-                fallback_results.append(self.create_fallback_response(task))
-            return fallback_results
-
-    def _prepare_individual_tasks(self, all_ideas: List[tuple]) -> List[Dict]:
-        """Prepare individual tasks for processing"""
-        tasks = []
-        for i, idea_data in enumerate(all_ideas):
-            tasks.append({
-                'idea_data': idea_data
-            })
-        return tasks
-    
-    async def assign_codes(self) -> List[models.CodeAssignedModel]:
-        """Main method to assign codes using standardized processing patterns"""
-        self._stats.start_timing()
-        
-        # Extract all ideas
-        all_ideas = self._extract_all_ideas()
-        total_ideas = len(all_ideas)
-        
-        if total_ideas == 0:
-            self.verbose_reporter.stat_line("No ideas found for code assignment")
-            return []
-        
-        # Use fallback rate limits for initial display (actual limits fetched during processing)
-        self.verbose_reporter.stat_line(f"Model: {self.model} (Initial limits: {self.rate_limits.requests_per_minute} RPM, {self.rate_limits.tokens_per_minute:,} TPM)")
-        self.verbose_reporter.stat_line(f"Processing {total_ideas} ideas with {len(self.codebook)} available codes")
-        
-        # Prepare tasks
-        tasks = self._prepare_individual_tasks(all_ideas)
-        
-        # Process with queue + workers pattern
-        if nest_asyncio:
-            nest_asyncio.apply()
-        all_results = await self.process_all_tasks_async(tasks)
-        
-        # Merge results back into model structure
-        self._results = self._merge_results_into_models(all_results)
-        
-        # Report summary
-        if all_results:
-            valid_results = [r for r in all_results if r is not None]
-            if valid_results:
-                avg_confidence = np.mean([r.assignment_confidence for r in valid_results])
-                high_confidence = sum(1 for r in valid_results if r.assignment_confidence >= 0.7)
-                low_confidence = sum(1 for r in valid_results if r.assignment_confidence < 0.5)
-                
-                self.verbose_reporter.summary("CODE ASSIGNMENT COMPLETED", {
-                    "Total ideas processed": len(valid_results),
-                    "Average confidence": f"{avg_confidence:.2f}",
-                    "High confidence (≥0.7)": high_confidence,
-                    "Low confidence (<0.5)": low_confidence
-                })
-
-        # Print learning insights (assignment stats printed by pipeline.py)
-        self.print_learning_insights()
-
-        return self._results
-
-    def assign(self) -> List[models.CodeAssignedModel]:
-        """Synchronous wrapper for assign_codes"""
-        if nest_asyncio:
-            nest_asyncio.apply()
-        
-        return asyncio.run(self.assign_codes())
+            for attr, count in sorted(
+                stats["attributes"].items(), key=lambda x: -x[1]
+            ):
+                print(f"        {attr}: {count}")
