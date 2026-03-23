@@ -1,0 +1,654 @@
+"""
+Codebook Generator: Code generation and consolidation pipeline (P8-P9).
+
+Pipeline (2 stages):
+  P8.  Code Generation from Attributes (per domain) — derive codebook codes
+  P9.  Codebook Consolidation (cross-domain) — merge into final MECE codebook
+
+Accepts taxonomy results from step_4_classifier as input.
+
+Usage:
+    from .codebook_generator import CodebookGenerator
+    from .config_codebookGenerator import CodebookConfig
+
+    generator = CodebookGenerator(config)
+    result = generator.generate(
+        taxonomy_result=taxonomy_result,
+        extraction_metadata=extraction_metadata,
+    )
+"""
+
+import asyncio
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Literal, Optional, Set
+
+from pydantic import BaseModel, Field, create_model
+
+import nest_asyncio
+from aiolimiter import AsyncLimiter
+
+from utils.llm import (
+    create_client, llm_create_async, RateLimits,
+    extract_rate_limits_from_response,
+)
+from config import (
+    ProcessingConfig, DEFAULT_PROCESSING_CONFIG, OPENAI_API_KEY,
+    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+)
+
+from development.step_3_ideaExtractor.dimension_data import (
+    get_dimension, DimensionDefinition,
+)
+
+from development.step_4_classifier.models_classifier import (
+    DomainSet, DomainResultModel, TaxonomyResultsCache, DomainDescription,
+)
+
+from .config_codebookGenerator import CodebookConfig
+from .prompts_codebookGenerator import (
+    # P8: Code Generation from Attributes
+    build_code_from_attributes_prompt,
+    CodeGenerationFromAttributesResult,
+    CodeFromAttributes,
+    # P9: Codebook Consolidation
+    build_codebook_consolidation_prompt,
+    CodebookConsolidationResult,
+    ConsolidatedCode,
+    # Attribute types needed for P8 input formatting
+    DiscoveredAttribute,
+)
+
+# Enable nested event loops (for VS Code interactive / notebook compatibility)
+nest_asyncio.apply()
+
+
+# =============================================================================
+# SHARED DATACLASSES
+# =============================================================================
+
+@dataclass
+class PromptContext:
+    """Shared context passed to all prompt formatting methods."""
+    survey_question: str
+    language: str
+    dataset_context_section: str
+    dimension_name: str
+    dimension_description: str
+    dimension_def: Optional[DimensionDefinition] = None
+
+
+@dataclass
+class DomainContext:
+    """Partition-specific context."""
+    partition_name: str
+    partition_definition: str
+
+
+@dataclass
+class TaxonomyResult:
+    """Input from taxonomy stages P1-P7 (mirrors step_4_classifier.classifier.TaxonomyResult)."""
+    partition_n_labels: Dict[str, int]
+    partition_n_batches: Dict[str, int]
+    partition_facets: Dict[str, list]  # domain -> [DiscoveredFacet]
+    partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
+    partition_attributes: Dict[str, Dict[str, list]]  # domain -> {facet -> [DiscoveredAttribute]}
+    attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
+
+
+@dataclass
+class DomainResult:
+    """Per-domain pipeline result (v3)."""
+    partition_name: str
+    n_labels: int
+    n_batches: int
+    facets: list
+    facet_assignments: Dict[str, str]  # idea_id -> facet_name
+    attributes: Dict[str, list]  # facet_name -> attributes
+    attribute_assignments: Dict[str, str] = field(default_factory=dict)  # idea_id -> attribute_name
+
+
+@dataclass
+class CodebookResult:
+    """Output of codebook stages P8-P9."""
+    codes: List[ConsolidatedCode]
+    codebook_narrative: str
+
+
+# =============================================================================
+# MAIN PROCESSOR
+# =============================================================================
+
+class CodebookGenerator:
+    """
+    Codebook Generator: Code generation and consolidation pipeline (P8-P9).
+
+    Pipeline (2 stages):
+    P8.  CODE GENERATION:                   Per domain, derive codes from attributes
+    P9.  CODEBOOK CONSOLIDATION:            Cross-domain, merge into MECE codebook
+    """
+
+    def __init__(self, config: CodebookConfig, prompt_printer=None):
+        self._model_p8 = config.model_p8
+        self._model_p9 = config.model_p9
+        self._temperature = config.temperature
+        self._max_tokens_code_from_attributes = config.max_tokens_code_from_attributes
+        self._max_tokens_codebook_consolidation = config.max_tokens_codebook_consolidation
+
+        # Prompt capture (optional)
+        self._prompt_printer = prompt_printer
+        self._captured_gates: Set[str] = set()
+
+        # Shared async resources — initialized in generate()
+        self._clients = None
+        self._semaphore = None
+        self._rate_limiter = None
+
+    # =========================================================================
+    # PUBLIC API
+    # =========================================================================
+
+    def generate(
+        self,
+        taxonomy_result: TaxonomyResult,
+        partition_set: DomainSet,
+        survey_question: str = "",
+        language: str = "Dutch",
+        dataset_context: Optional[Dict[str, str]] = None,
+        dimension_name: str = "",
+        dimension_description: str = "",
+        verbose: bool = False,
+        prompt_printer=None,
+    ) -> CodebookResult:
+        """Run codebook stages (P8-P9) from a TaxonomyResult.
+
+        Args:
+            taxonomy_result: Output from TaxonomyClassifier.process()
+            partition_set: Domain partition definitions
+            survey_question: The survey question being coded
+            language: Language of the survey responses
+            dataset_context: Optional dataset context dict
+            dimension_name: Name of the dimension being analyzed
+            dimension_description: Description of the dimension
+            verbose: Print progress information
+            prompt_printer: Optional prompt printer (overrides __init__ printer)
+        """
+        if prompt_printer is not None:
+            self._prompt_printer = prompt_printer
+
+        print(f"\n{'='*70}")
+        print(f"CODEBOOK GENERATION (P8-P9)")
+        print(f"{'='*70}")
+
+        # Resolve dimension definition
+        dimension_def = None
+        if dimension_name:
+            dimension_def = get_dimension(dimension_name)
+            if dimension_def and verbose:
+                print(f"  Dimension: {dimension_name}")
+            elif not dimension_def and verbose:
+                print(f"  WARNING: No DimensionDefinition found for '{dimension_name}'")
+
+        dataset_context_section = self._build_dataset_context_section(dataset_context)
+
+        prompt_context = PromptContext(
+            survey_question=survey_question,
+            language=language,
+            dataset_context_section=dataset_context_section,
+            dimension_name=dimension_name,
+            dimension_description=dimension_description,
+            dimension_def=dimension_def,
+        )
+
+        partition_contexts = self._build_all_partition_contexts(partition_set)
+
+        async def _run():
+            await self._initialize_async_resources(verbose)
+            return await self._process_codebook_async(
+                taxonomy_result, partition_contexts, prompt_context, verbose
+            )
+
+        return asyncio.run(_run())
+
+    # =========================================================================
+    # ASYNC ORCHESTRATION
+    # =========================================================================
+
+    async def _initialize_async_resources(self, verbose: bool):
+        """Initialize clients and rate limiters for P8-P9 models."""
+        # Create one client per unique model
+        unique_models = {self._model_p8, self._model_p9}
+        self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
+
+        processing_config = DEFAULT_PROCESSING_CONFIG
+        headroom = processing_config.rate_limit_headroom
+
+        # --- Fetch real rate limits from API headers ---
+        if verbose:
+            print("  Fetching rate limits from API...")
+        limits = await self._fetch_rate_limits_from_api()
+
+        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+            if verbose:
+                print(f"  WARNING: Using fallback rate limits "
+                      f"(TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+            limits = RateLimits(
+                tokens_per_minute=FALLBACK_TPM,
+                requests_per_minute=FALLBACK_RPM,
+            )
+        elif verbose:
+            print(f"  Fetched from API: TPM={limits.tokens_per_minute:,}, "
+                  f"RPM={limits.requests_per_minute:,}")
+
+        # --- Static concurrency + rate limiter from API limits ---
+        est_avg_tokens = 3000
+        rpm_throughput = limits.requests_per_minute * headroom / 60
+        tpm_throughput = limits.tokens_per_minute * headroom / est_avg_tokens / 60
+        arrival_rate = min(rpm_throughput, tpm_throughput)
+        bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
+
+        self._semaphore = asyncio.Semaphore(15)
+        self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
+
+        if verbose:
+            print(f"\n  [RATE LIMITING SETUP]")
+            print(f"  Models: P8={self._model_p8}, P9={self._model_p9}")
+            print(f"  RPM: {limits.requests_per_minute:,} "
+                  f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
+            print(f"  TPM: {limits.tokens_per_minute:,} "
+                  f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
+            print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
+            print(f"  Default concurrency (semaphore): 15 (static)")
+
+    async def _process_codebook_async(
+        self,
+        taxonomy: TaxonomyResult,
+        partition_contexts: Dict[str, DomainContext],
+        prompt_context: PromptContext,
+        verbose: bool,
+    ) -> CodebookResult:
+        """Codebook stages P8-P9: code generation + consolidation."""
+        # Unpack taxonomy result
+        partition_facets = taxonomy.partition_facets
+        partition_assignments = taxonomy.partition_assignments
+        domain_facet_attributes = taxonomy.partition_attributes
+        attribute_assignments = taxonomy.attribute_assignments
+
+        start_time = time.time()
+
+        # =================================================================
+        # PHASE 8 (P8): Per-domain Code Generation
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 8: Per-domain Code Generation...")
+
+        t_phase8 = time.time()
+
+        # Build one task per domain (no valence split — codes emerge naturally)
+        p8_tasks = {}
+        for domain_name in domain_facet_attributes:
+            domain_attrs = domain_facet_attributes.get(domain_name, {})
+            if not domain_attrs:
+                continue
+
+            # Filter attribute_assignments to this domain
+            domain_facet_ids = set(partition_assignments.get(domain_name, {}).keys())
+            domain_attr_assigns = {
+                iid: aname for iid, aname in attribute_assignments.items()
+                if iid in domain_facet_ids
+            }
+
+            # Build excluded domains: all other domains
+            excluded = [
+                (other_name, partition_contexts[other_name].partition_definition)
+                for other_name in partition_contexts
+                if other_name != domain_name
+            ]
+
+            p8_tasks[domain_name] = self._run_code_generation_from_attributes(
+                {domain_name: domain_attrs}, prompt_context,
+                attribute_assignments=domain_attr_assigns,
+                domain_name=domain_name,
+                domain_definition=partition_contexts[domain_name].partition_definition,
+                excluded_domains=excluded,
+            )
+
+        p8_results = await asyncio.gather(*p8_tasks.values(), return_exceptions=True)
+
+        # Collect all codes with provenance tracking
+        all_codes = []
+        code_provenance = {}  # code index -> domain_name
+        codebook_narratives = []
+        for key, result in zip(p8_tasks.keys(), p8_results):
+            if isinstance(result, Exception):
+                print(f"  P8 '{key}' FAILED: {type(result).__name__}: {result}")
+            else:
+                for code in result.codes:
+                    code_provenance[len(all_codes)] = key
+                    all_codes.append(code)
+                codebook_narratives.append(f"[{key}] {result.scratchpad}")
+                if verbose:
+                    print(f"    {key}: {len(result.codes)} codes")
+
+        t_phase8 = time.time() - t_phase8
+
+        if verbose:
+            print(f"\n  Phase 8 done in {t_phase8:.1f}s → {len(all_codes)} raw codes "
+                  f"from {len(p8_tasks)} calls")
+
+        # Compute idea frequencies per code (from attribute assignments)
+        # Each code has source_attributes; count how many ideas map to those attrs
+        attr_to_count: Dict[str, int] = {}
+        for attr_name in attribute_assignments.values():
+            attr_to_count[attr_name] = attr_to_count.get(attr_name, 0) + 1
+
+        code_frequencies: Dict[int, int] = {}
+        for idx, code in enumerate(all_codes):
+            freq = sum(
+                attr_to_count.get(attr, 0)
+                for attr in (code.source_attributes or [])
+            )
+            code_frequencies[idx] = freq
+
+        # =================================================================
+        # PHASE 9 (P9): Cross-domain Codebook Consolidation
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 9: Codebook Consolidation...")
+
+        t_phase9 = time.time()
+
+        if len(all_codes) > 0:
+            consolidation_result = await self._consolidate_codebook(
+                all_codes, code_provenance, prompt_context,
+                code_frequencies=code_frequencies,
+            )
+            all_codes = consolidation_result.codes
+            codebook_narratives.append(
+                f"[consolidation] {consolidation_result.scratchpad}"
+            )
+
+        codebook_narrative = "\n".join(codebook_narratives)
+
+        t_phase9 = time.time() - t_phase9
+
+        if verbose:
+            print(f"\n  Phase 9 done in {t_phase9:.1f}s → {len(all_codes)} codes "
+                  f"(after consolidation)")
+            for i, code in enumerate(all_codes, 1):
+                print(f"    {i}. {code.code_name}: {code.definition}")
+
+        codebook_elapsed = time.time() - start_time
+        if verbose:
+            print(f"\n  Codebook (P8-P9) complete in {codebook_elapsed:.1f}s")
+
+        return CodebookResult(
+            codes=all_codes,
+            codebook_narrative=codebook_narrative,
+        )
+
+    # =========================================================================
+    # PHASE 8 (P8): CODE GENERATION FROM ATTRIBUTES
+    # =========================================================================
+
+    @staticmethod
+    def _build_constrained_response_model(
+        attribute_names: List[str],
+    ):
+        """Build a CodeGenerationFromAttributesResult with source_attributes
+        constrained to an enum of valid attribute names."""
+        if not attribute_names:
+            return CodeGenerationFromAttributesResult
+
+        # Create Literal type from known attribute names
+        AttrLiteral = Literal[tuple(attribute_names)]
+
+        # Dynamic CodeFromAttributes with constrained source_attributes
+        ConstrainedCode = create_model(
+            "CodeFromAttributes",
+            code_name=(str, Field(..., description="Short code name (3-5 word noun phrase)")),
+            definition=(str, Field(..., description="Clear definition of what this code covers (1-2 sentences)")),
+            typical_indicators=(List[str], Field(..., description="Words or phrases that signal this code")),
+            source_attributes=(List[AttrLiteral], Field(
+                default_factory=list,
+                description="Attribute names this code is derived from (must be exact names from the inventory)",
+            )),
+        )
+
+        # Dynamic result model using the constrained code model
+        ConstrainedResult = create_model(
+            "CodeGenerationFromAttributesResult",
+            scratchpad=(str, CodeGenerationFromAttributesResult.model_fields["scratchpad"]),
+            codes=(List[ConstrainedCode], Field(..., description="Formal codes derived from the attribute inventory")),
+        )
+
+        return ConstrainedResult
+
+    async def _run_code_generation_from_attributes(
+        self,
+        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+        prompt_context: PromptContext,
+        attribute_assignments: Optional[Dict[str, str]] = None,
+        domain_name: str = "",
+        domain_definition: str = "",
+        excluded_domains: Optional[List[tuple]] = None,
+    ) -> CodeGenerationFromAttributesResult:
+        """Generate codes from an attribute inventory (per-domain)."""
+        prompt = build_code_from_attributes_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_def=prompt_context.dimension_def,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            domain_name=domain_name,
+            domain_definition=domain_definition,
+            domain_attributes=domain_facet_attributes,
+            attribute_assignments=attribute_assignments,
+            excluded_domains=excluded_domains,
+        )
+
+        # Collect all attribute names for enum constraint
+        all_attr_names = [
+            attr.attribute_name
+            for facet_attrs in domain_facet_attributes.values()
+            for attrs in facet_attrs.values()
+            for attr in attrs
+        ]
+        response_model = self._build_constrained_response_model(all_attr_names)
+
+        # Prompt capture
+        domain_key = "::".join(domain_facet_attributes.keys())
+        gate_key = f"qr_code_gen_{domain_key}"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="code_generation_from_attributes",
+                metadata={
+                    "model": self._model_p8,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_code_from_attributes,
+                    "language": prompt_context.language,
+                    "n_domains": len(domain_facet_attributes),
+                    "n_total_attributes": len(all_attr_names),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        for attempt in range(2):
+            try:
+                return await self._llm_call(
+                    prompt, response_model,
+                    self._max_tokens_code_from_attributes,
+                    model=self._model_p8,
+                    timeout=120.0,
+                )
+            except Exception as e:
+                if attempt == 0:
+                    print(f"    P8 CODE GENERATION failed (attempt 1), retrying: "
+                          f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    P8 CODE GENERATION failed (attempt 2), returning empty: "
+                          f"{type(e).__name__}: {e}")
+                    return CodeGenerationFromAttributesResult(codes=[], evaluation="PROCESSING_ERROR")
+
+    # =========================================================================
+    # PHASE 9 (P9): CODEBOOK CONSOLIDATION
+    # =========================================================================
+
+    async def _consolidate_codebook(
+        self,
+        raw_codes: list,
+        code_provenance: dict,
+        prompt_context: PromptContext,
+        code_frequencies: Optional[Dict[int, int]] = None,
+    ) -> CodebookConsolidationResult:
+        """Consolidate per-domain codes into a final parsimonious codebook."""
+        prompt = build_codebook_consolidation_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            dimension_def=prompt_context.dimension_def,
+            raw_codes=raw_codes,
+            code_provenance=code_provenance,
+            code_frequencies=code_frequencies,
+        )
+
+        # Prompt capture
+        gate_key = "qr_codebook_consolidation"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="codebook_consolidation",
+                metadata={
+                    "model": self._model_p9,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_codebook_consolidation,
+                    "language": prompt_context.language,
+                    "n_raw_codes": len(raw_codes),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        for attempt in range(2):
+            try:
+                return await self._llm_call(
+                    prompt, CodebookConsolidationResult,
+                    self._max_tokens_codebook_consolidation,
+                    model=self._model_p9,
+                    timeout=120.0,
+                )
+            except Exception as e:
+                if attempt == 0:
+                    print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 1), retrying: "
+                          f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 2), returning raw codes: "
+                          f"{type(e).__name__}: {e}")
+                    raise  # Let caller handle fallback to raw codes
+
+    # =========================================================================
+    # DYNAMIC RATE LIMIT DISCOVERY
+    # =========================================================================
+
+    async def _fetch_rate_limits_from_api(self) -> RateLimits:
+        """Make a minimal API call to fetch rate limits from response headers."""
+        from openai import AsyncOpenAI
+
+        if API_PROVIDER == "azure":
+            from config import (
+                AZURE_OPENAI_ENDPOINT,
+                AZURE_OPENAI_API_KEY,
+                AZURE_OPENAI_DEPLOYMENT_NAME,
+            )
+            client = AsyncOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+                default_query={"api-version": "2024-10-21"},
+            )
+            model = AZURE_OPENAI_DEPLOYMENT_NAME
+        else:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            model = self._model_p8
+
+        response = await client.chat.completions.with_raw_response.create(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=5,
+        )
+        return extract_rate_limits_from_response(response)
+
+    # =========================================================================
+    # SHARED LLM CALL
+    # =========================================================================
+
+    async def _llm_call(self, prompt: str, response_model, max_tokens: int,
+                        temperature: float | None = None, model: str | None = None,
+                        timeout: float = 120.0, gate=None):
+        """Make a rate-limited LLM call with optional per-phase concurrency gate.
+
+        Args:
+            gate: Optional concurrency gate (asyncio.Semaphore or similar).
+                  If provided, used instead of self._semaphore.
+                  Allows per-phase concurrency control.
+            timeout: Generous safety net (60s for standard, 120s for reasoning).
+        """
+        use_model = model or self._model_p8
+        client = self._clients[use_model]
+        concurrency_ctx = gate if gate is not None else self._semaphore
+        async with concurrency_ctx:
+            async with self._rate_limiter:
+                return await asyncio.wait_for(
+                    llm_create_async(
+                        client=client,
+                        model=use_model,
+                        prompt=prompt,
+                        response_model=response_model,
+                        temperature=temperature if temperature is not None else self._temperature,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=timeout,
+                )
+
+    # =========================================================================
+    # HELPERS
+    # =========================================================================
+
+    def _build_all_partition_contexts(
+        self,
+        partition_set: DomainSet,
+    ) -> Dict[str, DomainContext]:
+        """Build DomainContext for each partition."""
+        contexts = {}
+        for part in partition_set.partitions:
+            contexts[part.partition_name] = DomainContext(
+                partition_name=part.partition_name,
+                partition_definition=part.inclusion_definition,
+            )
+        return contexts
+
+    @staticmethod
+    def _build_dataset_context_section(
+        dataset_context: Optional[Dict[str, str]],
+    ) -> str:
+        """Build dataset context block for prompts."""
+        if not dataset_context:
+            return ""
+        parts = []
+        for key in ["domain", "entity", "topic", "perspective", "intent"]:
+            value = dataset_context.get(key, "")
+            if value:
+                parts.append(f"{key.capitalize()}: {value}")
+        if not parts:
+            return ""
+        return "<dataset_context>\n" + "\n".join(parts) + "\n</dataset_context>"

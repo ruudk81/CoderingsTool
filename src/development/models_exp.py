@@ -149,10 +149,8 @@ class CodeAssignedModel(ClusterModel):
 
 # === MECE CACHE MODELS (step 5 categories) ========================================================
 
-from development.step_4_classNcoder.models_exp import DomainSet
-from development.step_4_classNcoder.prompts_exp import (
-    MECECode, MECEVerification,
-)
+from development.step_4_classifier.models_classifier import DomainSet
+from prompts import MECECode, MECEVerification
 
 
 class DomainResultModel(BaseModel):

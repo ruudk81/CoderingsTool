@@ -441,12 +441,13 @@ class CacheConfig:
         # Step 3: idea extraction (dev)
         "extracted_ideas": "004",
         "extracted_ideas_metadata": "004",
-        # Step 4: taxonomy coder (dev)
+        # Step 4: taxonomy classifier (dev, P1-P7)
         "taxonomy": "005",
         "taxonomy_metadata": "005",
-        "mece_codes": "005",
-        "mece_codes_metadata": "005",
-        "taxonomy_codes": "005",
+        # Step 5: codebook generator (dev, P8-P10)
+        "mece_codes": "006",
+        "mece_codes_metadata": "006",
+        "taxonomy_codes": "006",
     })
     
     # Cache validity settings
