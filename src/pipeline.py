@@ -37,15 +37,15 @@ model_config = ModelConfig()
 #var_name = "Q20"
 #sample_size = 500
 
-filename = "M000000 Associatiemonitor Merk X net databestand.sav"
-id_column = "DLNMID"
-var_name = "Qd1_combined"
-sample_size = 2000 
+#filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+#id_column = "DLNMID"
+#var_name = "Qd1_combined"
+#sample_size = 2000 
 
-#filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
-#d_column = "DLNMID"
-#var_name = "Q15"
-#sample_size = 2000
+filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+id_column = "DLNMID"
+var_name = "Q15"
+sample_size = 2000
 
 #filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
 #id_column = "DLNMID"
@@ -64,12 +64,10 @@ STEP_NAMES = {
     1: "preprocessed",
     2: "quality_filter",
     3: "extracted_ideas",
-    4: "embeddings",
-    5: "code_assignment",
-    6: "codebook_generation",
-    7: "codebook_refinement",
-    8: "code_assignment_direct",
-    9: "export"
+    4: "taxonomy",
+    5: "codebook",
+    6: "code_assignment",
+    7: "export",
 }
 
 # ===================================================================================================================
@@ -669,1147 +667,412 @@ def step_3_extract_ideas(
     return encoded_text
 
 
-def step_4_generate_embeddings(
+def step_4_classify_taxonomy(
     encoded_text,
     filename,
     var_lab,
-    variable_key=None,              # Auto-generate if None
-    cache_manager=None,             # Use global if None
-    model_config=None,              # Use global if None
+    variable_key=None,
+    cache_manager=None,
     force_recalc=False,
     verbose=True,
-    streamlit_container=None        # Optional progress updates
+    prompt_printer_enabled=False,
+    streamlit_container=None,
 ):
-    """Step 4: Generate embeddings for extracted ideas
+    """Step 4: Taxonomy classification (P1-P7)
 
-    Args:
-        encoded_text: List of IdeasExtractedModel instances from step 3
-        filename: SPSS filename for caching
-        var_lab: Variable label for context
-        variable_key: Cache key (auto-generated if None)
-        cache_manager: CacheManager instance (uses global if None)
-        model_config: ModelConfig instance for API configuration (uses global if None)
-        force_recalc: Force recalculation bypassing cache
-        verbose: Enable verbose output
-        streamlit_container: Optional Streamlit container for progress updates
+    Discovers domain partitions from step 3 ideas, then runs the full taxonomy
+    pipeline: facet discovery → consolidation → assignment → attribute discovery
+    → consolidation → assignment → cross-facet dedup.
 
     Returns:
-        List[models.EmbeddingsModel]: List of models with embeddings
+        None (results cached as metadata for step 5)
     """
-    from config_steps.config_embedder import EmbedderConfig
-    from utils.embedder import Embedder
-    from utils.verboseReporter import VerboseReporter
-
-    step_name = "embeddings"
-    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
-
-    # Optional Streamlit progress
-    if streamlit_container:
-        streamlit_container.text("🔄 Generating embeddings for ideas...")
-    verbose_reporter = VerboseReporter(verbose)
-
-    if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-        embedded_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.EmbeddingsModel)
-        total_embeddings = sum(len(resp.response_ideas) for resp in embedded_text if resp.response_ideas)
-        verbose_reporter.summary("EMBEDDINGS FROM CACHE", {
-            "Input": f"{len(encoded_text)} responses",
-            "Total embeddings": f"{total_embeddings}"
-        })
-
-        # Optional Streamlit success message
-        if streamlit_container:
-            streamlit_container.success("✅ Embedding generation completed (from cache)")
-    else:
-        verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
-        start_time = time.time()
-        verbose_reporter.step_start("Generating Embeddings", emoji="🔗")
-
-        # Load extraction metadata from cache (contains template_prefix for embedding format)
-        extraction_metadata = None
-        try:
-            extraction_metadata = cache_manager.load_metadata_from_cache(
-                filename=filename,
-                step="extracted_ideas",
-                variable_key=variable_key,
-                model_cls=models.ExtractionMetadata
-            )
-            if extraction_metadata and verbose:
-                print(f"   Loaded extraction metadata (template_prefix: '{extraction_metadata.template_prefix[:30]}...')" if extraction_metadata.template_prefix and len(extraction_metadata.template_prefix) > 30 else f"   Loaded extraction metadata (template_prefix: '{extraction_metadata.template_prefix}')" if extraction_metadata.template_prefix else "   Loaded extraction metadata (no template_prefix)")
-        except Exception as e:
-            if verbose:
-                print(f"   Note: Could not load extraction metadata: {e}")
-
-        # Initialize embedder with v5 config (defaults: 4-pass default mode, analysis enabled)
-        embedder_config = EmbedderConfig(verbose=verbose)
-        get_embeddings = Embedder(
-            config=embedder_config,
-            model_config=model_config,
-            var_lab=var_lab
-        )
-
-        # Print configuration summary (matching experiment runner output)
-        if verbose:
-            print(f"\n📋 Embedder Configuration:")
-            print(f"   Embedding model: {get_embeddings.embedding_model}")
-            print(f"   Text format: {embedder_config.embedding_text_format}")
-            print(f"   Analyze embeddings: {embedder_config.analyze_embeddings}")
-            print(f"   Compute similarity stats: {embedder_config.compute_similarity_stats}")
-
-        # Pass extraction metadata for template_prefix access
-        if extraction_metadata:
-            get_embeddings.set_extraction_metadata(extraction_metadata)
-
-        # Count input statistics
-        total_ideas = sum(item.idea_count for item in encoded_text)
-        if verbose:
-            print(f"\n📊 Input Statistics:")
-            print(f"   Total responses: {len(encoded_text)}")
-            print(f"   Total ideas: {total_ideas}")
-            print(f"   Average ideas per response: {total_ideas / len(encoded_text):.2f}" if encoded_text else "   Average ideas per response: 0")
-
-        input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
-        embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
-
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-
-        # Count output statistics
-        embeddings_count = sum(
-            1 for resp in embedded_text
-            if resp.response_ideas
-            for idea in resp.response_ideas
-            if idea.idea_embedding is not None
-        )
-        ladder_count = sum(
-            1 for resp in embedded_text
-            if resp.response_ideas
-            for idea in resp.response_ideas
-            if getattr(idea, 'ladder_embedding', None) is not None
-        )
-        concept_count = sum(
-            1 for resp in embedded_text
-            if resp.response_ideas
-            for idea in resp.response_ideas
-            if getattr(idea, 'interpretation_embedding', None) is not None
-        )
-
-        # Print final statistics (matching experiment runner output)
-        if verbose:
-            print(f"\n📊 Embedding Statistics:")
-            print(f"   Responses processed: {len(embedded_text)}")
-            print(f"   Idea embeddings generated: {embeddings_count}")
-            if ladder_count > 0:
-                print(f"   Ladder embeddings generated: {ladder_count}")
-            if concept_count > 0:
-                print(f"   Concept embeddings generated: {concept_count}")
-            print(f"   Elapsed time: {elapsed_time:.2f}s")
-            print(f"   Rate: {embeddings_count / elapsed_time:.1f} embeddings/sec" if elapsed_time > 0 else "   Rate: N/A")
-
-            # Print analysis results if available
-            if get_embeddings.analysis:
-                analysis = get_embeddings.analysis
-                print(f"\n🔍 Embedding Analysis:")
-                print(f"   Dimensions: {analysis.embedding_dim}")
-                print(f"   Norm: mean={analysis.mean_norm:.4f}, std={analysis.std_norm:.4f}, "
-                      f"range=[{analysis.min_norm:.4f}, {analysis.max_norm:.4f}]")
-                if analysis.mean_pairwise_similarity is not None:
-                    print(f"   Pairwise similarity: mean={analysis.mean_pairwise_similarity:.4f}, "
-                          f"std={analysis.std_pairwise_similarity:.4f}, "
-                          f"range=[{analysis.min_pairwise_similarity:.4f}, {analysis.max_pairwise_similarity:.4f}]")
-
-        cache_manager.save_to_cache(embedded_text, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
-        print(f"\n'Embedding generation' completed in {elapsed_time:.2f} seconds.")
-
-        # Optional Streamlit success message
-        if streamlit_container:
-            streamlit_container.success(f"✅ Embedding generation completed in {elapsed_time:.2f}s")
-
-    return embedded_text
-
-
-def step_4_classNcoder(
-    embedded_text,
-    filename,
-    var_lab,
-    variable_key=None,              # Auto-generate if None
-    cache_manager=None,             # Use global if None
-    force_recalc=False,
-    verbose=True,
-    streamlit_container=None        # Optional progress updates
-):
-    """Step 5: Category Discovery & Assignment
-
-    Partitions ideas by domain, discovers MECE coding categories per
-    partition via MAP/REDUCE/MECE, then assigns each idea to exactly one
-    category.
-
-    Three stages:
-      1. Partition Discovery: group by domain, collect unique labels
-      2. Map-Reduce MECE: discover categories per partition (concurrent)
-      3. Category Assignment: assign ideas to categories (concurrent)
-
-    Args:
-        embedded_text: List of EmbeddingsModel instances from step 4
-        filename: SPSS filename for caching
-        var_lab: Survey question text (for context)
-        variable_key: Cache key (auto-generated if None)
-        cache_manager: CacheManager instance (uses global if None)
-        force_recalc: Force recalculation bypassing cache
-        verbose: Enable verbose output
-        streamlit_container: Optional Streamlit container for progress updates
-
-    Returns:
-        List[models.CodeAssignedModel]: Ideas with category assignments
-    """
-    from config_steps.config_categories import CategoriesConfig, AssignmentConfig
     from utils.domain_discoverer import DomainDiscoverer
-    from utils.map_reduce_mece import MapReduceMECE
-    from utils.code_assignment import CodeAssigner
-    from utils.verboseReporter import VerboseReporter
+    from utils.classifier import TaxonomyClassifier, TaxonomyResult
+    from utils.promptPrinter import PromptPrinter
+    from config_steps.config_classifier import CategoriesConfig
+    from models import DomainSet, DomainResultModel, TaxonomyResultsCache, ExtractionMetadata
 
-    step_name = "code_assignment"
-    mece_step_name = "mece_categories"
+    step_name = "taxonomy"
     variable_key, cache_manager, _ = _resolve_step_defaults(variable_key, cache_manager)
 
     if streamlit_container:
-        streamlit_container.text("Discovering MECE categories and assigning ideas...")
-    verbose_reporter = VerboseReporter(verbose)
+        streamlit_container.text("🔄 Running taxonomy classification (P1-P7)...")
 
-    # ─── Cache check ────────────────────────────────────────────────────
-    if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-        category_results = cache_manager.load_from_cache(
-            filename, step_name, variable_key, models.CodeAssignedModel
-        )
-        total_ideas = sum(
-            len(resp.response_ideas)
-            for resp in category_results if resp.response_ideas
-        )
-        assigned_count = sum(
-            1 for resp in category_results if resp.response_ideas
-            for idea in resp.response_ideas
-            if idea.assigned_category
-        )
-        verbose_reporter.summary("CATEGORY ASSIGNMENT FROM CACHE", {
-            "Input": f"{len(embedded_text)} responses",
-            "Total ideas": f"{total_ideas}",
-            "Assigned": f"{assigned_count}",
-        })
-        if streamlit_container:
-            streamlit_container.success(
-                f"Category assignment completed (from cache): {assigned_count} ideas assigned"
-            )
-        return category_results
+    # Check cache
+    if not force_recalc and cache_manager.is_cache_valid(filename, f"{step_name}_metadata", variable_key):
+        taxonomy_cache = cache_manager.load_metadata_from_cache(filename, step_name, variable_key, TaxonomyResultsCache)
+        if taxonomy_cache:
+            n_domains = len(taxonomy_cache.partition_results)
+            n_facets = sum(len(r.facets) for r in taxonomy_cache.partition_results.values())
+            print(f"\n=== TAXONOMY FROM CACHE ({n_domains} domains, {n_facets} facets) ===\n")
+            if streamlit_container:
+                streamlit_container.success("✅ Taxonomy classification completed (from cache)")
+            return
 
-    # ─── Fresh computation ──────────────────────────────────────────────
-    verbose_reporter.section_header("CATEGORY DISCOVERY & ASSIGNMENT")
-    start_time = time.time()
-
-    # Load extraction metadata
-    extraction_metadata = None
-    try:
-        extraction_metadata = cache_manager.load_metadata_from_cache(
-            filename=filename,
-            step="extracted_ideas",
-            variable_key=variable_key,
-            model_cls=models.ExtractionMetadata
-        )
-        if extraction_metadata and verbose:
-            print(f"   Loaded extraction metadata "
-                  f"(primary_dimension: {extraction_metadata.primary_dimension})")
-    except Exception as e:
-        if verbose:
-            print(f"   Note: Could not load extraction metadata: {e}")
-
-    # Configuration
-    categories_config = CategoriesConfig()
-    assignment_config = AssignmentConfig()
-
-    # ═══ Stage 1: Partition Discovery ═══════════════════════════════════
-    discoverer = DomainDiscoverer(categories_config, extraction_metadata)
-    partition_set, label_mappings, precluster_results = discoverer.discover(
-        embedded_text
+    # Load extraction metadata from step 3
+    extraction_metadata = cache_manager.load_metadata_from_cache(
+        filename, "extracted_ideas", variable_key, ExtractionMetadata
     )
-    grouping_instructions = discoverer.get_grouping_instructions()
 
-    if verbose:
-        print(f"\n   Partitions discovered: {len(label_mappings)}")
-        for name, mapping in label_mappings.items():
-            print(f"     {name}: {mapping.label_count} unique labels")
-
-    # ═══ Stage 2: Map-Reduce MECE ══════════════════════════════════════
-    # Build context from extraction metadata
-    survey_question = var_lab or ""
+    # Extract survey context
+    survey_question = ""
     language = "Dutch"
     dataset_context = None
-    primary_dimension = None
-    dimension_description = None
-
+    dimension_name = ""
+    dimension_description = ""
     if extraction_metadata:
-        meta = extraction_metadata
-        if getattr(meta, 'var_lab', ''):
-            survey_question = meta.var_lab
-        language = getattr(meta, 'lang', 'Dutch') or 'Dutch'
+        survey_question = getattr(extraction_metadata, 'var_lab', '') or ''
+        language = getattr(extraction_metadata, 'lang', 'Dutch') or 'Dutch'
         dataset_context = {}
-        for f in ('domain', 'entity', 'topic', 'perspective', 'intent'):
-            val = getattr(meta, f, None)
+        for f in ('sector', 'entity', 'topic', 'perspective', 'intent'):
+            val = getattr(extraction_metadata, f, None)
             if val:
                 dataset_context[f] = val
-        primary_dimension = getattr(meta, 'primary_dimension', None)
-        dimension_description = getattr(meta, 'primary_dimension_description', None)
+        dimension_name = getattr(extraction_metadata, 'primary_dimension', '') or ''
+        dimension_description = getattr(extraction_metadata, 'primary_dimension_description', '') or ''
 
-    processor = MapReduceMECE(categories_config)
-    mece_results = processor.process_all_partitions(
+    # Config
+    config = CategoriesConfig(
+        label_source="idea",
+        label_prefix="",
+        include_valence=True,
+    )
+
+    start_time = time.time()
+
+    # Stage 1: Partition discovery
+    discoverer = DomainDiscoverer(config, extraction_metadata)
+    partition_set, label_mappings = discoverer.discover(encoded_text)
+
+    # Stage 2: Taxonomy classification (P1-P7)
+    prompt_printer = PromptPrinter(enabled=prompt_printer_enabled, print_realtime=prompt_printer_enabled)
+    classifier = TaxonomyClassifier(config, prompt_printer=prompt_printer)
+    taxonomy_result = classifier.process(
         label_mappings=label_mappings,
         partition_set=partition_set,
         survey_question=survey_question,
         language=language,
         dataset_context=dataset_context,
-        primary_dimension=primary_dimension,
+        dimension_name=dimension_name,
         dimension_description=dimension_description,
-        grouping_instructions=grouping_instructions,
-        precluster_results=precluster_results,
         verbose=verbose,
     )
 
-    # ═══ Cache MECE results (metadata) ═════════════════════════════════
+    elapsed_time = time.time() - start_time
+
+    # Build per-domain pydantic results and cache
     pydantic_results = {}
-    for name, result in mece_results.items():
-        pydantic_results[name] = models.DomainResultModel(
-            partition_name=result.partition_name,
-            n_labels=result.n_labels,
-            n_batches=result.n_batches,
-            reduce_skipped=result.reduce_skipped,
-            categories=result.categories,
-            mece_verifications=result.mece_verifications,
+    for name in taxonomy_result.partition_facets:
+        facet_assigns = {
+            k: v for k, v in taxonomy_result.partition_assignments.get(name, {}).items()
+            if v is not None
+        }
+        domain_facet_ids = set(facet_assigns.keys())
+        domain_attr_assigns = {
+            iid: aname for iid, aname in taxonomy_result.attribute_assignments.items()
+            if iid in domain_facet_ids and aname is not None
+        }
+        pydantic_results[name] = DomainResultModel(
+            partition_name=name,
+            n_labels=taxonomy_result.partition_n_labels.get(name, 0),
+            n_batches=taxonomy_result.partition_n_batches.get(name, 0),
+            facets=[f.model_dump() for f in taxonomy_result.partition_facets.get(name, [])],
+            facet_assignments=facet_assigns,
+            attributes={
+                facet_name: [a.model_dump() for a in attrs]
+                for facet_name, attrs in taxonomy_result.partition_attributes.get(name, {}).items()
+            },
+            attribute_assignments=domain_attr_assigns,
         )
 
-    mece_cache = models.CodingResultsCache(
+    taxonomy_cache = TaxonomyResultsCache(
         partition_set=partition_set,
         partition_results=pydantic_results,
-        label_counts={
-            name: m.label_count for name, m in label_mappings.items()
-        },
-        processing_mode=categories_config.processing_mode,
-        label_source=categories_config.label_source,
-        total_categories=sum(
-            len(r.categories) for r in mece_results.values()
-        ),
+        label_counts={name: m.label_count for name, m in label_mappings.items()},
+        label_source=config.label_source,
+    )
+    cache_manager.save_metadata_to_cache(
+        metadata=taxonomy_cache,
+        filename=filename,
+        step=step_name,
+        variable_key=variable_key,
+    )
+
+    total_facets = sum(len(taxonomy_result.partition_facets.get(n, [])) for n in taxonomy_result.partition_facets)
+    total_attrs = sum(len(a) for fa in taxonomy_result.partition_attributes.values() for a in fa.values())
+    print(f"\n'Taxonomy classification' completed in {elapsed_time:.2f} seconds "
+          f"({len(pydantic_results)} domains, {total_facets} facets, {total_attrs} attributes).\n")
+
+    if streamlit_container:
+        streamlit_container.success(f"✅ Taxonomy classification completed in {elapsed_time:.2f}s")
+
+
+
+def step_5_generate_codebook(
+    filename,
+    variable_key=None,
+    cache_manager=None,
+    force_recalc=False,
+    verbose=True,
+    prompt_printer_enabled=False,
+    streamlit_container=None,
+):
+    """Step 5: Generate codebook from taxonomy (P8-P9)
+
+    Loads taxonomy results from step 4 cache, reconstructs TaxonomyResult,
+    and runs codebook generation (code generation per domain + cross-domain
+    consolidation).
+
+    Returns:
+        None (results cached as metadata for step 6)
+    """
+    from utils.codeGenerator import CodebookGenerator, CodebookResult, TaxonomyResult
+    from utils.promptPrinter import PromptPrinter
+    from config_steps.config_codeGenerator import CodebookConfig
+    from prompts_steps.prompts_classifier import DiscoveredFacet, DiscoveredAttribute
+    from models import DomainSet, DomainResultModel, TaxonomyResultsCache, CodingResultsCache, ExtractionMetadata
+
+    step_name = "mece_codes"
+    variable_key, cache_manager, _ = _resolve_step_defaults(variable_key, cache_manager)
+
+    if streamlit_container:
+        streamlit_container.text("🔄 Generating codebook (P8-P9)...")
+
+    # Check cache
+    if not force_recalc and cache_manager.is_cache_valid(filename, f"{step_name}_metadata", variable_key):
+        mece_cache = cache_manager.load_metadata_from_cache(filename, step_name, variable_key, CodingResultsCache)
+        if mece_cache:
+            n_codes = mece_cache.total_categories
+            print(f"\n=== CODEBOOK FROM CACHE ({n_codes} codes) ===\n")
+            if streamlit_container:
+                streamlit_container.success("✅ Codebook generation completed (from cache)")
+            return
+
+    # Load taxonomy from step 4 cache
+    taxonomy_cache = cache_manager.load_metadata_from_cache(
+        filename, "taxonomy", variable_key, TaxonomyResultsCache
+    )
+    if taxonomy_cache is None:
+        raise FileNotFoundError("No cached taxonomy results. Run step 4 first.")
+
+    # Load extraction metadata from step 3
+    extraction_metadata = cache_manager.load_metadata_from_cache(
+        filename, "extracted_ideas", variable_key, ExtractionMetadata
+    )
+
+    # Extract survey context
+    survey_question = ""
+    language = "Dutch"
+    dataset_context = None
+    dimension_name = ""
+    dimension_description = ""
+    if extraction_metadata:
+        survey_question = getattr(extraction_metadata, 'var_lab', '') or ''
+        language = getattr(extraction_metadata, 'lang', 'Dutch') or 'Dutch'
+        dataset_context = {}
+        for f in ('sector', 'entity', 'topic', 'perspective', 'intent'):
+            val = getattr(extraction_metadata, f, None)
+            if val:
+                dataset_context[f] = val
+        dimension_name = getattr(extraction_metadata, 'primary_dimension', '') or ''
+        dimension_description = getattr(extraction_metadata, 'primary_dimension_description', '') or ''
+
+    partition_set = taxonomy_cache.partition_set
+    pydantic_results = taxonomy_cache.partition_results
+
+    # Reconstruct TaxonomyResult from cached partition_results
+    partition_facets = {}
+    partition_assignments = {}
+    partition_attributes = {}
+    partition_n_labels = {}
+    partition_n_batches = {}
+    all_attr_assignments = {}
+
+    for name, result in pydantic_results.items():
+        partition_facets[name] = [DiscoveredFacet(**f) for f in result.facets]
+        partition_assignments[name] = result.facet_assignments
+        partition_attributes[name] = {
+            facet_name: [DiscoveredAttribute(**a) for a in attrs]
+            for facet_name, attrs in result.attributes.items()
+        }
+        partition_n_labels[name] = result.n_labels
+        partition_n_batches[name] = result.n_batches
+        all_attr_assignments.update(result.attribute_assignments)
+
+    taxonomy_result = TaxonomyResult(
+        partition_n_labels=partition_n_labels,
+        partition_n_batches=partition_n_batches,
+        partition_facets=partition_facets,
+        partition_assignments=partition_assignments,
+        partition_attributes=partition_attributes,
+        attribute_assignments=all_attr_assignments,
+    )
+
+    config = CodebookConfig()
+    start_time = time.time()
+
+    prompt_printer = PromptPrinter(enabled=prompt_printer_enabled, print_realtime=prompt_printer_enabled)
+    generator = CodebookGenerator(config, prompt_printer=prompt_printer)
+    codebook_result = generator.generate(
+        taxonomy_result=taxonomy_result,
+        partition_set=partition_set,
+        survey_question=survey_question,
+        language=language,
+        dataset_context=dataset_context,
+        dimension_name=dimension_name,
+        dimension_description=dimension_description,
+        verbose=verbose,
+    )
+
+    elapsed_time = time.time() - start_time
+
+    # Cache codebook for step 6
+    mece_cache = CodingResultsCache(
+        partition_set=partition_set,
+        partition_results=pydantic_results,
+        label_counts={name: r.n_labels for name, r in pydantic_results.items()},
+        total_categories=len(codebook_result.codes),
+        raw_codes=[c.model_dump() for c in codebook_result.codes],
     )
     cache_manager.save_metadata_to_cache(
         metadata=mece_cache,
         filename=filename,
-        step=mece_step_name,
+        step=step_name,
         variable_key=variable_key,
     )
-    if verbose:
-        print(f"\n   MECE results cached "
-              f"({mece_cache.total_categories} categories across "
-              f"{len(pydantic_results)} partitions)")
 
-    # ═══ Stage 3: Category Assignment ══════════════════════════════════
+    print(f"\n'Codebook generation' completed in {elapsed_time:.2f} seconds "
+          f"({len(codebook_result.codes)} codes).\n")
+
+    if streamlit_container:
+        streamlit_container.success(f"✅ Codebook generation completed in {elapsed_time:.2f}s")
+
+
+def step_6_assign_codes(
+    encoded_text,
+    filename,
+    variable_key=None,
+    cache_manager=None,
+    force_recalc=False,
+    verbose=True,
+    prompt_printer_enabled=False,
+    streamlit_container=None,
+):
+    """Step 6: Assign codes to ideas (P10)
+
+    Loads codebook from step 5 cache and ideas from step 3, then assigns
+    each idea to exactly one MECE code via LLM.
+
+    Returns:
+        List[models.CodeAssignedModel]: Ideas with assigned codes
+    """
+    from utils.codeAssigner import CodeAssigner
+    from utils.promptPrinter import PromptPrinter
+    from config_steps.config_codeAssigner import AssignmentConfig
+    from prompts_steps.prompts_codeGenerator import ConsolidatedCode
+    from models import CodingResultsCache, DomainSet, DomainResultModel, ExtractionMetadata
+
+    step_name = "taxonomy_codes"
+    variable_key, cache_manager, _ = _resolve_step_defaults(variable_key, cache_manager)
+
+    if streamlit_container:
+        streamlit_container.text("🔄 Assigning codes to ideas (P10)...")
+
+    # Check cache
+    if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+        assigned_results = cache_manager.load_from_cache(
+            filename, step_name, variable_key, models.CodeAssignedModel
+        )
+        if assigned_results:
+            total_ideas = sum(len(r.response_ideas or []) for r in assigned_results)
+            print(f"\n=== CODE ASSIGNMENT FROM CACHE ({len(assigned_results)} responses, {total_ideas} ideas) ===\n")
+            if streamlit_container:
+                streamlit_container.success("✅ Code assignment completed (from cache)")
+            return assigned_results
+
+    # Load codebook from step 5 cache
+    mece_cache = cache_manager.load_metadata_from_cache(
+        filename, "mece_codes", variable_key, CodingResultsCache
+    )
+    if mece_cache is None:
+        raise FileNotFoundError("No cached codebook results. Run step 5 first.")
+
+    # Load extraction metadata from step 3
+    extraction_metadata = cache_manager.load_metadata_from_cache(
+        filename, "extracted_ideas", variable_key, ExtractionMetadata
+    )
+
+    partition_set = mece_cache.partition_set
+    pydantic_results = mece_cache.partition_results
+
+    # Reconstruct ConsolidatedCode from cached dicts
+    codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else None
+
+    # Collect attribute_assignments from all domains
+    all_attr_assignments = {}
+    for domain_result in pydantic_results.values():
+        all_attr_assignments.update(domain_result.attribute_assignments)
+
+    config = AssignmentConfig()
+    start_time = time.time()
+
+    prompt_printer = PromptPrinter(enabled=prompt_printer_enabled, print_realtime=prompt_printer_enabled)
     assigner = CodeAssigner(
-        config=assignment_config,
-        embeddings_models=embedded_text,
+        config=config,
+        ideas_models=encoded_text,
         mece_results=pydantic_results,
         partition_set=partition_set,
         extraction_metadata=extraction_metadata,
+        prompt_printer=prompt_printer,
+        codes=codes,
+        attribute_assignments=all_attr_assignments,
     )
-    category_results = assigner.assign_all()
-
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-
-    # ═══ Cache assignment results (primary output) ═════════════════════
-    cache_manager.save_to_cache(
-        category_results, filename, step_name, variable_key,
-        elapsed_time, var_lab=var_lab
-    )
-
-    # ═══ Summary ═══════════════════════════════════════════════════════
-    total_ideas = sum(
-        len(resp.response_ideas)
-        for resp in category_results if resp.response_ideas
-    )
-    assigned_count = sum(
-        1 for resp in category_results if resp.response_ideas
-        for idea in resp.response_ideas
-        if idea.assigned_category
-    )
-
-    if verbose:
-        print(f"\n   Category discovery & assignment completed in "
-              f"{elapsed_time:.2f} seconds.")
-        print(f"   Total ideas: {total_ideas}")
-        print(f"   Assigned: {assigned_count}")
-        print(f"   Partitions: {len(mece_results)}")
-        print(f"   MECE categories: {mece_cache.total_categories}")
-
-    if streamlit_container:
-        streamlit_container.success(
-            f"Category assignment completed in {elapsed_time:.2f}s: "
-            f"{assigned_count}/{total_ideas} ideas assigned"
-        )
-
-    return category_results
-
-
-def step_6_generate_codebook(
-    category_results,
-    filename,
-    var_name,
-    var_lab,
-    variable_key=None,              # Auto-generate if None
-    cache_manager=None,             # Use global if None
-    model_config=None,              # Use global if None
-    force_recalc=False,
-    verbose=True,
-    verbose_detailed=False,
-    prompt_printer_enabled=False,
-    cache_reasoning=True,
-    streamlit_container=None        # Optional progress updates
-):
-    """Step 6: Generate codebook from MECE categories using inductive coding
-
-    Args:
-        category_results: List of CodeAssignedModel instances from step 5
-        filename: SPSS filename for caching
-        var_name: Variable name for metadata
-        var_lab: Variable label for context
-        variable_key: Cache key (auto-generated if None)
-        cache_manager: CacheManager instance (uses global if None)
-        model_config: ModelConfig instance for LLM calls (uses global if None)
-        force_recalc: Force recalculation bypassing cache
-        verbose: Enable verbose output
-        verbose_detailed: Enable detailed verbose output
-        prompt_printer_enabled: Enable prompt printing
-        cache_reasoning: Cache reasoning results for export
-        streamlit_container: Optional Streamlit container for progress updates
-
-    Returns:
-        CodeGeneratorReasoningResults: Complete reasoning results with codebook and tracking data
-    """
-    from utils import codeGenerator, verboseReporter, promptPrinter
-
-    step_name = "codebook_generation"
-    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
-
-    # Optional Streamlit progress
-    if streamlit_container:
-        streamlit_container.text("Generating codebook from categories...")
-    verbose_reporter = verboseReporter.VerboseReporter(verbose)
-    # Always capture prompts when verbose, but only print realtime if prompt_printer_enabled
-    prompt_printer = promptPrinter.PromptPrinter(
-        enabled=verbose,  # Capture prompts whenever verbose mode is on
-        print_realtime=prompt_printer_enabled  # Only print realtime if explicitly enabled
-    )
-    codebook_reasoning = None
-
-    if not force_recalc and cache_manager.is_cache_valid(filename, f"{step_name}_reasoning", variable_key):
-        # Load codebook_reasoning from cache
-        reasoning_models = cache_manager.load_from_cache(
-            filename, f"{step_name}_reasoning", variable_key, codeGenerator.CodeGeneratorReasoningResults
-        )
-        if reasoning_models and len(reasoning_models) > 0:
-            codebook_reasoning = reasoning_models[0]
-            num_codes = len(codebook_reasoning.codebook) if codebook_reasoning.codebook else 0
-            verbose_reporter.summary("CODEBOOK FROM CACHE", {
-                "Total codes": num_codes,
-                "Source variable": var_name
-            })
-
-            # Optional Streamlit success message
-            if streamlit_container:
-                streamlit_container.success(f"Codebook generation completed (from cache): {num_codes} codes")
-
-            print("[OK] Loaded codebook reasoning from cache")
-        else:
-            print("ERROR: Failed to load codebook reasoning from cache")
-            codebook_reasoning = None
-    else:
-        verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
-        start_time = time.time()
-
-        # Load MECE results cache from step 5 (for partition/category structure)
-        mece_results_cache = cache_manager.load_metadata_from_cache(
-            filename=filename,
-            step="mece_categories",
-            variable_key=variable_key,
-            model_cls=models.CodingResultsCache,
-        )
-        if mece_results_cache and verbose:
-            total_cats = mece_results_cache.total_categories
-            n_partitions = len(mece_results_cache.partition_results)
-            print(f"[INFO] Loaded MECE categories: {total_cats} categories across {n_partitions} partitions")
-
-        # Load extraction_metadata for theme extraction
-        extraction_metadata = cache_manager.load_metadata_from_cache(
-            filename=filename,
-            step="extracted_ideas",
-            variable_key=variable_key,
-            model_cls=models.ExtractionMetadata,
-        )
-        if extraction_metadata and verbose:
-            print(f"[INFO] Loaded extraction metadata for theme extraction")
-
-        # Inductive code generation (MECE category route — no starter codes)
-        generator = codeGenerator.InductiveCodeGenerator(
-            cluster_results=[],  # Empty — MECE route uses category_assigned_data
-            starter_codes=[],
-            var_lab=var_lab,
-            verbose=verbose,
-            verbose_detailed=verbose_detailed,
-            prompt_printer=prompt_printer,
-            extraction_metadata=extraction_metadata,
-            mece_results_cache=mece_results_cache,
-            category_assigned_data=category_results,
-            embedding_text_format="ladder",
-        )
-        results = generator.generate()
-
-        if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
-            codebook_reasoning = results
-            final_codebook = results.codebook if results.codebook else []
-
-            # Display final codebook summary
-            if verbose and final_codebook:
-                verbose_reporter.empty_line()
-                print("[STATS] FINAL CODEBOOK SUMMARY")
-                verbose_reporter.stat_line(f"Total codes: {len(final_codebook)}")
-
-                verbose_reporter.empty_line()
-                print("[LIST] Complete codebook:")
-                for idx, item in enumerate(final_codebook, 1):
-                    definition = item['definition']
-                    if len(definition) > 100:
-                        definition = definition[:97] + "..."
-                    source = item.get('source_cluster_id', '')
-                    cluster_count = len(source.split(',')) if source else 0
-                    cluster_info = f" ({cluster_count} categories)" if cluster_count > 1 else ""
-                    print(f"  {idx}. {item['code']}{cluster_info}")
-
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-
-        # Cache codebook reasoning if available
-        if codebook_reasoning:
-            try:
-                cache_manager.save_to_cache(
-                    [codebook_reasoning], filename, f"{step_name}_reasoning",
-                    variable_key, elapsed_time, var_lab=var_lab,
-                )
-                print("Cached codebook reasoning for export consistency")
-            except Exception as e:
-                print(f"WARNING: Failed to cache reasoning results: {e}")
-        else:
-            print("WARNING: No reasoning results generated to cache")
-
-        # Cache the enriched cluster results with expanded_cluster field
-        cache_manager.save_to_cache(
-            generator.cluster_results,
-            filename, "expanded_clusters", variable_key,
-            elapsed_time, var_lab=var_lab,
-        )
-        print("Cached enriched clusters with expanded_cluster field")
-
-        print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
-
-        # Optional Streamlit success message
-        if streamlit_container:
-            num_codes = len(codebook_reasoning.codebook) if codebook_reasoning and codebook_reasoning.codebook else 0
-            streamlit_container.success(f"Codebook generation completed in {elapsed_time:.2f}s: {num_codes} codes")
-
-    # Display sample prompts (first of each stage) when verbose - matches run_experiment.py
-    if verbose and prompt_printer.prompts:
-        print("\n" + "=" * 80)
-        print("SAMPLE PROMPTS (First of Each Stage)")
-        print("=" * 80)
-        prompt_printer.print_all_prompts()
-
-    return codebook_reasoning
-
-
-def step_7_refine_codebook(
-    codebook_reasoning,
-    filename,
-    var_name,
-    var_lab,
-    variable_key=None,              # Auto-generate if None
-    cache_manager=None,             # Use global if None
-    model_config=None,              # Use global if None
-    default_language=None,          # Use DEFAULT_LANGUAGE if None
-    force_recalc=False,
-    verbose=True,
-    prompt_printer_enabled=False,
-    streamlit_container=None        # Optional progress updates
-):
-    """Step 7: Refine codebook into hierarchical themes
-
-    Args:
-        codebook_reasoning: CodeGeneratorReasoningResults from step 6
-        filename: SPSS filename for caching
-        var_name: Variable name for metadata
-        var_lab: Variable label for context
-        variable_key: Cache key (auto-generated if None)
-        cache_manager: CacheManager instance (uses global if None)
-        model_config: ModelConfig instance for LLM calls (uses global if None)
-        default_language: Language for refinement (uses DEFAULT_LANGUAGE if None)
-        force_recalc: Force recalculation bypassing cache
-        verbose: Enable verbose output
-        prompt_printer_enabled: Enable prompt printing
-        streamlit_container: Optional Streamlit container for progress updates
-
-    Returns:
-        tuple: (refinement_results: CodeRefinementResults, theme_enriched_codebook: ThemeEnrichedCodebookModel, refinement_report: dict, prompt_printer: PromptPrinter)
-    """
-    from utils.codebookRefinement import refine_codebook, print_refinement_report, get_refinement_report
-    from utils import verboseReporter, promptPrinter
-
-    step_name = "codebook_refinement"
-    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
-
-    # Use DEFAULT_LANGUAGE if not provided
-    if default_language is None:
-        from config import DEFAULT_LANGUAGE as DEFAULT_LANG
-        default_language = DEFAULT_LANG
-
-    # Optional Streamlit progress
-    if streamlit_container:
-        streamlit_container.text("🔄 Refining codebook into hierarchical themes...")
-    verbose_reporter = verboseReporter.VerboseReporter(verbose)
-    prompt_printer = promptPrinter.PromptPrinter(enabled=True, print_realtime=prompt_printer_enabled)
-    start_time = time.time()
-
-    if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-        refinement_results_cached = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeRefinementResults)
-        if refinement_results_cached and len(refinement_results_cached) > 0:
-            refinement_results = refinement_results_cached[0]
-            verbose_reporter.summary("CODEBOOK REFINEMENT FROM CACHE", {
-                "Original codes": refinement_results.processing_stats.get('original_code_count', 0),
-                "Refined categories": refinement_results.processing_stats.get('refined_category_count', 0),
-                "Total subcodes": refinement_results.processing_stats.get('total_refined_subcodes', 0)
-            })
-
-            # Optional Streamlit success message
-            if streamlit_container:
-                num_categories = refinement_results.processing_stats.get('refined_category_count', 0)
-                streamlit_container.success(f"✅ Codebook refinement completed (from cache): {num_categories} themes")
-        else:
-            print("ERROR: Failed to load codebook refinement from cache")
-            refinement_results = None
-    else:
-        verbose_reporter.section_header("CODEBOOK REFINEMENT PHASE")
-
-        # Check if we have codebook_reasoning from step 6
-        if codebook_reasoning is not None:
-            verbose_reporter.step_start("Refinement", "Refining raw codes into hierarchical structure")
-
-            # Run refinement using simple sync call
-            refinement_results = refine_codebook(
-                survey_question=var_lab,
-                reasoning_results=codebook_reasoning,
-                model_config=model_config,
-                language=default_language,
-                verbose=verbose,
-                prompt_printer=prompt_printer
-            )
-
-            # Cache results
-            elapsed_time = time.time() - start_time
-            cache_manager.save_to_cache([refinement_results], filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
-
-            if verbose:
-                print_refinement_report(refinement_results)
-        else:
-            print("ERROR: No codebook reasoning results available for refinement")
-            refinement_results = None
+    assigned_results = assigner.assign_all()
 
     elapsed_time = time.time() - start_time
-    print(f"\n'codebook refinement' completed in {elapsed_time:.2f} seconds.\n")
 
-    # Optional Streamlit success message
-    if streamlit_container:
-        if refinement_results:
-            num_categories = refinement_results.processing_stats.get('refined_category_count', 0)
-            streamlit_container.success(f"✅ Codebook refinement completed in {elapsed_time:.2f}s: {num_categories} themes")
-        else:
-            streamlit_container.warning("⚠️ Codebook refinement had issues")
+    # Cache results
+    cache_manager.save_to_cache(assigned_results, filename, step_name, variable_key)
 
-    # Create theme enriched codebook
-    if refinement_results and refinement_results.refined_codebook.refined_codebook:
-        verbose_reporter.step_start("Creating theme enriched codebook", "Converting refined results for step 9")
-
-        # Load codebook_reasoning from cache if not provided (for cache-only runs)
-        if not codebook_reasoning:
-            from utils import codeGenerator
-            try:
-                reasoning_models = cache_manager.load_from_cache(
-                    filename, "codebook_generation_reasoning", variable_key,
-                    codeGenerator.CodeGeneratorReasoningResults
-                )
-                if reasoning_models and len(reasoning_models) > 0:
-                    codebook_reasoning = reasoning_models[0]
-                    verbose_reporter.stat_line("Loaded codebook_reasoning from cache for examples extraction")
-            except Exception as e:
-                verbose_reporter.warning(f"Failed to load codebook_reasoning from cache: {e}")
-                codebook_reasoning = None
-
-        # Create ThemeEnrichedCodebookEntry objects from refined codebook
-        enriched_entries = []
-        code_to_theme_mapping = {}
-        themes_summary = []
-
-        # Extract assignment_examples from codebook_reasoning.codebook
-        # Map by expanded cluster IDs to handle code merging/renaming
-        import json
-        cluster_to_assignment_examples = {}
-        if codebook_reasoning and hasattr(codebook_reasoning, 'codebook'):
-            for entry in codebook_reasoning.codebook:
-                # Parse JSON strings to lists
-                inclusion = entry.get('inclusion_examples')
-                exclusion = entry.get('exclusion_examples')
-
-                examples_data = {
-                    'inclusion_examples': json.loads(inclusion) if inclusion and isinstance(inclusion, str) else inclusion,
-                    'exclusion_examples': json.loads(exclusion) if exclusion and isinstance(exclusion, str) else exclusion,
-                    'near_neighbor_label': entry.get('near_neighbor_label'),
-                    'tell_apart_rule': entry.get('tell_apart_rule')
-                }
-
-                # Map each expanded cluster ID to these examples
-                source_clusters = entry.get('source_cluster_id', '').split(',')
-                for cluster_id in source_clusters:
-                    cluster_id = cluster_id.strip()
-                    if cluster_id:
-                        cluster_to_assignment_examples[cluster_id] = examples_data
-
-        for category in refinement_results.refined_codebook.refined_codebook:
-            theme_name = category.category
-
-            # Add to themes summary
-            themes_summary.append({
-                'theme_name': theme_name,
-                'theme_description': theme_name,  # Use theme name as description
-                'code_count': len(category.subcodes)
-            })
-
-            for subcode in category.subcodes:
-                # Get assignment_examples by expanded cluster ID (handles code merging)
-                source_clusters = subcode.source_cluster.split(',') if subcode.source_cluster else []
-                first_cluster = source_clusters[0].strip() if source_clusters else None
-                examples = cluster_to_assignment_examples.get(first_cluster, {}) if first_cluster else {}
-
-                final_inclusion = examples.get('inclusion_examples')
-                final_exclusion = examples.get('exclusion_examples')
-                near_neighbor = examples.get('near_neighbor_label')
-                tell_apart = examples.get('tell_apart_rule')
-
-                # Create ThemeEnrichedCodebookEntry with category support (3-level hierarchy)
-                enriched_entry = models.ThemeEnrichedCodebookEntry(
-                    code=subcode.code,
-                    definition=subcode.description,
-                    theme=theme_name,
-                    theme_description=theme_name,
-                    category=subcode.category,  # Empty string for 2-level, category name for 3-level
-                    category_description=subcode.category if subcode.category else "",  # Use category name as description
-                    source_cluster=subcode.source_cluster,  # Use source_cluster directly from RefinedSubcode
-                    inclusion_examples=final_inclusion,
-                    exclusion_examples=final_exclusion,
-                    near_neighbor_label=near_neighbor,
-                    tell_apart_rule=tell_apart
-                )
-                enriched_entries.append(enriched_entry)
-
-                # Build code-to-theme mapping
-                code_to_theme_mapping[subcode.code] = theme_name
-
-        # Create ThemeEnrichedCodebookModel
-        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-            codes=enriched_entries,
-            themes_summary=themes_summary,
-            code_to_theme_mapping=code_to_theme_mapping,
-            theme_methodology="GPT-5 based codebook refinement with hierarchical theme organization",
-            generation_metadata={
-                "refinement_source": "step_8_codebook_refinement",
-                "original_code_count": len(refinement_results.original_codebook),
-                "refined_category_count": len(refinement_results.refined_codebook.refined_codebook),
-                "total_refined_codes": len(enriched_entries)
-            },
-            source_variable=var_name
-        )
-
-        verbose_reporter.step_complete(f"Created theme enriched codebook: {len(enriched_entries)} codes in {len(themes_summary)} themes")
-
-        # Validation: Ensure all cluster IDs from Step 6 are preserved after Step 7 refinement
-        if codebook_reasoning and hasattr(codebook_reasoning, 'cluster_results') and verbose:
-            # Get all cluster IDs from Step 6 codebook_reasoning
-            step6_clusters = {str(cr.get('cluster_id', '')) for cr in codebook_reasoning.cluster_results if cr.get('cluster_id')}
-
-            # Get all cluster IDs from Step 7 refined codebook
-            step7_clusters = set()
-            for entry in enriched_entries:
-                if hasattr(entry, 'source_cluster') and entry.source_cluster:
-                    for cluster_id in str(entry.source_cluster).split(','):
-                        step7_clusters.add(cluster_id.strip())
-
-            verbose_reporter.empty_line()
-            verbose_reporter.stat_line("[VALIDATION] Step 7 cluster preservation:")
-            verbose_reporter.stat_line(f"  Clusters from Step 6: {len(step6_clusters)}")
-            verbose_reporter.stat_line(f"  Clusters in Step 7: {len(step7_clusters)}")
-
-            if step6_clusters != step7_clusters:
-                lost = step6_clusters - step7_clusters
-                if lost:
-                    verbose_reporter.warning(f"  WARNING: {len(lost)} clusters lost during refinement!")
-                    verbose_reporter.warning(f"  Lost cluster IDs: {sorted(lost)}")
-                added = step7_clusters - step6_clusters
-                if added:
-                    verbose_reporter.warning(f"  WARNING: {len(added)} unexpected clusters added!")
-                    verbose_reporter.warning(f"  Added cluster IDs: {sorted(added)}")
-            else:
-                verbose_reporter.stat_line("  ✓ All clusters preserved through refinement")
-
-    else:
-        print("ERROR: No refinement results available to create theme enriched codebook")
-        # Create empty theme enriched codebook as fallback
-        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-            codes=[],
-            themes_summary=[],
-            code_to_theme_mapping={},
-            theme_methodology="Empty fallback - refinement failed",
-            source_variable=var_name
-        )
-
-    # Cache theme_enriched_codebook separately (following step 6 pattern)
-    if theme_enriched_codebook:
-        try:
-            cache_manager.save_to_cache([theme_enriched_codebook], filename, f"{step_name}_enriched", variable_key, elapsed_time, var_lab=var_lab)
-            if verbose:
-                print("Cached theme enriched codebook for step 8 access")
-        except Exception as e:
-            print(f"Warning: Failed to cache theme enriched codebook: {str(e)}")
-
-    # Generate structured report for Streamlit display
-    refinement_report = None
-    if refinement_results:
-        refinement_report = get_refinement_report(refinement_results)
-
-    return refinement_results, theme_enriched_codebook, refinement_report, prompt_printer
-
-
-def step_8_assign_codes(
-    filename,
-    variable_key,
-    cache_manager,
-    theme_enriched_codebook,
-    var_lab,
-    model_config=None,              # Use global if None
-    force_recalc=False,
-    verbose=True,
-    verbose_detailed=False,
-    prompt_printer_enabled=False,
-    streamlit_container=None        # Optional progress updates
-):
-    """Step 8: Assign codes to individual ideas using enriched clusters from Step 6
-
-    Args:
-        filename: SPSS filename for caching
-        variable_key: Cache key
-        cache_manager: CacheManager instance
-        theme_enriched_codebook: ThemeEnrichedCodebookModel from step 7
-        var_lab: Variable label for context
-        model_config: ModelConfig instance for LLM calls (uses global if None)
-        force_recalc: Force recalculation bypassing cache
-        verbose: Enable verbose output
-        verbose_detailed: Enable detailed verbose output
-        prompt_printer_enabled: Enable prompt printing
-        streamlit_container: Optional Streamlit container for progress updates
-
-    Returns:
-        Tuple[List[models.CodeAssignedModel], Dict]:
-            - List of models with code assignments
-            - Dictionary with stats (total_responses, total_ideas, unique_codes_assigned,
-              unique_themes_assigned, total_code_assignments, total_theme_assignments,
-              avg_codes_per_idea, avg_themes_per_idea, processing_time)
-    """
-    from utils import codeAssigner, verboseReporter, promptPrinter
-
-    step_name = "code_assignment_direct"
-
-    initial_cluster_results = cache_manager.load_from_cache(
-        filename,
-        "expanded_clusters",
-        variable_key,
-        models.ClusterModel
+    total_ideas = sum(len(r.response_ideas or []) for r in assigned_results)
+    assigned_count = sum(
+        1 for r in assigned_results
+        for idea in (r.response_ideas or [])
+        if idea.assigned_code
     )
+    print(f"\n'Code assignment' completed in {elapsed_time:.2f} seconds "
+          f"({assigned_count}/{total_ideas} ideas assigned).\n")
 
-    # Use global model_config if not provided
-    if model_config is None:
-        model_config = globals().get('model_config')
-        if model_config is None:
-            from config import ModelConfig
-            model_config = ModelConfig()
-
-    # Optional Streamlit progress
     if streamlit_container:
-        streamlit_container.text("🔄 Assigning codes to individual ideas...")
-    verbose_reporter = verboseReporter.VerboseReporter(verbose)
-    prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
+        streamlit_container.success(f"✅ Code assignment completed in {elapsed_time:.2f}s")
 
-    if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-        code_assigned_results = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeAssignedModel)
-        total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
-        total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
-        verbose_reporter.summary("DIRECT CODE ASSIGNMENTS FROM CACHE", {
-            "Input responses": len(code_assigned_results),
-            "Ideas processed": total_ideas,
-            "Code assignments": total_assignments,
-            "Theme assignments": sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_themes]) for resp in code_assigned_results if resp.response_ideas)
-        })
-
-        # Optional Streamlit success message
-        if streamlit_container:
-            streamlit_container.success(f"✅ Code assignment completed (from cache): {total_assignments} assignments")
-    else:
-        verbose_reporter.section_header("DIRECT CODE ASSIGNMENT PHASE (NO EMBEDDINGS)")
-        start_time = time.time()
-
-        if not theme_enriched_codebook or not theme_enriched_codebook.codes:
-            print("Error: No enriched codebook available for direct code assignment.")
-            code_assigned_results = []
-        elif not initial_cluster_results:
-            print("Error: No cluster results available for direct code assignment.")
-            code_assigned_results = []
-        else:
-            print(f"\nDirect assignment: Processing ideas from {len(initial_cluster_results)} cluster results")
-            print(f"Using complete codebook with {len(theme_enriched_codebook.codes)} codes")
-
-            # Create code assigner (sends all codes to LLM)
-            code_assigner_instance = codeAssigner.CodeAssigner(
-                cluster_models=initial_cluster_results,
-                codebook=[models.Codebook(
-                    code=entry.code,
-                    definition=entry.definition,
-                    theme=entry.theme,
-                    theme_description=entry.theme_description,
-                    source_cluster=entry.source_cluster,  # Preserve source_cluster for default code mapping
-                    inclusion_examples=entry.inclusion_examples,
-                    exclusion_examples=entry.exclusion_examples,
-                    near_neighbor_label=entry.near_neighbor_label,
-                    tell_apart_rule=entry.tell_apart_rule
-                ) for entry in theme_enriched_codebook.codes],
-                var_lab=var_lab,
-                code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
-                model_config=model_config,
-                verbose=verbose,
-                prompt_printer=prompt_printer
-            )
-
-            code_assigned_results = code_assigner_instance.assign()
-
-            # Print assignment strategy stats (default vs fallback)
-            if verbose:
-                code_assigner_instance.print_assignment_stats()
-
-        for result in code_assigned_results:
-            if not hasattr(result, 'assignment_metadata') or result.assignment_metadata is None:
-                result.assignment_metadata = {}
-            result.assignment_metadata.update({
-                "codebook_used": f"{len(theme_enriched_codebook.codes)} codes with themes",
-                "assignment_method": "direct_llm_processing",
-                "theme_methodology": theme_enriched_codebook.theme_methodology,
-                "assignment_timestamp": start_time
-            })
-
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-
-        cache_manager.save_to_cache(code_assigned_results, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
-        print(f"\n'Direct code assignment' completed in {elapsed_time:.2f} seconds.\n")
-
-        # Optional Streamlit success message
-        if streamlit_container:
-            total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
-            streamlit_container.success(f"✅ Code assignment completed in {elapsed_time:.2f}s: {total_assignments} assignments")
-
-    # Calculate stats for UI display (matching PipelineSummarizer output)
-    total_responses = len(code_assigned_results)
-    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
-
-    # Count unique codes and themes
-    code_frequency = {}
-    theme_frequency = {}
-    for resp in code_assigned_results:
-        if resp.response_ideas:
-            for idea in resp.response_ideas:
-                if idea and idea.assigned_codes:
-                    for code in idea.assigned_codes:
-                        code_frequency[code] = code_frequency.get(code, 0) + 1
-                if idea and idea.assigned_themes:
-                    for theme in idea.assigned_themes:
-                        theme_frequency[theme] = theme_frequency.get(theme, 0) + 1
-
-    total_code_assignments = sum(code_frequency.values())
-    total_theme_assignments = sum(theme_frequency.values())
-    unique_codes = len(code_frequency)
-    unique_themes = len(theme_frequency)
-
-    stats = {
-        'total_responses': total_responses,
-        'total_ideas': total_ideas,
-        'unique_codes_assigned': unique_codes,
-        'unique_themes_assigned': unique_themes,
-        'total_code_assignments': total_code_assignments,
-        'total_theme_assignments': total_theme_assignments,
-        'avg_codes_per_idea': total_code_assignments / total_ideas if total_ideas > 0 else 0.0,
-        'avg_themes_per_idea': total_theme_assignments / total_ideas if total_ideas > 0 else 0.0,
-        'processing_time': elapsed_time if 'elapsed_time' in locals() else 0.0
-    }
-
-    # Print code distribution
-    if verbose and code_frequency:
-        print(f"\n{'='*70}")
-        print("CODE DISTRIBUTION")
-        print(f"{'='*70}")
-        print(f"{'Code':<45} {'Count':>8} {'Percent':>10}")
-        print(f"{'-'*70}")
-
-        # Separate regular codes from fallback codes (Overig, - algemeen, etc.)
-        from config import MISCELLANEOUS_CODE_LABELS, GENERAL_CODE_LABELS
-        misc_labels = set(MISCELLANEOUS_CODE_LABELS.values())
-        general_suffixes = [f"- {v}" for v in GENERAL_CODE_LABELS.values()]
-
-        def is_fallback_code(code_name):
-            if code_name in misc_labels:
-                return True
-            for suffix in general_suffixes:
-                if suffix in code_name:
-                    return True
-            return False
-
-        regular_codes = [(c, n) for c, n in code_frequency.items() if not is_fallback_code(c)]
-        fallback_codes = [(c, n) for c, n in code_frequency.items() if is_fallback_code(c)]
-
-        # Sort each group by count descending
-        regular_codes.sort(key=lambda x: x[1], reverse=True)
-        fallback_codes.sort(key=lambda x: x[1], reverse=True)
-
-        # Display regular codes first, then fallback codes
-        for code, count in regular_codes:
-            pct = (count / total_code_assignments) * 100
-            display_code = code[:42] + "..." if len(code) > 45 else code
-            print(f"{display_code:<45} {count:>8} {pct:>9.1f}%")
-
-        if fallback_codes:
-            print(f"{'-'*70}")
-            for code, count in fallback_codes:
-                pct = (count / total_code_assignments) * 100
-                display_code = code[:42] + "..." if len(code) > 45 else code
-                print(f"{display_code:<45} {count:>8} {pct:>9.1f}%")
-
-        print(f"{'-'*70}")
-        print(f"{'TOTAL':<45} {total_code_assignments:>8} {'100.0%':>10}")
-        print(f"{'='*70}\n")
-
-    # Return instance if it exists (for prompt inspection), otherwise None
-    instance_for_inspection = code_assigner_instance if 'code_assigner_instance' in locals() else None
-    return code_assigned_results, stats, instance_for_inspection
+    return assigned_results
 
 
-def step_9_export_results(
-    code_assigned_results,
-    theme_enriched_codebook,
-    filename,
-    var_name,
-    quality_filtered_text=None,
+def step_7_export(
+    assigned_results=None,
+    filename=None,
+    var_name=None,
+    variable_key=None,
+    cache_manager=None,
     verbose=True,
-    streamlit_container=None,        # Optional progress updates
-    include_visualizations=False,    # Add visualization sheets to Excel
-    cache_manager=None,              # Required for loading visualization data
-    variable_key=None                # Required for loading visualization data
+    streamlit_container=None,
 ):
-    """Step 9: Export results to Excel
+    """Step 7: Export results (PLACEHOLDER)
 
-    Args:
-        code_assigned_results: List of CodeAssignedModel instances from step 8
-        theme_enriched_codebook: ThemeEnrichedCodebookModel from step 7
-        filename: SPSS filename for export naming
-        var_name: Variable name for export naming
-        quality_filtered_text: List of QualityFilteredModel instances from step 2 (includes filtered responses)
-        verbose: Enable verbose output
-        streamlit_container: Optional Streamlit container for progress updates
-        include_visualizations: If True, add dendrogram and word cloud sheets + generate network HTML
-        cache_manager: CacheManager instance for loading visualization data (required if include_visualizations=True)
-        variable_key: Cache variable key (required if include_visualizations=True)
-
-    Returns:
-        str: Path to exported Excel file
+    This step is not yet implemented. It will export coded results to Excel.
     """
-    from utils.resultsExporter import ResultsExporter
+    print("\n=== EXPORT STEP NOT YET IMPLEMENTED ===")
+    print("Step 7 (export) will be developed as part of Job 3.\n")
 
-    # Optional Streamlit progress
     if streamlit_container:
-        streamlit_container.text("🔄 Exporting results to Excel...")
-
-    # Load visualization data from cache if requested
-    clustering_metadata = None
-    extraction_metadata = None
-
-    if include_visualizations and cache_manager and variable_key:
-        try:
-            # Load clustering metadata (contains c-TF-IDF keywords, LLM labels, etc.)
-            clustering_metadata_list = cache_manager.load_from_cache(
-                filename, "clustering_metadata", variable_key, models.ClusteringMetadataModel
-            )
-            if clustering_metadata_list and len(clustering_metadata_list) > 0:
-                clustering_metadata = clustering_metadata_list[0]
-                if verbose:
-                    print(f"[INFO] Loaded clustering metadata for visualizations")
-
-            # Load extraction metadata (contains taxonomy axis, template prefix, etc.)
-            extraction_metadata = cache_manager.load_metadata_from_cache(
-                filename, "extracted_ideas", variable_key, models.ExtractionMetadata
-            )
-            if extraction_metadata and verbose:
-                print(f"[INFO] Loaded extraction metadata for visualizations")
-
-        except Exception as e:
-            if verbose:
-                print(f"[WARNING] Could not load visualization data: {e}")
-                print("         Visualizations may be incomplete")
-
-    try:
-        exporter = ResultsExporter(verbose=verbose)
-        excel_path = exporter.export_to_excel(
-            code_assigned_results,
-            theme_enriched_codebook,
-            filename,
-            var_name,
-            quality_filtered_text=quality_filtered_text,
-            export_dir=None,  # Will create default export directory
-            include_visualizations=include_visualizations,
-            clustering_metadata=clustering_metadata,
-            extraction_metadata=extraction_metadata
-        )
-        print(f"[SUCCESS] Code assignments exported to Excel: {excel_path}")
-
-        # Optional Streamlit success message
-        if streamlit_container:
-            if include_visualizations:
-                streamlit_container.success(f"✅ Results exported with visualizations: {excel_path}")
-            else:
-                streamlit_container.success(f"✅ Results exported to Excel: {excel_path}")
-
-        return excel_path
-    except Exception as e:
-        print(f"[WARNING] Excel export failed: {str(e)}")
-
-        # Optional Streamlit error message
-        if streamlit_container:
-            streamlit_container.error(f"⚠️ Excel export failed: {str(e)}")
-
-        return None
+        streamlit_container.info("Export step not yet implemented")
 
 
+# ===================================================================================================================
+# MAIN EXECUTION
+# ===================================================================================================================
 
 if __name__ == '__main__':
     import sys
@@ -1818,17 +1081,17 @@ if __name__ == '__main__':
         FORCE_STEP = STEP_NAMES.get(RUN_UNTIL_STEP, "")
     else:
         FORCE_STEP = ""
-    
+
     data_loader = dataLoader.DataLoader(verbose=False)
     var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
-    # Start capturing all verbose output to file - MUST be before any print statements
+    # Start capturing all verbose output to file
     from utils.saveVerbose import VerboseCapture
     verbose_capture = VerboseCapture(
         filename=filename,
         variable_key=var_name,
         sample_size=sample_size,
-        run_until_step=RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 9
+        run_until_step=RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 7
     )
     verbose_capture.__enter__()
 
@@ -1841,21 +1104,20 @@ if __name__ == '__main__':
     print(f"Data file: {filename}")
     print(f"Variable: {var_name} - {var_lab}")
     print(f"Sample size: {sample_size if sample_size else 'All responses'}")
-    print(f"Run until step: {RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 'All (0-9)'}")
+    print(f"Run until step: {RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 'All (0-7)'}")
     print(f"Force recalculate: {'ALL STEPS' if FORCE_RECALCULATE_ALL else (f'Step {RUN_UNTIL_STEP} ({FORCE_STEP})' if FORCE_STEP else 'None')}")
     print(f"Verbose mode: {VERBOSE}")
     print(f"Prompt printer: {PROMPT_PRINTER}")
     print("=" * 80)
-    
+
     selected_variables = globals().get('selected_variables', [var_name])
     is_merged = globals().get('is_merged', False)
     test_mode = globals().get('is_test_mode', True)
-    sample_size =  globals().get('test_sample_size', sample_size) if test_mode else None
-                   
+    sample_size = globals().get('test_sample_size', sample_size) if test_mode else None
+
     if 'variable_key' in globals():
         variable_key = globals()['variable_key']
     else:
-        # Generate variable_key for standalone mode 
         from utils.cacheManager import generate_enhanced_variable_key
         merge_config = globals().get('merge_config', None)
         variable_key = generate_enhanced_variable_key(
@@ -1871,15 +1133,12 @@ if __name__ == '__main__':
             print(f"EXECUTION STOPPED: RUN_UNTIL_STEP set to {RUN_UNTIL_STEP}")
             print(f"Completed steps 0-{current_step}")
             print(f"{'='*80}\n")
-            # Print LLM usage summary before exiting
             if token_tracker.call_count > 0:
                 print(token_tracker.get_summary())
-            # Save captured verbose output before exiting
             verbose_capture.__exit__(None, None, None)
             sys.exit(0)
-    
+
     # === STEP 0 ====
-    """get data"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "data"
     raw_text_list = step_0_load_data(
         filename, id_column, var_name,
@@ -1890,9 +1149,8 @@ if __name__ == '__main__':
         verbose=VERBOSE
     )
     check_execution_stop(0)
-    
+
     # === STEP 1 ====
-    """preprocess data"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "preprocessed"
     preprocessed_text, stats = step_1_preprocess(
         raw_text_list, filename, var_lab,
@@ -1906,7 +1164,6 @@ if __name__ == '__main__':
     check_execution_stop(1)
 
     # === STEP 2 ====
-    """quality filter"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "quality_filter"
     quality_filtered_text = step_2_quality_filter(
         preprocessed_text, filename, var_lab,
@@ -1920,7 +1177,6 @@ if __name__ == '__main__':
     check_execution_stop(2)
 
     # === STEP 3 ====
-    """Response segments/ideas"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "extracted_ideas"
     encoded_text = step_3_extract_ideas(
         quality_filtered_text, filename, var_lab,
@@ -1934,101 +1190,60 @@ if __name__ == '__main__':
     check_execution_stop(3)
 
     # === STEP 4 ====
-    """Generate embeddings"""
-    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "embeddings"
-    embedded_text = step_4_generate_embeddings(
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "taxonomy"
+    step_4_classify_taxonomy(
         encoded_text, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
-        model_config=model_config,
         force_recalc=force_recalc,
-        verbose=VERBOSE
+        verbose=VERBOSE,
+        prompt_printer_enabled=PROMPT_PRINTER
     )
     check_execution_stop(4)
 
     # === STEP 5 ====
-    """Category Discovery & Assignment"""
-    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment"
-    category_results = step_4_classNcoder(
-        embedded_text, filename, var_lab,
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook"
+    step_5_generate_codebook(
+        filename,
         variable_key=variable_key,
         cache_manager=cache_manager,
         force_recalc=force_recalc,
         verbose=VERBOSE,
+        prompt_printer_enabled=PROMPT_PRINTER
     )
     check_execution_stop(5)
 
     # === STEP 6 ====
-    """Generate codes"""
-    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_generation"
-    codebook_reasoning = step_6_generate_codebook(
-        category_results, filename, var_name, var_lab, variable_key, cache_manager, model_config,
-        force_recalc=force_recalc, verbose=VERBOSE, verbose_detailed=False,
-        prompt_printer_enabled=PROMPT_PRINTER, cache_reasoning=True
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment"
+    code_assigned_results = step_6_assign_codes(
+        encoded_text, filename,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        force_recalc=force_recalc,
+        verbose=VERBOSE,
+        prompt_printer_enabled=PROMPT_PRINTER
     )
     check_execution_stop(6)
 
     # === STEP 7 ====
-    """Codebook Refinement"""
-    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_refinement"
-    refinement_results, theme_enriched_codebook, refinement_report, step7_prompt_printer = step_7_refine_codebook(
-        codebook_reasoning, filename, var_name, var_lab,
+    step_7_export(
+        assigned_results=code_assigned_results,
+        filename=filename,
+        var_name=var_name,
         variable_key=variable_key,
         cache_manager=cache_manager,
-        model_config=model_config,
-        default_language=DEFAULT_LANGUAGE,
-        force_recalc=force_recalc,
         verbose=VERBOSE,
-        prompt_printer_enabled=False  # Set to True to print prompt with assignment_examples
     )
-    check_execution_stop(7)
 
-    # === STEP 8 ====
-    """Assign codes (and themes)"""
-    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment_direct"
-    code_assigned_results, stats, code_assigner_instance = step_8_assign_codes(
-        filename,
-        variable_key,
-        cache_manager,
-        theme_enriched_codebook,
-        var_lab,
-        model_config=model_config,
-        force_recalc=force_recalc,
-        verbose=VERBOSE,
-        prompt_printer_enabled=True
-    )
-    check_execution_stop(8)
-
-    # Print codebook summary
-    for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
-        print(f"{idx}) {entry.code}")
-
-    # === STEP 9  =====
-    """Export Results"""
-    excel_path = step_9_export_results(
-        code_assigned_results,
-        theme_enriched_codebook,
-        filename,
-        var_name,
-        quality_filtered_text=quality_filtered_text,
-        verbose=VERBOSE,
-        include_visualizations=INCLUDE_VISUALIZATIONS,
-        cache_manager=cache_manager,
-        variable_key=variable_key
-    )
-    
-    # Pipeline completed successfully
+    # Pipeline completed
     print(f"\n{'='*80}")
     print("PIPELINE COMPLETED SUCCESSFULLY")
-    print("All steps (0-9) executed")
-    print(f"Results exported to: {excel_path}")
+    print("All steps (0-7) executed")
     print(f"{'='*80}\n")
 
-    # Print LLM usage summary
     if token_tracker.call_count > 0:
         print(token_tracker.get_summary())
 
-    # Save captured verbose output
     verbose_capture.__exit__(None, None, None)
 
 # %%
