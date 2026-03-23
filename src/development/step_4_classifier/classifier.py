@@ -48,8 +48,14 @@ from config import (
 from development.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
 )
+from development.step_3_ideaExtractor.ideaExtractor_exp import (
+    ConcurrencyGate, ConcurrencyRamp,
+    RealTimeTPMTracker, RealTimeRPMTracker,
+    ApiLimits, compute_optimal_concurrency,
+)
+from config_steps.config_ideaExtractor import RampUpConfig
 
-from .config_classifier import CategoriesConfig
+from .config_classifier import CategoriesConfig, ClassifierRampConfig
 from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
 from .models_classifier import DomainSet, DomainDescription
@@ -129,6 +135,20 @@ class TaxonomyResult:
     attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
 
 
+@dataclass
+class PhaseRampState:
+    """Per-phase concurrency ramp state for gather-based dispatch."""
+    gate: ConcurrencyGate
+    ramp: ConcurrencyRamp
+    rpm_tracker: RealTimeRPMTracker
+    tpm_tracker: RealTimeTPMTracker
+    phase_name: str = ""
+    total_tasks: int = 0
+    completions: int = 0
+    timeouts: int = 0
+    done: bool = False
+
+
 # =============================================================================
 # MAIN PROCESSOR
 # =============================================================================
@@ -188,10 +208,14 @@ class TaxonomyClassifier:
         # Failure tracking for retry pass (P3, P6)
         self.failed_task_ids: set = set()
 
+        # Concurrency ramp config
+        self._ramp_config = config.ramp_config
+
         # Shared async resources — initialized in _initialize_async_resources()
         self._client = None
         self._semaphore = None
         self._rate_limiter = None
+        self._fetched_limits = None
 
     # =========================================================================
     # PUBLIC API
@@ -292,12 +316,11 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool,
     ):
-        """Initialize clients and rate limiters. No bootstrap — uses static semaphore.
+        """Initialize clients and rate limiters.
 
-        Per strategy doc: bootstrap is wasted for small phases (<30 tasks) and
-        miscalibrated for large phases (different prompt types). Instead, use a
-        static semaphore (15) as a default fallback + rate limiter from API limits.
-        Per-phase gates (Group 3) will override this for phases that need it.
+        Fetches real rate limits from API headers, computes Little's Law-based
+        default concurrency. Per-phase gates (P1/P3/P4/P6) override the default
+        with completion-based ramps.
         """
         # Create one client per unique model
         unique_models = {self._model_p1, self._model_p2, self._model_p3, self._model_p4, self._model_p5, self._model_p6, self._model_p7}
@@ -323,16 +346,25 @@ class TaxonomyClassifier:
             print(f"  Fetched from API: TPM={limits.tokens_per_minute:,}, "
                   f"RPM={limits.requests_per_minute:,}")
 
-        # --- Static concurrency + rate limiter from API limits ---
-        est_avg_tokens = 3000  # Conservative estimate for rate limiter computation
+        # Store for per-phase ramp creation
+        self._fetched_limits = limits
+
+        # --- Compute Little's Law-based concurrency ---
+        cfg = self._ramp_config
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        little_law = compute_optimal_concurrency(
+            api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
+        )
+
+        est_avg_tokens = cfg.estimated_avg_tokens
         rpm_throughput = limits.requests_per_minute * headroom / 60
         tpm_throughput = limits.tokens_per_minute * headroom / est_avg_tokens / 60
         arrival_rate = min(rpm_throughput, tpm_throughput)
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
 
-        # Static semaphore (15) — per strategy doc recommendation for small batches.
-        # Large phases (P3, P6) will get per-phase gates in Group 3.
-        self._semaphore = asyncio.Semaphore(15)
+        # Default semaphore for small phases (P2, P5, P7) — uses start_fraction
+        default_conc = max(cfg.min_initial, int(little_law * cfg.start_fraction))
+        self._semaphore = asyncio.Semaphore(default_conc)
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
 
         if verbose:
@@ -345,7 +377,8 @@ class TaxonomyClassifier:
             print(f"  TPM: {limits.tokens_per_minute:,} "
                   f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
             print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
-            print(f"  Default concurrency (semaphore): 15 (static, per-phase gates override)")
+            print(f"  Little's Law: {little_law} | "
+                  f"Default concurrency: {default_conc} (small phases P2/P5/P7)")
 
     async def _process_taxonomy_async(
         self,
@@ -363,6 +396,13 @@ class TaxonomyClassifier:
         if verbose:
             print(f"\n  Phase 1: Per-domain Facet Discovery...")
 
+        # Estimate total P1 chunks for ramp sizing
+        total_p1_chunks = sum(
+            len(self._create_batches(mapping.labels))
+            for mapping in label_mappings.values()
+        )
+        p1_state = self._create_phase_ramp("P1", total_p1_chunks)
+
         facet_tasks = {}
         for name, mapping in sorted(label_mappings.items()):
             # Build excluded domains: all other domains
@@ -375,10 +415,11 @@ class TaxonomyClassifier:
                 name, mapping.labels, partition_contexts[name],
                 prompt_context, verbose,
                 excluded_domains=excluded,
+                phase_state=p1_state,
             )
 
-        facet_results_list = await asyncio.gather(
-            *facet_tasks.values(), return_exceptions=True
+        facet_results_list = await self._run_with_ramp(
+            facet_tasks.values(), p1_state
         )
 
         partition_facets: Dict[str, List[DiscoveredFacet]] = {}
@@ -412,28 +453,29 @@ class TaxonomyClassifier:
 
         t_phase3 = time.time()
 
-        # Per-phase gate: estimate total batches across all domains
+        # Per-phase ramp: estimate total batches across all domains
         total_p3_ideas = sum(
             len(label_mappings[name].ideas)
             for name in partition_facets
             if partition_facets[name] and label_mappings[name].ideas
         )
         est_p3_batches = max(1, total_p3_ideas // self._facet_assignment_batch_size)
-        p3_gate = asyncio.Semaphore(min(est_p3_batches, 40))
+        p3_state = self._create_phase_ramp("P3", est_p3_batches)
 
         assignment_tasks = {
             name: self._run_facet_assignment(
                 name, partition_facets[name],
                 label_mappings[name].ideas,
                 partition_contexts[name], prompt_context,
-                gate=p3_gate,
+                gate=p3_state.gate,
+                phase_state=p3_state,
             )
             for name in sorted(partition_facets.keys())
             if partition_facets[name] and label_mappings[name].ideas
         }
 
-        assignment_results_list = await asyncio.gather(
-            *assignment_tasks.values(), return_exceptions=True
+        assignment_results_list = await self._run_with_ramp(
+            assignment_tasks.values(), p3_state
         )
 
         # idea_id -> facet_name per domain
@@ -499,18 +541,34 @@ class TaxonomyClassifier:
             ]
 
             task_key = f"{domain_name}::{facet_name}"
-            attr_tasks[task_key] = self._discover_facet_attributes(
-                domain_name=domain_name,
-                facet_name=facet_name,
-                facet_description=facet_obj.facet_description,
-                observations=observations,
-                part_context=partition_contexts[domain_name],
+            attr_tasks[task_key] = (domain_name, facet_name, facet_obj, observations, excluded_f)
+
+        # Create ramp — estimate inner chunks across all facets
+        total_p4_chunks = 0
+        for task_key, (dn, fn, fo, obs, ef) in attr_tasks.items():
+            total_p4_chunks += max(1, len(self._create_batches(
+                obs, size_min=self._p4_batch_size_min,
+                size_max=self._p4_batch_size_max,
+                target=self._p4_target_batches,
+            )))
+        p4_state = self._create_phase_ramp("P4", total_p4_chunks)
+
+        # Build actual coroutines
+        attr_coros = {}
+        for task_key, (dn, fn, fo, obs, ef) in attr_tasks.items():
+            attr_coros[task_key] = self._discover_facet_attributes(
+                domain_name=dn,
+                facet_name=fn,
+                facet_description=fo.facet_description,
+                observations=obs,
+                part_context=partition_contexts[dn],
                 prompt_context=prompt_context,
-                excluded_facets=excluded_f,
+                excluded_facets=ef,
+                phase_state=p4_state,
             )
 
-        attr_results_list = await asyncio.gather(
-            *attr_tasks.values(), return_exceptions=True
+        attr_results_list = await self._run_with_ramp(
+            attr_coros.values(), p4_state
         )
 
         # Collect attributes: domain -> facet -> [attributes]
@@ -518,7 +576,7 @@ class TaxonomyClassifier:
         # Also per-domain flat: facet -> [attributes]
         partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
 
-        for key, result in zip(attr_tasks.keys(), attr_results_list):
+        for key, result in zip(attr_coros.keys(), attr_results_list):
             domain_name, facet_name = key.split("::", 1)
             if isinstance(result, Exception):
                 print(f"  Attribute discovery '{key}' FAILED: "
@@ -555,14 +613,14 @@ class TaxonomyClassifier:
 
         t_phase6 = time.time()
 
-        # Per-phase gate: estimate total batches across all facets
+        # Per-phase ramp: estimate total batches across all facets
         total_p6_ideas = sum(
             len(domain_facet_ideas.get((dn, fn), []))
             for dn, fa in domain_facet_attributes.items()
             for fn in fa
         )
         est_p6_batches = max(1, total_p6_ideas // self._facet_assignment_batch_size)
-        p6_gate = asyncio.Semaphore(min(est_p6_batches, 40))
+        p6_state = self._create_phase_ramp("P6", est_p6_batches)
 
         # Assign attributes to ideas, grouped by facet
         attribute_assignments: Dict[str, str] = {}  # idea_id -> attribute_name
@@ -599,12 +657,13 @@ class TaxonomyClassifier:
                     ideas=facet_ideas,
                     part_context=partition_contexts[domain_name],
                     prompt_context=prompt_context,
-                    gate=p6_gate,
+                    gate=p6_state.gate,
+                    phase_state=p6_state,
                 )
 
         if assign_tasks:
-            assign_results = await asyncio.gather(
-                *assign_tasks.values(), return_exceptions=True
+            assign_results = await self._run_with_ramp(
+                assign_tasks.values(), p6_state
             )
 
             for task_key, result in zip(assign_tasks.keys(), assign_results):
@@ -1710,12 +1769,112 @@ class TaxonomyClassifier:
         return extract_rate_limits_from_response(response)
 
     # =========================================================================
+    # CONCURRENCY RAMP (completion-based, no bootstrap)
+    # =========================================================================
+
+    def _create_phase_ramp(self, phase_name: str, num_tasks: int) -> PhaseRampState:
+        """Create per-phase ConcurrencyGate + ConcurrencyRamp from Little's Law."""
+        cfg = self._ramp_config
+        api_limits = ApiLimits(
+            self._fetched_limits.tokens_per_minute,
+            self._fetched_limits.requests_per_minute,
+        )
+        little_law = compute_optimal_concurrency(
+            api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
+        )
+        little_law_cap = min(little_law, num_tasks)
+
+        ramp_up_cfg = RampUpConfig(
+            start_fraction=cfg.start_fraction,
+            target_fraction=cfg.target_fraction,
+            min_initial=cfg.min_initial,
+            measurement_window_seconds=cfg.monitor_poll_interval,
+            min_completions_per_step=cfg.min_completions_per_step,
+        )
+
+        initial = max(cfg.min_initial, int(little_law_cap * cfg.start_fraction))
+        initial = min(initial, num_tasks)
+        target = min(int(little_law_cap * cfg.target_fraction), num_tasks)
+
+        gate = ConcurrencyGate(initial)
+        ramp = ConcurrencyRamp(ramp_up_cfg, little_law_cap, num_tasks)
+
+        print(f"    [{phase_name}] Little's Law: {little_law} | "
+              f"Start: {initial} → Target: {target} ({num_tasks} tasks)")
+
+        return PhaseRampState(
+            gate=gate, ramp=ramp,
+            rpm_tracker=RealTimeRPMTracker(window_seconds=60.0),
+            tpm_tracker=RealTimeTPMTracker(window_seconds=60.0),
+            phase_name=phase_name,
+            total_tasks=num_tasks,
+        )
+
+    async def _phase_monitor(self, state: PhaseRampState):
+        """Background monitor: advance ramp + print progress alongside gather."""
+        start_time = time.monotonic()
+        last_report_time = start_time
+
+        while not state.done:
+            await asyncio.sleep(self._ramp_config.monitor_poll_interval)
+            now = time.monotonic()
+            elapsed = now - start_time
+
+            # Feed completions to ramp
+            if not state.ramp.is_done() and state.completions >= self._ramp_config.min_completions_per_step:
+                rate = state.completions / elapsed if elapsed > 0 else 0
+                state.ramp.record_measurement(
+                    throughput=rate,
+                    tpm_pct=0, rpm_pct=0,  # ramp uses throughput, not utilization
+                    completions_total=state.completions,
+                    timeouts_total=state.timeouts,
+                    duration=elapsed,
+                )
+                new_target = state.ramp.current_target()
+                if new_target != state.gate.limit:
+                    state.gate.set_limit(new_target)
+
+            # Progress line every 2s
+            if now - last_report_time >= 2.0:
+                last_report_time = now
+                rate = state.completions / elapsed if elapsed > 0 else 0
+
+                tpm_pct = rpm_pct = 0.0
+                if self._fetched_limits.tokens_per_minute:
+                    current_tpm = await state.tpm_tracker.get_current_tpm()
+                    tpm_pct = current_tpm / (self._fetched_limits.tokens_per_minute * DEFAULT_PROCESSING_CONFIG.rate_limit_headroom) * 100
+                if self._fetched_limits.requests_per_minute:
+                    current_rpm = await state.rpm_tracker.get_current_rpm()
+                    rpm_pct = current_rpm / (self._fetched_limits.requests_per_minute * DEFAULT_PROCESSING_CONFIG.rate_limit_headroom) * 100
+
+                timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
+                ramp_target = state.ramp._target
+                print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
+                      f"({rate:.1f}/s) | "
+                      f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% "
+                      f"Conc:{state.gate.active}/{state.gate.limit}→{ramp_target}"
+                      f"{timeout_info}")
+
+    async def _run_with_ramp(self, coros, state: PhaseRampState):
+        """Run coroutines via gather with a background ramp monitor.
+
+        Returns gather results. Monitor exits when gather completes.
+        """
+        async def _work():
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            state.done = True
+            return results
+
+        results, _ = await asyncio.gather(_work(), self._phase_monitor(state))
+        return results
+
+    # =========================================================================
     # SHARED LLM CALL
     # =========================================================================
 
     async def _llm_call(self, prompt: str, response_model, max_tokens: int,
                         temperature: float | None = None, model: str | None = None,
-                        timeout: float = 120.0, gate=None):
+                        timeout: float = 120.0, gate=None, phase_state: PhaseRampState = None):
         """Make a rate-limited LLM call with optional per-phase concurrency gate.
 
         Args:
@@ -1723,23 +1882,46 @@ class TaxonomyClassifier:
                   If provided, used instead of self._semaphore.
                   Allows per-phase concurrency control.
             timeout: Generous safety net (60s for standard, 120s for reasoning).
+            phase_state: Optional PhaseRampState for completion/TPM/RPM tracking.
         """
         use_model = model or self._model_p1
         client = self._clients[use_model]
         concurrency_ctx = gate if gate is not None else self._semaphore
         async with concurrency_ctx:
             async with self._rate_limiter:
-                return await asyncio.wait_for(
-                    llm_create_async(
-                        client=client,
-                        model=use_model,
-                        prompt=prompt,
-                        response_model=response_model,
-                        temperature=temperature if temperature is not None else self._temperature,
-                        max_tokens=max_tokens,
-                    ),
-                    timeout=timeout,
-                )
+                try:
+                    result = await asyncio.wait_for(
+                        llm_create_async(
+                            client=client,
+                            model=use_model,
+                            prompt=prompt,
+                            response_model=response_model,
+                            temperature=temperature if temperature is not None else self._temperature,
+                            max_tokens=max_tokens,
+                        ),
+                        timeout=timeout,
+                    )
+                    if phase_state is not None:
+                        phase_state.completions += 1
+                        await phase_state.rpm_tracker.record()
+                        # Extract actual tokens from response if available
+                        raw = getattr(result, '_raw_response', None)
+                        usage = getattr(raw, 'usage', None) if raw else None
+                        if usage:
+                            total_tokens = (
+                                getattr(usage, 'prompt_tokens', 0)
+                                + getattr(usage, 'completion_tokens', 0)
+                                + getattr(usage, 'input_tokens', 0)
+                                + getattr(usage, 'output_tokens', 0)
+                            )
+                            await phase_state.tpm_tracker.record(total_tokens)
+                        else:
+                            await phase_state.tpm_tracker.record(max_tokens)
+                    return result
+                except asyncio.TimeoutError:
+                    if phase_state is not None:
+                        phase_state.timeouts += 1
+                    raise
 
     # =========================================================================
     # HELPERS

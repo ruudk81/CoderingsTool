@@ -47,7 +47,7 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-EXPERIMENT_N = 50  # Limit number of responses for a test run (None = use all)
+EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 
 # =============================================================================

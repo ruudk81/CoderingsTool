@@ -5,7 +5,24 @@ Pipeline: facet discovery → facet assignment → attribute discovery →
 attribute consolidation → cross-facet dedup.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ClassifierRampConfig:
+    """Completion-based concurrency ramp settings (no bootstrap).
+
+    Concurrency is computed from Little's Law using estimated latency
+    and real API rate limits. Ramp starts at start_fraction and
+    advances toward target_fraction proportional to completions.
+    """
+    estimated_latency_seconds: float = 10.0    # Conservative latency estimate
+    estimated_avg_tokens: int = 3000           # Conservative token estimate
+    start_fraction: float = 0.50               # Start at 50% of Little's Law
+    target_fraction: float = 0.90              # Ramp toward 90% of Little's Law
+    min_initial: int = 5                       # Concurrency floor
+    monitor_poll_interval: float = 0.5         # Monitor coroutine sleep (seconds)
+    min_completions_per_step: int = 3          # Min completions before evaluating ramp
 
 
 @dataclass
@@ -89,6 +106,12 @@ class CategoriesConfig:
     consolidation_max_chunks_per_call: int = 6   # Rule 2: max chunks per consolidation call
     consolidation_max_items_per_call: int = 150  # Rule 3: max total items per consolidation call
     consolidation_max_rounds: int = 5            # safety cap on recursive rounds
+
+    # ==========================================================================
+    # CONCURRENCY RAMP (completion-based, no bootstrap)
+    # ==========================================================================
+
+    ramp_config: ClassifierRampConfig = field(default_factory=ClassifierRampConfig)
 
     # ==========================================================================
     # OUTPUT
