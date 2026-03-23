@@ -1,8 +1,8 @@
-# Step 5 Categories v3 — Architecture & Data Flow
+# Step 4 classNcoder — Architecture & Data Flow
 
 ## Design Intent
 
-Taxonomy-driven inductive code generation. Step 3 delivers **Dimension (L1)** and **Domain (L2)** per idea. Step 5 completes the taxonomy by discovering **Facets (L3)** and **Attributes (L4)**, then derives codebook codes from attributes.
+Taxonomy-driven inductive code generation. Step 3 delivers **Dimension (L1)** and **Domain (L2)** per idea. Step 4 completes the taxonomy by discovering **Facets (L3)** and **Attributes (L4)**, then derives codebook codes from attributes.
 
 Key principles:
 - **Dimension-specific semantics** — facet/attribute meaning adapts per dimension using `dimension_data.py` as source of truth
@@ -17,9 +17,9 @@ Level   | Name      | Source  | Semantic question (dimension-dependent)
 --------|-----------|---------|----------------------------------------
 L1      | Dimension | Step 3  | What type of variation? (fixed per dataset)
 L2      | Domain    | Step 3  | [dimension-specific] e.g., "What part of the system?"
-L3      | Facet     | Step 5  | [dimension-specific] e.g., "What type of change?"
-L4      | Attribute | Step 5  | [dimension-specific] e.g., "What exactly is proposed?"
-Code    | Code      | Step 5  | Derived from frequency-weighted attributes
+L3      | Facet     | Step 4  | [dimension-specific] e.g., "What type of change?"
+L4      | Attribute | Step 4  | [dimension-specific] e.g., "What exactly is proposed?"
+Code    | Code      | Step 4  | Derived from frequency-weighted attributes
 ```
 
 The dimension determines what facet and attribute _mean_. These semantics are defined in
@@ -161,11 +161,10 @@ All prompt builders live in `prompts_exp.py`.
 - **Output**: `ConsolidatedCode` list — final MECE codebook
 - **Runs**: cross-domain; hierarchical if many codes
 
-### Code Assignment — `build_single_dual_assignment_prompt()`
+### Code Assignment — `build_code_assignment_prompt()`
 - **Input**: single idea + codebook (optionally pre-filtered by embeddings)
-- **Output**: `CodeAttributeAssignment` — code ID + confidence + rationale
+- **Output**: `CodeAssignmentResponse` — code ID + confidence + rationale
 - **Runs**: per idea, concurrent via queue-based workers in `CodeAssigner`
-- **Note**: despite the legacy "dual" name, this assigns codes only; attributes are already assigned in P6
 
 ## Data Flow: What Step 3 Provides
 
@@ -238,18 +237,18 @@ Configurable in `CategoriesConfig.label_source`. Labels are formatted by `partit
 **Stored fields** (direct attributes on ideas): `"instance"`, `"interpretation"`, `"abstraction"`, `"facet"`, `"domain"`, `"idea"`
 
 **Computed composites**:
-- `"ladder"` — `instance → interpretation → abstraction` (default)
+- `"ladder"` — `instance → interpretation → abstraction`
 - `"idea_rungs"` — `idea → interpretation → abstraction`
 
 **Valence tags** (when `CategoriesConfig.include_valence=True`): prepends `[+]`, `[-]`, or `[0]` to each label.
 
 ## Concurrency & Rate Limiting
 
-Bootstrap pattern shared across P1–P6:
-1. Fetch real rate limits from API response headers
-2. Run 3 probe calls to measure avg latency and token usage
-3. Compute optimal concurrency via Little's Law
-4. Shared `asyncio.Semaphore` + `AsyncLimiter` for all LLM calls in QualitativeResearcher
+Static concurrency for QualitativeResearcher (P1–P9):
+1. Fetch real rate limits from API response headers (fallback: 250K TPM, 10K RPM)
+2. Static `asyncio.Semaphore(15)` for all LLM calls
+3. `AsyncLimiter` derived from API rate limits with headroom
+4. Per-phase concurrency gates for P3 and P6 to prevent resource exhaustion on large phases
 
 Code assignment (`CodeAssigner`) has its own rate-limiting stack:
 1. ConcurrencyGate: completion-based ramp from 50% → 90% of Little's Law
@@ -263,7 +262,7 @@ Code assignment (`CodeAssigner`) has its own rate-limiting stack:
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `label_source` | `"ladder"` | Which fields to use as observations |
+| `label_source` | `"idea"` | Which fields to use as observations |
 | `include_valence` | `False` | Prepend valence tags |
 | `qr_model_p1` | `gpt-4.1-mini` | P1: Facet Discovery |
 | `qr_model_p2` | `gpt-4.1` | P2: Facet Consolidation |
@@ -271,7 +270,7 @@ Code assignment (`CodeAssigner`) has its own rate-limiting stack:
 | `qr_model_p4` | `gpt-4.1-mini` | P4: Attribute Discovery |
 | `qr_model_p5` | `gpt-4.1` | P5: Attribute Chunk Consolidation |
 | `qr_model_p6` | `gpt-4.1-nano` | P6: Attribute Assignment |
-| `qr_model_p7` | `gpt-4.1` | P7: Cross-facet Attribute Consolidation |
+| `qr_model_p7` | `gpt-4.1-mini` | P7: Cross-facet Attribute Consolidation |
 | `qr_model_p8` | `gpt-4.1` | P8: Code Generation |
 | `qr_model_p9` | `gpt-4.1` | P9: Codebook Consolidation |
 | `batch_size_min/max` | 100/150 | P1 chunk sizing |
@@ -293,7 +292,7 @@ Code assignment (`CodeAssigner`) has its own rate-limiting stack:
 | File | Purpose |
 |------|---------|
 | `qualitative_researcher.py` | Main orchestrator: P1–P9 pipeline with async concurrency |
-| `prompts_exp.py` | All prompt builders + Pydantic response models (DiscoveredFacet, DiscoveredAttribute, CodeFromAttributes, ConsolidatedCode, CodeAttributeAssignment, etc.) |
+| `prompts_exp.py` | All prompt builders + Pydantic response models (DiscoveredFacet, DiscoveredAttribute, CodeFromAttributes, ConsolidatedCode, CodeAssignmentResponse, etc.) |
 | `code_assignment.py` | Code assignment orchestrator (Stage 2) with queue-based workers, embedding pre-filter, 4-layer rate limiting |
 | `domain_discoverer.py` | Partition ideas by domain, collect unique labels per partition (`DomainDiscoverer`, `PartitionLabelMapping`) |
 | `partition_labels.py` | Label extraction/formatting (ladder composites, valence tags, prefixes) |
@@ -301,10 +300,14 @@ Code assignment (`CodeAssigner`) has its own rate-limiting stack:
 | `models_exp.py` | Data models (`DomainSet`, `CodingResultsCache`, `CodeAssignedModel`, `CodeAssignedSubmodel`) |
 | `embedding_matcher.py` | Embedding-based pre-filter for code assignment |
 | `run_experiment.py` | Experiment runner: full pipeline + assignment-only mode, caching, prompt capture |
-| `view_assignments.py` | View/analyze assignment results |
+| `view_assignments_codes.py` | View/analyze code assignment results |
+| `view_assignments_attributes.py` | View/analyze attribute assignment results |
 | `view_ideas.py` | Full idea-level view grouped by code |
+| `view_codebook.py` | View codebook summary |
+| `view_taxonomy.py` | View taxonomy structure |
 | `debug_assignment_prompt.py` | Debug helper for inspecting assignment prompts |
-| `debug_generation_prompts.py` | Debug helper for inspecting pipeline prompts |
+| `debug_codebook_prompts.py` | Debug helper for inspecting codebook prompts |
+| `debug_taxonomy_prompts.py` | Debug helper for inspecting taxonomy prompts |
 | `debug_lookup.py` | Debug helper for ID lookups |
 
 ## Source of Truth
