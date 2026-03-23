@@ -856,7 +856,7 @@ class TaxonomyClassifier:
                 print(f"    FACET DISCOVERY '{partition_name}' chunk "
                       f"{chunk_idx + 1}/{len(batches)} FAILED: "
                       f"{type(e).__name__}: {e}")
-                results[chunk_idx] = FacetDiscoveryResult(facets=[])
+                results[chunk_idx] = FacetDiscoveryResult(scratchpad="chunk failed", facets=[])
 
         await asyncio.gather(*(
             process_chunk(i, batch) for i, batch in enumerate(batches)
