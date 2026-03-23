@@ -414,10 +414,10 @@ class HunspellPool:
 class SpellChecker:
     def __init__(self, config: SpellCheckConfig = None, model_config: ModelConfig = None, processing_config: ProcessingConfig = None, openai_api_key: Optional[str] = None, verbose: bool = False, prompt_printer = None, verbose_reporter: Optional['VerboseReporter'] = None):
         self.config = config or DEFAULT_SPELLCHECK_CONFIG
-        self.model_config = model_config or ModelConfig()
+        self.model_config = model_config or ModelConfig()  # kept for backward compat
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.openai_api_key = openai_api_key or OPENAI_API_KEY
-        self.model = self.model_config.get_model_for_stage('spell_check')
+        self.model = self.config.model
         
         self.suggestion_cache = {} if self.config.enable_suggestion_caching else None
         self.suggestion_cache_hits = 0

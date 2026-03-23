@@ -36,7 +36,7 @@ from utils.llm import (
 )
 from config import (
     ProcessingConfig, DEFAULT_PROCESSING_CONFIG, OPENAI_API_KEY,
-    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params,
 )
 from development.step_3_ideaExtractor.ideaExtractor_exp import (
     ConcurrencyGate, ConcurrencyRamp,
@@ -769,6 +769,7 @@ class CodebookGenerator:
                             response_model=response_model,
                             temperature=temperature if temperature is not None else self._temperature,
                             max_tokens=max_tokens,
+                            **get_reasoning_params(use_model),
                         ),
                         timeout=effective_timeout,
                     )

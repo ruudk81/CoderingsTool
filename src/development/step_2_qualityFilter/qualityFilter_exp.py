@@ -546,9 +546,9 @@ class Grader:
         self.responses = responses
         self.question = var_lab
         self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
-        self.model_config = model_config or ModelConfig()
+        self.model_config = model_config or ModelConfig()  # kept for backward compat
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.model = self.model_config.get_model_for_stage('quality_filter')
+        self.model = self.config.model
         self.grader_instructions = GRADER_INSTRUCTIONS
         self._results: List[models.QualityFilteredModel] = []
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)

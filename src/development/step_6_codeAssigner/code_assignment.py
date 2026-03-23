@@ -58,6 +58,7 @@ from utils.cached_resources import get_tiktoken_encoding
 from config import (
     ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
     OPENAI_API_KEY, API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+    get_reasoning_params,
 )
 
 from development.step_3_ideaExtractor import models_exp as models
@@ -766,6 +767,7 @@ class CodeAssigner:
                             response_model=response_model,
                             temperature=self._config.assignment_temperature,
                             max_tokens=self._config.assignment_max_tokens,
+                            **get_reasoning_params(self._config.assignment_model),
                         ),
                         timeout=timeout,
                     )

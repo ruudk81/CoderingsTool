@@ -780,10 +780,10 @@ class IdeaExtractor:
         self.responses = responses
         self.var_lab = var_lab
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
-        self.model_config = model_config or ModelConfig()
+        self.model_config = model_config or ModelConfig()  # kept for backward compat
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.warm_up_config = DEFAULT_WARM_UP_CONFIG
-        self.model = self.model_config.get_model_for_stage('segmentation')
+        self.model = self.config.model
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeasExtractedModel] = []
         self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)

@@ -6,7 +6,7 @@ This module contains all configuration for the Step 2 quality filtering pipeline
 - Processing constants for token estimation, timeouts, and throughput adjustment
 """
 from dataclasses import dataclass
-from config import DEFAULT_MODEL
+from config import get_model
 
 
 # =============================================================================
@@ -24,8 +24,8 @@ class QualityFilterConfig:
     high_quality_threshold: float = 0.7
     medium_quality_threshold: float = 0.4
     max_filter_examples: int = 5  # For verbose output
-    # Model configuration - will be overridden by ModelConfig
-    model: str = DEFAULT_MODEL  # Fallback model
+    # Model (derived from MODEL_FAMILY toggle in config.py)
+    model: str = get_model("mini")
     max_concurrent_requests: int = 5  # For API rate limiting
     # Timeout configuration for API calls
     minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)

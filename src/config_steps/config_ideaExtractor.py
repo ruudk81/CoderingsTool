@@ -14,6 +14,7 @@ These settings control:
 - Generic specifier extraction
 """
 from dataclasses import dataclass
+from config import get_model
 
 
 # =============================================================================
@@ -228,8 +229,8 @@ class SegmentationConfig:
     umap_n_jobs: int = 1
     max_code_examples: int = 5  # For verbose output
     max_sample_responses: int = 3  # For verbose output
-    # Model configuration - will be overridden by ModelConfig
-    model: str = "gpt-4o-mini"  # Fallback model
+    # Model (derived from MODEL_FAMILY toggle in config.py)
+    model: str = get_model("mini")
     temperature: float = 0.0  # Temperature for generation
     max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
     # Timeout configuration for API calls

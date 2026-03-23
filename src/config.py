@@ -49,7 +49,7 @@ GENERAL_CODE_LABELS = {
 }
 
 # =============================================================================
-# MODEL CONFIGURATION - CENTRALIZED
+# MODEL CONFIGURATION - CENTRALIZED FOR DEVELOPMENT PIPELINE
 # =============================================================================
 
 # =============================================================================
@@ -100,8 +100,65 @@ OPENAI_MODEL_LIMITS = {
     "text-embedding-3-small": {"context_window": 8_191, "max_output": 0},
 }
 
-# Default models (used for both providers)
-DEFAULT_MODEL = "gpt-4.1-mini"
+# =============================================================================
+# MODEL FAMILY TOGGLE
+# =============================================================================
+# Switch this to change all pipeline models at once.
+# Each step uses get_model(tier) to resolve the actual model name.
+#
+# Supported families: "gpt-4.1", "gpt-5"
+# Tiers: "default" (full model), "mini", "nano"
+#
+# Examples:
+#   MODEL_FAMILY = "gpt-4.1"  →  gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
+#   MODEL_FAMILY = "gpt-5"    →  gpt-5, gpt-5-mini, gpt-5-nano
+
+MODEL_FAMILY = "gpt-5"
+
+
+def get_model(tier: str = "default") -> str:
+    """Resolve a model name from the current MODEL_FAMILY and tier.
+
+    Args:
+        tier: "default", "mini", or "nano"
+    """
+    if tier == "default":
+        return MODEL_FAMILY
+    return f"{MODEL_FAMILY}-{tier}"
+
+
+# Reasoning model families require reasoning_effort and text_verbosity parameters.
+# These are hardcoded defaults (minimal reasoning, medium verbosity) applied
+# automatically when using a reasoning model family like gpt-5.
+_REASONING_FAMILIES = {"gpt-5"}
+
+REASONING_EFFORT = "minimal"   # minimal, low, medium, high
+TEXT_VERBOSITY = "medium"      # minimal, low, medium, high
+
+
+def get_reasoning_params(model: str = None) -> dict:
+    """Return reasoning API params if the model is a reasoning model, else empty dict.
+
+    Usage in _llm_call: pass **get_reasoning_params(model) as kwargs to llm_create_async.
+    For chat models (gpt-4.1 family): returns {} — no extra params.
+    For reasoning models (gpt-5 family): returns {reasoning: {effort, ...}, text: {format: ...}}.
+    """
+    if model is None:
+        model = get_model()
+    # Check if any reasoning family prefix matches
+    family = model.rsplit("-", 1)[0] if "-" in model else model
+    # Handle e.g. "gpt-5-mini" → family "gpt-5", "gpt-5" → family "gpt-5"
+    for rf in _REASONING_FAMILIES:
+        if model == rf or model.startswith(rf + "-"):
+            return {
+                "reasoning": {"effort": REASONING_EFFORT},
+                "text": {"format": {"type": "text", "verbosity": TEXT_VERBOSITY}},
+            }
+    return {}
+
+
+# Default models (derived from MODEL_FAMILY)
+DEFAULT_MODEL = get_model("mini")
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 # =============================================================================
@@ -194,9 +251,6 @@ def get_embedding_model_for_api() -> str:
 # =============================================================================
 # RATE LIMIT FALLBACKS (Used when API headers are unavailable)
 # =============================================================================
-# Rate limits are now fetched dynamically from API response headers.
-# These fallback values are only used if headers are not present.
-# Set via environment variables or use conservative defaults.
 
 FALLBACK_TPM = int(os.getenv("FALLBACK_TPM", "100000"))  # Conservative: 100K tokens/min
 FALLBACK_RPM = int(os.getenv("FALLBACK_RPM", "100"))     # Conservative: 100 requests/min
@@ -205,7 +259,6 @@ FALLBACK_RPM = int(os.getenv("FALLBACK_RPM", "100"))     # Conservative: 100 req
 # EMBEDDING MODEL DIMENSIONS
 # =============================================================================
 
-# Embedding dimensions for different OpenAI embedding models
 EMBEDDING_MODEL_DIMENSIONS = {
     "text-embedding-3-large": 3072,
     "text-embedding-3-small": 1536,
@@ -224,10 +277,14 @@ def get_embedding_dimensions(model: str) -> int:
 
 @dataclass
 class ModelConfig:
-    """Centralized configuration for all models used throughout the pipeline"""
-    
+    """Centralized model configuration.
+
+    Development pipeline (steps 1-6): uses MODEL_FAMILY toggle via get_model().
+    Old production pipeline (pipeline.py, app.py): uses legacy stage models below.
+    """
+
     # =============================================================================
-    # MODEL TYPE MAPPING
+    # MODEL TYPE MAPPING (shared by both pipelines)
     # =============================================================================
     MODEL_TYPES = {
         # GPT-4 family (chat models)
@@ -238,98 +295,74 @@ class ModelConfig:
         "gpt-4.1-mini": "chat",
         "gpt-4.1-nano": "chat",
         "gpt-5-chat-latest": "chat",
-        
+
         # GPT-5 family (reasoning models)
         "gpt-5": "reasoning",
         "gpt-5-mini": "reasoning",
         "gpt-5-nano": "reasoning",
-
     }
-    
-    # =============================================================================
-    # STAGE-SPECIFIC MODELS
-    # =============================================================================
-    
-    # Text preprocessing models
-    spell_check_model: str = DEFAULT_MODEL
 
-    # Quality filtering and segmentation models
-    quality_filter_model: str = DEFAULT_MODEL
-    segmentation_model: str = "gpt-4.1-mini"
+    # =============================================================================
+    # SHARED PARAMETERS
+    # =============================================================================
 
-    # Embedding model
+    # Embedding model (not family-dependent)
     embedding_model: str = "text-embedding-3-large"
 
-    speculative_codes_model: str = DEFAULT_MODEL
+    # Global parameters
+    seed: int = 42
+    default_temperature: float = 0.0
+    default_max_tokens: int = 32000
 
-    # Codebook generation
+
+
+
+
+
+    # =============================================================================
+    # OLD PRODUCTION PIPELINE MODELS — USED BY pipeline.py / app.py — TO BE CLEANED
+    # These models are referenced by utils/codeGenerator.py, utils/codebookRefinement.py,
+    # utils/codeAssigner.py, and app.py. They will be removed when the old production
+    # pipeline is migrated to use the development steps.
+    # =============================================================================
+
+    speculative_codes_model: str = get_model("mini")
     thematic_summary_model: str = "gpt-5-chat-latest"
     candidate_selection_model: str = "gpt-5-chat-latest"
-    code_generation_model: str ="gpt-5-chat-latest"
+    code_generation_model: str = "gpt-5-chat-latest"
     validation_model: str = "gpt-5-chat-latest"
-
-    # Codebook refinement
     codebook_refinement_model: str = "gpt-5-mini"
+    code_assignment_model: str = get_model("nano")
+    refinement_temperature: float = 0.2
 
-    # Code assignment
-    code_assignment_model: str = "gpt-4.1-nano"
-
-  
-
-    # =============================================================================
-    # GLOBAL PARAMETERS
-    # =============================================================================
-    
-    seed: int = 42
-    default_temperature: float = 0.0  # Default to deterministic
-    default_max_tokens: int = 32000   # Default token limit
-    
-    # =============================================================================
-    # STAGE-SPECIFIC TEMPERATURES
-    # =============================================================================
-    
-    spell_check_temperature: float = 0.0
-    quality_filter_temperature: float = 0.0
-    refinement_temperature: float = 0.2 
-    
-    # =============================================================================
-    # GPT-5 SPECIFIC PARAMETERS - STAGE-SPECIFIC
-    # =============================================================================
-    
-    # Theme Extraction (Step 1 - Cluster Summary)
-    theme_extraction_reasoning_effort: str = "minimal"       
-    theme_extraction_text_verbosity: str = "medium"      
-
-    # Candidate Selection (Step 2 - Code Selection)  
-    candidate_selection_reasoning_effort: str = "minimal"   
-    candidate_selection_text_verbosity: str = "medium"        
-
-    # Code Generation (Step 3 - Code Recommendation)
-    code_generation_reasoning_effort: str = "minimal"      
-    code_generation_text_verbosity: str = "medium"     
-
-    # Validation (Step 4 - Code Validation)
-    validation_reasoning_effort: str = "minimal"         
-    validation_text_verbosity: str = "medium"         
-    
-    # Codebook Refinement  
+    # GPT-5 reasoning/verbosity parameters (old production pipeline only)
+    theme_extraction_reasoning_effort: str = "minimal"
+    theme_extraction_text_verbosity: str = "medium"
+    candidate_selection_reasoning_effort: str = "minimal"
+    candidate_selection_text_verbosity: str = "medium"
+    code_generation_reasoning_effort: str = "minimal"
+    code_generation_text_verbosity: str = "medium"
+    validation_reasoning_effort: str = "minimal"
+    validation_text_verbosity: str = "medium"
     refinement_reasoning_effort: str = "minimal"
     refinement_text_verbosity: str = "medium"
+    gpt5_reasoning_effort: str = "minimal"
+    gpt5_text_verbosity: str = "medium"
 
-    # Keep global defaults as fallback
-    gpt5_reasoning_effort: str = "minimal"  # Global default
-    gpt5_text_verbosity: str = "medium"     # Global default
-    
     # =============================================================================
-    # HELPER METHODS
+    # HELPER METHODS — OLD PRODUCTION PIPELINE — TO BE CLEANED
     # =============================================================================
-    
+
     def get_model_for_stage(self, stage: str) -> str:
-        """Get the appropriate model for a pipeline stage"""
+        """Get the appropriate model for a pipeline stage.
+
+        Used by old production pipeline (app.py, utils/codeGenerator.py).
+        Development steps 1-3 now use their own config.model field directly.
+        """
         stage_models = {
-            'spell_check': self.spell_check_model,
-            'quality_filter': self.quality_filter_model,
-            'segmentation': self.segmentation_model,
+            'spell_check': get_model("mini"),          # fallback if old callers still use this
+            'quality_filter': get_model("mini"),        # fallback if old callers still use this
+            'segmentation': get_model("mini"),          # fallback if old callers still use this
             'embedding': self.embedding_model,
             'speculative_codes': self.speculative_codes_model,
             'theme_extraction': self.thematic_summary_model,
@@ -337,23 +370,20 @@ class ModelConfig:
             'code_recommendation': self.code_generation_model,
             'recommendation_validation': self.validation_model,
             'codebook_refinement': self.codebook_refinement_model,
-            'code_assignment': self.code_assignment_model
-            }
+            'code_assignment': self.code_assignment_model,
+        }
         return stage_models.get(stage, DEFAULT_MODEL)
-    
+
     def get_temperature_for_stage(self, stage: str) -> float:
-        
         stage_temperatures = {
-            'spell_check': self.spell_check_temperature,
-            'quality_filter': self.quality_filter_temperature,
-            'refinement': self.refinement_temperature}
-    
+            'spell_check': 0.0,
+            'quality_filter': 0.0,
+            'refinement': self.refinement_temperature,
+        }
         if stage in stage_temperatures:
             return stage_temperatures[stage]
-    
         model_name = self.get_model_for_stage(stage)
         model_type = self.MODEL_TYPES.get(model_name, "chat")
-    
         if model_type == "chat":
             return 0.0
         elif model_type == "reasoning":
@@ -361,26 +391,25 @@ class ModelConfig:
         else:
             return self.default_temperature
 
-    
     def get_reasoning_effort_for_stage(self, stage: str) -> str:
-        """Get GPT-5 reasoning effort for specific stage"""
+        """Get GPT-5 reasoning effort for specific stage (old production pipeline)."""
         stage_efforts = {
             'theme_extraction': self.theme_extraction_reasoning_effort,
             'candidate_selection': self.candidate_selection_reasoning_effort,
             'code_recommendation': self.code_generation_reasoning_effort,
             'recommendation_validation': self.validation_reasoning_effort,
-            'codebook_refinement': self.refinement_reasoning_effort
+            'codebook_refinement': self.refinement_reasoning_effort,
         }
         return stage_efforts.get(stage, self.gpt5_reasoning_effort)
 
     def get_text_verbosity_for_stage(self, stage: str) -> str:
-        """Get GPT-5 text verbosity for specific stage"""
+        """Get GPT-5 text verbosity for specific stage (old production pipeline)."""
         stage_verbosities = {
             'theme_extraction': self.theme_extraction_text_verbosity,
             'candidate_selection': self.candidate_selection_text_verbosity,
             'code_recommendation': self.code_generation_text_verbosity,
             'recommendation_validation': self.validation_text_verbosity,
-            'codebook_refinement': self.refinement_text_verbosity
+            'codebook_refinement': self.refinement_text_verbosity,
         }
         return stage_verbosities.get(stage, self.gpt5_text_verbosity)
     
