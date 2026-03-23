@@ -530,7 +530,7 @@ def cache_mece_results(
     cache_manager.save_metadata_to_cache(
         metadata=mece_cache,
         filename=filename,
-        step="mece_categories",
+        step="mece_codes",
         variable_key=variable_key,
     )
     total_facets = sum(
@@ -560,7 +560,7 @@ def load_mece_cache(
     cache_manager = CacheManager()
     return cache_manager.load_metadata_from_cache(
         filename=filename,
-        step="mece_categories",
+        step="mece_codes",
         variable_key=variable_key,
         model_cls=CodingResultsCache,
     )
@@ -707,7 +707,7 @@ def run_code_assignment(
     cache_manager.save_to_cache(
         assigned_results,
         FILENAME,
-        "code_assignment",
+        "taxonomy_codes",
         variable_key,
     )
     print(f"Category assignment results cached "
@@ -737,7 +737,7 @@ def save_prompts_to_json(prompt_printer):
     CODEBOOK_TYPES = {
         "code_generation_from_attributes", "codebook_consolidation",
     }
-    ASSIGNMENT_TYPES = {"code_assignment", "dual_assignment"}
+    ASSIGNMENT_TYPES = {"taxonomy_codes", "dual_assignment"}
 
     taxonomy_prompts = [
         p for p in prompt_printer.prompts

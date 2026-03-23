@@ -729,7 +729,7 @@ class CodeAssigner:
         if (self._prompt_printer is not None
                 and _assign_key not in self._captured_assign_gates):
             self._prompt_printer.capture_prompt(
-                step_name="code_assignment",
+                step_name="taxonomy_codes",
                 utility_name="CodeAssigner",
                 prompt_content=prompt,
                 prompt_type="dual_assignment",

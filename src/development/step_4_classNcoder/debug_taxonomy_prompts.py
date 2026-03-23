@@ -78,7 +78,7 @@ STATIC_PROMPT_MODELS = {
     "attribute_consolidation": AttributeConsolidatedResponse,
     "code_generation_from_attributes": CodeGenerationFromAttributesResult,
     "codebook_consolidation": CodebookConsolidationResult,
-    "code_assignment": CodeAssignmentBatch,
+    "taxonomy_codes": CodeAssignmentBatch,
     "dual_assignment": CodeAssignmentResponse,
 }
 
@@ -279,7 +279,7 @@ def main():
         return
 
     # Exclude P10 assignment prompts (handled by debug_assignment_prompt.py)
-    P10_TYPES = {"code_assignment", "dual_assignment"}
+    P10_TYPES = {"taxonomy_codes", "dual_assignment"}
     prompts = [p for p in prompts if p.get("prompt_type", "") not in P10_TYPES]
 
     # Group by prompt_type, keeping first instance of each

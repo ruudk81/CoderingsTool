@@ -58,7 +58,7 @@ def load_assignments(
     )
     cache_manager = CacheManager()
     data = cache_manager.load_from_cache(
-        filename, "code_assignment", variable_key, CodeAssignedModel
+        filename, "taxonomy_codes", variable_key, CodeAssignedModel
     )
     if not data:
         raise FileNotFoundError(

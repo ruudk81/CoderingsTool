@@ -2,7 +2,7 @@
 """
 View codebook results (P8-P9): codes with definitions, indicators, source attributes.
 
-Loads from cached MECE results (step "mece_categories").
+Loads from cached MECE results (step "mece_codes").
 
 Usage:
     cd src && python -m development.step_4_classNcoder.view_codebook
@@ -44,7 +44,7 @@ def main():
     cache_manager = CacheManager()
     mece_cache = cache_manager.load_metadata_from_cache(
         filename=FILENAME,
-        step="mece_categories",
+        step="mece_codes",
         variable_key=variable_key,
         model_cls=CodingResultsCache,
     )

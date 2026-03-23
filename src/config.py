@@ -434,20 +434,20 @@ class CacheConfig:
     
     # Step prefixes for file naming
     step_prefixes: Dict[str, str] = field(default_factory=lambda: {
+        # Step 0-2: production pipeline
         "data": "001",
         "preprocessed": "002",
         "quality_filter": "003",
+        # Step 3: idea extraction (dev)
         "extracted_ideas": "004",
-        "embeddings": "005",
-        "initial_clusters": "006",
-        "expanded_clusters": "006",
-        "codebook_generation": "007",
-        "codebook_refinement": "008",
-        "code_assignment": "009",
-        "export": "010",
-        "mece_categories": "005",
-        "code_assignment": "005",
-        })
+        "extracted_ideas_metadata": "004",
+        # Step 4: taxonomy coder (dev)
+        "taxonomy": "005",
+        "taxonomy_metadata": "005",
+        "mece_codes": "005",
+        "mece_codes_metadata": "005",
+        "taxonomy_codes": "005",
+    })
     
     # Cache validity settings
     max_cache_age_days: int = 30
