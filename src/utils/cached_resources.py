@@ -50,22 +50,3 @@ def get_spacy_nlp():
     """Load SpaCy language model with caching for session-wide reuse (always loads)"""
     return get_spacy_nlp_conditional(True)
 
-@conditional_cache_resource
-def get_embedder_for_provider(provider: str, config=None, model_config=None):
-    """Load embedding provider conditionally - only load what's needed"""
-    with conditional_spinner(f"Initializing {provider} embedder..."):
-        if provider.lower() == "openai":
-            from utils.embedder import Embedder
-            return Embedder(config=config, model_config=model_config, provider="openai", verbose=False)
-        elif provider.lower() == "gemini":
-            from utils.embedder import Embedder  
-            return Embedder(config=config, model_config=model_config, provider="gemini", verbose=False)
-        else:
-            raise ValueError(f"Unknown embedding provider: {provider}")
-
-@conditional_cache_resource
-def get_clusterer_conditional(config_hash: str = "default"):
-    """Load clusterer resources conditionally"""
-    with conditional_spinner("Loading clustering algorithms..."):
-        from utils.clusterer import Clusterer
-        return Clusterer
