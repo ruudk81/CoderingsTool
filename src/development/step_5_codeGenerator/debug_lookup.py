@@ -73,7 +73,6 @@ print("=" * 60)
 print("LOOKUP TEST (replicating DomainDiscoverer)")
 print("=" * 60)
 if metadata and metadata.domains:
-    # Build lookup the same way DomainDiscoverer.__init__ does
     domains_lookup = {}
     for d in metadata.domains:
         key = d.get('key', '')

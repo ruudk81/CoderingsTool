@@ -9,7 +9,7 @@ Accepts taxonomy results from step_4_classifier as input.
 
 Usage:
     from .codebook_generator import CodebookGenerator
-    from .config_codebookGenerator import CodebookConfig
+    from .config_codeGenerator import CodebookConfig
 
     generator = CodebookGenerator(config)
     result = generator.generate(
@@ -45,8 +45,8 @@ from development.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyResultsCache, DomainDescription,
 )
 
-from .config_codebookGenerator import CodebookConfig
-from .prompts_codebookGenerator import (
+from .config_codeGenerator import CodebookConfig
+from .prompts_codeGenerator import (
     # P8: Code Generation from Attributes
     build_code_from_attributes_prompt,
     CodeGenerationFromAttributesResult,
@@ -216,14 +216,12 @@ class CodebookGenerator:
 
     async def _initialize_async_resources(self, verbose: bool):
         """Initialize clients and rate limiters for P8-P9 models."""
-        # Create one client per unique model
         unique_models = {self._model_p8, self._model_p9}
         self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
 
         processing_config = DEFAULT_PROCESSING_CONFIG
         headroom = processing_config.rate_limit_headroom
 
-        # --- Fetch real rate limits from API headers ---
         if verbose:
             print("  Fetching rate limits from API...")
         limits = await self._fetch_rate_limits_from_api()
@@ -240,7 +238,6 @@ class CodebookGenerator:
             print(f"  Fetched from API: TPM={limits.tokens_per_minute:,}, "
                   f"RPM={limits.requests_per_minute:,}")
 
-        # --- Static concurrency + rate limiter from API limits ---
         est_avg_tokens = 3000
         rpm_throughput = limits.requests_per_minute * headroom / 60
         tpm_throughput = limits.tokens_per_minute * headroom / est_avg_tokens / 60
@@ -268,7 +265,6 @@ class CodebookGenerator:
         verbose: bool,
     ) -> CodebookResult:
         """Codebook stages P8-P9: code generation + consolidation."""
-        # Unpack taxonomy result
         partition_facets = taxonomy.partition_facets
         partition_assignments = taxonomy.partition_assignments
         domain_facet_attributes = taxonomy.partition_attributes
@@ -284,21 +280,18 @@ class CodebookGenerator:
 
         t_phase8 = time.time()
 
-        # Build one task per domain (no valence split — codes emerge naturally)
         p8_tasks = {}
         for domain_name in domain_facet_attributes:
             domain_attrs = domain_facet_attributes.get(domain_name, {})
             if not domain_attrs:
                 continue
 
-            # Filter attribute_assignments to this domain
             domain_facet_ids = set(partition_assignments.get(domain_name, {}).keys())
             domain_attr_assigns = {
                 iid: aname for iid, aname in attribute_assignments.items()
                 if iid in domain_facet_ids
             }
 
-            # Build excluded domains: all other domains
             excluded = [
                 (other_name, partition_contexts[other_name].partition_definition)
                 for other_name in partition_contexts
@@ -315,9 +308,8 @@ class CodebookGenerator:
 
         p8_results = await asyncio.gather(*p8_tasks.values(), return_exceptions=True)
 
-        # Collect all codes with provenance tracking
         all_codes = []
-        code_provenance = {}  # code index -> domain_name
+        code_provenance = {}
         codebook_narratives = []
         for key, result in zip(p8_tasks.keys(), p8_results):
             if isinstance(result, Exception):
@@ -336,8 +328,6 @@ class CodebookGenerator:
             print(f"\n  Phase 8 done in {t_phase8:.1f}s → {len(all_codes)} raw codes "
                   f"from {len(p8_tasks)} calls")
 
-        # Compute idea frequencies per code (from attribute assignments)
-        # Each code has source_attributes; count how many ideas map to those attrs
         attr_to_count: Dict[str, int] = {}
         for attr_name in attribute_assignments.values():
             attr_to_count[attr_name] = attr_to_count.get(attr_name, 0) + 1
@@ -400,10 +390,8 @@ class CodebookGenerator:
         if not attribute_names:
             return CodeGenerationFromAttributesResult
 
-        # Create Literal type from known attribute names
         AttrLiteral = Literal[tuple(attribute_names)]
 
-        # Dynamic CodeFromAttributes with constrained source_attributes
         ConstrainedCode = create_model(
             "CodeFromAttributes",
             code_name=(str, Field(..., description="Short code name (3-5 word noun phrase)")),
@@ -415,7 +403,6 @@ class CodebookGenerator:
             )),
         )
 
-        # Dynamic result model using the constrained code model
         ConstrainedResult = create_model(
             "CodeGenerationFromAttributesResult",
             scratchpad=(str, CodeGenerationFromAttributesResult.model_fields["scratchpad"]),
@@ -448,7 +435,6 @@ class CodebookGenerator:
             excluded_domains=excluded_domains,
         )
 
-        # Collect all attribute names for enum constraint
         all_attr_names = [
             attr.attribute_name
             for facet_attrs in domain_facet_attributes.values()
@@ -457,7 +443,6 @@ class CodebookGenerator:
         ]
         response_model = self._build_constrained_response_model(all_attr_names)
 
-        # Prompt capture
         domain_key = "::".join(domain_facet_attributes.keys())
         gate_key = f"qr_code_gen_{domain_key}"
         if (self._prompt_printer is not None
@@ -520,7 +505,6 @@ class CodebookGenerator:
             code_frequencies=code_frequencies,
         )
 
-        # Prompt capture
         gate_key = "qr_codebook_consolidation"
         if (self._prompt_printer is not None
                 and gate_key not in self._captured_gates):
@@ -555,7 +539,7 @@ class CodebookGenerator:
                 else:
                     print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 2), returning raw codes: "
                           f"{type(e).__name__}: {e}")
-                    raise  # Let caller handle fallback to raw codes
+                    raise
 
     # =========================================================================
     # DYNAMIC RATE LIMIT DISCOVERY
@@ -595,14 +579,7 @@ class CodebookGenerator:
     async def _llm_call(self, prompt: str, response_model, max_tokens: int,
                         temperature: float | None = None, model: str | None = None,
                         timeout: float = 120.0, gate=None):
-        """Make a rate-limited LLM call with optional per-phase concurrency gate.
-
-        Args:
-            gate: Optional concurrency gate (asyncio.Semaphore or similar).
-                  If provided, used instead of self._semaphore.
-                  Allows per-phase concurrency control.
-            timeout: Generous safety net (60s for standard, 120s for reasoning).
-        """
+        """Make a rate-limited LLM call."""
         use_model = model or self._model_p8
         client = self._clients[use_model]
         concurrency_ctx = gate if gate is not None else self._semaphore

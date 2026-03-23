@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root / "src" / "development"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from development.step_5_codebookGenerator.models_codebookGenerator import (
+from development.step_6_codeAssigner.models_codeAssigner import (
     CodeAssignedModel, CodeAssignedSubmodel,
 )
 from development.step_4_classifier.models_classifier import TaxonomyResultsCache

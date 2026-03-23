@@ -5,7 +5,7 @@ View codebook results (P8-P9): codes with definitions, indicators, source attrib
 Loads from cached MECE results (step "mece_codes").
 
 Usage:
-    cd src && python -m development.step_5_codebookGenerator.view_codebook
+    cd src && python -m development.step_5_codeGenerator.view_codebook
 """
 
 import sys
@@ -25,8 +25,8 @@ except ImportError:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
-from development.step_5_codebookGenerator.models_codebookGenerator import CodingResultsCache
-from development.step_5_codebookGenerator.prompts_codebookGenerator import ConsolidatedCode
+from development.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
+from development.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 
 FILENAME = TEST_DATA.filename
 VAR_NAME = TEST_DATA.var_name

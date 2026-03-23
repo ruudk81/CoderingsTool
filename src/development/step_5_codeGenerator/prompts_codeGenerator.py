@@ -1,10 +1,9 @@
 """
-Prompt builders for Codebook Generator (P8-P10).
+Prompt builders for Code Generator (P8-P9).
 
 Organized in pipeline processing order:
   §8   Code Generation from Attributes (P8: per domain)
   §9   Codebook Consolidation (P9: cross-domain merge)
-  §10  Code Assignment (P10: single idea)
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ if TYPE_CHECKING:
     from development.step_3_ideaExtractor.dimension_data import DimensionDefinition
 
 from development.step_4_classifier.prompts_classifier import DiscoveredAttribute
-from development.step_5_codebookGenerator.models_codebookGenerator import CodeAssignment, CodeAssignmentBatch
 
 
 # =============================================================================
@@ -314,22 +312,21 @@ Dimension: {dimension_name} — {dimension_description}
 Before generating your final codes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
 
 <workflow>
+## STEP 1 — VALENCE SEPARATION (MANDATORY FIRST PASS)
 
-## STEP 1 — PRE-STRUCTURE BY VALENCE (HARD GATE)
+Before any clustering:
+1. Assign each attribute a valence:
+    * Positive (praise / favorable evaluation)
+    * Negative (criticism / unfavorable evaluation)
+    * Neutral (only if purely descriptive)
+2. NEVER group or merge across valence boundaries
+3. If an attribute contains both positive and negative aspects:
+    * Split it into separate entries BEFORE proceeding
+4. Treat positive and negative versions of the same phenomenon as distinct codes
 
-- Generate separate codes for positive and negative phenomena.
-- Do NOT combine praise and criticism into a single code.
-- If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
+Rule: Opposite evaluations MUST NEVER be combined.
 
-## STEP 2 — CLUSTER BY LATENT QUESTION (NOT TOPIC)
-
-Instead of grouping by topic, group by:
-
-**{domain_diagnostic}**
-
-If two codes answer the same question → same cluster
-
-## STEP 3 — AGGRESSIVE MERGING WITHIN CLUSTERS
+## STEP 2 — AGGRESSIVE MERGING WITHIN CLUSTERS
 
 Within each valence + question cluster:
 
@@ -337,7 +334,7 @@ Merge until a coder would NEVER hesitate between remaining codes.
 
 Strict Merge Rule: If both can apply to the same sentence → merge
 
-## STEP 4 — MECHANISM PURITY CHECK
+## STEP 3 — MECHANISM PURITY CHECK
 
 For each code, ask: Is this describing:
 * a value (e.g., fair, responsible)
@@ -347,7 +344,7 @@ For each code, ask: Is this describing:
 
 If mixed → SPLIT
 
-## STEP 5 — NEIGHBOUR STRESS TEST
+## STEP 4 — NEIGHBOR STRESS TEST
 
 For every pair of same-valence codes, ask: "Would a trained coder hesitate between these?"
 
@@ -355,37 +352,64 @@ If YES:
 1. Try sharpening definitions
 2. If still ambiguous → merge
 
-## STEP 6 — ONE-SENTENCE COVERAGE TEST
+## STEP 5 — ONE-SENTENCE COVERAGE TEST
 
 Each code must pass: Can I explain what this covers in ONE sentence without listing multiple unrelated things?
 
 If NO → split
 
-## STEP 7 — NON-REDUNDANCY KILL STEP
+## STEP 6 — NON-REDUNDANCY KILL STEP
 
 For each code: "If I delete this, do I lose meaning?"
 
+If NO → DELETE it
+
+## STEP 7 — FINAL DIAGNOSTIC UNIQUENESS CHECK
+
+Each code must complete the sentence:
+"{domain_diagnostic}"
+
+Rules:
+* The completion must be specific and distinct
+* It must reflect a SINGLE valence direction (positive OR negative)
+
+If two codes produce similar completions → MERGE
+
 If NO → delete
 
-## STEP 8 — FINAL DIAGNOSTIC UNIQUENESS CHECK
+## STEP 8 — PREVALENCE WEIGHTING & STRUCTURAL BALANCING
 
-Each code must complete: "{code_diagnostic}"
+Use attribute frequency to shape the FINAL codebook.
 
-If two codes produce similar completions → merge
+8.1 Core Structure Rule
+- High-prevalence attributes MUST define the main codes
+- The codebook should be built around a small number of dominant phenomena
 
+8.2 Low-Prevalence Constraint
+Low-frequency attributes MUST NOT become standalone codes unless:
+- They represent a clearly distinct phenomenon, AND
+- They cannot be meaningfully merged upward
+
+Otherwise, they must be:
+- Abstracted into a higher-level code, OR
+- Combined into a broader shared category
+
+8.3 Balancing Constraint — Structured Differentiation
+- DO NOT collapse everything into a single dominant code
+- If multiple distinct high- or mid-prevalence patterns exist:→ they MUST remain separate
+
+8.4 Final Check
+Ask: "Does this code exist because it is conceptually necessary, or just because it appeared rarely?"
+
+If the latter → merge or remove
 </workflow>
 
 <hard_rules>
-
-### DOMAIN AWARENESS
-Codes from DIFFERENT domains that share similar names may represent DIFFERENT phenomena. Do NOT merge codes across domains unless they are truly identical in meaning.
-
 ### NO DOUBLE-BARREL CODES
-If a code name contains "and" joining unrelated concepts → split into separate codes.
+If a code name contains "and" joining unrelated concepts → abstract to single phenomenon code name
 
 ### NO CAUSE + ATTRIBUTE MIX
 Do not combine a cause/reason with a descriptive attribute in a single code. Split into separate codes for each mechanism.
-
 </hard_rules>
 
 <validation_checklist>
@@ -396,22 +420,17 @@ Before finalizing, verify each code passes:
 - Mechanism is pure
 - One-sentence coverage
 - Diagnostic is unique
+- Prevalence weight rule with balancing constraint  
 </validation_checklist>
 
 <code_template>
 Each code must include:
-
-**code_name**: 3–5 word noun phrase, must reflect ONE dimension only
-
-**definition**: clear, interpretive claim — must specify what makes this DISTINCT
-
-**diagnostic_test**: Must follow: "{code_diagnostic}" — must NOT overlap with any other code
-
-**valence**: positive / negative / neutral
-
-**typical_indicators**: concrete phrases (not abstract labels)
-
-**source_attributes**: all merged origins
+- **code_name**: 3–5 word noun phrase, must reflect ONE dimension only
+= **definition**: clear, interpretive claim — must specify what makes this DISTINCT
+- **diagnostic_test**: Must follow: "{code_diagnostic}" — must NOT overlap with any other code
+- **valence**: positive / negative / neutral
+- **typical_indicators**: concrete phrases (not abstract labels)
+- **source_attributes**: all merged origins
 </code_template>
 
 All output MUST be in {language}.
@@ -453,125 +472,15 @@ class CodebookConsolidationResult(BaseModel):
         ..., description=(
             "Step-by-step reasoning following the 8-step workflow: "
             "(1) pre-structure by valence, "
-            "(2) cluster by latent question, "
-            "(3) aggressive merging within clusters, "
-            "(4) mechanism purity check, "
-            "(5) neighbour stress test, "
-            "(6) one-sentence coverage test, "
-            "(7) non-redundancy kill step, "
-            "(8) final diagnostic uniqueness check"
+            "(2) aggressive merging within clusters, "
+            "(3) mechanism purity check, "
+            "(4) neighbour stress test, "
+            "(5) one-sentence coverage test, "
+            "(6) non-redundancy kill step, "
+            "(8) final diagnostic uniqueness check, "
+            "(8) prevalence weighting and structural balancing check"
         )
     )
     codes: List[ConsolidatedCode] = Field(
         ..., description="Final MECE codebook"
-    )
-
-
-# =============================================================================
-# §10 CODE ASSIGNMENT (P10) — single idea
-# =============================================================================
-
-# Re-export data-flow wrapper models (canonical definition in models_codebookGenerator.py)
-# CodeAssignment and CodeAssignmentBatch are imported at the top of this file.
-
-
-def _build_codes_block(
-    codes: List[CodeFromAttributes],
-    other_label: Optional[str] = None,
-) -> str:
-    """Format codes for assignment prompt (code-only, no attributes)."""
-    lines = []
-    for i, code in enumerate(codes, 1):
-        diagnostic = getattr(code, 'diagnostic_test', '') or ''
-        indicators = ", ".join(code.typical_indicators[:5]) if code.typical_indicators else "(none)"
-        block = (
-            f"[C{i}] {code.code_name}\n"
-            f"    Definition: {code.definition}\n"
-        )
-        if diagnostic:
-            block += f"    Diagnostic: {diagnostic}\n"
-        block += f"    Indicators: {indicators}"
-        lines.append(block)
-
-    if other_label:
-        n = len(codes) + 1
-        lines.append(
-            f"[C{n}] {other_label}\n"
-            f"    Definition: Ideas that do not clearly fit any of the above codes.\n"
-            f"    Indicators: no matching indicators"
-        )
-
-    return "\n\n".join(lines)
-
-
-def build_code_assignment_prompt(
-    *,
-    survey_question: str,
-    language: str,
-    dataset_context_section: str,
-    codes: List[CodeFromAttributes],
-    other_label: Optional[str],
-    idea,
-    facet_lookup: Optional[Dict[str, str]] = None,
-) -> str:
-    """Build prompt for assigning a single idea to a code."""
-    codes_block = _build_codes_block(codes, other_label)
-
-    # Format single idea
-    valence = getattr(idea, 'valence', '') or '0'
-    facet = (facet_lookup or {}).get(idea.idea_id, '') or getattr(idea, 'facet', '') or ''
-    domain = getattr(idea, 'domain', '') or ''
-
-    idea_block = (
-        f"idea: {idea.idea}\n"
-        f"domain: {domain}\n"
-        f"facet: {facet}\n"
-        f"valence: {valence}"
-    )
-
-    other_label_display = other_label or "Other"
-
-    return f"""You are a qualitative coding assistant. Assign the idea below to the best-matching code.
-
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
-
-<codebook>
-{codes_block}
-</codebook>
-
-<idea>
-{idea_block}
-</idea>
-
-<instructions>
-1. Read the idea text, domain, facet, and valence.
-2. Find the code whose definition best matches what the respondent is expressing.
-3. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
-4. Assign "{other_label_display}" only if NO code fits at all.
-5. Rate confidence: 0.90+ = clear, 0.70-0.89 = good, 0.50-0.69 = approximate, <0.50 = weak.
-6. Provide a brief rationale for your code choice.
-
-All output MUST be in {language}.
-Provide output as valid JSON following the response schema provided.
-</instructions>
-"""
-
-
-class CodeAssignmentResponse(BaseModel):
-    """Single idea → code assignment."""
-    assigned_code_id: str = Field(
-        ...,
-        description="The code ID from the [C#] prefix (e.g. 'C1', 'C7'). Return ONLY the ID."
-    )
-    confidence: float = Field(
-        ...,
-        description="Confidence in the assignment (0.0 to 1.0)"
-    )
-    rationale: str = Field(
-        ...,
-        description="Brief rationale for the code choice"
     )

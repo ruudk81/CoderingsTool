@@ -1,7 +1,7 @@
 """
-Data models for Codebook Generator (P8-P10).
+Data models for Code Assigner (P10).
 
-Coding results cache and code assignment output models.
+Code assignment output models — final pipeline output.
 Imports taxonomy types from step 4 (upstream dependency).
 """
 
@@ -12,29 +12,7 @@ from development.step_3_ideaExtractor.models_exp import (
     IdeasExtractedSubmodel,
     IdeasExtractedModel,
 )
-from development.step_4_classifier.models_classifier import (
-    DomainSet,
-    DomainResultModel,
-)
 
-
-# =============================================================================
-# CACHE MODELS
-# =============================================================================
-
-class CodingResultsCache(BaseModel):
-    """Cache for full pipeline results (taxonomy + codes)."""
-    partition_set: DomainSet
-    partition_results: Dict[str, DomainResultModel]
-    label_counts: Dict[str, int] = Field(default_factory=dict)
-    label_source: str = ""
-    total_categories: int = 0
-    raw_codes: List[Dict] = Field(default_factory=list)  # ConsolidatedCode dicts
-
-
-# =============================================================================
-# CATEGORY ASSIGNMENT OUTPUT MODELS
-# =============================================================================
 
 # --- Internal wrapper models for code assignment (data-flow, not LLM response) ---
 
@@ -60,7 +38,7 @@ class CodeAssignedSubmodel(IdeasExtractedSubmodel):
 
     Extends step 3's IdeasExtractedSubmodel.
     Populated by: facet (L3) from step 4, attribute (L4) from step 4,
-    plus code assignment fields from step 5.
+    plus code assignment fields from step 6.
     """
     assigned_code: Optional[str] = None
     assigned_attribute: Optional[str] = None

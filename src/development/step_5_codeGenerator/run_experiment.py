@@ -1,15 +1,9 @@
 #%%
 
 """
-Step 5: Codebook Generator & Assignment runner (P8-P10)
+Step 5: Code Generator runner (P8-P9)
 
-Pipeline: load taxonomy from step 4 cache → generate codebook (P8-P9) →
-assign codes to ideas (P10).
-
-RUN_MODE controls which phases to execute:
-  "codebook"   — generate codebook from cached taxonomy (P8-P9)
-  "assignment"  — assign codes from cached codebook (P10)
-  "all"         — codebook + assignment (P8-P10)
+Pipeline: load taxonomy from step 4 cache → generate codebook (P8-P9).
 """
 
 import sys
@@ -27,11 +21,10 @@ from development.step_3_ideaExtractor import models_exp as models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 
-# Import step_5_codebookGenerator components
-from development.step_5_codebookGenerator.config_codebookGenerator import CodebookConfig, AssignmentConfig
-from development.step_5_codebookGenerator.codebook_generator import CodebookGenerator, CodebookResult
-from development.step_5_codebookGenerator.code_assignment import CodeAssigner
-from development.step_5_codebookGenerator.models_codebookGenerator import CodingResultsCache, CodeAssignedModel
+# Import step_5_codeGenerator components
+from development.step_5_codeGenerator.config_codeGenerator import CodebookConfig
+from development.step_5_codeGenerator.codebook_generator import CodebookGenerator, CodebookResult
+from development.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
 
 # Import step_4_classifier (upstream output types)
 from development.step_4_classifier.models_classifier import (
@@ -55,58 +48,17 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-RUN_MODE = "codebook"  # "codebook" | "assignment" | "all"
-EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
 
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-# All defaults defined in config_codebookGenerator.py.
-# Override individual params here only for one-off experiments.
 CONFIG = CodebookConfig()
-
-ASSIGNMENT_CONFIG = AssignmentConfig(
-    assignment_model="gpt-4.1-nano",
-    assignment_temperature=0.1,
-    verbose=True,
-)
 
 
 # =============================================================================
 # DATA LOADING
 # =============================================================================
-
-def load_step3_ideas(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
-    variable_key: Optional[str] = None,
-) -> List[models.IdeasExtractedModel]:
-    """Load Step 3 extracted ideas from cache."""
-    if variable_key is None:
-        variable_key = generate_enhanced_variable_key(
-            selected_variables=[variable],
-            is_merged=False,
-            sample_size=sample_size
-        )
-
-    cache_manager = CacheManager()
-    data = cache_manager.load_from_cache(
-        filename, "extracted_ideas", variable_key, models.IdeasExtractedModel
-    )
-
-    if not data:
-        raise FileNotFoundError(
-            f"Cache not found for step 'extracted_ideas' / variable_key '{variable_key}'.\n"
-            f"Run step 3 (ideaExtractor) first."
-        )
-
-    total_ideas = sum(item.idea_count for item in data)
-    print(f"Loaded {len(data)} responses with {total_ideas} ideas from step 3 cache")
-
-    return data
-
 
 def load_extraction_metadata(
     filename: str = FILENAME,
@@ -163,29 +115,6 @@ def load_taxonomy_cache(
     )
 
 
-def load_mece_cache(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
-    variable_key: Optional[str] = None,
-) -> Optional[CodingResultsCache]:
-    """Load cached MECE results (codebook) if available."""
-    if variable_key is None:
-        variable_key = generate_enhanced_variable_key(
-            selected_variables=[variable],
-            is_merged=False,
-            sample_size=sample_size,
-        )
-
-    cache_manager = CacheManager()
-    return cache_manager.load_metadata_from_cache(
-        filename=filename,
-        step="mece_codes",
-        variable_key=variable_key,
-        model_cls=CodingResultsCache,
-    )
-
-
 # =============================================================================
 # RESULTS PRINTING
 # =============================================================================
@@ -213,25 +142,6 @@ def print_codebook_results(codebook_result: CodebookResult):
 
     print(f"\n{'='*80}")
     print(f"Total codes: {len(codebook_result.codes)}")
-    print(f"{'='*80}\n")
-
-
-def print_assignment_results(assigned_results):
-    """Print assignment summary."""
-    total_ideas = sum(
-        len(r.response_ideas or []) for r in assigned_results
-    )
-    assigned_count = sum(
-        1 for r in assigned_results
-        for idea in (r.response_ideas or [])
-        if idea.assigned_code
-    )
-    print(f"\n{'='*80}")
-    print(f"ASSIGNMENT SUMMARY")
-    print(f"{'='*80}")
-    print(f"  Responses:       {len(assigned_results)}")
-    print(f"  Total ideas:     {total_ideas}")
-    print(f"  Ideas assigned:  {assigned_count}")
     print(f"{'='*80}\n")
 
 
@@ -271,12 +181,9 @@ def save_results_to_file(
     sample_str = str(sample_size) if sample_size else "full"
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Determine run mode suffix
-    mode_suffix = f"_{RUN_MODE}"
-
     output_filename = (
         f"{base_name}_{variable}_{sample_str}"
-        f"_step5_{date_str}{mode_suffix}.txt"
+        f"_step5_codebook_{date_str}.txt"
     )
     output_path = output_dir / output_filename
 
@@ -298,15 +205,8 @@ def cache_mece_results(
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
     variable_key: Optional[str] = None,
-) -> Dict[str, DomainResultModel]:
-    """Cache codebook results for later use by code assignment.
-
-    The codebook is stored as a single partition result keyed by "__global__",
-    since v3 produces a single cross-partition codebook.
-
-    Per-domain results (facets, assignments, attributes) are also stored
-    for debugging and analysis.
-    """
+) -> None:
+    """Cache codebook results for later use by code assignment (step 6)."""
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -321,7 +221,6 @@ def cache_mece_results(
         label_counts={
             name: r.n_labels for name, r in pydantic_results.items()
         },
-        label_source=CONFIG.label_source if hasattr(CONFIG, 'label_source') else "",
         total_categories=n_codes,
         raw_codes=[c.model_dump() for c in codebook_result.codes],
     )
@@ -336,58 +235,9 @@ def cache_mece_results(
     total_facets = sum(
         len(r.facets) for r in pydantic_results.values()
     )
-    print(f"v3 results cached "
+    print(f"Codebook cached "
           f"({n_codes} codes, {total_facets} facets across "
           f"{len(pydantic_results)} domains)")
-
-    return pydantic_results
-
-
-# =============================================================================
-# CODE ASSIGNMENT
-# =============================================================================
-
-def run_code_assignment(
-    ideas_models: List[models.IdeasExtractedModel],
-    mece_results: Dict[str, DomainResultModel],
-    partition_set: DomainSet,
-    extraction_metadata: Optional[models.ExtractionMetadata] = None,
-    config: AssignmentConfig = ASSIGNMENT_CONFIG,
-    prompt_printer=None,
-    codes=None,
-    attribute_assignments: Optional[Dict[str, str]] = None,
-) -> List[CodeAssignedModel]:
-    """Run code assignment and cache results."""
-    assigner = CodeAssigner(
-        config=config,
-        ideas_models=ideas_models,
-        mece_results=mece_results,
-        partition_set=partition_set,
-        extraction_metadata=extraction_metadata,
-        prompt_printer=prompt_printer,
-        codes=codes,
-        attribute_assignments=attribute_assignments,
-    )
-
-    assigned_results = assigner.assign_all()
-
-    # Cache assignment results
-    variable_key = generate_enhanced_variable_key(
-        selected_variables=[VARIABLE],
-        is_merged=False,
-        sample_size=SAMPLE_SIZE,
-    )
-    cache_manager = CacheManager()
-    cache_manager.save_to_cache(
-        assigned_results,
-        FILENAME,
-        "taxonomy_codes",
-        variable_key,
-    )
-    print(f"Category assignment results cached "
-          f"({len(assigned_results)} response models)")
-
-    return assigned_results
 
 
 # =============================================================================
@@ -395,7 +245,7 @@ def run_code_assignment(
 # =============================================================================
 
 def save_prompts_to_json(prompt_printer):
-    """Save captured prompts to JSON files (split by stage)."""
+    """Save captured prompts to JSON file."""
     if not prompt_printer or not prompt_printer.prompts:
         return
 
@@ -407,29 +257,17 @@ def save_prompts_to_json(prompt_printer):
     prompts_dir = project_root / "exports" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    CODEBOOK_TYPES = {
-        "code_generation_from_attributes", "codebook_consolidation",
-    }
-    ASSIGNMENT_TYPES = {"taxonomy_codes", "dual_assignment"}
-
+    base = f"step5_codeGenerator_{variable_key}"
     codebook_prompts = [
         p for p in prompt_printer.prompts
-        if p.get("prompt_type") in CODEBOOK_TYPES
+        if p.get("prompt_type") in {
+            "code_generation_from_attributes", "codebook_consolidation",
+        }
     ]
-    assignment_prompts = [
-        p for p in prompt_printer.prompts
-        if p.get("prompt_type") in ASSIGNMENT_TYPES
-    ]
-
-    base = f"step5_codebookGenerator_{variable_key}"
     if codebook_prompts:
         pp_code = PromptPrinter(enabled=True)
         pp_code.prompts = codebook_prompts
         pp_code.save_prompts(str(prompts_dir / f"{base}_codebook.json"))
-    if assignment_prompts:
-        pp_assign = PromptPrinter(enabled=True)
-        pp_assign.prompts = assignment_prompts
-        pp_assign.save_prompts(str(prompts_dir / f"{base}_assignment.json"))
 
 
 # =============================================================================
@@ -460,13 +298,13 @@ def _extract_metadata_context(extraction_metadata):
 
 
 # =============================================================================
-# RUN MODES
+# MAIN
 # =============================================================================
 
-def run_codebook_from_cache():
+def run_codebook():
     """Run codebook generation (P8-P9) from cached taxonomy results."""
     print("=" * 70)
-    print("CODEBOOK ONLY MODE (P8-P9, loading taxonomy from cache)")
+    print("CODE GENERATOR (P8-P9, loading taxonomy from cache)")
     print("=" * 70)
 
     extraction_metadata = load_extraction_metadata()
@@ -508,8 +346,8 @@ def run_codebook_from_cache():
         partition_n_batches[name] = result.n_batches
         all_attr_assignments.update(result.attribute_assignments)
 
-    from development.step_4_classifier.classifier import TaxonomyResult as _TaxonomyResult
-    taxonomy_result = _TaxonomyResult(
+    from development.step_5_codeGenerator.codebook_generator import TaxonomyResult
+    taxonomy_result = TaxonomyResult(
         partition_n_labels=partition_n_labels,
         partition_n_batches=partition_n_batches,
         partition_facets=partition_facets,
@@ -540,165 +378,25 @@ def run_codebook_from_cache():
     # Print codebook results
     print_codebook_results(codebook_result)
 
-    # Save prompts
-    save_prompts_to_json(prompt_printer)
-
-    return partition_set, pydantic_results, codebook_result, prompt_printer
-
-
-def run_assignment_only():
-    """Run code assignment from cached data (skip pipeline).
-
-    Loads step 3 ideas, MECE codebook, and extraction metadata from cache,
-    then runs assignment. Useful for iterating on assignment without
-    re-running theme discovery.
-    """
-    print("=" * 70)
-    print("ASSIGNMENT ONLY MODE (loading from cache)")
-    print("=" * 70)
-
-    # Load dependencies from cache
-    ideas_models = load_step3_ideas()
-    extraction_metadata = load_extraction_metadata()
-
-    mece_cache = load_mece_cache()
-    if mece_cache is None:
-        print("\nERROR: No cached MECE results found.")
-        print("Run codebook generation first (RUN_MODE = 'codebook' or 'all').")
-        return
-
-    partition_set = mece_cache.partition_set
-    pydantic_results = mece_cache.partition_results
-
-    # Reconstruct ConsolidatedCode from cached dicts
-    from development.step_5_codebookGenerator.prompts_codebookGenerator import ConsolidatedCode
-    codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else None
-
-    n_themes = mece_cache.total_categories
-    n_partitions = len(partition_set.partitions)
-    print(f"  Loaded codebook: {n_themes} themes, {n_partitions} partitions"
-          f", {len(codes) if codes else 0} raw codes")
-
-    prompt_printer = PromptPrinter(
-        enabled=True,
-        print_realtime=PRINT_PROMPTS,
-    )
-    # Collect attribute_assignments from all domains
-    all_attr_assignments = {}
-    for domain_result in pydantic_results.values():
-        all_attr_assignments.update(domain_result.attribute_assignments)
-
-    assigned_results = run_code_assignment(
-        ideas_models=ideas_models,
-        mece_results=pydantic_results,
-        partition_set=partition_set,
-        extraction_metadata=extraction_metadata,
-        prompt_printer=prompt_printer,
-        codes=codes,
-        attribute_assignments=all_attr_assignments,
-    )
-
-    # Print assignment summary
-    print_assignment_results(assigned_results)
+    # Cache for downstream use by step 6 (code assigner)
+    cache_mece_results(partition_set, pydantic_results, codebook_result)
 
     # Save prompts
     save_prompts_to_json(prompt_printer)
 
-    return assigned_results, prompt_printer
-
-
-def run_all():
-    """Run full codebook + assignment pipeline (P8-P10) from cached taxonomy."""
-    # Codebook generation (P8-P9)
-    result = run_codebook_from_cache()
-    if result is None:
-        return
-
-    partition_set, pydantic_results, codebook_result, prompt_printer = result
-
-    # Cache as MECE (taxonomy + codes) for assignment
-    cache_mece_results(
-        partition_set, pydantic_results,
-        codebook_result,
-    )
-
-    # Assignment (P10)
-    ideas_models = load_step3_ideas()
-    extraction_metadata = load_extraction_metadata()
-
-    all_attr_assignments = {}
-    for domain_result in pydantic_results.values():
-        all_attr_assignments.update(domain_result.attribute_assignments)
-
-    assigned_results = run_code_assignment(
-        ideas_models=ideas_models,
-        mece_results=pydantic_results,
-        partition_set=partition_set,
-        extraction_metadata=extraction_metadata,
-        prompt_printer=prompt_printer,
-        codes=codebook_result.codes,
-        attribute_assignments=all_attr_assignments,
-    )
-
-    # Print assignment summary
-    print_assignment_results(assigned_results)
-
-    # Save prompts
-    save_prompts_to_json(prompt_printer)
-
-    return assigned_results, prompt_printer
+    return codebook_result
 
 
 # =============================================================================
-# MAIN ENTRY POINT
+# ENTRY POINT
 # =============================================================================
 
 if __name__ == "__main__":
-    # Capture all output while also printing to console
     tee = TeeOutput(sys.stdout)
     sys.stdout = tee
 
     try:
-        if RUN_MODE == "codebook":
-            # =================================================================
-            # Codebook only: P8-P9 from cached taxonomy
-            # =================================================================
-            result = run_codebook_from_cache()
-            if result:
-                partition_set, pydantic_results, codebook_result, prompt_printer = result
-                # Also cache as MECE (taxonomy + codes) for assignment
-                cache_mece_results(
-                    partition_set, pydantic_results,
-                    codebook_result,
-                )
-            else:
-                prompt_printer = PromptPrinter()
-
-        elif RUN_MODE == "assignment":
-            # =================================================================
-            # Assignment only: P10 from cached codebook
-            # =================================================================
-            result = run_assignment_only()
-            if result:
-                assigned_results, prompt_printer = result
-            else:
-                prompt_printer = PromptPrinter()
-
-        elif RUN_MODE == "all":
-            # =================================================================
-            # Full codebook + assignment: P8-P10
-            # =================================================================
-            result = run_all()
-            if result:
-                assigned_results, prompt_printer = result
-            else:
-                prompt_printer = PromptPrinter()
-
-        else:
-            print(f"ERROR: Unknown RUN_MODE '{RUN_MODE}'")
-            print("Valid options: 'codebook', 'assignment', 'all'")
-            prompt_printer = PromptPrinter()
-
+        result = run_codebook()
     finally:
         sys.stdout = tee.original_stdout
 

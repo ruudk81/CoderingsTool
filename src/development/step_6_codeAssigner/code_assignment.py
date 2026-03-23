@@ -22,7 +22,7 @@ Pipeline:
 
 Usage:
     from .code_assignment import CodeAssigner
-    from .config_codebookGenerator import AssignmentConfig
+    from .config_codeAssigner import AssignmentConfig
 
     assigner = CodeAssigner(
         config=AssignmentConfig(),
@@ -80,15 +80,15 @@ from config_steps.config_ideaExtractor import (
     DEFAULT_WARM_UP_CONFIG,
 )
 
-from .config_codebookGenerator import AssignmentConfig, get_other_category_label
-from .models_codebookGenerator import CodeAssignedSubmodel, CodeAssignedModel
+from .config_codeAssigner import AssignmentConfig, get_other_category_label
+from .models_codeAssigner import CodeAssignedSubmodel, CodeAssignedModel
 from development.step_4_classifier.models_classifier import DomainSet, DomainResultModel
-from .prompts_codebookGenerator import (
+from .prompts_codeAssigner import (
     build_code_assignment_prompt,
     CodeAssignmentResponse,
-    CodeFromAttributes,
 )
-from .models_codebookGenerator import CodeAssignment, CodeAssignmentBatch
+from development.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
+from .models_codeAssigner import CodeAssignment, CodeAssignmentBatch
 
 @dataclass
 class ApiLimits:

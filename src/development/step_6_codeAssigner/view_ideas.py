@@ -6,6 +6,9 @@ View all ideas grouped by assigned code, with full ladder + taxonomy + code deta
 Output:
   - Console: grouped by code, each idea on 4 bullet lines
   - CSV: flat export to exports/ for Excel inspection
+
+Usage:
+    cd src && python -m development.step_6_codeAssigner.view_ideas
 """
 
 import csv
@@ -19,7 +22,7 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root / "src" / "development"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from development.step_5_codebookGenerator.models_codebookGenerator import CodeAssignedModel, CodeAssignedSubmodel
+from development.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel, CodeAssignedSubmodel
 
 try:
     from development.test_data import TEST_DATA
@@ -131,7 +134,6 @@ def save_csv(ideas: List[CodeAssignedSubmodel], filename: str = FILENAME, variab
     exports_dir = project_root / "exports"
     exports_dir.mkdir(exist_ok=True)
 
-    # Clean filename for CSV
     base = Path(filename).stem.replace(" ", "_")
     csv_path = exports_dir / f"ideas_{base}_{variable}_{SAMPLE_SIZE}.csv"
 

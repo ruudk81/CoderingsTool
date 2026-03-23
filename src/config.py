@@ -444,10 +444,11 @@ class CacheConfig:
         # Step 4: taxonomy classifier (dev, P1-P7)
         "taxonomy": "005",
         "taxonomy_metadata": "005",
-        # Step 5: codebook generator (dev, P8-P10)
+        # Step 5: code generator (dev, P8-P9)
         "mece_codes": "006",
         "mece_codes_metadata": "006",
-        "taxonomy_codes": "006",
+        # Step 6: code assigner (dev, P10)
+        "taxonomy_codes": "007",
     })
     
     # Cache validity settings

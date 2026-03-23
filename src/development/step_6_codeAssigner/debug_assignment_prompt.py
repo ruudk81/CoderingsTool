@@ -1,13 +1,13 @@
 #%%
 #
 """
-Debug script for Single-Idea Dual Assignment prompts.
+Debug script for Single-Idea Code Assignment prompts.
 
 Loads captured assignment prompts from the JSON file saved during
 the assignment run, and displays them with response model schema.
 
 Usage:
-    cd src && python -m development.step_5_codebookGenerator.debug_assignment_prompt
+    cd src && python -m development.step_6_codeAssigner.debug_assignment_prompt
 """
 
 import sys
@@ -31,7 +31,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 from instructor.function_calls import openai_schema
-from development.step_5_codebookGenerator.prompts_codebookGenerator import CodeAssignmentResponse
+from development.step_6_codeAssigner.prompts_codeAssigner import CodeAssignmentResponse
 
 # Configuration
 FILENAME = TEST_DATA.filename
@@ -49,7 +49,7 @@ def get_assignment_prompts_file() -> Path:
     """Get the captured assignment prompts JSON file path."""
     variable_key = generate_enhanced_variable_key([VAR_NAME], False, SAMPLE_SIZE)
     prompts_dir = project_root / "exports" / "prompts"
-    return prompts_dir / f"step4_classNcoder_{variable_key}_assignment.json"
+    return prompts_dir / f"step6_codeAssigner_{variable_key}_assignment.json"
 
 
 def load_prompts(filepath: Path) -> Optional[dict]:
@@ -131,8 +131,7 @@ def main():
         print(f"\nERROR: No captured assignment prompts found at:")
         print(f"  {prompts_file}")
         print("\nRun assignment first:")
-        print("  cd src && python -m development.step_5_codebookGenerator.run_experiment")
-        print("  (with RUN_MODE = 'assignment' or 'all')")
+        print("  cd src && python -m development.step_6_codeAssigner.run_experiment")
         return
 
     print(f"Session ID:    {data.get('session_id', 'unknown')}")

@@ -1,11 +1,11 @@
 #%%
 #
 """
-Debug script for Codebook Generator prompts (P8-P9): Full LLM Request Inspector
+Debug script for Code Generator prompts (P8-P9): Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
 Usage:
-    cd src && python -m development.step_5_codebookGenerator.debug_codebook_prompts
+    cd src && python -m development.step_5_codeGenerator.debug_codebook_prompts
 """
 
 import sys
@@ -30,7 +30,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 # Import response models (codebook only)
-from development.step_5_codebookGenerator.prompts_codebookGenerator import (
+from development.step_5_codeGenerator.prompts_codeGenerator import (
     CodeGenerationFromAttributesResult,
     CodebookConsolidationResult,
 )
@@ -71,7 +71,7 @@ def get_prompts_file() -> Path:
     """Get the codebook prompts JSON file path."""
     variable_key = generate_enhanced_variable_key([VAR_NAME], False, SAMPLE_SIZE)
     prompts_dir = project_root / "exports" / "prompts"
-    return prompts_dir / f"step4_classNcoder_{variable_key}_codebook.json"
+    return prompts_dir / f"step5_codeGenerator_{variable_key}_codebook.json"
 
 
 def load_prompts(filepath: Path) -> Optional[dict]:
@@ -154,7 +154,7 @@ def main():
     prompts_file = get_prompts_file()
 
     print("=" * 100)
-    print("DEBUG: Codebook Generator Prompt Inspector (P8-P9)")
+    print("DEBUG: Code Generator Prompt Inspector (P8-P9)")
     print("Shows prompt text + Pydantic response model schemas (as seen by instructor)")
     print("=" * 100)
     print(f"Variable:     {VAR_NAME}")
@@ -166,8 +166,7 @@ def main():
     if data is None:
         print(f"\nNo codebook prompts file found at: {prompts_file}")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m development.step_5_codebookGenerator.run_experiment")
-        print("  (with RUN_MODE = 'codebook' or 'all')")
+        print("  cd src && python -m development.step_5_codeGenerator.run_experiment")
         return
 
     print(f"\nSession ID:    {data.get('session_id', 'unknown')}")

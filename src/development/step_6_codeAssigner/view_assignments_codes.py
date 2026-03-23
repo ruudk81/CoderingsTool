@@ -6,6 +6,9 @@ View category assignments: inspect which code each idea/ladder was assigned to.
 Modes:
   - "idea":   compact view — idea text → assigned category + confidence
   - "ladder": detailed view — instance → interpretation → abstraction → code + attribute + rationale
+
+Usage:
+    cd src && python -m development.step_6_codeAssigner.view_assignments_codes
 """
 
 import sys
@@ -18,7 +21,7 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root / "src" / "development"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from development.step_5_codebookGenerator.models_codebookGenerator import CodeAssignedModel
+from development.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
 
 try:
     from development.test_data import TEST_DATA
@@ -149,7 +152,6 @@ def print_idea_mode(grouped: Dict[str, Dict[str, List]]):
             print(f"\n  {header}{category} ({len(ideas)} ideas, avg conf: {avg_conf:.2f})")
             print(f"  {'─' * 70}")
 
-            # Sort by confidence descending
             sorted_ideas = sorted(
                 ideas, key=lambda i: i.confidence or 0, reverse=True
             )
@@ -270,7 +272,6 @@ def print_category_idea_mode(cat_grouped: Dict[str, List]):
         parent = ""
         avg_conf = sum(i.confidence or 0 for i in ideas) / len(ideas)
 
-        # Print parent header when it changes
         if parent != current_parent:
             current_parent = parent
             if parent:
@@ -282,7 +283,6 @@ def print_category_idea_mode(cat_grouped: Dict[str, List]):
                 print(f"(no parent theme)")
                 print(f"{'═' * 80}")
 
-        # Partition distribution
         partition_counts = defaultdict(int)
         for idea in ideas:
             p = (idea.partition_name or idea.domain or "?").strip()
