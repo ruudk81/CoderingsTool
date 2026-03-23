@@ -147,8 +147,11 @@ TIMEOUT_FLOOR_SECONDS = 20.0  # qualityFilter-specific: 1 prompt per call, lower
 
 class LatencyTracker:
     """EMA tracker for latencies with generous timeout strategy"""
-    def __init__(self, processing_config: Optional[ProcessingConfig] = None):
+    def __init__(self, processing_config: Optional[ProcessingConfig] = None,
+                 timeout_floor: float = None, default_timeout: float = None):
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
+        self.timeout_floor = timeout_floor if timeout_floor is not None else TIMEOUT_FLOOR_SECONDS
+        self.default_timeout = default_timeout if default_timeout is not None else DEFAULT_TIMEOUT_SECONDS
         self.ema = None
         self.alpha = self.processing_config.latency_tracker_ema_alpha
         self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
@@ -162,17 +165,17 @@ class LatencyTracker:
         else:
             self.ema = self.alpha * value + (1 - self.alpha) * self.ema
 
-    def get_timeout(self, est_tokens):
+    def get_timeout(self, est_tokens=None):
         """Calculate timeout: generous safety net, not aggressive cutoff"""
         config = self.processing_config
         if self.retry_mode:
             return 120.0  # Very generous for retry pass
         if not self.values:
-            return max(TIMEOUT_FLOOR_SECONDS, DEFAULT_TIMEOUT_SECONDS)  # Cold start: 30s
+            return max(self.timeout_floor, self.default_timeout)  # Cold start
 
         # P95 × margin as safety net, bounded by floor and ceiling
         p95 = float(np.percentile(list(self.values), 95))
-        return max(TIMEOUT_FLOOR_SECONDS, min(config.adaptive_timeout_max_seconds, p95 * config.adaptive_timeout_margin))
+        return max(self.timeout_floor, min(config.adaptive_timeout_max_seconds, p95 * config.adaptive_timeout_margin))
 
     def get_avg_latency(self):
         """Get average latency for concurrency calculations"""

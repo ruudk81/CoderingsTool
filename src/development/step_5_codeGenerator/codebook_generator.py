@@ -20,6 +20,8 @@ Usage:
 
 import asyncio
 import time
+import numpy as np
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Set
 
@@ -36,6 +38,19 @@ from config import (
     ProcessingConfig, DEFAULT_PROCESSING_CONFIG, OPENAI_API_KEY,
     API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
 )
+from development.step_3_ideaExtractor.ideaExtractor_exp import (
+    ConcurrencyGate, ConcurrencyRamp,
+    RealTimeTPMTracker, RealTimeRPMTracker,
+    ApiLimits, compute_optimal_concurrency,
+)
+from development.step_2_qualityFilter.qualityFilter_exp import (
+    TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
+)
+from config_steps.config_ideaExtractor import (
+    RampUpConfig,
+    DEFAULT_CIRCUIT_BREAKER_CONFIG,
+)
+from development.step_4_classifier.classifier import PhaseRampState
 
 from development.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
@@ -139,10 +154,14 @@ class CodebookGenerator:
         self._prompt_printer = prompt_printer
         self._captured_gates: Set[str] = set()
 
+        # Concurrency ramp config
+        self._ramp_config = config.ramp_config
+
         # Shared async resources — initialized in generate()
         self._clients = None
         self._semaphore = None
         self._rate_limiter = None
+        self._fetched_limits = None
 
     # =========================================================================
     # PUBLIC API
@@ -238,13 +257,21 @@ class CodebookGenerator:
             print(f"  Fetched from API: TPM={limits.tokens_per_minute:,}, "
                   f"RPM={limits.requests_per_minute:,}")
 
-        est_avg_tokens = 3000
+        self._fetched_limits = limits
+        cfg = self._ramp_config
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        little_law = compute_optimal_concurrency(
+            api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
+        )
+
+        est_avg_tokens = cfg.estimated_avg_tokens
         rpm_throughput = limits.requests_per_minute * headroom / 60
         tpm_throughput = limits.tokens_per_minute * headroom / est_avg_tokens / 60
         arrival_rate = min(rpm_throughput, tpm_throughput)
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
 
-        self._semaphore = asyncio.Semaphore(15)
+        default_conc = max(cfg.min_initial, int(little_law * cfg.start_fraction))
+        self._semaphore = asyncio.Semaphore(default_conc)
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
 
         if verbose:
@@ -255,7 +282,8 @@ class CodebookGenerator:
             print(f"  TPM: {limits.tokens_per_minute:,} "
                   f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
             print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
-            print(f"  Default concurrency (semaphore): 15 (static)")
+            print(f"  Little's Law: {little_law} | "
+                  f"Default concurrency: {default_conc} (P9 consolidation)")
 
     async def _process_codebook_async(
         self,
@@ -306,7 +334,8 @@ class CodebookGenerator:
                 excluded_domains=excluded,
             )
 
-        p8_results = await asyncio.gather(*p8_tasks.values(), return_exceptions=True)
+        p8_state = self._create_phase_ramp("P8", len(p8_tasks), model=self._model_p8)
+        p8_results = await self._run_with_ramp(p8_tasks.values(), p8_state)
 
         all_codes = []
         code_provenance = {}
@@ -470,7 +499,7 @@ class CodebookGenerator:
                     prompt, response_model,
                     self._max_tokens_code_from_attributes,
                     model=self._model_p8,
-                    timeout=120.0,
+                    timeout=180.0,
                 )
             except Exception as e:
                 if attempt == 0:
@@ -530,7 +559,7 @@ class CodebookGenerator:
                     prompt, CodebookConsolidationResult,
                     self._max_tokens_codebook_consolidation,
                     model=self._model_p9,
-                    timeout=120.0,
+                    timeout=180.0,
                 )
             except Exception as e:
                 if attempt == 0:
@@ -573,29 +602,215 @@ class CodebookGenerator:
         return extract_rate_limits_from_response(response)
 
     # =========================================================================
+    # 4-LAYER RATE LIMITING (per-phase)
+    # =========================================================================
+
+    def _create_phase_ramp(self, phase_name: str, num_tasks: int,
+                           model: str = None) -> PhaseRampState:
+        """Create per-phase 4-layer rate limiting stack."""
+        cfg = self._ramp_config
+        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
+        api_limits = ApiLimits(
+            self._fetched_limits.tokens_per_minute,
+            self._fetched_limits.requests_per_minute,
+        )
+        little_law = compute_optimal_concurrency(
+            api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
+        )
+        little_law_cap = min(little_law, num_tasks)
+
+        ramp_up_cfg = RampUpConfig(
+            start_fraction=cfg.start_fraction,
+            target_fraction=cfg.target_fraction,
+            min_initial=cfg.min_initial,
+            measurement_window_seconds=cfg.monitor_poll_interval,
+            min_completions_per_step=cfg.min_completions_per_step,
+        )
+
+        # Capacity-relative starting
+        half_little_law = int(little_law * cfg.start_fraction)
+        initial = max(half_little_law, num_tasks)
+        initial = min(initial, num_tasks)
+        target = min(int(little_law_cap * cfg.target_fraction), num_tasks)
+
+        gate = ConcurrencyGate(initial)
+        ramp = ConcurrencyRamp(ramp_up_cfg, little_law_cap, num_tasks)
+        is_large = num_tasks >= cfg.circuit_breaker_min_tasks
+
+        token_bucket = None
+        if is_large:
+            token_bucket = TokenBucket(int(self._fetched_limits.tokens_per_minute * headroom))
+
+        latency_tracker = None
+        if is_large:
+            latency_tracker = LatencyTracker(
+                DEFAULT_PROCESSING_CONFIG,
+                timeout_floor=cfg.timeout_floor_seconds,
+                default_timeout=cfg.default_timeout_seconds,
+            )
+
+        circuit_breaker = None
+        if cfg.circuit_breaker_enabled and is_large:
+            circuit_breaker = ConcurrencyCircuitBreaker(
+                DEFAULT_CIRCUIT_BREAKER_CONFIG, gate, initial,
+            )
+
+        mode = "4-layer" if is_large else "light"
+        print(f"    [{phase_name}] Little's Law: {little_law} | "
+              f"Start: {initial} → Target: {target} ({num_tasks} tasks, {mode})")
+
+        return PhaseRampState(
+            gate=gate, ramp=ramp,
+            rpm_tracker=RealTimeRPMTracker(window_seconds=60.0),
+            tpm_tracker=RealTimeTPMTracker(window_seconds=60.0),
+            phase_name=phase_name,
+            total_tasks=num_tasks,
+            token_bucket=token_bucket,
+            latency_tracker=latency_tracker,
+            circuit_breaker=circuit_breaker,
+            estimated_avg_tokens=cfg.estimated_avg_tokens,
+        )
+
+    async def _phase_monitor(self, state: PhaseRampState):
+        """Background monitor: ramp + circuit breaker + progress."""
+        start_time = time.monotonic()
+        last_report_time = start_time
+        last_reported_completions = -1
+
+        while not state.done:
+            await asyncio.sleep(self._ramp_config.monitor_poll_interval)
+            now = time.monotonic()
+            elapsed = now - start_time
+
+            if state.circuit_breaker:
+                state.circuit_breaker.check_and_adjust()
+
+            if not state.ramp.is_done() and state.completions >= self._ramp_config.min_completions_per_step:
+                rate = state.completions / elapsed if elapsed > 0 else 0
+                state.ramp.record_measurement(
+                    throughput=rate, tpm_pct=0, rpm_pct=0,
+                    completions_total=state.completions,
+                    timeouts_total=state.timeouts, duration=elapsed,
+                )
+                new_target = state.ramp.current_target()
+                if new_target != state.gate.limit:
+                    state.gate.set_limit(new_target)
+                    if state.circuit_breaker:
+                        state.circuit_breaker.baseline = new_target
+
+            if now - last_report_time >= 2.0:
+                if state.completions != last_reported_completions:
+                    last_report_time = now
+                    last_reported_completions = state.completions
+                    rate = state.completions / elapsed if elapsed > 0 else 0
+                    current_tpm = await state.tpm_tracker.get_current_tpm()
+                    current_rpm = await state.rpm_tracker.get_current_rpm()
+                    timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
+                    cb_info = ""
+                    if state.circuit_breaker and state.circuit_breaker.state != 'CLOSED':
+                        cb_info = f" CB:{state.circuit_breaker.state}"
+                    print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
+                          f"({rate:.1f}/s) | TPM:{current_tpm:,.0f} RPM:{current_rpm:.0f} "
+                          f"Conc:{state.gate.active}/{state.gate.limit}→{state.ramp._target}"
+                          f"{timeout_info}{cb_info}")
+
+    async def _run_with_ramp(self, coros, state: PhaseRampState):
+        """Run coroutines via gather with a background ramp monitor."""
+        async def _work():
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            state.done = True
+            return results
+
+        results, _ = await asyncio.gather(_work(), self._phase_monitor(state))
+
+        if state.latency_tracker and state.latency_tracker.values:
+            vals = list(state.latency_tracker.values)
+            p50 = float(np.percentile(vals, 50))
+            p95 = float(np.percentile(vals, 95))
+            avg_tok = int(np.mean(list(state.actual_total_tokens))) if state.actual_total_tokens else 0
+            print(f"    [{state.phase_name}] Latency: P50={p50:.1f}s P95={p95:.1f}s | "
+                  f"avg_tokens={avg_tok:,} | "
+                  f"{state.completions} ok, {state.timeouts} timeouts")
+
+        return results
+
+    # =========================================================================
     # SHARED LLM CALL
     # =========================================================================
 
     async def _llm_call(self, prompt: str, response_model, max_tokens: int,
                         temperature: float | None = None, model: str | None = None,
-                        timeout: float = 120.0, gate=None):
-        """Make a rate-limited LLM call."""
+                        timeout: float = 180.0, gate=None, phase_state: PhaseRampState = None):
+        """Make a rate-limited LLM call through the 4-layer stack."""
         use_model = model or self._model_p8
         client = self._clients[use_model]
         concurrency_ctx = gate if gate is not None else self._semaphore
+
+        est_tokens = max_tokens
+        if phase_state and phase_state.estimated_avg_tokens:
+            est_tokens = phase_state.estimated_avg_tokens
+
         async with concurrency_ctx:
+            effective_timeout = timeout
+            if phase_state and phase_state.latency_tracker:
+                effective_timeout = phase_state.latency_tracker.get_timeout()
+
+            if phase_state and phase_state.token_bucket:
+                await phase_state.token_bucket.wait_and_acquire(est_tokens)
+
             async with self._rate_limiter:
-                return await asyncio.wait_for(
-                    llm_create_async(
-                        client=client,
-                        model=use_model,
-                        prompt=prompt,
-                        response_model=response_model,
-                        temperature=temperature if temperature is not None else self._temperature,
-                        max_tokens=max_tokens,
-                    ),
-                    timeout=timeout,
-                )
+                task_start = time.monotonic()
+                try:
+                    result = await asyncio.wait_for(
+                        llm_create_async(
+                            client=client,
+                            model=use_model,
+                            prompt=prompt,
+                            response_model=response_model,
+                            temperature=temperature if temperature is not None else self._temperature,
+                            max_tokens=max_tokens,
+                        ),
+                        timeout=effective_timeout,
+                    )
+
+                    elapsed = time.monotonic() - task_start
+                    if phase_state and phase_state.latency_tracker:
+                        phase_state.latency_tracker.add(elapsed)
+                    if phase_state and phase_state.circuit_breaker:
+                        phase_state.circuit_breaker.record_completion()
+
+                    if phase_state is not None:
+                        phase_state.completions += 1
+                        await phase_state.rpm_tracker.record()
+                        raw = getattr(result, '_raw_response', None)
+                        usage = getattr(raw, 'usage', None) if raw else None
+                        actual_tokens = None
+                        if usage:
+                            actual_tokens = (
+                                getattr(usage, 'prompt_tokens', 0)
+                                + getattr(usage, 'completion_tokens', 0)
+                                + getattr(usage, 'input_tokens', 0)
+                                + getattr(usage, 'output_tokens', 0)
+                            )
+                            await phase_state.tpm_tracker.record(actual_tokens)
+                        else:
+                            await phase_state.tpm_tracker.record(max_tokens)
+
+                        if actual_tokens and phase_state.actual_total_tokens is not None:
+                            phase_state.actual_total_tokens.append(actual_tokens)
+                        if actual_tokens and phase_state.token_bucket:
+                            delta = actual_tokens - est_tokens
+                            if delta != 0:
+                                await phase_state.token_bucket.reconcile(delta)
+
+                    return result
+
+                except asyncio.TimeoutError:
+                    if phase_state and phase_state.circuit_breaker:
+                        phase_state.circuit_breaker.record_timeout()
+                    if phase_state is not None:
+                        phase_state.timeouts += 1
+                    raise
 
     # =========================================================================
     # HELPERS

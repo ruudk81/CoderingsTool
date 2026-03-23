@@ -1,8 +1,8 @@
 # Prompt Processing Strategy
 
-Reference document for the rate limiting system in `ideaExtractor_exp.py`.
+Reference document for the rate limiting system across all pipeline steps — including multi-phase pipelines (step 4 classifier, step 5 codeGenerator, step 6 codeAssigner) using `asyncio.gather` dispatch, and single-phase steps (step 2 qualityFilter, step 3 ideaExtractor) using worker/queue dispatch.
 
-Last updated: 2026-03-15
+Last updated: 2026-03-23
 
 ---
 
@@ -68,7 +68,7 @@ The system manages four independent constraints:
 
 ### Design principles
 
-1. **Generous timeouts** — 60s floor, P95×3 adaptive. Only catches truly stuck requests. Timed-out tasks get fallback (no retry) since they're genuine outliers.
+1. **Generous timeouts** — 60s floor, 180s ceiling, P95×3 adaptive. Cold-start 180s. Only catches truly stuck requests. Timed-out tasks get fallback (no retry) since they're genuine outliers. Ceiling must accommodate the heaviest prompt type in the pipeline.
 
 2. **Completion-based ramp** — concurrency scales with progress, not wall-clock time. Works whether processing takes 5 seconds or 5 minutes.
 
@@ -154,33 +154,28 @@ After warm-up calibration, Little's Law is recalculated with measured latency (P
 
 **Current preference: Option B.** Validated on high-throughput deployments (150M TPM, 30K RPM). Not yet tested on slow deployments with significantly lower quotas — this is an open area for future validation. On such deployments, the conservative 50% start may need a higher `start_fraction` or a smaller recalibration window to avoid excessive warm-up time.
 
-#### When neither option applies: small batches
+#### Capacity-relative starting (supersedes old "small batches" rule)
 
-For small batches (<30 tasks), **neither bootstrap nor warm-up is appropriate**:
+The old rule (<30 tasks → static semaphore) was too coarse. With high-tier deployments (Little's Law = 4250), even 100 tasks should start at full concurrency. The new rule:
 
-- **Bootstrap overhead is disproportionate.** 3 probe calls at ~8s each = 24s of measurement overhead for a phase that might only take 30s to process. You're spending nearly as much time calibrating as executing.
-- **Warm-up never completes.** Option B needs 15-30 completions to recalibrate. If the total batch is 9-30 tasks, the warm-up window covers most or all of the work — the system never reaches its calibrated state, so you get the slow conservative start without the payoff of optimized throughput afterward.
+```
+initial = max(50% of Little's Law, num_tasks)
+initial = min(initial, num_tasks)  # never exceed task count
+```
 
-**Recommendation for small batches:** Use a sensible static semaphore (e.g., 10-20) and a rate limiter. No bootstrap, no warm-up. Just run the tasks. The overhead of any calibration strategy exceeds the total phase runtime.
+When `num_tasks ≤ 50% of Little's Law`, all tasks start immediately — the rate limiter + token bucket govern throughput. The 50% ramp only applies when task count exceeds half of Little's Law.
 
-This is particularly relevant for **multi-phase pipelines** where a single bootstrap is shared across phases with very different characteristics. For example, in a pipeline with:
-- Phase 1: 9 tasks (facet discovery per domain)
-- Phase 3: 844 tasks (facet assignment per idea)
-- Phase 4: 30 tasks (attribute discovery per facet)
-- Phase 6: 844 tasks (attribute assignment per idea)
+**Evidence:** P1 with 26 tasks and Little's Law = 4250. Starting at 13 (old rule: 50% of 26) spent the entire phase ramping while API had massive spare capacity. RPM used: 45 out of 27,000. TPM used: 210K out of 135M. Starting at 26 would have no RPM/TPM impact but would halve wall-clock time.
 
-A bootstrap calibrated on Phase 1's prompt latency is:
-- **Wasted** for Phase 1 itself (9 tasks — just run them)
-- **Miscalibrated** for Phase 3/6 (different prompt type, different latency profile)
-- **Wasted** for Phase 4 (30 tasks — borderline, but bootstrap overhead is still ~80% of phase runtime)
+**Strategy by phase size:**
 
-The correct approach is to **match the strategy to the phase**:
+| Phase size relative to Little's Law | Strategy | Rationale |
+|--------------------------------------|----------|-----------|
+| `tasks ≤ 50% of Little's Law` | Full stack, start at `num_tasks` | No ramp needed — rate limiter governs. All tasks run at once |
+| `tasks > 50% of Little's Law`, 30-100 | Full stack, start at 50%, warm-up if ≥30 | Enough tasks for calibration, ramp advances with completions |
+| `tasks > 50% of Little's Law`, 100+ | Full stack, start at 50%, warm-up + ramp to 90% | Full self-correction |
 
-| Batch size | Strategy | Rationale |
-|-----------|----------|-----------|
-| <30 tasks | Static semaphore (10-20) + rate limiter | Calibration overhead exceeds processing time |
-| 30-100 tasks | Option A (Bootstrap) | Enough tasks to amortize 3 probes, too few for warm-up to complete |
-| 100+ tasks | Option B (Warm-up ramp) | Enough volume for warm-up to recalibrate and self-correct |
+Multi-phase pipelines must use **per-phase state** — never share bootstrap/semaphore/ramp across phases with different models or prompt types.
 
 ### Worker scaling
 
@@ -201,6 +196,18 @@ RECOVERING: Cooldown expired, rate OK. Ramp +10% per 30s toward baseline.
 With 60s timeouts, the circuit breaker should rarely trip. If it does, something is genuinely wrong (network issues, API degradation).
 
 Applicable to both Option A and Option B, though more valuable with Option B where concurrency changes over time.
+
+### Multi-phase pipeline adaptation
+
+The architecture above was designed for single-model, single-phase worker/queue pipelines (steps 2/3). Multi-phase pipelines (step 4 classifier: 7 phases, 4-5 models) require adaptations:
+
+**Dispatch pattern agnostic.** The 4-layer stack operates at the `_llm_call()` level. Whether tasks are dispatched via worker/queue (`process_task()`) or `asyncio.gather()`, every API call passes through the same layers in the same order: ConcurrencyGate → TokenBucket → AsyncLimiter → Timeout. The dispatch pattern is irrelevant to the layers.
+
+**Per-phase rate limiting state.** Each phase gets its own `PhaseRampState` containing: gate, ramp, token bucket, latency tracker, circuit breaker. Phases run sequentially so there is no cross-phase contention. This avoids the "shared bootstrap" anti-pattern where one phase's calibration poisons another's concurrency settings.
+
+**Per-phase warm-up.** Different phases use different models with radically different token/latency profiles. For example, step 4's P3 (gpt-4.1-nano, batch assignment: P50=4s, 1843 avg tokens) vs P1 (gpt-4.1-mini, discovery: P50=24s, 4795 avg tokens). Cross-phase calibration would be meaningless — each phase must calibrate independently.
+
+**Capacity-relative starting.** When `num_tasks ≤ 50% of Little's Law`, skip the ramp and start at `num_tasks`. The rate limiter + token bucket prevent RPM/TPM violations; there is no benefit to throttling concurrency when the API has massive spare capacity. See "Concurrency initialization" below.
 
 ---
 
@@ -229,10 +236,12 @@ Aggressive timeouts create a vicious cycle:
 
 ```python
 def get_timeout(est_tokens):
-    if retry_mode:    return 120.0   # Very generous
-    if no data yet:   return 60.0    # Cold start
-    else:             return max(60.0, min(P95 * 3.0, 120.0))  # Adaptive safety net
+    if retry_mode:    return 180.0   # Very generous
+    if no data yet:   return 180.0   # Cold start — no latency data, be generous
+    else:             return max(60.0, min(P95 * 3.0, 180.0))  # Adaptive safety net
 ```
+
+Cold-start must be generous because complex prompts (100+ observations) can take 30-45s. A 60s cold-start causes unnecessary timeouts before the latency tracker has data.
 
 **Critical:** timeout is computed AFTER semaphore acquisition, not before. This prevents all workers from getting stale cold-start values when they acquire slots simultaneously at T+0.
 
@@ -464,11 +473,11 @@ These are implementation choices — the default (same timeout, one pass, reduce
 ### Timeout (LatencyTracker)
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| Cold start | 60s | No latency data yet |
+| Cold start | 180s | No latency data yet — generous for complex prompts |
 | Floor | 60s | Minimum timeout |
-| Ceiling | 120s | Maximum timeout |
+| Ceiling | 180s | Maximum timeout (accommodates heavy discovery prompts) |
 | Multiplier | P95 × 3.0 | Adaptive safety net |
-| Retry mode | Same as main | Retry uses same adaptive timeout (latency tracker has full history) |
+| Retry mode | 180s | Very generous for retry pass |
 
 ### TPM tracking (TPMTrackingConfig)
 | Parameter | Value | Purpose |
@@ -542,9 +551,28 @@ Bootstrap and warm-up both have overhead. For small batches (<30 tasks), that ov
 ### Measure latency at the right scope
 Latency fed into the tracker must measure only API response time (after semaphore + token bucket), not total task time including queue wait. Otherwise, queuing time inflates the latency estimate, inflating Little's Law, creating a positive feedback loop.
 
+### Complex prompts have fundamentally different latency profiles
+Steps 2/3 process single responses with small prompts (P50: 3-5s). Step 4 discovery phases send 100-150 observations per prompt (P50: 16-24s, P95: 31-41s). A 90s timeout that works for small prompts causes unnecessary timeouts on discovery prompts. Timeout strategy must accommodate the heaviest prompt type in the pipeline, not the average.
+
+### Don't throttle concurrency when capacity dwarfs demand
+With high-tier API limits (Little's Law = 4250) and 26 tasks, starting at 50% of task count (13) wastes half the phase ramping up while the API is idle. The rate limiter and token bucket already prevent quota violations — the concurrency gate should only throttle when demand approaches capacity. Rule: `initial = max(50% of Little's Law, num_tasks)`.
+
 ---
 
 ## Changelog
+
+### 2026-03-23: Multi-phase pipeline adoption + capacity-relative starting
+
+**Problem:** Step 4 classifier (P1-P7) used a static semaphore of 15 with no rate limiting layers. Brought the full 4-layer stack from steps 2/3, but discovered that the 50% start fraction and 90s timeout were wrong for this workload. With 26 P1 tasks and Little's Law = 4250, starting at 13 (50% of 26) throttled throughput when the API had massive spare capacity. The 90s timeout tripped on P4 discovery calls with P95 latency of 41s.
+
+**Fixes:**
+1. **Capacity-relative starting:** `initial = max(50% of Little's Law, num_tasks)`. Small phases relative to capacity start at full concurrency.
+2. **180s timeout ceiling:** Cold-start 180s, floor 60s. Accommodates heavy discovery prompts.
+3. **Per-phase state:** Each phase gets independent gate, ramp, token bucket, latency tracker, and circuit breaker. No cross-phase contamination.
+4. **Gather-pattern compatible:** The 4-layer stack works with `asyncio.gather` dispatch, not just worker/queue. Layers operate at `_llm_call()` level regardless of dispatch pattern.
+5. **Phase latency summary:** Per-phase P10/P50/P95 latency + avg tokens printed at phase end for diagnostics.
+
+**Key insight:** The strategy doc assumed a single-model, single-phase worker/queue pipeline. Multi-phase pipelines with varying models and prompt sizes need per-phase calibration and capacity-aware starting — the ramp is only useful when task count approaches or exceeds API capacity.
 
 ### 2026-03-22: Batch size guidance — when calibration is overhead
 

@@ -10,12 +10,16 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ClassifierRampConfig:
-    """Completion-based concurrency ramp settings (no bootstrap).
+    """4-layer rate limiting with completion-based ramp.
 
     Concurrency is computed from Little's Law using estimated latency
     and real API rate limits. Ramp starts at start_fraction and
     advances toward target_fraction proportional to completions.
+
+    Full stack (P1/P3/P4/P6): ConcurrencyGate + TokenBucket + AsyncLimiter + CircuitBreaker
+    Light mode (P2/P5/P7): default semaphore + rate limiter only
     """
+    # Concurrency ramp
     estimated_latency_seconds: float = 10.0    # Conservative latency estimate
     estimated_avg_tokens: int = 3000           # Conservative token estimate
     start_fraction: float = 0.50               # Start at 50% of Little's Law
@@ -23,6 +27,19 @@ class ClassifierRampConfig:
     min_initial: int = 5                       # Concurrency floor
     monitor_poll_interval: float = 0.5         # Monitor coroutine sleep (seconds)
     min_completions_per_step: int = 3          # Min completions before evaluating ramp
+
+    # Warm-up calibration (recalibrate Little's Law with measured data)
+    warm_up_sample_min: int = 15               # Min completions before calibration
+    warm_up_sample_max: int = 30               # Max completions before forced calibration
+    warm_up_min_tasks_to_enable: int = 30      # Skip warm-up for phases with fewer tasks
+
+    # Circuit breaker (monitors timeout rate, reduces concurrency on sustained pressure)
+    circuit_breaker_enabled: bool = True
+    circuit_breaker_min_tasks: int = 20        # Skip CB for small phases
+
+    # Adaptive timeout (P95 × margin, computed after gate acquisition)
+    timeout_floor_seconds: float = 60.0        # Minimum timeout
+    default_timeout_seconds: float = 180.0     # Cold-start timeout before latency data
 
 
 @dataclass

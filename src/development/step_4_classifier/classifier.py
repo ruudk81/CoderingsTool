@@ -28,6 +28,8 @@ Usage:
 
 import asyncio
 import time
+import numpy as np
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
@@ -53,7 +55,13 @@ from development.step_3_ideaExtractor.ideaExtractor_exp import (
     RealTimeTPMTracker, RealTimeRPMTracker,
     ApiLimits, compute_optimal_concurrency,
 )
-from config_steps.config_ideaExtractor import RampUpConfig
+from development.step_2_qualityFilter.qualityFilter_exp import (
+    TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
+)
+from config_steps.config_ideaExtractor import (
+    RampUpConfig,
+    DEFAULT_CIRCUIT_BREAKER_CONFIG,
+)
 
 from .config_classifier import CategoriesConfig, ClassifierRampConfig
 from .domain_discoverer import PartitionLabelMapping
@@ -137,7 +145,12 @@ class TaxonomyResult:
 
 @dataclass
 class PhaseRampState:
-    """Per-phase concurrency ramp state for gather-based dispatch."""
+    """Per-phase 4-layer rate limiting state for gather-based dispatch.
+
+    Full stack (large phases): all 4 layers active.
+    Light mode (small phases): token_bucket/latency_tracker/circuit_breaker = None.
+    """
+    # Layer 1: Concurrency gate + completion-based ramp
     gate: ConcurrencyGate
     ramp: ConcurrencyRamp
     rpm_tracker: RealTimeRPMTracker
@@ -147,6 +160,19 @@ class PhaseRampState:
     completions: int = 0
     timeouts: int = 0
     done: bool = False
+
+    # Layer 2: TPM token bucket (None for small phases)
+    token_bucket: Optional[TokenBucket] = None
+
+    # Layer 4: Adaptive timeout + circuit breaker (None for small phases)
+    latency_tracker: Optional[LatencyTracker] = None
+    circuit_breaker: Optional[ConcurrencyCircuitBreaker] = None
+
+    # Warm-up calibration tracking
+    actual_total_tokens: Optional[deque] = field(default_factory=lambda: deque(maxlen=100))
+    warm_up_calibrated: bool = False
+    warm_up_target_samples: int = 0
+    estimated_avg_tokens: int = 3000
 
 
 # =============================================================================
@@ -401,7 +427,7 @@ class TaxonomyClassifier:
             len(self._create_batches(mapping.labels))
             for mapping in label_mappings.values()
         )
-        p1_state = self._create_phase_ramp("P1", total_p1_chunks)
+        p1_state = self._create_phase_ramp("P1", total_p1_chunks, model=self._model_p1)
 
         facet_tasks = {}
         for name, mapping in sorted(label_mappings.items()):
@@ -460,7 +486,7 @@ class TaxonomyClassifier:
             if partition_facets[name] and label_mappings[name].ideas
         )
         est_p3_batches = max(1, total_p3_ideas // self._facet_assignment_batch_size)
-        p3_state = self._create_phase_ramp("P3", est_p3_batches)
+        p3_state = self._create_phase_ramp("P3", est_p3_batches, model=self._model_p3)
 
         assignment_tasks = {
             name: self._run_facet_assignment(
@@ -551,7 +577,7 @@ class TaxonomyClassifier:
                 size_max=self._p4_batch_size_max,
                 target=self._p4_target_batches,
             )))
-        p4_state = self._create_phase_ramp("P4", total_p4_chunks)
+        p4_state = self._create_phase_ramp("P4", total_p4_chunks, model=self._model_p4)
 
         # Build actual coroutines
         attr_coros = {}
@@ -620,7 +646,7 @@ class TaxonomyClassifier:
             for fn in fa
         )
         est_p6_batches = max(1, total_p6_ideas // self._facet_assignment_batch_size)
-        p6_state = self._create_phase_ramp("P6", est_p6_batches)
+        p6_state = self._create_phase_ramp("P6", est_p6_batches, model=self._model_p6)
 
         # Assign attributes to ideas, grouped by facet
         attribute_assignments: Dict[str, str] = {}  # idea_id -> attribute_name
@@ -911,7 +937,7 @@ class TaxonomyClassifier:
             try:
                 result = await self._llm_call(
                     prompt, FacetDiscoveryResult, self._max_tokens_facet_discovery,
-                    timeout=90.0,
+                    timeout=180.0,
                     gate=phase_state.gate if phase_state else None,
                     phase_state=phase_state,
                 )
@@ -994,7 +1020,7 @@ class TaxonomyClassifier:
 
         result = await self._llm_call(
             prompt, FacetConsolidatedResponse, self._max_tokens_facet_discovery,
-            temperature=0.0, model=self._model_p2, timeout=90.0,
+            temperature=0.0, model=self._model_p2, timeout=180.0,
         )
         return result.facets
 
@@ -1654,7 +1680,7 @@ class TaxonomyClassifier:
         result = await self._llm_call(
             prompt, AttributeChunkConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            temperature=0.0, model=self._model_p5, timeout=90.0,
+            temperature=0.0, model=self._model_p5, timeout=180.0,
         )
         return result.attributes
 
@@ -1747,7 +1773,7 @@ class TaxonomyClassifier:
         result = await self._llm_call(
             prompt, AttributeConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            model=self._model_p7, timeout=90.0,
+            model=self._model_p7, timeout=180.0,
         )
         return result.attributes
 
@@ -1783,12 +1809,18 @@ class TaxonomyClassifier:
         return extract_rate_limits_from_response(response)
 
     # =========================================================================
-    # CONCURRENCY RAMP (completion-based, no bootstrap)
+    # 4-LAYER RATE LIMITING (per-phase)
     # =========================================================================
 
-    def _create_phase_ramp(self, phase_name: str, num_tasks: int) -> PhaseRampState:
-        """Create per-phase ConcurrencyGate + ConcurrencyRamp from Little's Law."""
+    def _create_phase_ramp(self, phase_name: str, num_tasks: int,
+                           model: str = None) -> PhaseRampState:
+        """Create per-phase 4-layer rate limiting stack.
+
+        Large phases (>=min_tasks): full stack with TokenBucket, LatencyTracker, CircuitBreaker.
+        Small phases: gate + ramp only (layers 2-4 skipped).
+        """
         cfg = self._ramp_config
+        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
         api_limits = ApiLimits(
             self._fetched_limits.tokens_per_minute,
             self._fetched_limits.requests_per_minute,
@@ -1806,15 +1838,52 @@ class TaxonomyClassifier:
             min_completions_per_step=cfg.min_completions_per_step,
         )
 
-        initial = max(cfg.min_initial, int(little_law_cap * cfg.start_fraction))
-        initial = min(initial, num_tasks)
+        half_little_law = int(little_law * cfg.start_fraction)
+        initial = max(half_little_law, num_tasks)  # small phases: all at once
+        initial = min(initial, num_tasks)           # never exceed task count
         target = min(int(little_law_cap * cfg.target_fraction), num_tasks)
 
         gate = ConcurrencyGate(initial)
         ramp = ConcurrencyRamp(ramp_up_cfg, little_law_cap, num_tasks)
 
+        is_large = num_tasks >= cfg.circuit_breaker_min_tasks
+
+        # Layer 2: TPM token bucket
+        token_bucket = None
+        if is_large:
+            token_bucket = TokenBucket(int(self._fetched_limits.tokens_per_minute * headroom))
+
+        # Layer 4a: Adaptive timeout via latency tracker
+        latency_tracker = None
+        if is_large:
+            latency_tracker = LatencyTracker(
+                DEFAULT_PROCESSING_CONFIG,
+                timeout_floor=cfg.timeout_floor_seconds,
+                default_timeout=cfg.default_timeout_seconds,
+            )
+
+        # Layer 4b: Circuit breaker
+        circuit_breaker = None
+        if cfg.circuit_breaker_enabled and is_large:
+            circuit_breaker = ConcurrencyCircuitBreaker(
+                DEFAULT_CIRCUIT_BREAKER_CONFIG, gate, initial,
+            )
+
+        # Warm-up calibration target (adaptive sample size)
+        warm_up_target = 0
+        if num_tasks >= cfg.warm_up_min_tasks_to_enable:
+            if num_tasks <= 50:
+                warm_up_target = cfg.warm_up_sample_min
+            elif num_tasks >= 500:
+                warm_up_target = cfg.warm_up_sample_max
+            else:
+                fraction = (num_tasks - 50) / (500 - 50)
+                warm_up_target = int(cfg.warm_up_sample_min
+                                     + fraction * (cfg.warm_up_sample_max - cfg.warm_up_sample_min))
+
+        mode = "4-layer" if is_large else "light"
         print(f"    [{phase_name}] Little's Law: {little_law} | "
-              f"Start: {initial} → Target: {target} ({num_tasks} tasks)")
+              f"Start: {initial} → Target: {target} ({num_tasks} tasks, {mode})")
 
         return PhaseRampState(
             gate=gate, ramp=ramp,
@@ -1822,25 +1891,36 @@ class TaxonomyClassifier:
             tpm_tracker=RealTimeTPMTracker(window_seconds=60.0),
             phase_name=phase_name,
             total_tasks=num_tasks,
+            token_bucket=token_bucket,
+            latency_tracker=latency_tracker,
+            circuit_breaker=circuit_breaker,
+            warm_up_target_samples=warm_up_target,
+            estimated_avg_tokens=cfg.estimated_avg_tokens,
         )
 
     async def _phase_monitor(self, state: PhaseRampState):
-        """Background monitor: advance ramp + print progress alongside gather."""
+        """Background monitor: ramp + circuit breaker + warm-up + progress."""
         start_time = time.monotonic()
         last_report_time = start_time
-        last_reported_completions = -1  # Track to suppress stale lines
+        last_reported_completions = -1
 
         while not state.done:
             await asyncio.sleep(self._ramp_config.monitor_poll_interval)
             now = time.monotonic()
             elapsed = now - start_time
 
-            # Feed completions to ramp
+            # --- Circuit breaker check (every tick) ---
+            if state.circuit_breaker:
+                action = state.circuit_breaker.check_and_adjust()
+                if action and action in ('tripped', 'recovering', 'recovered'):
+                    pass  # CB already adjusted gate.limit internally
+
+            # --- Feed completions to ramp ---
             if not state.ramp.is_done() and state.completions >= self._ramp_config.min_completions_per_step:
                 rate = state.completions / elapsed if elapsed > 0 else 0
                 state.ramp.record_measurement(
                     throughput=rate,
-                    tpm_pct=0, rpm_pct=0,  # ramp uses throughput, not utilization
+                    tpm_pct=0, rpm_pct=0,
                     completions_total=state.completions,
                     timeouts_total=state.timeouts,
                     duration=elapsed,
@@ -1848,8 +1928,19 @@ class TaxonomyClassifier:
                 new_target = state.ramp.current_target()
                 if new_target != state.gate.limit:
                     state.gate.set_limit(new_target)
+                    if state.circuit_breaker:
+                        state.circuit_breaker.baseline = new_target
 
-            # Progress line every 2s — suppress when no new completions (consolidation tail)
+            # --- Warm-up calibration (one-shot) ---
+            if (not state.warm_up_calibrated
+                    and state.warm_up_target_samples > 0
+                    and state.actual_total_tokens is not None
+                    and len(state.actual_total_tokens) >= state.warm_up_target_samples
+                    and state.latency_tracker
+                    and len(state.latency_tracker.values) >= state.warm_up_target_samples):
+                self._calibrate_from_warm_up(state)
+
+            # --- Progress line every 2s (suppress stale) ---
             if now - last_report_time >= 2.0:
                 if state.completions != last_reported_completions:
                     last_report_time = now
@@ -1860,12 +1951,15 @@ class TaxonomyClassifier:
                     current_rpm = await state.rpm_tracker.get_current_rpm()
 
                     timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
+                    cb_info = ""
+                    if state.circuit_breaker and state.circuit_breaker.state != 'CLOSED':
+                        cb_info = f" CB:{state.circuit_breaker.state}"
                     ramp_target = state.ramp._target
                     print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
                           f"({rate:.1f}/s) | "
                           f"TPM:{current_tpm:,.0f} RPM:{current_rpm:.0f} "
                           f"Conc:{state.gate.active}/{state.gate.limit}→{ramp_target}"
-                          f"{timeout_info}")
+                          f"{timeout_info}{cb_info}")
 
     async def _run_with_ramp(self, coros, state: PhaseRampState):
         """Run coroutines via gather with a background ramp monitor.
@@ -1878,7 +1972,70 @@ class TaxonomyClassifier:
             return results
 
         results, _ = await asyncio.gather(_work(), self._phase_monitor(state))
+
+        # Phase summary: latency distribution + token stats
+        if state.latency_tracker and state.latency_tracker.values:
+            vals = list(state.latency_tracker.values)
+            p10 = float(np.percentile(vals, 10))
+            p50 = float(np.percentile(vals, 50))
+            p95 = float(np.percentile(vals, 95))
+            avg_tok = int(np.mean(list(state.actual_total_tokens))) if state.actual_total_tokens else 0
+            print(f"    [{state.phase_name}] Latency: P10={p10:.1f}s P50={p50:.1f}s P95={p95:.1f}s | "
+                  f"avg_tokens={avg_tok:,} | "
+                  f"{state.completions} ok, {state.timeouts} timeouts")
+
         return results
+
+    def _calibrate_from_warm_up(self, state: PhaseRampState) -> None:
+        """One-shot calibration: update token estimate and recompute Little's Law.
+
+        Fires once per phase after enough completions. Uses measured latency (P10)
+        and token counts to recalculate optimal concurrency and arrival rate.
+        """
+        measured_avg_tokens = int(np.mean(list(state.actual_total_tokens)))
+        measured_latency = float(np.percentile(list(state.latency_tracker.values), 10))
+
+        old_avg = state.estimated_avg_tokens
+        state.estimated_avg_tokens = measured_avg_tokens
+
+        # Recalculate Little's Law with measured data
+        api_limits = ApiLimits(
+            self._fetched_limits.tokens_per_minute,
+            self._fetched_limits.requests_per_minute,
+        )
+        new_little_law = compute_optimal_concurrency(
+            api_limits, measured_latency, measured_avg_tokens,
+        )
+        new_little_law_cap = min(new_little_law, state.total_tasks)
+
+        # Recalibrate ramp (preserves congestion detection state)
+        if not state.ramp.is_done():
+            state.ramp.recalibrate(new_little_law_cap)
+            new_start = state.ramp.current_target()
+            state.gate.set_limit(new_start)
+            if state.circuit_breaker:
+                state.circuit_breaker.baseline = new_start
+
+        # Recalculate arrival rate
+        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
+        new_arrival_rate = min(
+            self._fetched_limits.requests_per_minute * headroom / 60,
+            self._fetched_limits.tokens_per_minute * headroom / measured_avg_tokens / 60,
+        )
+        self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(new_arrival_rate, 0.01))
+
+        conc_target = state.ramp._target
+        print(f"\n    {'='*60}")
+        print(f"    WARM-UP CALIBRATION [{state.phase_name}] "
+              f"({len(state.actual_total_tokens)} samples)")
+        print(f"      Latency: {measured_latency:.1f}s (P10 measured)")
+        print(f"      avg_tokens: {old_avg} (estimate) -> {measured_avg_tokens} (measured)")
+        print(f"      Little's Law: {new_little_law_cap}")
+        print(f"      Concurrency: {state.gate.limit} → {conc_target}")
+        print(f"      Arrival rate: {new_arrival_rate:.2f}/s")
+        print(f"    {'='*60}")
+
+        state.warm_up_calibrated = True
 
     # =========================================================================
     # SHARED LLM CALL
@@ -1887,20 +2044,38 @@ class TaxonomyClassifier:
     async def _llm_call(self, prompt: str, response_model, max_tokens: int,
                         temperature: float | None = None, model: str | None = None,
                         timeout: float = 120.0, gate=None, phase_state: PhaseRampState = None):
-        """Make a rate-limited LLM call with optional per-phase concurrency gate.
+        """Make a rate-limited LLM call through the 4-layer stack.
 
-        Args:
-            gate: Optional concurrency gate (asyncio.Semaphore or similar).
-                  If provided, used instead of self._semaphore.
-                  Allows per-phase concurrency control.
-            timeout: Generous safety net (60s for standard, 120s for reasoning).
-            phase_state: Optional PhaseRampState for completion/TPM/RPM tracking.
+        Layer ordering (outside → inside):
+          1. ConcurrencyGate — limits in-flight requests
+          2. Adaptive timeout — computed AFTER gate (uses live latency data)
+          3. TokenBucket — TPM pacing (blocks until tokens available)
+          4. AsyncLimiter — RPM pacing (inter-request spacing)
+          5. Circuit breaker — records completion/timeout
+
+        Small phases (phase_state layers are None) skip layers 2-5 gracefully.
         """
         use_model = model or self._model_p1
         client = self._clients[use_model]
         concurrency_ctx = gate if gate is not None else self._semaphore
-        async with concurrency_ctx:
-            async with self._rate_limiter:
+
+        # Token estimate for TPM bucket (conservative until warm-up fires)
+        est_tokens = max_tokens
+        if phase_state and phase_state.estimated_avg_tokens:
+            est_tokens = phase_state.estimated_avg_tokens
+
+        async with concurrency_ctx:                                     # Layer 1: Concurrency
+            # Adaptive timeout: compute AFTER gate (fresh latency data)
+            effective_timeout = timeout
+            if phase_state and phase_state.latency_tracker:
+                effective_timeout = phase_state.latency_tracker.get_timeout()
+
+            # Layer 2: TPM token bucket
+            if phase_state and phase_state.token_bucket:
+                await phase_state.token_bucket.wait_and_acquire(est_tokens)
+
+            async with self._rate_limiter:                              # Layer 3: RPM
+                task_start = time.monotonic()
                 try:
                     result = await asyncio.wait_for(
                         llm_create_async(
@@ -1911,26 +2086,53 @@ class TaxonomyClassifier:
                             temperature=temperature if temperature is not None else self._temperature,
                             max_tokens=max_tokens,
                         ),
-                        timeout=timeout,
+                        timeout=effective_timeout,
                     )
+
+                    # Record latency for adaptive timeout
+                    elapsed = time.monotonic() - task_start
+                    if phase_state and phase_state.latency_tracker:
+                        phase_state.latency_tracker.add(elapsed)
+
+                    # Layer 4: Circuit breaker — record success
+                    if phase_state and phase_state.circuit_breaker:
+                        phase_state.circuit_breaker.record_completion()
+
                     if phase_state is not None:
                         phase_state.completions += 1
                         await phase_state.rpm_tracker.record()
-                        # Extract actual tokens from response if available
+
+                        # Extract actual tokens from response
                         raw = getattr(result, '_raw_response', None)
                         usage = getattr(raw, 'usage', None) if raw else None
+                        actual_tokens = None
                         if usage:
-                            total_tokens = (
+                            actual_tokens = (
                                 getattr(usage, 'prompt_tokens', 0)
                                 + getattr(usage, 'completion_tokens', 0)
                                 + getattr(usage, 'input_tokens', 0)
                                 + getattr(usage, 'output_tokens', 0)
                             )
-                            await phase_state.tpm_tracker.record(total_tokens)
+                            await phase_state.tpm_tracker.record(actual_tokens)
                         else:
                             await phase_state.tpm_tracker.record(max_tokens)
+
+                        # Track for warm-up calibration
+                        if actual_tokens and phase_state.actual_total_tokens is not None:
+                            phase_state.actual_total_tokens.append(actual_tokens)
+
+                        # Reconcile token bucket (return overestimate)
+                        if actual_tokens and phase_state.token_bucket:
+                            delta = actual_tokens - est_tokens
+                            if delta != 0:
+                                await phase_state.token_bucket.reconcile(delta)
+
                     return result
+
                 except asyncio.TimeoutError:
+                    # Layer 4: Circuit breaker — record timeout
+                    if phase_state and phase_state.circuit_breaker:
+                        phase_state.circuit_breaker.record_timeout()
                     if phase_state is not None:
                         phase_state.timeouts += 1
                     raise

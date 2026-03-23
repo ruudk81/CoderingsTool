@@ -4,7 +4,8 @@ Configuration for Code Generator (P8-P9).
 Pipeline: code generation from attributes → codebook consolidation.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from development.step_4_classifier.config_classifier import ClassifierRampConfig
 
 
 @dataclass
@@ -26,6 +27,9 @@ class CodebookConfig:
     consolidation_max_chunks_per_call: int = 6
     consolidation_max_items_per_call: int = 150
     consolidation_max_rounds: int = 5
+
+    # 4-layer rate limiting (reuses ClassifierRampConfig)
+    ramp_config: ClassifierRampConfig = field(default_factory=ClassifierRampConfig)
 
     # Output
     verbose: bool = True
