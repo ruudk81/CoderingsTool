@@ -978,7 +978,7 @@ class QualitativeResearcher:
             )
             all_codes = consolidation_result.codes
             codebook_narratives.append(
-                f"[consolidation] {consolidation_result.evaluation}"
+                f"[consolidation] {consolidation_result.scratchpad}"
             )
 
         codebook_narrative = "\n".join(codebook_narratives)
@@ -2093,6 +2093,7 @@ class QualitativeResearcher:
             dataset_context_section=prompt_context.dataset_context_section,
             dimension_name=prompt_context.dimension_name,
             dimension_description=prompt_context.dimension_description,
+            dimension_def=prompt_context.dimension_def,
             raw_codes=raw_codes,
             code_provenance=code_provenance,
             code_frequencies=code_frequencies,

@@ -1524,29 +1524,13 @@ def build_code_from_attributes_prompt(
     if dimension_def:
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(dimension_def.prompt_rules.domain_instruction)
-        facet_key_idea = _extract_key_idea(dimension_def.prompt_rules.facet_instruction)
         attribute_key_idea = _extract_key_idea(dimension_def.prompt_rules.attribute_instruction)
     else:
         noun_phrase = dimension_name
         domain_key_idea = "the subject the statement refers to"
-        facet_key_idea = "the analytical lens applied to the subject"
         attribute_key_idea = "the specific observable property being described"
 
-    # Excluded domains block
-    excluded_block = ""
-    if excluded_domains:
-        excl_lines = [
-            f"- {excl_name} — {excl_def}"
-            for excl_name, excl_def in excluded_domains
-        ]
-        excluded_block = (
-            "\nYou must NOT include codes that belong to these excluded domains:\n"
-            "<excluded_domains>\n"
-            + "\n".join(excl_lines)
-            + "\n</excluded_domains>"
-        )
-    
-    # Excluded domains block - "light" (names only, no definitions)
+    # Excluded domains block (names only, no definitions)
     excluded_block_light = ""
     if excluded_domains:
         excl_names = [excl_name for excl_name, _ in excluded_domains]
@@ -1574,6 +1558,8 @@ def build_code_from_attributes_prompt(
 
     return f"""You are tasked with deriving a PARSIMONIOUS codebook with MUTUALLY EXCLUSIVE and COLLECTIVELY EXHAUSTIVE codes that represent conceptually and semantically distinct PHENOMENA from a taxonomy inventory of attributes. These attributes were derived from written responses to a survey question.
 
+# Survey Context
+
 Here is the survey context:
 
 <survey_context>
@@ -1581,6 +1567,8 @@ Survey question: "{survey_question}"
 Language: {language}
 {dataset_context_section}
 </survey_context>
+
+# Taxonomy Context
 
 Here is the taxonomy context you are working within:
 
@@ -1601,104 +1589,70 @@ And you are working within this domain:
 <taxonomy_domain>
 {domain_name} — {domain_definition}
 </taxonomy_domain>
-{excluded_block}
 </taxonomy_context>
+
+# Attribute Inventory
 
 Here is the inventory of attributes for you to analyze:
 <attribute_inventory>
 {inventory_block}
 </attribute_inventory>
 
-# Understanding Phenomena vs Attributes
-
-**Attributes** are specific observations or qualities mentioned in responses. They represent individual data points.
-
-**Phenomena** are underlying conceptual patterns that multiple attributes may indicate. A phenomenon is an underlying pattern that can manifest through multiple specific attributes.
-
-Your task is to identify phenomena, NOT to create one code per attribute.
-
 # Code Derivation Rules
+<code_derivation_rules>
 
-## 1. Phenomenon Rule
-Codes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying phenomenon MUST be merged into a single code.
+1. Phenomenon Rule
+- Codes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying phenomenon MUST be merged into a single code.
 
-## 2. Dimension Rule
+2. Dimension Rule
 Only include codes that belong to this domain:
-{domain_name} — {domain_definition}
+- {domain_name} — {domain_definition}
 
 Do not include codes that belong to these excluded domains:
 {excluded_block_light}
 
-## 3. Specificity Rule
-Do NOT create separate codes simply because attributes differ in specificity. General statements and specific examples should be treated as indicators of the same phenomenon.
+3. Specificity Rule
+- Do NOT create separate codes simply because attributes differ in specificity. General statements and specific examples should be treated as indicators of the same phenomenon.
+- Example: "The train was delayed by 20 minutes" and "public transport is often late" both indicate unreliable punctuality and should be coded under the same broader phenomenon.
 
-Example: "The train was delayed by 20 minutes" and "public transport is often late" both indicate unreliable punctuality and should be coded under the same broader phenomenon.
+4. Prevalence Weighting Rule
+The number of ideas linked to each attribute MUST guide code construction.
+* Attributes with HIGH idea counts MUST define the core structure of the codebook.
+* The codebook MUST be anchored in a small number of dominant phenomena, not a long tail of low-frequency codes.
+* Attributes with LOW idea counts MUST NOT become standalone codes unless they represent a clearly distinct phenomenon that cannot be abstracted further.
 
-## 4. Prevalence Weighting Rule (CRITICAL)
-Codes MUST be primarily driven by the **number of ideas linked to attributes**.
+LOW-prevalence attributes MUST be:
+* abstracted into a higher-level phenomenon aligned with dominant patterns, OR
+* combined into a broader conceptual category that captures their shared meaning.
 
-- Attributes with HIGH idea counts MUST form the **core structure of the codebook**.
-- Attributes with LOW idea counts MUST NOT become standalone codes unless absolutely necessary.
-- LOW-prevalence attributes SHOULD be:
-  - merged into the closest HIGH-prevalence phenomenon, OR
-  - grouped into a broader combined phenomenon.
+Balancing Constraint — Structured Differentiation: Do NOT collapse all attributes into a single dominant "meta-code." If multiple conceptually distinct high- or mid-prevalence patterns exist, they MUST be represented as separate codes.
 
-If forced to choose between:
-- conceptual nuance  
-- prevalence dominance  
-
-➡️ ALWAYS prioritize prevalence dominance.
-
-## 5. Merge Bias Rule
-When in doubt:
-- MERGE rather than split
-- Especially when an attribute has relatively few ideas
-
-Attributes with low prevalence (e.g., <10–15 ideas) should almost never result in standalone codes.
-
-## 6. Parsimony Rule
-Use the smallest number of codes that still capture all distinct phenomena present in the inventory.
-
-## 7. Mutual Exclusivity Rule
+5. Mutual Exclusivity Rule
 Codes must represent clearly different phenomena so that responses can be coded consistently without ambiguity.
 
-## 8. Valence Sensitivity Rule
-Generate separate codes for positive and negative phenomena. Do NOT combine praise and criticism into a single code. If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
-
-## 9. Hierarchy Rule
-Derive codes from attribute content rather than copying domain or facet labels directly. Domain context should be used only to determine relevance and scope.
+6. Valence Sensitivity Rule
+- Generate separate codes for positive and negative phenomena.
+- Do NOT combine praise and criticism into a single code.
+- If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
+</code_derivation_rules>
 
 # Required Process
 
-Before writing your final output, think through your analysis in the scratchpad field:
+Before generating your final codes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
 
-**Step 1 — Identify High-Prevalence Anchors**
-- Identify attributes with the highest number of ideas.
-- Treat these as the PRIMARY building blocks of the codebook.
-
-**Step 2 — Map Lower-Prevalence Attributes**
-- Map lower-prevalence attributes onto these high-prevalence anchors wherever possible.
-- Only create a new code if the attribute:
-  - is conceptually distinct AND
-  - cannot reasonably be merged.
-
-**Step 3 — Ensure Domain Relevance**  
-Ensure that each phenomenon group belongs to the included domain and not to any excluded domain.
-
-**Step 4 — Check for Valence Distinctions**
-Split positive and negative variants into separate codes where relevant.
-
-**Step 5 — Name Each Phenomenon**
-Assign a descriptive name (3-5 word noun phrase in {language}) to each distinct phenomenon.
-
-**Step 6 — Validate Parsimony and Dominance**
-- Ensure the codebook is dominated by high-prevalence phenomena
-- Ensure low-prevalence attributes are absorbed rather than overrepresented
-- Keep total number of codes minimal 
-
-**Step 7 — Justify Low-Prevalence Codes (MANDATORY)**
-If any code is primarily based on attributes with low idea counts:
-- Explicitly justify why it was NOT merged into a higher-prevalence phenomenon
+<required_process>
+1. Identify higher-prevalence attributes (those with the largest idea count share) and treat them as anchors
+2. Group attributes into underlying phenomena, giving priority to higher-prevalence clusters.
+* Map low-prevalence attributes onto these dominant phenomena wherever possible.
+* Abstract low-prevalence attributes to a broader conceptual level rather than preserving them as standalone codes.
+* Only create a separate code for a low-prevalence attribute if it represents a clearly distinct phenomenon that cannot reasonably be merged without losing essential meaning.
+* Do NOT collapse conceptually distinct attributes into a single broad meta-code merely because one cluster is highly prevalent.
+3. Check for domain relevance - exclude any phenomena outside the allowed domain
+4. Check for valence distinctions and split positive vs negative where needed
+5. Name each phenomenon using a 3-5 word noun phrase
+6. Verify parsimony - ensure the codebook is dominated by high-prevalence phenomena and contains a minimal number of codes (typically 5-8)
+7. Explicitly justify any code that is primarily based on low-prevalence attributes instead of merging it
+</required_process>
 
 # Output Requirements
 
@@ -1707,15 +1661,6 @@ Provide output as valid JSON following the response schema provided.
 # Language Requirement
 
 All output (code names, definitions, typical indicators, and evaluation) must be written in {language}.
-
-# Final Notes
-
-Remember:
-- This is a **frequency-weighted abstraction task**, not a conceptual listing task.
-- Dominant patterns should shape the codebook.
-- Rare attributes should be absorbed unless absolutely necessary.
-
-Your goal is a **lean, high-signal codebook** that reflects the strongest patterns in the data.
 
 Begin now by applying the required process and then return only valid JSON."""
 
@@ -1742,14 +1687,12 @@ class CodeGenerationFromAttributesResult(BaseModel):
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before deriving codes: "
-            "(1) identify high-prevalence attributes (largest idea counts) and treat them as anchors, "
-            "(2) group attributes into underlying phenomena with priority given to high-prevalence clusters, "
-            "    - map low-prevalence attributes onto these dominant phenomena wherever possible, "
-            "    - only create a separate code for low-prevalence attributes if they are conceptually distinct and cannot be merged, "
+            "(1) identify higher-prevalence attributes (largest idea counts) and treat them as anchors, "
+            "(2) apply Prevalence Weighting Rule with Balancing Constraint, "
             "(3) check for domain relevance - exclude any phenomena outside the allowed domain, "
             "(4) check for valence distinctions and split positive vs negative where needed, "
             "(5) name each phenomenon (3–5 word noun phrase), "
-            "(5) verify parsimony - ensure the codebook is dominated by high-prevalence phenomena and contains a minimal number of codes (typically 5–8), "
+            "(6) verify parsimony - ensure the codebook is dominated by high-prevalence phenomena and contains a minimal number of codes (typically 5–8), "
             "(7) explicitly justify any code that is primarily based on low-prevalence attributes instead of merging it"
         )
     )
@@ -1771,6 +1714,7 @@ def build_codebook_consolidation_prompt(
     dataset_context_section: str,
     dimension_name: str,
     dimension_description: str,
+    dimension_def: Optional['DimensionDefinition'] = None,
     raw_codes: List[CodeFromAttributes],
     code_provenance: Dict[int, str],
     code_frequencies: Optional[Dict[int, int]] = None,
@@ -1781,7 +1725,16 @@ def build_codebook_consolidation_prompt(
         raw_codes: All codes from P8 (per-domain)
         code_provenance: Maps code index to domain_name
         code_frequencies: Maps code index to approximate idea count
+        dimension_def: DimensionDefinition for dimension-specific diagnostics
     """
+    # Dimension-specific diagnostics
+    if dimension_def:
+        domain_diagnostic = dimension_def.prompt_rules.domain_diagnostic
+        code_diagnostic = dimension_def.prompt_rules.code_diagnostic
+    else:
+        domain_diagnostic = "What question is being answered?"
+        code_diagnostic = "This code is about …"
+
     # Format raw codes with domain provenance tags and frequency
     code_lines = []
     for i, code in enumerate(raw_codes):
@@ -1818,125 +1771,110 @@ Dimension: {dimension_name} — {dimension_description}
 {codes_block}
 </candidate_codes>
 
-## CRITICAL OBJECTIVE
-Create a parsimonious codebook that preserves all distinct phenomena, without conceptual overlap or semantic ambiguity.
-The result must be conceptually clean, mutually exclusive, and easy for human coders to apply consistently.
-
-<core_principles>
-
-### 1. BALANCED PARSIMONY
-- Merge codes that describe the SAME underlying phenomenon — not merely related phenomena
-- Two codes are duplicates only if a human coder could not reliably distinguish them
-- Stop merging when each surviving code represents a clearly distinct aspect of the dimension
-- Preserve codes that cover distinct topics, even if they seem thematically related
-- IMPORTANT: only merge codes that share the same valence — see Principle 2
-
-### 2. VALENCE STRUCTURE (HARD CONSTRAINT)
-- Each code must have exactly ONE valence: positive, negative, or neutral
-- If a dimension has both positive (+) and negative (-) candidate codes, produce TWO separate codes — one positive, one negative
-- Do NOT merge positive and negative codes into a single valence-neutral code
-- Example: "Duurzaamheid (+)" and "Twijfel aan duurzaamheid (-)" must remain separate codes, NOT merged into "Duurzaamheid en ethiek"
-- Neutral codes are for observations without evaluative direction
-
-### 3. LATENT DIMENSION FOCUS
-- Each code must represent **ONE distinct question about {dimension_name}**
-- Test: each code must complete
-  **"This is about whether {dimension_name} is …"**
-
-### 4. STRICT MECE RULE (HARD CONSTRAINT)
-- Codes must be:
-  - **Mutually Exclusive** → no conceptual overlap
-  - **Collectively Exhaustive** → cover all meaningful variation
-- If two codes of the same valence could co-occur in the same sentence → **merge them**
-- If they answer different questions → **keep them separate**
-
-### 5. NEIGHBOURS CHECK
-- If a human coder would hesitate between two codes, first try to sharpen the definitions to make them distinguishable
-- Only merge if the distinction cannot be made conceptually — not just because the codes seem related
-- Prefer refining boundaries over merging
-
-### 6. APPROPRIATE ABSTRACTION LEVEL
-- Codes must be at the right level of abstraction for the dimension: {dimension_description}
-- Merge codes that differ only in specific examples but describe the same general phenomenon
-- Do not preserve detail that would make codes too narrow to apply consistently across responses
-
-### 7. NON-REDUNDANCY RULE
-- If removing a code does not reduce explanatory power → delete it
-- Avoid near-synonyms or adjacent constructs
-
-### 8. ACTIONABILITY
-- Each code must represent something meaningful and actionable given the survey question
-- Remove or merge codes that are too abstract or too narrow to be useful through the lens of the survey question
-
-### 9. DOMAIN AWARENESS
-- Each candidate code is tagged with its source domain in parentheses
-- Codes from DIFFERENT domains that share similar names represent DIFFERENT phenomena
-- Do NOT merge codes across domains unless they are truly identical in meaning
-- Example: "Reliability" from a customer service domain ≠ "Reliability" from a brand identity domain
-
-### 10. ATTRIBUTE TYPE SEPARATION
-- Codes that differ in underlying mechanism must remain separate, even if they co-occur in responses
-- If two codes describe different types of phenomena (e.g., values vs functional properties vs perceptions), they represent different mechanisms and must not be merged
-- Do NOT merge across attribute types into a single code
-
-### 11. COVERAGE GUARD
-- Each code must be specific enough that a human coder can confidently apply it
-- If a code's definition requires listing many unrelated phenomena, it is too broad — split it
-- Test: can you describe what this code covers in ONE sentence without using "and/or" more than once? If not, split it
-- Codes backed by many ideas carry more analytical value — do not merge them away lightly
-
-### 12. PRESERVE DISTINCT MECHANISMS
-- Codes that differ in underlying mechanism must remain separate, even if they seem thematically related
-- Examples of distinctions that must be preserved:
-  - Evaluative judgments vs factual descriptions
-  - Causes vs consequences
-  - General impressions vs specific experiences
-- When in doubt whether two codes differ: they probably do — keep them separate
-
-</core_principles>
-
-<code_definition_requirements>
-
-### DUAL-LAYER CODE DEFINITION (MANDATORY)
-Each code MUST include:
-
-**code_name**
-- 3–5 word noun phrase
-- Short, scannable, used for coding
-
-**definition**
-- A short interpretive claim
-- Must read like an analyst conclusion
-- Avoid vague abstract phrasing — be concrete and specific
-
-### CLARITY TEST (MANDATORY)
-Each code must include a diagnostic_test:
-"This is about whether {dimension_name} is …"
-- Must be unique per code
-- Must not overlap with other codes
-
-### ADDITIONAL REQUIRED FIELDS
-Each code must also include:
-- **valence**: one of "positive", "negative", or "neutral"
-- **typical_indicators**: words or phrases that signal this code
-- **source_attributes**: list of attribute names this code is derived from (from all merged codes)
-
-</code_definition_requirements>
+Before generating your final codes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
 
 <workflow>
-Follow these steps (DO NOT SKIP):
-1. Cluster similar codes by topic AND valence — keep positive (+) and negative (-) clusters separate
-2. Merge aggressively within the same valence — never merge across valence
-3. Test for MECE overlap — for each pair of same-valence codes, ask: "would a coder hesitate between these?"
-4. Remove redundancy — for each code, ask: "does removing this reduce explanatory power?"
-5. Ensure one clear dimension per code
-6. Assign valence label (positive, negative, neutral) to each surviving code
-7. Verify each surviving code is actionable through the lens of the survey question: "{survey_question}"
+
+## STEP 1 — PRE-STRUCTURE BY VALENCE (HARD GATE)
+
+- Generate separate codes for positive and negative phenomena.
+- Do NOT combine praise and criticism into a single code.
+- If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
+
+## STEP 2 — CLUSTER BY LATENT QUESTION (NOT TOPIC)
+
+Instead of grouping by topic, group by:
+
+**{domain_diagnostic}**
+
+If two codes answer the same question → same cluster
+
+## STEP 3 — AGGRESSIVE MERGING WITHIN CLUSTERS
+
+Within each valence + question cluster:
+
+Merge until a coder would NEVER hesitate between remaining codes.
+
+Strict Merge Rule: If both can apply to the same sentence → merge
+
+## STEP 4 — MECHANISM PURITY CHECK
+
+For each code, ask: Is this describing:
+* a value (e.g., fair, responsible)
+* a functional property (e.g., fast, easy to use)
+* a perception/judgment (e.g., reliable, outdated)
+* a cause/reason (e.g., due to specific actions or policies)
+
+If mixed → SPLIT
+
+## STEP 5 — NEIGHBOUR STRESS TEST
+
+For every pair of same-valence codes, ask: "Would a trained coder hesitate between these?"
+
+If YES:
+1. Try sharpening definitions
+2. If still ambiguous → merge
+
+## STEP 6 — ONE-SENTENCE COVERAGE TEST
+
+Each code must pass: Can I explain what this covers in ONE sentence without listing multiple unrelated things?
+
+If NO → split
+
+## STEP 7 — NON-REDUNDANCY KILL STEP
+
+For each code: "If I delete this, do I lose meaning?"
+
+If NO → delete
+
+## STEP 8 — FINAL DIAGNOSTIC UNIQUENESS CHECK
+
+Each code must complete: "{code_diagnostic}"
+
+If two codes produce similar completions → merge
+
 </workflow>
 
-All output MUST be in {language}.
+<hard_rules>
 
-Include a brief evaluation of what was merged, removed, or preserved and why.
+### DOMAIN AWARENESS
+Codes from DIFFERENT domains that share similar names may represent DIFFERENT phenomena. Do NOT merge codes across domains unless they are truly identical in meaning.
+
+### NO DOUBLE-BARREL CODES
+If a code name contains "and" joining unrelated concepts → split into separate codes.
+
+### NO CAUSE + ATTRIBUTE MIX
+Do not combine a cause/reason with a descriptive attribute in a single code. Split into separate codes for each mechanism.
+
+</hard_rules>
+
+<validation_checklist>
+Before finalizing, verify each code passes:
+- Single valence only
+- Answers ONE question
+- Cannot co-occur with same-valence code
+- Mechanism is pure
+- One-sentence coverage
+- Diagnostic is unique
+</validation_checklist>
+
+<code_template>
+Each code must include:
+
+**code_name**: 3–5 word noun phrase, must reflect ONE dimension only
+
+**definition**: clear, interpretive claim — must specify what makes this DISTINCT
+
+**diagnostic_test**: Must follow: "{code_diagnostic}" — must NOT overlap with any other code
+
+**valence**: positive / negative / neutral
+
+**typical_indicators**: concrete phrases (not abstract labels)
+
+**source_attributes**: all merged origins
+</code_template>
+
+All output MUST be in {language}.
 
 Provide output as valid JSON following the response schema provided."""
 
@@ -1953,7 +1891,7 @@ class ConsolidatedCode(BaseModel):
     )
     diagnostic_test: str = Field(
         ..., description=(
-            "Completes the sentence: 'This is about whether ...' — "
+            "Completes the dimension-specific diagnostic stem — "
             "must be unique per code and must not overlap with other codes."
         )
     )
@@ -1971,8 +1909,18 @@ class ConsolidatedCode(BaseModel):
 
 class CodebookConsolidationResult(BaseModel):
     """P9 output: consolidated codebook."""
-    evaluation: str = Field(
-        ..., description="Brief analysis of what was merged/removed and why"
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning following the 8-step workflow: "
+            "(1) pre-structure by valence, "
+            "(2) cluster by latent question, "
+            "(3) aggressive merging within clusters, "
+            "(4) mechanism purity check, "
+            "(5) neighbour stress test, "
+            "(6) one-sentence coverage test, "
+            "(7) non-redundancy kill step, "
+            "(8) final diagnostic uniqueness check"
+        )
     )
     codes: List[ConsolidatedCode] = Field(
         ..., description="Final MECE codebook"

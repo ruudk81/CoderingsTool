@@ -34,6 +34,7 @@ class PromptRules:
     - facet_diagnostic           → Facet (L3): short-form question for prompt headers
     - attribute_instruction      → Attribute (L4): dimension-specific observable property question
     - attribute_diagnostic       → Attribute (L4): short-form question for prompt headers
+    - code_diagnostic            → Code: sentence stem for P9 consolidation diagnostic test
     """
     instance_instruction: str
     interpretation_instruction: str
@@ -44,6 +45,7 @@ class PromptRules:
     facet_diagnostic: str
     attribute_instruction: str
     attribute_diagnostic: str
+    code_diagnostic: str
 
 
 @dataclass(frozen=True)
@@ -166,6 +168,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific proposed improvement."
             ),
             attribute_diagnostic="What exactly is the proposed improvement?",
+            code_diagnostic="This code is about what should change regarding …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -253,6 +256,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific defining feature."
             ),
             attribute_diagnostic="What defining feature is mentioned?",
+            code_diagnostic="This code is about how the entity is defined as …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -338,6 +342,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific actor or stakeholder group."
             ),
             attribute_diagnostic="Which specific actor group is referenced?",
+            code_diagnostic="This code is about which actors are involved in …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -423,6 +428,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific contextual condition."
             ),
             attribute_diagnostic="What specific condition is mentioned?",
+            code_diagnostic="This code is about the condition or situation of …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -508,6 +514,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific motivational factor."
             ),
             attribute_diagnostic="What specific reason is stated?",
+            code_diagnostic="This code is about why people care about …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -594,6 +601,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific observed experience feature."
             ),
             attribute_diagnostic="What specific experience feature was observed or felt?",
+            code_diagnostic="This code is about the experience of …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -685,6 +693,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific evaluation signal."
             ),
             attribute_diagnostic="What specific evidence of evaluation appears?",
+            code_diagnostic="This code is about how the entity is judged on …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -775,6 +784,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific behavioral or functional feature."
             ),
             attribute_diagnostic="What specific action occurs?",
+            code_diagnostic="This code is about what happens regarding …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -865,6 +875,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific quality or trait."
             ),
             attribute_diagnostic="What specific quality is described?",
+            code_diagnostic="This code is about the quality of the entity being …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -955,6 +966,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name the specific relational feature."
             ),
             attribute_diagnostic="What specific relationship is described?",
+            code_diagnostic="This code is about the relationship between …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -1046,6 +1058,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Key idea: Attributes name whatever specific feature can be identified."
             ),
             attribute_diagnostic="What specific feature is mentioned?",
+            code_diagnostic="This code is about …",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",

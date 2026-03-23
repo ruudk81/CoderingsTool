@@ -1,51 +1,153 @@
-P3 -- Facet Assignment (per domain)
+P9 — Codebook Consolidation workflow (templatized)
 
-You are a qualitative coding assistant. Your task is to assign survey response ideas to specific facets within a domain. Each idea represents a distinct concept extracted from a survey response, and you must determine which facet best captures the type of quality being described.
+## STEP 1 — PRE-STRUCTURE BY VALENCE (HARD GATE)
 
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
+Valence Sensitivity Rule
+- Generate separate codes for positive and negative phenomena.
+- Do NOT combine praise and criticism into a single code.
+- If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
 
-<domain_context>
-Domain: {domain_name} -- {domain_definition}
-</domain_context>
 
-Here are the facets available for assignment. Each idea must be assigned to exactly ONE of these facets:
+---
 
-<facets>
-{facet_codebook}
-</facets>
+## STEP 2 — CLUSTER BY LATENT QUESTION (NOT TOPIC)
 
-Here are the ideas you need to assign to facets:
+Instead of grouping by topic, group by:
 
-<ideas_to_assign>
-{ideas_block}
-</ideas_to_assign>
+**{domain_diagnostic}**
 
-For each idea in the list, follow these steps:
+If two codes answer the same question → same cluster
 
-1. Read the idea text carefully, noting the valence tag ([+] positive, [-] negative, [0] neutral) and what type of quality is being expressed.
+---
 
-2. Compare the idea against each available facet. Ask yourself: "Which facet best captures the type of quality being described in this idea?" Consider:
-   - The core meaning of the idea text
-   - The descriptions provided for each facet
-   - The examples given for each facet
-   - Semantic similarity between the idea and facet descriptions
+## STEP 3 — AGGRESSIVE MERGING WITHIN CLUSTERS
 
-3. Assign the idea to exactly ONE facet. You must return only the facet ID (the code in [F#] brackets, such as "F1" or "F2"). Do NOT return the facet name or description. Assign "{other_label}" ONLY if no facet fits at all.
+Within each valence + question cluster:
 
-4. Rate your confidence in this assignment on a scale from 0.0 to 1.0, where:
-   - 1.0 = completely certain this is the correct facet
-   - 0.7-0.9 = confident but some ambiguity exists
-   - 0.5-0.6 = moderate confidence, could reasonably fit multiple facets
-   - Below 0.5 = low confidence, significant ambiguity
+Merge until:
 
-Important requirements:
-- Assign each idea to exactly ONE facet
-- Return only the facet ID (e.g., "F1"), not the facet name
-- Echo back the exact idea_id and idea text from the input without modification
-- All output must be in {language}
+> A coder would NEVER hesitate between remaining codes
 
-Provide your response as valid JSON matching the schema provided.
+### Strict Merge Rule:
+
+If both can apply to the same sentence → **merge**
+
+---
+
+## STEP 4 — MECHANISM PURITY CHECK
+
+For each code, ask:
+
+Is this describing:
+
+* a **value** (e.g., fair, responsible)
+* a **functional property** (e.g., fast, easy to use)
+* a **perception/judgment** (e.g., reliable, outdated)
+* a **cause/reason** (e.g., due to specific actions or policies)
+
+If mixed → SPLIT
+
+---
+
+## STEP 5 — NEIGHBOUR STRESS TEST
+
+For every pair of same-valence codes:
+
+Ask:
+
+> "Would a trained coder hesitate between these?"
+
+If YES:
+
+1. Try sharpening definitions
+2. If still ambiguous → merge
+
+---
+
+## STEP 6 — ONE-SENTENCE COVERAGE TEST
+
+Each code must pass:
+
+> Can I explain what this covers in ONE sentence without listing multiple unrelated things?
+
+If NO → split
+
+---
+
+## STEP 7 — NON-REDUNDANCY KILL STEP
+
+For each code:
+
+"If I delete this, do I lose meaning?"
+
+If NO → delete
+
+---
+
+## STEP 8 — FINAL DIAGNOSTIC UNIQUENESS CHECK
+
+Each code must complete:
+
+> "{code_diagnostic}"
+
+If two codes produce similar completions → merge
+
+---
+
+## HARD RULES
+
+### 1. DOMAIN AWARENESS
+Codes from DIFFERENT domains that share similar names may represent DIFFERENT phenomena. Do NOT merge codes across domains unless they are truly identical in meaning.
+
+### 2. NO DOUBLE-BARREL CODES
+If a code name contains "and" joining unrelated concepts → split into separate codes.
+
+### 3. NO CAUSE + ATTRIBUTE MIX
+Do not combine a cause/reason with a descriptive attribute in a single code. Split into separate codes for each mechanism.
+
+---
+
+## VALIDATION CHECKLIST (USE BEFORE FINALIZING)
+
+Run this on every code:
+
+* [ ] Single valence only
+* [ ] Answers ONE question
+* [ ] Cannot co-occur with same-valence code
+* [ ] Mechanism is pure
+* [ ] One-sentence coverage
+* [ ] Diagnostic is unique
+
+---
+
+## Code Template
+
+**code_name**
+→ 3–5 word noun phrase
+→ must reflect ONE dimension only
+
+**definition**
+→ clear, interpretive claim
+→ must specify what makes this DISTINCT
+
+**diagnostic_test**
+→ Must follow: "{code_diagnostic}"
+→ Must NOT overlap with any other code
+
+**valence**
+→ positive / negative / neutral
+
+**typical_indicators**
+→ concrete phrases (not abstract labels)
+
+**source_attributes**
+→ all merged origins
+
+---
+
+## Template variables reference
+
+| Variable | Source |
+|----------|--------|
+| `{domain_diagnostic}` | `dimension_def.prompt_rules.domain_diagnostic` |
+| `{code_diagnostic}` | `dimension_def.prompt_rules.code_diagnostic` (NEW field added to PromptRules) |
