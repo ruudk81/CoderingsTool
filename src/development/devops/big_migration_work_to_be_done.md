@@ -247,17 +247,23 @@ For each utility step, follow this repeatable pattern:
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-1. **Embedding step:** Does step 4 (embeddings) remain as a standalone step, or do embeddings get generated on-demand within steps 4/6? The dev pipeline doesn't have a centralized embedding step.
+> **Core principle applied to all:** The development steps are the source of truth. If something exists in production but not in development, it gets removed. If development does it differently, development wins.
 
-2. **Field naming convention:** Which naming wins for the abstraction ladder — `interpretation`/`abstraction` (production) or `rung_1`/`rung_2` (development)? And for taxonomy L2 — `domain` or `concept_type`?
+1. **Embedding step:** No standalone embedding step. Development doesn't have one — embeddings are generated on-demand within steps 4 and 6. The production-only `embedder.py` / step 4 (embeddings) gets removed.
 
-3. **ClusterModel:** The development `models_exp.py` has a `ClusterModel` between `EmbeddingsModel` and `CodeAssignedModel`. The production chain goes directly from Embeddings to CodeAssigned. Does clustering still exist in the new pipeline?
+2. **Field naming convention:** Development naming wins. `rung_1`/`rung_2` (not `interpretation`/`abstraction`), `concept_type` (not `domain`). Production models.py gets rewritten to match development models.
 
-4. **Step 7 (export):** What does the new export need to look like? Carry over from current step 9, or redesign?
+3. **ClusterModel:** If development doesn't use it, it goes. No backward-compatibility bridging.
 
-5. **`prompts.py` vs `prompts_steps/`:** Currently production prompts for steps 5-8 are in `prompts.py` (main), while steps 1-3 have moved to `prompts_steps/`. For the new pipeline, should ALL prompts live in `prompts_steps/` for consistency?
+4. **Step 7 (export):** Still needs development — open item, not a migration question.
+
+5. **`prompts.py` vs `prompts_steps/`:** ALL step-specific prompts go in `prompts_steps/` (one file per step). ALL step-specific configs go in `config_steps/` (one file per step). Keeps hardcoded parameters easy to find. The monolithic `prompts.py` gets emptied as its contents move to per-step files.
+
+## Backlog
+
+1. **Step 7 (export):** Needs to be designed and built, not migrated. Will be addressed after steps 1-6 are in production.
 
 ---
 

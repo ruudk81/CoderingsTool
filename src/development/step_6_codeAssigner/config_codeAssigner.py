@@ -6,14 +6,15 @@ Assigns each idea to exactly one MECE code from the codebook.
 
 from dataclasses import dataclass
 from typing import Dict
+from config import get_model
 
 
 @dataclass
 class AssignmentConfig:
     """Configuration for MECE category assignment to individual ideas."""
 
-    # LLM settings
-    assignment_model: str = "gpt-4.1-mini"
+    # LLM settings (derived from MODEL_FAMILY toggle)
+    assignment_model: str = get_model("mini")
     assignment_temperature: float = 0.1    # Low for consistent assignment
     assignment_max_tokens: int = 4000
 

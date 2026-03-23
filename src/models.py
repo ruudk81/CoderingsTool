@@ -1,9 +1,27 @@
-from typing import List, Any, Optional, Type, Union, Dict, Tuple
-from pydantic import BaseModel, ConfigDict, Field
-import numpy as np
-import numpy.typing as npt
+"""
+Pipeline Data Models — Pydantic models for the CoderingsTool pipeline.
 
-# ===  METADATA MODEL ========================================================================================================
+Model chain (per-response, progressive enrichment):
+    ResponseModel → PreprocessedModel → QualityFilteredModel
+    → IdeasExtractedModel [IdeasExtractedSubmodel]
+    → CodeAssignedModel [CodeAssignedSubmodel]
+
+Metadata & cache models (dataset-level):
+    ExtractionMetadata (step 3)
+    DomainDescription / DomainSet (step 4 partition definitions)
+    DomainResultModel / TaxonomyResultsCache (step 4 taxonomy cache)
+    CodingResultsCache (step 5 codebook cache)
+
+Source of truth: development step model files (step_3, step_4, step_5, step_6).
+"""
+
+from typing import List, Any, Optional, Union, Dict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+# =============================================================================
+# STEP 3: EXTRACTION METADATA (dataset-level)
+# =============================================================================
 
 class ExtractionMetadata(BaseModel):
     """Extraction-level metadata from step 3 (applies to entire dataset, not per-idea).
@@ -40,33 +58,36 @@ class ExtractionMetadata(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-# === GROWING RESULT MODELS ========================================================================================================
+# =============================================================================
+# PIPELINE MODEL CHAIN (per-response, progressive enrichment)
+# =============================================================================
 
 class ResponseModel(BaseModel):
     respondent_id: Any
-    response: Union[str, float, int, None]   
-    response_type: Optional[str] = None   
-    model_config = ConfigDict(arbitrary_types_allowed=True) # for arrays with embeddings
- 
-    def to_model(self, model_class: Type['BaseModel']) -> 'BaseModel':
+    response: Union[str, float, int, None]
+    response_type: Optional[str] = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def to_model(self, model_class: type) -> 'BaseModel':
         data = self.model_dump()
         return model_class(**data)
+
 
 class PreprocessedModel(ResponseModel):
     quality_filter: Optional[bool] = None
     quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=don't know, 99999998=no response/empty, 99999999=gibberish
 
+
 class QualityFilteredModel(PreprocessedModel):
     pass
 
-# QualityFilterLLMResponse moved to prompts_steps/prompts_qualityFilter.py
 
 class IdeasExtractedSubmodel(BaseModel):
     """Per-idea data from step 3 extraction.
 
     Taxonomy fields: domain (L2), facet (L3), attribute (L4).
     - Domain assigned by step 3; facet partially populated by step 3.
-    - Facet and attribute completed by step 5.
+    - Facet and attribute completed by step 4 (classifier).
 
     Abstraction ladder (extraction metadata): instance → interpretation → abstraction.
     """
@@ -78,187 +99,129 @@ class IdeasExtractedSubmodel(BaseModel):
     abstraction: str = ""                 # Rung 3: broader significance (survey language)
     # --- Taxonomy levels ---
     domain: str = ""                      # Domain (L2): thematic domain
-    facet: str = ""                       # Facet (L3): analytical lens (step 3 hint; completed by step 5)
-    attribute: str = ""                   # Attribute (L4): named observable property (assigned by step 5)
+    facet: str = ""                       # Facet (L3): analytical lens (step 3 hint; completed by step 4)
+    attribute: str = ""                   # Attribute (L4): named observable property (assigned by step 4)
     # --- Classification metadata ---
     valence: str = ""                     # Directional effect: +, -, or 0
-    model_config = ConfigDict(arbitrary_types_allowed=True)   
-    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 class IdeasExtractedModel(QualityFilteredModel):
     response_ideas: Optional[List[IdeasExtractedSubmodel]] = None
     idea_count: int = 0
-    template_prefix: Optional[str] = None  # Canonical phrasing prefix for embedding text extraction
+    template_prefix: Optional[str] = None  # Canonical phrasing prefix for embedding text
 
-class EmbeddingsSubmodel(IdeasExtractedSubmodel):
-    idea_embedding: Optional[npt.NDArray[np.float32]] = None               # idea (natural sentence incl. template_prefix)
-    interpretation_embedding: Optional[npt.NDArray[np.float32]] = None     # Ladder rung 2: interpretation
-    abstraction_embedding: Optional[npt.NDArray[np.float32]] = None        # Ladder rung 3: abstraction
-    facet_embedding: Optional[npt.NDArray[np.float32]] = None              # Facet (L3)
-    domain_embedding: Optional[npt.NDArray[np.float32]] = None             # Domain (L2)
-    ladder_embedding: Optional[npt.NDArray[np.float32]] = None             # instance → interpretation → abstraction
 
-class EmbeddingsModel(IdeasExtractedModel):
-    response_ideas: Optional[List[EmbeddingsSubmodel]] = None
-    embedding_text_format: str = "idea"  # "idea", "concept", "ladder", "default", "all", etc.
+# =============================================================================
+# STEP 6: CODE ASSIGNMENT MODELS
+# =============================================================================
 
-class CodeAssignedSubmodel(EmbeddingsSubmodel):
-    """Per-idea data with MECE category assignment.
+class CodeAssignment(BaseModel):
+    """Single idea-to-code assignment (internal wrapper)."""
+    idea_id: str = Field(..., description="The idea_id from the input")
+    assigned_code_id: str = Field(
+        ..., description="The code ID from [C#] prefix (e.g. 'C1', 'C7'). ONLY the ID."
+    )
+    confidence: float = Field(..., description="Confidence (0.0 to 1.0)")
+    rationale: str = Field(..., description="Brief rationale")
 
-    Extends EmbeddingsSubmodel (not ClusterSubmodel) since category
-    assignment operates on ideas partitioned by domain, independent
-    of clustering.
+
+class CodeAssignmentBatch(BaseModel):
+    """Batch wrapper for uniform downstream handling."""
+    assignments: List[CodeAssignment] = Field(
+        ..., description="One assignment per idea"
+    )
+
+
+class CodeAssignedSubmodel(IdeasExtractedSubmodel):
+    """Per-idea data with code + attribute assignment.
+
+    Extends step 3's IdeasExtractedSubmodel.
+    Populated by: facet (L3) from step 4, attribute (L4) from step 4,
+    plus code assignment fields from step 6.
     """
-    assigned_category: Optional[str] = None        # MECECode.category_label
-    category_confidence: Optional[float] = None    # 0.0 - 1.0
-    category_rationale: Optional[str] = None       # LLM reasoning
-    partition_name: Optional[str] = None           # domain partition
-    # Bridge fields for step 6 codeGenerator compatibility (set at runtime)
-    initial_cluster: Optional[Union[int, str]] = None
-    expanded_cluster: Optional[str] = None
-    cluster_theme: Optional[str] = None
+    assigned_code: Optional[str] = None
+    assigned_attribute: Optional[str] = None
+    confidence: Optional[float] = None
+    rationale: Optional[str] = None
+    partition_name: Optional[str] = None
 
 
-class CodeAssignedModel(EmbeddingsModel):
-    """Response-level model with category-assigned ideas."""
+class CodeAssignedModel(IdeasExtractedModel):
+    """Response-level model with code-assigned ideas."""
     response_ideas: Optional[List[CodeAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None
 
 
-# === CODEBOOK  MODELS ========================================================================================================
-class CodebookEntry(BaseModel):
-    code: str
-    definition: str
-    source_cluster: Optional[str] = None    # Support sub-clusters like "12-1", "12-2"
-    inclusion_examples: Optional[List[str]] = None
-    exclusion_examples: Optional[List[str]] = None
-    near_neighbor_label: Optional[str] = None
-    tell_apart_rule: Optional[str] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+# =============================================================================
+# STEP 4: TAXONOMY CACHE MODELS (partition definitions + P1-P7 results)
+# =============================================================================
 
-class CodebookModel(BaseModel):
-    codes: List[CodebookEntry]
-    generation_metadata: Optional[Dict[str, Any]] = None
-    source_variable: Optional[str] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class RefinedSubcode(BaseModel):
-    id: str  # Original code ID(s) - multiple if merged (e.g., "1,2,3")
-    code: str
-    description: str
-    category: str = ""  # Empty string when code is directly under theme; category name for 3-level hierarchy
-    source_cluster: str = ""  # Cluster ID(s) from Step 6 - may be comma-separated for merged codes (e.g., "8,11,23")
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class RefinedCodebookCategory(BaseModel):
-    category: str
-    subcodes: List[RefinedSubcode]
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class RefinedCodebookModel(BaseModel):
-    analysis: str
-    refined_codebook: List[RefinedCodebookCategory]
-    generation_metadata: Optional[Dict[str, Any]] = None
-    source_variable: Optional[str] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class CodeTransformation(BaseModel):
-    phase: str  # "MAP" or "REDUCE"
-    batch_id: Optional[int] = None
-    transformation_type: str  # "PRESERVED", "MERGED", "DROPPED"
-    input_ids: List[str]  # Original sequential IDs
-    output_id: Optional[str] = None  # Result ID (None if DROPPED)
-    source_cluster_ids: List[str]  # Cluster IDs for traceability
-    final_code_label: Optional[str] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class BatchTransformationRecord(BaseModel):
-    batch_id: int
-    input_ids: List[str]
-    input_cluster_map: Dict[str, str]  # id -> cluster_id
-    output_ids: List[str]
-    transformations: List[CodeTransformation]
-    dropped_ids: List[str]
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class RefinementLineage(BaseModel):
-    original_codes: List[Dict[str, Any]]
-    master_id_to_cluster_map: Dict[str, str]
-    map_batches: List[BatchTransformationRecord]
-    reduce_record: Optional[BatchTransformationRecord] = None
-    orphaned_clusters: List[str] = []
-    reconciled_mappings: Dict[str, str] = {}  # orphaned_cluster -> target_code_source_cluster
-    timestamp: Optional[str] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class CodeRefinementResults(BaseModel):
-    original_codebook: List[Dict[str, Any]]
-    refined_codebook: RefinedCodebookModel
-    processing_stats: Dict[str, Any]
-    timestamp: str
-    lineage: Optional[RefinementLineage] = None  # Transformation tracking
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class CodeDefinition(BaseModel):
-    code: str
-    definition: str
-
-class Codebook(BaseModel):
-    code: str
-    definition: str
-    source_cluster:  Optional[str] = None    # Support sub-clusters like "12-1", "12-2"
-    theme: Optional[str] = None
-    theme_description: Optional[str] = None
-    inclusion_examples: Optional[List[str]] = None
-    exclusion_examples: Optional[List[str]] = None
-    near_neighbor_label: Optional[str] = None
-    tell_apart_rule: Optional[str] = None   
-
-class ThemeEnrichedCodebookEntry(CodebookEntry):
-    code: Optional[str] = None
-    definition: Optional[str] = None
-    theme: Optional[str] = None
-    theme_description: Optional[str] = None
-    category: str = ""  # Empty string for 2-level hierarchy; category name for 3-level hierarchy
-    category_description: str = ""  # Category description (empty for 2-level)
-    source_cluster: Optional[Union[int, str]] = None  
-    
-class ThemeEnrichedCodebookModel(CodebookModel):
-    codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
-    themes_summary: Optional[List[Dict[str, Any]]] = None
-    code_to_theme_mapping: Optional[Dict[str, str]] = None
-    theme_methodology: Optional[str] = None
+class DomainDescription(BaseModel):
+    """Description of a domain partition."""
+    partition_name: str = Field(
+        ...,
+        description="Concept type name (data-driven, e.g., 'recommendation', 'product_feature')"
+    )
+    inclusion_definition: str = Field(
+        ...,
+        description=(
+            "What kinds of statements belong to this partition. "
+            "Uses observable criteria."
+        )
+    )
+    boundary_test: str = Field(
+        ...,
+        description=(
+            "A yes/no question a coder asks to determine if a statement "
+            "belongs to this partition."
+        )
+    )
+    diagnostic_signals: List[str] = Field(
+        ...,
+        description="3-5 concrete words or phrases that indicate this partition"
+    )
 
 
-# === MECE CACHE MODELS (step 5 categories) ========================================================================================================
-
-from prompts import (
-    DomainSet, MECECode, MECEVerification,
-)
+class DomainSet(BaseModel):
+    """Complete set of domain partitions."""
+    partitions: List[DomainDescription] = Field(
+        ...,
+        description="List of populated domain partitions"
+    )
 
 
 class DomainResultModel(BaseModel):
-    """Pydantic-serializable version of PartitionMECEResult for caching."""
+    """Pydantic-serializable partition result for caching (taxonomy version)."""
     partition_name: str
     n_labels: int
     n_batches: int
-    reduce_skipped: bool
-    categories: List[MECECode] = Field(default_factory=list)
-    mece_verifications: List[MECEVerification] = Field(default_factory=list)
+    facets: List[Dict[str, Any]] = Field(default_factory=list)
+    facet_assignments: Dict[str, str] = Field(default_factory=dict)
+    attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
+    attribute_assignments: Dict[str, str] = Field(default_factory=dict)
 
+
+class TaxonomyResultsCache(BaseModel):
+    """Cache for taxonomy results (P1-P7): domains, facets, attributes."""
+    partition_set: DomainSet
+    partition_results: Dict[str, DomainResultModel]
+    label_counts: Dict[str, int] = Field(default_factory=dict)
+    label_source: str = ""
+
+
+# =============================================================================
+# STEP 5: CODEBOOK CACHE MODELS (extends taxonomy with generated codes)
+# =============================================================================
 
 class CodingResultsCache(BaseModel):
-    """Top-level cache wrapper for all MECE results.
+    """Cache for codebook results (taxonomy + codes).
 
-    Stores the complete output of the MAP/REDUCE/MECE pipeline:
-    partition definitions, MECE category sets, and label counts.
-    Designed for save_metadata_to_cache() (single model).
+    Extends TaxonomyResultsCache fields with raw_codes from P8-P9.
     """
     partition_set: DomainSet
     partition_results: Dict[str, DomainResultModel]
     label_counts: Dict[str, int] = Field(default_factory=dict)
-    processing_mode: str = ""
     label_source: str = ""
     total_categories: int = 0
-
-
-
+    raw_codes: List[Dict] = Field(default_factory=list)  # ConsolidatedCode dicts

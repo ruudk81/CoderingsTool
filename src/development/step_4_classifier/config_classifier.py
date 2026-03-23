@@ -6,6 +6,7 @@ attribute consolidation → cross-facet dedup.
 """
 
 from dataclasses import dataclass, field
+from config import get_model
 
 
 @dataclass
@@ -85,14 +86,14 @@ class CategoriesConfig:
     # TAXONOMY CLASSIFIER PIPELINE (P1-P7)
     # ==========================================================================
 
-    # LLM settings — per-stage model selection
-    qr_model_p1: str = "gpt-4.1-mini"       # P1: Facet Discovery
-    qr_model_p2: str = "gpt-4.1"            # P2: Facet Consolidation
-    qr_model_p3: str = "gpt-4.1-nano"       # P3: Facet Assignment (classification)
-    qr_model_p4: str = "gpt-4.1-mini"       # P4: Attribute Discovery
-    qr_model_p5: str = "gpt-4.1"            # P5: Attribute Chunk Consolidation
-    qr_model_p6: str = "gpt-4.1-nano"       # P6: Attribute Assignment (classification)
-    qr_model_p7: str = "gpt-4.1-mini"       # P7: Cross-facet Attribute Consolidation
+    # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
+    qr_model_p1: str = get_model("mini")    # P1: Facet Discovery
+    qr_model_p2: str = get_model("default") # P2: Facet Consolidation
+    qr_model_p3: str = get_model("nano")    # P3: Facet Assignment (classification)
+    qr_model_p4: str = get_model("mini")    # P4: Attribute Discovery
+    qr_model_p5: str = get_model("default") # P5: Attribute Chunk Consolidation
+    qr_model_p6: str = get_model("nano")    # P6: Attribute Assignment (classification)
+    qr_model_p7: str = get_model("mini")    # P7: Cross-facet Attribute Consolidation
     qr_temperature: float = 0.3
 
     # P1: Facet Discovery (per-domain, chunked)
