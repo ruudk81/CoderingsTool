@@ -603,7 +603,7 @@ class TaxonomyClassifier:
             )
             print(f"  Phase 4 done in {t_phase4:.1f}s → "
                   f"{total_attrs} attributes across "
-                  f"{len(attr_tasks)} facets")
+                  f"{len(attr_coros)} facets")
 
         # =================================================================
         # PHASE 6 (P6): Per-facet Attribute Assignment
@@ -804,6 +804,7 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool = False,
         excluded_domains: Optional[List[tuple]] = None,
+        phase_state: PhaseRampState = None,
     ) -> tuple:
         """Run facet discovery + LLM consolidation for a single domain.
 
@@ -824,6 +825,7 @@ class TaxonomyClassifier:
         chunk_facets = await self._run_facet_discovery(
             partition_name, batches, part_context, prompt_context,
             excluded_domains=excluded_domains,
+            phase_state=phase_state,
         )
         t_discovery = time.time() - t_discovery
 
@@ -860,6 +862,7 @@ class TaxonomyClassifier:
         part_context: DomainContext,
         prompt_context: PromptContext,
         excluded_domains: Optional[List[tuple]] = None,
+        phase_state: PhaseRampState = None,
     ) -> List[List[DiscoveredFacet]]:
         """Discover facets from chunked observations (concurrent).
 
@@ -908,7 +911,9 @@ class TaxonomyClassifier:
             try:
                 result = await self._llm_call(
                     prompt, FacetDiscoveryResult, self._max_tokens_facet_discovery,
-                    timeout=60.0,
+                    timeout=90.0,
+                    gate=phase_state.gate if phase_state else None,
+                    phase_state=phase_state,
                 )
                 results[chunk_idx] = result
             except Exception as e:
@@ -989,7 +994,7 @@ class TaxonomyClassifier:
 
         result = await self._llm_call(
             prompt, FacetConsolidatedResponse, self._max_tokens_facet_discovery,
-            temperature=0.0, model=self._model_p2, timeout=60.0,
+            temperature=0.0, model=self._model_p2, timeout=90.0,
         )
         return result.facets
 
@@ -1092,6 +1097,7 @@ class TaxonomyClassifier:
         part_context: DomainContext,
         prompt_context: PromptContext,
         gate=None,
+        phase_state: PhaseRampState = None,
     ) -> Dict[str, str]:
         """Assign all ideas in a domain to discovered facets.
 
@@ -1151,6 +1157,7 @@ class TaxonomyClassifier:
                 result = await self._llm_call(
                     prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment,
                     model=self._model_p3, timeout=60.0, gate=gate,
+                    phase_state=phase_state,
                 )
                 return result.assignments
             except Exception as e:
@@ -1266,6 +1273,7 @@ class TaxonomyClassifier:
         part_context: 'DomainContext',
         prompt_context: 'PromptContext',
         gate=None,
+        phase_state: PhaseRampState = None,
     ) -> Dict[str, str]:
         """Assign each idea to an attribute within its facet.
 
@@ -1326,6 +1334,7 @@ class TaxonomyClassifier:
                     prompt, AttributeAssignmentBatch,
                     self._max_tokens_facet_assignment,
                     model=self._model_p6, timeout=60.0, gate=gate,
+                    phase_state=phase_state,
                 )
                 return result.assignments
             except Exception as e:
@@ -1441,6 +1450,7 @@ class TaxonomyClassifier:
         part_context: DomainContext,
         prompt_context: PromptContext,
         excluded_facets: Optional[List[tuple]] = None,
+        phase_state: PhaseRampState = None,
     ) -> List[DiscoveredAttribute]:
         """Discover attributes (L4) within a single facet.
 
@@ -1464,6 +1474,7 @@ class TaxonomyClassifier:
             domain_name, facet_name, facet_description,
             batches, part_context, prompt_context,
             excluded_facets=excluded_facets,
+            phase_state=phase_state,
         )
 
         # Count raw attributes across all chunks
@@ -1502,6 +1513,7 @@ class TaxonomyClassifier:
         part_context: DomainContext,
         prompt_context: PromptContext,
         excluded_facets: Optional[List[tuple]] = None,
+        phase_state: PhaseRampState = None,
     ) -> List[List[DiscoveredAttribute]]:
         """Discover attributes from chunked observations (concurrent).
 
@@ -1555,7 +1567,9 @@ class TaxonomyClassifier:
                 result = await self._llm_call(
                     prompt, AttributeDiscoveryResult,
                     self._max_tokens_attribute_discovery,
-                    model=self._model_p4, timeout=60.0,
+                    model=self._model_p4, timeout=90.0,
+                    gate=phase_state.gate if phase_state else None,
+                    phase_state=phase_state,
                 )
                 results[chunk_idx] = result.attributes
             except Exception as e:
@@ -1640,7 +1654,7 @@ class TaxonomyClassifier:
         result = await self._llm_call(
             prompt, AttributeChunkConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            temperature=0.0, model=self._model_p5, timeout=60.0,
+            temperature=0.0, model=self._model_p5, timeout=90.0,
         )
         return result.attributes
 
@@ -1733,7 +1747,7 @@ class TaxonomyClassifier:
         result = await self._llm_call(
             prompt, AttributeConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            model=self._model_p7, timeout=60.0,
+            model=self._model_p7, timeout=90.0,
         )
         return result.attributes
 
@@ -1814,6 +1828,7 @@ class TaxonomyClassifier:
         """Background monitor: advance ramp + print progress alongside gather."""
         start_time = time.monotonic()
         last_report_time = start_time
+        last_reported_completions = -1  # Track to suppress stale lines
 
         while not state.done:
             await asyncio.sleep(self._ramp_config.monitor_poll_interval)
@@ -1834,26 +1849,23 @@ class TaxonomyClassifier:
                 if new_target != state.gate.limit:
                     state.gate.set_limit(new_target)
 
-            # Progress line every 2s
+            # Progress line every 2s — suppress when no new completions (consolidation tail)
             if now - last_report_time >= 2.0:
-                last_report_time = now
-                rate = state.completions / elapsed if elapsed > 0 else 0
+                if state.completions != last_reported_completions:
+                    last_report_time = now
+                    last_reported_completions = state.completions
+                    rate = state.completions / elapsed if elapsed > 0 else 0
 
-                tpm_pct = rpm_pct = 0.0
-                if self._fetched_limits.tokens_per_minute:
                     current_tpm = await state.tpm_tracker.get_current_tpm()
-                    tpm_pct = current_tpm / (self._fetched_limits.tokens_per_minute * DEFAULT_PROCESSING_CONFIG.rate_limit_headroom) * 100
-                if self._fetched_limits.requests_per_minute:
                     current_rpm = await state.rpm_tracker.get_current_rpm()
-                    rpm_pct = current_rpm / (self._fetched_limits.requests_per_minute * DEFAULT_PROCESSING_CONFIG.rate_limit_headroom) * 100
 
-                timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
-                ramp_target = state.ramp._target
-                print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
-                      f"({rate:.1f}/s) | "
-                      f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% "
-                      f"Conc:{state.gate.active}/{state.gate.limit}→{ramp_target}"
-                      f"{timeout_info}")
+                    timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
+                    ramp_target = state.ramp._target
+                    print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
+                          f"({rate:.1f}/s) | "
+                          f"TPM:{current_tpm:,.0f} RPM:{current_rpm:.0f} "
+                          f"Conc:{state.gate.active}/{state.gate.limit}→{ramp_target}"
+                          f"{timeout_info}")
 
     async def _run_with_ramp(self, coros, state: PhaseRampState):
         """Run coroutines via gather with a background ramp monitor.
