@@ -16,7 +16,10 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root / "src" / "development"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from development.step_4_classNcoder.models_exp import CodeAssignedModel, CodeAssignedSubmodel
+from development.step_4_classNcoder.models_exp import (
+    CodeAssignedModel, CodeAssignedSubmodel, TaxonomyResultsCache,
+)
+from development.step_3_ideaExtractor.models_exp import IdeasExtractedModel
 
 try:
     from development.test_data import TEST_DATA
@@ -48,27 +51,53 @@ def load_ideas(
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
 ) -> List[CodeAssignedSubmodel]:
-    """Load ideas with attribute assignments from code_assignment cache."""
+    """Load ideas with attribute assignments from taxonomy checkpoint + step 3.
+
+    Always reads from the taxonomy checkpoint (source of truth for P3/P6
+    assignments) joined with step 3 ideas for the full idea details.
+    """
     variable_key = generate_enhanced_variable_key(
         selected_variables=[variable],
         is_merged=False,
         sample_size=sample_size,
     )
-
     cache_manager = CacheManager()
-    data = cache_manager.load_from_cache(
-        filename, "taxonomy_codes", variable_key, CodeAssignedModel
+
+    taxonomy_cache = cache_manager.load_metadata_from_cache(
+        filename=filename, step="taxonomy", variable_key=variable_key,
+        model_cls=TaxonomyResultsCache,
+    )
+    step3_data = cache_manager.load_from_cache(
+        filename, "extracted_ideas", variable_key, IdeasExtractedModel
     )
 
-    if not data:
+    if not taxonomy_cache or not step3_data:
         raise FileNotFoundError(
-            f"No cached code_assignment results for variable_key '{variable_key}'."
+            f"No cached results found for variable_key '{variable_key}'.\n"
+            f"Run at least taxonomy (P1-P7) first."
         )
 
+    # Build attribute + facet lookups from taxonomy checkpoint
+    attr_assignments: Dict[str, str] = {}
+    facet_assignments: Dict[str, str] = {}
+    for domain_result in taxonomy_cache.partition_results.values():
+        attr_assignments.update(domain_result.attribute_assignments)
+        facet_assignments.update(domain_result.facet_assignments)
+
+    # Join step 3 ideas with taxonomy assignments
     ideas = []
-    for resp in data:
+    for resp in step3_data:
         if resp.response_ideas:
-            ideas.extend(resp.response_ideas)
+            for idea in resp.response_ideas:
+                explicit_fields = {'assigned_attribute', 'facet'}
+                sub = CodeAssignedSubmodel(
+                    **{k: v for k, v in idea.model_dump().items()
+                       if k in CodeAssignedSubmodel.model_fields
+                       and k not in explicit_fields},
+                    assigned_attribute=attr_assignments.get(idea.idea_id),
+                    facet=facet_assignments.get(idea.idea_id, idea.facet),
+                )
+                ideas.append(sub)
 
     total = len(ideas)
     with_attr = sum(1 for i in ideas if i.assigned_attribute and i.assigned_attribute != "__UNASSIGNED__")
