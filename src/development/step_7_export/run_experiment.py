@@ -1,13 +1,13 @@
 #%%
 
 """
-Step 9: Export Experiment Runner
+Step 7: Export Experiment Runner
 
 Runs the export step in isolation for experimentation.
-Loads Step 8 (code_assignment_direct) results from cache and exports to Excel.
+Loads Step 6 (taxonomy_codes) results from cache and exports to Excel.
 
 Usage:
-    cd src && python -m development.step_9_export.run_experiment
+    cd src && python -m development.step_7_export.run_experiment
 
 Toggle:
     USE_EXPERIMENTAL = True  -> Uses experimental resultsExporter from this folder
@@ -35,11 +35,9 @@ from typing import Optional
 # SHARED IMPORTS (from production)
 # =============================================================================
 import models
-from development.models_exp import CodeAssignedModel as ExpCodeAssignedModel
-try:
-    from development.step_5_clusterer.clusterer_exp import ClusteringMetadataModel as ExpClusteringMetadataModel
-except ImportError:
-    ExpClusteringMetadataModel = None
+from development.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
+from development.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
+from development.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -68,7 +66,6 @@ class ExperimentConfig:
     # Experiment-specific settings
     use_experimental: bool = True
     verbose: bool = True
-    include_visualizations: bool = True
     force_recalc: bool = True
 
 
@@ -96,7 +93,8 @@ else:
 # =============================================================================
 # CACHE OPERATIONS
 # =============================================================================
-def load_step8_cache(config: ExperimentConfig):
+def load_step6_cache(config: ExperimentConfig):
+    """Load step 6 (taxonomy_codes) and step 5 (mece_codes) from cache."""
     variable_key = generate_enhanced_variable_key(
         selected_variables=[config.var_name],
         is_merged=False,
@@ -104,22 +102,34 @@ def load_step8_cache(config: ExperimentConfig):
     )
     cache_manager = CacheManager(CacheConfig())
 
-    # Load code assigned results
-    if not cache_manager.is_cache_valid(config.filename, "code_assignment_direct", variable_key):
+    # Load code assigned results from step 6
+    if not cache_manager.is_cache_valid(config.filename, "taxonomy_codes", variable_key):
         raise FileNotFoundError(
-            f"Cache not found: code_assignment_direct/{variable_key}\n"
-            f"Run pipeline.py with RUN_UNTIL_STEP=8 first."
+            f"Cache not found: taxonomy_codes/{variable_key}\n"
+            f"Run step 6 (codeAssigner) first."
         )
 
     code_assigned_results = cache_manager.load_from_cache(
-        config.filename, "code_assignment_direct", variable_key, ExpCodeAssignedModel
+        config.filename, "taxonomy_codes", variable_key, CodeAssignedModel
     )
 
-    # Load theme enriched codebook
-    codebook_list = cache_manager.load_from_cache(
-        config.filename, "codebook_refinement_enriched", variable_key, models.ThemeEnrichedCodebookModel
+    # Load codebook from step 5 (mece_codes metadata)
+    mece_cache = cache_manager.load_metadata_from_cache(
+        filename=config.filename,
+        step="mece_codes",
+        variable_key=variable_key,
+        model_cls=CodingResultsCache,
     )
-    theme_enriched_codebook = codebook_list[0] if codebook_list else None
+    if mece_cache is None:
+        raise FileNotFoundError(
+            f"Cache not found: mece_codes/{variable_key}\n"
+            f"Run step 5 (codeGenerator) first."
+        )
+
+    # Reconstruct ConsolidatedCode objects from cached dicts
+    codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else []
+    partition_set = mece_cache.partition_set
+    partition_results = mece_cache.partition_results
 
     # Load quality filtered text (optional)
     quality_filtered_text = None
@@ -127,28 +137,10 @@ def load_step8_cache(config: ExperimentConfig):
         quality_filtered_text = cache_manager.load_from_cache(
             config.filename, "quality_filter", variable_key, models.QualityFilteredModel
         )
-    except:
+    except Exception:
         pass
 
-    # Load visualization metadata (optional)
-    clustering_metadata = None
-    extraction_metadata = None
-    if config.include_visualizations:
-        try:
-            metadata_list = cache_manager.load_from_cache(
-                config.filename, "clustering_metadata", variable_key, ExpClusteringMetadataModel
-            ) if ExpClusteringMetadataModel else None
-            clustering_metadata = metadata_list[0] if metadata_list else None
-        except:
-            pass
-        try:
-            extraction_metadata = cache_manager.load_metadata_from_cache(
-                config.filename, "extracted_ideas", variable_key, models.ExtractionMetadata
-            )
-        except:
-            pass
-
-    return code_assigned_results, theme_enriched_codebook, quality_filtered_text, clustering_metadata, extraction_metadata, variable_key, cache_manager
+    return code_assigned_results, codes, partition_set, partition_results, quality_filtered_text, variable_key
 
 
 def get_var_lab(config: ExperimentConfig) -> str:
@@ -163,7 +155,7 @@ def run_experiment(config: ExperimentConfig = None):
     if config is None:
         config = EXPERIMENT_CONFIG
 
-    code_assigned_results, theme_enriched_codebook, quality_filtered_text, clustering_metadata, extraction_metadata, variable_key, cache_manager = load_step8_cache(config)
+    code_assigned_results, codes, partition_set, partition_results, quality_filtered_text, variable_key = load_step6_cache(config)
     var_lab = get_var_lab(config)
 
     verbose_reporter = VerboseReporter(config.verbose)
@@ -171,8 +163,7 @@ def run_experiment(config: ExperimentConfig = None):
     verbose_reporter.section_header("EXPORT EXPERIMENT")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
     verbose_reporter.stat_line(f"Using experimental: {USE_EXPERIMENTAL}")
-    verbose_reporter.stat_line(f"Input: {len(code_assigned_results)} assigned results")
-    verbose_reporter.stat_line(f"Include visualizations: {config.include_visualizations}")
+    verbose_reporter.stat_line(f"Input: {len(code_assigned_results)} assigned results, {len(codes)} codes")
 
     start_time = time.time()
 
@@ -180,14 +171,13 @@ def run_experiment(config: ExperimentConfig = None):
     exporter = ResultsExporter(verbose=config.verbose)
     excel_path = exporter.export_to_excel(
         code_assigned_results,
-        theme_enriched_codebook,
+        codes,
+        partition_set,
+        partition_results,
         config.filename,
         config.var_name,
         quality_filtered_text=quality_filtered_text,
         export_dir=None,
-        include_visualizations=config.include_visualizations,
-        clustering_metadata=clustering_metadata,
-        extraction_metadata=extraction_metadata
     )
 
     elapsed_time = time.time() - start_time
@@ -209,18 +199,17 @@ if __name__ == "__main__":
         filename=config.filename,
         variable_key=config.var_name,
         sample_size=config.sample_size,
-        run_until_step=9
+        run_until_step=7
     )
     verbose_capture.__enter__()
 
     print("=" * 70)
-    print("EXPERIMENT: Step 9 - Export")
+    print("EXPERIMENT: Step 7 - Export")
     print("=" * 70)
     print(f"Dataset: {config.filename}")
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
     print(f"Using experimental: {USE_EXPERIMENTAL}")
-    print(f"Include visualizations: {config.include_visualizations}")
     print("=" * 70)
 
     try:
