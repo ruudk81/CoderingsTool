@@ -594,11 +594,17 @@ class CodebookGenerator:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             model = self._model_p8
 
-        response = await client.chat.completions.with_raw_response.create(
-            model=model,
-            messages=[{"role": "user", "content": "Hi"}],
-            max_tokens=5,
-        )
+        if API_PROVIDER == "azure":
+            response = await client.chat.completions.with_raw_response.create(
+                model=model,
+                messages=[{"role": "user", "content": "Hi"}],
+                max_completion_tokens=5,
+            )
+        else:
+            response = await client.responses.with_raw_response.create(
+                model=model,
+                input="Hi",
+            )
         return extract_rate_limits_from_response(response)
 
     # =========================================================================

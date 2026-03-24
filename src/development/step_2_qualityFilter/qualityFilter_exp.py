@@ -57,6 +57,7 @@ except ImportError:
     from prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
+from config import get_reasoning_params
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
@@ -142,7 +143,7 @@ class TokenBucket:
             logger.debug(f"[TOKEN BUCKET] No reconciliation needed for +{delta_tokens} tokens (underestimated)")
 
 
-TIMEOUT_FLOOR_SECONDS = 20.0  # qualityFilter-specific: 1 prompt per call, lower than ideaExtractor's 60s
+TIMEOUT_FLOOR_SECONDS = 60.0  # Per strategy doc: 60s floor, 180s cold-start/ceiling
 
 
 class LatencyTracker:
@@ -169,7 +170,7 @@ class LatencyTracker:
         """Calculate timeout: generous safety net, not aggressive cutoff"""
         config = self.processing_config
         if self.retry_mode:
-            return 120.0  # Very generous for retry pass
+            return 180.0  # Very generous for retry pass
         if not self.values:
             return max(self.timeout_floor, self.default_timeout)  # Cold start
 
@@ -1018,7 +1019,8 @@ class Grader:
                             response_model=List[QualityFilterLLMResponseExp],
                             prompt=prompt,
                             temperature=self.config.temperature,
-                            max_tokens=self.config.max_tokens
+                            max_tokens=self.config.max_tokens,
+                            **get_reasoning_params(self.model),
                         ),
                         timeout=timeout
                     )
@@ -1219,11 +1221,17 @@ class Grader:
             model = self.model
 
         # Make minimal API call with raw response to get headers
-        response = await client.chat.completions.with_raw_response.create(
-            model=model,
-            messages=[{"role": "user", "content": "Hi"}],
-            max_tokens=5
-        )
+        if API_PROVIDER == "azure":
+            response = await client.chat.completions.with_raw_response.create(
+                model=model,
+                messages=[{"role": "user", "content": "Hi"}],
+                max_completion_tokens=5,
+            )
+        else:
+            response = await client.responses.with_raw_response.create(
+                model=model,
+                input="Hi",
+            )
 
         return extract_rate_limits_from_response(response)
 

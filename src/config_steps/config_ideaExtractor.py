@@ -56,7 +56,7 @@ class TiktokenOffsetConfig:
 @dataclass
 class TimeoutConfig:
     """Configuration for timeouts and latency handling."""
-    default_timeout_seconds: float = 30.0   # Default timeout when no latency data
+    default_timeout_seconds: float = 180.0  # Cold-start timeout (generous for reasoning models)
     default_latency_seconds: float = 2.0    # Default latency estimate
     max_token_acquire_attempts: int = 1000  # Max attempts to acquire tokens before failing
 
@@ -230,7 +230,7 @@ class SegmentationConfig:
     max_code_examples: int = 5  # For verbose output
     max_sample_responses: int = 3  # For verbose output
     # Model (derived from MODEL_FAMILY toggle in config.py)
-    model: str = get_model("mini")
+    model: str = get_model("nano")
     temperature: float = 0.0  # Temperature for generation
     max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
     # Timeout configuration for API calls

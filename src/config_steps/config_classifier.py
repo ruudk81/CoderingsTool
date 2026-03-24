@@ -87,11 +87,11 @@ class CategoriesConfig:
     # ==========================================================================
 
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
-    qr_model_p1: str = get_model("mini")    # P1: Facet Discovery
-    qr_model_p2: str = get_model("default") # P2: Facet Consolidation
+    qr_model_p1: str = get_model("nano")    # P1: Facet Discovery
+    qr_model_p2: str = get_model("mini") # P2: Facet Consolidation
     qr_model_p3: str = get_model("nano")    # P3: Facet Assignment (classification)
-    qr_model_p4: str = get_model("mini")    # P4: Attribute Discovery
-    qr_model_p5: str = get_model("default") # P5: Attribute Chunk Consolidation
+    qr_model_p4: str = get_model("nano")    # P4: Attribute Discovery
+    qr_model_p5: str = get_model("mini") # P5: Attribute Chunk Consolidation
     qr_model_p6: str = get_model("nano")    # P6: Attribute Assignment (classification)
     qr_model_p7: str = get_model("mini")    # P7: Cross-facet Attribute Consolidation
     qr_temperature: float = 0.3

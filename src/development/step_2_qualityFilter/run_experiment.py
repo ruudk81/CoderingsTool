@@ -1,5 +1,8 @@
 #%%
 
+USE_EXPERIMENTAL = True   # Toggle between production and experimental
+EXPERIMENT_N     = None   # n or None (limit responses for quick experiments)
+
 """
 Step 2: Quality Filter Experiment Runner
 

@@ -52,7 +52,7 @@ except ImportError:
     from development.step_3_ideaExtractor import models_exp as models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
 from config_steps.config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
 
@@ -318,14 +318,14 @@ class LatencyTracker:
         tasks, double API costs on retry, and trigger the circuit breaker.
         """
         if self.retry_mode:
-            return 120.0  # Retry mode: very generous
+            return 180.0  # Retry mode: very generous
 
         if not self.values:
-            return 60.0  # Cold start: no data yet, be generous
+            return 180.0  # Cold start: generous for reasoning models
 
-        # Safety net: 3× P95, floor 60s, ceiling 120s
+        # Safety net: 3× P95, floor 60s, ceiling 180s
         p95 = float(np.percentile(list(self.values), 95))
-        return max(60.0, min(p95 * 3.0, 120.0))
+        return max(60.0, min(p95 * 3.0, 180.0))
 
 
 # === OPTIMAL STRATEGY CLASSES ========================================================================================================
@@ -1014,7 +1014,8 @@ class IdeaExtractor:
                 model=self.model,
                 response_model=response_model,
                 prompt=prompt,
-                temperature=0.0
+                temperature=0.0,
+                **get_reasoning_params(self.model),
             )
 
         if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
@@ -1128,7 +1129,8 @@ class IdeaExtractor:
                 model=self.model,
                 response_model=PrimaryDimensionConsolidatedResponse,
                 prompt=prompt,
-                temperature=0.0
+                temperature=0.0,
+                **get_reasoning_params(self.model),
             )
 
         if self.verbose_reporter.enabled:
@@ -1188,7 +1190,8 @@ class IdeaExtractor:
                 model=self.model,
                 response_model=DomainConsolidatedResponse,
                 prompt=prompt,
-                temperature=0.0
+                temperature=0.0,
+                **get_reasoning_params(self.model),
             )
 
         if self.verbose_reporter.enabled:
@@ -1811,7 +1814,8 @@ class IdeaExtractor:
                             prompt=prompt,
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens,
-                            max_retries=3
+                            max_retries=3,
+                            **get_reasoning_params(self.model),
                         ),
                         timeout=timeout
                     )
@@ -2112,11 +2116,17 @@ class IdeaExtractor:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             model = self.model
 
-        response = await client.chat.completions.with_raw_response.create(
-            model=model,
-            messages=[{"role": "user", "content": "Hi"}],
-            max_tokens=5
-        )
+        if API_PROVIDER == "azure":
+            response = await client.chat.completions.with_raw_response.create(
+                model=model,
+                messages=[{"role": "user", "content": "Hi"}],
+                max_completion_tokens=5,
+            )
+        else:
+            response = await client.responses.with_raw_response.create(
+                model=model,
+                input="Hi",
+            )
 
         return extract_rate_limits_from_response(response)
 

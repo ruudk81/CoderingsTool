@@ -45,7 +45,7 @@ OUTPUT_HISTORY_MAXLEN = 5             # EMA output token history window
 ERROR_WINDOW_SIZE = 50                # Token estimation error tracking window
 
 # Timeout and latency defaults
-DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data
+DEFAULT_TIMEOUT_SECONDS = 180.0       # Cold-start timeout (generous for reasoning models)
 DEFAULT_LATENCY_SECONDS = 2.0         # Default latency estimate
 
 # Progress reporting

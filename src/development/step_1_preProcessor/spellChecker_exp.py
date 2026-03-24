@@ -21,6 +21,7 @@ from aiolimiter import AsyncLimiter
 from utils.verboseReporter import VerboseReporter, ProcessingStats
 from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
+from config import get_reasoning_params
 
 # === CONFIG (from experimental config_exp.py) ========================================================================================================
 try:
@@ -167,7 +168,7 @@ class LatencyTracker:
         """Calculate timeout based on EMA and token count with configurable bounds"""
         config = self.processing_config
         if not self.values:
-            return max(config.adaptive_timeout_min_seconds, 30.0)  # Default 30s or configured minimum, whichever is higher
+            return max(config.adaptive_timeout_min_seconds, 180.0)  # Cold-start: generous for reasoning models
 
         # Use P95 latency as base
         p95 = np.percentile(list(self.values), 95)
@@ -1057,6 +1058,7 @@ Suggested corrections: {task_dict['suggestions']}
                     response_model=ProbeResponse,
                     temperature=self.config.temperature,
                     track_usage=False,  # Manual tracking for probes
+                    **get_reasoning_params(self.model),
                 )
 
                 # Extract usage from instructor's _raw_response
@@ -1087,11 +1089,17 @@ Suggested corrections: {task_dict['suggestions']}
                     model = self.model
 
                 # Make minimal API call with raw response to get headers
-                response = await client.chat.completions.with_raw_response.create(
-                    model=model,
-                    messages=[{"role": "user", "content": "Hi"}],
-                    max_tokens=5
-                )
+                if API_PROVIDER == "azure":
+                    response = await client.chat.completions.with_raw_response.create(
+                        model=model,
+                        messages=[{"role": "user", "content": "Hi"}],
+                        max_completion_tokens=5,
+                    )
+                else:
+                    response = await client.responses.with_raw_response.create(
+                        model=model,
+                        input="Hi",
+                    )
 
                 return extract_rate_limits_from_response(response)
 
@@ -1406,7 +1414,8 @@ Suggested corrections: {task_dict['suggestions']}
                             model=self.model,
                             prompt=full_prompt,
                             response_model=LLMCorrectionResponse,
-                            temperature=self.config.temperature
+                            temperature=self.config.temperature,
+                            **get_reasoning_params(self.model),
                         ),
                         timeout=timeout_seconds
                     )

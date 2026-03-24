@@ -141,18 +141,19 @@ def get_reasoning_params(model: str = None) -> dict:
 
     Usage in _llm_call: pass **get_reasoning_params(model) as kwargs to llm_create_async.
     For chat models (gpt-4.1 family): returns {} — no extra params.
-    For reasoning models (gpt-5 family): returns {reasoning: {effort, ...}, text: {format: ...}}.
+    For reasoning models (gpt-5 family): returns {reasoning: {effort: ...}}.
+
+    NOTE: We only pass 'reasoning' (effort), NOT 'text' (verbosity).
+    The 'text' parameter conflicts with instructor's structured output format.
+    Instructor controls the output format; adding text.format overrides it
+    and causes InstructorRetryException on every call.
     """
     if model is None:
         model = get_model()
-    # Check if any reasoning family prefix matches
-    family = model.rsplit("-", 1)[0] if "-" in model else model
-    # Handle e.g. "gpt-5-mini" → family "gpt-5", "gpt-5" → family "gpt-5"
     for rf in _REASONING_FAMILIES:
         if model == rf or model.startswith(rf + "-"):
             return {
                 "reasoning": {"effort": REASONING_EFFORT},
-                "text": {"format": {"type": "text", "verbosity": TEXT_VERBOSITY}},
             }
     return {}
 
@@ -426,11 +427,14 @@ class ProcessingConfig:
     rate_limit_headroom: float = 0.9  # Use 80% of API limits for safety
 
     # Concurrency bounds
-    concurrency_cap_default: int = 1000
-    concurrency_cap_permissive: int = 10000
-    concurrency_min_default: int = 100
+    # Cap at 200: even with 30K RPM, a single Python process can't efficiently
+    # manage 500+ in-flight HTTP connections. The rate limiter paces requests,
+    # but the concurrency gate caps how many are in-flight simultaneously.
+    concurrency_cap_default: int = 200
+    concurrency_cap_permissive: int = 500
+    concurrency_min_default: int = 10
     concurrency_min_permissive: int = 0
-    concurrency_min_conservative: int = 10
+    concurrency_min_conservative: int = 5
 
     # Adaptive timeout bounds
     adaptive_timeout_min_seconds: float = 15.0
