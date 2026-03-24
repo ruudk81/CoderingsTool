@@ -2,7 +2,7 @@
 
 Reference document for the rate limiting system across all pipeline steps — including multi-phase pipelines (step 4 classifier, step 5 codeGenerator, step 6 codeAssigner) using `asyncio.gather` dispatch, and single-phase steps (step 2 qualityFilter, step 3 ideaExtractor) using worker/queue dispatch.
 
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ---
 
@@ -35,7 +35,7 @@ Request flow:
          │
          ▼
   ┌─────────────┐
-  │  Timeout     │  Safety net: 60s floor, P95×3 adaptive
+  │  Timeout     │  Safety net: step-type floor (20s/45s), P95×3 adaptive
   │  (generous)  │  Only catches truly stuck requests
   └──────┬──────┘
          │
@@ -68,7 +68,7 @@ The system manages four independent constraints:
 
 ### Design principles
 
-1. **Generous timeouts** — 60s floor, 180s ceiling, P95×3 adaptive. Cold-start 180s. Only catches truly stuck requests. Timed-out tasks get fallback (no retry) since they're genuine outliers. Ceiling must accommodate the heaviest prompt type in the pipeline.
+1. **Step-type-aware timeouts** — cold-start floors of 20s (single processing) or 45s (chunk processing), 180s ceiling, P95×3 adaptive after warm-up. Only catches truly stuck requests. Timed-out tasks get fallback (no retry) since they're genuine outliers.
 
 2. **Completion-based ramp** — concurrency scales with progress, not wall-clock time. Works whether processing takes 5 seconds or 5 minutes.
 
@@ -77,6 +77,8 @@ The system manages four independent constraints:
 4. **Workers match capacity** — worker count equals ramp target, scaled up after warm-up calibration. No idle workers queued at the semaphore.
 
 5. **Timeout computed after semaphore** — prevents stale cold-start values when all workers acquire slots simultaneously before any latency data exists.
+
+6. **Self-tuning across providers and models** — no hardcoded concurrency numbers. Cold start derived from RPM, warm-up replaces estimates with measurements. Azure (600 RPM → start at 10) and OpenAI (30K RPM → start at 50) use the same logic. Nano (1.5s latency) and reasoning (20s latency) discover their own operating point. The binding constraint (RPM, TPM, or undocumented concurrency ceiling) is discovered through monitoring, not assumed.
 
 ---
 
@@ -117,26 +119,56 @@ Phase 3: Start processing at full computed concurrency
 Skip probes. Start conservatively, let real production completions calibrate the system, then ramp toward optimal.
 
 ```
-Phase 1: Theoretical Little's Law estimate (from model limits + tiktoken token estimates)
-Phase 2: Start at 50% of estimate (conservative)
-Phase 3: Process real tasks, collect latency data
-Phase 4: After 15-30 completions, recalibrate with measured P10 latency
-Phase 5: Ramp linearly toward 90% of recalibrated Little's Law
+Phase 1: Cold Start (t=0)
+  - Fetch RPM/TPM from API headers
+  - Estimate latency from model-tier defaults (nano=2s, mini=5s, default=10s, reasoning=20s)
+  - Estimate avg_tokens via tiktoken on 10 sample prompts × output ratio (chat=1.15x, reasoning=2.5x)
+  - Compute: throughput = min(RPM/60, TPM/60/avg_tokens)
+  - Compute: little_law = throughput × latency_estimate
+  - Cold semaphore = min(RPM/60, 50)  ← capped, see below
+  - Rate limit = 1/throughput (seconds between admissions)
+
+Phase 2: Warm-Up (t=0 to t=10s)
+  - Process real tasks, collect latency + token data
+  - After 10s (or 15-30 completions), recalibrate with measured values:
+    - new_throughput = min(RPM/60, TPM/60/measured_avg_tokens)
+    - new_little_law = new_throughput × measured_latency
+    - target_semaphore = min(new_little_law × 0.90, num_tasks)
+  - Post-warm-up jump (see below)
+
+Phase 3: Ramp toward target (+10% every 5s, guided by 4-signal monitoring)
 ```
 
-Concurrency scales linearly with completion progress:
+**Why cold semaphore is capped at 50:** OpenAI has an undocumented concurrent connection ceiling (~50-200 for most tiers, per community reports). The cap is a safety net — the warm-up discovers the real ceiling. For constrained deployments (Azure 600 RPM): `min(10, 50) = 10` — naturally conservative. For high-tier deployments (OpenAI 30K RPM): `min(500, 50) = 50` — capped, safe.
+
+**Post-warm-up jump:** The jump size depends on whether the warm-up showed stress:
+
+- **No stress (latency stable, no timeouts):** Jump to `min(100, Little's Law)`
+- **Stress detected (latency increasing or timeouts):** Hold at cold_start, ramp gently
+
+The 100 cap is double the cold-start ceiling (50) — a known-safe doubling from a proven baseline.
 
 ```
-  0% complete → 50% of Little's Law (start_fraction)
- 50% complete → 70% of Little's Law
-100% complete → 90% of Little's Law (target_fraction)
+Azure  (cold_start=20, little_law=60):   no stress → jump to min(100, 60)   = 60  → ramp from 60
+OpenAI (cold_start=50, little_law=1651): no stress → jump to min(100, 1651) = 100 → ramp from 100
 ```
 
-This replaces time-based ramping which failed when processing completed faster than the ramp duration.
+**Ramp from post-warm-up (+10% every 5s):**
 
-**Two stop signals:**
-1. **Throughput drop** — completion rate declining >10% for 2 consecutive measurement windows
-2. **Queue congestion** — timeout rate >5% in a measurement window
+After the jump, ramp gently toward `target_semaphore`, guided by the 4-signal monitoring (see below):
+
+```
+OpenAI example: 100 → 110 → 121 → 133 → 146 → ... → signal says stop
+Azure example:   60 →  66 →  73 →  80 →  88 → ... → signal says stop
+```
+
+**+10% is critical.** At +25%, the system overshoots and causes timeouts (85s, 3 timeouts). At +10%, the latency signal catches pressure early and the ramp self-corrects (36s, 0 timeouts).
+
+At each 5s interval, check all four monitoring signals. Only ramp if ALL are green. The ramp **stops** when either:
+- `target_semaphore` is reached (full utilization), or
+- Any signal goes yellow/red (practical ceiling discovered)
+
+Whichever comes first becomes the **operating point**.
 
 After warm-up calibration, Little's Law is recalculated with measured latency (P10, to avoid queuing-inflated values). The ramp adjusts start/target but **preserves congestion detection state** so ongoing throughput decline isn't forgotten.
 
@@ -197,6 +229,38 @@ With 60s timeouts, the circuit breaker should rarely trip. If it does, something
 
 Applicable to both Option A and Option B, though more valuable with Option B where concurrency changes over time.
 
+### 4-signal monitoring model
+
+The ramp, hold, and throttle decisions are governed by four signals evaluated every 5 seconds. This unified model replaces ad-hoc checks scattered across layers — every 5s interval evaluates all four signals together.
+
+#### Primary signals
+
+| Signal | Green (ramp up) | Yellow (hold) | Red (throttle down) |
+|---|---|---|---|
+| **Queue health** | Queue shrinking or stable (outflow >= inflow) | Queue slowly growing | Queue rapidly growing |
+| **RPM utilization** | < 80% of limit | 80-90% of limit | > 90% of limit |
+| **TPM utilization** | < 80% of limit | 80-90% of limit | > 90% of limit |
+| **Latency trend** | P95 stable or decreasing | P95 increased >10% vs previous check | P95 increased >25% vs previous check |
+
+Limit = 90% of RPM/TPM constraint (10% headroom). So "90% of limit" = ~81% of raw RPM/TPM.
+
+**Latency trend is the most important signal.** RPM/TPM utilization stayed <5% throughout all tests on high-tier deployments. Queue depth was always shrinking. Only P95 latency trend caught the API-side pressure that caused timeouts — the API accepts requests within limits but queues them server-side, causing latency spikes invisible to RPM/TPM tracking.
+
+#### Defensive signals
+
+| Signal | Action |
+|---|---|
+| Timeout rate > 5% | Circuit breaker: reduce concurrency by 20%, cooldown 60s |
+| 429 rate limit error | Exponential backoff on affected request, reduce admission rate |
+
+#### Decision logic
+
+- All four green → increase semaphore by +10% (add workers) toward `target_semaphore`
+- Any yellow → hold current semaphore
+- Any red → reduce semaphore by 20% (remove workers), reduce admission rate
+
+Monitor internally on every completion (for latency/token tracking), but only adjust concurrency every 5s to avoid oscillation.
+
 ### Multi-phase pipeline adaptation
 
 The architecture above was designed for single-model, single-phase worker/queue pipelines (steps 2/3). Multi-phase pipelines (step 4 classifier: 7 phases, 4-5 models) require adaptations:
@@ -232,16 +296,40 @@ Aggressive timeouts create a vicious cycle:
 
 **Solution:** Accept that ~5% of API calls take 10-30s. Set timeout high enough that only truly stuck requests (>60s) are caught. Those get fallback — no retry, since they're genuine outliers.
 
-### Timeout computation
+### Step-type-aware timeout defaults
+
+Two prompt types determine the cold-start timeout floor:
+
+| Prompt type | Cold-start floor | Steps | Description |
+|---|---|---|---|
+| **Single processing** | 20s | 1 (spell check), 2 (quality filter), 3 (idea extraction), 8 (code assignment) | One response per API call |
+| **Chunk processing** | 45s | 4 (embedding/classifier discovery), 5 (codebook generation), 6 (codebook refinement) | Batch of observations per API call |
+
+These are initial defaults — adjust upward if testing reveals timeouts on legitimate requests.
+
+### Timeout by lifecycle phase
+
+| Phase | Timeout | Rationale |
+|---|---|---|
+| Cold start (no latency data) | Step-type floor (20s or 45s) | Type-aware — no need for blanket 180s when we know the prompt type |
+| After warm-up | `max(step_type_floor, min(P95 × 3, 180s))` | Data-driven, adaptive, respects the step-type floor |
+| Retry pass | 180s | Very generous — API pressure at lowest after main batch |
 
 ```python
-def get_timeout(est_tokens):
-    if retry_mode:    return 180.0   # Very generous
-    if no data yet:   return 180.0   # Cold start — no latency data, be generous
-    else:             return max(60.0, min(P95 * 3.0, 180.0))  # Adaptive safety net
+# Step-type floors
+TIMEOUT_FLOORS = {
+    "single": 20.0,   # steps 1, 2, 3, 8
+    "chunk":  45.0,    # steps 4, 5, 6
+}
+
+def get_timeout(prompt_type, retry_mode=False):
+    floor = TIMEOUT_FLOORS[prompt_type]
+    if retry_mode:    return 180.0                          # Very generous
+    if no data yet:   return floor                          # Cold start — type-aware
+    else:             return max(floor, min(P95 * 3.0, 180.0))  # Adaptive, respects floor
 ```
 
-Cold-start must be generous because complex prompts (100+ observations) can take 30-45s. A 60s cold-start causes unnecessary timeouts before the latency tracker has data.
+The cold-start no longer needs a blanket 180s because the step type is known at initialization. After warm-up, measured P95 latency takes over — the floor only prevents the adaptive formula from going below the known minimum for that prompt type.
 
 **Critical:** timeout is computed AFTER semaphore acquisition, not before. This prevents all workers from getting stale cold-start values when they acquire slots simultaneously at T+0.
 
@@ -473,8 +561,8 @@ These are implementation choices — the default (same timeout, one pass, reduce
 ### Timeout (LatencyTracker)
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| Cold start | 180s | No latency data yet — generous for complex prompts |
-| Floor | 60s | Minimum timeout |
+| Cold start (single) | 20s | Steps 1, 2, 3, 8 — one response per call |
+| Cold start (chunk) | 45s | Steps 4, 5, 6 — batch of observations per call |
 | Ceiling | 180s | Maximum timeout (accommodates heavy discovery prompts) |
 | Multiplier | P95 × 3.0 | Adaptive safety net |
 | Retry mode | 180s | Very generous for retry pass |
@@ -493,6 +581,16 @@ These are implementation choices — the default (same timeout, one pass, reduce
 | Latency metric | P10 | Avoids queuing-inflated values |
 
 ---
+
+## Monitoring output format
+
+Per-phase progress line every 5 seconds:
+
+```
+[STEP2] 150/2000 (12.3/s) | TPM:45% RPM:62% Conc:35/50 Queue:12 | P50:1.2s P95:2.1s
+```
+
+Fields: completion count and throughput, TPM/RPM utilization as percentage of limit, current/target concurrency, queue depth, latency percentiles (P50, P95). Suppress output when no completions in last interval.
 
 ## Example output
 
@@ -530,6 +628,12 @@ Completed 1375 tasks in 65.8s
 
 ## Lessons learned
 
+### +10% ramp rate is critical
++25% overshoots and causes timeouts. +10% allows the latency signal to catch pressure before it cascades. Proven: 36s/0 timeouts vs 85s/3 timeouts at +25%.
+
+### Latency trend is the most important monitoring signal
+RPM/TPM utilization stayed <5% throughout all tests on high-tier deployments. Queue depth was always shrinking. Only P95 latency trend caught the API-side pressure that caused timeouts — the API accepts requests within limits but queues them server-side, causing latency spikes invisible to other signals.
+
 ### Aggressive timeouts are counterproductive
 The biggest performance win came from raising the timeout floor from 10s to 60s. Tight timeouts don't make processing faster — they create a retry tail that doubles both cost and wall-clock time.
 
@@ -557,9 +661,26 @@ Steps 2/3 process single responses with small prompts (P50: 3-5s). Step 4 discov
 ### Don't throttle concurrency when capacity dwarfs demand
 With high-tier API limits (Little's Law = 4250) and 26 tasks, starting at 50% of task count (13) wastes half the phase ramping up while the API is idle. The rate limiter and token bucket already prevent quota violations — the concurrency gate should only throttle when demand approaches capacity. Rule: `initial = max(50% of Little's Law, num_tasks)`.
 
+### Model capability determines prompt complexity, not just cost
+gpt-5-nano couldn't handle a decision-guide prompt (340 false don't-knows). gpt-5-mini handled it perfectly (91 correct). Match prompt complexity to model capability.
+
+### Pre-filter known non-answers before LLM
+527 empty responses were consuming API calls for nothing. Pre-filtering saves 26% of API costs and processing time.
+
 ---
 
 ## Changelog
+
+### 2026-03-24: Consolidated optimal API request strategy
+
+Merged `optimal_api_request_strategy.md` into this document. Key additions:
+1. **Unified 4-signal monitoring model** — queue health, RPM%, TPM%, latency trend as a single decision matrix with green/yellow/red thresholds
+2. **Cold-start cap at 50** — explicit reasoning about undocumented OpenAI concurrency ceiling
+3. **Post-warm-up jump logic** — jump to min(100, Little's Law) if no stress, else hold and ramp gently
+4. **+10% ramp rate** — integrated into ramp mechanics (not just lessons); proven vs +25% which overshoots
+5. **Timeout-by-phase table** — clean summary of cold start / after warm-up / retry timeouts
+6. **Monitoring output format** — standardized progress line with all key metrics
+7. **Additional lessons** — model capability vs prompt complexity, pre-filtering non-answers
 
 ### 2026-03-23: Multi-phase pipeline adoption + capacity-relative starting
 
