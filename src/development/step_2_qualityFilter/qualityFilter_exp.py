@@ -860,6 +860,7 @@ class Grader:
         self._rpm_window = deque()  # (timestamp,) entries
         self._tpm_window = deque()  # (timestamp, tokens) entries
         self._prev_queue_depth = 0  # For queue health trend
+        self._prev_p95 = None       # For latency trend detection
 
         # Layer 4: Circuit breaker
         self.circuit_breaker = ConcurrencyCircuitBreaker(
@@ -935,10 +936,21 @@ class Grader:
         else:
             tpm_signal = 'green'
 
+        # Latency trend (P95 increasing → API under pressure)
+        latency_signal = 'green'
+        if len(self.latency_tracker.values) >= 5:
+            current_p95 = float(np.percentile(list(self.latency_tracker.values), 95))
+            if self._prev_p95 is not None:
+                if current_p95 > self._prev_p95 * 1.25:  # P95 jumped >25%
+                    latency_signal = 'red'
+                elif current_p95 > self._prev_p95 * 1.10:  # P95 crept up >10%
+                    latency_signal = 'yellow'
+            self._prev_p95 = current_p95
+
         self._prev_queue_depth = queue_depth
 
         # Any red → red, any yellow → yellow, all green → green
-        signals = [queue_signal, rpm_signal, tpm_signal]
+        signals = [queue_signal, rpm_signal, tpm_signal, latency_signal]
         if 'red' in signals:
             return 'red'
         if 'yellow' in signals:
@@ -1608,7 +1620,21 @@ class Grader:
         """Main entry point for quality filtering"""
         self._stats.start_timing()
         self._stats.input_count = len(self.responses)
-        
+
+        # Pre-filter empty/None responses (code 99999998 = no response)
+        # Dev pipeline step 1 doesn't always mark these, so we catch them here
+        empty_values = {'none', 'nan', '<na>', 'na', ''}
+        pre_filter_count = 0
+        for r in self.responses:
+            if r.quality_filter_code is None:
+                response_text = str(r.response).strip() if r.response else ""
+                if not response_text or response_text.lower() in empty_values:
+                    r.quality_filter_code = 99999998
+                    r.quality_filter = True
+                    pre_filter_count += 1
+        if pre_filter_count > 0:
+            print(f"Pre-filtered {pre_filter_count} empty/None responses (code 99999998)")
+
         # Separate items that need processing from pre-filtered
         items_to_process = [r for r in self.responses if r.quality_filter_code is None]
         pre_filtered_items = [r for r in self.responses if r.quality_filter_code is not None]
@@ -1675,33 +1701,39 @@ class Grader:
                 len(filtered_examples) < self.config.max_filter_examples and
                 result.quality_filter_code is not None and
                 (result.quality_filter_code % 100 == 97 or result.quality_filter_code % 100 == 99)):
-                filtered_examples.append(f'"{result.response}" (quality filter: meaningless)')
+                code_label = "don't know" if result.quality_filter_code == 99999997 else "gibberish/off-topic"
+                filtered_examples.append(f'"{result.response}" ({code_label})')
         
         self._stats.output_count = len([r for r in self._results if not r.quality_filter])
         self._stats.end_timing()
         
-        # Report statistics
+        # Report statistics — clear separation of total vs LLM-processed
         total = len(self._results)
-        filtered_count = sum(1 for r in self._results if r.quality_filter)
         llm_processed = len(items_to_process)
-        
-        self.verbose_reporter.stat_line(f"Total responses: {total}")
-        self.verbose_reporter.stat_line(f"LLM processed: {llm_processed}")
-        self.verbose_reporter.stat_line(f"Pre-filtered: {len(pre_filtered_items)}")
-        
-        if quality_counts["high"] > 0:
-            self.verbose_reporter.stat_line(f"High quality: {quality_counts['high']} responses ({quality_counts['high']/llm_processed*100:.1f}% of LLM processed)" if llm_processed > 0 else "High quality: 0 responses")
-        if quality_counts["medium"] > 0:
-            self.verbose_reporter.stat_line(f"Medium quality: {quality_counts['medium']} responses ({quality_counts['medium']/llm_processed*100:.1f}% of LLM processed)" if llm_processed > 0 else "Medium quality: 0 responses")
-        if quality_counts["low"] > 0:
-            self.verbose_reporter.stat_line(f"Low quality: {quality_counts['low']} responses ({quality_counts['low']/llm_processed*100:.1f}% of LLM processed)" if llm_processed > 0 else "Low quality: 0 responses")
-        
-        self.verbose_reporter.stat_line(f"Total filtered out: {filtered_count} responses ({filtered_count/total*100:.1f}%)")
-        
-        # Show filtered examples
+        pre_filtered_count = len(pre_filtered_items)
+        llm_filtered = sum(1 for r in self._results
+                           if r.quality_filter and r.quality_filter_code in (99999997, 99999999))
+        llm_dont_know = sum(1 for r in self._results if r.quality_filter_code == 99999997)
+        llm_gibberish = sum(1 for r in self._results if r.quality_filter_code == 99999999)
+        meaningful = sum(1 for r in self._results if not r.quality_filter)
+
+        print(f"\n{'─'*60}")
+        print(f"SUMMARY ({total} total responses)")
+        print(f"{'─'*60}")
+        print(f"  Pre-filtered (empty/NA, code 99999998): {pre_filtered_count:>5}")
+        print(f"  LLM evaluated:                          {llm_processed:>5}")
+        print(f"    → Don't know (99999997):              {llm_dont_know:>5}")
+        print(f"    → Gibberish  (99999999):              {llm_gibberish:>5}")
+        print(f"    → Meaningful (null):                  {meaningful:>5}")
+        print(f"{'─'*60}")
+        print(f"  Total filtered out:                     {pre_filtered_count + llm_filtered:>5}  ({(pre_filtered_count + llm_filtered)/total*100:.1f}%)")
+        print(f"  Total meaningful (passed):              {meaningful:>5}  ({meaningful/total*100:.1f}%)")
+        print(f"{'─'*60}")
+
+        # Show filtered examples (LLM-filtered only, not pre-filtered)
         if filtered_examples:
-            self.verbose_reporter.sample_list("Sample filtered responses", filtered_examples)
-        
+            self.verbose_reporter.sample_list("Sample LLM-filtered responses", filtered_examples)
+
         self.verbose_reporter.step_complete("Quality filtering completed")
 
         # Report any processing failures prominently
@@ -1711,7 +1743,7 @@ class Grader:
             print(self.get_failure_report(total_responses=llm_processed))
             print(f"{'='*70}")
         else:
-            print(f"\nAll {llm_processed} responses processed successfully (0 errors)")
+            print(f"\nAll {llm_processed} LLM-evaluated responses processed successfully (0 errors)")
 
         return self._results
 

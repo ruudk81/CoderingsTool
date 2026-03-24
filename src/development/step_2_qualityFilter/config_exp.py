@@ -88,7 +88,7 @@ WARM_UP_MIN_COMPLETIONS = 3           # Minimum completions needed for calibrati
 
 # Signal-based ramp
 RAMP_INTERVAL_SECONDS = 5.0           # Evaluate signals every 5s
-RAMP_INCREASE_FACTOR = 1.25           # +25% concurrency when all signals green
+RAMP_INCREASE_FACTOR = 1.10           # +10% concurrency when all signals green
 RAMP_DECREASE_FACTOR = 0.80           # -20% concurrency when any signal red
 
 # Signal thresholds (as fraction of 90%-headroom limit)

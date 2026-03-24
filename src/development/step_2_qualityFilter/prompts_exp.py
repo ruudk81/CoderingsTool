@@ -12,7 +12,10 @@ from pydantic import BaseModel, Field
 GRADER_INSTRUCTIONS = """
 You are a research assistant evaluating an open-ended survey response.
 
-Your task: classify the response as meaningful, uncertain, or unusable.
+Your task: classify the response as one of the following:
+- Meaningful (null) — the response attempts to answer the question
+- Uncertain (99999997) — the respondent expresses inability or unwillingness to answer
+- Unusable (99999999) — the response is gibberish or completely off-topic
 
 ---
 
@@ -33,44 +36,60 @@ Response to evaluate:
 
 ---
 
-# Coding Rules
+# Step-by-Step Decision Guide
 
-## 99999997 — Don't Know / Uncertainty
-The respondent clearly expresses:
-- "I don't know", "No idea", "Unsure"
-- "N/A", "Not applicable"
-- "?", or any equivalent expression of uncertainty
+## 1. Check for Uncertainty → 99999997
 
-## 99999999 — Gibberish OR Completely Off-topic
+Classify as Uncertain if the response explicitly indicates the respondent cannot or will not provide an answer.
 
-### A) Gibberish:
-- Random characters ("asdf", "!!!")
-- Placeholder text ("test", "lorem ipsum")
-- Repeating the question without answering
+This includes:
+- Direct statements: "I don't know", "No idea", "Not sure", "Unsure"
+- Absence of answer: "No answer", "No explanation", "N/A", "Not applicable"
+- Minimal uncertainty signals: "?", "-"
+- Equivalent phrases in any language
 
-### B) Completely Off-topic:
-- Response is understandable BUT has ZERO relation to the question
-- Does not attempt to answer at all
+RULE: If the respondent admits uncertainty or declines to answer, do NOT try to interpret further. Return 99999997.
 
-IMPORTANT:
-- If there is ANY attempt to answer, even weak or vague → DO NOT use this code
-- Minimal answers like "Nothing" or "None" can be valid → treat as meaningful if relevant
+## 2. Check for Unusable → 99999999
 
-## null — Meaningful
-The response engages with the survey question in any way, even if short, vague, or poorly written.
+### A) Gibberish
+- Random or meaningless input: "asdf", "qwerty", "!!!", "123123"
+- Placeholder or test text: "test", "lorem ipsum"
+- Copying/repeating the question without answering
+- Strings with no interpretable meaning
+
+### B) Completely Off-topic
+- The response is understandable but does not attempt to answer the question at all
+- No logical connection to the survey question
+
+RULE: If a reasonable human reader would say "this doesn't answer the question at all", return 99999999.
+
+## 3. Otherwise → Meaningful (null)
+
+Classify as Meaningful if the response attempts to answer the question, even if:
+- It is vague
+- It is poorly written
+- It is short or incomplete
+- It contains minor irrelevance
+
+RULE: Any attempt to answer = meaningful. Return null.
 
 ---
 
-# Decision Process
+# Edge Cases
 
-Step 1: Does it express uncertainty?
-→ YES: return 99999997
+- Very short answers ("yes", "no", "maybe") → Meaningful if they logically relate to the question
+- Partially relevant responses → Meaningful (do NOT over-penalize)
+- Mixed responses (relevant + irrelevant content) → Meaningful if any part answers the question
+- Sarcasm or unclear tone → Meaningful if it still answers; Unusable if not
 
-Step 2: Is it gibberish or completely off-topic?
-→ YES: return 99999999
+---
 
-Else:
-→ return null
+# Priority Order
+
+1. Uncertainty (99999997) → if explicitly stated
+2. Unusable (99999999) → if no valid attempt to answer
+3. Meaningful (null) → everything else
 
 ---
 

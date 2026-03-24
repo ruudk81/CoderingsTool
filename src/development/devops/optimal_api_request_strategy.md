@@ -77,7 +77,7 @@ Azure  (cold_start=20, little_law=60):   no stress → jump to min(100, 60)   = 
 OpenAI (cold_start=50, little_law=1651): no stress → jump to min(100, 1651) = 100 → ramp from 100
 ```
 
-### Ramp from post-warm-up (+25% every 5s)
+### Ramp from post-warm-up (+10% every 5s)
 
 After the jump, ramp gently toward `target_semaphore`, guided by monitoring signals:
 
@@ -86,7 +86,7 @@ OpenAI example: 100 → 125 → 156 → 195 → 244 → ... → signal says stop
 Azure example:   18 →  23 →  29 →  36 →  45 → ... → signal says stop
 ```
 
-At each 5s interval, check all three signals (Phase 3). Only ramp if ALL are green.
+At each 5s interval, check all four signals (Phase 3). Only ramp if ALL are green.
 
 The ramp **stops** when either:
 - `target_semaphore` is reached (full utilization), or
@@ -98,7 +98,7 @@ Whichever comes first becomes the **operating point**.
 
 ## Phase 3: Continuous Monitoring & Adaptation (t=10s onwards)
 
-**Monitor three signals. Ramp up only when ALL are green. Throttle down when ANY is yellow/red.**
+**Monitor four signals. Ramp up only when ALL are green. Throttle down when ANY is yellow/red.**
 
 ### Primary signals
 
@@ -107,20 +107,22 @@ Whichever comes first becomes the **operating point**.
 | **Queue health** | Queue shrinking or stable (outflow >= inflow) | Queue slowly growing | Queue rapidly growing |
 | **RPM utilization** | < 80% of limit | 80-90% of limit | > 90% of limit |
 | **TPM utilization** | < 80% of limit | 80-90% of limit | > 90% of limit |
+| **Latency trend** | P95 stable or decreasing | P95 increased >10% vs previous check | P95 increased >25% vs previous check |
 
 Limit = 90% of RPM/TPM constraint, leaving 10% headroom. So "90% of limit" = ~81% of raw RPM/TPM.
+
+Latency trend detects API-side pressure that doesn't show up in RPM/TPM utilization — the API accepts requests within limits but queues them server-side, causing latency spikes.
 
 ### Defensive signals
 
 | Signal | Action |
 |---|---|
-| Latency increasing (P95 trending up) | Treat as queue growing — hold or throttle |
 | Timeout rate > 5% | Circuit breaker: reduce concurrency by 20%, cooldown 60s |
 | 429 rate limit error | Exponential backoff on affected request, reduce admission rate |
 
 ### Ramp logic
 
-- All three green → increase semaphore by +25% (add workers) toward `target_semaphore`
+- All four green → increase semaphore by +10% (add workers) toward `target_semaphore`
 - Any yellow → hold current semaphore
 - Any red → reduce semaphore by 20% (remove workers), reduce admission rate
 
