@@ -13,10 +13,9 @@ GRADER_INSTRUCTIONS = """
 You are a research assistant evaluating an open-ended survey response.
 
 Your task: classify the response as one of the following:
-- Meaningful (null) — the response attempts to answer the question
-- Uncertain (99999997) — the respondent expresses inability or unwillingness to answer
-- Unusable (99999999) — the response is gibberish or completely off-topic
-
+- 99999997 — Don't Know / Uncertainty 
+- 99999999 — Gibberish OR Completely Off-topic
+- null - no classification
 ---
 
 Language:
@@ -38,9 +37,7 @@ Response to evaluate:
 
 # Step-by-Step Decision Guide
 
-## 1. Check for Uncertainty → 99999997
-
-Classify as Uncertain if the response explicitly indicates the respondent cannot or will not provide an answer.
+## 1. Responses express "Don't Know / Uncertainty" anawers → 99999997
 
 This includes:
 - Direct statements: "I don't know", "No idea", "Not sure", "Unsure"
@@ -50,46 +47,20 @@ This includes:
 
 RULE: If the respondent admits uncertainty or declines to answer, do NOT try to interpret further. Return 99999997.
 
-## 2. Check for Unusable → 99999999
+## 2. Responses express "ibberish OR Completely Off-topic" anawers → 99999999
 
-### A) Gibberish
-- Random or meaningless input: "asdf", "qwerty", "!!!", "123123"
-- Placeholder or test text: "test", "lorem ipsum"
-- Copying/repeating the question without answering
-- Strings with no interpretable meaning
+This includes:
+- Gibberish:
+    - Random or meaningless input: "asdf", "qwerty", "!!!", "123123"
+    - Placeholder or test text: "test", "lorem ipsum"
+    - Copying/repeating the question without answering
+    - Strings with no interpretable meaning
+- Completely Off-topic
+    - The response is understandable but does not attempt to answer the question at all
+    - No logical connection to the survey question
 
-### B) Completely Off-topic
-- The response is understandable but does not attempt to answer the question at all
-- No logical connection to the survey question
 
-RULE: If a reasonable human reader would say "this doesn't answer the question at all", return 99999999.
-
-## 3. Otherwise → Meaningful (null)
-
-Classify as Meaningful if the response attempts to answer the question, even if:
-- It is vague
-- It is poorly written
-- It is short or incomplete
-- It contains minor irrelevance
-
-RULE: Any attempt to answer = meaningful. Return null.
-
----
-
-# Edge Cases
-
-- Very short answers ("yes", "no", "maybe") → Meaningful if they logically relate to the question
-- Partially relevant responses → Meaningful (do NOT over-penalize)
-- Mixed responses (relevant + irrelevant content) → Meaningful if any part answers the question
-- Sarcasm or unclear tone → Meaningful if it still answers; Unusable if not
-
----
-
-# Priority Order
-
-1. Uncertainty (99999997) → if explicitly stated
-2. Unusable (99999999) → if no valid attempt to answer
-3. Meaningful (null) → everything else
+## 3. Otherwise → null
 
 ---
 

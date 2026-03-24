@@ -25,7 +25,7 @@ class QualityFilterConfig:
     medium_quality_threshold: float = 0.4
     max_filter_examples: int = 5  # For verbose output
     # Model (derived from MODEL_FAMILY toggle in config.py)
-    model: str = get_model("nano")
+    model: str = get_model("mini")
     max_concurrent_requests: int = 5  # For API rate limiting
     # Timeout configuration for API calls
     minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
