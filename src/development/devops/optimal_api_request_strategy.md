@@ -31,11 +31,11 @@ cold_semaphore   = min(RPM / 60 , 50)                   # safe starting concurre
 rate_limit       = 1 / throughput                           # seconds between admissions
 ```
 
-### Why `min(RPM / 60 , 50)`?
+### Why `min(RPM / 60, 50)`?
 
 - Capped at 50 because OpenAI has an undocumented concurrent connection ceiling (~50-200 for most tiers, per community reports). The cap is a safety net — the warm-up discovers the real ceiling.
-- For constrained deployments (Azure 600 RPM): `min(10 x 2, 50) = 20` — naturally conservative.
-- For high-tier deployments (OpenAI 30K RPM): `min(500 x 2, 50) = 50` — capped, safe.
+- For constrained deployments (Azure 600 RPM): `min(10, 50) = 10` — naturally conservative.
+- For high-tier deployments (OpenAI 30K RPM): `min(500, 50) = 50` — capped, safe.
 
 ### Deploy
 
@@ -82,9 +82,12 @@ OpenAI (cold_start=50, little_law=1651): no stress → jump to min(100, 1651) = 
 After the jump, ramp gently toward `target_semaphore`, guided by monitoring signals:
 
 ```
-OpenAI example: 100 → 125 → 156 → 195 → 244 → ... → signal says stop
-Azure example:   18 →  23 →  29 →  36 →  45 → ... → signal says stop
+OpenAI example: 100 → 110 → 121 → 133 → 146 → ... → signal says stop
+Azure example:   60 →  66 →  73 →  80 →  88 → ... → signal says stop
 ```
+
+Proven: +10% is critical. At +25%, the system overshoots and causes timeouts (85s, 3 timeouts).
+At +10%, the latency signal catches pressure early and the ramp self-corrects (36s, 0 timeouts).
 
 At each 5s interval, check all four signals (Phase 3). Only ramp if ALL are green.
 
@@ -128,7 +131,7 @@ Latency trend detects API-side pressure that doesn't show up in RPM/TPM utilizat
 
 ### Monitoring interval
 
-Every 5 seconds, evaluate all three signals. Monitor internally on every completion (for latency/token tracking), but only adjust concurrency every 5s to avoid oscillation.
+Every 5 seconds, evaluate all four signals. Monitor internally on every completion (for latency/token tracking), but only adjust concurrency every 5s to avoid oscillation.
 
 ---
 
@@ -142,7 +145,7 @@ Task Queue → Worker picks task → Rate Limiter (spacing) → Token Bucket (TP
                                                                               Queue health updated
                                                                                         |
                                                                               Monitor evaluates (every 5s):
-                                                                                queue + RPM% + TPM%
+                                                                                queue + RPM% + TPM% + latency trend
                                                                                         |
                                                                               Ramp / Hold / Throttle
 ```
@@ -201,6 +204,15 @@ Fields:
 - Latency percentiles (P50, P95)
 
 Suppress output when no completions in last interval.
+
+---
+
+## Lessons Learned
+
+- **+10% ramp is critical.** +25% overshoots and causes timeouts. +10% allows the latency signal to catch pressure before it cascades. Proven: 36s/0 timeouts vs 85s/3 timeouts.
+- **Latency trend is the most important signal.** RPM/TPM utilization stayed <5% throughout all tests. Queue depth was always shrinking. Only P95 latency trend caught the API-side pressure that caused timeouts.
+- **Model capability determines prompt complexity, not just cost.** gpt-5-nano couldn't handle a decision-guide prompt (340 false don't-knows). gpt-5-mini handled it perfectly (91 correct). Match prompt complexity to model capability.
+- **Pre-filter known non-answers before LLM.** 527 empty responses were consuming API calls for nothing. Pre-filtering saves 26% of API costs and processing time.
 
 ---
 

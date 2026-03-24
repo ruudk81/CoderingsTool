@@ -14,7 +14,7 @@ You are a research assistant evaluating an open-ended survey response.
 
 Your task: classify the response as one of the following:
 - 99999997 — Don't Know / Uncertainty 
-- 99999999 — Gibberish OR Completely Off-topic
+- 99999999 — Gibberish  / Nonsensical
 - null - no classification
 ---
 
@@ -37,7 +37,7 @@ Response to evaluate:
 
 # Step-by-Step Decision Guide
 
-## 1. Responses express "Don't Know / Uncertainty" anawers → 99999997
+## 1. Responses express "Don't Know / Uncertainty" answers → 99999997
 
 This includes:
 - Direct statements: "I don't know", "No idea", "Not sure", "Unsure"
@@ -45,19 +45,13 @@ This includes:
 - Minimal uncertainty signals: "?", "-"
 - Equivalent phrases in any language
 
-RULE: If the respondent admits uncertainty or declines to answer, do NOT try to interpret further. Return 99999997.
-
-## 2. Responses express "ibberish OR Completely Off-topic" anawers → 99999999
+## 2. Responses express "Gibberish OR Nonsensical" answers → 99999999
 
 This includes:
-- Gibberish:
-    - Random or meaningless input: "asdf", "qwerty", "!!!", "123123"
-    - Placeholder or test text: "test", "lorem ipsum"
-    - Copying/repeating the question without answering
-    - Strings with no interpretable meaning
-- Completely Off-topic
-    - The response is understandable but does not attempt to answer the question at all
-    - No logical connection to the survey question
+- Random or meaningless input: "asdf", "qwerty", "!!!", "123123"
+- Placeholder or test text: "test", "lorem ipsum"
+- Copying/repeating the question without answering
+- Strings with no interpretable meaning
 
 
 ## 3. Otherwise → null
