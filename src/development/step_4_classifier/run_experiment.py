@@ -23,6 +23,7 @@ sys.path.insert(0, str(project_root / "src" / "development"))
 from development.step_3_ideaExtractor import models_exp as models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
+from utils.llm import token_tracker
 
 # Import step_4_classifier components
 from development.step_4_classifier.config_classifier import CategoriesConfig
@@ -481,8 +482,14 @@ if __name__ == "__main__":
     tee = TeeOutput(sys.stdout)
     sys.stdout = tee
 
+    token_tracker.reset()
+
     try:
         partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer = run_taxonomy()
+
+        # Print token usage
+        if token_tracker.call_count > 0:
+            print(token_tracker.get_summary())
 
     finally:
         sys.stdout = tee.original_stdout
