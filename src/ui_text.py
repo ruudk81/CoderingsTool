@@ -124,12 +124,10 @@ UI_TEXTS = {
             1: "Tekstbewerking",
             2: "Kwaliteitsfilter",
             3: "Descriptieve labels",
-            4: "Embeddings",
-            5: "Categorieën",
-            6: "Coderen",
-            7: "Thematische indeling",
-            8: "Codes toewijzen",
-            9: "Export"
+            4: "Taxonomie",
+            5: "Codeboek",
+            6: "Codes toewijzen",
+            7: "Export"
         }
     },
     
@@ -250,12 +248,10 @@ UI_TEXTS = {
             1: "Preprocessing",
             2: "Quality Filter",
             3: "Descriptive Labels",
-            4: "Embeddings",
-            5: "Categories",
-            6: "Coding",
-            7: "Theme Identification",
-            8: "Code Assignment",
-            9: "Export"
+            4: "Taxonomy",
+            5: "Codebook",
+            6: "Code Assignment",
+            7: "Export"
         }
     }
 }

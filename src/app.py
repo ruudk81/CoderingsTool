@@ -24,8 +24,10 @@ sys.path.append(str(project_root / "src"))
 sys.path.append(str(project_root / "src" / "utils"))
 
 import models
-from config import CacheConfig, ModelConfig, CodeAssignmentConfig
-from config_steps.config_codeGenerator import CodeDesignerConfig
+from config import CacheConfig, ModelConfig
+from config_steps.config_classifier import CategoriesConfig
+from config_steps.config_codeGenerator import CodebookConfig
+from config_steps.config_codeAssigner import AssignmentConfig
 from config_steps.config_preprocess import SpellCheckConfig
 from config_steps.config_qualityFilter import QualityFilterConfig
 from config_steps.config_ideaExtractor import SegmentationConfig
@@ -390,10 +392,12 @@ if 'quality_filter_config' not in st.session_state:
     st.session_state.quality_filter_config = QualityFilterConfig()
 if 'segmentation_config' not in st.session_state:
     st.session_state.segmentation_config = SegmentationConfig()
-if 'code_designer_config' not in st.session_state:
-    st.session_state.code_designer_config = CodeDesignerConfig()
-if 'code_assignment_config' not in st.session_state:
-    st.session_state.code_assignment_config = CodeAssignmentConfig()
+if 'categories_config' not in st.session_state:
+    st.session_state.categories_config = CategoriesConfig()
+if 'codebook_config' not in st.session_state:
+    st.session_state.codebook_config = CodebookConfig()
+if 'assignment_config' not in st.session_state:
+    st.session_state.assignment_config = AssignmentConfig()
 
 # helpers
 def get_step_name(step_num: int, lang: str = "en") -> str:
@@ -472,17 +476,15 @@ def invalidate_from_step(start_step: int):
         0: ['cached_data', 'raw_text_list'],
         1: ['preprocessed_text'],
         2: ['quality_filtered_text'],
-        3: ['extracted_ideas', 'encoded_text'],
-        4: ['embedded_text'],
-        5: ['category_results'],
-        6: ['reasoning_results'],
-        7: ['theme_enriched_codebook', 'refinement_results'],
-        8: ['code_assigned_results'],
-        9: ['excel_path']
+        3: ['extracted_ideas'],
+        4: ['taxonomy_metadata'],
+        5: ['codebook_metadata'],
+        6: ['code_assigned_results'],
+        7: ['excel_path']
     }
 
     all_cleared_keys = []
-    for step_num in range(start_step, 10):
+    for step_num in range(start_step, 8):
         keys_to_remove = step_result_keys.get(step_num, [])
         for key in keys_to_remove:
             if key in st.session_state.pipeline_results:
@@ -493,9 +495,8 @@ def invalidate_from_step(start_step: int):
     cache_manager = _get_cache_manager()
     step_mapping = {
         0: "data", 1: "preprocessed", 2: "quality_filter",
-        3: "extracted_ideas", 4: "embeddings", 5: "code_assignment",
-        6: "codebook_generation", 7: "codebook_refinement",
-        8: "code_assignment_direct", 9: "export"
+        3: "extracted_ideas", 4: "taxonomy", 5: "codebook",
+        6: "code_assignment", 7: "export"
     }
 
     # Get current dataset info
@@ -511,13 +512,10 @@ def invalidate_from_step(start_step: int):
         )
 
         # Invalidate cache entries for affected steps
-        for step_num in range(start_step, 10):
+        for step_num in range(start_step, 8):
             step_name = step_mapping.get(step_num)
             if step_name:
                 cache_manager.db.invalidate_cache(filename, step_name, variable_key)
-                # Step 5 also has a separate mece_categories metadata cache
-                if step_num == 5:
-                    cache_manager.db.invalidate_cache(filename, "mece_categories", variable_key)
 
 # Side bar ################################################################################################################################
 
@@ -738,10 +736,10 @@ def show_advanced_settings(current_step=0):
 
             st.markdown("---")
 
-        # Step 8: Code Assignment 
-        if current_step == 8:
-            st.markdown("#### 🎯 Step 9: Code Assignment")
-            current_assign_model = st.session_state.model_config.get_model_for_stage('code_assignment')
+        # Step 6: Code Assignment
+        if current_step == 6:
+            st.markdown("#### 🎯 Step 6: Code Assignment")
+            current_assign_model = st.session_state.assignment_config.assignment_model
             assign_model = st.selectbox(
                 "Code Assignment Model",
                 options=all_models,
@@ -749,41 +747,18 @@ def show_advanced_settings(current_step=0):
                 key="code_assignment_model"
             )
             if assign_model != current_assign_model:
-                st.session_state.model_config.code_assignment_model = assign_model
+                st.session_state.assignment_config.assignment_model = assign_model
 
-            top_k = st.number_input(
-                "Top K Similar Codes",
+            top_n = st.number_input(
+                "Embedding Top N",
                 min_value=1,
-                max_value=10,
-                value=st.session_state.code_assignment_config.top_k_similar_codes,
-                help="Number of most similar codes to present to the model",
-                key="top_k_codes"
+                max_value=20,
+                value=st.session_state.assignment_config.embedding_top_n,
+                help="Number of top codes pre-filtered via embedding similarity",
+                key="embedding_top_n"
             )
-            if top_k != st.session_state.code_assignment_config.top_k_similar_codes:
-                st.session_state.code_assignment_config.top_k_similar_codes = top_k
-
-            confidence = st.slider(
-                "Confidence Threshold",
-                min_value=0.1,
-                max_value=0.9,
-                value=st.session_state.code_assignment_config.min_confidence_threshold,
-                step=0.1,
-                help="Minimum confidence for valid assignment",
-                key="confidence_threshold"
-            )
-            if confidence != st.session_state.code_assignment_config.min_confidence_threshold:
-                st.session_state.code_assignment_config.min_confidence_threshold = confidence
-
-            batch_size = st.number_input(
-                "Batch Size",
-                min_value=5,
-                max_value=50,
-                value=st.session_state.code_assignment_config.batch_size,
-                help="Ideas processed per batch",
-                key="assignment_batch_size"
-            )
-            if batch_size != st.session_state.code_assignment_config.batch_size:
-                st.session_state.code_assignment_config.batch_size = batch_size
+            if top_n != st.session_state.assignment_config.embedding_top_n:
+                st.session_state.assignment_config.embedding_top_n = top_n
 
             st.markdown("---")
 
@@ -793,8 +768,9 @@ def show_advanced_settings(current_step=0):
             st.session_state.spellcheck_config = SpellCheckConfig()
             st.session_state.quality_filter_config = QualityFilterConfig()
             st.session_state.segmentation_config = SegmentationConfig()
-            st.session_state.code_designer_config = CodeDesignerConfig()
-            st.session_state.code_assignment_config = CodeAssignmentConfig()
+            st.session_state.categories_config = CategoriesConfig()
+            st.session_state.codebook_config = CodebookConfig()
+            st.session_state.assignment_config = AssignmentConfig()
             st.rerun()
 
 # App architecture ################################################################################################################################
@@ -841,7 +817,7 @@ def main():
                     st.rerun()
 
             with nav_col2:
-                can_go_forward = st.session_state.step < 10 and (loaded_from_cache or st.session_state.step in st.session_state.completed_steps)
+                can_go_forward = st.session_state.step < 8 and (loaded_from_cache or st.session_state.step in st.session_state.completed_steps)
                 if st.button(("Volgende" if st.session_state.language == "nl" else "Next") + " ➡️", disabled=not can_go_forward, use_container_width=True, key="nav_next"):
                     clear_all_wait_states()  # Clear wait states before navigation
                     st.session_state.step += 1
@@ -852,7 +828,7 @@ def main():
             loaded_from_cache = st.session_state.get('loaded_from_cache', False)
             with st.expander("📋 " + ("Alle stappen" if lang == "nl" else "All steps"), expanded=True):
 
-                for step in range(1, 10):  # Start from 1, skip step 0 (Upload Data)
+                for step in range(1, 9):  # Start from 1, skip step 0 (Upload Data)
                     step_name = get_step_name(step, lang)
 
                     # Determine if step is accessible (using OLD correct logic from All steps display)
@@ -906,7 +882,7 @@ def main():
                     st.rerun()
 
     # Main body
-    sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9,10]
+    sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8]
 
     if not st.session_state.step in sampling_steps:
         show_upload_page()
@@ -919,20 +895,16 @@ def main():
         elif st.session_state.step == 3:
             show_idea_extraction_page()
         elif st.session_state.step == 4:
-            show_embedding_page()
+            show_taxonomy_page()
         elif st.session_state.step == 5:
-            show_clustering_page()
-        elif st.session_state.step == 6:
             show_codebook_generation_page()
-        elif st.session_state.step == 7:
-            show_theme_identification_page()
-        elif st.session_state.step == 8:
+        elif st.session_state.step == 6:
             show_code_assignment_page()
-        elif st.session_state.step == 9:
+        elif st.session_state.step == 7:
             show_export_page()
-        elif st.session_state.step == 10:
-            show_results_page()    
-            
+        elif st.session_state.step == 8:
+            show_results_page()
+
         # BOTTOM SECTION: Results display
         show_info_panel()
 
@@ -1010,12 +982,10 @@ def determine_max_step_from_cache(filename: str, variable_key: str, cache_manage
         "preprocessed": 1,
         "quality_filter": 2,
         "extracted_ideas": 3,
-        "embeddings": 4,
-        "code_assignment": 5,
-        "codebook_generation": 6,
-        "codebook_refinement": 7,
-        "code_assignment_direct": 8,
-        "export": 9
+        "taxonomy": 4,
+        "codebook": 5,
+        "code_assignment": 6,
+        "export": 7
     }
 
     # Get all cached steps from database
@@ -2288,339 +2258,20 @@ def show_idea_extraction_page():
             except Exception as e:
                 st.error(f"Idee-extractie fout: {str(e)}" if lang == "nl" else f"Idea extraction error: {str(e)}")
 
-def show_embedding_page():
+def show_taxonomy_page():
     """
-    Step 4: Embedding Generation (Genereer Embeddings)
+    Step 4: Taxonomy Classification (Taxonomie-classificatie)
 
-    Generates vector embeddings for extracted ideas from step 3.
-
-    Pipeline function: step_4_generate_embeddings
-    Cache name: embeddings
-    Model: models.EmbeddingsModel
+    Placeholder — full implementation in a later phase.
     """
     lang = st.session_state.language
+    st.header("Step 4: Taxonomy" if lang == "en" else "Stap 4: Taxonomie")
+    st.info(
+        "Taxonomy classification is not yet implemented in this version of the UI."
+        if lang == "en" else
+        "Taxonomie-classificatie is nog niet geïmplementeerd in deze versie van de UI."
+    )
 
-    # ==================== HEADER ====================
-    st.header("Stap 4: Genereer Embeddings" if lang == "nl" else "Step 4: Generate Embeddings")
-
-    # ==================== BLOCK 1: GREEN BOX ====================
-    # Show completion status
-    if is_step_completed(4):
-        st.success("✅ " + ("Embeddings gegenereerd! Klik op doorgaan." if lang == "nl" else "Embeddings generated! Click continue."))
-
-    # ==================== BLOCK 2: BLUE BOX ====================
-    # Show input data info when previous step is complete
-    if is_step_completed(3):
-        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        step4_size = st.session_state.get('step4_sample_size')
-        display_size = step4_size if step4_size else get_display_sample_size(lang)
-        if is_step_completed(4):
-            sample_info += (f"**Data**: {display_size} {'embeddings' if lang == 'nl' else 'embeddings'}")
-        else:
-            sample_info += (f"**Data**: {display_size} {'deelantwoorden te embedden' if lang == 'nl' else 'answer parts to embed'}")
-        st.info(sample_info)
-
-    # ==================== VERBOSE LOG EXPANDER ====================
-    if is_step_completed(4):
-        show_verbose_log_expander(4)
-
-    # ==================== BLOCK 3: DATA LOADING ====================
-    # Load encoded_text if not already in pipeline_results
-    if is_step_completed(3) and not is_step_completed(4):
-        progress_container = st.empty()
-        try:
-            if 'encoded_text' not in st.session_state.pipeline_results:
-                # Generate variable_key
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                sample_size = st.session_state.get('sample_size_config')
-                merge_config = st.session_state.get('merge_config')
-                variable_key = generate_enhanced_variable_key(
-                    selected_variables,
-                    is_merged=is_merged,
-                    sample_size=sample_size,
-                    merge_config=merge_config
-                )
-
-                cache_manager = _get_cache_manager()
-
-                # Try to load from cache first (works for both upload and cache routes)
-                if cache_manager.is_cache_valid(st.session_state.filename, "extracted_ideas", variable_key):
-                    progress_container.text("🔄 " + ("Geëxtraheerde ideeën laden uit cache..." if lang == "nl" else "Loading extracted ideas from cache..."))
-                    encoded_text = _load_or_recover(
-                        st.session_state.filename,
-                        "extracted_ideas",
-                        variable_key,
-                        models.IdeasExtractedModel
-                    )
-
-                    # Check if cache load was successful
-                    if encoded_text is not None:
-                        st.session_state.pipeline_results['encoded_text'] = encoded_text
-
-                        # Populate var_lab if not already in pipeline_results
-                        if 'var_lab' not in st.session_state.pipeline_results:
-                            # Try to get from cache metadata first
-                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "extracted_ideas", variable_key)
-                            if cache_info and cache_info.get('var_lab'):
-                                st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
-                            else:
-                                # Fallback to session state
-                                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
-                        progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
-                    else:
-                        progress_container.error("❌ " + ("Cache beschadigd. Voer eerst stap 3 opnieuw uit." if lang == "nl" else "Cache corrupted. Please re-run step 3."))
-                else:
-                    progress_container.error("❌ " + ("Geen geëxtraheerde ideeën gevonden. Voer eerst stap 3 uit." if lang == "nl" else "No extracted ideas found. Please run step 3 first."))
-        except Exception as e:
-            st.error(f"Embedding fout: {str(e)}" if lang == "nl" else f"Embedding error: {str(e)}")
-
-    # ==================== BLOCK 4: PROCESSING BUTTON ====================
-    # Show processing button when ready to process
-    if is_step_completed(3) and not is_step_completed(4):
-        st.markdown(ui.get_text("EMBEDDING_INFO", lang))
-
-        # Show button to start embedding generation
-        if st.button("🚀 " + (
-            "Genereer Embeddings" if lang == "nl"
-            else "Generate Embeddings"
-        ), type="primary"):
-            progress_container = st.empty()
-            try:
-                progress_container.text("🔄 " + (
-                    "Embeddings aan het genereren..." if lang == "nl"
-                    else "Generating embeddings..."
-                ))
-
-                # Generate variable_key for caching
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                sample_size = st.session_state.get('sample_size_config')
-                merge_config = st.session_state.get('merge_config')
-                variable_key = generate_enhanced_variable_key(
-                    selected_variables,
-                    is_merged=is_merged,
-                    sample_size=sample_size,
-                    merge_config=merge_config
-                )
-
-                # Set force_recalc flag (respects both global and step-specific invalidation)
-                force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 4)
-
-                # Call pipeline processing function
-                embedded_text = _run_with_verbose_capture(
-                    pipeline.step_4_generate_embeddings,
-                    encoded_text=st.session_state.pipeline_results['encoded_text'],
-                    filename=st.session_state.filename,
-                    var_lab=st.session_state.pipeline_results['var_lab'],
-                    variable_key=variable_key,
-                    cache_manager=_get_cache_manager(),
-                    model_config=st.session_state.model_config,
-                    force_recalc=force_recalc,
-                    verbose=True
-                )
-
-                progress_container.success("✅ " + (
-                    "Embeddings gegenereerd" if lang == "nl"
-                    else "Embeddings generated"
-                ))
-
-                # Store results
-                st.session_state.pipeline_results['embedded_text'] = embedded_text
-
-                # Mark step completed
-                mark_step_completed(4)
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"Embedding fout: {str(e)}" if lang == "nl" else f"Embedding error: {str(e)}")
-
-
-def show_clustering_page():
-    """
-    Step 5: Category Discovery & Assignment
-
-    Partitions ideas by domain, discovers MECE categories, and assigns each idea.
-
-    Pipeline function: step_4_classNcoder
-    Cache name: code_assignment
-    Model: models.CodeAssignedModel
-    """
-    lang = st.session_state.language
-
-    # ==================== HEADER ====================
-    st.header("Stap 5: Categorisering" if lang == "nl" else "Step 5: Category Discovery")
-
-    # ==================== BLOCK 1: GREEN BOX ====================
-    # Show completion status
-    if is_step_completed(5):
-        st.success("✅ " + (
-            "Categorisering voltooid! Bekijk de resultaten en klik dan op doorgaan."
-            if lang == "nl" else
-            "Category discovery completed! Review the results, then click continue."))
-
-    # ==================== BLOCK 2: BLUE BOX ====================
-    # Show input data info when previous step is complete
-    if is_step_completed(4):
-        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        if not is_step_completed(5):
-            step4_size = st.session_state.get('step4_sample_size')
-            display_size = step4_size if step4_size else get_display_sample_size(lang)
-            sample_info += (f"**Data**: {display_size} {'embeddings te categoriseren' if lang == 'nl' else 'embeddings to categorize'}")
-        st.info(sample_info)
-
-    # ==================== BLOCK 3: YELLOW BOX ====================
-    # Show results/stats when current step is complete
-    if is_step_completed(5):
-        if st.session_state.get('category_stats', {}):
-            stats = st.session_state.get('category_stats', {})
-            nl = (lang == "nl")
-
-            summary_info = (
-                f"\n\n- {'Totaal categorieën' if nl else 'Total categories'}: {stats.get('total_categories', 0)}"
-                + f"\n\n- {'Totaal ideeën' if nl else 'Total ideas'}: {stats.get('total_ideas', 0)}"
-                + f"\n\n- {'Toegewezen' if nl else 'Assigned'}: {stats.get('assigned_count', 0)}"
-                + f"\n\n- {'Partities' if nl else 'Partitions'}: {stats.get('num_partitions', 0)}"
-            )
-
-            st.markdown(f"""
-            <div style="
-            border-radius: 10px;
-            padding: 12px 16px;
-            background-color: #FFF8E6;
-            margin-top: 8px;
-            color: #5C4102;">
-            {summary_info}
-            </div>
-            """, unsafe_allow_html=True)
-
-    # ==================== VERBOSE LOG EXPANDER ====================
-    if is_step_completed(5):
-        show_verbose_log_expander(5)
-
-    # ==================== BLOCK 4: DATA LOADING ====================
-    # Load embedded_text if not already in pipeline_results
-    if is_step_completed(4) and not is_step_completed(5):
-        progress_container = st.empty()
-        try:
-            if 'embedded_text' not in st.session_state.pipeline_results:
-                # Generate variable_key
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                sample_size = st.session_state.get('sample_size_config')
-                merge_config = st.session_state.get('merge_config')
-                variable_key = generate_enhanced_variable_key(
-                    selected_variables,
-                    is_merged=is_merged,
-                    sample_size=sample_size,
-                    merge_config=merge_config
-                )
-
-                cache_manager = _get_cache_manager()
-
-                # Try to load from cache first (works for both upload and cache routes)
-                if cache_manager.is_cache_valid(st.session_state.filename, "embeddings", variable_key):
-                    progress_container.text("🔄 " + ("Embeddings laden uit cache..." if lang == "nl" else "Loading embeddings from cache..."))
-                    embedded_text = _load_or_recover(
-                        st.session_state.filename,
-                        "embeddings",
-                        variable_key,
-                        models.EmbeddingsModel
-                    )
-
-                    # Check if cache load was successful
-                    if embedded_text is not None:
-                        st.session_state.pipeline_results['embedded_text'] = embedded_text
-
-                        # Populate var_lab if not already in pipeline_results
-                        if 'var_lab' not in st.session_state.pipeline_results:
-                            # Try to get from cache metadata first
-                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "embeddings", variable_key)
-                            if cache_info and cache_info.get('var_lab'):
-                                st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
-                            else:
-                                # Fallback to session state
-                                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
-                        progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
-                    else:
-                        progress_container.error("❌ " + ("Cache beschadigd. Voer eerst stap 4 opnieuw uit." if lang == "nl" else "Cache corrupted. Please re-run step 4."))
-                else:
-                    progress_container.error("❌ " + ("Geen embeddings gevonden. Voer eerst stap 4 uit." if lang == "nl" else "No embeddings found. Please run step 4 first."))
-        except Exception as e:
-            st.error(f"Categorisering fout: {str(e)}" if lang == "nl" else f"Category discovery error: {str(e)}")
-
-    # ==================== BLOCK 5: PROCESSING BUTTON ====================
-    # Show processing button when ready to process
-    if is_step_completed(4) and not is_step_completed(5):
-        st.markdown(ui.get_text("CLUSTERING_INFO", lang))
-
-        # Show button to start category discovery
-        if st.button("🚀 " + ("Start Categorisering" if lang == "nl" else "Start Category Discovery"), type="primary"):
-            progress_container = st.empty()
-            try:
-                progress_container.text("🔄 " + ("Categorisering uitvoeren..." if lang == "nl" else "Running category discovery..."))
-
-                # Generate variable_key for caching
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                sample_size = st.session_state.get('sample_size_config')
-                merge_config = st.session_state.get('merge_config')
-                variable_key = generate_enhanced_variable_key(
-                    selected_variables,
-                    is_merged=is_merged,
-                    sample_size=sample_size,
-                    merge_config=merge_config)
-
-                # Set force_recalc flag (respects both global and step-specific invalidation)
-                force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 5)
-
-                # Call pipeline processing function
-                category_results = _run_with_verbose_capture(
-                    pipeline.step_4_classNcoder,
-                    embedded_text=st.session_state.pipeline_results['embedded_text'],
-                    filename=st.session_state.filename,
-                    var_lab=st.session_state.pipeline_results['var_lab'],
-                    variable_key=variable_key,
-                    cache_manager=_get_cache_manager(),
-                    force_recalc=force_recalc,
-                    verbose=True)
-
-                progress_container.success("✅ " + ("Categorisering voltooid" if lang == "nl" else "Category discovery completed"))
-
-                # Store results
-                st.session_state.pipeline_results['category_results'] = category_results
-
-                # Calculate category statistics
-                total_ideas = sum(
-                    len(result.response_ideas) for result in category_results
-                    if result.response_ideas)
-                assigned_count = sum(
-                    1 for result in category_results if result.response_ideas
-                    for idea in result.response_ideas
-                    if idea.assigned_category)
-                categories = set(
-                    idea.assigned_category
-                    for result in category_results if result.response_ideas
-                    for idea in result.response_ideas
-                    if idea.assigned_category)
-                partitions = set(
-                    idea.partition_name
-                    for result in category_results if result.response_ideas
-                    for idea in result.response_ideas
-                    if idea.partition_name)
-
-                st.session_state['category_stats'] = {
-                    'total_categories': len(categories),
-                    'total_ideas': total_ideas,
-                    'assigned_count': assigned_count,
-                    'num_partitions': len(partitions)}
-
-                # Mark step completed
-                mark_step_completed(5)
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"Categorisering fout: {str(e)}" if lang == "nl" else f"Category discovery error: {str(e)}")
 
 def show_codebook_generation_page():
     """
@@ -2856,377 +2507,6 @@ def show_codebook_generation_page():
         if 'reasoning_results' in st.session_state.pipeline_results:
             show_step6_codebook_display()
 
-def show_theme_identification_page():
-    """ Step 7: Thematic codebook (Thematisch codeboek)"""
-    lang = st.session_state.language
-
-    # ==================== HEADER ====================
-    st.header("Stap 7: Thematisch codeboek" if lang == "nl" else "Step 7: Thematic codebook")
-
-    # ==================== BLOCK 1: GREEN BOX ====================
-    # Show completion status
-    if is_step_completed(7):
-        st.success("✅ " + ("Thema's geïdentificeerd! Bekijk de resultaten en klik op doorgaan."
-                           if lang == "nl" else "Themes identified! Review the results and click continue."))
-
-    # ==================== BLOCK 2: BLUE BOX ====================
-    # Show input data info when previous step is complete
-    if is_step_completed(6):
-        # Get num_codes from session state (set by step 6 or data loading block)
-        num_codes = st.session_state.get('codebook_stats', {}).get('num_codes', 0)
-
-        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        codes_text = "codes om te groeperen in thema's" if lang == 'nl' else 'codes to group into themes'
-        sample_info += (f"\n\n**Data:** {num_codes} {codes_text}")
-        st.info(sample_info)
-
-    # # ==================== BLOCK 3: YELLOW BOX ====================
-    # skipped/not necesarry
-
-    # ==================== VERBOSE LOG EXPANDER ====================
-    if is_step_completed(7):
-        show_verbose_log_expander(7)
-
-    # ==================== BLOCK 4: DATA LOADING ====================
-    # Load reasoning_results if not already in pipeline_results
-    if is_step_completed(6) and not is_step_completed(7):
-        progress_container = st.empty()
-        try:
-            if 'reasoning_results' not in st.session_state.pipeline_results:
-                # Generate variable_key
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                sample_size = st.session_state.get('sample_size_config')
-                merge_config = st.session_state.get('merge_config')
-                variable_key = generate_enhanced_variable_key(
-                    selected_variables,
-                    is_merged=is_merged,
-                    sample_size=sample_size,
-                    merge_config=merge_config
-                )
-
-                cache_manager = _get_cache_manager()
-
-                # Try cache first (works for both upload and cache routes)
-                # Note: Step 6 caches "codebook_generation_reasoning" - contains reasoning_results
-                if cache_manager.is_cache_valid(st.session_state.filename, "codebook_generation_reasoning", variable_key):
-                    progress_container.text("🔄 " + ("Codebook laden uit cache..." if lang == "nl" else "Loading codebook from cache..."))
-
-                    # Load reasoning_results from reasoning cache
-                    from utils import codeGenerator
-                    reasoning_list = _load_or_recover(
-                        st.session_state.filename,
-                        "codebook_generation_reasoning",
-                        variable_key,
-                        codeGenerator.CodeGeneratorReasoningResults
-                    )
-                    if reasoning_list and len(reasoning_list) > 0:
-                        reasoning_results = reasoning_list[0]
-                        st.session_state.pipeline_results['reasoning_results'] = reasoning_results
-
-                        # Calculate stats from reasoning_results.codebook
-                        if 'codebook_stats' not in st.session_state:
-                            num_codes = len(reasoning_results.codebook) if reasoning_results and reasoning_results.codebook else 0
-
-                            # Calculate unique clusters - use set.update() to handle comma-separated cluster IDs
-                            if reasoning_results and reasoning_results.codebook:
-                                cluster_ids = set()
-                                for entry in reasoning_results.codebook:
-                                    if entry.get('source_cluster_id'):
-                                        cluster_ids.update(entry['source_cluster_id'].split(','))
-                                unique_clusters = len(cluster_ids)
-                            else:
-                                unique_clusters = 0
-
-                            st.session_state['codebook_stats'] = {
-                                'num_codes': num_codes,
-                                'unique_clusters': unique_clusters
-                            }
-
-                        progress_container.success("✅ " + ("Codebook geladen uit cache" if lang == "nl" else "Codebook loaded from cache"))
-                    else:
-                        st.error("⚠️ " + ("Reasoning resultaten niet gevonden in cache. Voer stap 6 opnieuw uit." if lang == "nl"
-                                       else "Reasoning results not found in cache. Please re-run step 6."))
-                else:
-                    st.error("⚠️ " + ("Cache niet geldig. Voer stap 6 opnieuw uit." if lang == "nl"
-                                   else "Cache not valid. Please re-run step 6."))
-
-            # Populate metadata
-            if 'var_lab' not in st.session_state.pipeline_results:
-                # Try to get from cache metadata first
-                cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "codebook_generation_reasoning", variable_key)
-                if cache_info and cache_info.get('var_lab'):
-                    st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
-                else:
-                    # Fallback to session state
-                    st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
-
-        except Exception as e:
-            st.error(f"Data laad fout: {str(e)}" if lang == "nl" else f"Data loading error: {str(e)}")
-
-    # ==================== BLOCK 5: PROCESSING BUTTON ====================
-    # Show processing button when ready to process
-    if is_step_completed(6) and not is_step_completed(7):
-        st.markdown(ui.get_text("THEME_IDENTIFICATION_INFO", lang))
-
-        # Show button to start theme identification
-        if st.button("🚀 " + (
-            "Start Thema Identificatie" if lang == "nl"
-            else "Start Theme Identification"
-        ), type="primary"):
-            progress_container = st.empty()
-            try:
-                # Determine variable name for theme identification
-                var_name_for_themes = st.session_state.selected_variable
-                if (st.session_state.get('is_merged_variable', False) and
-                    st.session_state.get('selected_variables_config')):
-                    selected_vars = st.session_state.get('selected_variables_config', [])
-                    if len(selected_vars) > 1:
-                        var_name_for_themes = f"merged_{'-'.join(selected_vars[:3])}"
-
-                progress_container.text("🔄 Codebook aan het verfijnen..." if lang == "nl"
-                                       else "🔄 Refining codebook...")
-
-                # Get variable_key for caching
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                sample_size = st.session_state.get('sample_size_config')
-                merge_config = st.session_state.get('merge_config')
-                variable_key = generate_enhanced_variable_key(
-                    selected_variables,
-                    is_merged=is_merged,
-                    sample_size=sample_size,
-                    merge_config=merge_config
-                )
-
-                # Calculate force_recalc with step-specific logic
-                force_recalc = st.session_state.get('force_recalculate_all', False) or \
-                              (st.session_state.get('force_recalculate_from_step', 99) <= 7)
-
-                refinement_results, theme_enriched_codebook, refinement_report, _ = _run_with_verbose_capture(
-                    pipeline.step_7_refine_codebook,
-                    codebook_reasoning=st.session_state.pipeline_results['reasoning_results'],
-                    filename=st.session_state.filename,
-                    var_name=var_name_for_themes,
-                    var_lab=st.session_state.pipeline_results['var_lab'],
-                    variable_key=variable_key,
-                    cache_manager=_get_cache_manager(),
-                    model_config=st.session_state.model_config,
-                    default_language=st.session_state.get('language', 'nl'),
-                    force_recalc=force_recalc,
-                    verbose=True
-                )
-
-                progress_container.success("✅ " + (
-                    "Thema identificatie voltooid" if lang == "nl"
-                    else "Theme identification completed"
-                ))
-
-                # Store results
-                st.session_state.pipeline_results['theme_enriched_codebook'] = theme_enriched_codebook
-                st.session_state.pipeline_results['refinement_results'] = refinement_results
-                st.session_state.pipeline_results['refinement_report'] = refinement_report
-
-                # Calculate and store theme statistics
-                num_themes = len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
-                num_codes = len(theme_enriched_codebook.codes) if hasattr(theme_enriched_codebook, 'codes') else 0
-
-                st.session_state['theme_stats'] = {
-                    'num_themes': num_themes,
-                    'num_codes': num_codes
-                }
-
-                # Mark step 7 completed
-                mark_step_completed(7)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
-
-    # ==================== LOAD COMPLETED STEP 7 DATA ====================
-    # Load theme_enriched_codebook from cache if step 7 is completed but data not in session
-    if is_step_completed(7) and 'theme_enriched_codebook' not in st.session_state.pipeline_results:
-        try:
-            # Generate variable_key
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            sample_size = st.session_state.get('sample_size_config')
-            merge_config = st.session_state.get('merge_config')
-            variable_key = generate_enhanced_variable_key(
-                selected_variables,
-                is_merged=is_merged,
-                sample_size=sample_size,
-                merge_config=merge_config
-            )
-
-            cache_manager = _get_cache_manager()
-
-            # Load theme_enriched_codebook from cache
-            if cache_manager.is_cache_valid(st.session_state.filename, "codebook_refinement_enriched", variable_key):
-                codebook_list = _load_or_recover(
-                    st.session_state.filename,
-                    "codebook_refinement_enriched",
-                    variable_key,
-                    models.ThemeEnrichedCodebookModel
-                )
-
-                if codebook_list and len(codebook_list) > 0:
-                    st.session_state.pipeline_results['theme_enriched_codebook'] = codebook_list[0]
-        except:
-            # Silent fail - not critical if we can't load for editing
-            pass
-
-    # ==================== BLOCK 6: CODEBOOK EDITING ====================
-    # Allow editing of the codebook after step 7 is completed
-    if is_step_completed(7) and 'theme_enriched_codebook' in st.session_state.pipeline_results:
-        with st.expander("✏️ " + ("Codebook Bewerken" if lang == "nl" else "Edit Codebook"), expanded=False):
-
-            # Instructions
-            st.info(
-                "**Instructies:**\n"
-                "- Bewerk codes, categorieën en thema's direct in de tabel\n"
-                "- Laat 'Category' leeg voor 2-niveau hiërarchie (Thema → Code)\n"
-                "- Vul 'Category' in voor 3-niveau hiërarchie (Thema → Categorie → Code)\n"
-                "- Gebruik + en − knoppen om rijen toe te voegen/verwijderen\n"
-                "- Klik 'Wijzigingen Opslaan' om wijzigingen toe te passen"
-                if lang == "nl" else
-                "**Instructions:**\n"
-                "- Edit codes, categories, and themes directly in the table\n"
-                "- Leave 'Category' empty for 2-level hierarchy (Theme → Code)\n"
-                "- Fill 'Category' for 3-level hierarchy (Theme → Category → Code)\n"
-                "- Use + and − buttons to add/remove rows\n"
-                "- Click 'Save Changes' to apply edits"
-            )
-
-            # Get current codebook
-            current_codebook = st.session_state.pipeline_results['theme_enriched_codebook']
-
-            # Flatten to DataFrame
-            df = flatten_codebook_to_dataframe(current_codebook)
-
-            # Display editable table
-            edited_df = st.data_editor(
-                df,
-                num_rows="dynamic",  # Allow add/delete rows
-                use_container_width=True,
-                column_config={
-                    "Theme": st.column_config.TextColumn(
-                        "Theme" if lang == "en" else "Thema",
-                        help="Top-level theme name" if lang == "en" else "Hoofdthema naam",
-                        required=True,
-                        max_chars=100
-                    ),
-                    "Category": st.column_config.TextColumn(
-                        "Category" if lang == "en" else "Categorie",
-                        help="Leave empty for 2-level hierarchy" if lang == "en" else "Leeg laten voor 2-niveau hiërarchie",
-                        required=False,
-                        max_chars=100
-                    ),
-                    "Code": st.column_config.TextColumn(
-                        "Code",
-                        help="Short code label" if lang == "en" else "Korte code label",
-                        required=True,
-                        max_chars=150
-                    ),
-                    "Definition": st.column_config.TextColumn(
-                        "Definition" if lang == "en" else "Definitie",
-                        help="Code description/decision rule" if lang == "en" else "Code beschrijving/beslisregel",
-                        required=True,
-                        max_chars=500
-                    ),
-                    "Theme_Description": st.column_config.TextColumn(
-                        "Theme Description" if lang == "en" else "Thema Beschrijving",
-                        help="Description of the theme" if lang == "en" else "Beschrijving van het thema",
-                        max_chars=500
-                    ),
-                    "Category_Description": st.column_config.TextColumn(
-                        "Category Description" if lang == "en" else "Categorie Beschrijving",
-                        help="Description of the category" if lang == "en" else "Beschrijving van de categorie",
-                        max_chars=500
-                    )
-                },
-                hide_index=True,
-                key="codebook_editor"
-            )
-
-            # Show changes summary
-            if not edited_df.equals(df):
-                st.warning("⚠️ " + (
-                    "Je hebt wijzigingen aangebracht. Klik 'Wijzigingen Opslaan' om deze toe te passen."
-                    if lang == "nl" else
-                    "You have made changes. Click 'Save Changes' to apply them."
-                ))
-
-            # Save and Reset buttons
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                if st.button("💾 " + ("Wijzigingen Opslaan" if lang == "nl" else "Save Changes"),
-                            type="primary",
-                            use_container_width=True):
-                    # Validate
-                    is_valid, errors = validate_codebook_dataframe(edited_df, lang)
-
-                    if not is_valid:
-                        st.error("❌ " + ("Validatie fouten:" if lang == "nl" else "Validation errors:") + "\n" + "\n".join(f"- {err}" for err in errors))
-                    else:
-                        # Reconstruct codebook
-                        try:
-                            updated_codebook = reconstruct_codebook_from_dataframe(
-                                edited_df,
-                                current_codebook
-                            )
-
-                            # Update session state
-                            st.session_state.pipeline_results['theme_enriched_codebook'] = updated_codebook
-
-                            # Invalidate downstream steps (8 and 9 need to re-run)
-                            invalidate_from_step(8)
-
-                            # Re-cache the edited codebook
-                            cache_manager = _get_cache_manager()
-                            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                            is_merged = st.session_state.get('is_merged_variable', False)
-                            sample_size = st.session_state.get('sample_size_config')
-                            merge_config = st.session_state.get('merge_config')
-                            variable_key = generate_enhanced_variable_key(
-                                selected_variables,
-                                is_merged=is_merged,
-                                sample_size=sample_size,
-                                merge_config=merge_config
-                            )
-
-                            if variable_key:
-                                cache_manager.save_to_cache(
-                                    [updated_codebook],
-                                    st.session_state.filename,
-                                    "codebook_refinement_enriched",
-                                    variable_key,
-                                    0,  # elapsed_time
-                                    var_lab=st.session_state.get('var_lab', '')
-                                )
-
-                            # Update theme stats
-                            num_themes = len(updated_codebook.themes_summary) if updated_codebook.themes_summary else 0
-                            num_codes = len(updated_codebook.codes) if hasattr(updated_codebook, 'codes') else 0
-                            st.session_state['theme_stats'] = {
-                                'num_themes': num_themes,
-                                'num_codes': num_codes
-                            }
-
-                            st.success("✅ " + (
-                                "Codebook succesvol bijgewerkt! Voer stap 8 opnieuw uit om codes toe te wijzen met het bijgewerkte codebook."
-                                if lang == "nl" else
-                                "Codebook updated successfully! Re-run step 8 to assign codes using the updated codebook."
-                            ))
-                            st.rerun()
-
-                        except Exception as e:
-                            st.error("❌ " + ("Fout bij opslaan van wijzigingen:" if lang == "nl" else "Error saving changes:") + f" {str(e)}")
-
-            with col2:
-                if st.button("🔄 " + ("Reset naar Origineel" if lang == "nl" else "Reset to Original"),
-                            use_container_width=False):
-                    st.rerun()
-
 def show_code_assignment_page():
     """
     Step 8: Code Assignment
@@ -3328,18 +2608,6 @@ def show_code_assignment_page():
                     )
                     st.session_state.pipeline_results['category_results'] = category_results
                     progress_container.success("✅ " + ("Verrijkte categorie data geladen" if lang == "nl" else "Enriched category data loaded"))
-
-            # Load theme_enriched_codebook if not present (from step 7)
-            if 'theme_enriched_codebook' not in st.session_state.pipeline_results:
-                if cache_manager.is_cache_valid(st.session_state.filename, "codebook_refinement_enriched", variable_key):
-                    progress_container.text("🔄 " + ("Codebook laden uit cache..." if lang == "nl" else "Loading codebook from cache..."))
-                    # Load theme_enriched_codebook from its dedicated cache (returns list, extract first element)
-                    theme_enriched_data = cache_manager.load_from_cache(
-                        st.session_state.filename, "codebook_refinement_enriched", variable_key, models.ThemeEnrichedCodebookModel
-                    )
-                    if theme_enriched_data and len(theme_enriched_data) > 0:
-                        st.session_state.pipeline_results['theme_enriched_codebook'] = theme_enriched_data[0]
-                        progress_container.success("✅ " + ("Codebook geladen" if lang == "nl" else "Codebook loaded"))
 
             # Populate var_lab if not present
             if 'var_lab' not in st.session_state.pipeline_results:
@@ -3459,32 +2727,7 @@ def show_export_page():
         theme_enriched_codebook = st.session_state.pipeline_results['theme_enriched_codebook']
         st.success("✅ " + ("Resultaten beschikbaar vanuit huidige sessie" if lang == "nl" else "Results available from current session"))
     elif st.session_state.filename and st.session_state.selected_variable:
-        # Try to load from cache
-        st.info("🔍 " + ("Zoeken naar resultaten in cache..." if lang == "nl" else "Looking for results in cache..."))
-        
-        try:
-            # Load code assignments from cache (step 9a - direct assignment)
-            code_assigned_results = st.session_state.cache_manager.load_from_cache(
-                st.session_state.filename, "code_assignment_direct", models.CodeAssignedModel
-            )
-            
-            # Load theme enriched codebook from cache
-            theme_enriched_codebooks = st.session_state.cache_manager.load_from_cache(
-                st.session_state.filename, "codebook_refinement_enriched", models.ThemeEnrichedCodebookModel
-            )
-            
-            if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
-                theme_enriched_codebook = theme_enriched_codebooks[0]
-            
-            if code_assigned_results and theme_enriched_codebook:
-                st.success("✅ " + ("Resultaten geladen uit cache!" if lang == "nl" else "Results loaded from cache!"))
-                st.info("📊 " + ("Gevonden: {len(code_assigned_results)} responsen met {len(theme_enriched_codebook.codes)} codes" 
-                        if lang == "nl" else f"Found: {len(code_assigned_results)} responses with {len(theme_enriched_codebook.codes)} codes"))
-            else:
-                st.warning("⚠️ " + ("Geen volledige resultaten gevonden in cache" if lang == "nl" else "No complete results found in cache"))
-                
-        except Exception as e:
-            st.error("❌ " + (f"Fout bij laden uit cache: {str(e)}" if lang == "nl" else f"Error loading from cache: {str(e)}"))
+        st.warning("⚠️ " + ("Voer eerst stap 8 uit om resultaten te genereren." if lang == "nl" else "Please run step 8 first to generate results."))
     else:
         st.warning("⚠️ " + ("Geen bestand of variabele geselecteerd" if lang == "nl" else "No file or variable selected"))
     
@@ -4559,108 +3802,6 @@ def show_theme_samples(refinement_report):
         with st.expander(f"📝 {t_analysis}", expanded=False):
             st.write(analysis_text)
 
-# ============================================================================
-# CODEBOOK EDITING HELPER FUNCTIONS
-# ============================================================================
-
-def flatten_codebook_to_dataframe(theme_enriched_codebook: models.ThemeEnrichedCodebookModel) -> pd.DataFrame:
-    """
-    Flatten ThemeEnrichedCodebookModel to editable DataFrame for st.data_editor
-
-    Args:
-        theme_enriched_codebook: ThemeEnrichedCodebookModel from step 7
-
-    Returns:
-        pd.DataFrame with columns: Theme, Category, Code, Definition, Theme_Description, Category_Description
-
-    Note:
-        - Empty Category field = 2-level hierarchy (Theme → Code)
-        - Filled Category field = 3-level hierarchy (Theme → Category → Code)
-    """
-    rows = []
-    for entry in theme_enriched_codebook.codes:
-        rows.append({
-            'Theme': entry.theme or '',
-            'Category': entry.category or '',
-            'Code': entry.code or '',
-            'Definition': entry.definition or '',
-            'Theme_Description': entry.theme_description or '',
-            'Category_Description': entry.category_description or ''
-        })
-
-    df = pd.DataFrame(rows)
-    return df
-
-
-def reconstruct_codebook_from_dataframe(
-    df: pd.DataFrame,
-    original_codebook: models.ThemeEnrichedCodebookModel
-) -> models.ThemeEnrichedCodebookModel:
-    """
-    Reconstruct ThemeEnrichedCodebookModel from edited DataFrame
-
-    Args:
-        df: Edited DataFrame from st.data_editor
-        original_codebook: Original ThemeEnrichedCodebookModel for metadata preservation
-
-    Returns:
-        Updated ThemeEnrichedCodebookModel with edits applied
-
-    Preserves hierarchy structure:
-        - Empty Category = 2-level (Theme → Code)
-        - Filled Category = 3-level (Theme → Category → Code)
-    """
-    from datetime import datetime
-
-    enriched_entries = []
-    themes_summary = []
-    code_to_theme_mapping = {}
-
-    # Group by theme to rebuild themes_summary
-    theme_groups = df.groupby('Theme')
-
-    for theme_name, theme_df in theme_groups:
-        # Count codes in this theme
-        code_count = len(theme_df)
-        themes_summary.append({
-            'theme_name': theme_name,
-            'theme_description': theme_df.iloc[0]['Theme_Description'] if len(theme_df) > 0 else theme_name,
-            'code_count': code_count
-        })
-
-        # Create entries for each code
-        for _, row in theme_df.iterrows():
-            entry = models.ThemeEnrichedCodebookEntry(
-                code=str(row['Code']),
-                definition=str(row['Definition']),
-                theme=str(row['Theme']),
-                theme_description=str(row['Theme_Description']) if pd.notna(row['Theme_Description']) else str(row['Theme']),
-                category=str(row['Category']) if pd.notna(row['Category']) and str(row['Category']).strip() else '',
-                category_description=str(row['Category_Description']) if pd.notna(row['Category_Description']) else '',
-                source_cluster=None  # Not preserved during editing
-            )
-            enriched_entries.append(entry)
-            code_to_theme_mapping[str(row['Code'])] = str(row['Theme'])
-
-    # Preserve original metadata and add editing info
-    original_metadata = original_codebook.generation_metadata or {}
-    updated_metadata = {
-        **original_metadata,
-        'manually_edited': True,
-        'edited_timestamp': datetime.now().isoformat(),
-        'original_code_count': len(original_codebook.codes),
-        'edited_code_count': len(enriched_entries)
-    }
-
-    # Create updated model
-    return models.ThemeEnrichedCodebookModel(
-        codes=enriched_entries,
-        themes_summary=themes_summary,
-        code_to_theme_mapping=code_to_theme_mapping,
-        theme_methodology="Manual editing applied after GPT-5 refinement",
-        generation_metadata=updated_metadata,
-        source_variable=original_codebook.source_variable or 'unknown'
-    )
 
 
 def validate_codebook_dataframe(df: pd.DataFrame, lang: str = 'en') -> tuple:
@@ -4939,10 +4080,6 @@ def show_step9_assignment_stats():
         # Load code assignment results
         code_assigned_results = cache_manager.load_from_cache(filename, "code_assignment_direct", variable_key, models.CodeAssignedModel)
 
-        # Load theme enriched codebook
-        theme_enriched_codebook_results = cache_manager.load_from_cache(filename, "codebook_refinement_enriched", variable_key, models.ThemeEnrichedCodebookModel)
-        theme_enriched_codebook = theme_enriched_codebook_results[0] if theme_enriched_codebook_results else None
-        
         if code_assigned_results:
             st.write("📊 **Assignment Statistics:**")
 
@@ -5183,7 +4320,7 @@ def show_step_samples(step_number):
                 
         elif step_number == 4:
             # Step 4: Embeddings
-            data = cache_manager.load_from_cache(filename, "embeddings", variable_key, models.EmbeddingsModel)
+            data = cache_manager.load_from_cache(filename, "embeddings", variable_key, None)
             if data:
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
@@ -5235,24 +4372,13 @@ def show_step_samples(step_number):
                 st.write(f"⚠️ Error loading codebook reasoning: {e}")
                 
         elif step_number == 7:
-            # Step 7: Codebook Refinement
-            from utils.codebookRefinement import get_refinement_report
-
-            data = cache_manager.load_from_cache(filename, "codebook_refinement", variable_key, models.CodeRefinementResults)
-            if data and len(data) > 0:
-                # Convert CodeRefinementResults to structured dict for display
-                refinement_report = get_refinement_report(data[0])
-                show_theme_samples(refinement_report)
-
-                # Continue button (pattern from other steps)
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    if st.button("🔄 " + ("Ga door naar volgende stap" if st.session_state.language == 'nl' else "Continue to Next Step"),
-                                type="primary", use_container_width=True, key="theme_continue"):
-                        st.session_state.step = 8
-                        st.rerun()
-            else:
-                st.write("⏳ No refinement results in cache - run codebook refinement first")
+            # Step 7: Export
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                if st.button("🔄 " + ("Ga door naar volgende stap" if st.session_state.language == 'nl' else "Continue to Next Step"),
+                            type="primary", use_container_width=True, key="export_step_continue"):
+                    st.session_state.step = 8
+                    st.rerun()
                 
         elif step_number == 8:
             # Step 8: Code Assignment Results
