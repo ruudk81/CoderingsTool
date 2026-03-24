@@ -2,136 +2,90 @@
 Prompt for Step 2: Quality Filtering
 """
 
-from typing import Any, Optional, Union, Literal, List
-from pydantic import BaseModel, Field, model_validator
+from typing import Optional, Literal
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # STEP 2: QUALITY FILTERING
 # =============================================================================
 
 GRADER_INSTRUCTIONS = """
-You are a {language} language grader evaluating open-ended survey responses.
-Your task is to determine whether each response provides **usable, on-topic content in relation to the specific survey question**, and assign the appropriate quality_filter_code.
+You are a research assistant evaluating an open-ended survey response.
 
-For each response, assign exactly one quality_filter_code:
+Your task: classify the response as meaningful, uncertain, or unusable.
 
-==================================================
-CODE 99999997 — Don't Know / Uncertainty
-==================================================
+---
 
-Use this code if the respondent explicitly expresses uncertainty, lack of knowledge, or non-applicability.
+Language:
+<language>
+{language}
+</language>
 
-This includes any response whose clear meaning in {language} is equivalent to:
-- "I don't know"
-- "N/A"
-- "Not applicable"
-- "No idea"
-- "Unsure"
-- "Can't say"
-- "?"
-
-==================================================
-CODE 99999999 — Nonsensical/Gibberish OR completely Off-topic
-==================================================
-
-Use this code for **two different kinds of unusable responses**:
-
-A) Pure gibberish / nonsensical
-   Examples:
-   - Random characters: "asdfkj", "jjjjj", "x!@#%"
-   - Placeholder text: "lorem ipsum", "test test"
-   - Verbatim repetition of the question with no added content
-   - Completely unintelligible text
-
-B) Intelligible but completely off-topic / totally irrelevant
-   The response is understandable {language} , BUT:
-   - It does NOT address the actual survey question ({var_lab}) even remotely, OR
-   - It obviously avoids the question.
-
-Illustrative examples in English (if the question is about public transport):
-- "Nothing"
-- "I love dogs."
-- "The weather is nice today."
-- "Pizza is better than pasta."
-- "I work in finance."
-- A personal story that has nothing to do with transportation.
-
-These are NOT "I don't know" — they are simply irrelevant to the question.
-
-==================================================
-CODE null — Meaningful / On-topic Response
-==================================================
-
-A response is meaningful if:
-- It is understandable in {language}, AND
-- It engages with or relates to the survey question ({var_lab}), even if:
-  - It is very short
-  - It is vague
-  - It is opinionated
-  - It is critical
-  - It is poorly written
-  - It is partially incomplete
-
-Examples (if the question is about public transport):
-- "Buses are always late."
-- "Too crowded."
-- "Tickets are expensive."
-- "The metro is unreliable."
-
-==================================================
-SURVEY QUESTION
+Survey question:
 <survey_question>
 {var_lab}
 </survey_question>
 
-RESPONSES TO EVALUATE
-<responses>
-{responses}
-</responses>
+Response to evaluate:
+<response>
+{response_text}
+</response>
 
-==================================================
-DECISION RULE (FOLLOW EXACTLY)
+---
 
-For each response, apply these steps in order:
+# Coding Rules
 
-1. Does the response explicitly express uncertainty or "I don't know"?
-   - If YES → quality_filter_code = 99999997
-   - If NO → go to Step 2
+## 99999997 — Don't Know / Uncertainty
+The respondent clearly expresses:
+- "I don't know", "No idea", "Unsure"
+- "N/A", "Not applicable"
+- "?", or any equivalent expression of uncertainty
 
-2. Does this response provide usable content that addresses the survey question, even remotely?
-   - If NO (gibberish OR off-topic) → quality_filter_code = 99999999
-   - If YES → quality_filter_code = null
+## 99999999 — Gibberish OR Completely Off-topic
+
+### A) Gibberish:
+- Random characters ("asdf", "!!!")
+- Placeholder text ("test", "lorem ipsum")
+- Repeating the question without answering
+
+### B) Completely Off-topic:
+- Response is understandable BUT has ZERO relation to the question
+- Does not attempt to answer at all
+
+IMPORTANT:
+- If there is ANY attempt to answer, even weak or vague → DO NOT use this code
+- Minimal answers like "Nothing" or "None" can be valid → treat as meaningful if relevant
+
+## null — Meaningful
+The response engages with the survey question in any way, even if short, vague, or poorly written.
+
+---
+
+# Decision Process
+
+Step 1: Does it express uncertainty?
+→ YES: return 99999997
+
+Step 2: Is it gibberish or completely off-topic?
+→ YES: return 99999999
+
+Else:
+→ return null
+
+---
+
+# Output
+
+Return quality_filter_code only (99999997, 99999999, or null) following the response schema provided.
 """
 
 
 QualityCode = Optional[Literal[99999997, 99999999]]
 
 class QualityFilterLLMResponseExp(BaseModel):
-    """A single quality filter assessment result."""
-
-    respondent_id: Any = Field(
-        description="The respondent's ID from the input (preserve exact type and format)"
-    )
-
-    response: Union[str, float, int, None] = Field(
-        description="The exact response text being evaluated"
-    )
+    """Quality filter classification result. LLM returns only quality_filter_code."""
 
     quality_filter_code: QualityCode = Field(
         default=None,
-        description=(
-            "99999997 = uncertainty / don't know; "
-            "99999999 = gibberish OR completely off-topic; "
-            "null = meaningful response"
-        ),
-        examples=[99999997, 99999999, None],
+        description="99999997 = don't know; 99999999 = gibberish/off-topic; null = meaningful",
     )
-
-    # Derived programmatically — not requested from LLM
-    quality_filter: bool = False
-
-    @model_validator(mode="after")
-    def derive_quality_filter(self):
-        """Derive quality_filter from quality_filter_code. No validation error possible."""
-        self.quality_filter = self.quality_filter_code is not None
-        return self

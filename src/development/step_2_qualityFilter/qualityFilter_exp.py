@@ -35,6 +35,11 @@ try:
         RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
         CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
         WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
+        # Optimal API request strategy constants
+        get_model_tier_latency, get_output_ratio,
+        COLD_START_CAP, WARM_UP_WINDOW_SECONDS, WARM_UP_MIN_COMPLETIONS,
+        RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
+        SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
     )
     from .prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 except ImportError:
@@ -53,6 +58,11 @@ except ImportError:
         RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
         CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
         WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
+        # Optimal API request strategy constants
+        get_model_tier_latency, get_output_ratio,
+        COLD_START_CAP, WARM_UP_WINDOW_SECONDS, WARM_UP_MIN_COMPLETIONS,
+        RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
+        SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
     )
     from prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 
@@ -640,16 +650,16 @@ class Grader:
             total_tokens += len(self.encoding.encode(prompt))
         
         avg_input = total_tokens / sample_size
-        # Assume 15% output ratio initially
-        return int(avg_input * 1.15)
+        # Output ratio depends on model type (chat vs reasoning)
+        output_ratio = get_output_ratio(self.model)
+        return int(avg_input * output_ratio)
 
     def _build_individual_prompt(self, var_lab: str, response_id: str, response_text: str) -> str:
         """Build prompt for individual response assessment"""
-        responses_text = f"respondent_id: {response_id}, response: \"{response_text}\""
         return self.grader_instructions.format(
             language=DEFAULT_LANGUAGE,
             var_lab=var_lab,
-            responses=responses_text
+            response_text=response_text
         )
     
     def estimate_tokens(self, prompt: str) -> int:
@@ -790,55 +800,72 @@ class Grader:
 # --- OPTION B: WARM-UP + CONSERVATIVE RAMP METHODS ---
 
     def _initialize_rate_limiters(self, limits: RateLimits, num_tasks: int) -> int:
-        """Initialize rate limiting with gradual ramp-up (Option B).
+        """Initialize rate limiting per optimal API request strategy.
 
-        Layer 1: RPM — AsyncLimiter
-        Layer 2: TPM — TokenBucket
-        Layer 3: Concurrency — ConcurrencyGate via Little's Law, starting at 50%
+        Layer 1: RPM — AsyncLimiter (request spacing)
+        Layer 2: TPM — TokenBucket (token budget guard)
+        Layer 3: Concurrency — ConcurrencyGate (cold start from RPM, capped at 50)
         Layer 4: Circuit breaker — monitors timeout rate
 
-        Returns little_law_cap (what we're ramping toward).
+        Returns target_semaphore (what we're ramping toward after warm-up).
         """
         headroom = self.processing_config.rate_limit_headroom
 
-        # Layer 1: RPM
+        # Store limits for utilization tracking
+        self._rpm_limit = limits.requests_per_minute * headroom
+        self._tpm_limit = limits.tokens_per_minute * headroom
+
+        # Layer 1: RPM — rate limiter
         arrival_rate = min(
-            limits.requests_per_minute * headroom / 60,
-            limits.tokens_per_minute * headroom / self.avg_tokens / 60
+            self._rpm_limit / 60,
+            self._tpm_limit / self.avg_tokens / 60
         )
         self.rate_limiter = AsyncLimiter(1, time_period=1.0 / arrival_rate)
         self.current_arrival_rate = arrival_rate
 
-        # Layer 2: TPM
-        self.tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
+        # Layer 2: TPM — token bucket
+        self.tpm_bucket = TokenBucket(int(self._tpm_limit))
 
-        # Layer 3: Concurrency — start at 50% of theoretical Little's Law
+        # Layer 3: Concurrency — cold start per strategy doc
+        # Cold semaphore: min(RPM/60, 50), floored at min_initial
+        cold_semaphore = min(int(limits.requests_per_minute / 60), COLD_START_CAP)
+        cold_semaphore = max(cold_semaphore, self.ramp_up_config.min_initial)
+        cold_semaphore = min(cold_semaphore, num_tasks)
+        self._cold_start_semaphore = cold_semaphore
+
+        self.semaphore = ConcurrencyGate(cold_semaphore)
+        self.optimal_concurrency = cold_semaphore
+
+        # Compute Little's Law target (for post-warm-up ramp target)
+        latency_est = get_model_tier_latency(self.model)
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
         little_law = compute_optimal_concurrency(
-            api_limits, DEFAULT_LATENCY_SECONDS, self.avg_tokens,
+            api_limits, latency_est, self.avg_tokens,
             processing_config=self.processing_config,
         )
         little_law_cap = min(little_law, num_tasks)
+        self._little_law_target = little_law_cap
 
-        initial = max(
-            self.ramp_up_config.min_initial,
-            int(little_law_cap * self.ramp_up_config.start_fraction)
-        )
-        initial = min(initial, num_tasks)
-        self.semaphore = ConcurrencyGate(initial)
-        self.optimal_concurrency = initial
+        # Target semaphore: 90% of Little's Law (set after warm-up recalibration)
+        self._target_semaphore = min(int(little_law_cap * 0.90), num_tasks)
 
-        # Completion-based ramp
+        # Keep ConcurrencyRamp for backward compat (bypassed by signal-based ramp)
         self._concurrency_ramp = ConcurrencyRamp(
             self.ramp_up_config, little_law_cap, num_tasks
         )
         self._ramp_complete = False
+        self._signal_ramp_active = False  # Activates after warm-up
+
+        # RPM/TPM utilization tracking (sliding window, 60s)
+        self._rpm_window = deque()  # (timestamp,) entries
+        self._tpm_window = deque()  # (timestamp, tokens) entries
+        self._prev_queue_depth = 0  # For queue health trend
 
         # Layer 4: Circuit breaker
         self.circuit_breaker = ConcurrencyCircuitBreaker(
             config=self.circuit_breaker_config,
             gate=self.semaphore,
-            baseline=initial
+            baseline=cold_semaphore
         )
 
         return little_law_cap
@@ -853,15 +880,101 @@ class Grader:
             fraction = (num_tasks - 50) / (500 - 50)
             return int(self.warm_up_config.sample_min + fraction * (self.warm_up_config.sample_max - self.warm_up_config.sample_min))
 
-    def _calibrate_from_warm_up(self, num_tasks: int) -> None:
-        """One-shot calibration: update token estimate AND recompute Little's Law concurrency.
+    def _rpm_utilization(self) -> float:
+        """Current RPM as fraction of limit (0.0 to 1.0+)."""
+        now = time.time()
+        cutoff = now - 60.0
+        while self._rpm_window and self._rpm_window[0] < cutoff:
+            self._rpm_window.popleft()
+        current_rpm = len(self._rpm_window)
+        return current_rpm / self._rpm_limit if self._rpm_limit > 0 else 0.0
 
-        Fires once after enough warm-up completions. Uses measured latency and
-        token counts to recalculate optimal concurrency and arrival rate.
+    def _tpm_utilization(self) -> float:
+        """Current TPM as fraction of limit (0.0 to 1.0+)."""
+        now = time.time()
+        cutoff = now - 60.0
+        while self._tpm_window and self._tpm_window[0][0] < cutoff:
+            self._tpm_window.popleft()
+        current_tpm = sum(t[1] for t in self._tpm_window)
+        return current_tpm / self._tpm_limit if self._tpm_limit > 0 else 0.0
+
+    def _record_api_call(self, actual_tokens: int):
+        """Record an API call for RPM/TPM utilization tracking."""
+        now = time.time()
+        self._rpm_window.append(now)
+        self._tpm_window.append((now, actual_tokens))
+
+    def _evaluate_signals(self, queue_depth: int) -> str:
+        """Evaluate queue health + RPM% + TPM% signals.
+
+        Returns: 'green' (all green), 'yellow' (any yellow), 'red' (any red).
+        """
+        # Queue health: compare with previous depth
+        if queue_depth > self._prev_queue_depth + 5:
+            queue_signal = 'red'
+        elif queue_depth > self._prev_queue_depth:
+            queue_signal = 'yellow'
+        else:
+            queue_signal = 'green'
+
+        # RPM utilization
+        rpm_pct = self._rpm_utilization()
+        if rpm_pct > SIGNAL_YELLOW_THRESHOLD:
+            rpm_signal = 'red'
+        elif rpm_pct > SIGNAL_GREEN_THRESHOLD:
+            rpm_signal = 'yellow'
+        else:
+            rpm_signal = 'green'
+
+        # TPM utilization
+        tpm_pct = self._tpm_utilization()
+        if tpm_pct > SIGNAL_YELLOW_THRESHOLD:
+            tpm_signal = 'red'
+        elif tpm_pct > SIGNAL_GREEN_THRESHOLD:
+            tpm_signal = 'yellow'
+        else:
+            tpm_signal = 'green'
+
+        self._prev_queue_depth = queue_depth
+
+        # Any red → red, any yellow → yellow, all green → green
+        signals = [queue_signal, rpm_signal, tpm_signal]
+        if 'red' in signals:
+            return 'red'
+        if 'yellow' in signals:
+            return 'yellow'
+        return 'green'
+
+    def _apply_signal_ramp(self, queue: asyncio.Queue):
+        """Signal-based ramp: +25% if all green, -20% if any red, hold if yellow."""
+        if not self._signal_ramp_active:
+            return
+
+        queue_depth = queue.qsize()
+        signal = self._evaluate_signals(queue_depth)
+        current = self.semaphore.limit
+
+        if signal == 'green' and current < self._target_semaphore:
+            new = min(int(current * RAMP_INCREASE_FACTOR), self._target_semaphore)
+            new = max(new, current + 1)  # Always advance by at least 1
+            self.semaphore.set_limit(new)
+            self.optimal_concurrency = new
+        elif signal == 'red' and current > self.ramp_up_config.min_initial:
+            new = max(int(current * RAMP_DECREASE_FACTOR), self.ramp_up_config.min_initial)
+            self.semaphore.set_limit(new)
+            self.optimal_concurrency = new
+        # yellow: hold
+
+    def _calibrate_from_warm_up(self, num_tasks: int) -> None:
+        """Post-warm-up calibration: measure reality, jump, activate signal-based ramp.
+
+        After 10s of real work, uses measured latency and token counts to:
+        1. Recalculate Little's Law with real data
+        2. Jump concurrency based on stress detection
+        3. Activate signal-based ramp toward target
         """
         measured_avg_tokens = int(np.mean(list(self.actual_total_tokens)))
-        # P10 latency: avoids queuing-inflated values that would inflate Little's Law
-        measured_latency = float(np.percentile(list(self.latency_tracker.values), 10))
+        measured_latency = float(np.median(list(self.latency_tracker.values)))
 
         old_avg = self.avg_tokens
         self.avg_tokens = measured_avg_tokens
@@ -877,15 +990,31 @@ class Grader:
             processing_config=self.processing_config,
         )
         new_little_law_cap = min(new_little_law, num_tasks)
+        self._little_law_target = new_little_law_cap
+        self._target_semaphore = min(int(new_little_law_cap * 0.90), num_tasks)
 
-        # Recalibrate ramp: reset to 50% of new Little's Law, ramp toward 90%
-        if self._concurrency_ramp and not self._ramp_complete:
-            self._concurrency_ramp.recalibrate(new_little_law_cap)
-            new_start = self._concurrency_ramp.current_target()
-            self.semaphore.set_limit(new_start)
-            self.optimal_concurrency = new_start
-            if self.circuit_breaker:
-                self.circuit_breaker.baseline = new_start
+        # Stress detection: any timeouts during warm-up?
+        warm_up_timeouts = self.stats.get('timeouts', 0)
+        latency_values = list(self.latency_tracker.values)
+        latency_increasing = (len(latency_values) >= 4 and
+            np.mean(latency_values[-2:]) > np.mean(latency_values[:2]) * 1.5)
+        stress = warm_up_timeouts > 0 or latency_increasing
+
+        # Post-warm-up jump: min(100, Little's Law) if no stress
+        if not stress:
+            post_warmup = min(100, new_little_law_cap)
+        else:
+            post_warmup = self._cold_start_semaphore  # Hold if stress detected
+
+        post_warmup = min(post_warmup, num_tasks)
+        self.semaphore.set_limit(post_warmup)
+        self.optimal_concurrency = post_warmup
+        if self.circuit_breaker:
+            self.circuit_breaker.baseline = post_warmup
+
+        # Activate signal-based ramp
+        self._signal_ramp_active = True
+        self._ramp_complete = False
 
         # Recalculate arrival rate (tokens changed, so TPM rail changes)
         headroom = self.processing_config.rate_limit_headroom
@@ -896,14 +1025,15 @@ class Grader:
         self.rate_limiter = AsyncLimiter(1, time_period=1.0 / new_arrival_rate)
         self.current_arrival_rate = new_arrival_rate
 
-        conc_target = self._concurrency_ramp.cap if self._concurrency_ramp else self.optimal_concurrency
+        stress_label = " (STRESS DETECTED — holding)" if stress else ""
         print(f"\n{'='*60}")
-        print(f"WARM-UP CALIBRATION (from {len(self.actual_total_tokens)} samples)")
-        print(f"   Latency: {measured_latency:.1f}s (P10 measured)")
+        print(f"WARM-UP CALIBRATION (from {len(self.actual_total_tokens)} samples, {WARM_UP_WINDOW_SECONDS}s window){stress_label}")
+        print(f"   Latency: {measured_latency:.2f}s (median measured)")
         print(f"   avg_tokens: {old_avg} (tiktoken) -> {measured_avg_tokens} (measured)")
         print(f"   Little's Law: {new_little_law_cap}")
-        print(f"   Concurrency: reset to {self.optimal_concurrency} (50%), ramping -> {conc_target} (90%)")
+        print(f"   Concurrency: {self._cold_start_semaphore} (cold) -> {post_warmup} (jump) -> {self._target_semaphore} (target)")
         print(f"   Arrival rate: {new_arrival_rate:.2f}/s")
+        print(f"   Signal ramp: +{int((RAMP_INCREASE_FACTOR-1)*100)}% / {RAMP_INTERVAL_SECONDS}s toward {self._target_semaphore}")
         print(f"{'='*60}")
 
         self._warm_up_calibrated = True
@@ -1016,7 +1146,7 @@ class Grader:
                         llm_create_async(
                             client=self.client,
                             model=self.model,
-                            response_model=List[QualityFilterLLMResponseExp],
+                            response_model=QualityFilterLLMResponseExp,
                             prompt=prompt,
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens,
@@ -1050,6 +1180,9 @@ class Grader:
                         # Track actual total tokens for rolling average
                         self.actual_total_tokens.append(actual_total_tokens)
 
+                        # Track RPM/TPM utilization
+                        self._record_api_call(actual_total_tokens)
+
                         # Track estimation accuracy
                         estimation_error = abs(actual_total_tokens - est_tokens)
                         self.estimation_errors.append(estimation_error)
@@ -1058,28 +1191,17 @@ class Grader:
                         delta = actual_total_tokens - est_tokens
                         await self.tpm_bucket.reconcile(delta)
                     
-                    # Extract result and convert strict LLM response to pipeline model
-                    if response and len(response) > 0:
-                        llm_result = response[0]
-
-                        # AUDIT: Log if LLM returned different ID (drift detection)
-                        if str(llm_result.respondent_id) != str(task['task_id']):
-                            logger.warning(
-                                f"ID drift detected: LLM returned '{llm_result.respondent_id}' "
-                                f"but input was '{task['task_id']}'"
-                            )
-
-                        # OVERRIDE: Always use original values, only take classification from LLM
-                        result = models.QualityFilteredModel(
-                            respondent_id=task['task_id'],           # FROM ORIGINAL
-                            response=task['response_text'],          # FROM ORIGINAL
-                            quality_filter=llm_result.quality_filter,
-                            quality_filter_code=llm_result.quality_filter_code
-                        )
-                        self.stats['tasks_successful'] += 1
-                        return result
-                    else:
-                        return self.create_fallback_response(task)
+                    # Convert LLM classification to pipeline model
+                    # LLM returns only quality_filter_code; we attach ID, response, and derive quality_filter
+                    quality_code = response.quality_filter_code
+                    result = models.QualityFilteredModel(
+                        respondent_id=task['task_id'],
+                        response=task['response_text'],
+                        quality_filter=quality_code is not None,
+                        quality_filter_code=quality_code
+                    )
+                    self.stats['tasks_successful'] += 1
+                    return result
                     
         except asyncio.TimeoutError:
             self.stats['timeouts'] += 1
@@ -1262,32 +1384,32 @@ class Grader:
 
         self.rate_limits = limits
 
-        # Phase 2: Initialize rate limiters with conservative ramp (Option B — no probes)
+        # Phase 2: Initialize rate limiters per optimal API request strategy
         self.bootstrap_avg_tokens = self.avg_tokens  # Preserve tiktoken estimate for diagnostics
-        little_law_cap = self._initialize_rate_limiters(limits, len(tasks))
-        self._warm_up_target_samples = self._calculate_warm_up_sample_size(len(tasks))
+        self._initialize_rate_limiters(limits, len(tasks))
         self._warm_up_calibrated = False
 
-        # Workers = ramp target (90% of theoretical Little's Law)
-        ramp_target = self._concurrency_ramp.cap
-        num_workers = min(ramp_target, len(tasks))
+        # Workers: enough to cover target (spawned upfront, gated by semaphore)
+        num_workers = min(self._target_semaphore, len(tasks))
         num_workers = max(num_workers, 5)  # Floor of 5 workers
 
         headroom = self.processing_config.rate_limit_headroom
         rpm_throughput = limits.requests_per_minute * headroom / 60
         tpm_throughput = limits.tokens_per_minute * headroom / self.avg_tokens / 60
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
+        latency_est = get_model_tier_latency(self.model)
 
-        print("[RATE LIMITING SETUP] - Warm-up + Conservative Ramp (Option B)")
+        print("[RATE LIMITING SETUP] - Optimal API Request Strategy")
         print(f"- Model: {self.model}")
-        print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * headroom:,.0f} with headroom)")
-        print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * headroom:,.0f} with headroom)")
-        print(f"- Tiktoken avg_tokens: {self.avg_tokens}")
+        print(f"- RPM limit: {limits.requests_per_minute:,} ({self._rpm_limit:,.0f} with headroom)")
+        print(f"- TPM limit: {limits.tokens_per_minute:,} ({self._tpm_limit:,.0f} with headroom)")
+        print(f"- Tiktoken avg_tokens: {self.avg_tokens} (output ratio: {get_output_ratio(self.model):.2f}x)")
         print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
-        print(f"- Little's Law (theoretical): {little_law_cap}")
-        print(f"- Ramp: {self.optimal_concurrency} (50%) -> {ramp_target} (90%) proportional to completions")
-        print(f"- Warm-up calibration after {self._warm_up_target_samples} completions")
-        print(f"- Timeout: {TIMEOUT_FLOOR_SECONDS}s floor (generous safety net)")
+        print(f"- Latency estimate: {latency_est}s ({self.model})")
+        print(f"- Little's Law (theoretical): {self._little_law_target}")
+        print(f"- Cold start: {self._cold_start_semaphore} (min(RPM/60, {COLD_START_CAP}))")
+        print(f"- Target: {self._target_semaphore} (90% of Little's Law, capped at {len(tasks)} tasks)")
+        print(f"- Warm-up: {WARM_UP_WINDOW_SECONDS}s window, then signal-based ramp (+{int((RAMP_INCREASE_FACTOR-1)*100)}%/{RAMP_INTERVAL_SECONDS}s)")
         print(f"- Processing {len(tasks):,} tasks")
         print(f"- Workers: {num_workers}")
 
@@ -1306,14 +1428,17 @@ class Grader:
             w = asyncio.create_task(self.worker(queue, results))
             workers.append(w)
 
-        # Phase 4: Main processing loop (0.1s tick for ramp responsiveness)
+        # Phase 4: Main processing loop
         start_time = time.time()
         last_report = start_time
         last_adjustment = start_time
+        last_ramp_check = start_time
+        prev_completed = 0  # For suppressing output when idle
 
         while not queue.empty():
             await asyncio.sleep(0.1)
             now = time.time()
+            elapsed = now - start_time
 
             # Circuit breaker (every tick)
             if self.circuit_breaker:
@@ -1321,40 +1446,50 @@ class Grader:
                 if action in ('tripped', 'recovering', 'recovered'):
                     self.optimal_concurrency = self.semaphore.limit
 
-            # Ramp check (completion-based)
-            await self._check_ramp_up()
-
-            # Warm-up calibration (one-shot after N completions)
+            # Warm-up calibration (time-based: after WARM_UP_WINDOW_SECONDS + min completions)
             if (not self._warm_up_calibrated
-                    and len(self.actual_total_tokens) >= self._warm_up_target_samples
-                    and len(self.latency_tracker.values) >= self._warm_up_target_samples):
+                    and elapsed >= WARM_UP_WINDOW_SECONDS
+                    and len(self.actual_total_tokens) >= WARM_UP_MIN_COMPLETIONS
+                    and len(self.latency_tracker.values) >= WARM_UP_MIN_COMPLETIONS):
                 self._calibrate_from_warm_up(len(tasks))
-                # Spawn extra workers if ramp target increased
-                new_target = self._concurrency_ramp.cap
-                if new_target > num_workers:
-                    extra = new_target - num_workers
+                # Spawn extra workers if target increased
+                if self._target_semaphore > num_workers:
+                    extra = self._target_semaphore - num_workers
                     for _ in range(extra):
                         w = asyncio.create_task(self.worker(queue, results))
                         workers.append(w)
-                    num_workers = new_target
+                    num_workers = self._target_semaphore
                     print(f"Workers: {num_workers} (+{extra} after calibration)")
+
+            # Signal-based ramp check (every RAMP_INTERVAL_SECONDS)
+            if self._signal_ramp_active and now - last_ramp_check >= RAMP_INTERVAL_SECONDS:
+                self._apply_signal_ramp(queue)
+                last_ramp_check = now
 
             # Throughput adjustment check
             if now - last_adjustment >= ADJUSTMENT_INTERVAL:
                 self._adjust_throughput_if_needed()
                 last_adjustment = now
 
-            # Progress report (every 2s)
-            if now - last_report >= 2.0:
+            # Progress report (every PROGRESS_REPORT_INTERVAL seconds)
+            if now - last_report >= PROGRESS_REPORT_INTERVAL:
                 completed = self.stats['tasks_processed']
-                elapsed = now - start_time
-                rate = completed / elapsed if elapsed > 0 else 0
-                active = self.semaphore.active
-                limit = self.optimal_concurrency
-                ramp_info = f" ramp:{limit}->{self._concurrency_ramp.cap}" if not self._ramp_complete else ""
-                cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
-                print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%) "
-                      f"Rate: {rate:.1f}/s | Conc:{active}/{limit} CB:{cb_state}{ramp_info}")
+                # Suppress output when no new completions (consolidation tail)
+                if completed > prev_completed:
+                    rate = completed / elapsed if elapsed > 0 else 0
+                    rpm_pct = self._rpm_utilization() * 100
+                    tpm_pct = self._tpm_utilization() * 100
+                    conc = self.semaphore.active
+                    conc_limit = self.optimal_concurrency
+                    q_depth = queue.qsize()
+                    p50 = float(np.median(list(self.latency_tracker.values))) if self.latency_tracker.values else 0
+                    p95 = float(np.percentile(list(self.latency_tracker.values), 95)) if len(self.latency_tracker.values) >= 2 else 0
+                    target_info = f"→{self._target_semaphore}" if self._signal_ramp_active else ""
+                    print(f"[STEP2] {completed}/{len(tasks)} ({rate:.1f}/s) | "
+                          f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% "
+                          f"Conc:{conc}/{conc_limit}{target_info} Queue:{q_depth} | "
+                          f"P50:{p50:.1f}s P95:{p95:.1f}s")
+                    prev_completed = completed
                 last_report = now
 
         # Wait for all tasks to complete

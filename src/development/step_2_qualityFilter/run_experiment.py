@@ -67,10 +67,11 @@ class ExperimentConfig:
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
     # Experiment-specific settings
-    use_experimental: bool = True
+    use_experimental: bool = USE_EXPERIMENTAL
     verbose: bool = True
     prompt_printer_enabled: bool = False
     force_recalc: bool = True
+    experiment_n: Optional[int] = EXPERIMENT_N
 
 
 EXPERIMENT_CONFIG = ExperimentConfig()
@@ -78,9 +79,9 @@ EXPERIMENT_CONFIG = ExperimentConfig()
 # =============================================================================
 # TOGGLE: PRODUCTION vs EXPERIMENTAL
 # =============================================================================
-USE_EXPERIMENTAL = EXPERIMENT_CONFIG.use_experimental
+_USE_EXPERIMENTAL = EXPERIMENT_CONFIG.use_experimental
 
-if USE_EXPERIMENTAL:
+if _USE_EXPERIMENTAL:
     try:
         from .qualityFilter_exp import Grader
     except ImportError:
@@ -140,8 +141,15 @@ def run_experiment(config: ExperimentConfig = None):
 
     verbose_reporter.section_header("QUALITY FILTERING EXPERIMENT")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
-    verbose_reporter.stat_line(f"Using experimental: {USE_EXPERIMENTAL}")
+    verbose_reporter.stat_line(f"Using experimental: {_USE_EXPERIMENTAL}")
     verbose_reporter.stat_line(f"Input: {len(preprocessed_text)} preprocessed responses")
+
+    # Optionally limit to experiment_n responses
+    if config.experiment_n is not None and config.experiment_n < len(preprocessed_text):
+        preprocessed_text = preprocessed_text[:config.experiment_n]
+        verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} responses")
+
+    verbose_reporter.stat_line(f"Processing: {len(preprocessed_text)} responses")
 
     start_time = time.time()
 
@@ -189,7 +197,8 @@ if __name__ == "__main__":
     print(f"Dataset: {config.filename}")
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
-    print(f"Using experimental: {USE_EXPERIMENTAL}")
+    print(f"Using experimental: {_USE_EXPERIMENTAL}")
+    print(f"Experiment N: {config.experiment_n or 'all'}")
     print("=" * 70)
 
     try:
