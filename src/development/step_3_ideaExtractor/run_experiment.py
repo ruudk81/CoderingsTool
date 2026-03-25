@@ -2,7 +2,7 @@
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
-EXPERIMENT_N  = 100  # n or None
+EXPERIMENT_N  = None  # n or None
 DISCOVER_DOMAINS = True  # True = Phase 3 discovers domains upfront; False = on-the-fly
 
 import sys

@@ -2140,6 +2140,26 @@ class IdeaExtractor:
         for char in zero_width_chars:
             text = text.replace(char, '')
 
+        # Strip dimension marker token (e.g., "[EXPERIENCE_PERCEPTION]") that the
+        # LLM sometimes includes despite prompt instructions not to.
+        # We add the prefix programmatically in _format_idea_text, so the marker
+        # must not be in the LLM's output.
+        original = text
+        if self.primary_dimension:
+            dimension = get_dimension(self.primary_dimension)
+            marker = dimension.domain_marker  # e.g., "[EXPERIENCE_PERCEPTION]"
+            if marker and marker in text:
+                text = text.replace(marker, '').strip()
+                text = ' '.join(text.split())  # collapse any double spaces
+
+        # Strip template prefix if the LLM included it (we add it in _format_idea_text)
+        if self.template_prefix and text.lower().startswith(self.template_prefix.lower()):
+            text = text[len(self.template_prefix):].strip()
+
+        # If stripping left nothing, keep the original — don't discard real content
+        if not text:
+            return original
+
         return text
 
     def _format_idea_text(self, normalized_text: str) -> str:
