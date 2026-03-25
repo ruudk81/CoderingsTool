@@ -3071,6 +3071,15 @@ class IdeaExtractor:
         nest_asyncio.apply()
         self._results = asyncio.run(self.process_all_tasks_async(tasks))
 
+        # Strip canonical_phrasing: leak from idea texts before further processing/caching
+        import re as _re
+        _canonical_pattern = _re.compile(r'\bcanonical_phrasing:\s*')
+        for result in self._results:
+            if result.response_ideas:
+                for idea in result.response_ideas:
+                    if idea.idea and 'canonical_phrasing:' in idea.idea:
+                        idea.idea = _canonical_pattern.sub('', idea.idea).strip()
+
         # Persist empirical stats for cold-start calibration on next run
         if len(self.latency_tracker.values) >= 5 and self.actual_total_tokens:
             tokens = list(self.actual_total_tokens)

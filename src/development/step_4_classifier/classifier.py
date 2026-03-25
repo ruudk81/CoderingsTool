@@ -1265,6 +1265,15 @@ class TaxonomyClassifier:
 
         # BP1: Build original idea lookup per batch for validation + content cross-check
         from difflib import SequenceMatcher
+        import re as _re
+
+        def _normalize_for_comparison(text: str) -> str:
+            """Strip template prefix and canonical_phrasing: for similarity comparison."""
+            if ' → ' in text:
+                text = text.split(' → ', 1)[1]
+            text = _re.sub(r'\bcanonical_phrasing:\s*', '', text)
+            return text.strip().lower()
+
         batch_idea_lookups = [
             {idea.idea_id: idea for idea in batch} for batch in idea_batches
         ]
@@ -1285,7 +1294,9 @@ class TaxonomyClassifier:
                 returned_text = getattr(assignment, 'idea', '') or ''
                 if original_text and returned_text:
                     similarity = SequenceMatcher(
-                        None, returned_text.lower(), original_text.lower()
+                        None,
+                        _normalize_for_comparison(returned_text),
+                        _normalize_for_comparison(original_text),
                     ).ratio()
                     if similarity < 0.7:
                         print(f"    CONTENT DRIFT: idea '{original_idea.idea_id}' — "
@@ -1446,6 +1457,15 @@ class TaxonomyClassifier:
 
         # BP1: Build original idea lookup per batch for validation + content cross-check
         from difflib import SequenceMatcher
+        import re as _re
+
+        def _normalize_for_comparison(text: str) -> str:
+            """Strip template prefix and canonical_phrasing: for similarity comparison."""
+            if ' → ' in text:
+                text = text.split(' → ', 1)[1]
+            text = _re.sub(r'\bcanonical_phrasing:\s*', '', text)
+            return text.strip().lower()
+
         batch_idea_lookups = [
             {idea.idea_id: idea for idea in batch} for batch in idea_batches
         ]
@@ -1466,7 +1486,9 @@ class TaxonomyClassifier:
                 returned_text = getattr(assignment, 'idea', '') or ''
                 if original_text and returned_text:
                     similarity = SequenceMatcher(
-                        None, returned_text.lower(), original_text.lower()
+                        None,
+                        _normalize_for_comparison(returned_text),
+                        _normalize_for_comparison(original_text),
                     ).ratio()
                     if similarity < 0.7:
                         print(f"    CONTENT DRIFT: idea '{original_idea.idea_id}' — "

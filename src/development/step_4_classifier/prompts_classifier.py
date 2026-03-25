@@ -14,6 +14,7 @@ Organized in pipeline processing order:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
@@ -584,6 +585,7 @@ def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
     lines = []
     for idea in ideas:
         idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
+        idea_text = re.sub(r'\bcanonical_phrasing:\s*', '', idea_text).strip()
         valence = _valence_display(idea)
         lines.append(
             f"- idea_id: {idea.idea_id}\n"

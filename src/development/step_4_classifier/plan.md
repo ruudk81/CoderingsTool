@@ -42,7 +42,7 @@ Source: analysis of verbose log `step4_taxonomy_20260325_130057.txt`
 
 ---
 
-## Issue 4 — Content drift warnings
+## Issue 4 — Content drift warnings ✅ RESOLVED
 
 ### 4a — `canonical_phrasing:` literal in idea text
 Some ideas have `idea = "Pinkpop Festival → canonical_phrasing: goede sfeer"` — the label leaks from step 3's field description. LLM strips it → similarity < 0.7 → assignment skipped.
