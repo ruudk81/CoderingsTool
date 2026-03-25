@@ -54,6 +54,7 @@ from utils.llm import (
     create_client, llm_create_async,
     RateLimits, extract_rate_limits_from_response,
 )
+from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats
 from utils.cached_resources import get_tiktoken_encoding
 from config import (
     ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
@@ -220,6 +221,15 @@ class CodeAssigner:
         self._current_arrival_rate: float = 0.0
         self._adjustment_count: int = 0
 
+        # Persistent performance stats for cold-start calibration
+        self._perf_stats = load_stats()
+        _stored = get_phase_stats(self._perf_stats, config.assignment_model, "step6_code_assignment")
+        self._stored_timeout = (
+            _stored["p95_latency_s"]
+            if _stored and _stored.get("sample_count", 0) >= 10 and "p95_latency_s" in _stored
+            else None
+        )
+
     # =========================================================================
     # PUBLIC API
     # =========================================================================
@@ -231,7 +241,23 @@ class CodeAssigner:
 
     def assign_all(self) -> List[CodeAssignedModel]:
         """Sync entry point. Returns list of CodeAssignedModel."""
-        return asyncio.run(self._assign_all_async())
+        results = asyncio.run(self._assign_all_async())
+
+        # Persist empirical stats for cold-start calibration on next run
+        if (self._latency_tracker is not None
+                and len(self._latency_tracker.values) >= 5
+                and self._actual_total_tokens):
+            tokens = list(self._actual_total_tokens)
+            measurements = {
+                "p50_latency_s": self._latency_tracker.get_p50(),
+                "p95_latency_s": self._latency_tracker.get_p95(),
+                "avg_tokens": sum(tokens) / len(tokens),
+            }
+            update_phase_stats(self._perf_stats, self._config.assignment_model,
+                               "step6_code_assignment", measurements, len(tokens))
+            save_stats(self._perf_stats)
+
+        return results
 
     # =========================================================================
     # ASYNC ORCHESTRATION
@@ -929,8 +955,14 @@ class CodeAssigner:
             max_adjustment=DEFAULT_PID_CONTROLLER_CONFIG.max_adjustment,
         )
 
-        # Latency + tiktoken offset
-        self._latency_tracker = LatencyTracker()
+        # Latency + tiktoken offset (use stored P95 as cold-start floor if available)
+        if self._stored_timeout:
+            self._latency_tracker = LatencyTracker(
+                timeout_floor=self._stored_timeout,
+                default_timeout=self._stored_timeout,
+            )
+        else:
+            self._latency_tracker = LatencyTracker()
         self._tiktoken_learner = TiktokenOffsetLearner()
 
         return little_law_cap

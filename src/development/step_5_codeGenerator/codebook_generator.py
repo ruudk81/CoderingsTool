@@ -51,6 +51,9 @@ from config_steps.config_ideaExtractor import (
     DEFAULT_CIRCUIT_BREAKER_CONFIG,
 )
 from development.step_4_classifier.classifier import PhaseRampState
+from utils.modelPerfStats import (
+    load_stats, save_stats, update_phase_stats, apply_to_ramp_config,
+)
 
 from development.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
@@ -162,6 +165,7 @@ class CodebookGenerator:
         self._semaphore = None
         self._rate_limiter = None
         self._fetched_limits = None
+        self._perf_stats: dict = {}
 
     # =========================================================================
     # PUBLIC API
@@ -235,6 +239,7 @@ class CodebookGenerator:
 
     async def _initialize_async_resources(self, verbose: bool):
         """Initialize clients and rate limiters for P8-P9 models."""
+        self._perf_stats = load_stats()
         unique_models = {self._model_p8, self._model_p9}
         self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
 
@@ -334,8 +339,10 @@ class CodebookGenerator:
                 excluded_domains=excluded,
             )
 
-        p8_state = self._create_phase_ramp("P8", len(p8_tasks), model=self._model_p8)
+        p8_state = self._create_phase_ramp("P8", len(p8_tasks), model=self._model_p8,
+                                            phase_key="step5_p8_codebook_generation")
         p8_results = await self._run_with_ramp(p8_tasks.values(), p8_state)
+        self._collect_phase_stats(p8_state, self._model_p8, "step5_p8_codebook_generation")
 
         all_codes = []
         code_provenance = {}
@@ -400,6 +407,8 @@ class CodebookGenerator:
         codebook_elapsed = time.time() - start_time
         if verbose:
             print(f"\n  Codebook (P8-P9) complete in {codebook_elapsed:.1f}s")
+
+        save_stats(self._perf_stats)
 
         return CodebookResult(
             codes=all_codes,
@@ -611,10 +620,29 @@ class CodebookGenerator:
     # 4-LAYER RATE LIMITING (per-phase)
     # =========================================================================
 
+    def _collect_phase_stats(
+        self, state: PhaseRampState, model: str, phase_key: str
+    ) -> None:
+        """Extract latency/token measurements from a completed phase and update perf stats."""
+        if state.latency_tracker is None or len(state.latency_tracker.values) < 5:
+            return
+        tokens = list(state.actual_total_tokens)
+        if not tokens:
+            return
+        measurements = {
+            "p50_latency_s": state.latency_tracker.get_p50(),
+            "p95_latency_s": state.latency_tracker.get_p95(),
+            "avg_tokens": sum(tokens) / len(tokens),
+        }
+        update_phase_stats(self._perf_stats, model, phase_key, measurements, state.completions)
+
     def _create_phase_ramp(self, phase_name: str, num_tasks: int,
-                           model: str = None) -> PhaseRampState:
+                           model: str = None, phase_key: str = None) -> PhaseRampState:
         """Create per-phase 4-layer rate limiting stack."""
-        cfg = self._ramp_config
+        from copy import copy
+        cfg = copy(self._ramp_config)
+        if phase_key and model:
+            apply_to_ramp_config(self._perf_stats, model, phase_key, cfg)
         headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
         api_limits = ApiLimits(
             self._fetched_limits.tokens_per_minute,

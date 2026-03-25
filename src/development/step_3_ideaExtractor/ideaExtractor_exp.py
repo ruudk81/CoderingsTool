@@ -55,6 +55,7 @@ except ImportError:
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
 from config_steps.config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
+from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE
 
 # === PROMPTS (builders + response models) =========================================================================
 try:
@@ -346,6 +347,18 @@ class LatencyTracker:
         if not self.values:
             return DEFAULT_LATENCY_SECONDS
         return self.ema if self.ema is not None else DEFAULT_LATENCY_SECONDS
+
+    def get_p50(self) -> float:
+        """Return P50 (median) latency, or EMA fallback if fewer than 2 samples."""
+        if len(self.values) >= 2:
+            return float(np.percentile(list(self.values), 50))
+        return self.get_avg_latency()
+
+    def get_p95(self) -> float:
+        """Return P95 latency, or EMA fallback if fewer than 2 samples."""
+        if len(self.values) >= 2:
+            return float(np.percentile(list(self.values), 95))
+        return self.get_avg_latency()
 
 
 # === OPTIMAL STRATEGY CLASSES ========================================================================================================
@@ -919,11 +932,25 @@ class IdeaExtractor:
         # Rolling average of actual total tokens
         self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
 
-        # Latency tracking
+        # Load persistent performance stats for cold-start calibration
+        self._perf_stats = load_stats()
+        _stored = get_phase_stats(self._perf_stats, self.model, "step3_idea_extraction")
+        _stored_timeout = (
+            _stored["p95_latency_s"]
+            if _stored and _stored.get("sample_count", 0) >= 10 and "p95_latency_s" in _stored
+            else None
+        )
+        _stored_tiktoken_offset = (
+            int(_stored["tiktoken_offset"])
+            if _stored and _stored.get("sample_count", 0) >= 10 and "tiktoken_offset" in _stored
+            else None
+        )
+
+        # Latency tracking (use stored P95 as cold-start floor if available)
         self.latency_tracker = LatencyTracker(
             processing_config=self.processing_config,
-            timeout_floor=TIMEOUT_FLOOR_SECONDS,
-            default_timeout=DEFAULT_TIMEOUT_SECONDS,
+            timeout_floor=_stored_timeout if _stored_timeout else TIMEOUT_FLOOR_SECONDS,
+            default_timeout=_stored_timeout if _stored_timeout else DEFAULT_TIMEOUT_SECONDS,
         )
 
         # Generic specifiers (must be initialized before _calculate_avg_tokens)
@@ -950,7 +977,9 @@ class IdeaExtractor:
 
         # === RATE LIMITING COMPONENTS ===
         # Tiktoken→API offset learning (accounts for system overhead)
-        self.tiktoken_offset_learner = TiktokenOffsetLearner()
+        # Seed default_offset from stored stats so warm-up starts from empirical value
+        _tiktoken_default = _stored_tiktoken_offset if _stored_tiktoken_offset is not None else TIKTOKEN_API_OFFSET_DEFAULT
+        self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
 
         # Config for new rate limiting components
         self.ramp_up_config = DEFAULT_RAMP_UP_CONFIG
@@ -3041,6 +3070,20 @@ class IdeaExtractor:
 
         nest_asyncio.apply()
         self._results = asyncio.run(self.process_all_tasks_async(tasks))
+
+        # Persist empirical stats for cold-start calibration on next run
+        if len(self.latency_tracker.values) >= 5 and self.actual_total_tokens:
+            tokens = list(self.actual_total_tokens)
+            measurements = {
+                "p50_latency_s": self.latency_tracker.get_p50(),
+                "p95_latency_s": self.latency_tracker.get_p95(),
+                "avg_tokens": sum(tokens) / len(tokens),
+            }
+            if self.tiktoken_offset_learner.is_learned():
+                measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
+            update_phase_stats(self._perf_stats, self.model, "step3_idea_extraction",
+                               measurements, len(self.actual_total_tokens))
+            save_stats(self._perf_stats)
 
         self._stats.output_count = len(self._results)
         self._stats.end_timing()

@@ -68,6 +68,7 @@ except ImportError:
 
 from utils.llm import RateLimits, extract_rate_limits_from_response
 from config import get_reasoning_params
+from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats
 
 
 # =============================================================================
@@ -225,6 +226,18 @@ class LatencyTracker:
         if not self.values:
             return DEFAULT_LATENCY_SECONDS
         return self.ema if self.ema is not None else DEFAULT_LATENCY_SECONDS
+
+    def get_p50(self) -> float:
+        """Return P50 (median) latency, or EMA fallback if fewer than 2 samples."""
+        if len(self.values) >= 2:
+            return float(np.percentile(list(self.values), 50))
+        return self.get_avg_latency()
+
+    def get_p95(self) -> float:
+        """Return P95 latency, or EMA fallback if fewer than 2 samples."""
+        if len(self.values) >= 2:
+            return float(np.percentile(list(self.values), 95))
+        return self.get_avg_latency()
 
 
 # === CONCURRENCY GATE (replaces asyncio.Semaphore) ========================================================================================================
@@ -624,9 +637,22 @@ class Grader:
         # Rolling average of actual total tokens for comparison
         self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
         
-        # Latency tracking
-        self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
-        
+        # Load persistent performance stats for cold-start calibration
+        self._perf_stats = load_stats()
+        _stored = get_phase_stats(self._perf_stats, self.model, "step2_quality_filter")
+        _stored_timeout = (
+            _stored["p95_latency_s"]
+            if _stored and _stored.get("sample_count", 0) >= 10 and "p95_latency_s" in _stored
+            else None
+        )
+
+        # Latency tracking (use stored P95 as cold-start floor if available)
+        self.latency_tracker = LatencyTracker(
+            processing_config=self.processing_config,
+            timeout_floor=_stored_timeout if _stored_timeout else None,
+            default_timeout=_stored_timeout if _stored_timeout else None,
+        )
+
         # Calculate initial average tokens estimate for bootstrapping
         self.avg_tokens = self._calculate_avg_tokens()
         
@@ -1643,7 +1669,19 @@ class Grader:
             if nest_asyncio:
                 nest_asyncio.apply()
             llm_results = asyncio.run(self.process_all_tasks_async(tasks))
-            
+
+            # Persist empirical stats for cold-start calibration on next run
+            if len(self.latency_tracker.values) >= 5 and self.actual_total_tokens:
+                tokens = list(self.actual_total_tokens)
+                measurements = {
+                    "p50_latency_s": self.latency_tracker.get_p50(),
+                    "p95_latency_s": self.latency_tracker.get_p95(),
+                    "avg_tokens": sum(tokens) / len(tokens),
+                }
+                update_phase_stats(self._perf_stats, self.model, "step2_quality_filter",
+                                   measurements, len(self.actual_total_tokens))
+                save_stats(self._perf_stats)
+
             # Store results
             self._results = llm_results
         else:
