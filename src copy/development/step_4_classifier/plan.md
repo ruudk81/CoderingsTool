@@ -24,21 +24,27 @@ Source: analysis of verbose log `step4_taxonomy_20260325_130057.txt`
 **Status** : RESOLVED
 ---
 
-## Issue 2 — `veiligheid en personeel`: 0 facets, 103 ideas lost ✅ CLOSED
+## Issue 2 — `veiligheid en personeel`: 0 facets, 103 ideas lost
 
-**Resolution:** Two-part fix, both delivered:
+**Problem:** Domain had 1 P1 chunk (95 obs). Chunk timed out. 0 facets → domain skipped in P3/P4/P6. All 103 ideas permanently unclassified.
 
-**Part A — 60s timeout floor** — done in Issue 1 config consolidation (`timeout_floor_seconds: 60.0`, `default_timeout_seconds: 60.0`). P1 log showed P95=31s with 4 timeouts at exactly 45s — 60s gives proper headroom.
+**Two-part fix:**
 
-**Part B — Fallback facet** — dropped. Synthetic facets corrupt downstream P4/P6 taxonomy structure. The timeout fix is the right solution; the persistent stats system (`data/model_perf_stats.json`) will further refine the floor empirically after real runs. If a domain still times out at 60s, it surfaces as a visible WARNING rather than silent data loss.
+**Part A — Raise timeout floor to 60s** in `ClassifierRampConfig` (src of truth = dev config, being replaced in issue 1):
+- `timeout_floor_seconds: float = 60.0`
+- `default_timeout_seconds: float = 60.0`
+
+P1 log showed P95=31s with 4 timeouts at exactly 45s. 60s gives proper headroom for large discovery prompts (~5k tokens).
+
+**Part B — Fallback facet** in `src/development/step_4_classifier/classifier.py` after P1 results (~line 475). If a domain produced 0 facets but has ideas, inject a single generic facet so no ideas are silently lost.
 
 ---
 
-## Issue 3 — `organisatie en logistiek`: 20 attributes → 0 after P7 ✅ RESOLVED
+## Issue 3 — `organisatie en logistiek`: 20 attributes → 0 after P7
 
 **Problem:** P7 returned `ConsolidatedAttribute` objects with unrecognized `parent_facet` values. Rebuild loop produces `{}`. Line 783 overwrites domain with empty dict, destroying all 20 attributes.
 
-**Fix:** Guard at line 798: if P7 returns 0 valid attributes but domain had some before, keep pre-P7 state.
+**Fix:** Guard at line 783: if P7 returns 0 valid attributes but domain had some before, keep pre-P7 state.
 
 ---
 

@@ -29,7 +29,6 @@ Usage:
 import asyncio
 import time
 import numpy as np
-import tiktoken
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
@@ -48,32 +47,28 @@ from config import (
     API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params,
 )
 
-from development.step_3_ideaExtractor.dimension_data import (
+from utils.dimension_data import (
     get_dimension, DimensionDefinition,
 )
-from development.step_3_ideaExtractor.ideaExtractor_exp import (
+from utils.ideaExtractor import (
     ConcurrencyGate, ConcurrencyRamp,
     RealTimeTPMTracker, RealTimeRPMTracker,
     ApiLimits, compute_optimal_concurrency,
-    PIDThroughputController,
-    TiktokenOffsetLearner,
 )
-from development.step_2_qualityFilter.qualityFilter_exp import (
-    TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
+from utils.qualityFilter import (
+    TokenBucket, LatencyTracker,
 )
+from utils.ideaExtractor import ConcurrencyCircuitBreaker
 from config_steps.config_ideaExtractor import (
     RampUpConfig,
     DEFAULT_CIRCUIT_BREAKER_CONFIG,
 )
 
 from config_steps.config_classifier import CategoriesConfig, ClassifierRampConfig
-from utils.modelPerfStats import (
-    load_stats, save_stats, update_phase_stats, apply_to_ramp_config, STATS_FILE,
-)
-from .domain_discoverer import PartitionLabelMapping
-from .partition_labels import format_label
-from .models_classifier import DomainSet, DomainDescription
-from .prompts_classifier import (
+from utils.domain_discoverer import PartitionLabelMapping
+from utils.partition_labels import format_label
+from models import DomainSet, DomainDescription
+from prompts_steps.prompts_classifier import (
     # P1: Facet Discovery
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
@@ -248,10 +243,6 @@ class TaxonomyClassifier:
         self._semaphore = None
         self._rate_limiter = None
         self._fetched_limits = None
-        self._pid_controller = None          # PID controller for arrival rate adjustment
-        self._current_arrival_rate = None    # Tracks current arrival rate for PID
-        self._tiktoken_offset_learner = TiktokenOffsetLearner()  # Learns tiktoken→API token offset
-        self._perf_stats: dict = {}                              # Persistent stats loaded per run
 
     # =========================================================================
     # PUBLIC API
@@ -358,9 +349,6 @@ class TaxonomyClassifier:
         default concurrency. Per-phase gates (P1/P3/P4/P6) override the default
         with completion-based ramps.
         """
-        # Load persistent performance stats (used for cold-start calibration per phase)
-        self._perf_stats = load_stats()
-
         # Create one client per unique model
         unique_models = {self._model_p1, self._model_p2, self._model_p3, self._model_p4, self._model_p5, self._model_p6, self._model_p7}
         self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
@@ -405,8 +393,6 @@ class TaxonomyClassifier:
         default_conc = max(cfg.min_initial, int(little_law * cfg.start_fraction))
         self._semaphore = asyncio.Semaphore(default_conc)
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
-        self._current_arrival_rate = arrival_rate
-        self._pid_controller = PIDThroughputController(target_utilization=0.80)
 
         if verbose:
             print(f"\n  [RATE LIMITING SETUP]")
@@ -442,8 +428,7 @@ class TaxonomyClassifier:
             len(self._create_batches(mapping.labels))
             for mapping in label_mappings.values()
         )
-        p1_state = self._create_phase_ramp("P1", total_p1_chunks, model=self._model_p1,
-                                            phase_key="step4_p1_facet_discovery")
+        p1_state = self._create_phase_ramp("P1", total_p1_chunks, model=self._model_p1)
 
         facet_tasks = {}
         for name, mapping in sorted(label_mappings.items()):
@@ -463,7 +448,6 @@ class TaxonomyClassifier:
         facet_results_list = await self._run_with_ramp(
             facet_tasks.values(), p1_state
         )
-        self._collect_phase_stats(p1_state, self._model_p1, "step4_p1_facet_discovery")
 
         partition_facets: Dict[str, List[DiscoveredFacet]] = {}
         partition_n_labels: Dict[str, int] = {}
@@ -503,8 +487,7 @@ class TaxonomyClassifier:
             if partition_facets[name] and label_mappings[name].ideas
         )
         est_p3_batches = max(1, total_p3_ideas // self._facet_assignment_batch_size)
-        p3_state = self._create_phase_ramp("P3", est_p3_batches, model=self._model_p3,
-                                            phase_key="step4_p3_facet_assignment")
+        p3_state = self._create_phase_ramp("P3", est_p3_batches, model=self._model_p3)
 
         assignment_tasks = {
             name: self._run_facet_assignment(
@@ -521,7 +504,6 @@ class TaxonomyClassifier:
         assignment_results_list = await self._run_with_ramp(
             assignment_tasks.values(), p3_state
         )
-        self._collect_phase_stats(p3_state, self._model_p3, "step4_p3_facet_assignment")
 
         # idea_id -> facet_name per domain
         partition_assignments: Dict[str, Dict[str, str]] = {}
@@ -596,8 +578,7 @@ class TaxonomyClassifier:
                 size_max=self._p4_batch_size_max,
                 target=self._p4_target_batches,
             )))
-        p4_state = self._create_phase_ramp("P4", total_p4_chunks, model=self._model_p4,
-                                            phase_key="step4_p4_attribute_discovery")
+        p4_state = self._create_phase_ramp("P4", total_p4_chunks, model=self._model_p4)
 
         # Build actual coroutines
         attr_coros = {}
@@ -616,7 +597,6 @@ class TaxonomyClassifier:
         attr_results_list = await self._run_with_ramp(
             attr_coros.values(), p4_state
         )
-        self._collect_phase_stats(p4_state, self._model_p4, "step4_p4_attribute_discovery")
 
         # Collect attributes: domain -> facet -> [attributes]
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
@@ -667,8 +647,7 @@ class TaxonomyClassifier:
             for fn in fa
         )
         est_p6_batches = max(1, total_p6_ideas // self._facet_assignment_batch_size)
-        p6_state = self._create_phase_ramp("P6", est_p6_batches, model=self._model_p6,
-                                            phase_key="step4_p6_attribute_assignment")
+        p6_state = self._create_phase_ramp("P6", est_p6_batches, model=self._model_p6)
 
         # Assign attributes to ideas, grouped by facet
         attribute_assignments: Dict[str, str] = {}  # idea_id -> attribute_name
@@ -713,7 +692,6 @@ class TaxonomyClassifier:
             assign_results = await self._run_with_ramp(
                 assign_tasks.values(), p6_state
             )
-            self._collect_phase_stats(p6_state, self._model_p6, "step4_p6_attribute_assignment")
 
             for task_key, result in zip(assign_tasks.keys(), assign_results):
                 if isinstance(result, Exception):
@@ -795,12 +773,8 @@ class TaxonomyClassifier:
                         example_observations=attr.example_observations,
                     ))
 
-                if not new_facet_attrs and before_count > 0:
-                    print(f"    WARNING: P7 '{domain_name}' returned 0 valid attributes "
-                          f"(had {before_count}) — keeping pre-consolidation state")
-                else:
-                    domain_facet_attributes[domain_name] = new_facet_attrs
-                    partition_attributes[domain_name] = new_facet_attrs
+                domain_facet_attributes[domain_name] = new_facet_attrs
+                partition_attributes[domain_name] = new_facet_attrs
 
                 # Remap attribute assignments: old names → consolidated names
                 remap = {}
@@ -835,8 +809,6 @@ class TaxonomyClassifier:
         taxonomy_elapsed = time.time() - start_time
         if verbose:
             print(f"\n  Taxonomy (P1-P7) complete in {taxonomy_elapsed:.1f}s")
-
-        save_stats(self._perf_stats)
 
         return TaxonomyResult(
             partition_n_labels=partition_n_labels,
@@ -1228,11 +1200,7 @@ class TaxonomyClassifier:
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Retry pass: re-run truly failed batches with reduced concurrency.
-        # NOTE: Intentional divergence from strategy doc retry pattern.
-        # Strategy says: reuse the same processing function with reduced concurrency.
-        # P3/P6 use batch-level retry because assignment is batched (10 ideas per call);
-        # individual-task retry doesn't apply — the unit of failure is the batch.
+        # Retry pass: re-run truly failed batches with reduced concurrency
         failed_batch_indices = [
             i for i, batch in enumerate(idea_batches)
             if any(idea.idea_id in self.failed_task_ids for idea in batch)
@@ -1409,11 +1377,7 @@ class TaxonomyClassifier:
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Retry pass: re-run truly failed batches with reduced concurrency.
-        # NOTE: Intentional divergence from strategy doc retry pattern.
-        # Strategy says: reuse the same processing function with reduced concurrency.
-        # P3/P6 use batch-level retry because assignment is batched (10 ideas per call);
-        # individual-task retry doesn't apply — the unit of failure is the batch.
+        # Retry pass: re-run truly failed batches with reduced concurrency
         failed_batch_indices = [
             i for i, batch in enumerate(idea_batches)
             if any(idea.idea_id in self.failed_task_ids for idea in batch)
@@ -1838,53 +1802,25 @@ class TaxonomyClassifier:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             model = self._model_p1
 
-        if API_PROVIDER == "azure":
-            response = await client.chat.completions.with_raw_response.create(
-                model=model,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_completion_tokens=5,
-            )
-        else:
-            response = await client.responses.with_raw_response.create(
-                model=model,
-                input="Hi",
-            )
+        response = await client.chat.completions.with_raw_response.create(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=5,
+        )
         return extract_rate_limits_from_response(response)
 
     # =========================================================================
     # 4-LAYER RATE LIMITING (per-phase)
     # =========================================================================
 
-    def _collect_phase_stats(
-        self, state: PhaseRampState, model: str, phase_key: str
-    ) -> None:
-        """Extract latency/token measurements from a completed phase and update perf stats."""
-        if state.latency_tracker is None or len(state.latency_tracker.values) < 5:
-            return
-        tokens = list(state.actual_total_tokens)
-        if not tokens:
-            return
-        measurements = {
-            "p50_latency_s": state.latency_tracker.get_p50(),
-            "p95_latency_s": state.latency_tracker.get_p95(),
-            "avg_tokens": sum(tokens) / len(tokens),
-        }
-        if phase_key == "step4_p1_facet_discovery" and self._tiktoken_offset_learner.is_learned():
-            measurements["tiktoken_offset"] = float(self._tiktoken_offset_learner.get_offset())
-        update_phase_stats(self._perf_stats, model, phase_key, measurements, state.completions)
-
     def _create_phase_ramp(self, phase_name: str, num_tasks: int,
-                           model: str = None, phase_key: str = None) -> PhaseRampState:
+                           model: str = None) -> PhaseRampState:
         """Create per-phase 4-layer rate limiting stack.
 
         Large phases (>=min_tasks): full stack with TokenBucket, LatencyTracker, CircuitBreaker.
         Small phases: gate + ramp only (layers 2-4 skipped).
         """
-        from copy import copy
-        cfg = copy(self._ramp_config)
-        # Apply empirical cold-start estimates from previous runs if available
-        if phase_key and model:
-            apply_to_ramp_config(self._perf_stats, model, phase_key, cfg)
+        cfg = self._ramp_config
         headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
         api_limits = ApiLimits(
             self._fetched_limits.tokens_per_minute,
@@ -1894,10 +1830,6 @@ class TaxonomyClassifier:
             api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
         )
         little_law_cap = min(little_law, num_tasks)
-
-        # Reset PID so each phase starts fresh
-        if self._pid_controller:
-            self._pid_controller.reset()
 
         ramp_up_cfg = RampUpConfig(
             start_fraction=cfg.start_fraction,
@@ -1968,11 +1900,10 @@ class TaxonomyClassifier:
         )
 
     async def _phase_monitor(self, state: PhaseRampState):
-        """Background monitor: ramp + circuit breaker + warm-up + PID + progress."""
+        """Background monitor: ramp + circuit breaker + warm-up + progress."""
         start_time = time.monotonic()
         last_report_time = start_time
         last_reported_completions = -1
-        last_pid_time = start_time
 
         while not state.done:
             await asyncio.sleep(self._ramp_config.monitor_poll_interval)
@@ -1984,11 +1915,6 @@ class TaxonomyClassifier:
                 action = state.circuit_breaker.check_and_adjust()
                 if action and action in ('tripped', 'recovering', 'recovered'):
                     pass  # CB already adjusted gate.limit internally
-
-            # --- PID arrival rate adjustment (every 20s, large phases only) ---
-            if state.token_bucket and now - last_pid_time >= 20.0:
-                await self._apply_pid_adjustment(state)
-                last_pid_time = now
 
             # --- Feed completions to ramp ---
             if not state.ramp.is_done() and state.completions >= self._ramp_config.min_completions_per_step:
@@ -2025,18 +1951,6 @@ class TaxonomyClassifier:
                     current_tpm = await state.tpm_tracker.get_current_tpm()
                     current_rpm = await state.rpm_tracker.get_current_rpm()
 
-                    tpm_limit = self._fetched_limits.tokens_per_minute if self._fetched_limits else 0
-                    rpm_limit = self._fetched_limits.requests_per_minute if self._fetched_limits else 0
-                    tpm_pct = (current_tpm / tpm_limit * 100) if tpm_limit > 0 else 0
-                    rpm_pct = (current_rpm / rpm_limit * 100) if rpm_limit > 0 else 0
-
-                    latency_info = ""
-                    if state.latency_tracker and len(state.latency_tracker.values) >= 2:
-                        vals = list(state.latency_tracker.values)
-                        p50 = float(np.percentile(vals, 50))
-                        p95 = float(np.percentile(vals, 95))
-                        latency_info = f" | P50:{p50:.1f}s P95:{p95:.1f}s"
-
                     timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
                     cb_info = ""
                     if state.circuit_breaker and state.circuit_breaker.state != 'CLOSED':
@@ -2044,9 +1958,9 @@ class TaxonomyClassifier:
                     ramp_target = state.ramp._target
                     print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
                           f"({rate:.1f}/s) | "
-                          f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% "
+                          f"TPM:{current_tpm:,.0f} RPM:{current_rpm:.0f} "
                           f"Conc:{state.gate.active}/{state.gate.limit}→{ramp_target}"
-                          f"{latency_info}{timeout_info}{cb_info}")
+                          f"{timeout_info}{cb_info}")
 
     async def _run_with_ramp(self, coros, state: PhaseRampState):
         """Run coroutines via gather with a background ramp monitor.
@@ -2110,7 +2024,6 @@ class TaxonomyClassifier:
             self._fetched_limits.tokens_per_minute * headroom / measured_avg_tokens / 60,
         )
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(new_arrival_rate, 0.01))
-        self._current_arrival_rate = new_arrival_rate  # Keep PID in sync after warm-up
 
         conc_target = state.ramp._target
         print(f"\n    {'='*60}")
@@ -2124,37 +2037,6 @@ class TaxonomyClassifier:
         print(f"    {'='*60}")
 
         state.warm_up_calibrated = True
-
-    async def _apply_pid_adjustment(self, state: PhaseRampState) -> None:
-        """Adjust AsyncLimiter arrival rate via PID controller based on TPM utilization.
-
-        Called every 20s from _phase_monitor. Asymmetric: aggressive when under-utilizing,
-        gentle when over-utilizing. No-ops when limits are unknown or adjustment is trivial.
-        """
-        if self._current_arrival_rate is None or self._pid_controller is None:
-            return
-        if not self._fetched_limits or not self._fetched_limits.tokens_per_minute:
-            return
-
-        current_tpm = await state.tpm_tracker.get_current_tpm()
-        tpm_limit = self._fetched_limits.tokens_per_minute
-        utilization = current_tpm / tpm_limit if tpm_limit > 0 else 0.0
-
-        adjustment = self._pid_controller.compute_adjustment(utilization)
-        if abs(adjustment - 1.0) < 0.01:
-            return
-
-        old_rate = self._current_arrival_rate
-        new_rate = old_rate * adjustment
-        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
-        rpm_max = self._fetched_limits.requests_per_minute * headroom / 60
-        new_rate = max(0.5, min(rpm_max, new_rate))
-
-        if abs(new_rate - old_rate) / max(old_rate, 0.001) < 0.02:
-            return
-
-        self._rate_limiter = AsyncLimiter(1, time_period=1.0 / new_rate)
-        self._current_arrival_rate = new_rate
 
     # =========================================================================
     # SHARED LLM CALL
@@ -2182,8 +2064,6 @@ class TaxonomyClassifier:
         est_tokens = max_tokens
         if phase_state and phase_state.estimated_avg_tokens:
             est_tokens = phase_state.estimated_avg_tokens
-        # Apply learned tiktoken→API offset to improve bucket pre-acquisition accuracy
-        est_tokens += self._tiktoken_offset_learner.get_offset()
 
         async with concurrency_ctx:                                     # Layer 1: Concurrency
             # Adaptive timeout: compute AFTER gate (fresh latency data)
@@ -2242,20 +2122,6 @@ class TaxonomyClassifier:
                         # Track for warm-up calibration
                         if actual_tokens and phase_state.actual_total_tokens is not None:
                             phase_state.actual_total_tokens.append(actual_tokens)
-
-                        # Learn tiktoken→API offset for future estimates
-                        if actual_tokens:
-                            try:
-                                encoding = tiktoken.encoding_for_model(use_model)
-                                tiktoken_count = len(encoding.encode(prompt))
-                                input_tokens = (
-                                    getattr(usage, 'input_tokens', 0)
-                                    or getattr(usage, 'prompt_tokens', 0)
-                                ) if usage else 0
-                                if input_tokens > 0:
-                                    self._tiktoken_offset_learner.record(tiktoken_count, input_tokens)
-                            except Exception:
-                                pass  # Non-critical — don't disrupt the pipeline
 
                         # Reconcile token bucket (return overestimate)
                         if actual_tokens and phase_state.token_bucket:

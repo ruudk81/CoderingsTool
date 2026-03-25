@@ -1,7 +1,7 @@
 """
-Taxonomy Classifier: Inductive taxonomy discovery pipeline (P1-P7).
+Inductive Code Generation pipeline for Category Discovery v3.
 
-Pipeline (7 stages):
+Pipeline (10 stages):
   P1.  Facet Discovery (chunked, per domain) — dimension-specific semantics
   P2.  Facet Consolidation (per domain, hierarchical merge)
   P3.  Facet Assignment (batched, per domain) — assign ideas to discovered facets
@@ -9,15 +9,18 @@ Pipeline (7 stages):
   P5.  Attribute Chunk Consolidation (per facet, hierarchical merge)
   P6.  Attribute Assignment (per facet) — assign ideas to discovered attributes
   P7.  Cross-facet Attribute Consolidation (per domain) — dedup across facets
+  P8.  Code Generation from Attributes (per domain) — derive codebook codes
+  P9.  Codebook Consolidation (cross-domain) — merge into final MECE codebook
+  P10. Code Assignment (per idea) — assign codes to ideas
 
-Per-domain steps (P1–P7) run CONCURRENTLY.
+Per-domain steps (P1–P7) run CONCURRENTLY. P8–P9 are sequential.
 
 Usage:
-    from .classifier import TaxonomyClassifier
-    from .config_classifier import CategoriesConfig
+    from .qualitative_researcher import QualitativeResearcher
+    from .config_classNcoder_exp import CategoriesConfig
 
-    processor = TaxonomyClassifier(config)
-    result = processor.process(
+    processor = QualitativeResearcher(config)
+    result = processor.process_all_partitions(
         label_mappings={"identity": mapping, ...},
         partition_set=partition_set,
         dimension_name="ATTRIBUTES_ASSOCIATIONS",
@@ -28,13 +31,10 @@ Usage:
 
 import asyncio
 import time
-import numpy as np
-import tiktoken
-from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Literal, Optional, Set
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 import nest_asyncio
 from aiolimiter import AsyncLimiter
@@ -45,35 +45,18 @@ from utils.llm import (
 )
 from config import (
     ProcessingConfig, DEFAULT_PROCESSING_CONFIG, OPENAI_API_KEY,
-    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params,
+    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
 )
 
 from development.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
 )
-from development.step_3_ideaExtractor.ideaExtractor_exp import (
-    ConcurrencyGate, ConcurrencyRamp,
-    RealTimeTPMTracker, RealTimeRPMTracker,
-    ApiLimits, compute_optimal_concurrency,
-    PIDThroughputController,
-    TiktokenOffsetLearner,
-)
-from development.step_2_qualityFilter.qualityFilter_exp import (
-    TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
-)
-from config_steps.config_ideaExtractor import (
-    RampUpConfig,
-    DEFAULT_CIRCUIT_BREAKER_CONFIG,
-)
 
-from config_steps.config_classifier import CategoriesConfig, ClassifierRampConfig
-from utils.modelPerfStats import (
-    load_stats, save_stats, update_phase_stats, apply_to_ramp_config, STATS_FILE,
-)
+from .config_classNcoder_exp import CategoriesConfig
 from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
-from .models_classifier import DomainSet, DomainDescription
-from .prompts_classifier import (
+from .models_exp import DomainSet, DomainDescription
+from .prompts_exp import (
     # P1: Facet Discovery
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
@@ -98,6 +81,14 @@ from .prompts_classifier import (
     build_attribute_consolidation_prompt,
     AttributeConsolidatedResponse,
     ConsolidatedAttribute,
+    # P8: Code Generation from Attributes
+    build_code_from_attributes_prompt,
+    CodeGenerationFromAttributesResult,
+    CodeFromAttributes,
+    # P9: Codebook Consolidation
+    build_codebook_consolidation_prompt,
+    CodebookConsolidationResult,
+    ConsolidatedCode,
 )
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
@@ -150,46 +141,22 @@ class TaxonomyResult:
 
 
 @dataclass
-class PhaseRampState:
-    """Per-phase 4-layer rate limiting state for gather-based dispatch.
-
-    Full stack (large phases): all 4 layers active.
-    Light mode (small phases): token_bucket/latency_tracker/circuit_breaker = None.
-    """
-    # Layer 1: Concurrency gate + completion-based ramp
-    gate: ConcurrencyGate
-    ramp: ConcurrencyRamp
-    rpm_tracker: RealTimeRPMTracker
-    tpm_tracker: RealTimeTPMTracker
-    phase_name: str = ""
-    total_tasks: int = 0
-    completions: int = 0
-    timeouts: int = 0
-    done: bool = False
-
-    # Layer 2: TPM token bucket (None for small phases)
-    token_bucket: Optional[TokenBucket] = None
-
-    # Layer 4: Adaptive timeout + circuit breaker (None for small phases)
-    latency_tracker: Optional[LatencyTracker] = None
-    circuit_breaker: Optional[ConcurrencyCircuitBreaker] = None
-
-    # Warm-up calibration tracking
-    actual_total_tokens: Optional[deque] = field(default_factory=lambda: deque(maxlen=100))
-    warm_up_calibrated: bool = False
-    warm_up_target_samples: int = 0
-    estimated_avg_tokens: int = 3000
+class PipelineResult:
+    """Complete pipeline output (v3)."""
+    partition_results: Dict[str, DomainResult]
+    codebook_narrative: str
+    codes: List[ConsolidatedCode]
 
 
 # =============================================================================
 # MAIN PROCESSOR
 # =============================================================================
 
-class TaxonomyClassifier:
+class QualitativeResearcher:
     """
-    Taxonomy Classifier: Inductive taxonomy discovery pipeline (P1-P7).
+    Inductive Code Generation pipeline for Category Discovery v3.
 
-    Pipeline (7 stages):
+    Pipeline (10 stages):
     P1.  FACET DISCOVERY:                   Per domain, chunked with overlap (concurrent)
     P2.  FACET CONSOLIDATION:               Per domain, hierarchical merge
     P3.  FACET ASSIGNMENT:                  Per domain, assign ideas to facets (concurrent)
@@ -197,6 +164,9 @@ class TaxonomyClassifier:
     P5.  ATTRIBUTE CHUNK CONSOLIDATION:     Per facet, hierarchical merge
     P6.  ATTRIBUTE ASSIGNMENT:              Per facet, assign ideas to attributes (concurrent)
     P7.  CROSS-FACET ATTR CONSOLIDATION:    Per domain, dedup across facets
+    P8.  CODE GENERATION:                   Per domain, derive codes from attributes
+    P9.  CODEBOOK CONSOLIDATION:            Cross-domain, merge into MECE codebook
+    P10. CODE ASSIGNMENT:                   Per idea, assign codes (separate module)
     """
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None):
@@ -207,10 +177,14 @@ class TaxonomyClassifier:
         self._model_p5 = config.qr_model_p5
         self._model_p6 = config.qr_model_p6
         self._model_p7 = config.qr_model_p7
+        self._model_p8 = config.qr_model_p8
+        self._model_p9 = config.qr_model_p9
         self._temperature = config.qr_temperature
         self._max_tokens_facet_discovery = config.qr_max_tokens_facet_discovery
         self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
         self._max_tokens_attribute_discovery = config.qr_max_tokens_attribute_discovery
+        self._max_tokens_code_from_attributes = config.qr_max_tokens_code_from_attributes
+        self._max_tokens_codebook_consolidation = config.qr_max_tokens_codebook_consolidation
         self._facet_assignment_batch_size = config.facet_assignment_batch_size
 
         # Batch sizing — P1 (facet discovery)
@@ -240,18 +214,10 @@ class TaxonomyClassifier:
         # Failure tracking for retry pass (P3, P6)
         self.failed_task_ids: set = set()
 
-        # Concurrency ramp config
-        self._ramp_config = config.ramp_config
-
-        # Shared async resources — initialized in _initialize_async_resources()
+        # Shared async resources — initialized in _process_all_async()
         self._client = None
         self._semaphore = None
         self._rate_limiter = None
-        self._fetched_limits = None
-        self._pid_controller = None          # PID controller for arrival rate adjustment
-        self._current_arrival_rate = None    # Tracks current arrival rate for PID
-        self._tiktoken_offset_learner = TiktokenOffsetLearner()  # Learns tiktoken→API token offset
-        self._perf_stats: dict = {}                              # Persistent stats loaded per run
 
     # =========================================================================
     # PUBLIC API
@@ -301,7 +267,42 @@ class TaxonomyClassifier:
 
         return prompt_context, partition_contexts, active_partitions
 
-    def process(
+    def process_all_partitions(
+        self,
+        label_mappings: Dict[str, PartitionLabelMapping],
+        partition_set: DomainSet,
+        survey_question: str = "",
+        language: str = "Dutch",
+        dataset_context: Optional[Dict[str, str]] = None,
+        dimension_name: str = "",
+        dimension_description: str = "",
+        verbose: bool = False,
+    ) -> PipelineResult:
+        """Run full pipeline: taxonomy (P1-P7) + codebook (P8-P9)."""
+        print(f"\n{'='*70}")
+        print(f"INDUCTIVE CODE GENERATION v3: Category Discovery")
+        print(f"{'='*70}")
+
+        prompt_context, partition_contexts, active_partitions = self._prepare_context(
+            label_mappings, partition_set, survey_question, language,
+            dataset_context, dimension_name, dimension_description, verbose,
+        )
+
+        if verbose:
+            total_labels = sum(m.label_count for m in active_partitions.values())
+            total_ideas = sum(len(m.ideas) for m in active_partitions.values())
+            n_partitions = len(active_partitions)
+            print(f"  Processing {n_partitions} domains concurrently "
+                  f"({total_labels} observations, {total_ideas} ideas)")
+            print(f"  Pipeline: P1-P7 taxonomy → P8-P9 codebook")
+
+        return asyncio.run(
+            self._process_all_async(
+                active_partitions, partition_contexts, prompt_context, verbose
+            )
+        )
+
+    def process_taxonomy_only(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
         partition_set: DomainSet,
@@ -312,7 +313,7 @@ class TaxonomyClassifier:
         dimension_description: str = "",
         verbose: bool = False,
     ) -> TaxonomyResult:
-        """Run taxonomy stages (P1-P7): facets, attributes, assignments."""
+        """Run taxonomy stages only (P1-P7): facets, attributes, assignments."""
         print(f"\n{'='*70}")
         print(f"TAXONOMY DISCOVERY (P1-P7)")
         print(f"{'='*70}")
@@ -341,6 +342,56 @@ class TaxonomyClassifier:
 
         return asyncio.run(_run())
 
+    def process_codebook_only(
+        self,
+        taxonomy: TaxonomyResult,
+        partition_set: DomainSet,
+        survey_question: str = "",
+        language: str = "Dutch",
+        dataset_context: Optional[Dict[str, str]] = None,
+        dimension_name: str = "",
+        dimension_description: str = "",
+        label_mappings: Optional[Dict[str, PartitionLabelMapping]] = None,
+        verbose: bool = False,
+    ) -> PipelineResult:
+        """Run codebook stages only (P8-P9) from a TaxonomyResult."""
+        print(f"\n{'='*70}")
+        print(f"CODEBOOK GENERATION (P8-P9)")
+        print(f"{'='*70}")
+
+        # Need label_mappings for bootstrap; use empty if not provided
+        if label_mappings is None:
+            label_mappings = {}
+
+        prompt_context, partition_contexts, active_partitions = self._prepare_context(
+            label_mappings, partition_set, survey_question, language,
+            dataset_context, dimension_name, dimension_description, verbose,
+        )
+
+        async def _run():
+            # Initialize clients and rate limiters
+            # For codebook-only, bootstrap uses fallback if no labels available
+            if active_partitions:
+                await self._initialize_async_resources(
+                    active_partitions, partition_contexts, prompt_context, verbose
+                )
+            else:
+                # No labels available — use fallback rate limits
+                unique_models = {self._model_p1, self._model_p2, self._model_p3,
+                                 self._model_p4, self._model_p5, self._model_p6,
+                                 self._model_p7, self._model_p8, self._model_p9}
+                self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
+                self._semaphore = asyncio.Semaphore(5)
+                self._rate_limiter = AsyncLimiter(1, time_period=0.1)
+                if verbose:
+                    print("  Using fallback rate limits (no labels for bootstrap)")
+
+            return await self._process_codebook_async(
+                taxonomy, partition_contexts, prompt_context, verbose
+            )
+
+        return asyncio.run(_run())
+
     # =========================================================================
     # ASYNC ORCHESTRATION
     # =========================================================================
@@ -352,17 +403,15 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool,
     ):
-        """Initialize clients and rate limiters.
+        """Initialize clients and rate limiters. No bootstrap — uses static semaphore.
 
-        Fetches real rate limits from API headers, computes Little's Law-based
-        default concurrency. Per-phase gates (P1/P3/P4/P6) override the default
-        with completion-based ramps.
+        Per strategy doc: bootstrap is wasted for small phases (<30 tasks) and
+        miscalibrated for large phases (different prompt types). Instead, use a
+        static semaphore (15) as a default fallback + rate limiter from API limits.
+        Per-phase gates (Group 3) will override this for phases that need it.
         """
-        # Load persistent performance stats (used for cold-start calibration per phase)
-        self._perf_stats = load_stats()
-
         # Create one client per unique model
-        unique_models = {self._model_p1, self._model_p2, self._model_p3, self._model_p4, self._model_p5, self._model_p6, self._model_p7}
+        unique_models = {self._model_p1, self._model_p2, self._model_p3, self._model_p4, self._model_p5, self._model_p6, self._model_p7, self._model_p8, self._model_p9}
         self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
 
         processing_config = DEFAULT_PROCESSING_CONFIG
@@ -385,41 +434,58 @@ class TaxonomyClassifier:
             print(f"  Fetched from API: TPM={limits.tokens_per_minute:,}, "
                   f"RPM={limits.requests_per_minute:,}")
 
-        # Store for per-phase ramp creation
-        self._fetched_limits = limits
-
-        # --- Compute Little's Law-based concurrency ---
-        cfg = self._ramp_config
-        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        little_law = compute_optimal_concurrency(
-            api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
-        )
-
-        est_avg_tokens = cfg.estimated_avg_tokens
+        # --- Static concurrency + rate limiter from API limits ---
+        est_avg_tokens = 3000  # Conservative estimate for rate limiter computation
         rpm_throughput = limits.requests_per_minute * headroom / 60
         tpm_throughput = limits.tokens_per_minute * headroom / est_avg_tokens / 60
         arrival_rate = min(rpm_throughput, tpm_throughput)
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
 
-        # Default semaphore for small phases (P2, P5, P7) — uses start_fraction
-        default_conc = max(cfg.min_initial, int(little_law * cfg.start_fraction))
-        self._semaphore = asyncio.Semaphore(default_conc)
+        # Static semaphore (15) — per strategy doc recommendation for small batches.
+        # Large phases (P3, P6) will get per-phase gates in Group 3.
+        self._semaphore = asyncio.Semaphore(15)
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
-        self._current_arrival_rate = arrival_rate
-        self._pid_controller = PIDThroughputController(target_utilization=0.80)
 
         if verbose:
             print(f"\n  [RATE LIMITING SETUP]")
             print(f"  Models: P1={self._model_p1}, P2={self._model_p2}, "
                   f"P3={self._model_p3}, P4={self._model_p4}, P5={self._model_p5}, "
-                  f"P6={self._model_p6}, P7={self._model_p7}")
+                  f"P6={self._model_p6}, P7={self._model_p7}, P8={self._model_p8}, "
+                  f"P9={self._model_p9}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
             print(f"  TPM: {limits.tokens_per_minute:,} "
                   f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
             print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
-            print(f"  Little's Law: {little_law} | "
-                  f"Default concurrency: {default_conc} (small phases P2/P5/P7)")
+            print(f"  Default concurrency (semaphore): 15 (static, per-phase gates override)")
+
+    async def _process_all_async(
+        self,
+        label_mappings: Dict[str, PartitionLabelMapping],
+        partition_contexts: Dict[str, DomainContext],
+        prompt_context: PromptContext,
+        verbose: bool,
+    ) -> PipelineResult:
+        """Main async entry: runs taxonomy (P1-P7) then codebook (P8-P9)."""
+        await self._initialize_async_resources(
+            label_mappings, partition_contexts, prompt_context, verbose
+        )
+
+        start_time = time.time()
+
+        taxonomy = await self._process_taxonomy_async(
+            label_mappings, partition_contexts, prompt_context, verbose
+        )
+
+        codebook_result = await self._process_codebook_async(
+            taxonomy, partition_contexts, prompt_context, verbose
+        )
+
+        total_elapsed = time.time() - start_time
+        if verbose:
+            print(f"\n  Pipeline complete in {total_elapsed:.1f}s")
+
+        return codebook_result
 
     async def _process_taxonomy_async(
         self,
@@ -437,14 +503,6 @@ class TaxonomyClassifier:
         if verbose:
             print(f"\n  Phase 1: Per-domain Facet Discovery...")
 
-        # Estimate total P1 chunks for ramp sizing
-        total_p1_chunks = sum(
-            len(self._create_batches(mapping.labels))
-            for mapping in label_mappings.values()
-        )
-        p1_state = self._create_phase_ramp("P1", total_p1_chunks, model=self._model_p1,
-                                            phase_key="step4_p1_facet_discovery")
-
         facet_tasks = {}
         for name, mapping in sorted(label_mappings.items()):
             # Build excluded domains: all other domains
@@ -457,13 +515,11 @@ class TaxonomyClassifier:
                 name, mapping.labels, partition_contexts[name],
                 prompt_context, verbose,
                 excluded_domains=excluded,
-                phase_state=p1_state,
             )
 
-        facet_results_list = await self._run_with_ramp(
-            facet_tasks.values(), p1_state
+        facet_results_list = await asyncio.gather(
+            *facet_tasks.values(), return_exceptions=True
         )
-        self._collect_phase_stats(p1_state, self._model_p1, "step4_p1_facet_discovery")
 
         partition_facets: Dict[str, List[DiscoveredFacet]] = {}
         partition_n_labels: Dict[str, int] = {}
@@ -496,32 +552,29 @@ class TaxonomyClassifier:
 
         t_phase3 = time.time()
 
-        # Per-phase ramp: estimate total batches across all domains
+        # Per-phase gate: estimate total batches across all domains
         total_p3_ideas = sum(
             len(label_mappings[name].ideas)
             for name in partition_facets
             if partition_facets[name] and label_mappings[name].ideas
         )
         est_p3_batches = max(1, total_p3_ideas // self._facet_assignment_batch_size)
-        p3_state = self._create_phase_ramp("P3", est_p3_batches, model=self._model_p3,
-                                            phase_key="step4_p3_facet_assignment")
+        p3_gate = asyncio.Semaphore(min(est_p3_batches, 40))
 
         assignment_tasks = {
             name: self._run_facet_assignment(
                 name, partition_facets[name],
                 label_mappings[name].ideas,
                 partition_contexts[name], prompt_context,
-                gate=p3_state.gate,
-                phase_state=p3_state,
+                gate=p3_gate,
             )
             for name in sorted(partition_facets.keys())
             if partition_facets[name] and label_mappings[name].ideas
         }
 
-        assignment_results_list = await self._run_with_ramp(
-            assignment_tasks.values(), p3_state
+        assignment_results_list = await asyncio.gather(
+            *assignment_tasks.values(), return_exceptions=True
         )
-        self._collect_phase_stats(p3_state, self._model_p3, "step4_p3_facet_assignment")
 
         # idea_id -> facet_name per domain
         partition_assignments: Dict[str, Dict[str, str]] = {}
@@ -586,44 +639,26 @@ class TaxonomyClassifier:
             ]
 
             task_key = f"{domain_name}::{facet_name}"
-            attr_tasks[task_key] = (domain_name, facet_name, facet_obj, observations, excluded_f)
-
-        # Create ramp — estimate inner chunks across all facets
-        total_p4_chunks = 0
-        for task_key, (dn, fn, fo, obs, ef) in attr_tasks.items():
-            total_p4_chunks += max(1, len(self._create_batches(
-                obs, size_min=self._p4_batch_size_min,
-                size_max=self._p4_batch_size_max,
-                target=self._p4_target_batches,
-            )))
-        p4_state = self._create_phase_ramp("P4", total_p4_chunks, model=self._model_p4,
-                                            phase_key="step4_p4_attribute_discovery")
-
-        # Build actual coroutines
-        attr_coros = {}
-        for task_key, (dn, fn, fo, obs, ef) in attr_tasks.items():
-            attr_coros[task_key] = self._discover_facet_attributes(
-                domain_name=dn,
-                facet_name=fn,
-                facet_description=fo.facet_description,
-                observations=obs,
-                part_context=partition_contexts[dn],
+            attr_tasks[task_key] = self._discover_facet_attributes(
+                domain_name=domain_name,
+                facet_name=facet_name,
+                facet_description=facet_obj.facet_description,
+                observations=observations,
+                part_context=partition_contexts[domain_name],
                 prompt_context=prompt_context,
-                excluded_facets=ef,
-                phase_state=p4_state,
+                excluded_facets=excluded_f,
             )
 
-        attr_results_list = await self._run_with_ramp(
-            attr_coros.values(), p4_state
+        attr_results_list = await asyncio.gather(
+            *attr_tasks.values(), return_exceptions=True
         )
-        self._collect_phase_stats(p4_state, self._model_p4, "step4_p4_attribute_discovery")
 
         # Collect attributes: domain -> facet -> [attributes]
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
         # Also per-domain flat: facet -> [attributes]
         partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
 
-        for key, result in zip(attr_coros.keys(), attr_results_list):
+        for key, result in zip(attr_tasks.keys(), attr_results_list):
             domain_name, facet_name = key.split("::", 1)
             if isinstance(result, Exception):
                 print(f"  Attribute discovery '{key}' FAILED: "
@@ -650,7 +685,7 @@ class TaxonomyClassifier:
             )
             print(f"  Phase 4 done in {t_phase4:.1f}s → "
                   f"{total_attrs} attributes across "
-                  f"{len(attr_coros)} facets")
+                  f"{len(attr_tasks)} facets")
 
         # =================================================================
         # PHASE 6 (P6): Per-facet Attribute Assignment
@@ -660,15 +695,14 @@ class TaxonomyClassifier:
 
         t_phase6 = time.time()
 
-        # Per-phase ramp: estimate total batches across all facets
+        # Per-phase gate: estimate total batches across all facets
         total_p6_ideas = sum(
             len(domain_facet_ideas.get((dn, fn), []))
             for dn, fa in domain_facet_attributes.items()
             for fn in fa
         )
         est_p6_batches = max(1, total_p6_ideas // self._facet_assignment_batch_size)
-        p6_state = self._create_phase_ramp("P6", est_p6_batches, model=self._model_p6,
-                                            phase_key="step4_p6_attribute_assignment")
+        p6_gate = asyncio.Semaphore(min(est_p6_batches, 40))
 
         # Assign attributes to ideas, grouped by facet
         attribute_assignments: Dict[str, str] = {}  # idea_id -> attribute_name
@@ -705,15 +739,13 @@ class TaxonomyClassifier:
                     ideas=facet_ideas,
                     part_context=partition_contexts[domain_name],
                     prompt_context=prompt_context,
-                    gate=p6_state.gate,
-                    phase_state=p6_state,
+                    gate=p6_gate,
                 )
 
         if assign_tasks:
-            assign_results = await self._run_with_ramp(
-                assign_tasks.values(), p6_state
+            assign_results = await asyncio.gather(
+                *assign_tasks.values(), return_exceptions=True
             )
-            self._collect_phase_stats(p6_state, self._model_p6, "step4_p6_attribute_assignment")
 
             for task_key, result in zip(assign_tasks.keys(), assign_results):
                 if isinstance(result, Exception):
@@ -795,12 +827,8 @@ class TaxonomyClassifier:
                         example_observations=attr.example_observations,
                     ))
 
-                if not new_facet_attrs and before_count > 0:
-                    print(f"    WARNING: P7 '{domain_name}' returned 0 valid attributes "
-                          f"(had {before_count}) — keeping pre-consolidation state")
-                else:
-                    domain_facet_attributes[domain_name] = new_facet_attrs
-                    partition_attributes[domain_name] = new_facet_attrs
+                domain_facet_attributes[domain_name] = new_facet_attrs
+                partition_attributes[domain_name] = new_facet_attrs
 
                 # Remap attribute assignments: old names → consolidated names
                 remap = {}
@@ -836,8 +864,6 @@ class TaxonomyClassifier:
         if verbose:
             print(f"\n  Taxonomy (P1-P7) complete in {taxonomy_elapsed:.1f}s")
 
-        save_stats(self._perf_stats)
-
         return TaxonomyResult(
             partition_n_labels=partition_n_labels,
             partition_n_batches=partition_n_batches,
@@ -845,6 +871,154 @@ class TaxonomyClassifier:
             partition_assignments=partition_assignments,
             partition_attributes=partition_attributes,
             attribute_assignments=attribute_assignments,
+        )
+
+    async def _process_codebook_async(
+        self,
+        taxonomy: TaxonomyResult,
+        partition_contexts: Dict[str, DomainContext],
+        prompt_context: PromptContext,
+        verbose: bool,
+    ) -> PipelineResult:
+        """Codebook stages P8-P9: code generation + consolidation."""
+        # Unpack taxonomy result
+        partition_facets = taxonomy.partition_facets
+        partition_assignments = taxonomy.partition_assignments
+        domain_facet_attributes = taxonomy.partition_attributes
+        attribute_assignments = taxonomy.attribute_assignments
+
+        start_time = time.time()
+
+        # =================================================================
+        # PHASE 8 (P8): Per-domain Code Generation
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 8: Per-domain Code Generation...")
+
+        t_phase8 = time.time()
+
+        # Build one task per domain (no valence split — codes emerge naturally)
+        p8_tasks = {}
+        for domain_name in domain_facet_attributes:
+            domain_attrs = domain_facet_attributes.get(domain_name, {})
+            if not domain_attrs:
+                continue
+
+            # Filter attribute_assignments to this domain
+            domain_facet_ids = set(partition_assignments.get(domain_name, {}).keys())
+            domain_attr_assigns = {
+                iid: aname for iid, aname in attribute_assignments.items()
+                if iid in domain_facet_ids
+            }
+
+            # Build excluded domains: all other domains
+            excluded = [
+                (other_name, partition_contexts[other_name].partition_definition)
+                for other_name in partition_contexts
+                if other_name != domain_name
+            ]
+
+            p8_tasks[domain_name] = self._run_code_generation_from_attributes(
+                {domain_name: domain_attrs}, prompt_context,
+                attribute_assignments=domain_attr_assigns,
+                domain_name=domain_name,
+                domain_definition=partition_contexts[domain_name].partition_definition,
+                excluded_domains=excluded,
+            )
+
+        p8_results = await asyncio.gather(*p8_tasks.values(), return_exceptions=True)
+
+        # Collect all codes with provenance tracking
+        all_codes = []
+        code_provenance = {}  # code index -> domain_name
+        codebook_narratives = []
+        for key, result in zip(p8_tasks.keys(), p8_results):
+            if isinstance(result, Exception):
+                print(f"  P8 '{key}' FAILED: {type(result).__name__}: {result}")
+            else:
+                for code in result.codes:
+                    code_provenance[len(all_codes)] = key
+                    all_codes.append(code)
+                codebook_narratives.append(f"[{key}] {result.scratchpad}")
+                if verbose:
+                    print(f"    {key}: {len(result.codes)} codes")
+
+        t_phase8 = time.time() - t_phase8
+
+        if verbose:
+            print(f"\n  Phase 8 done in {t_phase8:.1f}s → {len(all_codes)} raw codes "
+                  f"from {len(p8_tasks)} calls")
+
+        # Compute idea frequencies per code (from attribute assignments)
+        # Each code has source_attributes; count how many ideas map to those attrs
+        attr_to_count: Dict[str, int] = {}
+        for attr_name in attribute_assignments.values():
+            attr_to_count[attr_name] = attr_to_count.get(attr_name, 0) + 1
+
+        code_frequencies: Dict[int, int] = {}
+        for idx, code in enumerate(all_codes):
+            freq = sum(
+                attr_to_count.get(attr, 0)
+                for attr in (code.source_attributes or [])
+            )
+            code_frequencies[idx] = freq
+
+        # =================================================================
+        # PHASE 9 (P9): Cross-domain Codebook Consolidation
+        # =================================================================
+        if verbose:
+            print(f"\n  Phase 9: Codebook Consolidation...")
+
+        t_phase9 = time.time()
+
+        if len(all_codes) > 0:
+            consolidation_result = await self._consolidate_codebook(
+                all_codes, code_provenance, prompt_context,
+                code_frequencies=code_frequencies,
+            )
+            all_codes = consolidation_result.codes
+            codebook_narratives.append(
+                f"[consolidation] {consolidation_result.scratchpad}"
+            )
+
+        codebook_narrative = "\n".join(codebook_narratives)
+
+        t_phase9 = time.time() - t_phase9
+
+        if verbose:
+            print(f"\n  Phase 9 done in {t_phase9:.1f}s → {len(all_codes)} codes "
+                  f"(after consolidation)")
+            for i, code in enumerate(all_codes, 1):
+                print(f"    {i}. {code.code_name}: {code.definition}")
+
+        codebook_elapsed = time.time() - start_time
+        if verbose:
+            print(f"\n  Codebook (P8-P9) complete in {codebook_elapsed:.1f}s")
+
+        # Build DomainResult for each domain
+        partition_results = {}
+        for name in partition_facets:
+            # Collect attribute assignments for this domain
+            domain_facet_ids = set(partition_assignments.get(name, {}).keys())
+            domain_attr_assigns = {
+                idea_id: attr_name
+                for idea_id, attr_name in attribute_assignments.items()
+                if idea_id in domain_facet_ids
+            }
+            partition_results[name] = DomainResult(
+                partition_name=name,
+                n_labels=taxonomy.partition_n_labels.get(name, 0),
+                n_batches=taxonomy.partition_n_batches.get(name, 0),
+                facets=partition_facets.get(name, []),
+                facet_assignments=partition_assignments.get(name, {}),
+                attributes=taxonomy.partition_attributes.get(name, {}),
+                attribute_assignments=domain_attr_assigns,
+            )
+
+        return PipelineResult(
+            partition_results=partition_results,
+            codebook_narrative=codebook_narrative,
+            codes=all_codes,
         )
 
     # =========================================================================
@@ -859,7 +1033,6 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool = False,
         excluded_domains: Optional[List[tuple]] = None,
-        phase_state: PhaseRampState = None,
     ) -> tuple:
         """Run facet discovery + LLM consolidation for a single domain.
 
@@ -880,7 +1053,6 @@ class TaxonomyClassifier:
         chunk_facets = await self._run_facet_discovery(
             partition_name, batches, part_context, prompt_context,
             excluded_domains=excluded_domains,
-            phase_state=phase_state,
         )
         t_discovery = time.time() - t_discovery
 
@@ -917,7 +1089,6 @@ class TaxonomyClassifier:
         part_context: DomainContext,
         prompt_context: PromptContext,
         excluded_domains: Optional[List[tuple]] = None,
-        phase_state: PhaseRampState = None,
     ) -> List[List[DiscoveredFacet]]:
         """Discover facets from chunked observations (concurrent).
 
@@ -966,16 +1137,14 @@ class TaxonomyClassifier:
             try:
                 result = await self._llm_call(
                     prompt, FacetDiscoveryResult, self._max_tokens_facet_discovery,
-                    timeout=180.0,
-                    gate=phase_state.gate if phase_state else None,
-                    phase_state=phase_state,
+                    timeout=60.0,
                 )
                 results[chunk_idx] = result
             except Exception as e:
                 print(f"    FACET DISCOVERY '{partition_name}' chunk "
                       f"{chunk_idx + 1}/{len(batches)} FAILED: "
                       f"{type(e).__name__}: {e}")
-                results[chunk_idx] = FacetDiscoveryResult(scratchpad="chunk failed", facets=[])
+                results[chunk_idx] = FacetDiscoveryResult(facets=[])
 
         await asyncio.gather(*(
             process_chunk(i, batch) for i, batch in enumerate(batches)
@@ -1049,7 +1218,7 @@ class TaxonomyClassifier:
 
         result = await self._llm_call(
             prompt, FacetConsolidatedResponse, self._max_tokens_facet_discovery,
-            temperature=0.0, model=self._model_p2, timeout=180.0,
+            temperature=0.0, model=self._model_p2, timeout=60.0,
         )
         return result.facets
 
@@ -1152,7 +1321,6 @@ class TaxonomyClassifier:
         part_context: DomainContext,
         prompt_context: PromptContext,
         gate=None,
-        phase_state: PhaseRampState = None,
     ) -> Dict[str, str]:
         """Assign all ideas in a domain to discovered facets.
 
@@ -1212,7 +1380,6 @@ class TaxonomyClassifier:
                 result = await self._llm_call(
                     prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment,
                     model=self._model_p3, timeout=60.0, gate=gate,
-                    phase_state=phase_state,
                 )
                 return result.assignments
             except Exception as e:
@@ -1228,11 +1395,7 @@ class TaxonomyClassifier:
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Retry pass: re-run truly failed batches with reduced concurrency.
-        # NOTE: Intentional divergence from strategy doc retry pattern.
-        # Strategy says: reuse the same processing function with reduced concurrency.
-        # P3/P6 use batch-level retry because assignment is batched (10 ideas per call);
-        # individual-task retry doesn't apply — the unit of failure is the batch.
+        # Retry pass: re-run truly failed batches with reduced concurrency
         failed_batch_indices = [
             i for i, batch in enumerate(idea_batches)
             if any(idea.idea_id in self.failed_task_ids for idea in batch)
@@ -1332,7 +1495,6 @@ class TaxonomyClassifier:
         part_context: 'DomainContext',
         prompt_context: 'PromptContext',
         gate=None,
-        phase_state: PhaseRampState = None,
     ) -> Dict[str, str]:
         """Assign each idea to an attribute within its facet.
 
@@ -1393,7 +1555,6 @@ class TaxonomyClassifier:
                     prompt, AttributeAssignmentBatch,
                     self._max_tokens_facet_assignment,
                     model=self._model_p6, timeout=60.0, gate=gate,
-                    phase_state=phase_state,
                 )
                 return result.assignments
             except Exception as e:
@@ -1409,11 +1570,7 @@ class TaxonomyClassifier:
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Retry pass: re-run truly failed batches with reduced concurrency.
-        # NOTE: Intentional divergence from strategy doc retry pattern.
-        # Strategy says: reuse the same processing function with reduced concurrency.
-        # P3/P6 use batch-level retry because assignment is batched (10 ideas per call);
-        # individual-task retry doesn't apply — the unit of failure is the batch.
+        # Retry pass: re-run truly failed batches with reduced concurrency
         failed_batch_indices = [
             i for i, batch in enumerate(idea_batches)
             if any(idea.idea_id in self.failed_task_ids for idea in batch)
@@ -1513,7 +1670,6 @@ class TaxonomyClassifier:
         part_context: DomainContext,
         prompt_context: PromptContext,
         excluded_facets: Optional[List[tuple]] = None,
-        phase_state: PhaseRampState = None,
     ) -> List[DiscoveredAttribute]:
         """Discover attributes (L4) within a single facet.
 
@@ -1537,7 +1693,6 @@ class TaxonomyClassifier:
             domain_name, facet_name, facet_description,
             batches, part_context, prompt_context,
             excluded_facets=excluded_facets,
-            phase_state=phase_state,
         )
 
         # Count raw attributes across all chunks
@@ -1576,7 +1731,6 @@ class TaxonomyClassifier:
         part_context: DomainContext,
         prompt_context: PromptContext,
         excluded_facets: Optional[List[tuple]] = None,
-        phase_state: PhaseRampState = None,
     ) -> List[List[DiscoveredAttribute]]:
         """Discover attributes from chunked observations (concurrent).
 
@@ -1630,9 +1784,7 @@ class TaxonomyClassifier:
                 result = await self._llm_call(
                     prompt, AttributeDiscoveryResult,
                     self._max_tokens_attribute_discovery,
-                    model=self._model_p4, timeout=90.0,
-                    gate=phase_state.gate if phase_state else None,
-                    phase_state=phase_state,
+                    model=self._model_p4, timeout=60.0,
                 )
                 results[chunk_idx] = result.attributes
             except Exception as e:
@@ -1717,7 +1869,7 @@ class TaxonomyClassifier:
         result = await self._llm_call(
             prompt, AttributeChunkConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            temperature=0.0, model=self._model_p5, timeout=180.0,
+            temperature=0.0, model=self._model_p5, timeout=60.0,
         )
         return result.attributes
 
@@ -1810,9 +1962,179 @@ class TaxonomyClassifier:
         result = await self._llm_call(
             prompt, AttributeConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            model=self._model_p7, timeout=180.0,
+            model=self._model_p7, timeout=60.0,
         )
         return result.attributes
+
+    # =========================================================================
+    # PHASE 8 (P8): CODE GENERATION FROM ATTRIBUTES
+    # =========================================================================
+
+    @staticmethod
+    def _build_constrained_response_model(
+        attribute_names: List[str],
+    ):
+        """Build a CodeGenerationFromAttributesResult with source_attributes
+        constrained to an enum of valid attribute names."""
+        if not attribute_names:
+            return CodeGenerationFromAttributesResult
+
+        # Create Literal type from known attribute names
+        AttrLiteral = Literal[tuple(attribute_names)]
+
+        # Dynamic CodeFromAttributes with constrained source_attributes
+        ConstrainedCode = create_model(
+            "CodeFromAttributes",
+            code_name=(str, Field(..., description="Short code name (3-5 word noun phrase)")),
+            definition=(str, Field(..., description="Clear definition of what this code covers (1-2 sentences)")),
+            typical_indicators=(List[str], Field(..., description="Words or phrases that signal this code")),
+            source_attributes=(List[AttrLiteral], Field(
+                default_factory=list,
+                description="Attribute names this code is derived from (must be exact names from the inventory)",
+            )),
+        )
+
+        # Dynamic result model using the constrained code model
+        ConstrainedResult = create_model(
+            "CodeGenerationFromAttributesResult",
+            scratchpad=(str, CodeGenerationFromAttributesResult.model_fields["scratchpad"]),
+            codes=(List[ConstrainedCode], Field(..., description="Formal codes derived from the attribute inventory")),
+        )
+
+        return ConstrainedResult
+
+    async def _run_code_generation_from_attributes(
+        self,
+        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+        prompt_context: PromptContext,
+        attribute_assignments: Optional[Dict[str, str]] = None,
+        domain_name: str = "",
+        domain_definition: str = "",
+        excluded_domains: Optional[List[tuple]] = None,
+    ) -> CodeGenerationFromAttributesResult:
+        """Generate codes from an attribute inventory (per-domain)."""
+        prompt = build_code_from_attributes_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_def=prompt_context.dimension_def,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            domain_name=domain_name,
+            domain_definition=domain_definition,
+            domain_attributes=domain_facet_attributes,
+            attribute_assignments=attribute_assignments,
+            excluded_domains=excluded_domains,
+        )
+
+        # Collect all attribute names for enum constraint
+        all_attr_names = [
+            attr.attribute_name
+            for facet_attrs in domain_facet_attributes.values()
+            for attrs in facet_attrs.values()
+            for attr in attrs
+        ]
+        response_model = self._build_constrained_response_model(all_attr_names)
+
+        # Prompt capture
+        domain_key = "::".join(domain_facet_attributes.keys())
+        gate_key = f"qr_code_gen_{domain_key}"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="code_generation_from_attributes",
+                metadata={
+                    "model": self._model_p8,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_code_from_attributes,
+                    "language": prompt_context.language,
+                    "n_domains": len(domain_facet_attributes),
+                    "n_total_attributes": len(all_attr_names),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        for attempt in range(2):
+            try:
+                return await self._llm_call(
+                    prompt, response_model,
+                    self._max_tokens_code_from_attributes,
+                    model=self._model_p8,
+                    timeout=120.0,
+                )
+            except Exception as e:
+                if attempt == 0:
+                    print(f"    P8 CODE GENERATION failed (attempt 1), retrying: "
+                          f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    P8 CODE GENERATION failed (attempt 2), returning empty: "
+                          f"{type(e).__name__}: {e}")
+                    return CodeGenerationFromAttributesResult(codes=[], evaluation="PROCESSING_ERROR")
+
+    # =========================================================================
+    # PHASE 9 (P9): CODEBOOK CONSOLIDATION
+    # =========================================================================
+
+    async def _consolidate_codebook(
+        self,
+        raw_codes: list,
+        code_provenance: dict,
+        prompt_context: PromptContext,
+        code_frequencies: Optional[Dict[int, int]] = None,
+    ) -> CodebookConsolidationResult:
+        """Consolidate per-domain codes into a final parsimonious codebook."""
+        prompt = build_codebook_consolidation_prompt(
+            survey_question=prompt_context.survey_question,
+            language=prompt_context.language,
+            dataset_context_section=prompt_context.dataset_context_section,
+            dimension_name=prompt_context.dimension_name,
+            dimension_description=prompt_context.dimension_description,
+            dimension_def=prompt_context.dimension_def,
+            raw_codes=raw_codes,
+            code_provenance=code_provenance,
+            code_frequencies=code_frequencies,
+        )
+
+        # Prompt capture
+        gate_key = "qr_codebook_consolidation"
+        if (self._prompt_printer is not None
+                and gate_key not in self._captured_gates):
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="QualitativeResearcher",
+                prompt_content=prompt,
+                prompt_type="codebook_consolidation",
+                metadata={
+                    "model": self._model_p9,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens_codebook_consolidation,
+                    "language": prompt_context.language,
+                    "n_raw_codes": len(raw_codes),
+                    "dimension_name": prompt_context.dimension_name,
+                }
+            )
+            self._captured_gates.add(gate_key)
+
+        for attempt in range(2):
+            try:
+                return await self._llm_call(
+                    prompt, CodebookConsolidationResult,
+                    self._max_tokens_codebook_consolidation,
+                    model=self._model_p9,
+                    timeout=120.0,
+                )
+            except Exception as e:
+                if attempt == 0:
+                    print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 1), retrying: "
+                          f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    P9 CODEBOOK CONSOLIDATION failed (attempt 2), returning raw codes: "
+                          f"{type(e).__name__}: {e}")
+                    raise  # Let caller handle fallback to raw codes
 
     # =========================================================================
     # DYNAMIC RATE LIMIT DISCOVERY
@@ -1838,323 +2160,12 @@ class TaxonomyClassifier:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             model = self._model_p1
 
-        if API_PROVIDER == "azure":
-            response = await client.chat.completions.with_raw_response.create(
-                model=model,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_completion_tokens=5,
-            )
-        else:
-            response = await client.responses.with_raw_response.create(
-                model=model,
-                input="Hi",
-            )
+        response = await client.chat.completions.with_raw_response.create(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=5,
+        )
         return extract_rate_limits_from_response(response)
-
-    # =========================================================================
-    # 4-LAYER RATE LIMITING (per-phase)
-    # =========================================================================
-
-    def _collect_phase_stats(
-        self, state: PhaseRampState, model: str, phase_key: str
-    ) -> None:
-        """Extract latency/token measurements from a completed phase and update perf stats."""
-        if state.latency_tracker is None or len(state.latency_tracker.values) < 5:
-            return
-        tokens = list(state.actual_total_tokens)
-        if not tokens:
-            return
-        measurements = {
-            "p50_latency_s": state.latency_tracker.get_p50(),
-            "p95_latency_s": state.latency_tracker.get_p95(),
-            "avg_tokens": sum(tokens) / len(tokens),
-        }
-        if phase_key == "step4_p1_facet_discovery" and self._tiktoken_offset_learner.is_learned():
-            measurements["tiktoken_offset"] = float(self._tiktoken_offset_learner.get_offset())
-        update_phase_stats(self._perf_stats, model, phase_key, measurements, state.completions)
-
-    def _create_phase_ramp(self, phase_name: str, num_tasks: int,
-                           model: str = None, phase_key: str = None) -> PhaseRampState:
-        """Create per-phase 4-layer rate limiting stack.
-
-        Large phases (>=min_tasks): full stack with TokenBucket, LatencyTracker, CircuitBreaker.
-        Small phases: gate + ramp only (layers 2-4 skipped).
-        """
-        from copy import copy
-        cfg = copy(self._ramp_config)
-        # Apply empirical cold-start estimates from previous runs if available
-        if phase_key and model:
-            apply_to_ramp_config(self._perf_stats, model, phase_key, cfg)
-        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
-        api_limits = ApiLimits(
-            self._fetched_limits.tokens_per_minute,
-            self._fetched_limits.requests_per_minute,
-        )
-        little_law = compute_optimal_concurrency(
-            api_limits, cfg.estimated_latency_seconds, cfg.estimated_avg_tokens,
-        )
-        little_law_cap = min(little_law, num_tasks)
-
-        # Reset PID so each phase starts fresh
-        if self._pid_controller:
-            self._pid_controller.reset()
-
-        ramp_up_cfg = RampUpConfig(
-            start_fraction=cfg.start_fraction,
-            target_fraction=cfg.target_fraction,
-            min_initial=cfg.min_initial,
-            measurement_window_seconds=cfg.monitor_poll_interval,
-            min_completions_per_step=cfg.min_completions_per_step,
-        )
-
-        half_little_law = int(little_law * cfg.start_fraction)
-        initial = max(half_little_law, num_tasks)  # small phases: all at once
-        initial = min(initial, num_tasks)           # never exceed task count
-        target = min(int(little_law_cap * cfg.target_fraction), num_tasks)
-
-        gate = ConcurrencyGate(initial)
-        ramp = ConcurrencyRamp(ramp_up_cfg, little_law_cap, num_tasks)
-
-        is_large = num_tasks >= cfg.circuit_breaker_min_tasks
-
-        # Layer 2: TPM token bucket
-        token_bucket = None
-        if is_large:
-            token_bucket = TokenBucket(int(self._fetched_limits.tokens_per_minute * headroom))
-
-        # Layer 4a: Adaptive timeout via latency tracker
-        latency_tracker = None
-        if is_large:
-            latency_tracker = LatencyTracker(
-                DEFAULT_PROCESSING_CONFIG,
-                timeout_floor=cfg.timeout_floor_seconds,
-                default_timeout=cfg.default_timeout_seconds,
-            )
-
-        # Layer 4b: Circuit breaker
-        circuit_breaker = None
-        if cfg.circuit_breaker_enabled and is_large:
-            circuit_breaker = ConcurrencyCircuitBreaker(
-                DEFAULT_CIRCUIT_BREAKER_CONFIG, gate, initial,
-            )
-
-        # Warm-up calibration target (adaptive sample size)
-        warm_up_target = 0
-        if num_tasks >= cfg.warm_up_min_tasks_to_enable:
-            if num_tasks <= 50:
-                warm_up_target = cfg.warm_up_sample_min
-            elif num_tasks >= 500:
-                warm_up_target = cfg.warm_up_sample_max
-            else:
-                fraction = (num_tasks - 50) / (500 - 50)
-                warm_up_target = int(cfg.warm_up_sample_min
-                                     + fraction * (cfg.warm_up_sample_max - cfg.warm_up_sample_min))
-
-        mode = "4-layer" if is_large else "light"
-        print(f"    [{phase_name}] Little's Law: {little_law} | "
-              f"Start: {initial} → Target: {target} ({num_tasks} tasks, {mode})")
-
-        return PhaseRampState(
-            gate=gate, ramp=ramp,
-            rpm_tracker=RealTimeRPMTracker(window_seconds=60.0),
-            tpm_tracker=RealTimeTPMTracker(window_seconds=60.0),
-            phase_name=phase_name,
-            total_tasks=num_tasks,
-            token_bucket=token_bucket,
-            latency_tracker=latency_tracker,
-            circuit_breaker=circuit_breaker,
-            warm_up_target_samples=warm_up_target,
-            estimated_avg_tokens=cfg.estimated_avg_tokens,
-        )
-
-    async def _phase_monitor(self, state: PhaseRampState):
-        """Background monitor: ramp + circuit breaker + warm-up + PID + progress."""
-        start_time = time.monotonic()
-        last_report_time = start_time
-        last_reported_completions = -1
-        last_pid_time = start_time
-
-        while not state.done:
-            await asyncio.sleep(self._ramp_config.monitor_poll_interval)
-            now = time.monotonic()
-            elapsed = now - start_time
-
-            # --- Circuit breaker check (every tick) ---
-            if state.circuit_breaker:
-                action = state.circuit_breaker.check_and_adjust()
-                if action and action in ('tripped', 'recovering', 'recovered'):
-                    pass  # CB already adjusted gate.limit internally
-
-            # --- PID arrival rate adjustment (every 20s, large phases only) ---
-            if state.token_bucket and now - last_pid_time >= 20.0:
-                await self._apply_pid_adjustment(state)
-                last_pid_time = now
-
-            # --- Feed completions to ramp ---
-            if not state.ramp.is_done() and state.completions >= self._ramp_config.min_completions_per_step:
-                rate = state.completions / elapsed if elapsed > 0 else 0
-                state.ramp.record_measurement(
-                    throughput=rate,
-                    tpm_pct=0, rpm_pct=0,
-                    completions_total=state.completions,
-                    timeouts_total=state.timeouts,
-                    duration=elapsed,
-                )
-                new_target = state.ramp.current_target()
-                if new_target != state.gate.limit:
-                    state.gate.set_limit(new_target)
-                    if state.circuit_breaker:
-                        state.circuit_breaker.baseline = new_target
-
-            # --- Warm-up calibration (one-shot) ---
-            if (not state.warm_up_calibrated
-                    and state.warm_up_target_samples > 0
-                    and state.actual_total_tokens is not None
-                    and len(state.actual_total_tokens) >= state.warm_up_target_samples
-                    and state.latency_tracker
-                    and len(state.latency_tracker.values) >= state.warm_up_target_samples):
-                self._calibrate_from_warm_up(state)
-
-            # --- Progress line every 2s (suppress stale) ---
-            if now - last_report_time >= 2.0:
-                if state.completions != last_reported_completions:
-                    last_report_time = now
-                    last_reported_completions = state.completions
-                    rate = state.completions / elapsed if elapsed > 0 else 0
-
-                    current_tpm = await state.tpm_tracker.get_current_tpm()
-                    current_rpm = await state.rpm_tracker.get_current_rpm()
-
-                    tpm_limit = self._fetched_limits.tokens_per_minute if self._fetched_limits else 0
-                    rpm_limit = self._fetched_limits.requests_per_minute if self._fetched_limits else 0
-                    tpm_pct = (current_tpm / tpm_limit * 100) if tpm_limit > 0 else 0
-                    rpm_pct = (current_rpm / rpm_limit * 100) if rpm_limit > 0 else 0
-
-                    latency_info = ""
-                    if state.latency_tracker and len(state.latency_tracker.values) >= 2:
-                        vals = list(state.latency_tracker.values)
-                        p50 = float(np.percentile(vals, 50))
-                        p95 = float(np.percentile(vals, 95))
-                        latency_info = f" | P50:{p50:.1f}s P95:{p95:.1f}s"
-
-                    timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
-                    cb_info = ""
-                    if state.circuit_breaker and state.circuit_breaker.state != 'CLOSED':
-                        cb_info = f" CB:{state.circuit_breaker.state}"
-                    ramp_target = state.ramp._target
-                    print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
-                          f"({rate:.1f}/s) | "
-                          f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% "
-                          f"Conc:{state.gate.active}/{state.gate.limit}→{ramp_target}"
-                          f"{latency_info}{timeout_info}{cb_info}")
-
-    async def _run_with_ramp(self, coros, state: PhaseRampState):
-        """Run coroutines via gather with a background ramp monitor.
-
-        Returns gather results. Monitor exits when gather completes.
-        """
-        async def _work():
-            results = await asyncio.gather(*coros, return_exceptions=True)
-            state.done = True
-            return results
-
-        results, _ = await asyncio.gather(_work(), self._phase_monitor(state))
-
-        # Phase summary: latency distribution + token stats
-        if state.latency_tracker and state.latency_tracker.values:
-            vals = list(state.latency_tracker.values)
-            p10 = float(np.percentile(vals, 10))
-            p50 = float(np.percentile(vals, 50))
-            p95 = float(np.percentile(vals, 95))
-            avg_tok = int(np.mean(list(state.actual_total_tokens))) if state.actual_total_tokens else 0
-            print(f"    [{state.phase_name}] Latency: P10={p10:.1f}s P50={p50:.1f}s P95={p95:.1f}s | "
-                  f"avg_tokens={avg_tok:,} | "
-                  f"{state.completions} ok, {state.timeouts} timeouts")
-
-        return results
-
-    def _calibrate_from_warm_up(self, state: PhaseRampState) -> None:
-        """One-shot calibration: update token estimate and recompute Little's Law.
-
-        Fires once per phase after enough completions. Uses measured latency (P10)
-        and token counts to recalculate optimal concurrency and arrival rate.
-        """
-        measured_avg_tokens = int(np.mean(list(state.actual_total_tokens)))
-        measured_latency = float(np.percentile(list(state.latency_tracker.values), 10))
-
-        old_avg = state.estimated_avg_tokens
-        state.estimated_avg_tokens = measured_avg_tokens
-
-        # Recalculate Little's Law with measured data
-        api_limits = ApiLimits(
-            self._fetched_limits.tokens_per_minute,
-            self._fetched_limits.requests_per_minute,
-        )
-        new_little_law = compute_optimal_concurrency(
-            api_limits, measured_latency, measured_avg_tokens,
-        )
-        new_little_law_cap = min(new_little_law, state.total_tasks)
-
-        # Recalibrate ramp (preserves congestion detection state)
-        if not state.ramp.is_done():
-            state.ramp.recalibrate(new_little_law_cap)
-            new_start = state.ramp.current_target()
-            state.gate.set_limit(new_start)
-            if state.circuit_breaker:
-                state.circuit_breaker.baseline = new_start
-
-        # Recalculate arrival rate
-        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
-        new_arrival_rate = min(
-            self._fetched_limits.requests_per_minute * headroom / 60,
-            self._fetched_limits.tokens_per_minute * headroom / measured_avg_tokens / 60,
-        )
-        self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(new_arrival_rate, 0.01))
-        self._current_arrival_rate = new_arrival_rate  # Keep PID in sync after warm-up
-
-        conc_target = state.ramp._target
-        print(f"\n    {'='*60}")
-        print(f"    WARM-UP CALIBRATION [{state.phase_name}] "
-              f"({len(state.actual_total_tokens)} samples)")
-        print(f"      Latency: {measured_latency:.1f}s (P10 measured)")
-        print(f"      avg_tokens: {old_avg} (estimate) -> {measured_avg_tokens} (measured)")
-        print(f"      Little's Law: {new_little_law_cap}")
-        print(f"      Concurrency: {state.gate.limit} → {conc_target}")
-        print(f"      Arrival rate: {new_arrival_rate:.2f}/s")
-        print(f"    {'='*60}")
-
-        state.warm_up_calibrated = True
-
-    async def _apply_pid_adjustment(self, state: PhaseRampState) -> None:
-        """Adjust AsyncLimiter arrival rate via PID controller based on TPM utilization.
-
-        Called every 20s from _phase_monitor. Asymmetric: aggressive when under-utilizing,
-        gentle when over-utilizing. No-ops when limits are unknown or adjustment is trivial.
-        """
-        if self._current_arrival_rate is None or self._pid_controller is None:
-            return
-        if not self._fetched_limits or not self._fetched_limits.tokens_per_minute:
-            return
-
-        current_tpm = await state.tpm_tracker.get_current_tpm()
-        tpm_limit = self._fetched_limits.tokens_per_minute
-        utilization = current_tpm / tpm_limit if tpm_limit > 0 else 0.0
-
-        adjustment = self._pid_controller.compute_adjustment(utilization)
-        if abs(adjustment - 1.0) < 0.01:
-            return
-
-        old_rate = self._current_arrival_rate
-        new_rate = old_rate * adjustment
-        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
-        rpm_max = self._fetched_limits.requests_per_minute * headroom / 60
-        new_rate = max(0.5, min(rpm_max, new_rate))
-
-        if abs(new_rate - old_rate) / max(old_rate, 0.001) < 0.02:
-            return
-
-        self._rate_limiter = AsyncLimiter(1, time_period=1.0 / new_rate)
-        self._current_arrival_rate = new_rate
 
     # =========================================================================
     # SHARED LLM CALL
@@ -2162,116 +2173,31 @@ class TaxonomyClassifier:
 
     async def _llm_call(self, prompt: str, response_model, max_tokens: int,
                         temperature: float | None = None, model: str | None = None,
-                        timeout: float = 120.0, gate=None, phase_state: PhaseRampState = None):
-        """Make a rate-limited LLM call through the 4-layer stack.
+                        timeout: float = 120.0, gate=None):
+        """Make a rate-limited LLM call with optional per-phase concurrency gate.
 
-        Layer ordering (outside → inside):
-          1. ConcurrencyGate — limits in-flight requests
-          2. Adaptive timeout — computed AFTER gate (uses live latency data)
-          3. TokenBucket — TPM pacing (blocks until tokens available)
-          4. AsyncLimiter — RPM pacing (inter-request spacing)
-          5. Circuit breaker — records completion/timeout
-
-        Small phases (phase_state layers are None) skip layers 2-5 gracefully.
+        Args:
+            gate: Optional concurrency gate (asyncio.Semaphore or similar).
+                  If provided, used instead of self._semaphore.
+                  Allows per-phase concurrency control.
+            timeout: Generous safety net (60s for standard, 120s for reasoning).
         """
         use_model = model or self._model_p1
         client = self._clients[use_model]
         concurrency_ctx = gate if gate is not None else self._semaphore
-
-        # Token estimate for TPM bucket (conservative until warm-up fires)
-        est_tokens = max_tokens
-        if phase_state and phase_state.estimated_avg_tokens:
-            est_tokens = phase_state.estimated_avg_tokens
-        # Apply learned tiktoken→API offset to improve bucket pre-acquisition accuracy
-        est_tokens += self._tiktoken_offset_learner.get_offset()
-
-        async with concurrency_ctx:                                     # Layer 1: Concurrency
-            # Adaptive timeout: compute AFTER gate (fresh latency data)
-            effective_timeout = timeout
-            if phase_state and phase_state.latency_tracker:
-                effective_timeout = phase_state.latency_tracker.get_timeout()
-
-            # Layer 2: TPM token bucket
-            if phase_state and phase_state.token_bucket:
-                await phase_state.token_bucket.wait_and_acquire(est_tokens)
-
-            async with self._rate_limiter:                              # Layer 3: RPM
-                task_start = time.monotonic()
-                try:
-                    result = await asyncio.wait_for(
-                        llm_create_async(
-                            client=client,
-                            model=use_model,
-                            prompt=prompt,
-                            response_model=response_model,
-                            temperature=temperature if temperature is not None else self._temperature,
-                            max_tokens=max_tokens,
-                            **get_reasoning_params(use_model),
-                        ),
-                        timeout=effective_timeout,
-                    )
-
-                    # Record latency for adaptive timeout
-                    elapsed = time.monotonic() - task_start
-                    if phase_state and phase_state.latency_tracker:
-                        phase_state.latency_tracker.add(elapsed)
-
-                    # Layer 4: Circuit breaker — record success
-                    if phase_state and phase_state.circuit_breaker:
-                        phase_state.circuit_breaker.record_completion()
-
-                    if phase_state is not None:
-                        phase_state.completions += 1
-                        await phase_state.rpm_tracker.record()
-
-                        # Extract actual tokens from response
-                        raw = getattr(result, '_raw_response', None)
-                        usage = getattr(raw, 'usage', None) if raw else None
-                        actual_tokens = None
-                        if usage:
-                            actual_tokens = (
-                                getattr(usage, 'prompt_tokens', 0)
-                                + getattr(usage, 'completion_tokens', 0)
-                                + getattr(usage, 'input_tokens', 0)
-                                + getattr(usage, 'output_tokens', 0)
-                            )
-                            await phase_state.tpm_tracker.record(actual_tokens)
-                        else:
-                            await phase_state.tpm_tracker.record(max_tokens)
-
-                        # Track for warm-up calibration
-                        if actual_tokens and phase_state.actual_total_tokens is not None:
-                            phase_state.actual_total_tokens.append(actual_tokens)
-
-                        # Learn tiktoken→API offset for future estimates
-                        if actual_tokens:
-                            try:
-                                encoding = tiktoken.encoding_for_model(use_model)
-                                tiktoken_count = len(encoding.encode(prompt))
-                                input_tokens = (
-                                    getattr(usage, 'input_tokens', 0)
-                                    or getattr(usage, 'prompt_tokens', 0)
-                                ) if usage else 0
-                                if input_tokens > 0:
-                                    self._tiktoken_offset_learner.record(tiktoken_count, input_tokens)
-                            except Exception:
-                                pass  # Non-critical — don't disrupt the pipeline
-
-                        # Reconcile token bucket (return overestimate)
-                        if actual_tokens and phase_state.token_bucket:
-                            delta = actual_tokens - est_tokens
-                            if delta != 0:
-                                await phase_state.token_bucket.reconcile(delta)
-
-                    return result
-
-                except asyncio.TimeoutError:
-                    # Layer 4: Circuit breaker — record timeout
-                    if phase_state and phase_state.circuit_breaker:
-                        phase_state.circuit_breaker.record_timeout()
-                    if phase_state is not None:
-                        phase_state.timeouts += 1
-                    raise
+        async with concurrency_ctx:
+            async with self._rate_limiter:
+                return await asyncio.wait_for(
+                    llm_create_async(
+                        client=client,
+                        model=use_model,
+                        prompt=prompt,
+                        response_model=response_model,
+                        temperature=temperature if temperature is not None else self._temperature,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=timeout,
+                )
 
     # =========================================================================
     # HELPERS
