@@ -530,6 +530,158 @@ These are implementation choices — the default (same timeout, one pass, reduce
 
 ---
 
+## LLM output validation by model tier
+
+### The rule
+
+| Model tier | Validation approach |
+|---|---|
+| **Nano** (`"nano" in model_name`) | **No instructor schema enforcement.** Use raw API call + post-parse regex/tag extraction. Nano does not reliably follow Pydantic schemas and instructor cannot force it to change its output. |
+| **Mini / default** | **Enforce Pydantic via instructor.** These models handle structured output schemas well. |
+
+### Why
+
+Nano output tokens are cheap — accepting slightly lower-quality output with post-parse cleanup is the right trade-off. Instructor enforcement on nano risks:
+- Schema injected but ignored → output wrong, no error raised
+- Parsing exception → task fails completely
+- Instructor "coerces" non-compliant nano output into a wrong-but-valid Pydantic object (silent data corruption)
+
+### Pattern A — Nano: raw API + tag/regex parsing (step 2 reference)
+
+```python
+# Raw AsyncOpenAI call — no instructor schema injection
+response = await client.responses.create(model=model, input=prompt, ...)
+raw_text = response.output_text
+# Post-parse extraction via regex or XML tag matching
+result = parse_with_regex(raw_text)   # returns None → fallback to safe default
+```
+
+### Pattern B — Mini/default: instructor + Pydantic (step 3 / step 6)
+
+```python
+# instructor-wrapped client enforces Pydantic schema
+result = await llm_create_async(client, ResponseModel, prompt, model=model, ...)
+```
+
+With optional tier-aware field validators for mixed deployments:
+
+```python
+# Module-level flag — set once at init from config.assignment_model
+_strict_mode: bool = True   # True for mini/default, False for nano
+
+def configure_validation_mode(model: str) -> None:
+    global _strict_mode
+    _strict_mode = "nano" not in model.lower()
+
+class MyResponse(BaseModel):
+    field: str = Field(..., description="...")
+
+    @field_validator('field', mode='before')
+    @classmethod
+    def validate_field(cls, v):
+        if not v:
+            if _strict_mode:
+                raise ValueError("field is required")
+            return ""   # nano: coerce rather than reject
+        return str(v).strip()
+```
+
+### Where implemented
+
+| Step | Model(s) | Pattern | File |
+|---|---|---|---|
+| Step 2 | nano | A — raw API + `<category>` tag parsing | `qualityFilter_exp.py` |
+| Step 3 | mini/default | B — instructor + tier-aware `field_validator` | `ideaExtractor_exp.py`, `prompts_exp.py` |
+| Step 4 | mini/default only (by config) | B — standard instructor, no tier branching needed | `classifier.py` |
+| Step 5 | mini/default only (by config) | B — standard instructor, no tier branching needed | `codebook_generator.py` |
+| Step 6 | nano (default) | B — instructor + tier-aware `field_validator` | `code_assignment.py`, `prompts_codeAssigner.py` |
+
+**Note for steps 4 and 5:** These steps are intentionally mini/default only per config. Any future addition of a nano phase must apply Pattern A or Pattern B with tier-aware validators.
+
+---
+
+## Persistent cold-start stats
+
+### What
+
+Empirical per-model/per-phase latency and token stats persisted to `data/model_perf_stats.json` (gitignored, machine-specific). On cold start, stored stats replace hardcoded config defaults so each run starts from measured reality rather than guesses. Stats are updated after each run via an EMA — they never grow unboundedly and always stay within the range of values seen.
+
+### Utility
+
+`src/utils/modelPerfStats.py` — public API:
+
+```python
+load_stats(filepath)                               # → dict; {} on missing/corrupt
+save_stats(stats, filepath)                        # atomic write: .tmp → rename
+get_phase_stats(stats, model, phase_key)           # → dict | None
+update_phase_stats(stats, model, phase_key, measurements, n_new_samples)
+apply_to_ramp_config(stats, model, phase_key, ramp_config)
+# apply_to_ramp_config only activates when sample_count >= MIN_SAMPLES (10)
+```
+
+### Schema
+
+```json
+{
+  "version": 1,
+  "stats": {
+    "<model_name_as_passed_to_api>": {
+      "<phase_key>": {
+        "p50_latency_s": 4.2,
+        "p95_latency_s": 18.7,
+        "avg_tokens": 1843,
+        "tiktoken_offset": 312,
+        "sample_count": 47,
+        "last_updated": "2026-03-25"
+      }
+    }
+  }
+}
+```
+
+### Phase keys
+
+| Step | Phase key(s) |
+|---|---|
+| Step 2 | `step2_quality_filter` |
+| Step 3 | `step3_idea_extraction` |
+| Step 4 | `step4_p1_facet_discovery`, `step4_p3_facet_assignment`, `step4_p4_attribute_discovery`, `step4_p6_attribute_assignment`, `step4_p7_consolidation` |
+| Step 5 | `step5_p8_codebook_generation`, `step5_p9_consolidation` |
+| Step 6 | `step6_code_assignment` |
+
+Step 1 (spell checker) is Hunspell-based — no LLM rate limiting; excluded.
+
+### Cold-start override (applied when `sample_count >= 10`)
+
+| Stored field | Overrides config field | Meaning |
+|---|---|---|
+| `p50_latency_s` | `estimated_latency_seconds` | Used for Little's Law concurrency calculation |
+| `p95_latency_s` | `timeout_floor_seconds`, `default_timeout_seconds` | Natural floor — P95 of real runs |
+| `avg_tokens` | `estimated_avg_tokens` | Token bucket + Little's Law |
+
+### EMA update formula
+
+```python
+alpha = max(0.05, 1.0 / min(old_count + n_new_samples, 20))
+new_value = alpha * measured + (1 - alpha) * old_value
+```
+
+- High alpha when data is sparse → converges quickly on real values
+- Stabilises at 5% weight once ≥ 20 samples accumulated
+- Single value, never grows with run count
+
+### Resilience
+
+| Scenario | Behaviour |
+|---|---|
+| File missing | Empty dict → hardcoded config defaults used |
+| Corrupted JSON | Warning logged, empty dict → hardcoded defaults |
+| Model/phase key absent | Defaults used silently |
+| `sample_count < 10` | Stored entry exists but not yet applied — defaults used |
+| Write failure | Warning logged; existing file preserved (atomic write) |
+
+---
+
 ## Configuration reference
 
 ### Ramp-up (RampUpConfig)
