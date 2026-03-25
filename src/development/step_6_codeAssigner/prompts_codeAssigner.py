@@ -7,10 +7,20 @@ Single idea → code assignment.
 from __future__ import annotations
 
 from typing import Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from development.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
 from development.step_6_codeAssigner.models_codeAssigner import CodeAssignment, CodeAssignmentBatch
+
+# Tier-aware validation: True for mini/default (strict), False for nano (lenient).
+# Set once at CodeAssigner init via configure_validation_mode().
+_strict_assignment: bool = True
+
+
+def configure_validation_mode(model: str) -> None:
+    """Set validation strictness based on model tier. Call from CodeAssigner.__init__."""
+    global _strict_assignment
+    _strict_assignment = "nano" not in model.lower()
 
 
 # =============================================================================
@@ -117,3 +127,35 @@ class CodeAssignmentResponse(BaseModel):
         ...,
         description="Brief rationale for the code choice"
     )
+
+    @field_validator('assigned_code_id', mode='before')
+    @classmethod
+    def validate_code_id(cls, v):
+        if not v:
+            if _strict_assignment:
+                raise ValueError("assigned_code_id is required")
+            return ""
+        return str(v).strip()
+
+    @field_validator('confidence', mode='before')
+    @classmethod
+    def validate_confidence(cls, v):
+        if v is None:
+            if _strict_assignment:
+                raise ValueError("confidence is required")
+            return 0.0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            if _strict_assignment:
+                raise
+            return 0.0
+
+    @field_validator('rationale', mode='before')
+    @classmethod
+    def validate_rationale(cls, v):
+        if not v:
+            if _strict_assignment:
+                raise ValueError("rationale is required")
+            return ""
+        return str(v).strip()

@@ -88,6 +88,7 @@ from development.step_4_classifier.models_classifier import DomainSet, DomainRes
 from .prompts_codeAssigner import (
     build_code_assignment_prompt,
     CodeAssignmentResponse,
+    configure_validation_mode,
 )
 from development.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
 from .models_codeAssigner import CodeAssignment, CodeAssignmentBatch
@@ -193,6 +194,9 @@ class CodeAssigner:
         self._pid_controller = None         # PIDThroughputController
         self._circuit_breaker = None        # ConcurrencyCircuitBreaker
         self._warm_up_done = False          # One-shot calibration flag
+
+        # Tier-aware validation: nano → lenient field coercion; mini/default → strict
+        configure_validation_mode(config.assignment_model)
 
         # Tokenizer for local token estimation
         self._encoding = get_tiktoken_encoding(config.assignment_model)
