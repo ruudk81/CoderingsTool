@@ -85,8 +85,8 @@ class TimeoutConfig:
     Per strategy doc: single-processing steps (1, 2, 3, 8) use 20s cold-start floor;
     chunk-processing steps (4, 5, 6) use 45s. Adaptive after warm-up: max(floor, min(P95×3, 180)).
     """
-    timeout_floor_seconds: float = 20.0     # Cold-start floor for single-processing steps (strategy: 20s)
-    default_timeout_seconds: float = 20.0   # Cold-start default (was 180, now matches strategy for step 3)
+    timeout_floor_seconds: float = 45.0     # Cold-start floor (strategy: 45s for bulk extraction)
+    default_timeout_seconds: float = 45.0   # Cold-start default (strategy: 45s for bulk extraction)
     default_latency_seconds: float = 2.0    # Default latency estimate
     max_token_acquire_attempts: int = 1000  # Max attempts to acquire tokens before failing
 

@@ -68,7 +68,7 @@ The system manages four independent constraints:
 
 ### Design principles
 
-1. **Step-type-aware timeouts** — cold-start floors of 20s (single processing) or 45s (chunk processing), 180s ceiling, P95×3 adaptive after warm-up. Only catches truly stuck requests. Timed-out tasks get fallback (no retry) since they're genuine outliers.
+1. **Step-type-aware timeouts** — cold-start floors of 20s (simple single processing), 45s (complex single processing like step 3, or chunk processing), 180s ceiling, P95×3 adaptive after warm-up. Only catches truly stuck requests. Timed-out tasks get fallback (no retry) since they're genuine outliers.
 
 2. **Completion-based ramp** — concurrency scales with progress, not wall-clock time. Works whether processing takes 5 seconds or 5 minutes.
 
@@ -302,7 +302,8 @@ Two prompt types determine the cold-start timeout floor:
 
 | Prompt type | Cold-start floor | Steps | Description |
 |---|---|---|---|
-| **Single processing** | 20s | 1 (spell check), 2 (quality filter), 3 (idea extraction), 8 (code assignment) | One response per API call |
+| **Single processing** | 20s | 1 (spell check), 2 (quality filter), 8 (code assignment) | One response per API call |
+| **Single processing** | 45s | 3 (idea extraction) | One response per API call (complex multi-field extraction) |
 | **Chunk processing** | 45s | 4 (embedding/classifier discovery), 5 (codebook generation), 6 (codebook refinement) | Batch of observations per API call |
 
 These are initial defaults — adjust upward if testing reveals timeouts on legitimate requests.
@@ -561,7 +562,8 @@ These are implementation choices — the default (same timeout, one pass, reduce
 ### Timeout (LatencyTracker)
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| Cold start (single) | 20s | Steps 1, 2, 3, 8 — one response per call |
+| Cold start (single) | 20s | Steps 1, 2, 8 — one response per call |
+| Cold start (single) | 45s | Step 3 — complex multi-field extraction per call |
 | Cold start (chunk) | 45s | Steps 4, 5, 6 — batch of observations per call |
 | Ceiling | 180s | Maximum timeout (accommodates heavy discovery prompts) |
 | Multiplier | P95 × 3.0 | Adaptive safety net |
