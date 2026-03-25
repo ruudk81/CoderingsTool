@@ -29,6 +29,7 @@ Usage:
 import asyncio
 import time
 import numpy as np
+import tiktoken
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
@@ -54,6 +55,8 @@ from development.step_3_ideaExtractor.ideaExtractor_exp import (
     ConcurrencyGate, ConcurrencyRamp,
     RealTimeTPMTracker, RealTimeRPMTracker,
     ApiLimits, compute_optimal_concurrency,
+    PIDThroughputController,
+    TiktokenOffsetLearner,
 )
 from development.step_2_qualityFilter.qualityFilter_exp import (
     TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
@@ -242,6 +245,9 @@ class TaxonomyClassifier:
         self._semaphore = None
         self._rate_limiter = None
         self._fetched_limits = None
+        self._pid_controller = None          # PID controller for arrival rate adjustment
+        self._current_arrival_rate = None    # Tracks current arrival rate for PID
+        self._tiktoken_offset_learner = TiktokenOffsetLearner()  # Learns tiktoken→API token offset
 
     # =========================================================================
     # PUBLIC API
@@ -392,6 +398,8 @@ class TaxonomyClassifier:
         default_conc = max(cfg.min_initial, int(little_law * cfg.start_fraction))
         self._semaphore = asyncio.Semaphore(default_conc)
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.01))
+        self._current_arrival_rate = arrival_rate
+        self._pid_controller = PIDThroughputController(target_utilization=0.80)
 
         if verbose:
             print(f"\n  [RATE LIMITING SETUP]")
@@ -1199,7 +1207,11 @@ class TaxonomyClassifier:
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Retry pass: re-run truly failed batches with reduced concurrency
+        # Retry pass: re-run truly failed batches with reduced concurrency.
+        # NOTE: Intentional divergence from strategy doc retry pattern.
+        # Strategy says: reuse the same processing function with reduced concurrency.
+        # P3/P6 use batch-level retry because assignment is batched (10 ideas per call);
+        # individual-task retry doesn't apply — the unit of failure is the batch.
         failed_batch_indices = [
             i for i, batch in enumerate(idea_batches)
             if any(idea.idea_id in self.failed_task_ids for idea in batch)
@@ -1376,7 +1388,11 @@ class TaxonomyClassifier:
             for i, batch in enumerate(idea_batches)
         ))
 
-        # Retry pass: re-run truly failed batches with reduced concurrency
+        # Retry pass: re-run truly failed batches with reduced concurrency.
+        # NOTE: Intentional divergence from strategy doc retry pattern.
+        # Strategy says: reuse the same processing function with reduced concurrency.
+        # P3/P6 use batch-level retry because assignment is batched (10 ideas per call);
+        # individual-task retry doesn't apply — the unit of failure is the batch.
         failed_batch_indices = [
             i for i, batch in enumerate(idea_batches)
             if any(idea.idea_id in self.failed_task_ids for idea in batch)
@@ -1836,6 +1852,10 @@ class TaxonomyClassifier:
         )
         little_law_cap = min(little_law, num_tasks)
 
+        # Reset PID so each phase starts fresh
+        if self._pid_controller:
+            self._pid_controller.reset()
+
         ramp_up_cfg = RampUpConfig(
             start_fraction=cfg.start_fraction,
             target_fraction=cfg.target_fraction,
@@ -1905,10 +1925,11 @@ class TaxonomyClassifier:
         )
 
     async def _phase_monitor(self, state: PhaseRampState):
-        """Background monitor: ramp + circuit breaker + warm-up + progress."""
+        """Background monitor: ramp + circuit breaker + warm-up + PID + progress."""
         start_time = time.monotonic()
         last_report_time = start_time
         last_reported_completions = -1
+        last_pid_time = start_time
 
         while not state.done:
             await asyncio.sleep(self._ramp_config.monitor_poll_interval)
@@ -1920,6 +1941,11 @@ class TaxonomyClassifier:
                 action = state.circuit_breaker.check_and_adjust()
                 if action and action in ('tripped', 'recovering', 'recovered'):
                     pass  # CB already adjusted gate.limit internally
+
+            # --- PID arrival rate adjustment (every 20s, large phases only) ---
+            if state.token_bucket and now - last_pid_time >= 20.0:
+                await self._apply_pid_adjustment(state)
+                last_pid_time = now
 
             # --- Feed completions to ramp ---
             if not state.ramp.is_done() and state.completions >= self._ramp_config.min_completions_per_step:
@@ -1956,6 +1982,18 @@ class TaxonomyClassifier:
                     current_tpm = await state.tpm_tracker.get_current_tpm()
                     current_rpm = await state.rpm_tracker.get_current_rpm()
 
+                    tpm_limit = self._fetched_limits.tokens_per_minute if self._fetched_limits else 0
+                    rpm_limit = self._fetched_limits.requests_per_minute if self._fetched_limits else 0
+                    tpm_pct = (current_tpm / tpm_limit * 100) if tpm_limit > 0 else 0
+                    rpm_pct = (current_rpm / rpm_limit * 100) if rpm_limit > 0 else 0
+
+                    latency_info = ""
+                    if state.latency_tracker and len(state.latency_tracker.values) >= 2:
+                        vals = list(state.latency_tracker.values)
+                        p50 = float(np.percentile(vals, 50))
+                        p95 = float(np.percentile(vals, 95))
+                        latency_info = f" | P50:{p50:.1f}s P95:{p95:.1f}s"
+
                     timeout_info = f" timeouts:{state.timeouts}" if state.timeouts > 0 else ""
                     cb_info = ""
                     if state.circuit_breaker and state.circuit_breaker.state != 'CLOSED':
@@ -1963,9 +2001,9 @@ class TaxonomyClassifier:
                     ramp_target = state.ramp._target
                     print(f"    [{state.phase_name}] {state.completions}/{state.total_tasks} "
                           f"({rate:.1f}/s) | "
-                          f"TPM:{current_tpm:,.0f} RPM:{current_rpm:.0f} "
+                          f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% "
                           f"Conc:{state.gate.active}/{state.gate.limit}→{ramp_target}"
-                          f"{timeout_info}{cb_info}")
+                          f"{latency_info}{timeout_info}{cb_info}")
 
     async def _run_with_ramp(self, coros, state: PhaseRampState):
         """Run coroutines via gather with a background ramp monitor.
@@ -2029,6 +2067,7 @@ class TaxonomyClassifier:
             self._fetched_limits.tokens_per_minute * headroom / measured_avg_tokens / 60,
         )
         self._rate_limiter = AsyncLimiter(1, time_period=1.0 / max(new_arrival_rate, 0.01))
+        self._current_arrival_rate = new_arrival_rate  # Keep PID in sync after warm-up
 
         conc_target = state.ramp._target
         print(f"\n    {'='*60}")
@@ -2042,6 +2081,37 @@ class TaxonomyClassifier:
         print(f"    {'='*60}")
 
         state.warm_up_calibrated = True
+
+    async def _apply_pid_adjustment(self, state: PhaseRampState) -> None:
+        """Adjust AsyncLimiter arrival rate via PID controller based on TPM utilization.
+
+        Called every 20s from _phase_monitor. Asymmetric: aggressive when under-utilizing,
+        gentle when over-utilizing. No-ops when limits are unknown or adjustment is trivial.
+        """
+        if self._current_arrival_rate is None or self._pid_controller is None:
+            return
+        if not self._fetched_limits or not self._fetched_limits.tokens_per_minute:
+            return
+
+        current_tpm = await state.tpm_tracker.get_current_tpm()
+        tpm_limit = self._fetched_limits.tokens_per_minute
+        utilization = current_tpm / tpm_limit if tpm_limit > 0 else 0.0
+
+        adjustment = self._pid_controller.compute_adjustment(utilization)
+        if abs(adjustment - 1.0) < 0.01:
+            return
+
+        old_rate = self._current_arrival_rate
+        new_rate = old_rate * adjustment
+        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
+        rpm_max = self._fetched_limits.requests_per_minute * headroom / 60
+        new_rate = max(0.5, min(rpm_max, new_rate))
+
+        if abs(new_rate - old_rate) / max(old_rate, 0.001) < 0.02:
+            return
+
+        self._rate_limiter = AsyncLimiter(1, time_period=1.0 / new_rate)
+        self._current_arrival_rate = new_rate
 
     # =========================================================================
     # SHARED LLM CALL
@@ -2069,6 +2139,8 @@ class TaxonomyClassifier:
         est_tokens = max_tokens
         if phase_state and phase_state.estimated_avg_tokens:
             est_tokens = phase_state.estimated_avg_tokens
+        # Apply learned tiktoken→API offset to improve bucket pre-acquisition accuracy
+        est_tokens += self._tiktoken_offset_learner.get_offset()
 
         async with concurrency_ctx:                                     # Layer 1: Concurrency
             # Adaptive timeout: compute AFTER gate (fresh latency data)
@@ -2127,6 +2199,20 @@ class TaxonomyClassifier:
                         # Track for warm-up calibration
                         if actual_tokens and phase_state.actual_total_tokens is not None:
                             phase_state.actual_total_tokens.append(actual_tokens)
+
+                        # Learn tiktoken→API offset for future estimates
+                        if actual_tokens:
+                            try:
+                                encoding = tiktoken.encoding_for_model(use_model)
+                                tiktoken_count = len(encoding.encode(prompt))
+                                input_tokens = (
+                                    getattr(usage, 'input_tokens', 0)
+                                    or getattr(usage, 'prompt_tokens', 0)
+                                ) if usage else 0
+                                if input_tokens > 0:
+                                    self._tiktoken_offset_learner.record(tiktoken_count, input_tokens)
+                            except Exception:
+                                pass  # Non-critical — don't disrupt the pipeline
 
                         # Reconcile token bucket (return overestimate)
                         if actual_tokens and phase_state.token_bucket:

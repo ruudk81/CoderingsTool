@@ -39,8 +39,8 @@ class ClassifierRampConfig:
     circuit_breaker_min_tasks: int = 20        # Skip CB for small phases
 
     # Adaptive timeout (P95 × margin, computed after gate acquisition)
-    timeout_floor_seconds: float = 60.0        # Minimum timeout
-    default_timeout_seconds: float = 180.0     # Cold-start timeout before latency data
+    timeout_floor_seconds: float = 45.0        # Cold-start floor (chunk processing = 45s per strategy doc)
+    default_timeout_seconds: float = 45.0      # Cold-start timeout (matches floor; P95×3 adaptive after warm-up)
 
 
 @dataclass

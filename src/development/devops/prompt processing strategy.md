@@ -2,7 +2,7 @@
 
 Reference document for the rate limiting system across all pipeline steps — including multi-phase pipelines (step 4 classifier, step 5 codeGenerator, step 6 codeAssigner) using `asyncio.gather` dispatch, and single-phase steps (step 2 qualityFilter, step 3 ideaExtractor) using worker/queue dispatch.
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 ---
 
@@ -243,6 +243,8 @@ The ramp, hold, and throttle decisions are governed by four signals evaluated ev
 | **Latency trend** | P95 stable or decreasing | P95 increased >10% vs previous check | P95 increased >25% vs previous check |
 
 Limit = 90% of RPM/TPM constraint (10% headroom). So "90% of limit" = ~81% of raw RPM/TPM.
+
+**Note on gather-based dispatch (step 4 classifier):** Steps using `asyncio.gather` dispatch all tasks at once (gated by ConcurrencyGate), so there is no explicit in-process queue to measure. Throughput decline (requests/s trending down) serves as the proxy signal for server-side queue pressure. The circuit breaker's timeout rate monitoring captures this indirectly.
 
 **Latency trend is the most important signal.** RPM/TPM utilization stayed <5% throughout all tests on high-tier deployments. Queue depth was always shrinking. Only P95 latency trend caught the API-side pressure that caused timeouts — the API accepts requests within limits but queues them server-side, causing latency spikes invisible to RPM/TPM tracking.
 
@@ -487,6 +489,8 @@ Key design choices:
 - **Reduced concurrency** — 10% of original worker count (minimum 5). The main batch just finished, so API pressure is at its lowest. Conservative concurrency avoids re-triggering the conditions that caused the original failures.
 - **Same admission controls** — retry tasks go through the same semaphore, token bucket, and rate limiter. No bypassing safety layers.
 - **Reuses existing infrastructure** — the retry pass calls the same `_process_all_tasks_async` method. No separate code path to maintain.
+
+**Exception — batch-processing phases (step 4 P3/P6):** Assignment phases that process ideas in batches (10 ideas per API call) use batch-level retry instead of task-level retry. The unit of failure is the batch, not the individual task — retrying individual ideas doesn't apply. These phases use a separate retry semaphore at reduced concurrency. This is an intentional divergence from the pattern above.
 
 #### Reporting
 
