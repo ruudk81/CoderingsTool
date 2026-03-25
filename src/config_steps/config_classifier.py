@@ -39,8 +39,8 @@ class ClassifierRampConfig:
     circuit_breaker_min_tasks: int = 20        # Skip CB for small phases
 
     # Adaptive timeout (P95 × margin, computed after gate acquisition)
-    timeout_floor_seconds: float = 60.0        # Minimum timeout
-    default_timeout_seconds: float = 180.0     # Cold-start timeout before latency data
+    timeout_floor_seconds: float = 60.0        # Cold-start floor (chunk processing = 60s for large discovery prompts)
+    default_timeout_seconds: float = 60.0      # Cold-start timeout (matches floor; P95×3 adaptive after warm-up)
 
 
 @dataclass
@@ -87,11 +87,11 @@ class CategoriesConfig:
     # ==========================================================================
 
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
-    qr_model_p1: str = get_model("nano")    # P1: Facet Discovery
-    qr_model_p2: str = get_model("mini")    # P2: Facet Consolidation
+    qr_model_p1: str = get_model("mini")    # P1: Facet Discovery
+    qr_model_p2: str = get_model("default") # P2: Facet Consolidation
     qr_model_p3: str = get_model("nano")    # P3: Facet Assignment (classification)
-    qr_model_p4: str = get_model("nano")    # P4: Attribute Discovery
-    qr_model_p5: str = get_model("mini")    # P5: Attribute Chunk Consolidation
+    qr_model_p4: str = get_model("mini")    # P4: Attribute Discovery
+    qr_model_p5: str = get_model("default") # P5: Attribute Chunk Consolidation
     qr_model_p6: str = get_model("nano")    # P6: Attribute Assignment (classification)
     qr_model_p7: str = get_model("mini")    # P7: Cross-facet Attribute Consolidation
     qr_temperature: float = 0.3

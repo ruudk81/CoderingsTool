@@ -66,7 +66,7 @@ from config_steps.config_ideaExtractor import (
     DEFAULT_CIRCUIT_BREAKER_CONFIG,
 )
 
-from .config_classifier import CategoriesConfig, ClassifierRampConfig
+from config_steps.config_classifier import CategoriesConfig, ClassifierRampConfig
 from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
 from .models_classifier import DomainSet, DomainDescription
