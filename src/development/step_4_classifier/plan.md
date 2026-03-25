@@ -58,13 +58,46 @@ Idea `"Pinkpop Festival → De vele schaduwplekken"` echoed back as `"De vele sc
 
 ## Issue 5 — Invalid `attribute_id`: `''`, `'A0'`, `'A?'`
 
-**Problem:** P6 LLM returns invalid IDs — `''` (skipped), `'A0'` (off-by-one), `'A?'` (uncertainty placeholder). All cause skipped assignments.
+**Problem:** P6 LLM returns invalid IDs — `''` (skipped), `'A0'` (off-by-one), `'A?'` (uncertainty placeholder). All cause skipped assignments at the `attr_id_to_name.get(...)` lookup → idea loses attribute classification permanently.
 
 ### 5a — Improve P6 prompt
-Add explicit guidance: A0 does not exist, IDs start at A1; never return empty or placeholder; always pick closest match.
+
+**File:** `src/development/step_4_classifier/prompts_classifier.py`
+**Location:** `build_attribute_assignment_prompt` — "Important requirements" block (~line 1196)
+
+Add after the existing requirements:
+```
+- Attribute IDs start at A1 — A0 does not exist; never return 'A0'
+- Never return an empty ID or a placeholder such as 'A?' — always pick the closest matching attribute
+- When uncertain, choose the attribute whose description best matches the core meaning of the idea; do not leave the assignment blank
+```
 
 ### 5b — Single-attribute fallback
-If attribute_id is invalid but facet has only one attribute, assign to it automatically.
+
+**File:** `src/development/step_4_classifier/classifier.py`
+**Location:** Invalid attribute_id guard (~line 1500)
+
+Replace:
+```python
+attr_name = attr_id_to_name.get(assignment.assigned_attribute_id)
+if attr_name is None:
+    print(f"    WARNING: Invalid attribute_id ...")
+    continue
+```
+
+With:
+```python
+attr_name = attr_id_to_name.get(assignment.assigned_attribute_id)
+if attr_name is None:
+    if len(attr_id_to_name) == 1:
+        attr_name = next(iter(attr_id_to_name.values()))
+    else:
+        print(f"    WARNING: Invalid attribute_id '{assignment.assigned_attribute_id}' "
+              f"for idea '{original_idea.idea_id}' — skipping")
+        continue
+```
+
+**Logic:** if the facet has exactly one attribute there is no ambiguity — assign to it regardless of the invalid ID returned.
 
 ---
 
