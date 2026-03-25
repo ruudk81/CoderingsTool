@@ -10,9 +10,9 @@ from collections import deque
 from dataclasses import dataclass
 import numpy as np
 
+import re
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
-from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-from instructor.exceptions import InstructorRetryException
+from openai import AsyncOpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from aiolimiter import AsyncLimiter
 
 # === MODELS ========================================================================================================
@@ -41,7 +41,7 @@ try:
         RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
         SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
     )
-    from .prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
+    from .prompts_exp import GRADER_INSTRUCTIONS
 except ImportError:
     from config_exp import (
         OPENAI_API_KEY, DEFAULT_LANGUAGE,
@@ -64,10 +64,42 @@ except ImportError:
         RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
         SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
     )
-    from prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
+    from prompts_exp import GRADER_INSTRUCTIONS
 
-from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
+from utils.llm import RateLimits, extract_rate_limits_from_response
 from config import get_reasoning_params
+
+
+# =============================================================================
+# RAW RESPONSE PARSING (no instructor — nano trips on structured output schemas)
+# =============================================================================
+# Category → quality_filter_code mapping:
+#   1, 2     → 99999997  (don't know / no answer)
+#   3        → 99999998  (no text / empty)
+#   4        → 99999999  (gibberish / nonsense)
+#   no flag  → None      (keep for analysis)
+CATEGORY_TO_CODE = {"1": 99999997, "2": 99999997, "3": 99999998, "4": 99999999}
+
+def parse_quality_code(raw_text: str) -> Optional[int]:
+    """Parse <category> tag from LLM scratchpad output into a quality filter code.
+
+    Returns 99999997, 99999999, or None (= keep the response).
+    Any unexpected output defaults to None (conservative: don't flag).
+    """
+    # Extract content from <category>...</category> tag
+    match = re.search(r'<category>\s*(.*?)\s*</category>', raw_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        value = match.group(1).strip().lower()
+        if value in CATEGORY_TO_CODE:
+            return CATEGORY_TO_CODE[value]
+        # "no flag" or any other text → keep
+        return None
+    # No tag found — fallback: scan for a standalone category number
+    match = re.search(r'\b([1-4])\b', raw_text[-50:])  # check end of response
+    if match:
+        return CATEGORY_TO_CODE.get(match.group(1))
+    # Unparseable → conservative default: keep
+    return None
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
@@ -569,8 +601,8 @@ class Grader:
         # Initialize tokenizer for token counting (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
-        # Instructor-patched async client for structured output (supports OpenAI and Azure)
-        self.client = create_client(self.model, async_mode=True)
+        # Raw async client (no instructor — nano produces correct results without schema injection)
+        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
         # Rate limiting setup - use fallback values for initial setup
         # Actual rate limits will be fetched from API during process_all_tasks_async
@@ -1105,7 +1137,6 @@ class Grader:
             APIConnectionError,
             APITimeoutError,
             InternalServerError,
-            InstructorRetryException,
             asyncio.TimeoutError
         )),
         wait=wait_exponential_jitter(initial=2, max=60),
@@ -1113,25 +1144,20 @@ class Grader:
         reraise=True
     )
     async def process_task(self, task: Dict) -> models.QualityFilteredModel:
-        """Process a single quality assessment task"""
+        """Process a single quality assessment task via raw API call + parse."""
         task_start = time.perf_counter()
-        
+
         try:
-            # Build prompt
             prompt = self._build_individual_prompt(
                 self.question,
                 task['task_id'],
                 task['response_text']
             )
-            
-            # Estimate tokens
             est_tokens = self.estimate_tokens(prompt)
-            
-            # Log estimation for first few tasks
+
             if task.get('task_index', 0) < 5:
                 logger.info(f"[ESTIMATION DEBUG] Task {task.get('task_index', 0)}: estimated {est_tokens} tokens")
-            
-            # Capture prompt for first task
+
             if self.prompt_printer and task.get('task_index', 0) == 0:
                 self.prompt_printer.capture_prompt(
                     step_name="quality_filter",
@@ -1145,67 +1171,47 @@ class Grader:
                         "estimated_tokens": est_tokens
                     }
                 )
-           
-            # Semaphore FIRST to prevent convoy effect, then token bucket, then rate limiter
+
             async with self.semaphore:
-                # Compute timeout AFTER semaphore: uses current latency data, not stale cold-start
                 timeout = self.latency_tracker.get_timeout(est_tokens)
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
                 async with self.rate_limiter:
-                    
-                    # Make API call
+
+                    # Raw API call — no instructor schema injection
+                    api_params = {
+                        "model": self.model,
+                        "input": prompt,
+                        "max_output_tokens": self.config.max_tokens,
+                        **get_reasoning_params(self.model),
+                    }
                     response = await asyncio.wait_for(
-                        llm_create_async(
-                            client=self.client,
-                            model=self.model,
-                            response_model=QualityFilterLLMResponseExp,
-                            prompt=prompt,
-                            temperature=self.config.temperature,
-                            max_tokens=self.config.max_tokens,
-                            **get_reasoning_params(self.model),
-                        ),
+                        self.client.responses.create(**api_params),
                         timeout=timeout
                     )
-                    
-                    # Record latency
+
                     latency = time.perf_counter() - task_start
                     self.latency_tracker.add(latency)
-                    
-                    # Track actual token usage for learning and reconciliation
-                    usage = getattr(response, '_raw_response', None)
-                    if usage:
-                        usage = getattr(usage, 'usage', None)
-                    if not usage:
-                        usage = getattr(response, 'usage', None)
 
+                    # Track token usage
+                    usage = getattr(response, 'usage', None)
                     if usage:
-                        # Handle both Responses API (input_tokens/output_tokens) and Chat API (prompt_tokens/completion_tokens)
-                        input_tokens = getattr(usage, 'input_tokens', 0) or getattr(usage, 'prompt_tokens', 0)
-                        output_tokens = getattr(usage, 'output_tokens', 0) or getattr(usage, 'completion_tokens', 0)
+                        input_tokens = getattr(usage, 'input_tokens', 0)
+                        output_tokens = getattr(usage, 'output_tokens', 0)
                         actual_total_tokens = getattr(usage, 'total_tokens', 0) or (input_tokens + output_tokens)
-                        actual_output_tokens = output_tokens
 
-                        # Update output token history for estimation learning
                         if len(self.output_token_history) < 5:
-                            self.output_token_history.append(actual_output_tokens)
-
-                        # Track actual total tokens for rolling average
+                            self.output_token_history.append(output_tokens)
                         self.actual_total_tokens.append(actual_total_tokens)
-
-                        # Track RPM/TPM utilization
                         self._record_api_call(actual_total_tokens)
 
-                        # Track estimation accuracy
                         estimation_error = abs(actual_total_tokens - est_tokens)
                         self.estimation_errors.append(estimation_error)
+                        await self.tpm_bucket.reconcile(actual_total_tokens - est_tokens)
 
-                        # Reconcile token difference with bucket
-                        delta = actual_total_tokens - est_tokens
-                        await self.tpm_bucket.reconcile(delta)
-                    
-                    # Convert LLM classification to pipeline model
-                    # LLM returns only quality_filter_code; we attach ID, response, and derive quality_filter
-                    quality_code = response.quality_filter_code
+                    # Parse raw text response into quality code
+                    raw_text = response.output_text if hasattr(response, 'output_text') else str(response)
+                    quality_code = parse_quality_code(raw_text)
+
                     result = models.QualityFilteredModel(
                         respondent_id=task['task_id'],
                         response=task['response_text'],
@@ -1214,36 +1220,20 @@ class Grader:
                     )
                     self.stats['tasks_successful'] += 1
                     return result
-                    
+
         except asyncio.TimeoutError:
             self.stats['timeouts'] += 1
             logger.warning(f"Task {task['task_id']} timed out")
-            raise  # Let tenacity retry
-            
+            raise
+
         except RateLimitError:
             self.stats['rate_limits'] += 1
             logger.warning(f"Task {task['task_id']} hit rate limit")
-            raise  # Let tenacity retry
-
-        except InstructorRetryException as e:
-            # Concise output for 429 errors wrapped in InstructorRetryException
-            error_str = str(e)
-            if "429" in error_str or "RateLimitReached" in error_str:
-                self.stats['rate_limits'] += 1
-                if "token rate limit" in error_str.lower():
-                    limit_type = "TPM"
-                elif "call rate limit" in error_str.lower():
-                    limit_type = "RPM"
-                else:
-                    limit_type = "rate"
-                print(f"429 {limit_type} limit hit (task {task['task_id']})")
-            else:
-                logger.error(f"Task {task['task_id']} failed: {type(e).__name__}")
-            raise  # Let tenacity retry
+            raise
 
         except Exception as e:
             logger.error(f"Task {task['task_id']} failed: {type(e).__name__}: {e}")
-            raise  # Let tenacity retry
+            raise
     
     def create_fallback_response(self, task: Dict) -> models.QualityFilteredModel:
         """Create fallback response for failed tasks"""
@@ -1340,7 +1330,6 @@ class Grader:
 
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
         """Make a minimal API call to fetch rate limits from response headers."""
-        from openai import AsyncOpenAI
         from config import API_PROVIDER, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
 
         if API_PROVIDER == "azure":

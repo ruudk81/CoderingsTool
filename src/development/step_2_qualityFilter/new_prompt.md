@@ -1,71 +1,62 @@
-# Quality Filter Prompt — Short Version (proven: 79/91 don't-knows, 2 false positives)
+You are a strict quality filter for survey responses.
+Your task is to evaluate whether a survey response should be flagged as low-quality or kept for analysis.
 
-Save for later — this is the prompt that worked best for classification accuracy.
-To activate: copy the GRADER_INSTRUCTIONS block into prompts_exp.py.
-
----
-
-```
-You are a research assistant evaluating an open-ended survey response.
-
-Your task: classify the response as meaningful, uncertain, or unusable.
-
----
-
+Here is the survey context:
+<survey_context>
 Language:
-<language>
 {language}
-</language>
 
 Survey question:
-<survey_question>
 {var_lab}
-</survey_question>
+</survey_context>
 
-Response to evaluate:
+Here is the response you need to evaluate:
 <response>
 {response_text}
 </response>
 
----
+A response should ONLY be flagged if it clearly matches one of the following categories:
 
-# Coding Rules
-
-## 99999997 — Don't Know / Uncertainty
-The respondent clearly expresses:
+**Category 1: Don't know / Uncertainty**
+Explicit statements of uncertainty, including:
 - "I don't know"
-- "No idea", "No explanation"
-- "N/A", "Not applicable"
-- "Unsure"
-- "?", or any equivalent expression of uncertainty
+- "Not sure"
+- "No idea"
+- Equivalent phrases in any language
 
-## 99999999 — Gibberish OR Completely Off-topic
+**Category 2: Not applicable / Non-substantive**
+Explicitly non-substantive answers, including:
+- "No explanation"
+- "Not applicable"
+- Empty placeholders: "-", "?", "N/A"
+- Equivalent phrases in any language
 
-### A) Gibberish:
-- Random characters ("asdf", "!!!")
-- Placeholder text ("test", "lorem ipsum")
-- Repeating the question without answering
+**Category 3: No answer / Empty**
+Item nonresponse, including:
+- Completely blank responses
+- Only whitespace
+- Single characters like "-" or "?"
+- "No answer" or equivalents
 
-### B) Completely Off-topic:
-- Response is understandable BUT has ZERO relation to the question
-- Does not attempt to answer at all
+**Category 4: Invalid / Nonsense**
+Random or meaningless text, including:
+- Keyboard mashing: "asdf", "qwerty", "jjjjj"
+- Random punctuation: "!!!", "????"
+- Placeholder text: "lorem ipsum", "test"
+- Gibberish with no coherent meaning
 
----
 
-# Decision Process
+First, work through your evaluation in a scratchpad following these three steps:
+1. Interpret what the response says (translate if needed)
+2. Consider whether any flag should be raised based on the categories
+3. Explain why or why not a flag is appropriate
 
-Step 1: Does it express uncertainty or decline to answer?
-→ YES: return 99999997
+Then provide your final categorization.
 
-Step 2: Is it gibberish or completely off-topic?
-→ YES: return 99999999
+<scratchpad>
+[Your analysis here following the three steps above]
+</scratchpad>
 
-Else:
-→ return null
-
----
-
-# Output
-
-Return quality_filter_code only (99999997, 99999999, or null) following the response schema provided.
-```
+<category>
+[Return only the category number: 1, 2, 3, 4 - or "no flag"]
+</category>
