@@ -1,5 +1,4 @@
 from __future__ import annotations
-import re
 from typing import ClassVar, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, create_model
 
@@ -7,33 +6,6 @@ try:
     from .dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
 except ImportError:
     from development.step_3_ideaExtractor.dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Shared validator: reject strings that contain example-like phrases
-# ═══════════════════════════════════════════════════════════════════════
-
-_EXAMPLE_PATTERNS = re.compile(
-    r'\b(?:'
-    r'such as|like\s+\w+(?:\s*,\s*\w+)+|for example|for instance|e\.g\.'  # English
-    r'|zoals|bijvoorbeeld|denk aan'                                        # Dutch
-    r'|zum Beispiel|wie etwa|z\.B\.'                                       # German
-    r'|par exemple|comme'                                                  # French
-    r'|por ejemplo|como por ejemplo'                                       # Spanish
-    r')\b',
-    re.IGNORECASE,
-)
-
-
-def _reject_examples(v: str, field_label: str) -> str:
-    """Raise ValueError if value contains example-like phrases."""
-    if _EXAMPLE_PATTERNS.search(v):
-        raise ValueError(
-            f"{field_label} must NOT contain examples or enumerations "
-            f"(detected example phrase). Rewrite as a pure abstract definition "
-            f"without 'such as', 'like', 'zoals', 'bijvoorbeeld', etc."
-        )
-    return v
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -375,10 +347,6 @@ class PrimaryDimensionChunkResponse(BaseModel):
         description="Scope statement completing: 'Responses vary in [what differentiates them] regarding [survey topic].' Abstract principle of variation only, no listed content or examples"
     )
 
-    @field_validator('primary_dimension_description', mode='after')
-    @classmethod
-    def no_examples_in_description(cls, v: str) -> str:
-        return _reject_examples(v, "primary_dimension_description")
 
 
 # --- 3b. Dimension consolidation ---
@@ -460,10 +428,6 @@ class PrimaryDimensionConsolidatedResponse(BaseModel):
         description="Scope statement completing: 'Responses vary in [what differentiates them] regarding [survey topic].' Abstract principle of variation only, no listed content or examples"
     )
 
-    @field_validator('primary_dimension_description', mode='after')
-    @classmethod
-    def no_examples_in_description(cls, v: str) -> str:
-        return _reject_examples(v, "primary_dimension_description")
 
 
 def consolidate_primary_dimension_by_majority(
@@ -608,10 +572,6 @@ class DomainItem(BaseModel):
         description="Short clarification of domain label in {language} (1 sentence). CRITICAL: One focused boundary, not a compound list, no examples or enumerations"
     )
 
-    @field_validator('definition', mode='after')
-    @classmethod
-    def no_examples_in_definition(cls, v: str) -> str:
-        return _reject_examples(v, "definition")
 
 class DomainChunkResponse(BaseModel):
     """LLM response for single chunk domain discovery."""
@@ -740,7 +700,6 @@ def build_taxonomy_enriched_extraction_prompt(
     entity: str,
     topic: str,
     intent: str,
-    respondent_id: str,
     response: str,
     canonical_phrasing: str,
     dimension: DimensionDefinition,
@@ -767,8 +726,7 @@ Anchor: {dimension.domain_marker}
 </taxonomy_lens>
 
 <response>
-Respondent ID: {respondent_id}
-Response: {response}
+{response}
 </response>
 
 ---
@@ -786,17 +744,16 @@ SPLITTING RULES (NON-NEGOTIABLE):
 
 ---
 
-## STEP 2 — REFORMULATE EACH IDEA
+## STEP 2 — IDEA STATEMENT
 
-For each idea, produce an idea statement using EXACTLY this pattern:
+For each idea, extract the SHORTEST span from the response that captures it.
 
-{canonical_phrasing}
+Your output replaces {dimension.domain_marker} in: {canonical_phrasing}
 
-- Do NOT alter the template prefix
-- Replace {dimension.domain_marker} with the SHORTEST verbatim span from the response that expresses the idea
-- Do NOT include the literal marker token in output
-- Use respondent_id: {respondent_id}
-- Use {language}, preserve original meaning
+Rules:
+- Output ONLY the span — do NOT include the prefix or the marker token
+- Use {language}, preserve the respondent's original wording
+
 
 ---
 
@@ -844,6 +801,9 @@ class SemanticTaxonomyResponse(BaseModel):
     Abstraction ladder: instance → interpretation → abstraction (survey language).
     Domain: L2 thematic domain.
     Facet (L3) is assigned later in step 5, NOT here.
+
+    Note: ladder validation is tier-aware and applied in create_extraction_model(),
+    not here. See _make_ladder_validator().
     """
 
     instance: str = ""
@@ -851,31 +811,16 @@ class SemanticTaxonomyResponse(BaseModel):
     abstraction: str = ""
     domain: str = ""
 
-    @field_validator('instance', 'interpretation', 'abstraction', mode='before')
-    @classmethod
-    def reject_invalid(cls, v: object) -> str:
-        """STRICT: Reject None and non-string values instead of auto-fixing."""
-        if v is None:
-            raise ValueError("Field must not be None. Provide a non-empty string value.")
-        if not isinstance(v, str):
-            raise TypeError(f"Expected str, got {type(v).__name__}: {v!r}")
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError("Field must not be empty after stripping whitespace.")
-        return stripped.lower().rstrip('.,;:!?')
-
 
 class TaxonomyEnrichedIdeaResponse(BaseModel):
-    """Base model for extraction. Use create_extraction_model() for dimension-specific versions."""
-    respondent_id: str = Field(
-        description="Respondent identifier from the response context"
-    )
-    idea_id: str = Field(
-        description="Sequential number as string",
-        examples=["1", "2", "3"]
-    )
+    """Base model for extraction. Use create_extraction_model() for dimension-specific versions.
+
+    Note: respondent_id and idea_id are NOT in the response model — they are
+    known by the caller and assigned programmatically. This reduces output tokens
+    and eliminates a source of validation failures on nano models.
+    """
     idea: str = Field(
-        description="Complete idea statement beginning with the canonical_phrasing template"
+        description="The extracted idea — shortest verbatim span expressing the concept"
     )
     abstraction_ladder: Optional[SemanticTaxonomyResponse] = Field(
         default=None,
@@ -892,12 +837,18 @@ def create_extraction_model(
     dimension: DimensionDefinition,
     template_prefix: str,
     domains: list[DomainItem] | None = None,
+    model: str = "",
 ) -> type[TaxonomyEnrichedIdeaResponse]:
-    """Create dimension-specific extraction model with STRICT validation.
+    """Create dimension-specific extraction model with tier-aware validation.
 
     template_prefix and domain_marker are baked in via class closure.
     No ClassVar. Each call returns a fresh class. Safe for async.
+
+    Ladder validation is tier-aware:
+    - nano: lenient — coerce None/empty to "", never reject (retries are futile)
+    - mini/default: strict — reject None/empty (retries will succeed)
     """
+    _strict_ladder = "nano" not in model
     _prefix = template_prefix.strip() if template_prefix else ""
     _marker = dimension.domain_marker
     prompt_rules = dimension.prompt_rules
@@ -956,6 +907,29 @@ def create_extraction_model(
             _label_map[c.key.lower().replace('_', ' ')] = c.label
 
     class DimensionTaxonomy(_BaseDimensionTaxonomy):
+        @field_validator('instance', 'interpretation', 'abstraction', mode='before')
+        @classmethod
+        def validate_ladder_field(cls, v: object) -> str:
+            """Tier-aware ladder validation (closure over _strict_ladder).
+
+            strict (mini/default): reject None/empty — retry will succeed.
+            lenient (nano): coerce to "" — retry is futile.
+            """
+            if v is None:
+                if _strict_ladder:
+                    raise ValueError("Field must not be None. Provide a non-empty string value.")
+                return ""
+            if not isinstance(v, str):
+                if _strict_ladder:
+                    raise TypeError(f"Expected str, got {type(v).__name__}: {v!r}")
+                return str(v).strip().lower().rstrip('.,;:!?')
+            stripped = v.strip()
+            if not stripped:
+                if _strict_ladder:
+                    raise ValueError("Field must not be empty after stripping whitespace.")
+                return ""
+            return stripped.lower().rstrip('.,;:!?')
+
         @field_validator('domain', mode='before')
         @classmethod
         def normalize_domain(cls, v: object) -> str:
@@ -990,22 +964,10 @@ def create_extraction_model(
         @field_validator('idea', mode='before')
         @classmethod
         def validate_idea(cls, v: str) -> str:
-            """STRICT: Reject if template prefix is missing or marker not replaced."""
+            """Basic validation — non-empty string only."""
             if not isinstance(v, str) or not v.strip():
                 raise ValueError("idea must be a non-empty string.")
-            v = v.strip()
-            if cls._template_prefix and not v.lower().startswith(cls._template_prefix.lower()):
-                raise ValueError(
-                    f"idea must start with the canonical phrasing template "
-                    f"{cls._template_prefix!r}, but starts with: {v[:len(cls._template_prefix)+10]!r}. "
-                    f"Please begin your idea with: {cls._template_prefix}"
-                )
-            if cls._domain_marker and cls._domain_marker in v:
-                raise ValueError(
-                    f"The marker token {cls._domain_marker!r} must be replaced with actual content. "
-                    f"Do not include the literal marker in the final idea."
-                )
-            return v
+            return v.strip()
 
     DimensionExtractionModel.__name__ = f"IdeaExtr_{dimension_key}"
     DimensionExtractionModel.__qualname__ = f"IdeaExtr_{dimension_key}"

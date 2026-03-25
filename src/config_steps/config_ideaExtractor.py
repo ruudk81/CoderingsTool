@@ -16,6 +16,31 @@ These settings control:
 from dataclasses import dataclass
 from config import get_model
 
+# =============================================================================
+# SEGMENTATION CONFIGURATION  
+# =============================================================================
+
+@dataclass
+class SegmentationConfig:
+    """Configuration for segmentation and description step"""
+    max_tokens: int = 16000
+    completion_reserve: int = 1000
+    min_batch_size: int = 5  # Minimum responses per batch for efficiency
+    max_batch_size: int = 20  # Maximum responses per batch for manageability
+    target_token_utilization: float = 0.8  # Use 80% of available tokens per batch
+    retry_delay: int = 2
+    max_retries: int = 3
+    spacy_batch_size: int = 32
+    umap_n_jobs: int = 1
+    max_code_examples: int = 5  # For verbose output
+    max_sample_responses: int = 3  # For verbose output
+    # Model (derived from MODEL_FAMILY toggle in config.py)
+    model: str = get_model("mini")
+    temperature: float = 0.0  # Temperature for generation
+    max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
+    # Timeout configuration for API calls
+    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
+    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
 
 # =============================================================================
 # TOKEN HISTORY CONFIGURATION
@@ -55,8 +80,13 @@ class TiktokenOffsetConfig:
 
 @dataclass
 class TimeoutConfig:
-    """Configuration for timeouts and latency handling."""
-    default_timeout_seconds: float = 180.0  # Cold-start timeout (generous for reasoning models)
+    """Configuration for timeouts and latency handling.
+
+    Per strategy doc: single-processing steps (1, 2, 3, 8) use 20s cold-start floor;
+    chunk-processing steps (4, 5, 6) use 45s. Adaptive after warm-up: max(floor, min(P95×3, 180)).
+    """
+    timeout_floor_seconds: float = 20.0     # Cold-start floor for single-processing steps (strategy: 20s)
+    default_timeout_seconds: float = 20.0   # Cold-start default (was 180, now matches strategy for step 3)
     default_latency_seconds: float = 2.0    # Default latency estimate
     max_token_acquire_attempts: int = 1000  # Max attempts to acquire tokens before failing
 
@@ -211,31 +241,6 @@ class SpecifierConfig:
     max_workers: int = 10                   # Max workers for specifier extraction
 
 
-# =============================================================================
-# SEGMENTATION CONFIGURATION (moved from config.py - ideaExtractor-only)
-# =============================================================================
-
-@dataclass
-class SegmentationConfig:
-    """Configuration for segmentation and description step"""
-    max_tokens: int = 16000
-    completion_reserve: int = 1000
-    min_batch_size: int = 5  # Minimum responses per batch for efficiency
-    max_batch_size: int = 20  # Maximum responses per batch for manageability
-    target_token_utilization: float = 0.8  # Use 80% of available tokens per batch
-    retry_delay: int = 2
-    max_retries: int = 3
-    spacy_batch_size: int = 32
-    umap_n_jobs: int = 1
-    max_code_examples: int = 5  # For verbose output
-    max_sample_responses: int = 3  # For verbose output
-    # Model (derived from MODEL_FAMILY toggle in config.py)
-    model: str = get_model("nano")
-    temperature: float = 0.0  # Temperature for generation
-    max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
-    # Timeout configuration for API calls
-    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
-    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
 
 
 # =============================================================================

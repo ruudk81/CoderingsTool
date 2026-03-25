@@ -147,6 +147,7 @@ TIKTOKEN_OFFSET_HISTORY_MAXLEN = DEFAULT_TIKTOKEN_OFFSET_CONFIG.offset_history_m
 TIKTOKEN_OFFSET_MIN_SAMPLES = DEFAULT_TIKTOKEN_OFFSET_CONFIG.offset_min_samples
 
 # Timeouts and latency
+TIMEOUT_FLOOR_SECONDS = DEFAULT_TIMEOUT_CONFIG.timeout_floor_seconds
 DEFAULT_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_timeout_seconds
 DEFAULT_LATENCY_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_latency_seconds
 MAX_TOKEN_ACQUIRE_ATTEMPTS = DEFAULT_TIMEOUT_CONFIG.max_token_acquire_attempts
@@ -293,13 +294,22 @@ class ConcurrencyGate:
 
 
 class LatencyTracker:
-    """Simple EMA tracker for latencies"""
-    def __init__(self, processing_config: Optional[ProcessingConfig] = None):
+    """EMA tracker for latencies with step-type-aware timeout strategy.
+
+    Per strategy doc:
+    - Cold start: max(timeout_floor, default_timeout) — 20s for single-processing steps
+    - Adaptive: max(timeout_floor, min(P95×3, 180)) after warm-up data
+    - Retry: adaptive with 60s floor (latency history is fully populated at retry time)
+    """
+    def __init__(self, processing_config: Optional[ProcessingConfig] = None,
+                 timeout_floor: float = None, default_timeout: float = None):
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
+        self.timeout_floor = timeout_floor if timeout_floor is not None else TIMEOUT_FLOOR_SECONDS
+        self.default_timeout = default_timeout if default_timeout is not None else DEFAULT_TIMEOUT_SECONDS
         self.ema = None
         self.alpha = self.processing_config.latency_tracker_ema_alpha
         self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
-        self.retry_mode = False  # Set True for batch retry (generous timeout)
+        self.retry_mode = False  # Set True for batch retry
 
     def add(self, value):
         """Add a latency measurement"""
@@ -309,7 +319,7 @@ class LatencyTracker:
         else:
             self.ema = self.alpha * value + (1 - self.alpha) * self.ema
 
-    def get_timeout(self, est_tokens):
+    def get_timeout(self, est_tokens=None):
         """Safety-net timeout — only catches truly stuck requests.
 
         Normal latency variance (1-30s) is NOT a problem. We only want to
@@ -318,14 +328,24 @@ class LatencyTracker:
         tasks, double API costs on retry, and trigger the circuit breaker.
         """
         if self.retry_mode:
-            return 180.0  # Retry mode: very generous
+            # Adaptive at retry time — latency history is fully populated
+            if not self.values:
+                return 180.0  # Edge case: no data at all
+            p95 = float(np.percentile(list(self.values), 95))
+            return max(60.0, min(p95 * 3.0, 180.0))
 
         if not self.values:
-            return 180.0  # Cold start: generous for reasoning models
+            return max(self.timeout_floor, self.default_timeout)  # Step-type-aware cold start
 
-        # Safety net: 3× P95, floor 60s, ceiling 180s
+        # Safety net: 3× P95, bounded by floor and ceiling
         p95 = float(np.percentile(list(self.values), 95))
-        return max(60.0, min(p95 * 3.0, 180.0))
+        return max(self.timeout_floor, min(p95 * 3.0, 180.0))
+
+    def get_avg_latency(self):
+        """Get average latency for concurrency calculations."""
+        if not self.values:
+            return DEFAULT_LATENCY_SECONDS
+        return self.ema if self.ema is not None else DEFAULT_LATENCY_SECONDS
 
 
 # === OPTIMAL STRATEGY CLASSES ========================================================================================================
@@ -412,9 +432,13 @@ class ConcurrencyRamp:
       0% complete → start (50% of Little's Law)
       100% complete → target (90% of Little's Law)
 
-    Checks for two stop signals:
-      1. Throughput drop — completion rate declining vs previous window
-      2. Queue backing up — timeout rate >5% in a window
+    Uses 4-signal monitoring model (per strategy doc):
+      1. Queue health — throughput trend (declining = pressure)
+      2. RPM utilization — >80% yellow, >90% red
+      3. TPM utilization — >80% yellow, >90% red
+      4. Latency trend — P95 increasing >10% yellow, >25% red
+
+    Decision: all green → advance; any yellow → hold; any red → stop.
 
     After warm-up calibration, Little's Law is recalculated and the ramp
     adjusts start/target but preserves congestion detection state.
@@ -426,9 +450,12 @@ class ConcurrencyRamp:
         self._stopped_concurrency = None
         self._stop_reason = None
 
-        # Compute start and target from Little's Law
+        # Compute start and target from Little's Law (capacity-relative)
         self._little_law_cap = little_law_cap
-        start = max(config.min_initial, int(little_law_cap * config.start_fraction))
+        half_little_law = int(little_law_cap * config.start_fraction)
+        start = max(half_little_law, num_tasks)   # small batches: all at once
+        start = min(start, num_tasks)              # never exceed task count
+        start = max(start, config.min_initial)     # never below floor
         target = min(int(little_law_cap * config.target_fraction), num_tasks)
         self._start = start
         self._target = max(target, start)  # target >= start
@@ -441,6 +468,9 @@ class ConcurrencyRamp:
         # Queue depth tracking
         self._prev_completions_total = 0
         self._prev_timeouts_total = 0
+
+        # Latency trend tracking (4-signal model)
+        self._prev_p95_latency: Optional[float] = None
 
     @property
     def cap(self) -> int:
@@ -463,7 +493,10 @@ class ConcurrencyRamp:
         decline is not forgotten across recalibration.
         """
         self._little_law_cap = new_little_law_cap
-        new_start = max(self.config.min_initial, int(new_little_law_cap * self.config.start_fraction))
+        half_little_law = int(new_little_law_cap * self.config.start_fraction)
+        new_start = max(half_little_law, self._num_tasks)   # capacity-relative
+        new_start = min(new_start, self._num_tasks)
+        new_start = max(new_start, self.config.min_initial)
         new_target = min(int(new_little_law_cap * self.config.target_fraction), self._num_tasks)
         self._start = new_start
         self._target = max(new_target, new_start)
@@ -475,25 +508,76 @@ class ConcurrencyRamp:
         print(f"RAMP RECALIBRATED: {new_start} → {self._target} "
               f"(Little's Law: {new_little_law_cap})")
 
+    def _evaluate_signals(self, throughput: float, tpm_pct: float, rpm_pct: float,
+                          p95_latency: Optional[float], completions_total: int,
+                          timeouts_total: int) -> Dict[str, str]:
+        """Evaluate 4 monitoring signals per strategy doc.
+
+        Returns dict mapping signal name to 'green', 'yellow', or 'red'.
+        Thresholds from strategy doc lines 238-243.
+        """
+        signals = {}
+
+        # Signal 1: Queue health (throughput trend)
+        if self._prev_throughput is not None and self._prev_throughput > 0:
+            growth = (throughput - self._prev_throughput) / self._prev_throughput
+            if growth < -0.25:
+                signals['queue'] = 'red'
+            elif growth < -0.10:
+                signals['queue'] = 'yellow'
+            else:
+                signals['queue'] = 'green'
+        else:
+            signals['queue'] = 'green'
+
+        # Signal 2: RPM utilization
+        if rpm_pct > 90:
+            signals['rpm'] = 'red'
+        elif rpm_pct > 80:
+            signals['rpm'] = 'yellow'
+        else:
+            signals['rpm'] = 'green'
+
+        # Signal 3: TPM utilization
+        if tpm_pct > 90:
+            signals['tpm'] = 'red'
+        elif tpm_pct > 80:
+            signals['tpm'] = 'yellow'
+        else:
+            signals['tpm'] = 'green'
+
+        # Signal 4: Latency trend (P95 vs previous)
+        if p95_latency and self._prev_p95_latency and self._prev_p95_latency > 0:
+            change = (p95_latency - self._prev_p95_latency) / self._prev_p95_latency
+            if change > 0.25:
+                signals['latency'] = 'red'
+            elif change > 0.10:
+                signals['latency'] = 'yellow'
+            else:
+                signals['latency'] = 'green'
+        else:
+            signals['latency'] = 'green'
+
+        return signals
+
     def record_measurement(self, throughput: float, tpm_pct: float, rpm_pct: float,
-                           completions_total: int, timeouts_total: int, duration: float):
-        """Called every 2s with current metrics. Returns new concurrency target."""
+                           completions_total: int, timeouts_total: int, duration: float,
+                           p95_latency: Optional[float] = None):
+        """Called every 0.5s with current metrics. Uses 4-signal model for ramp decisions.
+
+        Signals: queue health, RPM%, TPM%, latency trend (P95).
+        Decision: all green → advance; any yellow → hold; any red → stop ramp.
+        """
         if self._done:
             return
 
-        # --- Stop signal 1: throughput dropping ---
-        if self._prev_throughput is not None and self._prev_throughput > 0:
-            growth = (throughput - self._prev_throughput) / self._prev_throughput
-            if growth < -0.10:  # throughput dropped >10%
-                self._declining_steps += 1
-            else:
-                self._declining_steps = max(0, self._declining_steps - 1)
+        # Evaluate all 4 signals
+        signals = self._evaluate_signals(
+            throughput, tpm_pct, rpm_pct, p95_latency,
+            completions_total, timeouts_total,
+        )
 
-            if self._declining_steps >= 2:  # 2 consecutive drops
-                self._stop('throughput_drop', self._current)
-                return
-
-        # --- Stop signal 2: queue congestion (timeouts appearing) ---
+        # --- Defensive signal: queue congestion (timeouts appearing) ---
         new_timeouts = timeouts_total - self._prev_timeouts_total
         new_completions = completions_total - self._prev_completions_total
         if new_timeouts > 0 and new_completions > 0:
@@ -502,11 +586,22 @@ class ConcurrencyRamp:
                 self._stop('queue_congestion', self._current)
                 return
 
+        # Decision logic: any red → stop, any yellow → hold, all green → advance
+        if 'red' in signals.values():
+            red_signals = [k for k, v in signals.items() if v == 'red']
+            self._stop(f'red_signal:{",".join(red_signals)}', self._current)
+            return
+
+        # Update tracking state
+        self._prev_p95_latency = p95_latency
         self._prev_throughput = throughput
         self._prev_completions_total = completions_total
         self._prev_timeouts_total = timeouts_total
 
-        # --- Completion-based ramp: advance proportional to progress ---
+        if 'yellow' in signals.values():
+            return  # Hold — don't advance but don't stop
+
+        # --- All green: completion-based ramp advance ---
         ramp_fraction = min(completions_total / self._num_tasks, 1.0)
         new_conc = int(self._start + (self._target - self._start) * ramp_fraction)
         new_conc = max(new_conc, self._current)  # never decrease during ramp
@@ -825,7 +920,11 @@ class IdeaExtractor:
         self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
 
         # Latency tracking
-        self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
+        self.latency_tracker = LatencyTracker(
+            processing_config=self.processing_config,
+            timeout_floor=TIMEOUT_FLOOR_SECONDS,
+            default_timeout=DEFAULT_TIMEOUT_SECONDS,
+        )
 
         # Generic specifiers (must be initialized before _calculate_avg_tokens)
         self.generic_specifiers = {}
@@ -893,7 +992,8 @@ class IdeaExtractor:
             'timeouts': 0
         }
 
-        # Failure log: tracks each permanent PROCESSING_ERROR with details
+        # Failure tracking: set for O(1) lookup + list for detailed reporting
+        self.failed_task_ids: set = set()
         self.failure_log = []  # List of {respondent_id, reason, error_type, response_preview}
 
     def _calculate_avg_tokens(self) -> int:
@@ -931,7 +1031,6 @@ class IdeaExtractor:
         token_counts = []
         for response in sample_responses:
             prompt = self._build_taxonomy_enriched_prompt(
-                response.respondent_id,
                 response.response,
                 placeholder_subject,
                 placeholder_phrasing_template
@@ -1533,7 +1632,8 @@ class IdeaExtractor:
                         model=self.model,
                         response_model=response_model,
                         prompt=prompt,
-                        temperature=0.0
+                        temperature=0.0,
+                        **get_reasoning_params(self.model),
                     )
 
                     results.append({
@@ -1568,7 +1668,6 @@ class IdeaExtractor:
 
     def _build_taxonomy_enriched_prompt(
         self,
-        respondent_id: str,
         response: str,
         subject: str,
         phrasing_template: str,
@@ -1576,7 +1675,6 @@ class IdeaExtractor:
         """Build taxonomy-enriched prompt for idea extraction.
 
         Args:
-            respondent_id: Respondent identifier
             response: The response text to extract ideas from
             subject: The canonical subject/entity from survey question
             phrasing_template: Template with domain marker placeholder
@@ -1610,7 +1708,6 @@ class IdeaExtractor:
             entity=self.generic_specifiers['entity'],
             topic=self.generic_specifiers['topic'],
             intent=self.generic_specifiers['intent'],
-            respondent_id=respondent_id,
             response=response,
             canonical_phrasing=phrasing_template,
             dimension=dimension,
@@ -1760,7 +1857,6 @@ class IdeaExtractor:
 
             # V3: Build prompt with subject and phrasing template
             prompt = self._build_taxonomy_enriched_prompt(
-                task['respondent_id'],
                 task['response'],
                 subject,
                 phrasing_template,
@@ -1798,6 +1894,7 @@ class IdeaExtractor:
                 dimension=dimension,
                 template_prefix=template_prefix,
                 domains=getattr(self, 'domains', None),
+                model=self.model,
             )
 
             async with self.semaphore:
@@ -1873,7 +1970,7 @@ class IdeaExtractor:
 
                             # Clean idea text
                             idea_text = self._format_idea_text(normalized)
-                            response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
+                            response_idea_id = str(i + 1)
                             ideas.append(models.IdeasExtractedSubmodel(
                                 idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                 idea=idea_text,
@@ -1908,7 +2005,8 @@ class IdeaExtractor:
                                     prompt=prompt,
                                     temperature=self.config.temperature,
                                     max_tokens=self.config.max_tokens,
-                                    max_retries=3
+                                    max_retries=3,
+                                    **get_reasoning_params(self.model),
                                 ),
                                 timeout=timeout
                             )
@@ -1918,7 +2016,7 @@ class IdeaExtractor:
                                 if normalized and normalized not in ["", "NA", "N/A"]:
                                     taxonomy_resp = getattr(idea_response, 'abstraction_ladder', None)
                                     idea_text = self._format_idea_text(normalized)
-                                    response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
+                                    response_idea_id = str(i + 1)
                                     retry_ideas.append(models.IdeasExtractedSubmodel(
                                         idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                         idea=idea_text,
@@ -1943,6 +2041,7 @@ class IdeaExtractor:
                                 )
                         # All retries exhausted — log and fall back
                         self.stats['tasks_failed'] += 1
+                        self.failed_task_ids.add(str(task['respondent_id']))
                         self.failure_log.append({
                             'respondent_id': task['respondent_id'],
                             'reason': 'empty_ideas',
@@ -2044,17 +2143,14 @@ class IdeaExtractor:
         return text
 
     def _format_idea_text(self, normalized_text: str) -> str:
-        """Return clean idea text.
+        """Prepend the template prefix to the LLM's verbatim span.
 
-        Taxonomy fields (instance, facet, domain, valence)
-        are stored as separate fields on IdeasExtractedSubmodel.
-
-        Args:
-            normalized_text: The normalized idea text
-
-        Returns:
-            Clean idea text
+        The LLM outputs just the idea content (e.g. "goede sfeer").
+        We prepend the canonical prefix (e.g. "Pinkpop →") to produce
+        the full idea statement: "Pinkpop → goede sfeer".
         """
+        if self.template_prefix and not normalized_text.lower().startswith(self.template_prefix.lower()):
+            return f"{self.template_prefix} {normalized_text}"
         return normalized_text
 
     def build_extraction_metadata(self, filename: str = "", var_name: str = "") -> 'models.ExtractionMetadata':
@@ -2154,7 +2250,7 @@ class IdeaExtractor:
         # Layer 2: TPM — TokenBucket (self-regulating via acquire/wait)
         self.tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
 
-        # Layer 3: Concurrency — linear ramp from 50% to 90% of Little's Law
+        # Layer 3: Concurrency — capacity-relative starting + ramp to 90% of Little's Law
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
         little_law = compute_optimal_concurrency(
             api_limits, avg_latency_s, self.avg_tokens,
@@ -2162,12 +2258,11 @@ class IdeaExtractor:
         )
         little_law_cap = min(little_law, num_tasks)
 
-        # Start at 50% of Little's Law, ramp to 90%
-        initial = max(
-            self.ramp_up_config.min_initial,
-            int(little_law_cap * self.ramp_up_config.start_fraction)
-        )
-        initial = min(initial, num_tasks)
+        # Capacity-relative starting: small batches run all at once
+        half_little_law = int(little_law_cap * self.ramp_up_config.start_fraction)
+        initial = max(half_little_law, num_tasks)   # small batches: all at once
+        initial = min(initial, num_tasks)            # never exceed task count
+        initial = max(initial, self.ramp_up_config.min_initial)  # never below floor
         self.semaphore = ConcurrencyGate(initial)
         self.optimal_concurrency = initial
 
@@ -2266,14 +2361,38 @@ class IdeaExtractor:
         )
         new_little_law_cap = min(new_little_law, num_tasks)
 
-        # Recalibrate ramp: reset to 50% of new Little's Law, ramp toward 90%
-        if self._concurrency_ramp and not self._ramp_complete:
-            self._concurrency_ramp.recalibrate(new_little_law_cap)
-            new_start = self._concurrency_ramp.current_target()
-            self.semaphore.set_limit(new_start)
-            self.optimal_concurrency = new_start
+        # --- Stress detection for post-warm-up jump ---
+        warmup_timeouts = self.stats['timeouts']
+        latency_values = list(self.latency_tracker.values)
+        latency_stable = True
+        if len(latency_values) >= 10:
+            first_half = latency_values[:len(latency_values) // 2]
+            second_half = latency_values[len(latency_values) // 2:]
+            if statistics.mean(second_half) > statistics.mean(first_half) * 1.25:
+                latency_stable = False
+        stress_detected = warmup_timeouts > 0 or not latency_stable
+
+        if not stress_detected:
+            # No stress: jump to min(100, Little's Law)
+            jump_target = min(100, new_little_law_cap)
+            self.semaphore.set_limit(jump_target)
+            self.optimal_concurrency = jump_target
             if self.circuit_breaker:
-                self.circuit_breaker.baseline = new_start
+                self.circuit_breaker.baseline = jump_target
+            # Recalibrate ramp to start from jump target
+            if self._concurrency_ramp and not self._ramp_complete:
+                self._concurrency_ramp.recalibrate(new_little_law_cap)
+                self._concurrency_ramp._start = jump_target
+                self._concurrency_ramp._current = jump_target
+        else:
+            # Stress detected: hold at current, ramp gently from current position
+            if self._concurrency_ramp and not self._ramp_complete:
+                self._concurrency_ramp.recalibrate(new_little_law_cap)
+                new_start = self._concurrency_ramp.current_target()
+                self.semaphore.set_limit(new_start)
+                self.optimal_concurrency = new_start
+                if self.circuit_breaker:
+                    self.circuit_breaker.baseline = new_start
 
         # Recalculate arrival rate (tokens changed, so TPM rail changes)
         new_arrival_rate = min(
@@ -2288,12 +2407,19 @@ class IdeaExtractor:
             self.pid_controller.reset()
 
         conc_target = self._concurrency_ramp.cap if self._concurrency_ramp else self.optimal_concurrency
+        stress_reason = ""
+        if stress_detected:
+            stress_reason = f" (stress: {'timeouts' if warmup_timeouts > 0 else 'latency increasing'})"
+
         print(f"\n{'='*60}")
         print(f"WARM-UP CALIBRATION (from {len(self.actual_total_tokens)} samples)")
         print(f"   Latency: {measured_latency:.1f}s (measured)")
         print(f"   avg_tokens: {old_avg} (tiktoken) → {measured_avg_tokens} (measured)")
         print(f"   Little's Law: {new_little_law_cap}")
-        print(f"   Concurrency: reset to {self.optimal_concurrency} (50%), ramping → {conc_target} (90%)")
+        if not stress_detected:
+            print(f"   POST-WARMUP JUMP: {old_conc} → {self.optimal_concurrency} (no stress), ramping → {conc_target}")
+        else:
+            print(f"   POST-WARMUP HOLD: staying at {self.optimal_concurrency}{stress_reason}, ramping → {conc_target}")
         print(f"   Arrival rate: {new_arrival_rate:.2f}/s")
         print(f"{'='*60}")
 
@@ -2371,12 +2497,18 @@ class IdeaExtractor:
             current_rpm = await self.rpm_tracker.get_current_rpm()
             rpm_pct = current_rpm / self.rate_limits.requests_per_minute * 100 if self.rate_limits.requests_per_minute else 0
 
-        # Feed to ramp with throughput + total completions + total timeouts
+        # Compute P95 latency for 4-signal model
+        p95_latency = None
+        if self.latency_tracker.values:
+            p95_latency = float(np.percentile(list(self.latency_tracker.values), 95))
+
+        # Feed to ramp with throughput + total completions + total timeouts + P95 latency
         self._concurrency_ramp.record_measurement(
             throughput, tpm_pct, rpm_pct,
             completions_total=self.stats['tasks_successful'],
             timeouts_total=self.stats['timeouts'],
             duration=elapsed,
+            p95_latency=p95_latency,
         )
 
         # Reset window
@@ -2475,6 +2607,7 @@ class IdeaExtractor:
                 self.stats['tasks_failed'] += 1
                 if task is not None:
                     task_index, task_data = task
+                    self.failed_task_ids.add(str(task_data.get('respondent_id', 'unknown')))
                     self.failure_log.append({
                         'respondent_id': task_data.get('respondent_id', 'unknown'),
                         'reason': 'exception',
@@ -2651,16 +2784,24 @@ class IdeaExtractor:
                 limit = self.optimal_concurrency
                 conc_pct = active / limit * 100 if limit > 0 else 0
 
+                # Latency percentiles
+                latency_str = ""
+                if self.latency_tracker.values:
+                    vals = list(self.latency_tracker.values)
+                    p50 = float(np.percentile(vals, 50))
+                    p95 = float(np.percentile(vals, 95))
+                    latency_str = f" | P50:{p50:.1f}s P95:{p95:.1f}s"
+
+                queue_depth = queue.qsize()
                 cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
                 ramp_info = ""
                 if not self._ramp_complete and self._concurrency_ramp:
                     target = self._concurrency_ramp._target
                     ramp_info = f" ramp:{limit}→{target}"
                 timeout_info = f" deferred:{timeouts}" if timeouts > 0 else ""
-                print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%) "
-                      f"Rate: {rate:.1f}/s | "
-                      f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% Conc:{active}/{limit}({conc_pct:.0f}%) "
-                      f"CB:{cb_state}{ramp_info}{timeout_info}")
+                print(f"[STEP3] {completed}/{len(tasks)} ({rate:.1f}/s) | "
+                      f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% Conc:{active}/{limit} Queue:{queue_depth}"
+                      f"{latency_str} CB:{cb_state}{ramp_info}{timeout_info}")
                 last_report = now
                 last_report_completed = completed
 
@@ -2725,19 +2866,19 @@ class IdeaExtractor:
             for task_index, task_data in timed_out:
                 failed_tasks_for_retry.append((task_index, task_data, 'timeout'))
 
-        # Exception failures (from failure_log, already have fallback in results)
-        if self.failure_log:
-            failed_ids = {str(f['respondent_id']) for f in self.failure_log}
+        # Exception failures (from failed_task_ids set — O(1) lookup)
+        if self.failed_task_ids:
             for i, task in enumerate(tasks):
-                if str(task.get('respondent_id', '')) in failed_ids:
+                if str(task.get('respondent_id', '')) in self.failed_task_ids:
                     failed_tasks_for_retry.append((i, task, 'exception'))
 
         if failed_tasks_for_retry:
             print(f"\n[RETRY PASS] Retrying {len(failed_tasks_for_retry)} failed tasks with reduced concurrency...")
 
-            # Save pre-retry state
+            # Save pre-retry state and clear for retry tracking
             pre_retry_failure_log = list(self.failure_log)
             pre_retry_timed_out_count = len(timed_out)
+            self.failed_task_ids.clear()
             self.failure_log.clear()
 
             # Reduced concurrency: 10% of workers, min 5
@@ -2782,6 +2923,7 @@ class IdeaExtractor:
             for task_index, task_data in retry_timed_out:
                 if results[task_index] is None:
                     self.stats['tasks_failed'] += 1
+                    self.failed_task_ids.add(str(task_data.get('respondent_id', 'unknown')))
                     self.failure_log.append({
                         'respondent_id': task_data.get('respondent_id', 'unknown'),
                         'reason': 'timeout_after_retry',

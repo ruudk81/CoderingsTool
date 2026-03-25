@@ -2,7 +2,7 @@
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
-EXPERIMENT_N  = None  # n or None
+EXPERIMENT_N  = 100  # n or None
 DISCOVER_DOMAINS = True  # True = Phase 3 discovers domains upfront; False = on-the-fly
 
 import sys
@@ -35,6 +35,7 @@ except ImportError:
         sys.path.insert(0, str(models_dir))
     import models_exp as models
 from config import CacheConfig, ModelConfig
+from config_steps.config_ideaExtractor import DEFAULT_SEGMENTATION_CONFIG
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
@@ -260,6 +261,7 @@ if __name__ == "__main__":
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
     print(f"Using experimental: {USE_EXPERIMENTAL}")
+    print(f"Model: {DEFAULT_SEGMENTATION_CONFIG.model}")
     print(f"Experiment N: {config.experiment_n or 'all'}")
     print(f"Force recalculate: {config.force_recalc}")
     print("=" * 70)
