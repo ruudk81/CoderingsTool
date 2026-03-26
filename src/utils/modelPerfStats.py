@@ -48,6 +48,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from config import API_PROVIDER
+
 # Absolute path derived from this file's location (src/utils/ → project root → data/)
 STATS_FILE = Path(__file__).parent.parent.parent / "data" / "model_perf_stats.json"
 
@@ -60,6 +62,16 @@ _EMA_FLOOR_ALPHA = 0.05
 
 # Fields that may appear in a measurement dict.
 _NUMERIC_FIELDS = ("p50_latency_s", "p95_latency_s", "avg_tokens", "tiktoken_offset")
+
+
+def _model_key(model: str) -> str:
+    """Build a provider-scoped model key — e.g. 'azure:gpt-4.1-mini'.
+
+    Azure and OpenAI share model names but have completely different
+    rate limits, latency profiles, and throughput characteristics.
+    Stats must never be mixed across providers.
+    """
+    return f"{API_PROVIDER}:{model}"
 
 
 # ---------------------------------------------------------------------------
@@ -106,8 +118,8 @@ def get_phase_stats(
     model: str,
     phase_key: str,
 ) -> Optional[Dict[str, Any]]:
-    """Return stored stats for (model, phase_key), or None if not present."""
-    return stats.get("stats", {}).get(model, {}).get(phase_key)
+    """Return stored stats for (provider:model, phase_key), or None if not present."""
+    return stats.get("stats", {}).get(_model_key(model), {}).get(phase_key)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +142,7 @@ def update_phase_stats(
     if n_new_samples <= 0:
         return
 
-    model_stats = stats.setdefault("stats", {}).setdefault(model, {})
+    model_stats = stats.setdefault("stats", {}).setdefault(_model_key(model), {})
     entry = model_stats.setdefault(phase_key, {"sample_count": 0})
 
     old_count = entry.get("sample_count", 0)
