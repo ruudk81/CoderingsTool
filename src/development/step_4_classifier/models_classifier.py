@@ -1,11 +1,16 @@
 """
 Data models for Taxonomy Classifier (P1-P7).
 
-Partition models and taxonomy cache models.
+Partition models, taxonomy cache models, and growing model output.
 """
 
-from typing import List, Dict, Any
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
+
+from development.step_3_ideaExtractor.models_exp import (
+    IdeasExtractedSubmodel,
+    IdeasExtractedModel,
+)
 
 
 # =============================================================================
@@ -67,3 +72,22 @@ class TaxonomyResultsCache(BaseModel):
     partition_results: Dict[str, DomainResultModel]
     label_counts: Dict[str, int] = Field(default_factory=dict)
     label_source: str = ""
+
+
+# =============================================================================
+# GROWING MODEL (per-respondent output with taxonomy classification)
+# =============================================================================
+
+class TaxonomyClassifiedSubmodel(IdeasExtractedSubmodel):
+    """Per-idea data with taxonomy classification.
+
+    Extends step 3's IdeasExtractedSubmodel.
+    facet (L3) and attribute (L4) are inherited and populated by step 4 P3/P6.
+    """
+    partition_name: Optional[str] = None  # Domain partition this idea belongs to
+
+
+class TaxonomyClassifiedModel(IdeasExtractedModel):
+    """Response-level model with taxonomy-classified ideas."""
+    response_ideas: Optional[List[TaxonomyClassifiedSubmodel]] = None
+    classification_metadata: Optional[Dict[str, Any]] = None

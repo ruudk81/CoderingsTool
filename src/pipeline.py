@@ -652,6 +652,41 @@ def step_3_extract_ideas(
     return encoded_text
 
 
+def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
+    """Build TaxonomyClassifiedModel list from step 3 ideas + taxonomy results.
+
+    Creates new model instances (does not mutate encoded_text) with facet (L3),
+    attribute (L4), and partition_name populated from TaxonomyResultsCache.
+    """
+    from models import TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel
+
+    # Build global lookups: idea_id -> facet/attribute/partition name
+    facet_lookup = {}
+    attr_lookup = {}
+    partition_lookup = {}
+    for domain_result in taxonomy_cache.partition_results.values():
+        facet_lookup.update(domain_result.facet_assignments)
+        attr_lookup.update(domain_result.attribute_assignments)
+        for idea_id in domain_result.facet_assignments:
+            partition_lookup[idea_id] = domain_result.partition_name
+
+    output = []
+    for resp in encoded_text:
+        new_ideas = []
+        if resp.response_ideas:
+            for idea in resp.response_ideas:
+                idea_data = idea.model_dump()
+                idea_data["facet"] = facet_lookup.get(idea.idea_id, idea.facet or "")
+                idea_data["attribute"] = attr_lookup.get(idea.idea_id, idea.attribute or "")
+                idea_data["partition_name"] = partition_lookup.get(idea.idea_id, idea.domain or "")
+                new_ideas.append(TaxonomyClassifiedSubmodel(**idea_data))
+
+        resp_data = resp.model_dump(exclude={"response_ideas"})
+        output.append(TaxonomyClassifiedModel(**resp_data, response_ideas=new_ideas))
+
+    return output
+
+
 def step_4_classify_taxonomy(
     encoded_text,
     filename,
@@ -670,13 +705,14 @@ def step_4_classify_taxonomy(
     → consolidation → assignment → cross-facet dedup.
 
     Returns:
-        None (results cached as metadata for step 5)
+        List[IdeasExtractedModel] with enriched facet (L3) and attribute (L4) fields.
     """
     from utils.domain_discoverer import DomainDiscoverer
     from utils.classifier import TaxonomyClassifier, TaxonomyResult
     from utils.promptPrinter import PromptPrinter
     from config_steps.config_classifier import CategoriesConfig
-    from models import DomainSet, DomainResultModel, TaxonomyResultsCache, ExtractionMetadata
+    from models import (DomainSet, DomainResultModel, TaxonomyResultsCache,
+                        ExtractionMetadata, TaxonomyClassifiedModel)
 
     step_name = "taxonomy"
     variable_key, cache_manager, _ = _resolve_step_defaults(variable_key, cache_manager)
@@ -693,7 +729,14 @@ def step_4_classify_taxonomy(
             print(f"\n=== TAXONOMY FROM CACHE ({n_domains} domains, {n_facets} facets) ===\n")
             if streamlit_container:
                 streamlit_container.success("✅ Taxonomy classification completed (from cache)")
-            return
+            # Load growing model; rebuild from metadata if missing (backward compat)
+            enriched = cache_manager.load_from_cache(
+                filename, "taxonomy_classified", variable_key, TaxonomyClassifiedModel
+            )
+            if not enriched:
+                enriched = _build_taxonomy_enriched_models(encoded_text, taxonomy_cache)
+                cache_manager.save_to_cache(enriched, filename, "taxonomy_classified", variable_key)
+            return enriched
 
     # Load extraction metadata from step 3
     extraction_metadata = cache_manager.load_metadata_from_cache(
@@ -784,6 +827,10 @@ def step_4_classify_taxonomy(
         variable_key=variable_key,
     )
 
+    # Build and cache growing model (enriched facet/attribute per idea)
+    enriched_models = _build_taxonomy_enriched_models(encoded_text, taxonomy_cache)
+    cache_manager.save_to_cache(enriched_models, filename, "taxonomy_classified", variable_key)
+
     total_facets = sum(len(taxonomy_result.partition_facets.get(n, [])) for n in taxonomy_result.partition_facets)
     total_attrs = sum(len(a) for fa in taxonomy_result.partition_attributes.values() for a in fa.values())
     print(f"\n'Taxonomy classification' completed in {elapsed_time:.2f} seconds "
@@ -791,6 +838,8 @@ def step_4_classify_taxonomy(
 
     if streamlit_container:
         streamlit_container.success(f"✅ Taxonomy classification completed in {elapsed_time:.2f}s")
+
+    return enriched_models
 
 
 
@@ -1176,7 +1225,7 @@ if __name__ == '__main__':
 
     # === STEP 4 ====
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "taxonomy"
-    step_4_classify_taxonomy(
+    enriched_text = step_4_classify_taxonomy(
         encoded_text, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
@@ -1201,7 +1250,7 @@ if __name__ == '__main__':
     # === STEP 6 ====
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment"
     code_assigned_results = step_6_assign_codes(
-        encoded_text, filename,
+        enriched_text or encoded_text, filename,
         variable_key=variable_key,
         cache_manager=cache_manager,
         force_recalc=force_recalc,

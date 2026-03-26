@@ -29,7 +29,10 @@ from utils.llm import token_tracker
 from config_steps.config_classifier import CategoriesConfig
 from development.step_4_classifier.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
 from development.step_4_classifier.classifier import TaxonomyClassifier, TaxonomyResult
-from development.step_4_classifier.models_classifier import DomainSet, DomainResultModel, TaxonomyResultsCache
+from development.step_4_classifier.models_classifier import (
+    DomainSet, DomainResultModel, TaxonomyResultsCache,
+    TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel,
+)
 
 
 # =============================================================================
@@ -268,6 +271,43 @@ def save_results_to_file(
 
 
 # =============================================================================
+# GROWING MODEL BUILDER
+# =============================================================================
+
+def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
+    """Build TaxonomyClassifiedModel list from step 3 ideas + taxonomy results.
+
+    Creates new model instances (does not mutate encoded_text) with facet (L3),
+    attribute (L4), and partition_name populated from TaxonomyResultsCache.
+    """
+    # Build global lookups: idea_id -> facet/attribute/partition name
+    facet_lookup = {}
+    attr_lookup = {}
+    partition_lookup = {}  # idea_id -> partition_name
+    for domain_result in taxonomy_cache.partition_results.values():
+        facet_lookup.update(domain_result.facet_assignments)
+        attr_lookup.update(domain_result.attribute_assignments)
+        for idea_id in domain_result.facet_assignments:
+            partition_lookup[idea_id] = domain_result.partition_name
+
+    output = []
+    for resp in encoded_text:
+        new_ideas = []
+        if resp.response_ideas:
+            for idea in resp.response_ideas:
+                idea_data = idea.model_dump()
+                idea_data["facet"] = facet_lookup.get(idea.idea_id, idea.facet or "")
+                idea_data["attribute"] = attr_lookup.get(idea.idea_id, idea.attribute or "")
+                idea_data["partition_name"] = partition_lookup.get(idea.idea_id, idea.domain or "")
+                new_ideas.append(TaxonomyClassifiedSubmodel(**idea_data))
+
+        resp_data = resp.model_dump(exclude={"response_ideas"})
+        output.append(TaxonomyClassifiedModel(**resp_data, response_ideas=new_ideas))
+
+    return output
+
+
+# =============================================================================
 # TAXONOMY CACHING
 # =============================================================================
 
@@ -275,6 +315,7 @@ def cache_taxonomy_results(
     partition_set: DomainSet,
     label_mappings: Dict[str, PartitionLabelMapping],
     taxonomy_result: TaxonomyResult,
+    ideas_models: Optional[List[models.IdeasExtractedModel]] = None,
     filename: str = FILENAME,
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
@@ -330,6 +371,12 @@ def cache_taxonomy_results(
         step="taxonomy",
         variable_key=variable_key,
     )
+
+    # Build and cache growing model (enriched facet/attribute per idea)
+    if ideas_models is not None:
+        enriched = _build_taxonomy_enriched_models(ideas_models, taxonomy_cache)
+        cache_manager.save_to_cache(enriched, filename, "taxonomy_classified", variable_key)
+        print(f"Growing model cached: {len(enriched)} enriched responses")
 
     total_facets = sum(
         len(taxonomy_result.partition_facets.get(name, []))
@@ -468,8 +515,8 @@ def run_taxonomy():
     # Print taxonomy results
     print_taxonomy_results(partition_set, label_mappings, taxonomy_result)
 
-    # Cache taxonomy results
-    cache_taxonomy_results(partition_set, label_mappings, taxonomy_result)
+    # Cache taxonomy results (metadata + growing model)
+    cache_taxonomy_results(partition_set, label_mappings, taxonomy_result, ideas_models=ideas_models)
 
     # Save prompts
     save_prompts_to_json(prompt_printer)

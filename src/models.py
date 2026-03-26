@@ -113,6 +113,25 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 
 # =============================================================================
+# STEP 4: TAXONOMY CLASSIFIED MODELS (growing model output)
+# =============================================================================
+
+class TaxonomyClassifiedSubmodel(IdeasExtractedSubmodel):
+    """Per-idea data with taxonomy classification.
+
+    Extends step 3's IdeasExtractedSubmodel.
+    facet (L3) and attribute (L4) are inherited and populated by step 4 P3/P6.
+    """
+    partition_name: Optional[str] = None  # Domain partition this idea belongs to
+
+
+class TaxonomyClassifiedModel(IdeasExtractedModel):
+    """Response-level model with taxonomy-classified ideas."""
+    response_ideas: Optional[List[TaxonomyClassifiedSubmodel]] = None
+    classification_metadata: Optional[Dict[str, Any]] = None
+
+
+# =============================================================================
 # STEP 6: CODE ASSIGNMENT MODELS
 # =============================================================================
 
@@ -133,21 +152,19 @@ class CodeAssignmentBatch(BaseModel):
     )
 
 
-class CodeAssignedSubmodel(IdeasExtractedSubmodel):
+class CodeAssignedSubmodel(TaxonomyClassifiedSubmodel):
     """Per-idea data with code + attribute assignment.
 
-    Extends step 3's IdeasExtractedSubmodel.
-    Populated by: facet (L3) from step 4, attribute (L4) from step 4,
-    plus code assignment fields from step 6.
+    Extends step 4's TaxonomyClassifiedSubmodel (which provides facet, attribute,
+    partition_name). Adds code assignment fields from step 6.
     """
     assigned_code: Optional[str] = None
     assigned_attribute: Optional[str] = None
     confidence: Optional[float] = None
     rationale: Optional[str] = None
-    partition_name: Optional[str] = None
 
 
-class CodeAssignedModel(IdeasExtractedModel):
+class CodeAssignedModel(TaxonomyClassifiedModel):
     """Response-level model with code-assigned ideas."""
     response_ideas: Optional[List[CodeAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None

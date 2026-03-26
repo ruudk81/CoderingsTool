@@ -8,9 +8,9 @@ Imports taxonomy types from step 4 (upstream dependency).
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
-from development.step_3_ideaExtractor.models_exp import (
-    IdeasExtractedSubmodel,
-    IdeasExtractedModel,
+from development.step_4_classifier.models_classifier import (
+    TaxonomyClassifiedSubmodel,
+    TaxonomyClassifiedModel,
 )
 
 
@@ -33,21 +33,19 @@ class CodeAssignmentBatch(BaseModel):
     )
 
 
-class CodeAssignedSubmodel(IdeasExtractedSubmodel):
+class CodeAssignedSubmodel(TaxonomyClassifiedSubmodel):
     """Per-idea data with code + attribute assignment.
 
-    Extends step 3's IdeasExtractedSubmodel.
-    Populated by: facet (L3) from step 4, attribute (L4) from step 4,
-    plus code assignment fields from step 6.
+    Extends step 4's TaxonomyClassifiedSubmodel (which provides facet, attribute,
+    partition_name). Adds code assignment fields from step 6.
     """
     assigned_code: Optional[str] = None
     assigned_attribute: Optional[str] = None
     confidence: Optional[float] = None
     rationale: Optional[str] = None
-    partition_name: Optional[str] = None
 
 
-class CodeAssignedModel(IdeasExtractedModel):
+class CodeAssignedModel(TaxonomyClassifiedModel):
     """Response-level model with code-assigned ideas."""
     response_ideas: Optional[List[CodeAssignedSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None

@@ -3,7 +3,7 @@
 """
 Step 6: Code Assigner runner (P10)
 
-Pipeline: load codebook from step 5 cache + ideas from step 3 →
+Pipeline: load codebook from step 5 cache + ideas from step 4 (or step 3 fallback) →
 assign codes to ideas (P10).
 No RUN_MODE — always runs P10.
 """
@@ -34,7 +34,7 @@ from development.step_5_codeGenerator.models_codeGenerator import CodingResultsC
 
 # Import step_4_classifier (upstream output types)
 from development.step_4_classifier.models_classifier import (
-    DomainSet, DomainResultModel,
+    DomainSet, DomainResultModel, TaxonomyClassifiedModel,
 )
 
 
@@ -97,6 +97,35 @@ def load_step3_ideas(
 
     total_ideas = sum(item.idea_count for item in data)
     print(f"Loaded {len(data)} responses with {total_ideas} ideas from step 3 cache")
+
+    return data
+
+
+def load_step4_enriched(
+    filename: str = FILENAME,
+    variable: str = VARIABLE,
+    sample_size: Optional[int] = SAMPLE_SIZE,
+    variable_key: Optional[str] = None,
+) -> Optional[List[TaxonomyClassifiedModel]]:
+    """Load Step 4 enriched ideas (with facet/attribute/partition) from cache.
+
+    Returns None if not cached (caller should fall back to step 3).
+    """
+    if variable_key is None:
+        variable_key = generate_enhanced_variable_key(
+            selected_variables=[variable],
+            is_merged=False,
+            sample_size=sample_size
+        )
+
+    cache_manager = CacheManager()
+    data = cache_manager.load_from_cache(
+        filename, "taxonomy_classified", variable_key, TaxonomyClassifiedModel
+    )
+
+    if data:
+        total_ideas = sum(item.idea_count for item in data)
+        print(f"Loaded {len(data)} responses with {total_ideas} ideas from step 4 cache (enriched)")
 
     return data
 
@@ -312,8 +341,11 @@ def run_assignment():
     print("CODE ASSIGNER (P10, loading from cache)")
     print("=" * 70)
 
-    # Load dependencies from cache
-    ideas_models = load_step3_ideas()
+    # Load dependencies from cache — prefer step 4 enriched, fall back to step 3
+    ideas_models = load_step4_enriched()
+    if ideas_models is None:
+        print("Step 4 growing model not cached, falling back to step 3")
+        ideas_models = load_step3_ideas()
     extraction_metadata = load_extraction_metadata()
 
     mece_cache = load_mece_cache()
