@@ -11,7 +11,7 @@ import platform
 import shutil
 from pathlib import Path
 from dataclasses import dataclass
-from config import get_model
+from config import get_step_model
 
 
 # =============================================================================
@@ -89,7 +89,7 @@ SPACY_VECTOR_NORM_THRESHOLD = 5          # Minimum vector norm for valid SpaCy t
 @dataclass
 class SpellCheckConfig:
     """Configuration for spell checking step"""
-    model: str = get_model("nano")
+    model: str = get_step_model("spell_check")
     batch_size: int = 20
     temperature: float = 0.0
     max_tokens: int = 4000

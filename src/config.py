@@ -69,7 +69,6 @@ AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
 AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING", "text-embedding-3-large")
 # Deployment for codeGenerator (uses chat completion without reasoning)
-# Defaults to DEFAULT_MODEL (gpt-4.1-mini) to match CodeDesignerConfig.model
 AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER", "gpt-4.1-mini")
 
 # Azure ARM access (for dynamic limit fetching - optional)
@@ -127,6 +126,38 @@ def get_model(tier: str = "default") -> str:
     return f"{MODEL_FAMILY}-{tier}"
 
 
+# =============================================================================
+# STEP MODEL TIERS — single source of truth for which tier each pipeline phase uses
+# =============================================================================
+
+STEP_MODEL_TIERS = {
+    # Step 1: Preprocessing
+    "spell_check":      "nano",
+    # Step 2: Quality Filter
+    "quality_filter":   "mini",
+    # Step 3: Idea Extraction
+    "segmentation":     "mini",
+    # Step 4: Taxonomy Classifier (P1-P7)
+    "classifier_p1":    "mini",      # Facet Discovery
+    "classifier_p2":    "default",   # Facet Consolidation
+    "classifier_p3":    "nano",      # Facet Assignment
+    "classifier_p4":    "mini",      # Attribute Discovery
+    "classifier_p5":    "default",   # Attribute Chunk Consolidation
+    "classifier_p6":    "nano",      # Attribute Assignment
+    "classifier_p7":    "mini",      # Cross-facet Attribute Consolidation
+    # Step 5: Code Generator (P8-P9)
+    "codegen_p8":       "default",
+    "codegen_p9":       "default",
+    # Step 6: Code Assigner
+    "code_assignment":  "mini",
+}
+
+
+def get_step_model(phase: str) -> str:
+    """Resolve model name for a pipeline phase from the central tier mapping."""
+    return get_model(STEP_MODEL_TIERS[phase])
+
+
 # Reasoning model families require reasoning_effort and text_verbosity parameters.
 # These are hardcoded defaults (minimal reasoning, medium verbosity) applied
 # automatically when using a reasoning model family like gpt-5.
@@ -158,8 +189,6 @@ def get_reasoning_params(model: str = None) -> dict:
     return {}
 
 
-# Default models (derived from MODEL_FAMILY)
-DEFAULT_MODEL = get_model("mini")
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 # =============================================================================
@@ -278,15 +307,8 @@ def get_embedding_dimensions(model: str) -> int:
 
 @dataclass
 class ModelConfig:
-    """Centralized model configuration.
+    """Centralized model configuration."""
 
-    Development pipeline (steps 1-6): uses MODEL_FAMILY toggle via get_model().
-    Old production pipeline (pipeline.py, app.py): uses legacy stage models below.
-    """
-
-    # =============================================================================
-    # MODEL TYPE MAPPING (shared by both pipelines)
-    # =============================================================================
     MODEL_TYPES = {
         # GPT-4 family (chat models)
         "gpt-4": "chat",
@@ -316,104 +338,6 @@ class ModelConfig:
     default_max_tokens: int = 32000
 
 
-
-
-
-
-    # =============================================================================
-    # OLD PRODUCTION PIPELINE MODELS — USED BY pipeline.py / app.py — TO BE CLEANED
-    # These models are referenced by utils/codeGenerator.py, utils/codebookRefinement.py,
-    # utils/codeAssigner.py, and app.py. They will be removed when the old production
-    # pipeline is migrated to use the development steps.
-    # =============================================================================
-
-    speculative_codes_model: str = get_model("mini")
-    thematic_summary_model: str = "gpt-5-chat-latest"
-    candidate_selection_model: str = "gpt-5-chat-latest"
-    code_generation_model: str = "gpt-5-chat-latest"
-    validation_model: str = "gpt-5-chat-latest"
-    codebook_refinement_model: str = "gpt-5-mini"
-    code_assignment_model: str = get_model("nano")
-    refinement_temperature: float = 0.2
-
-    # GPT-5 reasoning/verbosity parameters (old production pipeline only)
-    theme_extraction_reasoning_effort: str = "minimal"
-    theme_extraction_text_verbosity: str = "medium"
-    candidate_selection_reasoning_effort: str = "minimal"
-    candidate_selection_text_verbosity: str = "medium"
-    code_generation_reasoning_effort: str = "minimal"
-    code_generation_text_verbosity: str = "medium"
-    validation_reasoning_effort: str = "minimal"
-    validation_text_verbosity: str = "medium"
-    refinement_reasoning_effort: str = "minimal"
-    refinement_text_verbosity: str = "medium"
-    gpt5_reasoning_effort: str = "minimal"
-    gpt5_text_verbosity: str = "medium"
-
-    # =============================================================================
-    # HELPER METHODS — OLD PRODUCTION PIPELINE — TO BE CLEANED
-    # =============================================================================
-
-    def get_model_for_stage(self, stage: str) -> str:
-        """Get the appropriate model for a pipeline stage.
-
-        Used by old production pipeline (app.py, utils/codeGenerator.py).
-        Development steps 1-3 now use their own config.model field directly.
-        """
-        stage_models = {
-            'spell_check': get_model("mini"),          # fallback if old callers still use this
-            'quality_filter': get_model("mini"),        # fallback if old callers still use this
-            'segmentation': get_model("mini"),          # fallback if old callers still use this
-            'embedding': self.embedding_model,
-            'speculative_codes': self.speculative_codes_model,
-            'theme_extraction': self.thematic_summary_model,
-            'candidate_selection': self.candidate_selection_model,
-            'code_recommendation': self.code_generation_model,
-            'recommendation_validation': self.validation_model,
-            'codebook_refinement': self.codebook_refinement_model,
-            'code_assignment': self.code_assignment_model,
-        }
-        return stage_models.get(stage, DEFAULT_MODEL)
-
-    def get_temperature_for_stage(self, stage: str) -> float:
-        stage_temperatures = {
-            'spell_check': 0.0,
-            'quality_filter': 0.0,
-            'refinement': self.refinement_temperature,
-        }
-        if stage in stage_temperatures:
-            return stage_temperatures[stage]
-        model_name = self.get_model_for_stage(stage)
-        model_type = self.MODEL_TYPES.get(model_name, "chat")
-        if model_type == "chat":
-            return 0.0
-        elif model_type == "reasoning":
-            return 1.0
-        else:
-            return self.default_temperature
-
-    def get_reasoning_effort_for_stage(self, stage: str) -> str:
-        """Get GPT-5 reasoning effort for specific stage (old production pipeline)."""
-        stage_efforts = {
-            'theme_extraction': self.theme_extraction_reasoning_effort,
-            'candidate_selection': self.candidate_selection_reasoning_effort,
-            'code_recommendation': self.code_generation_reasoning_effort,
-            'recommendation_validation': self.validation_reasoning_effort,
-            'codebook_refinement': self.refinement_reasoning_effort,
-        }
-        return stage_efforts.get(stage, self.gpt5_reasoning_effort)
-
-    def get_text_verbosity_for_stage(self, stage: str) -> str:
-        """Get GPT-5 text verbosity for specific stage (old production pipeline)."""
-        stage_verbosities = {
-            'theme_extraction': self.theme_extraction_text_verbosity,
-            'candidate_selection': self.candidate_selection_text_verbosity,
-            'code_recommendation': self.code_generation_text_verbosity,
-            'recommendation_validation': self.validation_text_verbosity,
-            'codebook_refinement': self.refinement_text_verbosity,
-        }
-        return stage_verbosities.get(stage, self.gpt5_text_verbosity)
-    
 
 # =============================================================================
 # PROCESSING CONFIGURATION
@@ -526,33 +450,6 @@ class CacheConfig:
         cache_filename = self.get_cache_filename(original_filename, step_name)
         return self.cache_dir / cache_filename
 
-# QualityFilterConfig moved to config_steps/config_qualityFilter.py
-
-# CodeDesignerConfig moved to config_steps/config_codeGenerator.py
-
-# =============================================================================
-# CODE ASSIGNMENT CONFIGURATION
-# =============================================================================
-
-@dataclass
-class CodeAssignmentConfig:
-    """Configuration for code assignment step"""
-    batch_size: int = 20  # Increased from 10 for better throughput
-    temperature: float = 0.0
-    max_tokens: int = 4000
-    retries: int = 3
-    retry_delay: int = 2
-    max_concurrent_requests: int = 20  # Increased from 5 (though semaphore removed)
-    top_k_similar_codes: int = 10  # Number of most similar codes to present
-    min_confidence_threshold: float = 0.3  # Minimum confidence for valid assignment
-    miscellaneous_confidence_threshold: float = 0.6  # Threshold below which to assign miscellaneous code
-    # Model configuration - will be overridden by ModelConfig
-    model: str = DEFAULT_MODEL  # Fallback model
-    max_assignment_examples: int = 3  # For verbose output
-    # Timeout configuration for API calls
-    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
-    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
-  
 
 # =============================================================================
 # EXPORT CLEANUP CONFIGURATION
@@ -571,14 +468,11 @@ class ExportCleanupConfig:
 # DEFAULT INSTANCES
 # =============================================================================
 
-# Central model configuration - configure all models here
 DEFAULT_MODEL_CONFIG = ModelConfig()
 
 # Processing configuration
 DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
 
-# Step-specific configurations (SpellCheckConfig → config_preprocess.py, QualityFilterConfig → config_qualityFilter.py)
-DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CLEANUP_CONFIG = ExportCleanupConfig()
 
 

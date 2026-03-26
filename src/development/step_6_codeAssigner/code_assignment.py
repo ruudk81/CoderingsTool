@@ -82,7 +82,7 @@ from config_steps.config_ideaExtractor import (
     DEFAULT_WARM_UP_CONFIG,
 )
 
-from .config_codeAssigner import AssignmentConfig, get_other_category_label
+from config_steps.config_codeAssigner import AssignmentConfig, get_other_category_label
 from .models_codeAssigner import CodeAssignedSubmodel, CodeAssignedModel
 from development.step_4_classifier.models_classifier import DomainSet, DomainResultModel
 from .prompts_codeAssigner import (

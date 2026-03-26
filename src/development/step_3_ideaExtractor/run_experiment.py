@@ -1,4 +1,16 @@
 #%%
+"""
+Step 2: Idea Extraction runner
+
+Loads Step 2 (filtered) results from cache and runs idea extraction
+
+Usage:
+    cd src && python -m development.step_3_ideaExtractor.run_experiment
+
+Toggle:
+    USE_EXPERIMENTAL = True  -> Uses experimental qualityFilter from this folder
+    USE_EXPERIMENTAL = False -> Uses production qualityFilter from utils/
+"""
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
@@ -34,7 +46,7 @@ except ImportError:
     if str(models_dir) not in sys.path:
         sys.path.insert(0, str(models_dir))
     import models_exp as models
-from config import CacheConfig, ModelConfig
+from config import CacheConfig
 from config_steps.config_ideaExtractor import DEFAULT_SEGMENTATION_CONFIG
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -140,7 +152,6 @@ def run_experiment(config: ExperimentConfig = None):
     var_lab = get_var_lab(config)
 
     # Initialize configs
-    model_config = ModelConfig()
     verbose_reporter = VerboseReporter(config.verbose)
     prompt_printer = PromptPrinter(
         enabled=True,  # Always capture prompts for debugging
@@ -169,7 +180,6 @@ def run_experiment(config: ExperimentConfig = None):
     extractor = IdeaExtractor(
         responses=filtered_text,
         var_lab=var_lab,
-        model_config=model_config,
         verbose=config.verbose,
         prompt_printer=prompt_printer,
         discover_domains=DISCOVER_DOMAINS,

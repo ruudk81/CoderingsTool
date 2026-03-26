@@ -36,7 +36,7 @@ from typing import Optional
 # SHARED IMPORTS (from production)
 # =============================================================================
 import models
-from config import CacheConfig, ModelConfig
+from config import CacheConfig
 from config_steps.config_preprocess import SpellCheckConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -143,7 +143,6 @@ def run_experiment(config: ExperimentConfig = None):
     raw_text_list, variable_key, cache_manager = load_step0_cache(config)
     var_lab = get_var_lab(config)
 
-    model_config = ModelConfig()
     verbose_reporter = VerboseReporter(config.verbose)
     prompt_printer = PromptPrinter(enabled=config.prompt_printer_enabled, print_realtime=config.prompt_printer_enabled)
     spell_check_config = SpellCheckConfig(minimum_timeout_seconds=15.0, maximum_timeout_seconds=60.0)
@@ -157,7 +156,7 @@ def run_experiment(config: ExperimentConfig = None):
 
     # Initialize utils
     text_normalizer = TextNormalizer(verbose=config.verbose)
-    spell_checker = SpellChecker(config=spell_check_config, model_config=model_config, verbose=config.verbose, prompt_printer=prompt_printer)
+    spell_checker = SpellChecker(config=spell_check_config, verbose=config.verbose, prompt_printer=prompt_printer)
     text_finalizer = TextFinalizer(verbose=config.verbose)
 
     # Process strings

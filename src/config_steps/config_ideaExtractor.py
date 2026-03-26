@@ -14,7 +14,7 @@ These settings control:
 - Generic specifier extraction
 """
 from dataclasses import dataclass
-from config import get_model
+from config import get_step_model
 
 # =============================================================================
 # SEGMENTATION CONFIGURATION  
@@ -35,7 +35,7 @@ class SegmentationConfig:
     max_code_examples: int = 5  # For verbose output
     max_sample_responses: int = 3  # For verbose output
     # Model (derived from MODEL_FAMILY toggle in config.py)
-    model: str = get_model("mini")
+    model: str = get_step_model("segmentation")
     temperature: float = 0.0  # Temperature for generation
     max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
     # Timeout configuration for API calls

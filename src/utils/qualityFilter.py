@@ -22,7 +22,7 @@ import models
 # === CONFIG — generic/universal ========================================================================================================
 from config import (
     OPENAI_API_KEY, DEFAULT_LANGUAGE,
-    ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+    ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
     FALLBACK_TPM, FALLBACK_RPM,
 )
 
@@ -212,7 +212,6 @@ class Grader:
         responses: List[models.PreprocessedModel],
         var_lab: str,
         config: Optional[QualityFilterConfig] = None,
-        model_config: Optional[ModelConfig] = None,
         processing_config: Optional[ProcessingConfig] = None,
         verbose: bool = False,
         prompt_printer = None):
@@ -220,9 +219,8 @@ class Grader:
         self.responses = responses
         self.question = var_lab
         self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
-        self.model_config = model_config or ModelConfig()
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.model = self.model_config.get_model_for_stage('quality_filter')
+        self.model = self.config.model
         self.grader_instructions = GRADER_INSTRUCTIONS
         self._results: List[models.QualityFilteredModel] = []
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)

@@ -9,7 +9,7 @@ Accepts taxonomy results from step_4_classifier as input.
 
 Usage:
     from .codebook_generator import CodebookGenerator
-    from .config_codeGenerator import CodebookConfig
+    from config_steps.config_codeGenerator import CodebookConfig
 
     generator = CodebookGenerator(config)
     result = generator.generate(
@@ -63,7 +63,7 @@ from development.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyResultsCache, DomainDescription,
 )
 
-from .config_codeGenerator import CodebookConfig
+from config_steps.config_codeGenerator import CodebookConfig
 from .prompts_codeGenerator import (
     # P8: Code Generation from Attributes
     build_code_from_attributes_prompt,

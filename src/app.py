@@ -24,7 +24,7 @@ sys.path.append(str(project_root / "src"))
 sys.path.append(str(project_root / "src" / "utils"))
 
 import models
-from config import CacheConfig, ModelConfig
+from config import CacheConfig, ModelConfig, get_step_model
 from config_steps.config_classifier import CategoriesConfig
 from config_steps.config_codeGenerator import CodebookConfig
 from config_steps.config_codeAssigner import AssignmentConfig
@@ -384,8 +384,6 @@ if 'sample_size_config' not in st.session_state:
     st.session_state.sample_size_config = None
 
 # Initialize configuration objects for session-specific settings
-if 'model_config' not in st.session_state:
-    st.session_state.model_config = ModelConfig()
 if 'spellcheck_config' not in st.session_state:
     st.session_state.spellcheck_config = SpellCheckConfig()
 if 'quality_filter_config' not in st.session_state:
@@ -531,14 +529,10 @@ def show_advanced_settings(current_step=0):
         all_models = gpt4_models + gpt5_models
         embedding_models = ["text-embedding-3-large", "text-embedding-3-small", "gemini-embedding-001"]
 
-        # Reasoning and verbosity options
-        reasoning_options = ["minimal", "low", "medium", "high"]
-        verbosity_options = ["low", "medium", "high"]
-
-        # Step 1: Preprocessing (
+        # Step 1: Preprocessing
         if current_step == 1:
             st.markdown("#### 📝 Step 2: Preprocessing")
-            current_spell_model = st.session_state.model_config.get_model_for_stage('spell_check')
+            current_spell_model = st.session_state.spellcheck_config.model
             spell_model = st.selectbox(
                 "Spell Check Model",
                 options=all_models,
@@ -546,14 +540,14 @@ def show_advanced_settings(current_step=0):
                 key="spell_check_model"
             )
             if spell_model != current_spell_model:
-                st.session_state.model_config.spell_check_model = spell_model
+                st.session_state.spellcheck_config.model = spell_model
 
             st.markdown("---")
 
-        # Step 2: Quality Filter 
+        # Step 2: Quality Filter
         if current_step == 2:
             st.markdown("#### 🔍 Step 3: Quality Filter")
-            current_quality_model = st.session_state.model_config.get_model_for_stage('quality_filter')
+            current_quality_model = st.session_state.quality_filter_config.model
             quality_model = st.selectbox(
                 "Quality Filter Model",
                 options=all_models,
@@ -561,14 +555,14 @@ def show_advanced_settings(current_step=0):
                 key="quality_filter_model"
             )
             if quality_model != current_quality_model:
-                st.session_state.model_config.quality_filter_model = quality_model
+                st.session_state.quality_filter_config.model = quality_model
 
             st.markdown("---")
 
-        # Step 3: Idea Extraction 
+        # Step 3: Idea Extraction
         if current_step == 3:
             st.markdown("#### 💡 Step 4: Idea Extraction")
-            current_seg_model = st.session_state.model_config.get_model_for_stage('segmentation')
+            current_seg_model = st.session_state.segmentation_config.model
             seg_model = st.selectbox(
                 "Segmentation Model",
                 options=all_models,
@@ -576,22 +570,20 @@ def show_advanced_settings(current_step=0):
                 key="segmentation_model"
             )
             if seg_model != current_seg_model:
-                st.session_state.model_config.segmentation_model = seg_model
+                st.session_state.segmentation_config.model = seg_model
 
             st.markdown("---")
 
-        # Step 4: Embeddings 
+        # Step 4: Embeddings
         if current_step == 4:
             st.markdown("#### 🔗 Step 5: Embeddings")
-            current_emb_model = st.session_state.model_config.get_model_for_stage('embedding')
+            current_emb_model = ModelConfig().embedding_model
             emb_model = st.selectbox(
                 "Embedding Model",
                 options=embedding_models,
                 index=embedding_models.index(current_emb_model) if current_emb_model in embedding_models else 0,
                 key="embedding_model"
             )
-            if emb_model != current_emb_model:
-                st.session_state.model_config.embedding_model = emb_model
 
             st.markdown("---")
 
@@ -600,139 +592,6 @@ def show_advanced_settings(current_step=0):
             st.markdown("#### 📊 Step 6: Category Discovery")
             st.markdown("*Automatic MECE category discovery from idea partitions*")
             st.info("Category discovery partitions ideas by concept type, discovers MECE categories per partition using MAP/REDUCE, and assigns each idea to exactly one category.")
-
-            st.markdown("---")
-
-        # Step 6 and 7: Codebook Generation 
-        if current_step in [6, 7]:
-            st.markdown("#### 🏗️ Step 7: Code Generation ⭐")
-            st.markdown("*Core code generation models and parameters*")
-
-            # Theme Summary Model
-            current_theme_model = st.session_state.model_config.get_model_for_stage('theme_extraction')
-            theme_model = st.selectbox(
-                    "Theme Summary Model",
-                    options=gpt5_models + gpt4_models,
-                    index=(gpt5_models + gpt4_models).index(current_theme_model) if current_theme_model in (gpt5_models + gpt4_models) else 0,
-                    key="theme_summary_model"
-            )
-            if theme_model != current_theme_model:
-                st.session_state.model_config.thematic_summary_model = theme_model
-
-            # Candidate Selection Model
-            current_candidate_model = st.session_state.model_config.get_model_for_stage('candidate_selection')
-            candidate_model = st.selectbox(
-                "Candidate Selection Model",
-                options=gpt5_models + gpt4_models,
-                index=(gpt5_models + gpt4_models).index(current_candidate_model) if current_candidate_model in (gpt5_models + gpt4_models) else 0,
-                key="candidate_selection_model"
-            )
-            if candidate_model != current_candidate_model:
-                st.session_state.model_config.candidate_selection_model = candidate_model
-
-            # Code Generation Model
-            current_codegen_model = st.session_state.model_config.get_model_for_stage('code_recommendation')
-            codegen_model = st.selectbox(
-                "Code Generation Model",
-                options=gpt5_models + gpt4_models,
-                index=(gpt5_models + gpt4_models).index(current_codegen_model) if current_codegen_model in (gpt5_models + gpt4_models) else 0,
-                key="code_generation_model"
-            )
-            if codegen_model != current_codegen_model:
-                st.session_state.model_config.code_generation_model = codegen_model
-
-            # Validation Model
-            current_validation_model = st.session_state.model_config.get_model_for_stage('recommendation_validation')
-            validation_model = st.selectbox(
-                "Validation Model",
-                options=gpt5_models + gpt4_models,
-                index=(gpt5_models + gpt4_models).index(current_validation_model) if current_validation_model in (gpt5_models + gpt4_models) else 0,
-                key="validation_model"
-            )
-            if validation_model != current_validation_model:
-                st.session_state.model_config.validation_model = validation_model
-
-            st.markdown("**GPT-5 Reasoning Parameters**")
-
-            # Theme Extraction Parameters
-            st.markdown("*Theme Extraction*")
-            theme_reasoning = st.selectbox(
-                "Reasoning Effort",
-                options=reasoning_options,
-                index=reasoning_options.index(st.session_state.model_config.theme_extraction_reasoning_effort),
-                key="theme_reasoning"
-            )
-            if theme_reasoning != st.session_state.model_config.theme_extraction_reasoning_effort:
-                st.session_state.model_config.theme_extraction_reasoning_effort = theme_reasoning
-
-            theme_verbosity = st.selectbox(
-                "Text Verbosity",
-                options=verbosity_options,
-                index=verbosity_options.index(st.session_state.model_config.theme_extraction_text_verbosity),
-                key="theme_verbosity"
-            )
-            if theme_verbosity != st.session_state.model_config.theme_extraction_text_verbosity:
-                st.session_state.model_config.theme_extraction_text_verbosity = theme_verbosity
-
-            # Candidate Selection Parameters
-            st.markdown("*Candidate Selection*")
-            candidate_reasoning = st.selectbox(
-                "Reasoning Effort",
-                options=reasoning_options,
-                index=reasoning_options.index(st.session_state.model_config.candidate_selection_reasoning_effort),
-                key="candidate_reasoning"
-            )
-            if candidate_reasoning != st.session_state.model_config.candidate_selection_reasoning_effort:
-                st.session_state.model_config.candidate_selection_reasoning_effort = candidate_reasoning
-
-            candidate_verbosity = st.selectbox(
-                "Text Verbosity",
-                options=verbosity_options,
-                index=verbosity_options.index(st.session_state.model_config.candidate_selection_text_verbosity),
-                key="candidate_verbosity"
-            )
-            if candidate_verbosity != st.session_state.model_config.candidate_selection_text_verbosity:
-                st.session_state.model_config.candidate_selection_text_verbosity = candidate_verbosity
-
-            # Code Generation Parameters
-            st.markdown("*Code Generation*")
-            codegen_reasoning = st.selectbox(
-                "Reasoning Effort",
-                options=reasoning_options,
-                index=reasoning_options.index(st.session_state.model_config.code_generation_reasoning_effort),
-                key="codegen_reasoning"
-            )
-            if codegen_reasoning != st.session_state.model_config.code_generation_reasoning_effort:
-                st.session_state.model_config.code_generation_reasoning_effort = codegen_reasoning
-
-            codegen_verbosity = st.selectbox(
-                "Text Verbosity",
-                options=verbosity_options,
-                index=verbosity_options.index(st.session_state.model_config.code_generation_text_verbosity),
-                key="codegen_verbosity"
-            )
-            if codegen_verbosity != st.session_state.model_config.code_generation_text_verbosity:
-                st.session_state.model_config.code_generation_text_verbosity = codegen_verbosity
-
-            # Validation Parameters
-            st.markdown("*Validation*")
-            validation_reasoning = st.selectbox(
-                "Reasoning Effort",
-                options=reasoning_options,
-                index=reasoning_options.index(st.session_state.model_config.validation_reasoning_effort),
-                key="validation_reasoning"
-            )
-            if validation_reasoning != st.session_state.model_config.validation_reasoning_effort:
-                st.session_state.model_config.validation_reasoning_effort = validation_reasoning
-
-            validation_verbosity = st.selectbox(
-                "Text Verbosity",
-                options=verbosity_options,
-                index=verbosity_options.index(st.session_state.model_config.validation_text_verbosity),
-                key="validation_verbosity"
-            )
-            if validation_verbosity != st.session_state.model_config.validation_text_verbosity:
-                st.session_state.model_config.validation_text_verbosity = validation_verbosity
 
             st.markdown("---")
 
@@ -764,7 +623,6 @@ def show_advanced_settings(current_step=0):
 
         # Reset to defaults button (always shown)
         if st.button("🔄 Reset All to Defaults", type="secondary"):
-            st.session_state.model_config = ModelConfig()
             st.session_state.spellcheck_config = SpellCheckConfig()
             st.session_state.quality_filter_config = QualityFilterConfig()
             st.session_state.segmentation_config = SegmentationConfig()
@@ -1746,7 +1604,7 @@ def show_preprocessing_page():
                         var_lab=st.session_state.pipeline_results['var_lab'],
                         variable_key=variable_key,
                         cache_manager=_get_cache_manager(),
-                        model_config=st.session_state.model_config,
+
                         force_recalc=force_recalc,
                         verbose=True,
                         prompt_printer_enabled=False)
@@ -1954,7 +1812,7 @@ def show_filtering_page():
                         var_lab=st.session_state.pipeline_results['var_lab'],
                         variable_key=variable_key,
                         cache_manager=cache_manager,
-                        model_config=st.session_state.model_config,
+
                         force_recalc=False,
                         verbose=True,
                         prompt_printer_enabled=False
@@ -1996,7 +1854,7 @@ def show_filtering_page():
                     var_lab=st.session_state.pipeline_results['var_lab'],
                     variable_key=variable_key,
                     cache_manager=_get_cache_manager(),
-                    model_config=st.session_state.model_config,
+
                     force_recalc=force_recalc,
                     verbose=True,
                     prompt_printer_enabled=False
@@ -2157,7 +2015,7 @@ def show_idea_extraction_page():
                         var_lab=st.session_state.pipeline_results['var_lab'],
                         variable_key=variable_key,
                         cache_manager=cache_manager,
-                        model_config=st.session_state.model_config,
+
                         force_recalc=False,
                         verbose=True,
                         prompt_printer_enabled=False
@@ -2207,7 +2065,7 @@ def show_idea_extraction_page():
                     var_lab=st.session_state.pipeline_results['var_lab'],
                     variable_key=variable_key,
                     cache_manager=_get_cache_manager(),
-                    model_config=st.session_state.model_config,
+
                     force_recalc=force_recalc,
                     verbose=True,
                     prompt_printer_enabled=False

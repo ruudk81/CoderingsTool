@@ -20,10 +20,9 @@ import models
 from utils import dataLoader
 from utils.cacheManager import CacheManager
 from utils.llm import token_tracker
-from config import CacheConfig, ModelConfig, DEFAULT_LANGUAGE
+from config import CacheConfig, DEFAULT_LANGUAGE
 cache_config = CacheConfig()
 cache_manager = CacheManager(cache_config)
-model_config = ModelConfig()
 
 #  ===  STANDALONE ========================================================================================================
 
@@ -74,15 +73,14 @@ STEP_NAMES = {
 # HELPERS
 # ===================================================================================================================
 
-def _resolve_step_defaults(variable_key=None, cache_manager=None, model_config=None):
+def _resolve_step_defaults(variable_key=None, cache_manager=None):
     """Resolve default values for step function parameters.
 
     Each parameter is resolved only if passed as None:
     - variable_key: generated from module-level globals (selected_variables, etc.)
     - cache_manager: falls back to module-level global, then creates default
-    - model_config: falls back to module-level global, then creates default
 
-    Returns: (variable_key, cache_manager, model_config)
+    Returns: (variable_key, cache_manager)
     """
     if variable_key is None:
         from utils.cacheManager import generate_enhanced_variable_key
@@ -102,13 +100,7 @@ def _resolve_step_defaults(variable_key=None, cache_manager=None, model_config=N
             from config import CacheConfig
             cache_manager = CacheManager(CacheConfig())
 
-    if model_config is None:
-        model_config = globals().get('model_config')
-        if model_config is None:
-            from config import ModelConfig
-            model_config = ModelConfig()
-
-    return variable_key, cache_manager, model_config
+    return variable_key, cache_manager
 
 
 # ===================================================================================================================
@@ -288,7 +280,6 @@ def step_1_preprocess(
     var_lab,
     variable_key=None,              # Auto-generate if None
     cache_manager=None,             # Use global if None
-    model_config=None,              # Use global if None
     force_recalc=False,
     verbose=True,
     prompt_printer_enabled=False,
@@ -302,7 +293,6 @@ def step_1_preprocess(
         var_lab: Variable label for context
         variable_key: Cache key (auto-generated if None)
         cache_manager: CacheManager instance (uses global if None)
-        model_config: ModelConfig instance for LLM calls (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         prompt_printer_enabled: Enable prompt printing
@@ -315,7 +305,7 @@ def step_1_preprocess(
     from config_steps.config_preprocess import SpellCheckConfig
 
     step_name = "preprocessed"
-    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
+    variable_key, cache_manager = _resolve_step_defaults(variable_key, cache_manager)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -351,7 +341,7 @@ def step_1_preprocess(
         verbose_reporter.section_header("PREPROCESSING PHASE")
         # intialize utils
         text_normalizer = textNormalizer.TextNormalizer(verbose=verbose)
-        spell_checker = spellChecker.SpellChecker(config=spell_check_config, model_config=model_config, verbose=verbose, prompt_printer=prompt_printer)
+        spell_checker = spellChecker.SpellChecker(config=spell_check_config, verbose=verbose, prompt_printer=prompt_printer)
         text_finalizer = textFinalizer.TextFinalizer(verbose=verbose)
         start_time = time.time()
         # preprocess strings
@@ -484,7 +474,6 @@ def step_2_quality_filter(
     var_lab,
     variable_key=None,              # Auto-generate if None
     cache_manager=None,             # Use global if None
-    model_config=None,              # Use global if None
     force_recalc=False,
     verbose=True,
     prompt_printer_enabled=False,
@@ -498,7 +487,6 @@ def step_2_quality_filter(
         var_lab: Variable label for context
         variable_key: Cache key (auto-generated if None)
         cache_manager: CacheManager instance (uses global if None)
-        model_config: ModelConfig instance for LLM calls (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         prompt_printer_enabled: Enable prompt printing
@@ -510,7 +498,7 @@ def step_2_quality_filter(
     from utils import qualityFilter, verboseReporter, promptPrinter
 
     step_name = "quality_filter"
-    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
+    variable_key, cache_manager = _resolve_step_defaults(variable_key, cache_manager)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -544,7 +532,7 @@ def step_2_quality_filter(
     else:
         verbose_reporter.section_header("QUALITY FILTERING PHASE")
         start_time = time.time()
-        grader = qualityFilter.Grader(preprocessed_text, var_lab, model_config=model_config, verbose=verbose, prompt_printer=prompt_printer)
+        grader = qualityFilter.Grader(preprocessed_text, var_lab, verbose=verbose, prompt_printer=prompt_printer)
         quality_filtered_text = grader.grade()
         #grading_summary = grader.summary()
         end_time = time.time()
@@ -581,7 +569,6 @@ def step_3_extract_ideas(
     var_lab,
     variable_key=None,              # Auto-generate if None
     cache_manager=None,             # Use global if None
-    model_config=None,              # Use global if None
     force_recalc=False,
     verbose=True,
     prompt_printer_enabled=False,
@@ -595,7 +582,6 @@ def step_3_extract_ideas(
         var_lab: Variable label for context
         variable_key: Cache key (auto-generated if None)
         cache_manager: CacheManager instance (uses global if None)
-        model_config: ModelConfig instance for LLM calls (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         prompt_printer_enabled: Enable prompt printing
@@ -607,7 +593,7 @@ def step_3_extract_ideas(
     from utils import ideaExtractor, verboseReporter, promptPrinter
 
     step_name = "extracted_ideas"
-    variable_key, cache_manager, model_config = _resolve_step_defaults(variable_key, cache_manager, model_config)
+    variable_key, cache_manager = _resolve_step_defaults(variable_key, cache_manager)
 
     # Optional Streamlit progress
     if streamlit_container:
@@ -632,7 +618,6 @@ def step_3_extract_ideas(
         encoder = ideaExtractor.IdeaExtractor(
             responses=filtered_text,
             var_lab=var_lab,
-            model_config=model_config,
             verbose=verbose,
             prompt_printer=prompt_printer
         )
@@ -1156,7 +1141,7 @@ if __name__ == '__main__':
         raw_text_list, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
-        model_config=model_config,
+
         force_recalc=force_recalc,
         verbose=VERBOSE,
         prompt_printer_enabled=PROMPT_PRINTER
@@ -1169,7 +1154,7 @@ if __name__ == '__main__':
         preprocessed_text, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
-        model_config=model_config,
+
         force_recalc=force_recalc,
         verbose=VERBOSE,
         prompt_printer_enabled=PROMPT_PRINTER
@@ -1182,7 +1167,7 @@ if __name__ == '__main__':
         quality_filtered_text, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
-        model_config=model_config,
+
         force_recalc=force_recalc,
         verbose=VERBOSE,
         prompt_printer_enabled=PROMPT_PRINTER

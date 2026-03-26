@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
 from config_steps.config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
 
@@ -742,7 +742,6 @@ class IdeaExtractor:
         responses: List[models.QualityFilteredModel],
         var_lab: str,
         config: Optional[SegmentationConfig] = None,
-        model_config: Optional[ModelConfig] = None,
         processing_config: Optional[ProcessingConfig] = None,
         verbose: bool = False,
         prompt_printer=None,
@@ -752,10 +751,9 @@ class IdeaExtractor:
         self.responses = responses
         self.var_lab = var_lab
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
-        self.model_config = model_config or ModelConfig()
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.warm_up_config = DEFAULT_WARM_UP_CONFIG
-        self.model = self.model_config.get_model_for_stage('segmentation')
+        self.model = self.config.model
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeasExtractedModel] = []
         self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)

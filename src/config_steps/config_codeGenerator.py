@@ -5,7 +5,7 @@ Pipeline: code generation from attributes → codebook consolidation.
 """
 
 from dataclasses import dataclass, field
-from config import get_model
+from config import get_step_model
 from config_steps.config_classifier import ClassifierRampConfig
 
 
@@ -14,8 +14,8 @@ class CodebookConfig:
     """Configuration for Codebook Generation (P8-P9)."""
 
     # LLM settings (derived from MODEL_FAMILY toggle)
-    model_p8: str = get_model("default") # P8: Code Generation from Attributes
-    model_p9: str = get_model("default") # P9: Codebook Consolidation
+    model_p8: str = get_step_model("codegen_p8")  # P8: Code Generation from Attributes
+    model_p9: str = get_step_model("codegen_p9")  # P9: Codebook Consolidation
     temperature: float = 0.3
 
     # P8: Code Generation from Attributes (per-domain)

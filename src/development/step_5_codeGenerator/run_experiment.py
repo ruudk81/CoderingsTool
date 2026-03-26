@@ -23,7 +23,7 @@ from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 
 # Import step_5_codeGenerator components
-from development.step_5_codeGenerator.config_codeGenerator import CodebookConfig
+from config_steps.config_codeGenerator import CodebookConfig
 from development.step_5_codeGenerator.codebook_generator import CodebookGenerator, CodebookResult
 from development.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
 

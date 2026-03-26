@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from config import (
     OPENAI_API_KEY,
     DEFAULT_LANGUAGE,
-    ModelConfig,
     ProcessingConfig,
     DEFAULT_PROCESSING_CONFIG,
     API_PROVIDER,

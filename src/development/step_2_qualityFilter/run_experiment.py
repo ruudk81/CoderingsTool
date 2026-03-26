@@ -38,7 +38,7 @@ EXPERIMENT_N     = None   # n or None (limit responses for quick experiments)
 # SHARED IMPORTS (from production)
 # =============================================================================
 import models
-from config import CacheConfig, ModelConfig
+from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
@@ -135,7 +135,6 @@ def run_experiment(config: ExperimentConfig = None):
     preprocessed_text, variable_key, cache_manager = load_step1_cache(config)
     var_lab = get_var_lab(config)
 
-    model_config = ModelConfig()
     verbose_reporter = VerboseReporter(config.verbose)
     prompt_printer = PromptPrinter(enabled=config.prompt_printer_enabled, print_realtime=config.prompt_printer_enabled)
 
@@ -153,7 +152,7 @@ def run_experiment(config: ExperimentConfig = None):
 
     start_time = time.time()
 
-    grader = Grader(preprocessed_text, var_lab, model_config=model_config, verbose=config.verbose, prompt_printer=prompt_printer)
+    grader = Grader(preprocessed_text, var_lab, verbose=config.verbose, prompt_printer=prompt_printer)
     quality_filtered_text = grader.grade()
 
     elapsed_time = time.time() - start_time
