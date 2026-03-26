@@ -41,7 +41,7 @@ try:
         RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
         SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
     )
-    from .prompts_exp import GRADER_INSTRUCTIONS
+    from .prompts_exp import GRADER_INSTRUCTIONS, GRADER_INSTRUCTIONS_STRUCTURED, QualityFilterStructuredResponse
 except ImportError:
     from config_exp import (
         OPENAI_API_KEY, DEFAULT_LANGUAGE,
@@ -64,22 +64,23 @@ except ImportError:
         RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
         SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
     )
-    from prompts_exp import GRADER_INSTRUCTIONS
+    from prompts_exp import GRADER_INSTRUCTIONS, GRADER_INSTRUCTIONS_STRUCTURED, QualityFilterStructuredResponse
 
-from utils.llm import RateLimits, extract_rate_limits_from_response
+from utils.llm import RateLimits, extract_rate_limits_from_response, create_client, llm_create_async
 from config import get_reasoning_params
 from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats
 
 
 # =============================================================================
-# RAW RESPONSE PARSING (no instructor — nano trips on structured output schemas)
+# RAW RESPONSE PARSING (Pattern A — nano only; mini/default use instructor)
 # =============================================================================
 # Category → quality_filter_code mapping:
 #   1, 2     → 99999997  (don't know / no answer)
-#   3        → 99999998  (no text / empty)
-#   4        → 99999999  (gibberish / nonsense)
+#   3        → 99999998  (absence of answer)
+#   4        → 99999998  (no text / empty)
+#   5        → 99999999  (gibberish / nonsense)
 #   no flag  → None      (keep for analysis)
-CATEGORY_TO_CODE = {"1": 99999997, "2": 99999997, "3": 99999998, "4": 99999999}
+CATEGORY_TO_CODE = {"1": 99999997, "2": 99999997, "3": 99999998, "4": 99999998, "5": 99999999}
 
 def parse_quality_code(raw_text: str) -> Optional[int]:
     """Parse <category> tag from LLM scratchpad output into a quality filter code.
@@ -96,7 +97,7 @@ def parse_quality_code(raw_text: str) -> Optional[int]:
         # "no flag" or any other text → keep
         return None
     # No tag found — fallback: scan for a standalone category number
-    match = re.search(r'\b([1-4])\b', raw_text[-50:])  # check end of response
+    match = re.search(r'\b([1-5])\b', raw_text[-50:])  # check end of response
     if match:
         return CATEGORY_TO_CODE.get(match.group(1))
     # Unparseable → conservative default: keep
@@ -614,8 +615,12 @@ class Grader:
         # Initialize tokenizer for token counting (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
-        # Raw async client (no instructor — nano produces correct results without schema injection)
-        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        # Tier-aware client: nano uses raw API (Pattern A), mini/default uses instructor (Pattern B)
+        self._is_nano = "nano" in self.model.lower()
+        if self._is_nano:
+            self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        else:
+            self.client = create_client(model=self.model, async_mode=True)
 
         # Rate limiting setup - use fallback values for initial setup
         # Actual rate limits will be fetched from API during process_all_tasks_async
@@ -713,8 +718,12 @@ class Grader:
         return int(avg_input * output_ratio)
 
     def _build_individual_prompt(self, var_lab: str, response_id: str, response_text: str) -> str:
-        """Build prompt for individual response assessment"""
-        return self.grader_instructions.format(
+        """Build prompt for individual response assessment.
+
+        Uses nano (XML tag) or structured (instructor) prompt variant based on model tier.
+        """
+        template = GRADER_INSTRUCTIONS if self._is_nano else GRADER_INSTRUCTIONS_STRUCTURED
+        return template.format(
             language=DEFAULT_LANGUAGE,
             var_lab=var_lab,
             response_text=response_text
@@ -1203,40 +1212,82 @@ class Grader:
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
                 async with self.rate_limiter:
 
-                    # Raw API call — no instructor schema injection
-                    api_params = {
-                        "model": self.model,
-                        "input": prompt,
-                        "max_output_tokens": self.config.max_tokens,
-                        **get_reasoning_params(self.model),
-                    }
-                    response = await asyncio.wait_for(
-                        self.client.responses.create(**api_params),
-                        timeout=timeout
-                    )
+                    if self._is_nano:
+                        # Pattern A: Raw API call — no instructor schema injection
+                        api_params = {
+                            "model": self.model,
+                            "input": prompt,
+                            "max_output_tokens": self.config.max_tokens,
+                            **get_reasoning_params(self.model),
+                        }
+                        response = await asyncio.wait_for(
+                            self.client.responses.create(**api_params),
+                            timeout=timeout
+                        )
 
-                    latency = time.perf_counter() - task_start
-                    self.latency_tracker.add(latency)
+                        latency = time.perf_counter() - task_start
+                        self.latency_tracker.add(latency)
 
-                    # Track token usage
-                    usage = getattr(response, 'usage', None)
-                    if usage:
-                        input_tokens = getattr(usage, 'input_tokens', 0)
-                        output_tokens = getattr(usage, 'output_tokens', 0)
-                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (input_tokens + output_tokens)
+                        # Track token usage
+                        usage = getattr(response, 'usage', None)
+                        if usage:
+                            input_tokens = getattr(usage, 'input_tokens', 0)
+                            output_tokens = getattr(usage, 'output_tokens', 0)
+                            actual_total_tokens = getattr(usage, 'total_tokens', 0) or (input_tokens + output_tokens)
 
-                        if len(self.output_token_history) < 5:
-                            self.output_token_history.append(output_tokens)
-                        self.actual_total_tokens.append(actual_total_tokens)
-                        self._record_api_call(actual_total_tokens)
+                            if len(self.output_token_history) < 5:
+                                self.output_token_history.append(output_tokens)
+                            self.actual_total_tokens.append(actual_total_tokens)
+                            self._record_api_call(actual_total_tokens)
 
-                        estimation_error = abs(actual_total_tokens - est_tokens)
-                        self.estimation_errors.append(estimation_error)
-                        await self.tpm_bucket.reconcile(actual_total_tokens - est_tokens)
+                            estimation_error = abs(actual_total_tokens - est_tokens)
+                            self.estimation_errors.append(estimation_error)
+                            await self.tpm_bucket.reconcile(actual_total_tokens - est_tokens)
 
-                    # Parse raw text response into quality code
-                    raw_text = response.output_text if hasattr(response, 'output_text') else str(response)
-                    quality_code = parse_quality_code(raw_text)
+                        # Parse raw text response into quality code
+                        raw_text = response.output_text if hasattr(response, 'output_text') else str(response)
+                        quality_code = parse_quality_code(raw_text)
+
+                    else:
+                        # Pattern B: Instructor + Pydantic validation
+                        structured_response = await asyncio.wait_for(
+                            llm_create_async(
+                                client=self.client,
+                                model=self.model,
+                                prompt=prompt,
+                                response_model=QualityFilterStructuredResponse,
+                                temperature=0.0,
+                                max_tokens=self.config.max_tokens,
+                                max_retries=3,
+                                **get_reasoning_params(self.model),
+                            ),
+                            timeout=timeout
+                        )
+
+                        latency = time.perf_counter() - task_start
+                        self.latency_tracker.add(latency)
+
+                        # Token tracking handled by llm_create_async (track_usage=True by default)
+                        # Still reconcile bucket estimate
+                        raw_response = getattr(structured_response, '_raw_response', None)
+                        usage = getattr(raw_response, 'usage', None) if raw_response else None
+                        if usage:
+                            actual_total_tokens = getattr(usage, 'total_tokens', 0) or (
+                                getattr(usage, 'input_tokens', 0) + getattr(usage, 'output_tokens', 0)
+                            )
+                            output_tokens = getattr(usage, 'output_tokens', 0)
+
+                            if len(self.output_token_history) < 5:
+                                self.output_token_history.append(output_tokens)
+                            self.actual_total_tokens.append(actual_total_tokens)
+                            self._record_api_call(actual_total_tokens)
+
+                            estimation_error = abs(actual_total_tokens - est_tokens)
+                            self.estimation_errors.append(estimation_error)
+                            await self.tpm_bucket.reconcile(actual_total_tokens - est_tokens)
+
+                        # Map instructor-validated category to quality code
+                        quality_code = CATEGORY_TO_CODE.get(str(structured_response.category)) if structured_response.category else None
 
                     result = models.QualityFilteredModel(
                         respondent_id=task['task_id'],

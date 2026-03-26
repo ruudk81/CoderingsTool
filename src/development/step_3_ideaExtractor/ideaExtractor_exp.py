@@ -2052,7 +2052,7 @@ class IdeaExtractor:
                                         instance=taxonomy_resp.instance if taxonomy_resp else "",
                                         interpretation=taxonomy_resp.interpretation if taxonomy_resp else "",
                                         abstraction=taxonomy_resp.abstraction if taxonomy_resp else "",
-                                        facet=taxonomy_resp.facet if taxonomy_resp else "",
+                                        facet="",
                                         domain=taxonomy_resp.domain if taxonomy_resp else "",
                                         valence=getattr(idea_response, 'valence', "") or "",
                                     ))
