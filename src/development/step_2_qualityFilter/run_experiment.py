@@ -1,8 +1,4 @@
 #%%
-
-USE_EXPERIMENTAL = True   # Toggle between production and experimental
-EXPERIMENT_N     = None   # n or None (limit responses for quick experiments)
-
 """
 Step 2: Quality Filter Experiment Runner
 
@@ -33,6 +29,10 @@ nest_asyncio.apply()
 
 from dataclasses import dataclass
 from typing import Optional
+
+
+USE_EXPERIMENTAL = True   # Toggle between production and experimental
+EXPERIMENT_N     = None   # n or None (limit responses for quick experiments)
 
 # =============================================================================
 # SHARED IMPORTS (from production)
