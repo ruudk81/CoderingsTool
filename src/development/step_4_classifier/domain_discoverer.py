@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from development.step_3_ideaExtractor import models_exp as models
 
-from .config_classifier import CategoriesConfig
+from config_steps.config_classifier import CategoriesConfig
 from .partition_labels import collect_unique_labels, collect_unique_labels_with_domains, format_label
 from .models_classifier import DomainDescription, DomainSet
 

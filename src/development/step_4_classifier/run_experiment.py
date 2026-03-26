@@ -26,7 +26,7 @@ from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 
 # Import step_4_classifier components
-from development.step_4_classifier.config_classifier import CategoriesConfig
+from config_steps.config_classifier import CategoriesConfig
 from development.step_4_classifier.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
 from development.step_4_classifier.classifier import TaxonomyClassifier, TaxonomyResult
 from development.step_4_classifier.models_classifier import DomainSet, DomainResultModel, TaxonomyResultsCache
