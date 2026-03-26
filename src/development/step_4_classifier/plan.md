@@ -56,7 +56,7 @@ Idea `"Pinkpop Festival → De vele schaduwplekken"` echoed back as `"De vele sc
 
 ---
 
-## Issue 5 — Invalid `attribute_id`: `''`, `'A0'`, `'A?'`
+## Issue 5 — Invalid `attribute_id`: `''`, `'A0'`, `'A?'` ✅ RESOLVED
 
 **Problem:** P6 LLM returns invalid IDs — `''` (skipped), `'A0'` (off-by-one), `'A?'` (uncertainty placeholder). All cause skipped assignments at the `attr_id_to_name.get(...)` lookup → idea loses attribute classification permanently.
 

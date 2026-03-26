@@ -1496,12 +1496,15 @@ class TaxonomyClassifier:
                               f"original '{original_text}' (similarity: {similarity:.2f}) — skipping")
                         continue
 
-                # Fix 6 (BP6): Reject invalid attribute_id — no raw string fallback
+                # Fix 6 (BP6): Reject invalid attribute_id — single-attribute fallback
                 attr_name = attr_id_to_name.get(assignment.assigned_attribute_id)
                 if attr_name is None:
-                    print(f"    WARNING: Invalid attribute_id '{assignment.assigned_attribute_id}' "
-                          f"for idea '{original_idea.idea_id}' — skipping")
-                    continue
+                    if len(attr_id_to_name) == 1:
+                        attr_name = next(iter(attr_id_to_name.values()))
+                    else:
+                        print(f"    WARNING: Invalid attribute_id '{assignment.assigned_attribute_id}' "
+                              f"for idea '{original_idea.idea_id}' — skipping")
+                        continue
 
                 # Detect duplicate assignments
                 if original_idea.idea_id in all_assignments:
