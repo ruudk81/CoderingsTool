@@ -68,7 +68,7 @@ except ImportError:
 
 from utils.llm import RateLimits, extract_rate_limits_from_response, create_client, llm_create_async
 from config import get_reasoning_params
-from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats
+from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, COLD_START_P95_MULTIPLIER
 
 
 # =============================================================================
@@ -646,7 +646,7 @@ class Grader:
         self._perf_stats = load_stats()
         _stored = get_phase_stats(self._perf_stats, self.model, "step2_quality_filter")
         _stored_timeout = (
-            _stored["p95_latency_s"]
+            _stored["p95_latency_s"] * COLD_START_P95_MULTIPLIER
             if _stored and _stored.get("sample_count", 0) >= 10 and "p95_latency_s" in _stored
             else None
         )

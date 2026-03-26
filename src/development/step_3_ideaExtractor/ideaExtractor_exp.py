@@ -55,7 +55,7 @@ except ImportError:
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
 from config_steps.config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
-from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE
+from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE, COLD_START_P95_MULTIPLIER
 
 # === PROMPTS (builders + response models) =========================================================================
 try:
@@ -936,7 +936,7 @@ class IdeaExtractor:
         self._perf_stats = load_stats()
         _stored = get_phase_stats(self._perf_stats, self.model, "step3_idea_extraction")
         _stored_timeout = (
-            _stored["p95_latency_s"]
+            _stored["p95_latency_s"] * COLD_START_P95_MULTIPLIER
             if _stored and _stored.get("sample_count", 0) >= 10 and "p95_latency_s" in _stored
             else None
         )

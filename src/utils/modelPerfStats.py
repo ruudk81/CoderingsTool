@@ -60,6 +60,11 @@ MIN_SAMPLES = 10
 # EMA stabilises at this weight once sample_count reaches 20.
 _EMA_FLOOR_ALPHA = 0.05
 
+# Safety multiplier applied to stored P95 when used as cold-start timeout floor.
+# Raw P95 is too tight: 5% of tasks exceed it by definition, causing cold-start
+# timeouts before warm-up can correct. 2× gives headroom for API variance.
+COLD_START_P95_MULTIPLIER = 2.0
+
 # Fields that may appear in a measurement dict.
 _NUMERIC_FIELDS = ("p50_latency_s", "p95_latency_s", "avg_tokens", "tiktoken_offset")
 
@@ -191,10 +196,11 @@ def apply_to_ramp_config(
         ramp_config.estimated_latency_seconds = entry["p50_latency_s"]
 
     if "p95_latency_s" in entry:
+        floor = entry["p95_latency_s"] * COLD_START_P95_MULTIPLIER
         if hasattr(ramp_config, "timeout_floor_seconds"):
-            ramp_config.timeout_floor_seconds = entry["p95_latency_s"]
+            ramp_config.timeout_floor_seconds = floor
         if hasattr(ramp_config, "default_timeout_seconds"):
-            ramp_config.default_timeout_seconds = entry["p95_latency_s"]
+            ramp_config.default_timeout_seconds = floor
 
     if "avg_tokens" in entry and hasattr(ramp_config, "estimated_avg_tokens"):
         ramp_config.estimated_avg_tokens = int(entry["avg_tokens"])
