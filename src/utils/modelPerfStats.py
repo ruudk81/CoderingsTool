@@ -48,7 +48,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-STATS_FILE = Path("data/model_perf_stats.json")
+# Absolute path derived from this file's location (src/utils/ → project root → data/)
+STATS_FILE = Path(__file__).parent.parent.parent / "data" / "model_perf_stats.json"
 
 # Only apply stored stats when we have at least this many samples.
 # Below this threshold the estimate may not be reliable.
