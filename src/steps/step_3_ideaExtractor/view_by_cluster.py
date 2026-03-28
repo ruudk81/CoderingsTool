@@ -5,7 +5,7 @@ View Step 3 results organized by domain.
 Displays all ideas grouped by domain, showing: idea, facet, valence.
 
 Usage:
-    cd src && python -m development.step_3_ideaExtractor.view_by_cluster
+    cd src && python -m steps.step_3_ideaExtractor.view_by_cluster
 """
 
 import sys
@@ -16,18 +16,18 @@ sys.path.insert(0, str(src_dir))
 import re
 from collections import defaultdict
 try:
-    from development.step_3_ideaExtractor import models_exp as models
+    from steps.step_3_ideaExtractor import models
 except ImportError:
     models_dir = Path(__file__).parent
     if str(models_dir) not in sys.path:
         sys.path.insert(0, str(models_dir))
-    import models_exp as models
+    import models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:

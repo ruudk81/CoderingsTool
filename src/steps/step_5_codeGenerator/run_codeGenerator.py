@@ -15,29 +15,28 @@ from datetime import datetime
 # Add parent paths for imports
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
-sys.path.insert(0, str(project_root / "src" / "development"))
 
-from development.step_3_ideaExtractor import models_exp as models
+from steps.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 
 # Import step_5_codeGenerator components
 from config_steps.config_codeGenerator import CodebookConfig
-from development.step_5_codeGenerator.codebook_generator import CodebookGenerator, CodebookResult
-from development.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
+from steps.step_5_codeGenerator.codebook_generator import CodebookGenerator, CodebookResult
+from steps.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
 
 # Import step_4_classifier (upstream output types)
-from development.step_4_classifier.models_classifier import (
+from steps.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
 )
 
 
 # =============================================================================
-# DATASET CONFIGURATION (centralized in development/test_data.py)
+# DATASET CONFIGURATION (centralized in steps/test_data.py)
 # =============================================================================
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
@@ -327,7 +326,7 @@ def run_codebook():
           f"across {len(pydantic_results)} domains")
 
     # Reconstruct taxonomy data for codebook generator
-    from development.step_4_classifier.prompts_classifier import DiscoveredFacet, DiscoveredAttribute
+    from prompts_steps.prompts_classifier import DiscoveredFacet, DiscoveredAttribute
 
     partition_facets = {}
     partition_assignments = {}
@@ -347,7 +346,7 @@ def run_codebook():
         partition_n_batches[name] = result.n_batches
         all_attr_assignments.update(result.attribute_assignments)
 
-    from development.step_5_codeGenerator.codebook_generator import TaxonomyResult
+    from steps.step_5_codeGenerator.codebook_generator import TaxonomyResult
     taxonomy_result = TaxonomyResult(
         partition_n_labels=partition_n_labels,
         partition_n_batches=partition_n_batches,

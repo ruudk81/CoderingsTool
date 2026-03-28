@@ -8,7 +8,7 @@ Imports taxonomy types from step 4 (upstream dependency).
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
-from development.step_4_classifier.models_classifier import (
+from steps.step_4_classifier.models_classifier import (
     TaxonomyClassifiedSubmodel,
     TaxonomyClassifiedModel,
 )

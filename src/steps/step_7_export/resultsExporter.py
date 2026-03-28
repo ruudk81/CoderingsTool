@@ -9,9 +9,9 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 
 # === MODELS ========================================================================================================
 import models
-from development.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
-from development.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
-from development.step_4_classifier.models_classifier import DomainSet, DomainResultModel
+from steps.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
+from prompts_steps.prompts_codeGenerator import ConsolidatedCode
+from steps.step_4_classifier.models_classifier import DomainSet, DomainResultModel
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter

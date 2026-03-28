@@ -5,7 +5,7 @@ View taxonomy results (P1-P7): domains, facets, attributes, assignments.
 Loads from cached taxonomy results (step "taxonomy").
 
 Usage:
-    cd src && python -m development.step_4_classifier.view_taxonomy
+    cd src && python -m steps.step_4_classifier.view_taxonomy
 """
 
 import sys
@@ -18,14 +18,14 @@ sys.path.insert(0, str(src_dir))
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
-from development.step_4_classifier.models_classifier import TaxonomyResultsCache
+from steps.step_4_classifier.models_classifier import TaxonomyResultsCache
 
 FILENAME = TEST_DATA.filename
 VAR_NAME = TEST_DATA.var_name

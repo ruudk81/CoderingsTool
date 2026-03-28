@@ -17,32 +17,31 @@ from datetime import datetime
 # Add parent paths for imports
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
-sys.path.insert(0, str(project_root / "src" / "development"))
 
-from development.step_3_ideaExtractor import models_exp as models
+from steps.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 
 # Import step_6_codeAssigner components
 from config_steps.config_codeAssigner import AssignmentConfig
-from development.step_6_codeAssigner.code_assignment import CodeAssigner
-from development.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
+from steps.step_6_codeAssigner.code_assignment import CodeAssigner
+from steps.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
 
 # Import step_5_codeGenerator (upstream output types)
-from development.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
+from steps.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
 
 # Import step_4_classifier (upstream output types)
-from development.step_4_classifier.models_classifier import (
+from steps.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyClassifiedModel,
 )
 
 
 # =============================================================================
-# DATASET CONFIGURATION (centralized in development/test_data.py)
+# DATASET CONFIGURATION (centralized in steps/test_data.py)
 # =============================================================================
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
@@ -358,7 +357,7 @@ def run_assignment():
     pydantic_results = mece_cache.partition_results
 
     # Reconstruct ConsolidatedCode from cached dicts
-    from development.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+    from prompts_steps.prompts_codeGenerator import ConsolidatedCode
     codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else None
 
     n_themes = mece_cache.total_categories

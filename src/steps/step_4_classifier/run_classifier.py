@@ -18,28 +18,27 @@ from datetime import datetime
 # Add parent paths for imports
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
-sys.path.insert(0, str(project_root / "src" / "development"))
 
-from development.step_3_ideaExtractor import models_exp as models
+from steps.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 
 # Import step_4_classifier components
 from config_steps.config_classifier import CategoriesConfig
-from development.step_4_classifier.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
-from development.step_4_classifier.classifier import TaxonomyClassifier, TaxonomyResult
-from development.step_4_classifier.models_classifier import (
+from steps.step_4_classifier.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
+from steps.step_4_classifier.classifier import TaxonomyClassifier, TaxonomyResult
+from steps.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
     TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel,
 )
 
 
 # =============================================================================
-# DATASET CONFIGURATION (centralized in development/test_data.py)
+# DATASET CONFIGURATION (centralized in steps/test_data.py)
 # =============================================================================
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
@@ -462,7 +461,7 @@ def _load_and_discover(extraction_metadata=None):
     if EXPERIMENT_N is not None and EXPERIMENT_N < len(ideas_models):
         total = len(ideas_models)
         ideas_models = ideas_models[:EXPERIMENT_N]
-        print(f"Experiment subset: {EXPERIMENT_N} responses (of {total} total)")
+        print(f"Subset: {EXPERIMENT_N} responses (of {total} total)")
 
     if extraction_metadata is None:
         extraction_metadata = load_extraction_metadata()

@@ -7,7 +7,7 @@ Loads captured assignment prompts from the JSON file saved during
 the assignment run, and displays them with response model schema.
 
 Usage:
-    cd src && python -m development.step_6_codeAssigner.debug_assignment_prompt
+    cd src && python -m steps.step_6_codeAssigner.debug_assignment_prompt
 """
 
 import sys
@@ -23,7 +23,7 @@ from utils.cacheManager import generate_enhanced_variable_key
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
@@ -31,7 +31,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 from instructor.function_calls import openai_schema
-from development.step_6_codeAssigner.prompts_codeAssigner import CodeAssignmentResponse
+from prompts_steps.prompts_codeAssigner import CodeAssignmentResponse
 
 # Configuration
 FILENAME = TEST_DATA.filename
@@ -131,7 +131,7 @@ def main():
         print(f"\nERROR: No captured assignment prompts found at:")
         print(f"  {prompts_file}")
         print("\nRun assignment first:")
-        print("  cd src && python -m development.step_6_codeAssigner.run_experiment")
+        print("  cd src && python -m steps.step_6_codeAssigner.run_codeAssigner")
         return
 
     print(f"Session ID:    {data.get('session_id', 'unknown')}")

@@ -1,16 +1,12 @@
 #%%
 """
-Step 2: Quality Filter Experiment Runner
+Step 2: Quality Filter Step Runner
 
-Runs the quality filtering step in isolation for experimentation.
+Runs the quality filtering step in isolation.
 Loads Step 1 (preprocessed) results from cache and runs quality filtering.
 
 Usage:
-    cd src && python -m development.step_2_qualityFilter.run_experiment
-
-Toggle:
-    USE_EXPERIMENTAL = True  -> Uses experimental qualityFilter from this folder
-    USE_EXPERIMENTAL = False -> Uses production qualityFilter from utils/
+    cd src && python -m steps.step_2_qualityFilter.run_qualityFilter
 """
 
 import sys
@@ -31,11 +27,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-USE_EXPERIMENTAL = True   # Toggle between production and experimental
-EXPERIMENT_N     = None   # n or None (limit responses for quick experiments)
+EXPERIMENT_N     = None   # n or None (limit responses for quick testing)
 
 # =============================================================================
-# SHARED IMPORTS (from production)
+# SHARED IMPORTS
 # =============================================================================
 import models
 from config import CacheConfig
@@ -48,7 +43,7 @@ from utils import dataLoader
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     # Fallback for direct execution
     exp_root = Path(__file__).parent.parent
@@ -57,48 +52,40 @@ except ImportError:
     from test_data import TEST_DATA
 
 # =============================================================================
-# EXPERIMENT CONFIGURATION
+# STEP CONFIGURATION
 # =============================================================================
 @dataclass
-class ExperimentConfig:
+class StepConfig:
     # Data config from centralized test_data.py
     filename: str = TEST_DATA.filename
     id_column: str = TEST_DATA.id_column
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
-    # Experiment-specific settings
-    use_experimental: bool = USE_EXPERIMENTAL
+    # Step-specific settings
     verbose: bool = True
     prompt_printer_enabled: bool = False
     force_recalc: bool = True
     experiment_n: Optional[int] = EXPERIMENT_N
 
 
-EXPERIMENT_CONFIG = ExperimentConfig()
+STEP_CONFIG = StepConfig()
 
 # =============================================================================
-# TOGGLE: PRODUCTION vs EXPERIMENTAL
+# IMPORTS
 # =============================================================================
-_USE_EXPERIMENTAL = EXPERIMENT_CONFIG.use_experimental
-
-if _USE_EXPERIMENTAL:
-    try:
-        from .qualityFilter_exp import Grader
-    except ImportError:
-        exp_dir = Path(__file__).parent
-        if str(exp_dir) not in sys.path:
-            sys.path.insert(0, str(exp_dir))
-        from qualityFilter_exp import Grader
-    print("[EXPERIMENTAL] Using qualityFilter_exp.py from development folder")
-else:
-    from utils.qualityFilter import Grader
-    print("[PRODUCTION] Using qualityFilter.py from utils/")
+try:
+    from .qualityFilter import Grader
+except ImportError:
+    exp_dir = Path(__file__).parent
+    if str(exp_dir) not in sys.path:
+        sys.path.insert(0, str(exp_dir))
+    from qualityFilter import Grader
 
 
 # =============================================================================
 # CACHE OPERATIONS
 # =============================================================================
-def load_step1_cache(config: ExperimentConfig):
+def load_step1_cache(config: StepConfig):
     variable_key = generate_enhanced_variable_key(
         selected_variables=[config.var_name],
         is_merged=False,
@@ -120,17 +107,17 @@ def load_step1_cache(config: ExperimentConfig):
     return data, variable_key, cache_manager
 
 
-def get_var_lab(config: ExperimentConfig) -> str:
+def get_var_lab(config: StepConfig) -> str:
     loader = dataLoader.DataLoader(data_dir=str(data_dir), verbose=False)
     return loader.get_varlab(filename=config.filename, var_name=config.var_name)
 
 
 # =============================================================================
-# MAIN EXPERIMENT RUNNER
+# MAIN STEP RUNNER
 # =============================================================================
-def run_experiment(config: ExperimentConfig = None):
+def run_step(config: StepConfig = None):
     if config is None:
-        config = EXPERIMENT_CONFIG
+        config = STEP_CONFIG
 
     preprocessed_text, variable_key, cache_manager = load_step1_cache(config)
     var_lab = get_var_lab(config)
@@ -138,15 +125,14 @@ def run_experiment(config: ExperimentConfig = None):
     verbose_reporter = VerboseReporter(config.verbose)
     prompt_printer = PromptPrinter(enabled=config.prompt_printer_enabled, print_realtime=config.prompt_printer_enabled)
 
-    verbose_reporter.section_header("QUALITY FILTERING EXPERIMENT")
+    verbose_reporter.section_header("QUALITY FILTERING")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
-    verbose_reporter.stat_line(f"Using experimental: {_USE_EXPERIMENTAL}")
     verbose_reporter.stat_line(f"Input: {len(preprocessed_text)} preprocessed responses")
 
     # Optionally limit to experiment_n responses
     if config.experiment_n is not None and config.experiment_n < len(preprocessed_text):
         preprocessed_text = preprocessed_text[:config.experiment_n]
-        verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} responses")
+        verbose_reporter.stat_line(f"Subset: {config.experiment_n} responses")
 
     verbose_reporter.stat_line(f"Processing: {len(preprocessed_text)} responses")
 
@@ -168,7 +154,7 @@ def run_experiment(config: ExperimentConfig = None):
 
     verbose_reporter.stat_line(f"Filtered: {sum(code_counts.values())} responses")
     verbose_reporter.stat_line(f"Passed: {len(quality_filtered_text) - sum(code_counts.values())} responses")
-    print(f"\n'Quality filtering experiment' completed in {elapsed_time:.2f} seconds.\n")
+    print(f"\n'Quality filtering' completed in {elapsed_time:.2f} seconds.\n")
 
     return quality_filtered_text
 
@@ -177,7 +163,7 @@ def run_experiment(config: ExperimentConfig = None):
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
-    config = EXPERIMENT_CONFIG
+    config = STEP_CONFIG
     var_lab = get_var_lab(config)
 
     verbose_capture = VerboseCapture(
@@ -191,17 +177,16 @@ if __name__ == "__main__":
     token_tracker.reset()
 
     print("=" * 70)
-    print("EXPERIMENT: Step 2 - Quality Filter")
+    print("Step 2 - Quality Filter")
     print("=" * 70)
     print(f"Dataset: {config.filename}")
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
-    print(f"Using experimental: {_USE_EXPERIMENTAL}")
     print(f"Experiment N: {config.experiment_n or 'all'}")
     print("=" * 70)
 
     try:
-        results = run_experiment(config)
+        results = run_step(config)
 
         if token_tracker.call_count > 0:
             print(token_tracker.get_summary())

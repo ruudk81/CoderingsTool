@@ -5,7 +5,7 @@ Debug script for Quality Filter prompts: Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schema.
 
 Usage:
-    cd src && python -m development.step_2_qualityFilter.debug_quality_prompts
+    cd src && python -m steps.step_2_qualityFilter.debug_quality_prompts
 """
 
 import sys
@@ -21,14 +21,14 @@ sys.path.insert(0, str(src_dir))
 from utils.cacheManager import generate_enhanced_variable_key
 
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
-from development.step_2_qualityFilter.prompts_exp import (
+from prompts_steps.prompts_qualityFilter import (
     GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp,
 )
 from config import DEFAULT_LANGUAGE

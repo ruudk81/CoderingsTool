@@ -5,13 +5,13 @@ from pathlib import Path
 
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
-sys.path.insert(0, str(project_root / "src" / "development"))
+sys.path.insert(0, str(project_root / "src" / "steps"))
 
-from development.step_3_ideaExtractor import models_exp as models
+from steps.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     from test_data import TEST_DATA
 

@@ -9,7 +9,7 @@ For each captured prompt, displays:
   2. The Pydantic response model's JSON schema (what instructor injects as tool definition)
 
 Usage:
-    cd src && python -m development.step_3_ideaExtractor.debug_full_prompts
+    cd src && python -m steps.step_3_ideaExtractor.debug_full_prompts
 """
 
 import sys
@@ -25,7 +25,7 @@ from utils.cacheManager import generate_enhanced_variable_key
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
@@ -33,7 +33,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 try:
-    from development.step_3_ideaExtractor.prompts_exp import (
+    from prompts_steps.prompts_ideaExtractor import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
         PrimaryDimensionChunkResponse,
@@ -42,9 +42,9 @@ try:
         DomainConsolidatedResponse,
         create_extraction_model,
     )
-    from development.step_3_ideaExtractor.dimension_data import get_dimension
+    from steps.step_3_ideaExtractor.dimension_data import get_dimension
 except ImportError:
-    from prompts_exp import (
+    from prompts_steps.prompts_ideaExtractor import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
         PrimaryDimensionChunkResponse,
@@ -53,7 +53,7 @@ except ImportError:
         DomainConsolidatedResponse,
         create_extraction_model,
     )
-    from development.step_3_ideaExtractor.dimension_data import get_dimension
+    from steps.step_3_ideaExtractor.dimension_data import get_dimension
 
 
 # Configuration (from centralized test_data.py)
@@ -210,8 +210,8 @@ def main():
     if not prompts_file.exists():
         print(f"\nNo prompts file found at: {prompts_file}")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m development.step_3_ideaExtractor.run_experiment")
-        print("\nMake sure PRINT_PROMPTS = True in run_experiment.py")
+        print("  cd src && python -m steps.step_3_ideaExtractor.run_ideaExtractor")
+        print("\nMake sure PRINT_PROMPTS = True in run file")
         return
 
     data = load_prompts(prompts_file)

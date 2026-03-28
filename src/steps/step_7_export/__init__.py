@@ -1,1 +1,1 @@
-"""Step 9: Export - Export results to Excel with optional visualizations"""
+"""Step 7: Export - Export results to Excel"""

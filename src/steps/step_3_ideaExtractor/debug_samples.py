@@ -5,7 +5,7 @@ Debug script for Step 3: Idea Extractor
 Loads cached results and prints sample responses with extracted ideas.
 
 Usage:
-    cd src && python -m development.step_3_ideaExtractor.debug_samples
+    cd src && python -m steps.step_3_ideaExtractor.debug_samples
 """
 
 import sys
@@ -16,18 +16,18 @@ sys.path.insert(0, str(src_dir))
 import random
 import re
 try:
-    from development.step_3_ideaExtractor import models_exp as models
+    from steps.step_3_ideaExtractor import models
 except ImportError:
     models_dir = Path(__file__).parent
     if str(models_dir) not in sys.path:
         sys.path.insert(0, str(models_dir))
-    import models_exp as models
+    import models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:

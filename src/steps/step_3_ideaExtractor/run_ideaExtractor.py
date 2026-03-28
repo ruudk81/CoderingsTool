@@ -1,18 +1,13 @@
 #%%
 """
-Step 2: Idea Extraction runner
+Step 3: Idea Extraction Step Runner
 
-Loads Step 2 (filtered) results from cache and runs idea extraction
+Loads Step 2 (filtered) results from cache and runs idea extraction.
 
 Usage:
-    cd src && python -m development.step_3_ideaExtractor.run_experiment
-
-Toggle:
-    USE_EXPERIMENTAL = True  -> Uses experimental qualityFilter from this folder
-    USE_EXPERIMENTAL = False -> Uses production qualityFilter from utils/
+    cd src && python -m steps.step_3_ideaExtractor.run_ideaExtractor
 """
 
-USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
 EXPERIMENT_N  = None  # n or None
 DISCOVER_DOMAINS = True  # True = Phase 3 discovers domains upfront; False = on-the-fly
@@ -36,16 +31,16 @@ from dataclasses import dataclass
 from typing import Optional
 
 # =============================================================================
-# SHARED IMPORTS (from production)
+# SHARED IMPORTS
 # =============================================================================
 
 try:
-    from development.step_3_ideaExtractor import models_exp as models
+    from steps.step_3_ideaExtractor import models
 except ImportError:
     models_dir = Path(__file__).parent
     if str(models_dir) not in sys.path:
         sys.path.insert(0, str(models_dir))
-    import models_exp as models
+    import models
 from config import CacheConfig
 from config_steps.config_ideaExtractor import DEFAULT_SEGMENTATION_CONFIG
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -57,7 +52,7 @@ from utils import dataLoader
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
@@ -65,11 +60,11 @@ except ImportError:
     from test_data import TEST_DATA
 
 # =============================================================================
-# EXPERIMENT CONFIGURATION
+# STEP CONFIGURATION
 # =============================================================================
 @dataclass
-class ExperimentConfig:
-    """Configuration for the ideaExtractor experiment."""
+class StepConfig:
+    """Configuration for the ideaExtractor step."""
 
     # Data config from centralized test_data.py
     filename: str = TEST_DATA.filename
@@ -77,38 +72,33 @@ class ExperimentConfig:
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
 
-    # Toggle: production vs experimental
-    use_experimental: bool = USE_EXPERIMENTAL  # Set True to use local ideaExtractor_exp.py
-
     # Output settings
     verbose: bool = True
     prompt_printer_enabled: bool = PRINT_PROMPTS
 
     # Processing settings
-    force_recalc: bool = True  # Always recalculate in development
-    experiment_n: Optional[int] = EXPERIMENT_N  # Limit responses for experiment (None = use all)
+    force_recalc: bool = True  # Always recalculate
+    experiment_n: Optional[int] = EXPERIMENT_N  # Limit responses (None = use all)
 
 
-EXPERIMENT_CONFIG = ExperimentConfig()
+STEP_CONFIG = StepConfig()
 
-if USE_EXPERIMENTAL:
-    try:
-        from .ideaExtractor_exp import IdeaExtractor
-    except ImportError:
-        exp_dir = Path(__file__).parent
-        if str(exp_dir) not in sys.path:
-            sys.path.insert(0, str(exp_dir))
-        from ideaExtractor_exp import IdeaExtractor
-    print("[EXPERIMENTAL] Using ideaExtractor_exp.py from development folder")
-else:
-    from utils.ideaExtractor import IdeaExtractor
-    print("[PRODUCTION] Using ideaExtractor.py from utils/")
+# =============================================================================
+# IMPORTS
+# =============================================================================
+try:
+    from .ideaExtractor import IdeaExtractor
+except ImportError:
+    exp_dir = Path(__file__).parent
+    if str(exp_dir) not in sys.path:
+        sys.path.insert(0, str(exp_dir))
+    from ideaExtractor import IdeaExtractor
 
 
 # =============================================================================
 # CACHE OPERATIONS
 # =============================================================================
-def load_step2_cache(config: ExperimentConfig):
+def load_step2_cache(config: StepConfig):
     """Load quality-filtered results from Step 2 cache."""
     variable_key = generate_enhanced_variable_key(
         selected_variables=[config.var_name],
@@ -131,19 +121,19 @@ def load_step2_cache(config: ExperimentConfig):
     return data, variable_key, cache_manager
 
 
-def get_var_lab(config: ExperimentConfig) -> str:
+def get_var_lab(config: StepConfig) -> str:
     """Get variable label from data file."""
     loader = dataLoader.DataLoader(data_dir=str(data_dir), verbose=False)
     return loader.get_varlab(filename=config.filename, var_name=config.var_name)
 
 
 # =============================================================================
-# MAIN EXPERIMENT RUNNER
+# MAIN STEP RUNNER
 # =============================================================================
-def run_experiment(config: ExperimentConfig = None):
+def run_step(config: StepConfig = None):
     """Run the idea extraction step."""
     if config is None:
-        config = EXPERIMENT_CONFIG
+        config = STEP_CONFIG
 
     # Load previous step output
     quality_filtered_text, variable_key, cache_manager = load_step2_cache(config)
@@ -158,9 +148,8 @@ def run_experiment(config: ExperimentConfig = None):
         print_realtime=config.prompt_printer_enabled  # Only print if requested
     )
 
-    verbose_reporter.section_header("IDEA EXTRACTION EXPERIMENT")
+    verbose_reporter.section_header("IDEA EXTRACTION")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
-    verbose_reporter.stat_line(f"Using experimental: {USE_EXPERIMENTAL}")
 
     # Filter to meaningful responses only
     filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
@@ -170,7 +159,7 @@ def run_experiment(config: ExperimentConfig = None):
     # Optionally limit to experiment_n responses
     if config.experiment_n is not None and config.experiment_n < len(filtered_text):
         filtered_text = filtered_text[:config.experiment_n]
-        verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} responses")
+        verbose_reporter.stat_line(f"Subset: {config.experiment_n} responses")
 
     verbose_reporter.stat_line(f"Processing: {len(filtered_text)} responses")
 
@@ -231,7 +220,7 @@ def run_experiment(config: ExperimentConfig = None):
     else:
         print(f"\nAll {len(filtered_text)} responses processed successfully (0 PROCESSING_ERROR)")
 
-    print(f"\n'Idea extraction experiment' completed in {elapsed_time:.2f} seconds.\n")
+    print(f"\n'Idea extraction' completed in {elapsed_time:.2f} seconds.\n")
 
     # Save prompts to JSON file
     if prompt_printer.prompts:
@@ -247,7 +236,7 @@ def run_experiment(config: ExperimentConfig = None):
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
-    config = EXPERIMENT_CONFIG
+    config = STEP_CONFIG
 
     # Get variable label for verbose capture
     var_lab = get_var_lab(config)
@@ -265,19 +254,18 @@ if __name__ == "__main__":
     token_tracker.reset()
 
     print("=" * 70)
-    print("EXPERIMENT: Step 3 - Idea Extractor")
+    print("Step 3 - Idea Extractor")
     print("=" * 70)
     print(f"Dataset: {config.filename}")
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
-    print(f"Using experimental: {USE_EXPERIMENTAL}")
     print(f"Model: {DEFAULT_SEGMENTATION_CONFIG.model}")
     print(f"Experiment N: {config.experiment_n or 'all'}")
     print(f"Force recalculate: {config.force_recalc}")
     print("=" * 70)
 
     try:
-        results, extractor, prompt_printer = run_experiment(config)
+        results, extractor, prompt_printer = run_step(config)
 
         # Print sample output
         if results and len(results) > 0:
@@ -294,7 +282,7 @@ if __name__ == "__main__":
                 print(f"  - {idea.idea}")
                 ladder_parts = [v for v in (idea.instance, idea.interpretation, idea.abstraction) if v]
                 if ladder_parts:
-                    print(f"    ladder: {' → '.join(ladder_parts)}")
+                    print(f"    ladder: {' -> '.join(ladder_parts)}")
                 if idea.domain:
                     print(f"    domain: {idea.domain}")
                 if idea.valence:
@@ -304,7 +292,7 @@ if __name__ == "__main__":
         # Print all taxonomies
         if results:
             print("\n" + "=" * 70)
-            print("ALL TAXONOMIES  (instance → interpretation → abstraction | domain | valence)")
+            print("ALL TAXONOMIES  (instance -> interpretation -> abstraction | domain | valence)")
             print("=" * 70)
             tax_count = 0
             for item in results:
@@ -312,7 +300,7 @@ if __name__ == "__main__":
                     continue
                 for idea in item.response_ideas:
                     ladder_parts = [v for v in (idea.instance, idea.interpretation, idea.abstraction) if v]
-                    chain = " → ".join(ladder_parts)
+                    chain = " -> ".join(ladder_parts)
                     extras = []
                     if idea.domain:
                         extras.append(idea.domain)

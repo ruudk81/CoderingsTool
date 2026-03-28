@@ -1,17 +1,13 @@
 #%%
 
 """
-Step 1: Preprocess Experiment Runner
+Step 1: Preprocess Step Runner
 
-Runs the preprocessing step in isolation for experimentation.
+Runs the preprocessing step in isolation.
 Loads Step 0 (data) results from cache and runs preprocessing.
 
 Usage:
-    cd src && python -m development.step_1_preProcessor.run_experiment
-
-Toggle:
-    USE_EXPERIMENTAL = True  -> Uses experimental utils from this folder
-    USE_EXPERIMENTAL = False -> Uses production utils from utils/
+    cd src && python -m steps.step_1_preProcessor.run_preProcessor
 """
 
 import sys
@@ -33,7 +29,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 # =============================================================================
-# SHARED IMPORTS (from production)
+# SHARED IMPORTS
 # =============================================================================
 import models
 from config import CacheConfig
@@ -47,7 +43,7 @@ from utils import dataLoader
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     # Fallback for direct execution
     exp_root = Path(__file__).parent.parent
@@ -56,56 +52,44 @@ except ImportError:
     from test_data import TEST_DATA
 
 # =============================================================================
-# EXPERIMENT CONFIGURATION
+# STEP CONFIGURATION
 # =============================================================================
 @dataclass
-class ExperimentConfig:
+class StepConfig:
     # Data config from centralized test_data.py
     filename: str = TEST_DATA.filename
     id_column: str = TEST_DATA.id_column
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
-    # Experiment-specific settings
-    use_experimental: bool = True
+    # Step-specific settings
     verbose: bool = True
     prompt_printer_enabled: bool = False
     force_recalc: bool = True
 
 
-EXPERIMENT_CONFIG = ExperimentConfig()
+STEP_CONFIG = StepConfig()
 
 # =============================================================================
-# TOGGLE: PRODUCTION vs EXPERIMENTAL
+# IMPORTS
 # =============================================================================
-USE_EXPERIMENTAL = EXPERIMENT_CONFIG.use_experimental
-
-if USE_EXPERIMENTAL:
-    # Try relative import first (works when run as module: python -m ...)
-    # Fall back to absolute import (works when run directly or in notebook)
-    try:
-        from .spellChecker_exp import SpellChecker
-        from .textNormalizer_exp import TextNormalizer
-        from .textFinalizer_exp import TextFinalizer
-    except ImportError:
-        # Add development folder to path for direct execution
-        exp_dir = Path(__file__).parent
-        if str(exp_dir) not in sys.path:
-            sys.path.insert(0, str(exp_dir))
-        from spellChecker_exp import SpellChecker
-        from textNormalizer_exp import TextNormalizer
-        from textFinalizer_exp import TextFinalizer
-    print("[EXPERIMENTAL] Using experimental utils from development folder")
-else:
-    from utils.spellChecker import SpellChecker
-    from utils.textNormalizer import TextNormalizer
-    from utils.textFinalizer import TextFinalizer
-    print("[PRODUCTION] Using utils from utils/")
+try:
+    from .spellChecker import SpellChecker
+    from .textNormalizer import TextNormalizer
+    from .textFinalizer import TextFinalizer
+except ImportError:
+    # Add step folder to path for direct execution
+    exp_dir = Path(__file__).parent
+    if str(exp_dir) not in sys.path:
+        sys.path.insert(0, str(exp_dir))
+    from spellChecker import SpellChecker
+    from textNormalizer import TextNormalizer
+    from textFinalizer import TextFinalizer
 
 
 # =============================================================================
 # CACHE OPERATIONS
 # =============================================================================
-def load_step0_cache(config: ExperimentConfig):
+def load_step0_cache(config: StepConfig):
     """Load raw data from Step 0 cache."""
     variable_key = generate_enhanced_variable_key(
         selected_variables=[config.var_name],
@@ -128,17 +112,17 @@ def load_step0_cache(config: ExperimentConfig):
     return data, variable_key, cache_manager
 
 
-def get_var_lab(config: ExperimentConfig) -> str:
+def get_var_lab(config: StepConfig) -> str:
     loader = dataLoader.DataLoader(data_dir=str(data_dir), verbose=False)
     return loader.get_varlab(filename=config.filename, var_name=config.var_name)
 
 
 # =============================================================================
-# MAIN EXPERIMENT RUNNER
+# MAIN STEP RUNNER
 # =============================================================================
-def run_experiment(config: ExperimentConfig = None):
+def run_step(config: StepConfig = None):
     if config is None:
-        config = EXPERIMENT_CONFIG
+        config = STEP_CONFIG
 
     raw_text_list, variable_key, cache_manager = load_step0_cache(config)
     var_lab = get_var_lab(config)
@@ -147,9 +131,8 @@ def run_experiment(config: ExperimentConfig = None):
     prompt_printer = PromptPrinter(enabled=config.prompt_printer_enabled, print_realtime=config.prompt_printer_enabled)
     spell_check_config = SpellCheckConfig(minimum_timeout_seconds=15.0, maximum_timeout_seconds=60.0)
 
-    verbose_reporter.section_header("PREPROCESSING EXPERIMENT")
+    verbose_reporter.section_header("PREPROCESSING")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
-    verbose_reporter.stat_line(f"Using experimental: {USE_EXPERIMENTAL}")
     verbose_reporter.stat_line(f"Input: {len(raw_text_list)} responses")
 
     start_time = time.time()
@@ -223,7 +206,7 @@ def run_experiment(config: ExperimentConfig = None):
     cache_manager.save_to_cache(preprocessed_text, config.filename, "preprocessed", variable_key, elapsed_time, var_lab=var_lab)
 
     verbose_reporter.stat_line(f"Output: {len(preprocessed_text)} preprocessed responses")
-    print(f"\n'Preprocessing experiment' completed in {elapsed_time:.2f} seconds.\n")
+    print(f"\n'Preprocessing' completed in {elapsed_time:.2f} seconds.\n")
 
     return preprocessed_text
 
@@ -232,7 +215,7 @@ def run_experiment(config: ExperimentConfig = None):
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
-    config = EXPERIMENT_CONFIG
+    config = STEP_CONFIG
     var_lab = get_var_lab(config)
 
     variable_key = generate_enhanced_variable_key([config.var_name], False, config.sample_size)
@@ -247,16 +230,15 @@ if __name__ == "__main__":
     token_tracker.reset()
 
     print("=" * 70)
-    print("EXPERIMENT: Step 1 - Preprocess")
+    print("Step 1 - Preprocess")
     print("=" * 70)
     print(f"Dataset: {config.filename}")
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
-    print(f"Using experimental: {USE_EXPERIMENTAL}")
     print("=" * 70)
 
     try:
-        results = run_experiment(config)
+        results = run_step(config)
 
         if token_tracker.call_count > 0:
             print(token_tracker.get_summary())

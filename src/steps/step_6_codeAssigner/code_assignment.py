@@ -62,8 +62,8 @@ from config import (
     get_reasoning_params,
 )
 
-from development.step_3_ideaExtractor import models_exp as models
-from development.step_3_ideaExtractor.ideaExtractor_exp import (
+from steps.step_3_ideaExtractor import models
+from steps.step_3_ideaExtractor.ideaExtractor import (
     TokenBucket,
     ConcurrencyGate,
     LatencyTracker,
@@ -84,13 +84,13 @@ from config_steps.config_ideaExtractor import (
 
 from config_steps.config_codeAssigner import AssignmentConfig, get_other_category_label
 from .models_codeAssigner import CodeAssignedSubmodel, CodeAssignedModel
-from development.step_4_classifier.models_classifier import DomainSet, DomainResultModel
+from steps.step_4_classifier.models_classifier import DomainSet, DomainResultModel
 from .prompts_codeAssigner import (
     build_code_assignment_prompt,
     CodeAssignmentResponse,
     configure_validation_mode,
 )
-from development.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
+from prompts_steps.prompts_codeGenerator import CodeFromAttributes
 from .models_codeAssigner import CodeAssignment, CodeAssignmentBatch
 
 @dataclass

@@ -7,7 +7,7 @@ Partition models, taxonomy cache models, and growing model output.
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
-from development.step_3_ideaExtractor.models_exp import (
+from steps.step_3_ideaExtractor.models import (
     IdeasExtractedSubmodel,
     IdeasExtractedModel,
 )

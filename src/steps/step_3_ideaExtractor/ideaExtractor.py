@@ -46,10 +46,7 @@ from aiolimiter import AsyncLimiter
 logger = logging.getLogger(__name__)
 
 # === MODELS ========================================================================================================
-try:
-    from . import models_exp as models
-except ImportError:
-    from development.step_3_ideaExtractor import models_exp as models
+from steps.step_3_ideaExtractor import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
@@ -58,54 +55,29 @@ from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_
 from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE, COLD_START_P95_MULTIPLIER
 
 # === PROMPTS (builders + response models) =========================================================================
-try:
-    from .prompts_exp import (
-        build_context_specifier_group1_prompt,
-        build_context_specifier_group2_prompt,
-        build_consolidate_specifiers_group1_prompt,
-        build_consolidate_specifiers_group2_prompt,
-        build_primary_dimension_decision_tree_prompt,
-        build_primary_dimension_consolidation_prompt,
-        build_domain_discovery_prompt,
-        build_domain_consolidation_prompt,
-        build_taxonomy_enriched_extraction_prompt,
-        GenericSpecifierGroup1Response,
-        GenericSpecifierGroup2Response,
-        PrimaryDimensionChunkResponse,
-        PrimaryDimensionConsolidatedResponse,
-        DomainItem,
-        DomainChunkResponse,
-        DomainConsolidatedResponse,
-        create_extraction_model,
-        consolidate_primary_dimension_by_majority,
-    )
-except ImportError:
-    from development.step_3_ideaExtractor.prompts_exp import (
-        build_context_specifier_group1_prompt,
-        build_context_specifier_group2_prompt,
-        build_consolidate_specifiers_group1_prompt,
-        build_consolidate_specifiers_group2_prompt,
-        build_primary_dimension_decision_tree_prompt,
-        build_primary_dimension_consolidation_prompt,
-        build_domain_discovery_prompt,
-        build_domain_consolidation_prompt,
-        build_taxonomy_enriched_extraction_prompt,
-        GenericSpecifierGroup1Response,
-        GenericSpecifierGroup2Response,
-        PrimaryDimensionChunkResponse,
-        PrimaryDimensionConsolidatedResponse,
-        DomainItem,
-        DomainChunkResponse,
-        DomainConsolidatedResponse,
-        create_extraction_model,
-        consolidate_primary_dimension_by_majority,
-    )
+from prompts_steps.prompts_ideaExtractor import (
+    build_context_specifier_group1_prompt,
+    build_context_specifier_group2_prompt,
+    build_consolidate_specifiers_group1_prompt,
+    build_consolidate_specifiers_group2_prompt,
+    build_primary_dimension_decision_tree_prompt,
+    build_primary_dimension_consolidation_prompt,
+    build_domain_discovery_prompt,
+    build_domain_consolidation_prompt,
+    build_taxonomy_enriched_extraction_prompt,
+    GenericSpecifierGroup1Response,
+    GenericSpecifierGroup2Response,
+    PrimaryDimensionChunkResponse,
+    PrimaryDimensionConsolidatedResponse,
+    DomainItem,
+    DomainChunkResponse,
+    DomainConsolidatedResponse,
+    create_extraction_model,
+    consolidate_primary_dimension_by_majority,
+)
 
 # === DIMENSION DATA ===============================================================================================
-try:
-    from .dimension_data import get_dimension, DimensionDefinition
-except ImportError:
-    from development.step_3_ideaExtractor.dimension_data import get_dimension, DimensionDefinition
+from steps.step_3_ideaExtractor.dimension_data import get_dimension, DimensionDefinition
 
 # === STEP-SPECIFIC CONFIG =============================================================================================
 from config_steps.config_ideaExtractor import (

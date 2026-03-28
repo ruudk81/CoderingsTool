@@ -9,7 +9,7 @@ Shows:
 - Sample meaningful responses: random sample of passed responses
 
 Usage:
-    cd src && python -m development.step_2_qualityFilter.view_quality_results
+    cd src && python -m steps.step_2_qualityFilter.view_quality_results
 """
 
 import sys
@@ -26,7 +26,7 @@ from config import CacheConfig
 from utils import dataLoader
 
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:

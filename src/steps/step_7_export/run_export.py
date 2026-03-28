@@ -1,17 +1,13 @@
 #%%
 
 """
-Step 7: Export Experiment Runner
+Step 7: Export Step Runner
 
-Runs the export step in isolation for experimentation.
+Runs the export step in isolation.
 Loads Step 6 (taxonomy_codes) results from cache and exports to Excel.
 
 Usage:
-    cd src && python -m development.step_7_export.run_experiment
-
-Toggle:
-    USE_EXPERIMENTAL = True  -> Uses experimental resultsExporter from this folder
-    USE_EXPERIMENTAL = False -> Uses production resultsExporter from utils/
+    cd src && python -m steps.step_7_export.run_export
 """
 
 import sys
@@ -32,12 +28,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 # =============================================================================
-# SHARED IMPORTS (from production)
+# SHARED IMPORTS
 # =============================================================================
 import models
-from development.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
-from development.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
-from development.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from steps.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
+from steps.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
+from prompts_steps.prompts_codeGenerator import ConsolidatedCode
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -46,7 +42,7 @@ from utils import dataLoader
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
@@ -54,46 +50,38 @@ except ImportError:
     from test_data import TEST_DATA
 
 # =============================================================================
-# EXPERIMENT CONFIGURATION
+# STEP CONFIGURATION
 # =============================================================================
 @dataclass
-class ExperimentConfig:
+class StepConfig:
     # Data config from centralized test_data.py
     filename: str = TEST_DATA.filename
     id_column: str = TEST_DATA.id_column
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
-    # Experiment-specific settings
-    use_experimental: bool = True
+    # Step-specific settings
     verbose: bool = True
     force_recalc: bool = True
 
 
-EXPERIMENT_CONFIG = ExperimentConfig()
+STEP_CONFIG = StepConfig()
 
 # =============================================================================
-# TOGGLE: PRODUCTION vs EXPERIMENTAL
+# IMPORTS
 # =============================================================================
-USE_EXPERIMENTAL = EXPERIMENT_CONFIG.use_experimental
-
-if USE_EXPERIMENTAL:
-    try:
-        from .resultsExporter_exp import ResultsExporter
-    except ImportError:
-        exp_dir = Path(__file__).parent
-        if str(exp_dir) not in sys.path:
-            sys.path.insert(0, str(exp_dir))
-        from resultsExporter_exp import ResultsExporter
-    print("[EXPERIMENTAL] Using resultsExporter_exp.py from development folder")
-else:
-    from utils.resultsExporter import ResultsExporter
-    print("[PRODUCTION] Using resultsExporter.py from utils/")
+try:
+    from .resultsExporter import ResultsExporter
+except ImportError:
+    exp_dir = Path(__file__).parent
+    if str(exp_dir) not in sys.path:
+        sys.path.insert(0, str(exp_dir))
+    from resultsExporter import ResultsExporter
 
 
 # =============================================================================
 # CACHE OPERATIONS
 # =============================================================================
-def load_step6_cache(config: ExperimentConfig):
+def load_step6_cache(config: StepConfig):
     """Load step 6 (taxonomy_codes) and step 5 (mece_codes) from cache."""
     variable_key = generate_enhanced_variable_key(
         selected_variables=[config.var_name],
@@ -143,26 +131,25 @@ def load_step6_cache(config: ExperimentConfig):
     return code_assigned_results, codes, partition_set, partition_results, quality_filtered_text, variable_key
 
 
-def get_var_lab(config: ExperimentConfig) -> str:
+def get_var_lab(config: StepConfig) -> str:
     loader = dataLoader.DataLoader(data_dir=str(data_dir), verbose=False)
     return loader.get_varlab(filename=config.filename, var_name=config.var_name)
 
 
 # =============================================================================
-# MAIN EXPERIMENT RUNNER
+# MAIN STEP RUNNER
 # =============================================================================
-def run_experiment(config: ExperimentConfig = None):
+def run_step(config: StepConfig = None):
     if config is None:
-        config = EXPERIMENT_CONFIG
+        config = STEP_CONFIG
 
     code_assigned_results, codes, partition_set, partition_results, quality_filtered_text, variable_key = load_step6_cache(config)
     var_lab = get_var_lab(config)
 
     verbose_reporter = VerboseReporter(config.verbose)
 
-    verbose_reporter.section_header("EXPORT EXPERIMENT")
+    verbose_reporter.section_header("EXPORT")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
-    verbose_reporter.stat_line(f"Using experimental: {USE_EXPERIMENTAL}")
     verbose_reporter.stat_line(f"Input: {len(code_assigned_results)} assigned results, {len(codes)} codes")
 
     start_time = time.time()
@@ -183,7 +170,7 @@ def run_experiment(config: ExperimentConfig = None):
     elapsed_time = time.time() - start_time
 
     verbose_reporter.stat_line(f"Output: {excel_path}")
-    print(f"\n'Export experiment' completed in {elapsed_time:.2f} seconds.\n")
+    print(f"\n'Export' completed in {elapsed_time:.2f} seconds.\n")
 
     return excel_path
 
@@ -192,7 +179,7 @@ def run_experiment(config: ExperimentConfig = None):
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
-    config = EXPERIMENT_CONFIG
+    config = STEP_CONFIG
     var_lab = get_var_lab(config)
 
     verbose_capture = VerboseCapture(
@@ -204,16 +191,15 @@ if __name__ == "__main__":
     verbose_capture.__enter__()
 
     print("=" * 70)
-    print("EXPERIMENT: Step 7 - Export")
+    print("Step 7 - Export")
     print("=" * 70)
     print(f"Dataset: {config.filename}")
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
-    print(f"Using experimental: {USE_EXPERIMENTAL}")
     print("=" * 70)
 
     try:
-        excel_path = run_experiment(config)
+        excel_path = run_step(config)
 
         print("\n" + "=" * 70)
         print("EXPORT COMPLETE")

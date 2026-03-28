@@ -5,7 +5,7 @@ Debug script for Taxonomy Classifier prompts (P1-P7): Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
 Usage:
-    cd src && python -m development.step_4_classifier.debug_taxonomy_prompts
+    cd src && python -m steps.step_4_classifier.debug_taxonomy_prompts
 """
 
 import sys
@@ -22,7 +22,7 @@ from utils.cacheManager import generate_enhanced_variable_key
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:
@@ -30,7 +30,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 # Import response models
-from development.step_4_classifier.prompts_classifier import (
+from prompts_steps.prompts_classifier import (
     FacetDiscoveryResult,
     FacetConsolidatedResponse,
     FacetAssignmentBatch,
@@ -214,7 +214,7 @@ def main():
     if not prompts_files:
         print("\nNo prompts files found.")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m development.step_4_classifier.run_experiment")
+        print("  cd src && python -m steps.step_4_classifier.run_classifier")
         return
 
     # Merge prompts from all files

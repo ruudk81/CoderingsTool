@@ -40,19 +40,12 @@ from config_steps.config_preProcessor import (
     OUTPUT_TOKEN_RATIO, SPACY_VECTOR_NORM_THRESHOLD,
 )
 
-# === PROMPTS (from experimental prompts_exp.py) ========================================================================================================
-try:
-    from .prompts_exp import (
-        SPELLCHECK_INSTRUCTIONS,
-        CorrectionItem,
-        LLMCorrectionResponse,
-    )
-except ImportError:
-    from prompts_exp import (
-        SPELLCHECK_INSTRUCTIONS,
-        CorrectionItem,
-        LLMCorrectionResponse,
-    )
+# === PROMPTS ========================================================================================================
+from prompts_steps.prompts_preProcessor import (
+    SPELLCHECK_INSTRUCTIONS,
+    CorrectionItem,
+    LLMCorrectionResponse,
+)
 
 logger = logging.getLogger(__name__)
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH

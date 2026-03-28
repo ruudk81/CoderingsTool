@@ -8,7 +8,7 @@ Output:
   - CSV: flat export to exports/ for Excel inspection
 
 Usage:
-    cd src && python -m development.step_6_codeAssigner.view_ideas
+    cd src && python -m steps.step_6_codeAssigner.view_ideas
 """
 
 import csv
@@ -19,13 +19,13 @@ from typing import Dict, List, Optional
 
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
-sys.path.insert(0, str(project_root / "src" / "development"))
+sys.path.insert(0, str(project_root / "src" / "steps"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from development.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel, CodeAssignedSubmodel
+from steps.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel, CodeAssignedSubmodel
 
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     exp_root = Path(__file__).parent.parent
     if str(exp_root) not in sys.path:

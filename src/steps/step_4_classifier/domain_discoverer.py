@@ -12,7 +12,7 @@ collects unique labels per partition.
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 
-from development.step_3_ideaExtractor import models_exp as models
+from steps.step_3_ideaExtractor import models
 
 from config_steps.config_classifier import CategoriesConfig
 from .partition_labels import collect_unique_labels, collect_unique_labels_with_domains, format_label

@@ -1,12 +1,10 @@
 """
-Centralized test data configuration for all development.
+Centralized test data configuration for all pipeline steps.
 
-Change these values once, and all run_experiment.py files will use them.
+Change these values once, and all run_[step].py files will use them.
 
 Usage:
-    from development.test_data import TEST_DATA
-    # or when running from development folder:
-    from test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 """
 
 from dataclasses import dataclass
@@ -15,7 +13,7 @@ from typing import Optional
 
 @dataclass
 class TestDataConfig:
-    """Configuration for the test dataset used in development."""
+    """Configuration for the test dataset used in steps."""
     
     #filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     #id_column = "DLNMID"
@@ -43,5 +41,5 @@ class TestDataConfig:
     # sample_size = 50
 
 
-# Singleton instance - import this in run_experiment.py
+# Singleton instance - import this in run file
 TEST_DATA = TestDataConfig()

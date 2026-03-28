@@ -1,16 +1,16 @@
 #%%
 
 """
-Step 0: Data Loader Experiment Runner
+Step 0: Data Loader Step Runner
 
 Loads raw data from an SPSS file and writes it to cache as List[ResponseModel].
-This seeds the cache for all downstream development steps (step_1, step_2, etc.)
+This seeds the cache for all downstream steps (step_1, step_2, etc.)
 without requiring pipeline.py to run first.
 
-Always uses the production dataLoader — there is no experimental variant.
+Always uses the production dataLoader -- there is no step-specific variant.
 
 Usage:
-    cd src && python -m development.step_0_dataLoader.run_experiment
+    cd src && python -m steps.step_0_dataLoader.run_dataLoader
 """
 
 import sys
@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 # =============================================================================
-# SHARED IMPORTS (from production)
+# SHARED IMPORTS
 # =============================================================================
 import models
 from config import CacheConfig
@@ -41,7 +41,7 @@ from utils import dataLoader
 
 # Import centralized test data config
 try:
-    from development.test_data import TEST_DATA
+    from steps.test_data import TEST_DATA
 except ImportError:
     # Fallback for direct execution
     exp_root = Path(__file__).parent.parent
@@ -51,10 +51,10 @@ except ImportError:
 
 
 # =============================================================================
-# EXPERIMENT CONFIGURATION
+# STEP CONFIGURATION
 # =============================================================================
 @dataclass
-class ExperimentConfig:
+class StepConfig:
     # Data config from centralized test_data.py
     filename: str = TEST_DATA.filename
     id_column: str = TEST_DATA.id_column
@@ -65,23 +65,23 @@ class ExperimentConfig:
     force_recalc: bool = True
 
 
-EXPERIMENT_CONFIG = ExperimentConfig()
+STEP_CONFIG = StepConfig()
 
 
 # =============================================================================
 # HELPERS
 # =============================================================================
-def get_var_lab(config: ExperimentConfig) -> str:
+def get_var_lab(config: StepConfig) -> str:
     loader = dataLoader.DataLoader(data_dir=str(data_dir), verbose=False)
     return loader.get_varlab(filename=config.filename, var_name=config.var_name)
 
 
 # =============================================================================
-# MAIN EXPERIMENT RUNNER
+# MAIN STEP RUNNER
 # =============================================================================
-def run_experiment(config: ExperimentConfig = None):
+def run_step(config: StepConfig = None):
     if config is None:
-        config = EXPERIMENT_CONFIG
+        config = STEP_CONFIG
 
     variable_key = generate_enhanced_variable_key(
         selected_variables=[config.var_name],
@@ -165,7 +165,7 @@ def run_experiment(config: ExperimentConfig = None):
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
-    config = EXPERIMENT_CONFIG
+    config = STEP_CONFIG
     var_lab = get_var_lab(config)
 
     variable_key = generate_enhanced_variable_key([config.var_name], False, config.sample_size)
@@ -178,7 +178,7 @@ if __name__ == "__main__":
     verbose_capture.__enter__()
 
     print("=" * 70)
-    print("EXPERIMENT: Step 0 - Data Loader")
+    print("Step 0 - Data Loader")
     print("=" * 70)
     print(f"Dataset:     {config.filename}")
     print(f"Variable:    {config.var_name} - {var_lab}")
@@ -187,7 +187,7 @@ if __name__ == "__main__":
     print("=" * 70)
 
     try:
-        results = run_experiment(config)
+        results = run_step(config)
 
     finally:
         verbose_capture.__exit__(None, None, None)

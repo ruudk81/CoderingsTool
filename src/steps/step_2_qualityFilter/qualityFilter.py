@@ -18,57 +18,32 @@ from aiolimiter import AsyncLimiter
 # === MODELS ========================================================================================================
 import models
 
-# === CONFIG (from experimental config_exp.py) ========================================================================================================
-try:
-    from .config_exp import (
-        OPENAI_API_KEY, DEFAULT_LANGUAGE,
-        ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG,
-        ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
-        API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
-        AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
-        # Experimental constants
-        INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
-        DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
-        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
-        ADJUSTMENT_INTERVAL,
-        # Ramp-up, warm-up, and PID configs (from config_ideaExtractor)
-        RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
-        CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
-        WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
-        PIDControllerConfig, DEFAULT_PID_CONTROLLER_CONFIG,
-        TPMTrackingConfig, DEFAULT_TPM_TRACKING_CONFIG,
-        # Optimal API request strategy constants
-        get_model_tier_latency, get_output_ratio,
-        COLD_START_CAP, WARM_UP_WINDOW_SECONDS, WARM_UP_MIN_COMPLETIONS,
-        RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
-        SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
-    )
-    from .prompts_exp import GRADER_INSTRUCTIONS, GRADER_INSTRUCTIONS_STRUCTURED, QualityFilterStructuredResponse
-except ImportError:
-    from config_exp import (
-        OPENAI_API_KEY, DEFAULT_LANGUAGE,
-        ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG,
-        ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
-        API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
-        AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
-        # Experimental constants
-        INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
-        DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
-        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
-        ADJUSTMENT_INTERVAL,
-        # Ramp-up, warm-up, and PID configs (from config_ideaExtractor)
-        RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
-        CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
-        WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
-        PIDControllerConfig, DEFAULT_PID_CONTROLLER_CONFIG,
-        TPMTrackingConfig, DEFAULT_TPM_TRACKING_CONFIG,
-        # Optimal API request strategy constants
-        get_model_tier_latency, get_output_ratio,
-        COLD_START_CAP, WARM_UP_WINDOW_SECONDS, WARM_UP_MIN_COMPLETIONS,
-        RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
-        SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
-    )
-    from prompts_exp import GRADER_INSTRUCTIONS, GRADER_INSTRUCTIONS_STRUCTURED, QualityFilterStructuredResponse
+# === CONFIG ========================================================================================================
+from config import (
+    OPENAI_API_KEY, DEFAULT_LANGUAGE,
+    ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+    AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
+)
+from config_steps.config_qualityFilter import (
+    QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG,
+    INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
+    DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
+    PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
+    ADJUSTMENT_INTERVAL,
+    get_model_tier_latency, get_output_ratio,
+    COLD_START_CAP, WARM_UP_WINDOW_SECONDS, WARM_UP_MIN_COMPLETIONS,
+    RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
+    SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
+)
+from config_steps.config_ideaExtractor import (
+    RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
+    CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
+    WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
+    PIDControllerConfig, DEFAULT_PID_CONTROLLER_CONFIG,
+    TPMTrackingConfig, DEFAULT_TPM_TRACKING_CONFIG,
+)
+from prompts_steps.prompts_qualityFilter import GRADER_INSTRUCTIONS, GRADER_INSTRUCTIONS_STRUCTURED, QualityFilterStructuredResponse
 
 from utils.llm import RateLimits, extract_rate_limits_from_response, create_client, llm_create_async
 from config import get_reasoning_params
@@ -125,7 +100,7 @@ logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("instructor").setLevel(logging.ERROR)
 
-# Note: Constants (INPUT_HISTORY_MAXLEN, etc.) now imported from config_exp.py
+# Note: Constants (INPUT_HISTORY_MAXLEN, etc.) imported from config_steps/config_qualityFilter.py
 # Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS come from ProcessingConfig
 
 # === RATE LIMITING HELPER CLASSES  ========================================================================================================
