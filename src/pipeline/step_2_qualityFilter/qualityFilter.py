@@ -45,7 +45,7 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
 )
 from pipeline.step_2_qualityFilter.prompts_qualityFilter import GRADER_INSTRUCTIONS, GRADER_INSTRUCTIONS_STRUCTURED, QualityFilterStructuredResponse
 
-from utils.llm import RateLimits, extract_rate_limits_from_response, create_client, llm_create_async
+from utils.llm import RateLimits, extract_rate_limits_from_response, create_client, llm_create_async, token_tracker
 from config import get_reasoning_params
 from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, COLD_START_P95_MULTIPLIER
 
@@ -1144,6 +1144,9 @@ class Grader:
                             input_tokens = getattr(usage, 'input_tokens', 0)
                             output_tokens = getattr(usage, 'output_tokens', 0)
                             actual_total_tokens = getattr(usage, 'total_tokens', 0) or (input_tokens + output_tokens)
+
+                            # Record in global token tracker for cost reporting
+                            token_tracker.record(self.model, input_tokens, output_tokens)
 
                             if len(self.output_token_history) < 5:
                                 self.output_token_history.append(output_tokens)
