@@ -80,24 +80,57 @@ AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")
 # Adjust based on your subscription tier if needed
 # =============================================================================
 OPENAI_MODEL_LIMITS = {
-    # GPT-4.1 family - 1M context window
+    # GPT-4.1 family  
     "gpt-4.1": {"context_window": 1_000_000, "max_output": 32_000},
     "gpt-4.1-mini": {"context_window": 1_000_000, "max_output": 32_000},
     "gpt-4.1-nano": {"context_window": 1_000_000, "max_output": 32_000},
-    # GPT-5 family - 400K total (272K input + 128K output)
+    # GPT-5 family -  
+    "gpt-5.4": {"context_window": 1_000_000, "max_output": 128_000},
+    "gpt-5.4-mini": {"context_window": 400_000, "max_output": 128_000},
+    "gpt-5.4-nano": {"context_window": 400_000, "max_output": 128_000},
     "gpt-5": {"context_window": 272_000, "max_output": 128_000},
     "gpt-5.1": {"context_window": 272_000, "max_output": 128_000},
     "gpt-5.2": {"context_window": 272_000, "max_output": 128_000},
     "gpt-5-mini": {"context_window": 272_000, "max_output": 128_000},
     "gpt-5-nano": {"context_window": 128_000, "max_output": 32_000},
     "gpt-5-chat-latest": {"context_window": 272_000, "max_output": 128_000},
-    # GPT-4o family (legacy)
+    # GPT-4o family  
     "gpt-4o": {"context_window": 128_000, "max_output": 16_000},
     "gpt-4o-mini": {"context_window": 128_000, "max_output": 16_000},
     # Embeddings
     "text-embedding-3-large": {"context_window": 8_191, "max_output": 0},
     "text-embedding-3-small": {"context_window": 8_191, "max_output": 0},
 }
+
+# =============================================================================
+# MODEL PRICING (per 1M tokens) - Used by TokenTracker in llm.py
+# Update when OpenAI changes pricing: https://openai.com/api/pricing/
+# =============================================================================
+MODEL_PRICING = {
+    # GPT-4.1 family
+    "gpt-4.1": {"input": 2.00, "output": 8.00},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
+    # GPT-5 family
+    "gpt-5.4": {"input": 2.50, "output": 15.00},
+    "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
+    "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
+    "gpt-5": {"input": 1.25, "output": 10.00},
+    "gpt-5.1": {"input": 1.25, "output": 10.00},
+    "gpt-5.2": {"input": 1.25, "output": 10.00},
+    "gpt-5-mini": {"input": 0.25, "output": 2.00},
+    "gpt-5-nano": {"input": 0.05, "output": 0.40},
+    "gpt-5-chat-latest": {"input": 1.25, "output": 10.00},
+    # GPT-4o family (legacy)
+    "gpt-4o": {"input": 2.50, "output": 10.00},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    # Embeddings
+    "text-embedding-3-large": {"input": 0.13, "output": 0.0},
+    "text-embedding-3-small": {"input": 0.02, "output": 0.0},
+}
+
+# Default pricing for unknown models
+DEFAULT_PRICING = {"input": 1.00, "output": 4.00}
 
 # =============================================================================
 # MODEL FAMILY TOGGLE
@@ -111,8 +144,9 @@ OPENAI_MODEL_LIMITS = {
 # Examples:
 #   MODEL_FAMILY = "gpt-4.1"  →  gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
 #   MODEL_FAMILY = "gpt-5"    →  gpt-5, gpt-5-mini, gpt-5-nano
+#   MODEL_FAMILY = "gpt-5.4"   
 
-MODEL_FAMILY = "gpt-5"
+MODEL_FAMILY = "gpt-5.4"
 
 
 def get_model(tier: str = "default") -> str:
@@ -134,22 +168,22 @@ STEP_MODEL_TIERS = {
     # Step 1: Preprocessing
     "spell_check":      "nano",
     # Step 2: Quality Filter
-    "quality_filter":   "mini",
+    "quality_filter":   "nano",
     # Step 3: Idea Extraction
-    "segmentation":     "mini",
+    "segmentation":     "nano",
     # Step 4: Taxonomy Classifier (P1-P7)
-    "classifier_p1":    "mini",      # Facet Discovery
+    "classifier_p1":    "nano",      # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation
     "classifier_p3":    "nano",      # Facet Assignment
-    "classifier_p4":    "mini",      # Attribute Discovery
-    "classifier_p5":    "default",   # Attribute Chunk Consolidation
+    "classifier_p4":    "nano",      # Attribute Discovery
+    "classifier_p5":    "nano",      # Attribute Chunk Consolidation
     "classifier_p6":    "nano",      # Attribute Assignment
-    "classifier_p7":    "mini",      # Cross-facet Attribute Consolidation
+    "classifier_p7":    "default",      # Cross-facet Attribute Consolidation
     # Step 5: Code Generator (P8-P9)
     "codegen_p8":       "default",
     "codegen_p9":       "default",
     # Step 6: Code Assigner
-    "code_assignment":  "mini",
+    "code_assignment":  "nano",
 }
 
 
@@ -163,8 +197,8 @@ def get_step_model(phase: str) -> str:
 # automatically when using a reasoning model family like gpt-5.
 _REASONING_FAMILIES = {"gpt-5"}
 
-REASONING_EFFORT = "minimal"   # minimal, low, medium, high
-TEXT_VERBOSITY = "medium"      # minimal, low, medium, high
+REASONING_EFFORT = "none"   # minimal, low, medium, high - none only for >5.4
+TEXT_VERBOSITY = "low"      # minimal, low, medium, high
 
 
 def get_reasoning_params(model: str = None) -> dict:
@@ -323,6 +357,9 @@ class ModelConfig:
         "gpt-5": "reasoning",
         "gpt-5-mini": "reasoning",
         "gpt-5-nano": "reasoning",
+        "gpt-5.4": "reasoning",
+        "gpt-5.4-mini": "reasoning",
+        "gpt-5.4-nano": "reasoning",
     }
 
     # =============================================================================

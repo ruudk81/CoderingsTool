@@ -1,6 +1,6 @@
 # Model Pricing Reference
 
-Pricing per 1M tokens. Source: OpenAI pricing page, verified against `src/utils/llm.py:MODEL_PRICING`.
+Pricing per 1M tokens. Source: OpenAI pricing page, verified against `src/config.py:MODEL_PRICING`.
 
 Last updated: 2026-03-24
 
@@ -53,7 +53,7 @@ Total:                                 $2.108
 
 ## Where Pricing Lives in Code
 
-`src/utils/llm.py` → `MODEL_PRICING` dict (line ~387) + `TokenTracker.record()` method.
+`src/config.py` → `MODEL_PRICING` dict + `DEFAULT_PRICING` fallback. Consumed by `TokenTracker.record()` in `src/utils/llm.py`.
 
 The `TokenTracker` is a global singleton (`token_tracker`) that records every LLM call automatically via `_extract_and_track_usage()`. Access summary via `token_tracker.get_summary()`.
 
