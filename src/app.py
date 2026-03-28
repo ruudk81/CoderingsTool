@@ -28,7 +28,7 @@ from config import CacheConfig, ModelConfig, get_step_model
 from config_steps.config_classifier import CategoriesConfig
 from config_steps.config_codeGenerator import CodebookConfig
 from config_steps.config_codeAssigner import AssignmentConfig
-from config_steps.config_preprocess import SpellCheckConfig
+from config_steps.config_preProcessor import SpellCheckConfig
 from config_steps.config_qualityFilter import QualityFilterConfig
 from config_steps.config_ideaExtractor import SegmentationConfig
 

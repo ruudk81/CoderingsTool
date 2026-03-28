@@ -302,7 +302,7 @@ def step_1_preprocess(
         List[models.PreprocessedModel]: List of preprocessed response models
     """
     from utils import textNormalizer, spellChecker, textFinalizer, verboseReporter, promptPrinter
-    from config_steps.config_preprocess import SpellCheckConfig
+    from config_steps.config_preProcessor import SpellCheckConfig
 
     step_name = "preprocessed"
     variable_key, cache_manager = _resolve_step_defaults(variable_key, cache_manager)

@@ -23,33 +23,22 @@ from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
 from config import get_reasoning_params
 
-# === CONFIG (from experimental config_exp.py) ========================================================================================================
-try:
-    from .config_exp import (
-        OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH,
-        DUTCH_DICT_PATH, ENGLISH_DICT_PATH,
-        SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG,
-        ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
-        API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
-        AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
-        # Experimental constants
-        MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,
-        SUGGESTION_BATCH_SIZE, MAX_CONCURRENT_SUGGESTION_BATCHES,
-        OUTPUT_TOKEN_RATIO, SPACY_VECTOR_NORM_THRESHOLD,
-    )
-except ImportError:
-    from config_exp import (
-        OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH,
-        DUTCH_DICT_PATH, ENGLISH_DICT_PATH,
-        SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG,
-        ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
-        API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
-        AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
-        # Experimental constants
-        MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,
-        SUGGESTION_BATCH_SIZE, MAX_CONCURRENT_SUGGESTION_BATCHES,
-        OUTPUT_TOKEN_RATIO, SPACY_VECTOR_NORM_THRESHOLD,
-    )
+# === CONFIG — generic/universal ========================================================================================================
+from config import (
+    OPENAI_API_KEY, DEFAULT_LANGUAGE,
+    ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+    AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
+)
+
+# === CONFIG — step-specific ========================================================================================================
+from config_steps.config_preProcessor import (
+    HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH,
+    SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG,
+    MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,
+    SUGGESTION_BATCH_SIZE, MAX_CONCURRENT_SUGGESTION_BATCHES,
+    OUTPUT_TOKEN_RATIO, SPACY_VECTOR_NORM_THRESHOLD,
+)
 
 # === PROMPTS (from experimental prompts_exp.py) ========================================================================================================
 try:
