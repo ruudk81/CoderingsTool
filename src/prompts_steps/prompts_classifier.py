@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from steps.step_3_ideaExtractor.dimension_data import DimensionDefinition
+    from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
 
 
 # =============================================================================

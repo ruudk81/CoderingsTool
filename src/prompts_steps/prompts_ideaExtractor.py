@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator, create_model
 try:
     from .dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
 except ImportError:
-    from steps.step_3_ideaExtractor.dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
+    from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
 
 
 # ═══════════════════════════════════════════════════════════════════════
