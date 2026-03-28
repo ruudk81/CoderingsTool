@@ -26,9 +26,9 @@ def _get_hunspell_paths():
     Returns:
         Tuple of (hunspell_executable_path, hunspell_dict_directory)
     """
-    # Determine project root: pipeline/ -> src/ -> project root
-    config_file_dir = Path(__file__).parent  # pipeline/
-    project_root = config_file_dir.parent.parent  # project root
+    # Determine project root: step_1_preProcessor/ -> pipeline/ -> src/ -> project root
+    config_file_dir = Path(__file__).parent  # step_1_preProcessor/
+    project_root = config_file_dir.parent.parent.parent  # project root
     hunspell_dir = str(project_root / "hunspell")
 
     system = platform.system()
