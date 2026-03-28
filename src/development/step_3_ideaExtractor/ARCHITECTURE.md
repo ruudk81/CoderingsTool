@@ -192,6 +192,61 @@ Per idea (in `IdeasExtractedModel`):
 
 Step 5 uses this to: discover Facets (L3) within domains, assign Facets to ideas, discover Attributes (L4) within Facets, and derive codebook codes from Attributes.
 
+## Data Flow
+
+### From Step 2 (input)
+
+- **`List[QualityFilteredModel]`**: preprocessed responses with quality_filter flags; step 3 filters to `quality_filter=False` (meaningful responses only)
+
+### Step 3 Output (cached)
+
+- **Growing model** (`List[IdeasExtractedModel]`, step="extracted_ideas", prefix 004):
+  - Per-response: `response_ideas` (list of `IdeasExtractedSubmodel`), `idea_count`, `template_prefix`
+  - Per-idea: `idea`, `instance`, `interpretation`, `abstraction`, `domain` (L2), `facet` (hint), `valence`
+
+- **Metadata** (`ExtractionMetadata`, step="extracted_ideas", prefix 004):
+  - `primary_dimension`, `primary_dimension_description`, `decision_tree_stop_position`
+  - `domains` (list of `{key, label, definition}`)
+  - Context specifiers: `lang`, `sector`, `topic`, `perspective`, `entity`, `intent`
+  - File info: `filename`, `var_name`, `var_lab`, `template_prefix`
+
+### To Step 4 (output contract)
+
+Step 4 loads both outputs:
+- **Growing model**: per-idea domain assignment + abstraction ladder for taxonomy classification
+- **Metadata**: primary_dimension (to load `DimensionDefinition`), domains (for partitioning), specifiers (for prompts)
+
+Steps 5 and 6 also load `ExtractionMetadata` for survey context and dimension information.
+
+## Configuration
+
+**`SegmentationConfig`** (dataclass in `config_steps/config_ideaExtractor.py`):
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `model` | `get_step_model("segmentation")` | LLM model for extraction |
+| `max_tokens` | 16000 | Context window budget |
+| `completion_reserve` | 1000 | Reserved for output |
+| `min_batch_size` / `max_batch_size` | 5 / 20 | Responses per batch bounds |
+| `target_token_utilization` | 0.8 | Use 80% of available tokens |
+| `temperature` | 0.0 | Deterministic extraction |
+| `max_concurrent_requests` | 8 | Initial concurrency cap |
+| `minimum_timeout_seconds` / `maximum_timeout_seconds` | 15.0 / 60.0 | Timeout bounds |
+
+**Supporting configs** (all in `config_steps/config_ideaExtractor.py`):
+
+| Config | Key fields |
+|--------|-----------|
+| `TokenHistoryConfig` | input/output history windows (10/15), default_output_ratio (0.25) |
+| `TiktokenOffsetConfig` | api_offset_default (300), offset_history_maxlen (30) |
+| `TimeoutConfig` | timeout_floor_seconds (45.0), default_latency_seconds (2.0) |
+| `WarmUpConfig` | sample_min/max (15/30 completions before calibration) |
+| `RampUpConfig` | start_fraction/target_fraction (0.50/0.90 of Little's Law) |
+| `CircuitBreakerConfig` | trip_threshold (5% timeout rate), cooldown (60s), reduction_factor (0.85) |
+| `PIDControllerConfig` | kp_up/kp_down (0.4/0.2), max_adjustment (15%) |
+| `TPMTrackingConfig` | sliding_window (60s), target_utilization (0.80) |
+| `SpecifierConfig` | sample_min/max (50/1000), chunk_size (50), max_workers (10) |
+
 ## Rate Limiting (3-tier system)
 
 **TokenBucket**: simple bucket with regeneration based on elapsed time; enforces wait-and-acquire for token consumption.
