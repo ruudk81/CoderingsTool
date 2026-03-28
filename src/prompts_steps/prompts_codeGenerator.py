@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from utils.dimension_data import DimensionDefinition
+    from development.step_3_ideaExtractor.dimension_data import DimensionDefinition
 
-from prompts_steps.prompts_classifier import DiscoveredAttribute
+from development.step_4_classifier.prompts_classifier import DiscoveredAttribute
 
 
 # =============================================================================

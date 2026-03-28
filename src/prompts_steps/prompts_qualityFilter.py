@@ -1,174 +1,137 @@
-"""
-Prompts for Step 2: Quality Filtering
+"""Prompt for Step 2: Quality Filtering
 
-Contains the quality filter grading prompt and response models.
+Two prompt variants:
+- GRADER_INSTRUCTIONS_NANO: Raw text output with <scratchpad>/<category> tags (Pattern A)
+- GRADER_INSTRUCTIONS_STRUCTURED: Instructor-compatible with Pydantic model (Pattern B)
 """
 
 from __future__ import annotations
-from typing import Any, Optional, Union, Literal, List
-from pydantic import BaseModel, Field, model_validator
+from typing import Literal, Optional
+from pydantic import BaseModel, Field
 
 
 # =============================================================================
-# STEP 2: QUALITY FILTERING
+# SHARED PROMPT BODY (categories + decision rules, used by both variants)
 # =============================================================================
 
-GRADER_INSTRUCTIONS = """
-You are a {language} language grader evaluating open-ended survey responses.
-Your task is to determine whether each response provides **usable, on-topic content in relation to the specific survey question**, and assign appropriate quality filter codes.
+_CATEGORIES_BLOCK = """A response should ONLY be classified as noise if it matches one of the following categories WITHOUT AMBIGUITY:
 
-You will classify each response into one of three practical outcomes:
-
-==================================================
-OUTCOME A — Don't Know / Uncertainty
-CODE: 99999997 | quality_filter = true
-==================================================
-
-Use this code if the respondent explicitly expresses uncertainty, lack of knowledge, or non-applicability.
-
-This includes any response whose clear meaning in {language} is equivalent to:
+**Category 1: Don't know / Not knowing the answer**
+Explicit statements of not knowing, such as:
 - "I don't know"
-- "N/A"
-- "Not applicable"
+- "Not sure"
 - "No idea"
-- "Unsure"
-- "Can't say"
-- "?"
+- Equivalent phrases in any language
 
-If a response fits this pattern → set:
-quality_filter = true
-quality_filter_code = 99999997
+**Category 2: Not applicable / Not having the answer**
+Explicit statement of absence, such as:
+- "No answer"
+- "Not applicable"
+- "No explanation"
+- Empty placeholders: "-", "?", "N/A"
+- Equivalent phrases in any language
 
-==================================================
-OUTCOME B — Nonsensical/Gibberish OR completely Off-topic
-CODE: 99999999 | quality_filter = true
-==================================================
+**Category 3: Absence of answer / Not addressing the question**
+Not addressing the question, by explicit statments such as:
+- "Already mentioned it"
+- "See previous question"
+- "It's written above"
+- "As said before"
+- "Already done"
+- Equivalent phrases in any language
 
-Use this code for **two different kinds of unusable responses**:
+**Category 4: No text / Empty**
+Item nonresponse, such as:
+- Completely blank responses
+- Only whitespace
+- Single characters like "-" or "?"
+- Equivalent phrases in any language
 
-A) Pure gibberish / nonsensical
-   Examples:
-   - Random characters: "asdfkj", "jjjjj", "x!@#%"
-   - Placeholder text: "lorem ipsum", "test test"
-   - Verbatim repetition of the question with no added content
-   - Completely unintelligible text
-
-B) Intelligible but completely off-topic / totally irrelevant
-   The response is understandable {language} , BUT:
-   - It does NOT address the actual survey question ({var_lab}) even remotely, OR
-   - It obviously avoids the question.
-
-Illustractive examples in English (if the question is about public transport):
-- "Nothing"
-- "I love dogs."
-- "The weather is nice today."
-- "Pizza is better than pasta."
-- "I work in finance."
-- A personal story that has nothing to do with transportation.
-
-These are NOT "I don't know" — they are simply irrelevant to the question.
-
-If a response fits **either A or B** → set:
-quality_filter = true
-quality_filter_code = 99999999
-
-
-==================================================
-OUTCOME C — Meaningful / On-topic Response
-quality_filter = false | quality_filter_code = null
-==================================================
-
-A response is meaningful if:
-- It is understandable in {language}, AND
-- It engages with or relates to the survey question ({var_lab}), even if:
-  - It is very short
-  - It is vague
-  - It is opinionated
-  - It is critical
-  - It is poorly written
-  - It is partially incomplete
-
-Examples (if the question is about public transport):
-- "Buses are always late."
-- "Too crowded."
-- "Tickets are expensive."
-- "The metro is unreliable."
-
-For this category → set:
-quality_filter = false
-quality_filter_code = null
-
-==================================================
-SURVEY QUESTION
-<survey_question>
-{var_lab}
-</survey_question>
-
-RESPONSES TO EVALUATE
-<responses>
-{responses}
-</responses>
-
-==================================================
-DECISION RULE (FOLLOW EXACTLY)
-
-For each response, apply these steps in order:
-
-1. Does the response explicitly express uncertainty or "I don't know"?
-   - If YES → quality_filter = true, quality_filter_code = 99999997
-   - If NO → go to Step 2
-
-2. Ask:
-   "Does this response provide usable content that addresses the survey question, even remotely?"
-
-   - If NO (because it is gibberish OR off-topic) →
-     quality_filter = true, quality_filter_code = 99999999
-
-   - If YES →
-     quality_filter = false, quality_filter_code = null
+**Category 5: Invalid test / Nonsense**
+Random or meaningless text, such as:
+- Keyboard mashing: "asdf", "qwerty", "jjjjj"
+- Random punctuation: "!!!", "????"
+- Placeholder text: "lorem ipsum", "test"
 """
 
+_CONTEXT_BLOCK = """You are a strict quality filter for survey responses.
+Your task is to evaluate whether a survey response should be flagged as low-quality or kept for analysis.
 
-QualityCode = Optional[Literal[99999997, 99999999]]
+Here is the survey context:
+<survey_context>
+Language:
+{language}
 
-class QualityFilterLLMResponse(BaseModel):
-    """A single quality filter assessment result."""
+Survey question:
+{var_lab}
 
-    respondent_id: Any = Field(
-        description="The respondent's ID from the input (preserve exact type and format)"
+Type of responses: Coarse, brief, informal, and low-effort statements, with occasional bursts of strong emotion or rare detailed insights.
+</survey_context>
+
+Here is the response you need to evaluate:
+<response>
+{response_text}
+</response>
+
+"""
+
+_DECISION_RULE = """First, work through your evaluation following these three steps:
+1. Interpret what the response says (translate if needed)
+2. Consider whether the response should be categorized as noise WITHOUT HESITATION and AMBIGUITY
+3. Then provide your final categorization. Return one of:
+
+1 → Don't know / Not knowing the answer
+2 → Not applicable  / Not having the answer
+3 → Absence of answer / Not addressing the question
+4 → No text / Empty
+5 → Invalid test / Nonsense
+null → Keep the response"""
+
+
+# =============================================================================
+# PATTERN A: Nano — raw text output with XML tags
+# =============================================================================
+
+GRADER_INSTRUCTIONS_NANO = _CONTEXT_BLOCK + _CATEGORIES_BLOCK + _DECISION_RULE + """
+
+Output
+
+<scratchpad>
+[Your analysis here following the three steps above]
+</scratchpad>
+
+<category>
+[Return only the category number: 1, 2, 3, 4, 5 - or "null"]
+</category>"""
+
+# Backward compat alias
+GRADER_INSTRUCTIONS = GRADER_INSTRUCTIONS_NANO
+
+
+# =============================================================================
+# PATTERN B: Mini/default — instructor + Pydantic response model
+# =============================================================================
+
+GRADER_INSTRUCTIONS_STRUCTURED = _CONTEXT_BLOCK + _CATEGORIES_BLOCK + _DECISION_RULE + """
+
+Begin processing now and provide your output as valid JSON following the response schema provided."""
+
+
+class QualityFilterStructuredResponse(BaseModel):
+    """Pydantic response model for instructor-based quality filtering (mini/default)."""
+    scratchpad: str = Field(
+        description="Your evaluation reasoning: 1) interpret the response, 2) assess noise fit, 3) categorize"
     )
-
-    response: Union[str, float, int, None] = Field(
-        description="The exact response text being evaluated"
-    )
-
-    quality_filter: bool = Field(
-        description=(
-            "true if the response is unusable (don't know OR gibberish/off-topic), "
-            "false if the response is meaningful and addresses the question"
-        ),
-        examples=[True, False],
-    )
-
-    quality_filter_code: QualityCode = Field(
+    category: Optional[Literal[1, 2, 3, 4, 5]] = Field(
         default=None,
         description=(
-            "99999997 = uncertainty / don't know; "
-            "99999999 = gibberish OR completely off-topic; "
-            "null = meaningful response"
+            "Quality filter category: "
+            "1 = don't know / not knowing the answer; "
+            "2 = not applicable / not having the answer; "
+            "3 = absence of answer / not addressing the question; "
+            "4 = no text / empty; "
+            "5 = invalid text / nonsense; "
+            "null = keep the response (meaningful)"
         ),
-        examples=[99999997, 99999999, None],
+        examples=[1, 5, None],
     )
-
-    @model_validator(mode="after")
-    def check_consistency(self):
-        if self.quality_filter and self.quality_filter_code is None:
-            raise ValueError(
-                "If quality_filter=true, quality_filter_code must be 99999997 or 99999999"
-            )
-        if not self.quality_filter and self.quality_filter_code is not None:
-            raise ValueError(
-                "If quality_filter=false, quality_filter_code must be null"
-            )
-
-        return self

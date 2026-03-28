@@ -14,6 +14,7 @@ Organized in pipeline processing order:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
@@ -584,6 +585,7 @@ def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
     lines = []
     for idea in ideas:
         idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
+        idea_text = re.sub(r'\bcanonical_phrasing:\s*', '', idea_text).strip()
         valence = _valence_display(idea)
         lines.append(
             f"- idea_id: {idea.idea_id}\n"
@@ -1196,6 +1198,9 @@ Important requirements:
 - Return only the attribute ID (e.g., "A1"), not the attribute name
 - Echo back the exact idea_id and idea text from the input without modification
 - All output must be in {language}
+- Attribute IDs start at A1 — A0 does not exist; never return 'A0'
+- Never return an empty ID or a placeholder such as 'A?' — always pick the closest matching attribute
+- When uncertain, choose the attribute whose description best matches the core meaning of the idea; do not leave the assignment blank
 
 Provide your response as valid JSON matching the schema provided."""
 
