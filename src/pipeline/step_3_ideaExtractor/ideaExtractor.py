@@ -50,7 +50,7 @@ from pipeline.step_3_ideaExtractor import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
-from config_steps.config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
+from pipeline.step_3_ideaExtractor.config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
 from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE, COLD_START_P95_MULTIPLIER
 
@@ -80,7 +80,7 @@ from prompts_steps.prompts_ideaExtractor import (
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension, DimensionDefinition
 
 # === STEP-SPECIFIC CONFIG =============================================================================================
-from config_steps.config_ideaExtractor import (
+from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     DEFAULT_TOKEN_HISTORY_CONFIG,
     DEFAULT_TIKTOKEN_OFFSET_CONFIG,
     DEFAULT_TIMEOUT_CONFIG,

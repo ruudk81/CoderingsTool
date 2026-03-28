@@ -24,7 +24,7 @@ from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 
 # Import step_6_codeAssigner components
-from config_steps.config_codeAssigner import AssignmentConfig
+from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig
 from pipeline.step_6_codeAssigner.code_assignment import CodeAssigner
 from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
 

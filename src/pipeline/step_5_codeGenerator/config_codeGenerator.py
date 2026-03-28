@@ -6,7 +6,7 @@ Pipeline: code generation from attributes → codebook consolidation.
 
 from dataclasses import dataclass, field
 from config import get_step_model
-from config_steps.config_classifier import ClassifierRampConfig
+from pipeline.step_4_classifier.config_classifier import ClassifierRampConfig
 
 
 @dataclass

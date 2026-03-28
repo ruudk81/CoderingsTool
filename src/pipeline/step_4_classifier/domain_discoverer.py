@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from pipeline.step_3_ideaExtractor import models
 
-from config_steps.config_classifier import CategoriesConfig
+from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from .partition_labels import collect_unique_labels, collect_unique_labels_with_domains, format_label
 from .models_classifier import DomainDescription, DomainSet
 

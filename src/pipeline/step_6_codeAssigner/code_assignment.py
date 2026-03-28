@@ -74,7 +74,7 @@ from pipeline.step_3_ideaExtractor.ideaExtractor import (
     PIDThroughputController,
     ConcurrencyCircuitBreaker,
 )
-from config_steps.config_ideaExtractor import (
+from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     DEFAULT_RAMP_UP_CONFIG,
     DEFAULT_CIRCUIT_BREAKER_CONFIG,
     DEFAULT_PID_CONTROLLER_CONFIG,
@@ -82,7 +82,7 @@ from config_steps.config_ideaExtractor import (
     DEFAULT_WARM_UP_CONFIG,
 )
 
-from config_steps.config_codeAssigner import AssignmentConfig, get_other_category_label
+from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig, get_other_category_label
 from .models_codeAssigner import CodeAssignedSubmodel, CodeAssignedModel
 from pipeline.step_4_classifier.models_classifier import DomainSet, DomainResultModel
 from .prompts_codeAssigner import (

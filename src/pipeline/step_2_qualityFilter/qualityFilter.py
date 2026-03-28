@@ -25,7 +25,7 @@ from config import (
     API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
     AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
 )
-from config_steps.config_qualityFilter import (
+from pipeline.step_2_qualityFilter.config_qualityFilter import (
     QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG,
     INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
     DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
@@ -36,7 +36,7 @@ from config_steps.config_qualityFilter import (
     RAMP_INTERVAL_SECONDS, RAMP_INCREASE_FACTOR, RAMP_DECREASE_FACTOR,
     SIGNAL_GREEN_THRESHOLD, SIGNAL_YELLOW_THRESHOLD,
 )
-from config_steps.config_ideaExtractor import (
+from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
     CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
     WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
@@ -100,7 +100,7 @@ logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("instructor").setLevel(logging.ERROR)
 
-# Note: Constants (INPUT_HISTORY_MAXLEN, etc.) imported from config_steps/config_qualityFilter.py
+# Note: Constants (INPUT_HISTORY_MAXLEN, etc.) imported from pipeline/config_qualityFilter.py
 # Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS come from ProcessingConfig
 
 # === RATE LIMITING HELPER CLASSES  ========================================================================================================

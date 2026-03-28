@@ -42,7 +42,7 @@ except ImportError:
         sys.path.insert(0, str(models_dir))
     import models
 from config import CacheConfig
-from config_steps.config_ideaExtractor import DEFAULT_SEGMENTATION_CONFIG
+from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_SEGMENTATION_CONFIG
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture

@@ -32,7 +32,7 @@ from config import (
 )
 
 # === CONFIG — step-specific ========================================================================================================
-from config_steps.config_preProcessor import (
+from pipeline.step_1_preProcessor.config_preProcessor import (
     HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH,
     SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG,
     MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,

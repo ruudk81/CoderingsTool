@@ -61,12 +61,12 @@ from pipeline.step_3_ideaExtractor.ideaExtractor import (
 from pipeline.step_2_qualityFilter.qualityFilter import (
     TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
 )
-from config_steps.config_ideaExtractor import (
+from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     RampUpConfig,
     DEFAULT_CIRCUIT_BREAKER_CONFIG,
 )
 
-from config_steps.config_classifier import CategoriesConfig, ClassifierRampConfig
+from pipeline.step_4_classifier.config_classifier import CategoriesConfig, ClassifierRampConfig
 from utils.modelPerfStats import (
     load_stats, save_stats, update_phase_stats, apply_to_ramp_config, STATS_FILE,
 )
