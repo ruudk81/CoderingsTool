@@ -41,7 +41,7 @@ from pipeline.step_1_preProcessor.config_preProcessor import (
 )
 
 # === PROMPTS ========================================================================================================
-from prompts_steps.prompts_preProcessor import (
+from pipeline.step_1_preProcessor.prompts_preProcessor import (
     SPELLCHECK_INSTRUCTIONS,
     CorrectionItem,
     LLMCorrectionResponse,

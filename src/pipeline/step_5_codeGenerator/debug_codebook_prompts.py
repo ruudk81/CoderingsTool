@@ -30,7 +30,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 # Import response models (codebook only)
-from prompts_steps.prompts_codeGenerator import (
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import (
     CodeGenerationFromAttributesResult,
     CodebookConsolidationResult,
 )

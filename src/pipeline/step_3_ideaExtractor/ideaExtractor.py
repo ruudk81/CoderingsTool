@@ -55,7 +55,7 @@ from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_
 from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE, COLD_START_P95_MULTIPLIER
 
 # === PROMPTS (builders + response models) =========================================================================
-from prompts_steps.prompts_ideaExtractor import (
+from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     build_context_specifier_group1_prompt,
     build_context_specifier_group2_prompt,
     build_consolidate_specifiers_group1_prompt,

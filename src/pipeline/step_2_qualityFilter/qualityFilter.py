@@ -43,7 +43,7 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     PIDControllerConfig, DEFAULT_PID_CONTROLLER_CONFIG,
     TPMTrackingConfig, DEFAULT_TPM_TRACKING_CONFIG,
 )
-from prompts_steps.prompts_qualityFilter import GRADER_INSTRUCTIONS, GRADER_INSTRUCTIONS_STRUCTURED, QualityFilterStructuredResponse
+from pipeline.step_2_qualityFilter.prompts_qualityFilter import GRADER_INSTRUCTIONS, GRADER_INSTRUCTIONS_STRUCTURED, QualityFilterStructuredResponse
 
 from utils.llm import RateLimits, extract_rate_limits_from_response, create_client, llm_create_async
 from config import get_reasoning_params

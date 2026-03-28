@@ -10,7 +10,7 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 # === MODELS ========================================================================================================
 import models
 from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
-from prompts_steps.prompts_codeGenerator import ConsolidatedCode
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from pipeline.step_4_classifier.models_classifier import DomainSet, DomainResultModel
 
 # === UTILS ========================================================================================================

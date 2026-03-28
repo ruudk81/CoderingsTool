@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
 
-from prompts_steps.prompts_classifier import DiscoveredAttribute
+from pipeline.step_4_classifier.prompts_classifier import DiscoveredAttribute
 
 
 # =============================================================================

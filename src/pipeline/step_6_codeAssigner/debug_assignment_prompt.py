@@ -31,7 +31,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 from instructor.function_calls import openai_schema
-from prompts_steps.prompts_codeAssigner import CodeAssignmentResponse
+from pipeline.step_6_codeAssigner.prompts_codeAssigner import CodeAssignmentResponse
 
 # Configuration
 FILENAME = TEST_DATA.filename

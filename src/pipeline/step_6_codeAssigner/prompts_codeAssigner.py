@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
-from prompts_steps.prompts_codeGenerator import CodeFromAttributes
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
 from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignment, CodeAssignmentBatch
 
 # Tier-aware validation: True for mini/default (strict), False for nano (lenient).

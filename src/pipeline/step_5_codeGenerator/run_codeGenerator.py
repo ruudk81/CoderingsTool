@@ -326,7 +326,7 @@ def run_codebook():
           f"across {len(pydantic_results)} domains")
 
     # Reconstruct taxonomy data for codebook generator
-    from prompts_steps.prompts_classifier import DiscoveredFacet, DiscoveredAttribute
+    from pipeline.step_4_classifier.prompts_classifier import DiscoveredFacet, DiscoveredAttribute
 
     partition_facets = {}
     partition_assignments = {}

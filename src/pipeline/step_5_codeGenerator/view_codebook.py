@@ -26,7 +26,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 from pipeline.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
-from prompts_steps.prompts_codeGenerator import ConsolidatedCode
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 
 FILENAME = TEST_DATA.filename
 VAR_NAME = TEST_DATA.var_name

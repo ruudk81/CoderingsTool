@@ -90,7 +90,7 @@ from .prompts_codeAssigner import (
     CodeAssignmentResponse,
     configure_validation_mode,
 )
-from prompts_steps.prompts_codeGenerator import CodeFromAttributes
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
 from .models_codeAssigner import CodeAssignment, CodeAssignmentBatch
 
 @dataclass

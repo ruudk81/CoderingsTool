@@ -30,7 +30,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 # Import response models
-from prompts_steps.prompts_classifier import (
+from pipeline.step_4_classifier.prompts_classifier import (
     FacetDiscoveryResult,
     FacetConsolidatedResponse,
     FacetAssignmentBatch,

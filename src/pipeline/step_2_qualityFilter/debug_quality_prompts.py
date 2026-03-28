@@ -28,7 +28,7 @@ except ImportError:
         sys.path.insert(0, str(exp_root))
     from test_data import TEST_DATA
 
-from prompts_steps.prompts_qualityFilter import (
+from pipeline.step_2_qualityFilter.prompts_qualityFilter import (
     GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp,
 )
 from config import DEFAULT_LANGUAGE

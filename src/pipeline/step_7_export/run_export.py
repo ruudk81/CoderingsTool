@@ -33,7 +33,7 @@ from typing import Optional
 import models
 from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
 from pipeline.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
-from prompts_steps.prompts_codeGenerator import ConsolidatedCode
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter

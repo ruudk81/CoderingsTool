@@ -33,7 +33,7 @@ except ImportError:
     from test_data import TEST_DATA
 
 try:
-    from prompts_steps.prompts_ideaExtractor import (
+    from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
         PrimaryDimensionChunkResponse,
@@ -44,7 +44,7 @@ try:
     )
     from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
 except ImportError:
-    from prompts_steps.prompts_ideaExtractor import (
+    from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
         PrimaryDimensionChunkResponse,
