@@ -644,7 +644,7 @@ class AdamConcurrencyController:
     # Gradient weights
     W_HEADROOM = 0.3       # pull toward target (spring constant)
     W_UTILIZATION = 1.0    # RPM/TPM headroom (only when binding)
-    W_LATENCY = 2.0        # latency trend penalty
+    W_PRESSURE = 2.0       # pressure ratio trend penalty
     W_TIMEOUT = 10.0       # timeout emergency brake
 
     TARGET_UTILIZATION = 0.8  # 80% target for TPM/RPM
@@ -671,12 +671,19 @@ class AdamConcurrencyController:
         # Tracking
         self.eval_interval = eval_interval
         self.last_eval_time = 0.0
-        self.prev_p95 = None
+
+        # EMA throughput for pressure ratio
+        self.ema_throughput = 0.0
+        self.ema_alpha = 0.2
+        self.prev_completed = 0
+        self.prev_eval_time = None
+        self.prev_pressure_ratio = None
 
         # History for logging
         self.last_gradient = 0.0
         self.last_step = 0.0
         self.last_delta = 0
+        self.last_pressure_ratio = 0.0
 
     @staticmethod
     def detect_bottleneck(rpm_limit: int, tpm_limit: int, avg_tokens: int,
@@ -698,19 +705,22 @@ class AdamConcurrencyController:
         else:
             return "tpm"
 
-    def should_evaluate(self, now: float) -> bool:
-        """Check if enough time has elapsed for next evaluation."""
+    def should_evaluate(self, now: float, tasks_completed: int = 0) -> bool:
+        """Check if enough time has elapsed and we have completion data."""
+        if self.prev_eval_time is None and tasks_completed == 0:
+            return False  # skip until first completions arrive
         return (now - self.last_eval_time) >= self.eval_interval
 
     def step(self, tpm_pct: float, rpm_pct: float,
-             p95_latency: float, timeout_rate: float) -> int:
+             tasks_dispatched: int, tasks_completed: int,
+             now: float, timeout_rate: float) -> int:
         """Compute next concurrency level from monitoring signals.
 
-        Gradient = headroom bias + utilization headroom - latency penalty - timeout penalty
+        Gradient = headroom bias + utilization - pressure ratio trend - timeout penalty
 
-        When latency is stable: headroom bias wins → ramp up
-        When latency rises: penalty overcomes bias → slow down / reverse
-        At equilibrium: they balance, Adam holds
+        Pressure ratio = InFlight / EMA_throughput (Little's Law inverted).
+        When healthy: ratio ≈ P50 latency (stable). When stressed: ratio grows
+        (throughput fails to keep up with concurrency).
 
         Returns new concurrency value (clamped to [min_floor, target]).
         """
@@ -725,17 +735,34 @@ class AdamConcurrencyController:
         else:
             utilization_signal = 0.0  # not relevant for throughput bottleneck
 
-        # Signal 3: Latency trend — the primary stress signal
-        if self.prev_p95 is not None and self.prev_p95 > 0:
-            latency_change = (p95_latency - self.prev_p95) / self.prev_p95
+        # Signal 3: Pressure ratio trend — the primary stress signal
+        # Update EMA throughput
+        new_completed = tasks_completed - self.prev_completed
+        dt = (now - self.prev_eval_time) if self.prev_eval_time is not None else 0.0
+        self.prev_completed = tasks_completed
+        self.prev_eval_time = now
+
+        if dt > 0 and new_completed > 0:
+            instant_rate = new_completed / dt
+            self.ema_throughput = (self.ema_alpha * instant_rate
+                                 + (1 - self.ema_alpha) * self.ema_throughput)
+
+        # Pressure ratio = in-flight / throughput
+        in_flight = tasks_dispatched - tasks_completed
+        pressure_ratio = in_flight / max(self.ema_throughput, 0.1)
+
+        # Pressure ratio trend (rising = stress, stable/falling = healthy)
+        if self.prev_pressure_ratio is not None and self.prev_pressure_ratio > 0:
+            pressure_change = (pressure_ratio - self.prev_pressure_ratio) / self.prev_pressure_ratio
         else:
-            latency_change = 0.0
-        self.prev_p95 = p95_latency
+            pressure_change = 0.0
+        self.prev_pressure_ratio = pressure_ratio
+        self.last_pressure_ratio = pressure_ratio
 
         # Composite gradient
         gradient = (headroom_bias
                    + self.W_UTILIZATION * utilization_signal
-                   - self.W_LATENCY * max(0, latency_change)
+                   - self.W_PRESSURE * max(0, pressure_change)
                    - self.W_TIMEOUT * timeout_rate)
 
         # Adam update
@@ -2636,14 +2663,15 @@ class IdeaExtractor:
 
         return True
 
-    async def _check_ramp_up(self):
+    async def _check_ramp_up(self, queue=None, total_tasks: int = 0):
         """Adam-inspired adaptive concurrency adjustment.
 
         Called every 0.1s from main loop. Evaluates every 2s (controller.eval_interval).
-        Gradient = headroom bias + utilization - latency penalty - timeout penalty.
+        Uses Pressure Ratio (InFlight / EMA throughput) as the stress signal.
         """
         now = time.monotonic()
-        if not self._adam_controller.should_evaluate(now):
+        tasks_completed = self.stats['tasks_successful'] + self.stats['tasks_failed']
+        if not self._adam_controller.should_evaluate(now, tasks_completed):
             return
 
         # TPM and RPM utilization (only used when RPM/TPM is the bottleneck)
@@ -2655,17 +2683,18 @@ class IdeaExtractor:
             current_rpm = await self.rpm_tracker.get_current_rpm()
             rpm_pct = current_rpm / self.rate_limits.requests_per_minute * 100 if self.rate_limits.requests_per_minute else 0
 
-        # P95 latency
-        p95_latency = 0.0
-        if self.latency_tracker.values:
-            p95_latency = float(np.percentile(list(self.latency_tracker.values), 95))
+        # In-flight count for pressure ratio
+        tasks_dispatched = total_tasks - (queue.qsize() if queue is not None else 0)
 
         # Timeout rate
         total = self.stats['tasks_successful'] + self.stats['timeouts']
         timeout_rate = self.stats['timeouts'] / total if total > 0 else 0.0
 
         # Adam step
-        new_conc = self._adam_controller.step(tpm_pct, rpm_pct, p95_latency, timeout_rate)
+        new_conc = self._adam_controller.step(
+            tpm_pct, rpm_pct, tasks_dispatched, tasks_completed,
+            now, timeout_rate
+        )
         self._adam_controller.last_eval_time = now
 
         if new_conc != self.optimal_concurrency:
@@ -2861,9 +2890,9 @@ class IdeaExtractor:
         print(f"- Target concurrency: {self.optimal_concurrency} (0.9 × min of theoretical, empirical)")
         print(f"- Bottleneck: {self._adam_controller.bottleneck}")
         if self._adam_controller.bottleneck == "throughput":
-            print(f"- Adaptive: Adam controller (signals: headroom bias, latency trend)")
+            print(f"- Adaptive: Adam controller (signals: headroom bias, pressure ratio)")
         else:
-            print(f"- Adaptive: Adam controller (signals: headroom bias, {self._adam_controller.bottleneck} utilization, latency trend)")
+            print(f"- Adaptive: Adam controller (signals: headroom bias, {self._adam_controller.bottleneck} utilization, pressure ratio)")
         print(f"- Timeout: 60s safety net (no retry, fallback on timeout)")
         print(f"- Arrival rate: {self.current_arrival_rate:.2f}/s (PID-adjusted)")
         print(f"- Token calibration: after {warm_up_samples} completions")
@@ -2912,7 +2941,7 @@ class IdeaExtractor:
                     self.optimal_concurrency = self.semaphore.limit
 
             # EVERY 2s: Adam-inspired adaptive concurrency adjustment
-            await self._check_ramp_up()
+            await self._check_ramp_up(queue=queue, total_tasks=len(tasks))
 
             # Progress reporting — every 2s OR every N completions
             completed = self.stats['tasks_processed']
@@ -2948,7 +2977,7 @@ class IdeaExtractor:
                 ramp_info = ""
                 if self._adam_controller:
                     adam = self._adam_controller
-                    ramp_info = f" adam:g={adam.last_gradient:+.2f} Δ={adam.last_delta:+d}"
+                    ramp_info = f" adam:g={adam.last_gradient:+.2f} Δ={adam.last_delta:+d} pr={adam.last_pressure_ratio:.1f}"
                 timeout_info = f" deferred:{timeouts}" if timeouts > 0 else ""
                 print(f"[STEP3] {completed}/{len(tasks)} ({rate:.1f}/s) | "
                       f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% Conc:{active}/{limit} Queue:{queue_depth}"
