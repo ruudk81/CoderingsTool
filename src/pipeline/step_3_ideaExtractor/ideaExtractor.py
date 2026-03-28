@@ -676,6 +676,7 @@ class AdamConcurrencyController:
         self.ema_throughput = 0.0
         self.ema_alpha = 0.2
         self.prev_completed = 0
+        self.prev_timeouts = 0       # for per-interval timeout detection
         self.prev_eval_time = None
         self.prev_pressure_ratio = None
 
@@ -713,7 +714,7 @@ class AdamConcurrencyController:
 
     def step(self, tpm_pct: float, rpm_pct: float,
              tasks_dispatched: int, tasks_completed: int,
-             now: float, timeout_rate: float) -> int:
+             now: float, timeouts_total: int) -> int:
         """Compute next concurrency level from monitoring signals.
 
         Gradient = headroom bias + utilization - pressure ratio trend - timeout penalty
@@ -759,16 +760,32 @@ class AdamConcurrencyController:
         self.prev_pressure_ratio = pressure_ratio
         self.last_pressure_ratio = pressure_ratio
 
+        # Per-interval timeout detection: any new timeout is a hard stress signal
+        new_timeouts = timeouts_total - self.prev_timeouts
+        self.prev_timeouts = timeouts_total
+        # Use 1.0 per timeout in this interval (not diluted cumulative rate)
+        timeout_signal = float(new_timeouts)
+
         # Composite gradient
         gradient = (headroom_bias
                    + self.W_UTILIZATION * utilization_signal
                    - self.W_PRESSURE * max(0, pressure_change)
-                   - self.W_TIMEOUT * timeout_rate)
+                   - self.W_TIMEOUT * timeout_signal)
 
-        # Adam update
+        # Safety margin: need clear positive signal to ramp, scales with headroom
+        safety = 0.5 * headroom_bias
+        effective_gradient = gradient - safety
+
+        # Hard rule: negative gradient must never increase concurrency
+        if effective_gradient < 0:
+            delta_clamp = 0  # hold or decrease only
+        else:
+            delta_clamp = None  # Adam decides freely
+
+        # Adam update (uses effective gradient)
         self.t += 1
-        self.m = self.beta1 * self.m + (1 - self.beta1) * gradient
-        self.v = self.beta2 * self.v + (1 - self.beta2) * gradient ** 2
+        self.m = self.beta1 * self.m + (1 - self.beta1) * effective_gradient
+        self.v = self.beta2 * self.v + (1 - self.beta2) * effective_gradient ** 2
 
         # Bias correction
         m_hat = self.m / (1 - self.beta1 ** self.t)
@@ -778,13 +795,17 @@ class AdamConcurrencyController:
         adam_step = self.lr * m_hat / (v_hat ** 0.5 + self.epsilon)
         delta = int(round(adam_step * self.current))
 
+        # Apply hard clamp: negative gradient → no increase
+        if delta_clamp is not None:
+            delta = min(delta, delta_clamp)
+
         # Apply with bounds
         new_conc = max(self.min_floor, min(self.current + delta, self.target))
         if new_conc != self.current:
             self.current = new_conc
 
         # Store for logging
-        self.last_gradient = gradient
+        self.last_gradient = effective_gradient
         self.last_step = adam_step
         self.last_delta = delta
 
@@ -1113,6 +1134,11 @@ class IdeaExtractor:
         self._stored_empirical_capacity = (
             _stored["empirical_capacity"]
             if _stored and _stored.get("sample_count", 0) >= 10 and "empirical_capacity" in _stored
+            else None
+        )
+        self._stored_p50 = (
+            _stored["p50_latency_s"]
+            if _stored and _stored.get("sample_count", 0) >= 10 and "p50_latency_s" in _stored
             else None
         )
 
@@ -2507,6 +2533,9 @@ class IdeaExtractor:
             initial=target, target=adam_target, bottleneck=bottleneck,
             min_floor=self.ramp_up_config.min_initial
         )
+        # Seed EMA throughput from stored stats: throughput ≈ capacity / P50
+        if self._stored_empirical_capacity and self._stored_p50 and self._stored_p50 > 0:
+            self._adam_controller.ema_throughput = self._stored_empirical_capacity / self._stored_p50
 
         # Layer 4: Circuit breaker (baseline updated when ramp stops)
         self.circuit_breaker = ConcurrencyCircuitBreaker(
@@ -2615,14 +2644,8 @@ class IdeaExtractor:
         if self.pid_controller:
             self.pid_controller.reset()
 
-        print(f"\n{'='*60}")
-        print(f"WARM-UP CALIBRATION (from {len(self.actual_total_tokens)} samples)")
-        print(f"   Latency: {measured_latency:.1f}s (measured)")
-        print(f"   avg_tokens: {old_avg} (tiktoken) → {measured_avg_tokens} (measured)")
-        print(f"   Little's Law: {new_little_law_cap}")
-        print(f"   Adam target updated: {self._adam_controller.target}")
-        print(f"   Arrival rate: {new_arrival_rate:.2f}/s")
-        print(f"{'='*60}")
+        print(f"\n[WARM-UP] Token calibration from {len(self.actual_total_tokens)} samples: "
+              f"avg_tokens {old_avg} → {measured_avg_tokens}")
 
         self._warm_up_calibrated = True
 
@@ -2686,14 +2709,10 @@ class IdeaExtractor:
         # In-flight count for pressure ratio
         tasks_dispatched = total_tasks - (queue.qsize() if queue is not None else 0)
 
-        # Timeout rate
-        total = self.stats['tasks_successful'] + self.stats['timeouts']
-        timeout_rate = self.stats['timeouts'] / total if total > 0 else 0.0
-
         # Adam step
         new_conc = self._adam_controller.step(
             tpm_pct, rpm_pct, tasks_dispatched, tasks_completed,
-            now, timeout_rate
+            now, self.stats['timeouts']
         )
         self._adam_controller.last_eval_time = now
 
