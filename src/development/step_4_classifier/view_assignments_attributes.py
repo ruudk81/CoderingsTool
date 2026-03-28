@@ -16,11 +16,9 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root / "src" / "development"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from development.step_6_codeAssigner.models_codeAssigner import (
-    CodeAssignedModel, CodeAssignedSubmodel,
+from development.step_4_classifier.models_classifier import (
+    TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel,
 )
-from development.step_4_classifier.models_classifier import TaxonomyResultsCache
-from development.step_3_ideaExtractor.models_exp import IdeasExtractedModel
 
 try:
     from development.test_data import TEST_DATA
@@ -51,11 +49,11 @@ def load_ideas(
     filename: str = FILENAME,
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
-) -> List[CodeAssignedSubmodel]:
-    """Load ideas with attribute assignments from taxonomy checkpoint + step 3.
+) -> List[TaxonomyClassifiedSubmodel]:
+    """Load ideas from step 4 growing model (taxonomy_classified cache).
 
-    Always reads from the taxonomy checkpoint (source of truth for P3/P6
-    assignments) joined with step 3 ideas for the full idea details.
+    The growing model contains per-idea facet, attribute, and partition_name
+    populated by P3/P6/P7.
     """
     variable_key = generate_enhanced_variable_key(
         selected_variables=[variable],
@@ -64,44 +62,23 @@ def load_ideas(
     )
     cache_manager = CacheManager()
 
-    taxonomy_cache = cache_manager.load_metadata_from_cache(
-        filename=filename, step="taxonomy", variable_key=variable_key,
-        model_cls=TaxonomyResultsCache,
-    )
-    step3_data = cache_manager.load_from_cache(
-        filename, "extracted_ideas", variable_key, IdeasExtractedModel
+    data = cache_manager.load_from_cache(
+        filename, "taxonomy_classified", variable_key, TaxonomyClassifiedModel
     )
 
-    if not taxonomy_cache or not step3_data:
+    if not data:
         raise FileNotFoundError(
             f"No cached results found for variable_key '{variable_key}'.\n"
             f"Run at least taxonomy (P1-P7) first."
         )
 
-    # Build attribute + facet lookups from taxonomy checkpoint
-    attr_assignments: Dict[str, str] = {}
-    facet_assignments: Dict[str, str] = {}
-    for domain_result in taxonomy_cache.partition_results.values():
-        attr_assignments.update(domain_result.attribute_assignments)
-        facet_assignments.update(domain_result.facet_assignments)
-
-    # Join step 3 ideas with taxonomy assignments
     ideas = []
-    for resp in step3_data:
+    for resp in data:
         if resp.response_ideas:
-            for idea in resp.response_ideas:
-                explicit_fields = {'assigned_attribute', 'facet'}
-                sub = CodeAssignedSubmodel(
-                    **{k: v for k, v in idea.model_dump().items()
-                       if k in CodeAssignedSubmodel.model_fields
-                       and k not in explicit_fields},
-                    assigned_attribute=attr_assignments.get(idea.idea_id),
-                    facet=facet_assignments.get(idea.idea_id, idea.facet),
-                )
-                ideas.append(sub)
+            ideas.extend(resp.response_ideas)
 
     total = len(ideas)
-    with_attr = sum(1 for i in ideas if i.assigned_attribute and i.assigned_attribute != "__UNASSIGNED__")
+    with_attr = sum(1 for i in ideas if i.attribute and i.attribute.strip())
     print(f"Loaded {total} ideas ({with_attr} with attribute assignments)")
     return ideas
 
@@ -110,11 +87,11 @@ def load_ideas(
 # DISPLAY
 # =============================================================================
 
-def print_by_attribute(ideas: List[CodeAssignedSubmodel], max_per_attribute: Optional[int] = None):
+def print_by_attribute(ideas: List[TaxonomyClassifiedSubmodel], max_per_attribute: Optional[int] = None):
     """Print ideas grouped by attribute (flat list, sorted by count)."""
-    attr_groups: Dict[str, List[CodeAssignedSubmodel]] = defaultdict(list)
+    attr_groups: Dict[str, List[TaxonomyClassifiedSubmodel]] = defaultdict(list)
     for idea in ideas:
-        attr = idea.assigned_attribute or "(no attribute)"
+        attr = idea.attribute or "(no attribute)"
         attr_groups[attr].append(idea)
 
     sorted_attrs = sorted(attr_groups.items(), key=lambda x: -len(x[1]))
@@ -146,16 +123,16 @@ def print_by_attribute(ideas: List[CodeAssignedSubmodel], max_per_attribute: Opt
             print(f"\n    ... ({len(attr_ideas) - max_per_attribute} more ideas)")
 
 
-def print_by_domain(ideas: List[CodeAssignedSubmodel], max_per_attribute: Optional[int] = None):
+def print_by_domain(ideas: List[TaxonomyClassifiedSubmodel], max_per_attribute: Optional[int] = None):
     """Print ideas grouped by domain → facet → attribute."""
     # Build hierarchy
-    hierarchy: Dict[str, Dict[str, Dict[str, List[CodeAssignedSubmodel]]]] = defaultdict(
+    hierarchy: Dict[str, Dict[str, Dict[str, List[TaxonomyClassifiedSubmodel]]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(list))
     )
     for idea in ideas:
         domain = idea.domain or "(unknown)"
         facet = idea.facet or "(unknown)"
-        attr = idea.assigned_attribute or "(no attribute)"
+        attr = idea.attribute or "(no attribute)"
         hierarchy[domain][facet][attr].append(idea)
 
     total = len(ideas)

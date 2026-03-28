@@ -81,7 +81,7 @@ def get_prompts_files() -> list[Path]:
     """Get taxonomy prompts file path(s)."""
     variable_key = generate_enhanced_variable_key([VAR_NAME], False, SAMPLE_SIZE)
     prompts_dir = project_root / "exports" / "prompts"
-    base = f"step4_classNcoder_{variable_key}"
+    base = f"step4_classifier_{variable_key}"
 
     files = []
     f = prompts_dir / f"{base}_taxonomy.json"
