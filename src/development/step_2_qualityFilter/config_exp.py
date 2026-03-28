@@ -34,6 +34,8 @@ from config_steps.config_ideaExtractor import (
     RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
     CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
     WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
+    PIDControllerConfig, DEFAULT_PID_CONTROLLER_CONFIG,
+    TPMTrackingConfig, DEFAULT_TPM_TRACKING_CONFIG,
 )
 
 # =============================================================================

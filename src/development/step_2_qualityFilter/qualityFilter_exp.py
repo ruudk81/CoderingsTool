@@ -30,11 +30,13 @@ try:
         INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
         PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
-        THROUGHPUT_ADJUSTMENT_THRESHOLD, THROUGHPUT_ADJUSTMENT_MIN_SAMPLES, ADJUSTMENT_INTERVAL,
-        # Ramp-up and warm-up configs (from config_ideaExtractor)
+        ADJUSTMENT_INTERVAL,
+        # Ramp-up, warm-up, and PID configs (from config_ideaExtractor)
         RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
         CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
         WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
+        PIDControllerConfig, DEFAULT_PID_CONTROLLER_CONFIG,
+        TPMTrackingConfig, DEFAULT_TPM_TRACKING_CONFIG,
         # Optimal API request strategy constants
         get_model_tier_latency, get_output_ratio,
         COLD_START_CAP, WARM_UP_WINDOW_SECONDS, WARM_UP_MIN_COMPLETIONS,
@@ -53,11 +55,13 @@ except ImportError:
         INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
         PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
-        THROUGHPUT_ADJUSTMENT_THRESHOLD, THROUGHPUT_ADJUSTMENT_MIN_SAMPLES, ADJUSTMENT_INTERVAL,
-        # Ramp-up and warm-up configs (from config_ideaExtractor)
+        ADJUSTMENT_INTERVAL,
+        # Ramp-up, warm-up, and PID configs (from config_ideaExtractor)
         RampUpConfig, DEFAULT_RAMP_UP_CONFIG,
         CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG,
         WarmUpConfig, DEFAULT_WARM_UP_CONFIG,
+        PIDControllerConfig, DEFAULT_PID_CONTROLLER_CONFIG,
+        TPMTrackingConfig, DEFAULT_TPM_TRACKING_CONFIG,
         # Optimal API request strategy constants
         get_model_tier_latency, get_output_ratio,
         COLD_START_CAP, WARM_UP_WINDOW_SECONDS, WARM_UP_MIN_COMPLETIONS,
@@ -241,6 +245,98 @@ class LatencyTracker:
         return self.get_avg_latency()
 
 
+# === REAL-TIME TPM TRACKER ========================================================================================================
+
+class RealTimeTPMTracker:
+    """Tracks actual TPM usage in a sliding window for PID feedback."""
+    def __init__(self, window_seconds: float = 60.0):
+        self.window_seconds = window_seconds
+        self.samples = deque()  # (timestamp, tokens) pairs
+        self.lock = asyncio.Lock()
+
+    async def record(self, tokens: int):
+        async with self.lock:
+            now = time.monotonic()
+            self.samples.append((now, tokens))
+            self._prune_old_samples(now)
+
+    def _prune_old_samples(self, now: float):
+        cutoff = now - self.window_seconds
+        while self.samples and self.samples[0][0] < cutoff:
+            self.samples.popleft()
+
+    async def get_current_tpm(self) -> float:
+        async with self.lock:
+            now = time.monotonic()
+            self._prune_old_samples(now)
+            if not self.samples:
+                return 0.0
+            total_tokens = sum(t for _, t in self.samples)
+            elapsed = max(now - self.samples[0][0], 1.0)
+            return (total_tokens / elapsed) * 60
+
+
+# === PID THROUGHPUT CONTROLLER ========================================================================================================
+
+class PIDThroughputController:
+    """PID controller for smooth arrival rate adjustment.
+
+    Asymmetric gains: aggressive when under-utilizing, gentle when over-utilizing.
+    Adjusts the arrival rate (requests/second) based on real-time TPM utilization.
+    """
+    def __init__(self, target_utilization: float = 0.80,
+                 kp_up: float = 0.4, kp_down: float = 0.2,
+                 ki: float = 0.05, kd: float = 0.1,
+                 min_adjustment: float = 0.02, max_adjustment: float = 0.15):
+        self.target = target_utilization
+        self.kp_up = kp_up
+        self.kp_down = kp_down
+        self.ki = ki
+        self.kd = kd
+        self.min_adjustment = min_adjustment
+        self.max_adjustment = max_adjustment
+        self.integral = 0.0
+        self.last_error = 0.0
+        self.last_time = None
+        self.adjustment_history = deque(maxlen=20)
+
+    def compute_adjustment(self, current_utilization: float) -> float:
+        """Returns multiplier for arrival rate. >1.0 = speed up, <1.0 = slow down."""
+        now = time.monotonic()
+        error = self.target - current_utilization
+
+        dt = 1.0
+        if self.last_time is not None:
+            dt = max(now - self.last_time, 0.1)
+        self.last_time = now
+
+        self.integral += error * dt
+        self.integral = max(-0.5, min(0.5, self.integral))
+
+        derivative = (error - self.last_error) / dt if dt > 0 else 0.0
+        self.last_error = error
+
+        kp = self.kp_up if error > 0 else self.kp_down
+        output = (kp * error) + (self.ki * self.integral) + (self.kd * derivative)
+        output = max(-self.max_adjustment, min(self.max_adjustment, output))
+
+        if abs(output) < self.min_adjustment:
+            adjustment = 1.0
+        else:
+            adjustment = 1.0 + output
+
+        self.adjustment_history.append({
+            "time": now, "utilization": current_utilization,
+            "error": error, "output": output, "adjustment": adjustment
+        })
+        return adjustment
+
+    def reset(self):
+        self.integral = 0.0
+        self.last_error = 0.0
+        self.last_time = None
+
+
 # === CONCURRENCY GATE (replaces asyncio.Semaphore) ========================================================================================================
 
 class ConcurrencyGate:
@@ -314,134 +410,6 @@ class ConcurrencyGate:
 
     async def __aexit__(self, *args):
         self.release()
-
-
-# === CONCURRENCY RAMP (LINEAR WITH CONGESTION DETECTION) ========================================================================================================
-
-class ConcurrencyRamp:
-    """Completion-based concurrency ramp with congestion detection.
-
-    Concurrency scales linearly with completion progress:
-      0% complete → start (50% of Little's Law)
-      100% complete → target (90% of Little's Law)
-
-    Checks for two stop signals:
-      1. Throughput drop — completion rate declining vs previous window
-      2. Queue backing up — timeout rate >5% in a window
-
-    After warm-up calibration, Little's Law is recalculated and the ramp
-    adjusts start/target but preserves congestion detection state.
-    """
-    def __init__(self, config: 'RampUpConfig', little_law_cap: int, num_tasks: int):
-        self.config = config
-        self._num_tasks = num_tasks
-        self._done = False
-        self._stopped_concurrency = None
-        self._stop_reason = None
-
-        # Compute start and target from Little's Law
-        self._little_law_cap = little_law_cap
-        start = max(config.min_initial, int(little_law_cap * config.start_fraction))
-        target = min(int(little_law_cap * config.target_fraction), num_tasks)
-        self._start = start
-        self._target = max(target, start)  # target >= start
-        self._current = start
-
-        # Throughput tracking (rolling window)
-        self._prev_throughput = None
-        self._declining_steps = 0
-
-        # Queue depth tracking
-        self._prev_completions_total = 0
-        self._prev_timeouts_total = 0
-
-    @property
-    def cap(self) -> int:
-        return self._target
-
-    def current_target(self) -> int:
-        return self._current
-
-    def is_done(self) -> bool:
-        return self._done
-
-    def stopped_concurrency(self) -> Optional[int]:
-        return self._stopped_concurrency
-
-    def recalibrate(self, new_little_law_cap: int):
-        """Called after warm-up calibration with updated Little's Law.
-
-        Updates start/target from new cap. Preserves congestion detection
-        state (_prev_throughput, _declining_steps) so that ongoing throughput
-        decline is not forgotten across recalibration.
-        """
-        self._little_law_cap = new_little_law_cap
-        new_start = max(self.config.min_initial, int(new_little_law_cap * self.config.start_fraction))
-        new_target = min(int(new_little_law_cap * self.config.target_fraction), self._num_tasks)
-        self._start = new_start
-        self._target = max(new_target, new_start)
-        self._current = new_start
-        self._done = False
-        self._stopped_concurrency = None
-        self._stop_reason = None
-        # NOTE: _prev_throughput and _declining_steps intentionally preserved
-        print(f"RAMP RECALIBRATED: {new_start} → {self._target} "
-              f"(Little's Law: {new_little_law_cap})")
-
-    def record_measurement(self, throughput: float, tpm_pct: float, rpm_pct: float,
-                           completions_total: int, timeouts_total: int, duration: float):
-        """Called every measurement window with current metrics."""
-        if self._done:
-            return
-
-        # --- Stop signal 1: throughput dropping ---
-        if self._prev_throughput is not None and self._prev_throughput > 0:
-            growth = (throughput - self._prev_throughput) / self._prev_throughput
-            if growth < -0.10:  # throughput dropped >10%
-                self._declining_steps += 1
-            else:
-                self._declining_steps = max(0, self._declining_steps - 1)
-
-            if self._declining_steps >= 2:  # 2 consecutive drops
-                self._stop('throughput_drop', self._current)
-                return
-
-        # --- Stop signal 2: queue congestion (timeouts appearing) ---
-        new_timeouts = timeouts_total - self._prev_timeouts_total
-        new_completions = completions_total - self._prev_completions_total
-        if new_timeouts > 0 and new_completions > 0:
-            timeout_rate = new_timeouts / (new_completions + new_timeouts)
-            if timeout_rate > 0.05:  # >5% of this window timed out
-                self._stop('queue_congestion', self._current)
-                return
-
-        self._prev_throughput = throughput
-        self._prev_completions_total = completions_total
-        self._prev_timeouts_total = timeouts_total
-
-        # --- Completion-based ramp: advance proportional to progress ---
-        ramp_fraction = min(completions_total / self._num_tasks, 1.0)
-        new_conc = int(self._start + (self._target - self._start) * ramp_fraction)
-        new_conc = max(new_conc, self._current)  # never decrease during ramp
-
-        if new_conc >= self._target:
-            self._current = self._target
-            self._done = True
-            self._stopped_concurrency = self._target
-            self._stop_reason = 'target_reached'
-            print(f"RAMP COMPLETE: concurrency {self._target} "
-                  f"({self.config.target_fraction*100:.0f}% of Little's Law {self._little_law_cap})")
-        else:
-            self._current = new_conc
-
-    def _stop(self, reason: str, concurrency: int):
-        """Stop ramping due to congestion signal."""
-        self._done = True
-        self._stopped_concurrency = concurrency
-        self._stop_reason = reason
-        label = 'THROUGHPUT DROP' if reason == 'throughput_drop' else 'QUEUE CONGESTION'
-        print(f"RAMP STOPPED ({label}): locking concurrency at {concurrency} "
-              f"(was ramping toward {self._target})")
 
 
 # === CIRCUIT BREAKER ========================================================================================================
@@ -645,9 +613,22 @@ class Grader:
         # Load persistent performance stats for cold-start calibration
         self._perf_stats = load_stats()
         _stored = get_phase_stats(self._perf_stats, self.model, "step2_quality_filter")
+        self._has_stored_stats = (
+            _stored is not None and _stored.get("sample_count", 0) >= 10
+        )
         _stored_timeout = (
             _stored["p95_latency_s"] * COLD_START_P95_MULTIPLIER
-            if _stored and _stored.get("sample_count", 0) >= 10 and "p95_latency_s" in _stored
+            if self._has_stored_stats and "p95_latency_s" in _stored
+            else None
+        )
+        self._stored_latency = (
+            _stored["p50_latency_s"]
+            if self._has_stored_stats and "p50_latency_s" in _stored
+            else None
+        )
+        self._stored_avg_tokens = (
+            int(_stored["avg_tokens"])
+            if self._has_stored_stats and "avg_tokens" in _stored
             else None
         )
 
@@ -658,8 +639,11 @@ class Grader:
             default_timeout=_stored_timeout if _stored_timeout else None,
         )
 
-        # Calculate initial average tokens estimate for bootstrapping
-        self.avg_tokens = self._calculate_avg_tokens()
+        # Token estimate: prefer stored avg_tokens over tiktoken sampling
+        if self._stored_avg_tokens is not None:
+            self.avg_tokens = self._stored_avg_tokens
+        else:
+            self.avg_tokens = self._calculate_avg_tokens()
         
         # Rate limiting components (will be initialized after bootstrap)
         self.rate_limiter = None
@@ -679,21 +663,22 @@ class Grader:
         # Failure log: tracks each permanent failure with details
         self.failure_log = []  # List of {respondent_id, reason, error_type, response_preview}
 
-        # Throughput adjustment state
-        self.current_arrival_rate = None      # Set during initialization, updated on adjustment
+        # Arrival rate adjustment state
+        self.current_arrival_rate = None      # Set during initialization, updated by PID
         self.bootstrap_avg_tokens = None      # Preserved original estimate for diagnostics
         self.adjustment_stats = {
             'adjustments_made': 0,
-            'last_avg_tokens': None,
         }
 
         # Warm-up ramp configuration (Option B)
         self.ramp_up_config = DEFAULT_RAMP_UP_CONFIG
         self.circuit_breaker_config = DEFAULT_CIRCUIT_BREAKER_CONFIG
         self.warm_up_config = DEFAULT_WARM_UP_CONFIG
+        self.pid_config = DEFAULT_PID_CONTROLLER_CONFIG
+        self.tpm_tracking_config = DEFAULT_TPM_TRACKING_CONFIG
         self.circuit_breaker = None
-        self._concurrency_ramp = None
-        self._ramp_complete = True  # No ramp until initialized
+        self.tpm_tracker = None       # Initialized in _initialize_rate_limiters
+        self.pid_controller = None    # Initialized in _initialize_rate_limiters
         self._warm_up_calibrated = False
         self._warm_up_target_samples = 15
 
@@ -815,52 +800,38 @@ class Grader:
             "consumption_rate": consumption_rate_per_sec if len(self.actual_total_tokens) >= 10 else 0
         }
 
-    def _adjust_throughput_if_needed(self) -> bool:
-        """Threshold-based throughput adjustment.
+    async def _apply_pid_adjustment(self) -> bool:
+        """Apply PID-based continuous arrival rate adjustment from real-time TPM utilization.
 
-        When actual token usage significantly exceeds bootstrap estimate,
-        reinstall rate_limiter and token bucket with corrected values.
-        Pattern ported from ideaExtractor_exp.py.
-
-        Returns True if adjustment was made, False otherwise.
+        Uses asymmetric gains: aggressive when under-utilizing, gentle when over-utilizing.
+        Returns True if adjustment was applied, False otherwise.
         """
-        if len(self.actual_total_tokens) < THROUGHPUT_ADJUSTMENT_MIN_SAMPLES:
+        if self.current_arrival_rate is None or self.tpm_tracker is None:
             return False
 
-        actual_avg = sum(self.actual_total_tokens) / len(self.actual_total_tokens)
-        bootstrap_avg = self.avg_tokens
-        ratio = actual_avg / bootstrap_avg if bootstrap_avg > 0 else 1.0
+        current_tpm = await self.tpm_tracker.get_current_tpm()
+        tpm_limit = self.rate_limits.tokens_per_minute
+        utilization = current_tpm / tpm_limit if tpm_limit > 0 else 0.0
 
-        if ratio <= THROUGHPUT_ADJUSTMENT_THRESHOLD:
+        adjustment = self.pid_controller.compute_adjustment(utilization)
+
+        if abs(adjustment - 1.0) < 0.01:
             return False
 
-        # Calculate new arrival rate using actual tokens
-        rpm_throughput = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
-        new_tpm_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
-        new_arrival_rate = min(rpm_throughput, new_tpm_throughput)
+        old_rate = self.current_arrival_rate
+        new_rate = old_rate * adjustment
 
-        # Reinstall rate limiter with adjusted rate
-        self.rate_limiter = AsyncLimiter(1, time_period=1.0/new_arrival_rate)
+        # Clamp to reasonable bounds
+        rpm_max = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
+        new_rate = max(0.5, min(rpm_max, new_rate))
 
-        # Reinitialize token bucket with fresh state
-        old_bucket_available = self.tpm_bucket.available
-        self.tpm_bucket = TokenBucket(int(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom))
+        # Only apply if change is meaningful (>2%)
+        if abs(new_rate - old_rate) / max(old_rate, 0.001) < 0.02:
+            return False
 
-        # Update avg_tokens for future estimation and rate calculations
-        old_avg = self.avg_tokens
-        old_arrival_rate = self.current_arrival_rate or 0
-        self.avg_tokens = int(actual_avg)
-        self.current_arrival_rate = new_arrival_rate
-
-        # Track adjustment
-        self.adjustment_stats['last_avg_tokens'] = old_avg
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0 / new_rate)
+        self.current_arrival_rate = new_rate
         self.adjustment_stats['adjustments_made'] += 1
-
-        print(f"\n>> THROUGHPUT ADJUSTMENT #{self.adjustment_stats['adjustments_made']}")
-        print(f"   Actual tokens ({actual_avg:.0f}) exceeded estimate ({bootstrap_avg:.0f}) by {(ratio-1)*100:.0f}%")
-        print(f"   Arrival rate: {old_arrival_rate:.2f}/s -> {new_arrival_rate:.2f}/s")
-        print(f"   avg_tokens: {old_avg} -> {self.avg_tokens}")
-        print(f"   Token bucket reset (was {old_bucket_available:,.0f} available)")
 
         return True
 
@@ -904,7 +875,8 @@ class Grader:
         self.optimal_concurrency = cold_semaphore
 
         # Compute Little's Law target (for post-warm-up ramp target)
-        latency_est = get_model_tier_latency(self.model)
+        # Prefer stored P50 latency from prior runs over model-tier default
+        latency_est = self._stored_latency if self._stored_latency is not None else get_model_tier_latency(self.model)
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
         little_law = compute_optimal_concurrency(
             api_limits, latency_est, self.avg_tokens,
@@ -916,11 +888,6 @@ class Grader:
         # Target semaphore: 90% of Little's Law (set after warm-up recalibration)
         self._target_semaphore = min(int(little_law_cap * 0.90), num_tasks)
 
-        # Keep ConcurrencyRamp for backward compat (bypassed by signal-based ramp)
-        self._concurrency_ramp = ConcurrencyRamp(
-            self.ramp_up_config, little_law_cap, num_tasks
-        )
-        self._ramp_complete = False
         self._signal_ramp_active = False  # Activates after warm-up
 
         # RPM/TPM utilization tracking (sliding window, 60s)
@@ -934,6 +901,20 @@ class Grader:
             config=self.circuit_breaker_config,
             gate=self.semaphore,
             baseline=cold_semaphore
+        )
+
+        # PID arrival rate adjustment
+        self.tpm_tracker = RealTimeTPMTracker(
+            window_seconds=self.tpm_tracking_config.sliding_window_seconds
+        )
+        self.pid_controller = PIDThroughputController(
+            target_utilization=self.tpm_tracking_config.target_utilization,
+            kp_up=self.pid_config.kp_up,
+            kp_down=self.pid_config.kp_down,
+            ki=self.pid_config.ki,
+            kd=self.pid_config.kd,
+            min_adjustment=self.pid_config.min_adjustment,
+            max_adjustment=self.pid_config.max_adjustment,
         )
 
         return little_law_cap
@@ -1093,7 +1074,6 @@ class Grader:
 
         # Activate signal-based ramp
         self._signal_ramp_active = True
-        self._ramp_complete = False
 
         # Recalculate arrival rate (tokens changed, so TPM rail changes)
         headroom = self.processing_config.rate_limit_headroom
@@ -1115,56 +1095,11 @@ class Grader:
         print(f"   Signal ramp: +{int((RAMP_INCREASE_FACTOR-1)*100)}% / {RAMP_INTERVAL_SECONDS}s toward {self._target_semaphore}")
         print(f"{'='*60}")
 
+        # Reset PID state so it doesn't carry stale integral/derivative from warm-up
+        if self.pid_controller:
+            self.pid_controller.reset()
+
         self._warm_up_calibrated = True
-
-    async def _check_ramp_up(self):
-        """Completion-based ramp with congestion detection.
-
-        Called every 0.1s. Every measurement_window (0.5s), feeds throughput and
-        timeout count to ConcurrencyRamp. Concurrency advances with completion progress.
-        """
-        if self._ramp_complete:
-            return
-
-        now = time.monotonic()
-        if not hasattr(self, '_ramp_last_check_time'):
-            self._ramp_last_check_time = now
-            self._ramp_last_completions = self.stats['tasks_successful']
-            return
-
-        elapsed = now - self._ramp_last_check_time
-        if elapsed < self.ramp_up_config.measurement_window_seconds:
-            return
-
-        completions_this_window = self.stats['tasks_successful'] - self._ramp_last_completions
-        if completions_this_window < self.ramp_up_config.min_completions_per_step:
-            return  # extend window — not enough data yet
-
-        throughput = completions_this_window / elapsed
-
-        # Feed to ramp (no TPM/RPM % tracking for qualityFilter)
-        self._concurrency_ramp.record_measurement(
-            throughput, 0.0, 0.0,
-            completions_total=self.stats['tasks_successful'],
-            timeouts_total=self.stats['timeouts'],
-            duration=elapsed,
-        )
-
-        # Reset window
-        self._ramp_last_check_time = now
-        self._ramp_last_completions = self.stats['tasks_successful']
-
-        if self._concurrency_ramp.is_done():
-            final = self._concurrency_ramp.stopped_concurrency()
-            self.semaphore.set_limit(final)
-            self.optimal_concurrency = final
-            self._ramp_complete = True
-            if self.circuit_breaker:
-                self.circuit_breaker.baseline = final
-        else:
-            next_conc = self._concurrency_ramp.current_target()
-            self.semaphore.set_limit(next_conc)
-            self.optimal_concurrency = next_conc
 
     @retry(
         retry=retry_if_exception_type((
@@ -1239,6 +1174,8 @@ class Grader:
                                 self.output_token_history.append(output_tokens)
                             self.actual_total_tokens.append(actual_total_tokens)
                             self._record_api_call(actual_total_tokens)
+                            if self.tpm_tracker:
+                                await self.tpm_tracker.record(actual_total_tokens)
 
                             estimation_error = abs(actual_total_tokens - est_tokens)
                             self.estimation_errors.append(estimation_error)
@@ -1281,6 +1218,8 @@ class Grader:
                                 self.output_token_history.append(output_tokens)
                             self.actual_total_tokens.append(actual_total_tokens)
                             self._record_api_call(actual_total_tokens)
+                            if self.tpm_tracker:
+                                await self.tpm_tracker.record(actual_total_tokens)
 
                             estimation_error = abs(actual_total_tokens - est_tokens)
                             self.estimation_errors.append(estimation_error)
@@ -1475,15 +1414,23 @@ class Grader:
         rpm_throughput = limits.requests_per_minute * headroom / 60
         tpm_throughput = limits.tokens_per_minute * headroom / self.avg_tokens / 60
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
-        latency_est = get_model_tier_latency(self.model)
+        latency_est = self._stored_latency if self._stored_latency is not None else get_model_tier_latency(self.model)
+        cold_start_source = "stored stats" if self._has_stored_stats else "model-tier defaults"
 
         print("[RATE LIMITING SETUP] - Optimal API Request Strategy")
         print(f"- Model: {self.model}")
+        print(f"- Cold-start source: {cold_start_source}")
         print(f"- RPM limit: {limits.requests_per_minute:,} ({self._rpm_limit:,.0f} with headroom)")
         print(f"- TPM limit: {limits.tokens_per_minute:,} ({self._tpm_limit:,.0f} with headroom)")
-        print(f"- Tiktoken avg_tokens: {self.avg_tokens} (output ratio: {get_output_ratio(self.model):.2f}x)")
+        if self._stored_avg_tokens is not None:
+            print(f"- avg_tokens: {self.avg_tokens} (from stored stats)")
+        else:
+            print(f"- avg_tokens: {self.avg_tokens} (tiktoken estimate, output ratio: {get_output_ratio(self.model):.2f}x)")
         print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
-        print(f"- Latency estimate: {latency_est}s ({self.model})")
+        if self._stored_latency is not None:
+            print(f"- Latency estimate: {latency_est}s (stored P50)")
+        else:
+            print(f"- Latency estimate: {latency_est}s (model-tier default)")
         print(f"- Little's Law (theoretical): {self._little_law_target}")
         print(f"- Cold start: {self._cold_start_semaphore} (min(RPM/60, {COLD_START_CAP}))")
         print(f"- Target: {self._target_semaphore} (90% of Little's Law, capped at {len(tasks)} tasks)")
@@ -1544,9 +1491,9 @@ class Grader:
                 self._apply_signal_ramp(queue)
                 last_ramp_check = now
 
-            # Throughput adjustment check
+            # PID arrival rate adjustment
             if now - last_adjustment >= ADJUSTMENT_INTERVAL:
-                self._adjust_throughput_if_needed()
+                await self._apply_pid_adjustment()
                 last_adjustment = now
 
             # Progress report (every PROGRESS_REPORT_INTERVAL seconds)
