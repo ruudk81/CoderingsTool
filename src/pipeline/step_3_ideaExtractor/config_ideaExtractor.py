@@ -128,9 +128,11 @@ class ConcurrencyControlConfig:
     States: RAMPING → HOLDING → REPAIRING → RECOVERED → HOLDING
     """
     ramp_step_pct: float = 0.05           # +5% of starting concurrency per tick (min 2)
-    repair_pct: float = 0.90              # cut to 90% of starting concurrency when repairing
-    p100_baseline_mult: float = 3.0       # baseline = P50 × 3. P100 above this = trouble
-    recovery_target_mult: float = 1.2     # interval P100 ≤ 1.2× baseline = queue drained
+    repair_pct: float = 0.90              # cut to 90% of current concurrency when repairing
+    holding_ratio: float = 2.0            # P95/P50 > 2× sustained = moderate stress → HOLDING
+    stress_ratio: float = 4.0             # P100/P50 > 4× sustained = severe stress → REPAIRING
+    stress_consecutive: int = 2           # need N consecutive ticks above ratio to trigger
+    recovery_ratio: float = 2.0           # P100/P50 ≤ 2× = queue drained → RECOVERED
     min_concurrency: int = 5              # hard floor
 
 

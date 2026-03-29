@@ -466,14 +466,14 @@ class ConcurrencyStateMachine:
         self.ramp_step = max(2, int(starting * self.config.ramp_step_pct))
 
         self.state = ConcurrencyState.RAMPING
-        self.baseline_p100 = None  # set from first-tick P50 × threshold_mult
-        self.baseline_set = False
         self.last_healthy_concurrency = starting
         self.holding_concurrency = None
 
+        # Consecutive tick counters for sustained ratio checks
+        self.consecutive_p95_stressed = 0   # P95/P50 > holding_ratio
+        self.consecutive_p100_stressed = 0  # P100/P50 > stress_ratio
+
         # Per-tick signal tracking
-        self.prev_throughput = None
-        self.prev_interval_p100 = None
         self.interval_latencies = []
 
     def record_latency(self, latency: float):
@@ -483,109 +483,88 @@ class ConcurrencyStateMachine:
     def _get_interval_p100(self) -> float:
         """Return max latency since last evaluation, then clear buffer."""
         if not self.interval_latencies:
-            return self.prev_interval_p100 or 0.0
+            return 0.0
         p100 = max(self.interval_latencies)
         self.interval_latencies.clear()
         return p100
 
-    def evaluate(self, p50: float, now: float, new_timeouts: int = 0) -> int:
+    def evaluate(self, p50: float, p95: float, now: float) -> int:
         """Main tick evaluation. Returns new concurrency.
 
-        Args:
-            new_timeouts: number of new deferred/timed-out tasks since last tick.
+        Two ratio signals:
+          P95/P50 > holding_ratio for N consecutive ticks → HOLDING
+          P100/P50 > stress_ratio for N consecutive ticks → REPAIRING
         """
-        # When rate-limited, defer to PID — don't manage concurrency
         if self.bottleneck != "throughput":
             return self.current
 
         interval_p100 = self._get_interval_p100()
-        throughput = self.current / max(p50, 0.1)
-
-        # Establish baseline from first tick with data: P50 × multiplier (default 3×)
-        if not self.baseline_set and p50 > 0:
-            self.baseline_p100 = p50 * self.config.p100_baseline_mult
-            self.baseline_set = True
-
-        # Need baseline before making decisions
-        if self.baseline_p100 is None or interval_p100 == 0:
-            self.prev_throughput = throughput
-            self.prev_interval_p100 = interval_p100
+        if interval_p100 == 0 or p50 <= 0:
             return self.current
 
-        # Stress detection (applies in any state)
-        # Two triggers: P100 exceeds baseline threshold, or new timeouts occurred
-        threshold = self.baseline_p100
-        has_timeouts = new_timeouts > 0
+        # Compute ratios
+        self.p95_ratio = p95 / p50
+        self.p100_ratio = interval_p100 / p50
 
-        # Classify signal directions (needs previous tick data)
-        prev_ok = (self.prev_throughput is not None and self.prev_interval_p100 is not None
-                   and self.prev_interval_p100 > 0 and self.prev_throughput > 0)
-        if not prev_ok:
-            # First tick with data — collect baseline, don't make state decisions
-            self.prev_throughput = throughput
-            self.prev_interval_p100 = interval_p100
-            return self.current
+        # Track consecutive ticks above thresholds
+        if self.p95_ratio > self.config.holding_ratio:
+            self.consecutive_p95_stressed += 1
+        else:
+            self.consecutive_p95_stressed = 0
 
-        thru_rising = throughput > self.prev_throughput * 1.05
-        p100_rising = interval_p100 > self.prev_interval_p100 * 1.10
-        p100_stable = not p100_rising
+        if self.p100_ratio > self.config.stress_ratio:
+            self.consecutive_p100_stressed += 1
+        else:
+            self.consecutive_p100_stressed = 0
+
+        should_hold = self.consecutive_p95_stressed >= self.config.stress_consecutive
+        should_repair = self.consecutive_p100_stressed >= self.config.stress_consecutive
 
         if self.state == ConcurrencyState.RAMPING:
-            if interval_p100 > threshold or has_timeouts:
-                # Stress — P100 exceeded threshold, sharp rise, or timeout
+            if should_repair:
                 self.state = ConcurrencyState.REPAIRING
                 self.current = max(self.config.min_concurrency,
                                    int(self.current * self.config.repair_pct))
-            elif p100_rising:
-                # P100 rising — at the edge, hold here
+            elif should_hold:
                 self.state = ConcurrencyState.HOLDING
                 self.holding_concurrency = self.current
                 self.last_healthy_concurrency = self.current
             else:
-                # No stress signal — keep ramping
                 self.last_healthy_concurrency = self.current
                 self.current = self.current + self.ramp_step
 
         elif self.state == ConcurrencyState.HOLDING:
             self.holding_concurrency = self.current
-            if interval_p100 > threshold or has_timeouts:
+            if should_repair:
                 self.state = ConcurrencyState.REPAIRING
                 self.current = max(self.config.min_concurrency,
                                    int(self.current * self.config.repair_pct))
-            elif thru_rising and p100_stable:
-                # Conditions improved — resume ramping
+            elif not should_hold:
+                # P95 ratio dropped back — resume ramping
                 self.state = ConcurrencyState.RAMPING
                 self.current = self.current + self.ramp_step
 
         elif self.state == ConcurrencyState.REPAIRING:
-            recovery_target = self.baseline_p100 * self.config.recovery_target_mult
-            if interval_p100 <= recovery_target:
+            if self.p100_ratio <= self.config.recovery_ratio:
                 self.state = ConcurrencyState.RECOVERED
 
         elif self.state == ConcurrencyState.RECOVERED:
-            if interval_p100 > threshold or has_timeouts:
-                # Stress during recovery — back to repairing
+            if should_repair:
                 self.state = ConcurrencyState.REPAIRING
                 self.current = max(self.config.min_concurrency,
                                    int(self.current * self.config.repair_pct))
-            elif p100_rising:
-                # P100 rising during recovery — hold here
+            elif should_hold:
                 self.state = ConcurrencyState.HOLDING
                 self.holding_concurrency = self.current
                 self.last_healthy_concurrency = self.current
             elif self.current >= self.last_healthy_concurrency:
-                # Reached target — hold
                 self.state = ConcurrencyState.HOLDING
                 self.current = self.last_healthy_concurrency
                 self.holding_concurrency = self.current
             else:
-                # No stress signal — keep ramping back toward last healthy
                 self.current = min(self.current + self.ramp_step,
                                    self.last_healthy_concurrency)
-                self.last_healthy_concurrency = self.current
 
-        self.prev_throughput = throughput
-        self.prev_interval_p100 = interval_p100
         return self.current
 
 # === REAL-TIME TPM TRACKER ========================================================================================================
@@ -886,13 +865,10 @@ class IdeaExtractor:
         _stored = get_phase_stats(self._perf_stats, self.model, "step3_idea_extraction")
         if _stored and _stored.get("sample_count", 0) >= 10:
             if "p99_latency_s" in _stored:
-                # Timeout = max(1.2 × P99, timeoutFactor × P99)
-                # timeoutFactor = 2 if previous run had timeouts, 0 otherwise
                 _p99 = _stored["p99_latency_s"]
                 _timeout_factor = COLD_START_TIMEOUT_FACTOR if _stored.get("had_timeouts") else 0
                 _stored_timeout = max(COLD_START_P99_MULTIPLIER * _p99, _timeout_factor * _p99)
             elif "p95_latency_s" in _stored:
-                # Fallback for stats that don't yet have P99
                 _stored_timeout = _stored["p95_latency_s"] * COLD_START_P95_MULTIPLIER
             else:
                 _stored_timeout = None
@@ -1894,10 +1870,11 @@ class IdeaExtractor:
             )
 
             async with self.semaphore:
-                # No timeout for tail tasks (queue empty, all remaining tasks already in-flight)
-                # Timeout only adds latency for the last chunk — these tasks will complete naturally
-                tail_mode = hasattr(self, '_queue_empty') and self._queue_empty
-                timeout = None if tail_mode else self.latency_tracker.get_timeout(est_tokens)
+                # No timeout for last batch — when remaining tasks fit within concurrency,
+                # they're all in the final wave. Timeouts would only add wall time.
+                last_batch = (hasattr(self, '_task_queue') and self._task_queue is not None
+                              and self._task_queue.qsize() < self.optimal_concurrency)
+                timeout = None if last_batch else self.latency_tracker.get_timeout(est_tokens)
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
                 api_start = time.perf_counter()
                 async with self.rate_limiter:
@@ -2650,6 +2627,7 @@ class IdeaExtractor:
         print(f"\n⏱ T+0.0s: Starting task processing")
 
         queue = asyncio.Queue()
+        self._task_queue = queue  # shared with process_task for tail mode detection
         results = [None] * len(tasks)
         timed_out = []  # Collect timed-out tasks for batch retry
 
@@ -2669,7 +2647,6 @@ class IdeaExtractor:
         last_diagnostics = start_time
         last_adjustment = start_time
 
-        self._queue_empty = False
         while not queue.empty():
             await asyncio.sleep(0.1)  # 10 Hz — enough to track ramp and progress
             now = time.time()
@@ -2714,23 +2691,24 @@ class IdeaExtractor:
                 # State machine concurrency evaluation (same tick as report)
                 state_str = ""
                 interval_p100 = 0.0
-                new_timeouts = timeouts - getattr(self, '_prev_timeouts_for_sm', 0)
-                self._prev_timeouts_for_sm = timeouts
                 if self._concurrency_sm and p50 > 0:
                     # Sync with circuit breaker (may have changed concurrency externally)
                     self._concurrency_sm.current = self.semaphore.limit
-                    new_conc = self._concurrency_sm.evaluate(p50=p50, now=time.monotonic(),
-                                                             new_timeouts=new_timeouts)
+                    new_conc = self._concurrency_sm.evaluate(p50=p50, p95=p95, now=time.monotonic())
                     if new_conc != self.optimal_concurrency:
                         self.semaphore.set_limit(new_conc)
                         self.optimal_concurrency = new_conc
-                    state_str = f" {self._concurrency_sm.state.value}"
-                    interval_p100 = self._concurrency_sm.prev_interval_p100 or 0.0
+                    sm = self._concurrency_sm
+                    p95r = getattr(sm, 'p95_ratio', 0)
+                    p100r = getattr(sm, 'p100_ratio', 0)
+                    state_str = (f" {sm.state.value}"
+                                 f" p95:{p95r:.1f}x/{sm.consecutive_p95_stressed}"
+                                 f" p100:{p100r:.1f}x/{sm.consecutive_p100_stressed}")
 
-                # Interval P100 is the reported P100 (what drives decisions)
+                # Latency percentiles (P100 = interval max, from state machine)
                 if self.latency_tracker.values:
-                    display_p100 = interval_p100 if interval_p100 > 0 else float(max(vals))
-                    latency_str = f" P50:{p50:.1f}s P95:{p95:.1f}s P100:{display_p100:.1f}s"
+                    iv_p100 = getattr(sm, 'p100_ratio', 0) * p50 if sm else float(max(vals))
+                    latency_str = f" P50:{p50:.1f}s P95:{p95:.1f}s P100:{iv_p100:.1f}s"
 
                 # Bottleneck-dependent constraint info
                 active = self.semaphore.active
@@ -2790,8 +2768,6 @@ class IdeaExtractor:
 
                 last_diagnostics = now
 
-        # Signal tail mode — remaining in-flight tasks run without timeout
-        self._queue_empty = True
         await queue.join()
 
         for _ in workers:
