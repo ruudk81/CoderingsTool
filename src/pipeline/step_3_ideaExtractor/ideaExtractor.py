@@ -6,19 +6,19 @@ Extracts structured ideas from survey responses using LLM with:
 - Data-driven domain discovery (5-15 domains per dimension)
 - 4-layer hierarchy: Instance → Interpretation → Abstraction → Domain → Primary Dimension
 - Secondary dimension: valence
-- Hybrid rate limiting: Little's Law + PID arrival rate + Circuit breaker
+- Rate limiting: state machine concurrency + PID arrival rate + circuit breaker
 - Template prefix enforcement for normalized idea phrasing
 
 Rate limiting strategy:
 1. RPM: AsyncLimiter (PID-adjustable arrival rate)
 2. TPM: TokenBucket (self-regulating via acquire/wait/reconcile)
-3. Concurrency: ConcurrencyGate (Little's Law initial, gradual ramp-up)
+3. Concurrency: ConcurrencyGate (state machine: ramp, hold, repair, recover)
 4. Circuit breaker: monitors timeout RATE, adjusts concurrency on sustained pressure
 
 Key features:
 1. Learned tiktoken→API token offset (accounts for ~300 token system overhead)
 2. PID arrival rate optimization (asymmetric: aggressive up, gentle down)
-3. Gradual ramp-up from 20% to 100% of target over 30s (avoids burst throttling)
+3. State machine concurrency: ramp gently, hold at sweet spot, repair on stress
 4. Circuit breaker for concurrency (reacts to rate, not individual timeouts)
 5. Live warm-up with one-shot calibration from production data
 """
@@ -35,6 +35,7 @@ import unicodedata
 from typing import Dict, List, Optional, Union, Tuple
 from dataclasses import dataclass
 from collections import deque
+from enum import Enum
 import numpy as np
 
 import nest_asyncio
@@ -92,7 +93,7 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     DEFAULT_THROUGHPUT_CONFIG,
     DEFAULT_WARM_UP_CONFIG,
     DEFAULT_SPECIFIER_CONFIG,
-    DEFAULT_RAMP_UP_CONFIG,
+    DEFAULT_CONCURRENCY_CONTROL_CONFIG,
     DEFAULT_CIRCUIT_BREAKER_CONFIG,
     DEFAULT_PID_CONTROLLER_CONFIG,
     DEFAULT_TPM_TRACKING_CONFIG,
@@ -418,403 +419,174 @@ def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_t
     return int(max(target, 5))
 
 
-# === CONCURRENCY RAMP (LINEAR WITH CONGESTION DETECTION) =========================================================================
+def detect_bottleneck(rpm_limit: int, tpm_limit: int, avg_tokens: int,
+                      starting_concurrency: int) -> str:
+    """Determine the binding constraint before processing starts.
 
-class ConcurrencyRamp:
-    """Completion-based concurrency ramp with congestion detection.
-
-    Concurrency scales linearly with completion progress:
-      0% complete → start (50% of Little's Law)
-      100% complete → target (90% of Little's Law)
-
-    Uses 4-signal monitoring model (per strategy doc):
-      1. Queue health — throughput trend (declining = pressure)
-      2. RPM utilization — >80% yellow, >90% red
-      3. TPM utilization — >80% yellow, >90% red
-      4. Latency trend — P95 increasing >10% yellow, >25% red
-
-    Decision: all green → advance; any yellow → hold; any red → stop.
-
-    After warm-up calibration, Little's Law is recalculated and the ramp
-    adjusts start/target but preserves congestion detection state.
+    If both RPM/s and TPM/s are far above the starting concurrency,
+    the bottleneck is server throughput (latency-bound), not rate limits.
     """
-    def __init__(self, config: 'RampUpConfig', little_law_cap: int, num_tasks: int):
-        self.config = config
-        self._num_tasks = num_tasks
-        self._done = False
-        self._stopped_concurrency = None
-        self._stop_reason = None
+    rpm_per_second = rpm_limit / 60
+    tpm_per_second = tpm_limit / 60 / max(avg_tokens, 1)
+    api_throughput = min(rpm_per_second, tpm_per_second)
 
-        # Compute start and target from Little's Law (capacity-relative)
-        self._little_law_cap = little_law_cap
-        half_little_law = int(little_law_cap * config.start_fraction)
-        start = max(half_little_law, num_tasks)   # small batches: all at once
-        start = min(start, num_tasks)              # never exceed task count
-        start = max(start, config.min_initial)     # never below floor
-        target = min(int(little_law_cap * config.target_fraction), num_tasks)
-        self._start = start
-        self._target = max(target, start)  # target >= start
-        self._current = start
-
-        # Throughput tracking (rolling window)
-        self._prev_throughput = None
-        self._declining_steps = 0
-
-        # Queue depth tracking
-        self._prev_completions_total = 0
-        self._prev_timeouts_total = 0
-
-        # Latency trend tracking (4-signal model)
-        self._prev_p95_latency: Optional[float] = None
-
-    @property
-    def cap(self) -> int:
-        return self._target
-
-    def current_target(self) -> int:
-        return self._current
-
-    def is_done(self) -> bool:
-        return self._done
-
-    def stopped_concurrency(self) -> Optional[int]:
-        return self._stopped_concurrency
-
-    def recalibrate(self, new_little_law_cap: int):
-        """Called after warm-up calibration with updated Little's Law.
-
-        Updates start/target from new cap. Preserves congestion detection
-        state (_prev_throughput, _declining_steps) so that ongoing throughput
-        decline is not forgotten across recalibration.
-        """
-        self._little_law_cap = new_little_law_cap
-        half_little_law = int(new_little_law_cap * self.config.start_fraction)
-        new_start = max(half_little_law, self._num_tasks)   # capacity-relative
-        new_start = min(new_start, self._num_tasks)
-        new_start = max(new_start, self.config.min_initial)
-        new_target = min(int(new_little_law_cap * self.config.target_fraction), self._num_tasks)
-        self._start = new_start
-        self._target = max(new_target, new_start)
-        self._current = new_start
-        self._done = False
-        self._stopped_concurrency = None
-        self._stop_reason = None
-        # NOTE: _prev_throughput and _declining_steps intentionally preserved
-        print(f"RAMP RECALIBRATED: {new_start} → {self._target} "
-              f"(Little's Law: {new_little_law_cap})")
-
-    def _evaluate_signals(self, throughput: float, tpm_pct: float, rpm_pct: float,
-                          p95_latency: Optional[float], completions_total: int,
-                          timeouts_total: int) -> Dict[str, str]:
-        """Evaluate 4 monitoring signals per strategy doc.
-
-        Returns dict mapping signal name to 'green', 'yellow', or 'red'.
-        Thresholds from strategy doc lines 238-243.
-        """
-        signals = {}
-
-        # Signal 1: Queue health (throughput trend)
-        if self._prev_throughput is not None and self._prev_throughput > 0:
-            growth = (throughput - self._prev_throughput) / self._prev_throughput
-            if growth < -0.25:
-                signals['queue'] = 'red'
-            elif growth < -0.10:
-                signals['queue'] = 'yellow'
-            else:
-                signals['queue'] = 'green'
-        else:
-            signals['queue'] = 'green'
-
-        # Signal 2: RPM utilization
-        if rpm_pct > 90:
-            signals['rpm'] = 'red'
-        elif rpm_pct > 80:
-            signals['rpm'] = 'yellow'
-        else:
-            signals['rpm'] = 'green'
-
-        # Signal 3: TPM utilization
-        if tpm_pct > 90:
-            signals['tpm'] = 'red'
-        elif tpm_pct > 80:
-            signals['tpm'] = 'yellow'
-        else:
-            signals['tpm'] = 'green'
-
-        # Signal 4: Latency trend (P95 vs previous)
-        if p95_latency and self._prev_p95_latency and self._prev_p95_latency > 0:
-            change = (p95_latency - self._prev_p95_latency) / self._prev_p95_latency
-            if change > 0.25:
-                signals['latency'] = 'red'
-            elif change > 0.10:
-                signals['latency'] = 'yellow'
-            else:
-                signals['latency'] = 'green'
-        else:
-            signals['latency'] = 'green'
-
-        return signals
-
-    def record_measurement(self, throughput: float, tpm_pct: float, rpm_pct: float,
-                           completions_total: int, timeouts_total: int, duration: float,
-                           p95_latency: Optional[float] = None):
-        """Called every 0.5s with current metrics. Uses 4-signal model for ramp decisions.
-
-        Signals: queue health, RPM%, TPM%, latency trend (P95).
-        Decision: all green → advance; any yellow → hold; any red → stop ramp.
-        """
-        if self._done:
-            return
-
-        # Evaluate all 4 signals
-        signals = self._evaluate_signals(
-            throughput, tpm_pct, rpm_pct, p95_latency,
-            completions_total, timeouts_total,
-        )
-
-        # --- Defensive signal: queue congestion (timeouts appearing) ---
-        new_timeouts = timeouts_total - self._prev_timeouts_total
-        new_completions = completions_total - self._prev_completions_total
-        if new_timeouts > 0 and new_completions > 0:
-            timeout_rate = new_timeouts / (new_completions + new_timeouts)
-            if timeout_rate > 0.05:  # >5% of this window timed out
-                self._stop('queue_congestion', self._current)
-                return
-
-        # Decision logic: any red → stop, any yellow → hold, all green → advance
-        if 'red' in signals.values():
-            red_signals = [k for k, v in signals.items() if v == 'red']
-            self._stop(f'red_signal:{",".join(red_signals)}', self._current)
-            return
-
-        # Update tracking state
-        self._prev_p95_latency = p95_latency
-        self._prev_throughput = throughput
-        self._prev_completions_total = completions_total
-        self._prev_timeouts_total = timeouts_total
-
-        if 'yellow' in signals.values():
-            return  # Hold — don't advance but don't stop
-
-        # --- All green: completion-based ramp advance ---
-        ramp_fraction = min(completions_total / self._num_tasks, 1.0)
-        new_conc = int(self._start + (self._target - self._start) * ramp_fraction)
-        new_conc = max(new_conc, self._current)  # never decrease during ramp
-
-        if new_conc >= self._target:
-            self._current = self._target
-            self._done = True
-            self._stopped_concurrency = self._target
-            self._stop_reason = 'target_reached'
-            print(f"RAMP COMPLETE: concurrency {self._target} "
-                  f"({self.config.target_fraction*100:.0f}% of Little's Law {self._little_law_cap})")
-        else:
-            self._current = new_conc
-
-    def _stop(self, reason: str, concurrency: int):
-        """Stop ramping due to congestion signal."""
-        self._done = True
-        self._stopped_concurrency = concurrency
-        self._stop_reason = reason
-        label = 'THROUGHPUT DROP' if reason == 'throughput_drop' else 'QUEUE CONGESTION'
-        print(f"RAMP STOPPED ({label}): locking concurrency at {concurrency} "
-              f"(was ramping toward {self._target})")
+    if api_throughput > starting_concurrency * 5:
+        return "throughput"
+    elif rpm_per_second <= tpm_per_second:
+        return "rpm"
+    else:
+        return "tpm"
 
 
-# === ADAM-INSPIRED CONCURRENCY CONTROLLER =========================================================================
+# === CONCURRENCY STATE MACHINE =========================================================================
 
-class AdamConcurrencyController:
-    """Adam-inspired adaptive concurrency controller.
+class ConcurrencyState(Enum):
+    RAMPING = "RAMPING"
+    HOLDING = "HOLDING"
+    REPAIRING = "REPAIRING"
+    RECOVERED = "RECOVERED"
 
-    Bottleneck-aware: identifies the binding constraint at init and only
-    monitors the signals that matter for that bottleneck.
 
-    Gradient signals:
-      - Headroom bias: gentle pull toward target (positive when below target)
-      - Utilization headroom: RPM/TPM headroom (only when RPM/TPM is binding)
-      - Latency trend: P95 change (negative when latency increases = stress)
-      - Timeout pressure: emergency brake
+class ConcurrencyStateMachine:
+    """State machine concurrency controller.
 
-    Adam mechanics:
-      - First moment (momentum): smooths gradient direction
-      - Second moment (variance): adapts step size — small steps when signals are noisy
-      - Bias correction: compensates for zero-initialization in early steps
+    Monitors throughput (concurrency/P50) and interval P100 (max latency per tick).
+    Ramps gently, holds at sweet spot, repairs on stress, recovers to healthy level.
+
+    States: RAMPING → HOLDING ↔ REPAIRING → RECOVERED → HOLDING
     """
 
-    # Gradient weights
-    W_HEADROOM = 0.3       # pull toward target (spring constant)
-    W_UTILIZATION = 1.0    # RPM/TPM headroom (only when binding)
-    W_PRESSURE = 2.0       # pressure ratio trend penalty
-    W_TIMEOUT = 10.0       # timeout emergency brake
+    def __init__(self, starting: int, bottleneck: str = "throughput",
+                 config: 'ConcurrencyControlConfig' = None):
+        from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_CONCURRENCY_CONTROL_CONFIG
+        self.config = config or DEFAULT_CONCURRENCY_CONTROL_CONFIG
+        self.current = starting
+        self.starting = starting
+        self.bottleneck = bottleneck
+        self.ramp_step = max(2, int(starting * self.config.ramp_step_pct))
 
-    TARGET_UTILIZATION = 0.8  # 80% target for TPM/RPM
+        self.state = ConcurrencyState.RAMPING
+        self.baseline_p100 = None  # set from first-tick P50 × threshold_mult
+        self.baseline_set = False
+        self.last_healthy_concurrency = starting
+        self.holding_concurrency = None
 
-    def __init__(self, initial: int, target: int, bottleneck: str = "throughput",
-                 min_floor: int = 5,
-                 beta1: float = 0.9, beta2: float = 0.999,
-                 learning_rate: float = 0.15, epsilon: float = 1e-8,
-                 eval_interval: float = 2.0):
-        self.current = initial
-        self.target = target
-        self.bottleneck = bottleneck  # "throughput", "rpm", or "tpm"
-        self.min_floor = min_floor
+        # Per-tick signal tracking
+        self.prev_throughput = None
+        self.prev_interval_p100 = None
+        self.interval_latencies = []
 
-        # Adam state
-        self.m = 0.0          # first moment (momentum)
-        self.v = 0.0          # second moment (variance)
-        self.t = 0            # step counter
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.lr = learning_rate
-        self.epsilon = epsilon
+    def record_latency(self, latency: float):
+        """Called from worker on each completion. Appends to interval buffer."""
+        self.interval_latencies.append(latency)
 
-        # Tracking
-        self.eval_interval = eval_interval
-        self.last_eval_time = 0.0
+    def _get_interval_p100(self) -> float:
+        """Return max latency since last evaluation, then clear buffer."""
+        if not self.interval_latencies:
+            return self.prev_interval_p100 or 0.0
+        p100 = max(self.interval_latencies)
+        self.interval_latencies.clear()
+        return p100
 
-        # EMA throughput for pressure ratio
-        self.ema_throughput = 0.0
-        self.ema_alpha = 0.2
-        self.prev_completed = 0
-        self.prev_timeouts = 0       # for per-interval timeout detection
-        self.prev_eval_time = None
-        self.prev_pressure_ratio = None
+    def evaluate(self, p50: float, now: float, new_timeouts: int = 0) -> int:
+        """Main tick evaluation. Returns new concurrency.
 
-        # History for logging
-        self.last_gradient = 0.0
-        self.last_step = 0.0
-        self.last_delta = 0
-        self.last_pressure_ratio = 0.0
-
-    @staticmethod
-    def detect_bottleneck(rpm_limit: int, tpm_limit: int, avg_tokens: int,
-                          cold_start_cap: int) -> str:
-        """Determine the binding constraint before processing starts.
-
-        If both RPM/s and TPM/s are far above the cold start cap,
-        the bottleneck is server throughput (latency-bound), not rate limits.
+        Args:
+            new_timeouts: number of new deferred/timed-out tasks since last tick.
         """
-        rpm_per_second = rpm_limit / 60
-        tpm_per_second = tpm_limit / 60 / max(avg_tokens, 1)
-        api_throughput = min(rpm_per_second, tpm_per_second)
+        # When rate-limited, defer to PID — don't manage concurrency
+        if self.bottleneck != "throughput":
+            return self.current
 
-        # If API can handle 5× our starting concurrency, rate limits aren't binding
-        if api_throughput > cold_start_cap * 5:
-            return "throughput"
-        elif rpm_per_second <= tpm_per_second:
-            return "rpm"
-        else:
-            return "tpm"
+        interval_p100 = self._get_interval_p100()
+        throughput = self.current / max(p50, 0.1)
 
-    def should_evaluate(self, now: float, tasks_completed: int = 0) -> bool:
-        """Check if enough time has elapsed and we have completion data."""
-        if self.prev_eval_time is None and tasks_completed == 0:
-            return False  # skip until first completions arrive
-        return (now - self.last_eval_time) >= self.eval_interval
+        # Establish baseline from first tick with data: P50 × multiplier (default 3×)
+        if not self.baseline_set and p50 > 0:
+            self.baseline_p100 = p50 * self.config.p100_baseline_mult
+            self.baseline_set = True
 
-    def step(self, tpm_pct: float, rpm_pct: float,
-             tasks_dispatched: int, tasks_completed: int,
-             now: float, timeouts_total: int) -> int:
-        """Compute next concurrency level from monitoring signals.
+        # Need baseline before making decisions
+        if self.baseline_p100 is None or interval_p100 == 0:
+            self.prev_throughput = throughput
+            self.prev_interval_p100 = interval_p100
+            return self.current
 
-        Gradient = headroom bias + utilization - pressure ratio trend - timeout penalty
+        # Stress detection (applies in any state)
+        # Two triggers: P100 exceeds baseline threshold, or new timeouts occurred
+        threshold = self.baseline_p100
+        has_timeouts = new_timeouts > 0
 
-        Pressure ratio = InFlight / EMA_throughput (Little's Law inverted).
-        When healthy: ratio ≈ P50 latency (stable). When stressed: ratio grows
-        (throughput fails to keep up with concurrency).
+        # Classify signal directions (needs previous tick data)
+        prev_ok = (self.prev_throughput is not None and self.prev_interval_p100 is not None
+                   and self.prev_interval_p100 > 0 and self.prev_throughput > 0)
+        if not prev_ok:
+            # First tick with data — collect baseline, don't make state decisions
+            self.prev_throughput = throughput
+            self.prev_interval_p100 = interval_p100
+            return self.current
 
-        Returns new concurrency value (clamped to [min_floor, target]).
-        """
-        # Signal 1: Headroom bias — gentle pull toward target (like a spring)
-        headroom_bias = self.W_HEADROOM * (self.target - self.current) / max(self.target, 1)
+        thru_rising = throughput > self.prev_throughput * 1.05
+        p100_rising = interval_p100 > self.prev_interval_p100 * 1.10
+        p100_stable = not p100_rising
 
-        # Signal 2: Utilization headroom (only when RPM/TPM is the bottleneck)
-        if self.bottleneck == "rpm":
-            utilization_signal = self.TARGET_UTILIZATION - rpm_pct / 100
-        elif self.bottleneck == "tpm":
-            utilization_signal = self.TARGET_UTILIZATION - tpm_pct / 100
-        else:
-            utilization_signal = 0.0  # not relevant for throughput bottleneck
+        if self.state == ConcurrencyState.RAMPING:
+            if interval_p100 > threshold or has_timeouts:
+                # Stress — P100 exceeded threshold, sharp rise, or timeout
+                self.state = ConcurrencyState.REPAIRING
+                self.current = max(self.config.min_concurrency,
+                                   int(self.current * self.config.repair_pct))
+            elif p100_rising:
+                # P100 rising — at the edge, hold here
+                self.state = ConcurrencyState.HOLDING
+                self.holding_concurrency = self.current
+                self.last_healthy_concurrency = self.current
+            else:
+                # No stress signal — keep ramping
+                self.last_healthy_concurrency = self.current
+                self.current = self.current + self.ramp_step
 
-        # Signal 3: Pressure ratio trend — the primary stress signal
-        # Update EMA throughput
-        new_completed = tasks_completed - self.prev_completed
-        dt = (now - self.prev_eval_time) if self.prev_eval_time is not None else 0.0
-        self.prev_completed = tasks_completed
-        self.prev_eval_time = now
+        elif self.state == ConcurrencyState.HOLDING:
+            self.holding_concurrency = self.current
+            if interval_p100 > threshold or has_timeouts:
+                self.state = ConcurrencyState.REPAIRING
+                self.current = max(self.config.min_concurrency,
+                                   int(self.current * self.config.repair_pct))
+            elif thru_rising and p100_stable:
+                # Conditions improved — resume ramping
+                self.state = ConcurrencyState.RAMPING
+                self.current = self.current + self.ramp_step
 
-        if dt > 0 and new_completed > 0:
-            instant_rate = new_completed / dt
-            self.ema_throughput = (self.ema_alpha * instant_rate
-                                 + (1 - self.ema_alpha) * self.ema_throughput)
+        elif self.state == ConcurrencyState.REPAIRING:
+            recovery_target = self.baseline_p100 * self.config.recovery_target_mult
+            if interval_p100 <= recovery_target:
+                self.state = ConcurrencyState.RECOVERED
 
-        # Pressure ratio = in-flight / throughput
-        in_flight = tasks_dispatched - tasks_completed
-        pressure_ratio = in_flight / max(self.ema_throughput, 0.1)
+        elif self.state == ConcurrencyState.RECOVERED:
+            if interval_p100 > threshold or has_timeouts:
+                # Stress during recovery — back to repairing
+                self.state = ConcurrencyState.REPAIRING
+                self.current = max(self.config.min_concurrency,
+                                   int(self.current * self.config.repair_pct))
+            elif p100_rising:
+                # P100 rising during recovery — hold here
+                self.state = ConcurrencyState.HOLDING
+                self.holding_concurrency = self.current
+                self.last_healthy_concurrency = self.current
+            elif self.current >= self.last_healthy_concurrency:
+                # Reached target — hold
+                self.state = ConcurrencyState.HOLDING
+                self.current = self.last_healthy_concurrency
+                self.holding_concurrency = self.current
+            else:
+                # No stress signal — keep ramping back toward last healthy
+                self.current = min(self.current + self.ramp_step,
+                                   self.last_healthy_concurrency)
+                self.last_healthy_concurrency = self.current
 
-        # Pressure ratio trend (rising = stress, stable/falling = healthy)
-        if self.prev_pressure_ratio is not None and self.prev_pressure_ratio > 0:
-            pressure_change = (pressure_ratio - self.prev_pressure_ratio) / self.prev_pressure_ratio
-        else:
-            pressure_change = 0.0
-        self.prev_pressure_ratio = pressure_ratio
-        self.last_pressure_ratio = pressure_ratio
-
-        # Per-interval timeout detection: any new timeout is a hard stress signal
-        new_timeouts = timeouts_total - self.prev_timeouts
-        self.prev_timeouts = timeouts_total
-        # Use 1.0 per timeout in this interval (not diluted cumulative rate)
-        timeout_signal = float(new_timeouts)
-
-        # Composite gradient
-        gradient = (headroom_bias
-                   + self.W_UTILIZATION * utilization_signal
-                   - self.W_PRESSURE * max(0, pressure_change)
-                   - self.W_TIMEOUT * timeout_signal)
-
-        # Safety margin: need clear positive signal to ramp, scales with headroom
-        safety = 0.5 * headroom_bias
-        effective_gradient = gradient - safety
-
-        # Hard rule: negative gradient must never increase concurrency
-        if effective_gradient < 0:
-            delta_clamp = 0  # hold or decrease only
-        else:
-            delta_clamp = None  # Adam decides freely
-
-        # Adam update (uses effective gradient)
-        self.t += 1
-        self.m = self.beta1 * self.m + (1 - self.beta1) * effective_gradient
-        self.v = self.beta2 * self.v + (1 - self.beta2) * effective_gradient ** 2
-
-        # Bias correction
-        m_hat = self.m / (1 - self.beta1 ** self.t)
-        v_hat = self.v / (1 - self.beta2 ** self.t)
-
-        # Step computation
-        adam_step = self.lr * m_hat / (v_hat ** 0.5 + self.epsilon)
-        delta = int(round(adam_step * self.current))
-
-        # Apply hard clamp: negative gradient → no increase
-        if delta_clamp is not None:
-            delta = min(delta, delta_clamp)
-
-        # Apply with bounds
-        new_conc = max(self.min_floor, min(self.current + delta, self.target))
-        if new_conc != self.current:
-            self.current = new_conc
-
-        # Store for logging
-        self.last_gradient = effective_gradient
-        self.last_step = adam_step
-        self.last_delta = delta
-
+        self.prev_throughput = throughput
+        self.prev_interval_p100 = interval_p100
         return self.current
-
-    def update_target(self, new_target: int):
-        """Update target after warm-up recalibration."""
-        self.target = new_target
-
 
 # === REAL-TIME TPM TRACKER ========================================================================================================
 class RealTimeTPMTracker:
@@ -1178,7 +950,7 @@ class IdeaExtractor:
         self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
 
         # Config for new rate limiting components
-        self.ramp_up_config = DEFAULT_RAMP_UP_CONFIG
+        self.concurrency_control_config = DEFAULT_CONCURRENCY_CONTROL_CONFIG
         self.circuit_breaker_config = DEFAULT_CIRCUIT_BREAKER_CONFIG
         self.pid_config = DEFAULT_PID_CONTROLLER_CONFIG
         self.tpm_tracking_config = DEFAULT_TPM_TRACKING_CONFIG
@@ -1190,8 +962,8 @@ class IdeaExtractor:
         self.pid_controller = None
         self.current_arrival_rate = None
 
-        # Adaptive concurrency (Adam controller)
-        self._adam_controller = None  # Initialized in _initialize_rate_limiters
+        # Concurrency state machine
+        self._concurrency_sm = None  # Initialized in _initialize_rate_limiters
 
         # Initial avg_tokens preserved for diagnostics (set from tiktoken Phase 4, never updated)
         self.bootstrap_avg_tokens = None
@@ -2122,8 +1894,10 @@ class IdeaExtractor:
             )
 
             async with self.semaphore:
-                # Compute timeout AFTER semaphore (uses current latency data, not stale)
-                timeout = self.latency_tracker.get_timeout(est_tokens)
+                # No timeout for tail tasks (queue empty, all remaining tasks already in-flight)
+                # Timeout only adds latency for the last chunk — these tasks will complete naturally
+                tail_mode = hasattr(self, '_queue_empty') and self._queue_empty
+                timeout = None if tail_mode else self.latency_tracker.get_timeout(est_tokens)
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
                 api_start = time.perf_counter()
                 async with self.rate_limiter:
@@ -2143,6 +1917,8 @@ class IdeaExtractor:
 
                     latency = time.perf_counter() - api_start
                     self.latency_tracker.add(latency)
+                    if self._concurrency_sm:
+                        self._concurrency_sm.record_latency(latency)
 
                     # Record successful completion to circuit breaker
                     if self.circuit_breaker:
@@ -2502,40 +2278,25 @@ class IdeaExtractor:
         )
         little_law_cap = min(little_law, num_tasks)
 
-        # Target concurrency = min(0.9 × theoretical, 0.9 × empirical capacity)
-        theoretical_conc = min(little_law_cap, num_tasks)
+        # Starting concurrency = min(empirical capacity or cold start cap, num_tasks)
         if getattr(self, '_stored_empirical_capacity', None) is not None:
-            target = min(
-                int(theoretical_conc * 0.9),
-                int(self._stored_empirical_capacity)  # no discount — already measured
-            )
-            target = max(target, self.ramp_up_config.min_initial)
-            target = min(target, num_tasks)
+            target = min(int(self._stored_empirical_capacity), num_tasks)
         else:
-            # No empirical data — cold start cap, Adam ramps toward theoretical
-            target = min(COLD_START_CAP, int(theoretical_conc * 0.9), num_tasks)
-            target = max(target, self.ramp_up_config.min_initial)
+            target = min(COLD_START_CAP, num_tasks)
+        target = max(target, DEFAULT_CONCURRENCY_CONTROL_CONFIG.min_concurrency)
 
         self.semaphore = ConcurrencyGate(target)
         self.optimal_concurrency = target
 
-        # Adam-inspired adaptive concurrency controller
-        # Target = theoretical ceiling; Adam ramps from current toward it
-        adam_target = min(int(theoretical_conc * 0.9), num_tasks)
-        adam_target = max(adam_target, self.ramp_up_config.min_initial)
-        if getattr(self, '_stored_empirical_capacity', None) is not None:
-            adam_target = target  # already at empirical cap, hold there
-        bottleneck = AdamConcurrencyController.detect_bottleneck(
+        # State machine concurrency controller
+        bottleneck = detect_bottleneck(
             limits.requests_per_minute, limits.tokens_per_minute,
             self.avg_tokens, target
         )
-        self._adam_controller = AdamConcurrencyController(
-            initial=target, target=adam_target, bottleneck=bottleneck,
-            min_floor=self.ramp_up_config.min_initial
+        self._concurrency_sm = ConcurrencyStateMachine(
+            starting=target, bottleneck=bottleneck,
+            config=DEFAULT_CONCURRENCY_CONTROL_CONFIG
         )
-        # Seed EMA throughput from stored stats: throughput ≈ capacity / P50
-        if self._stored_empirical_capacity and self._stored_p50 and self._stored_p50 > 0:
-            self._adam_controller.ema_throughput = self._stored_empirical_capacity / self._stored_p50
 
         # Layer 4: Circuit breaker (baseline updated when ramp stops)
         self.circuit_breaker = ConcurrencyCircuitBreaker(
@@ -2626,12 +2387,6 @@ class IdeaExtractor:
         )
         new_little_law_cap = min(new_little_law, num_tasks)
 
-        # Update Adam controller target with recalibrated Little's Law
-        # Concurrency changes are Adam's job — warm-up only updates the ceiling
-        if self._adam_controller:
-            new_target = min(int(new_little_law_cap * 0.9), num_tasks)
-            self._adam_controller.update_target(new_target)
-
         # Recalculate arrival rate (tokens changed, so TPM rail changes)
         new_arrival_rate = min(
             self.rate_limits.requests_per_minute * headroom / 60,
@@ -2685,40 +2440,6 @@ class IdeaExtractor:
             self.verbose_reporter.stat_line(f"Token estimate correction: {old_avg} → {self.avg_tokens}")
 
         return True
-
-    async def _check_ramp_up(self, queue=None, total_tasks: int = 0):
-        """Adam-inspired adaptive concurrency adjustment.
-
-        Called every 0.1s from main loop. Evaluates every 2s (controller.eval_interval).
-        Uses Pressure Ratio (InFlight / EMA throughput) as the stress signal.
-        """
-        now = time.monotonic()
-        tasks_completed = self.stats['tasks_successful'] + self.stats['tasks_failed']
-        if not self._adam_controller.should_evaluate(now, tasks_completed):
-            return
-
-        # TPM and RPM utilization (only used when RPM/TPM is the bottleneck)
-        tpm_pct = rpm_pct = 0.0
-        if self.tpm_tracker and self.rate_limits:
-            current_tpm = await self.tpm_tracker.get_current_tpm()
-            tpm_pct = current_tpm / self.rate_limits.tokens_per_minute * 100 if self.rate_limits.tokens_per_minute else 0
-        if self.rpm_tracker and self.rate_limits:
-            current_rpm = await self.rpm_tracker.get_current_rpm()
-            rpm_pct = current_rpm / self.rate_limits.requests_per_minute * 100 if self.rate_limits.requests_per_minute else 0
-
-        # In-flight count for pressure ratio
-        tasks_dispatched = total_tasks - (queue.qsize() if queue is not None else 0)
-
-        # Adam step
-        new_conc = self._adam_controller.step(
-            tpm_pct, rpm_pct, tasks_dispatched, tasks_completed,
-            now, self.stats['timeouts']
-        )
-        self._adam_controller.last_eval_time = now
-
-        if new_conc != self.optimal_concurrency:
-            self.semaphore.set_limit(new_conc)
-            self.optimal_concurrency = new_conc
 
     async def _apply_pid_adjustment(self) -> bool:
         """Apply PID-style continuous throughput adjustment based on real-time TPM utilization.
@@ -2892,7 +2613,6 @@ class IdeaExtractor:
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
         expected_throughput = min(rpm_throughput, tpm_throughput)
 
-        adam = self._adam_controller
         # Report every ~5% of tasks, min 10
         report_every_n = max(len(tasks) // 20, 10)
 
@@ -2901,7 +2621,8 @@ class IdeaExtractor:
         latency_source = "stored P50" if getattr(self, '_stored_p50', None) else "default"
         little_law_raw = expected_throughput * latency_used
 
-        print("\nRATE LIMITING SETUP - Adam Concurrency Controller + PID + Circuit Breaker")
+        sm = self._concurrency_sm
+        print("\nRATE LIMITING SETUP")
         print(f"- Model: {self.model}")
         print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * headroom:,.0f} with headroom)")
         print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * headroom:,.0f} with headroom)")
@@ -2914,15 +2635,10 @@ class IdeaExtractor:
             print(f"- Target concurrency: {self.optimal_concurrency} (empirical capacity, measured over time)")
         else:
             print(f"- Target concurrency: {self.optimal_concurrency} (cold start cap, no empirical data)")
-        print(f"- Bottleneck: {self._adam_controller.bottleneck}")
-        if self._adam_controller.bottleneck == "throughput":
-            print(f"- Adaptive: Adam controller (signals: headroom bias, pressure ratio)")
-        else:
-            print(f"- Adaptive: Adam controller (signals: headroom bias, {self._adam_controller.bottleneck} utilization, pressure ratio)")
-        print(f"- Timeout: 60s safety net (no retry, fallback on timeout)")
+        print(f"- Bottleneck: {sm.bottleneck}")
+        print(f"- Controller: state machine (signals: throughput, interval P100) ramp step: +{sm.ramp_step}")
         print(f"- Arrival rate: {self.current_arrival_rate:.2f}/s (PID-adjusted)")
         print(f"- Token calibration: after {warm_up_samples} completions")
-        print(f"- Progress report: every {report_every_n} completions or 2s")
         print(f"- Processing {len(tasks):,} tasks")
 
         # Workers = target concurrency so they can fill slots
@@ -2953,6 +2669,7 @@ class IdeaExtractor:
         last_diagnostics = start_time
         last_adjustment = start_time
 
+        self._queue_empty = False
         while not queue.empty():
             await asyncio.sleep(0.1)  # 10 Hz — enough to track ramp and progress
             now = time.time()
@@ -2966,10 +2683,7 @@ class IdeaExtractor:
                 elif action in ('recovering', 'recovered'):
                     self.optimal_concurrency = self.semaphore.limit
 
-            # EVERY 2s: Adam-inspired adaptive concurrency adjustment
-            await self._check_ramp_up(queue=queue, total_tasks=len(tasks))
-
-            # Progress reporting — every 2s OR every N completions
+            # Progress reporting + concurrency evaluation — synchronized
             completed = self.stats['tasks_processed']
             completions_since_report = completed - last_report_completed
             if now - last_report >= 2.0 or completions_since_report >= report_every_n:
@@ -2977,7 +2691,7 @@ class IdeaExtractor:
                 rate = completed / elapsed if elapsed > 0 else 0
                 timeouts = self.stats['timeouts']
 
-                # Three constraints: TPM%, RPM%, Concurrency%
+                # TPM/RPM utilization (for reporting and PID)
                 tpm_pct = rpm_pct = 0.0
                 if self.tpm_tracker and self.rate_limits:
                     current_tpm = await self.tpm_tracker.get_current_tpm()
@@ -2986,29 +2700,51 @@ class IdeaExtractor:
                     current_rpm = await self.rpm_tracker.get_current_rpm()
                     rpm_pct = current_rpm / self.rate_limits.requests_per_minute * 100 if self.rate_limits.requests_per_minute else 0
 
-                active = self.semaphore.active
-                limit = self.optimal_concurrency
-                conc_pct = active / limit * 100 if limit > 0 else 0
-
-                # Latency percentiles
+                # Latency and throughput
                 latency_str = ""
+                throughput_str = ""
+                p50 = 0.0
                 if self.latency_tracker.values:
                     vals = list(self.latency_tracker.values)
                     p50 = float(np.percentile(vals, 50))
                     p95 = float(np.percentile(vals, 95))
-                    p100 = float(max(vals))
-                    latency_str = f" | P50:{p50:.1f}s P95:{p95:.1f}s P100:{p100:.1f}s"
+                    throughput = self.optimal_concurrency / p50 if p50 > 0 else 0
+                    throughput_str = f" thru:{throughput:.0f}/s"
 
-                queue_depth = queue.qsize()
-                cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
-                ramp_info = ""
-                if self._adam_controller:
-                    adam = self._adam_controller
-                    ramp_info = f" adam:g={adam.last_gradient:+.2f} Δ={adam.last_delta:+d} pr={adam.last_pressure_ratio:.1f}"
+                # State machine concurrency evaluation (same tick as report)
+                state_str = ""
+                interval_p100 = 0.0
+                new_timeouts = timeouts - getattr(self, '_prev_timeouts_for_sm', 0)
+                self._prev_timeouts_for_sm = timeouts
+                if self._concurrency_sm and p50 > 0:
+                    # Sync with circuit breaker (may have changed concurrency externally)
+                    self._concurrency_sm.current = self.semaphore.limit
+                    new_conc = self._concurrency_sm.evaluate(p50=p50, now=time.monotonic(),
+                                                             new_timeouts=new_timeouts)
+                    if new_conc != self.optimal_concurrency:
+                        self.semaphore.set_limit(new_conc)
+                        self.optimal_concurrency = new_conc
+                    state_str = f" {self._concurrency_sm.state.value}"
+                    interval_p100 = self._concurrency_sm.prev_interval_p100 or 0.0
+
+                # Interval P100 is the reported P100 (what drives decisions)
+                if self.latency_tracker.values:
+                    display_p100 = interval_p100 if interval_p100 > 0 else float(max(vals))
+                    latency_str = f" P50:{p50:.1f}s P95:{p95:.1f}s P100:{display_p100:.1f}s"
+
+                # Bottleneck-dependent constraint info
+                active = self.semaphore.active
+                bn = self._concurrency_sm.bottleneck if self._concurrency_sm else "throughput"
+                if bn == "throughput":
+                    constraint_str = f"inflight:{active}/{self.optimal_concurrency}"
+                elif bn == "rpm":
+                    constraint_str = f"RPM:{rpm_pct:.0f}%"
+                else:
+                    constraint_str = f"TPM:{tpm_pct:.0f}%"
+
                 timeout_info = f" deferred:{timeouts}" if timeouts > 0 else ""
-                print(f"[STEP3] {completed}/{len(tasks)} ({rate:.1f}/s) | "
-                      f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% Conc:{active}/{limit} Queue:{queue_depth}"
-                      f"{latency_str} CB:{cb_state}{ramp_info}{timeout_info}")
+                print(f"[STEP3] {completed}/{len(tasks)} |{throughput_str} | "
+                      f"{constraint_str} |{latency_str} |{state_str}{timeout_info}")
                 last_report = now
                 last_report_completed = completed
 
@@ -3018,7 +2754,7 @@ class IdeaExtractor:
                     and len(self.latency_tracker.values) >= self._warm_up_target_samples):
                 self._calibrate_from_warm_up(len(tasks))
 
-            # Spawn extra workers if Adam increased concurrency beyond current worker count
+            # Spawn extra workers if state machine increased concurrency beyond current worker count
             if self.optimal_concurrency > num_workers:
                 extra = self.optimal_concurrency - num_workers
                 for _ in range(extra):
@@ -3054,6 +2790,8 @@ class IdeaExtractor:
 
                 last_diagnostics = now
 
+        # Signal tail mode — remaining in-flight tasks run without timeout
+        self._queue_empty = True
         await queue.join()
 
         for _ in workers:
@@ -3066,7 +2804,8 @@ class IdeaExtractor:
         self._main_batch_wall_time = t_main_done - t_phase_start
         self._main_batch_p50 = self.latency_tracker.get_p50() if self.latency_tracker.values else 0.0
         print(f"⏱ T+{t_main_done - t_phase_start:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred")
-        print(f"  Empirical capacity: {self.optimal_concurrency} (Adam's final concurrency)")
+        sm_state = self._concurrency_sm.state.value if self._concurrency_sm else "N/A"
+        print(f"  Final concurrency: {self.optimal_concurrency} (state: {sm_state})")
 
         # === RETRY PASS: retry timed-out + failed tasks with reduced concurrency ===
         # Collect all failed tasks: timed-out (from worker) + exceptions (from failure_log)
@@ -3257,8 +2996,9 @@ class IdeaExtractor:
                 measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
             if total_tasks > 0:
                 measurements["timeout_rate"] = self.stats['timeouts'] / total_tasks
-            # Empirical capacity: the concurrency Adam settled on (what actually worked)
-            measurements["empirical_capacity"] = float(self.optimal_concurrency)
+            # Empirical capacity: the discovered sweet spot (HOLDING concurrency), not the panic-cut value
+            holding = self._concurrency_sm.holding_concurrency if self._concurrency_sm else None
+            measurements["empirical_capacity"] = float(holding or self.optimal_concurrency)
             update_phase_stats(self._perf_stats, self.model, "step3_idea_extraction",
                                measurements, len(self.actual_total_tokens))
             save_stats(self._perf_stats)

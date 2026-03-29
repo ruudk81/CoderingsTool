@@ -85,8 +85,8 @@ class TimeoutConfig:
     Per strategy doc: single-processing steps (1, 2, 3, 8) use 20s cold-start floor;
     chunk-processing steps (4, 5, 6) use 45s. Adaptive after warm-up: max(floor, min(P95×3, 180)).
     """
-    timeout_floor_seconds: float = 45.0     # Cold-start floor (strategy: 45s for bulk extraction)
-    default_timeout_seconds: float = 45.0   # Cold-start default (strategy: 45s for bulk extraction)
+    timeout_floor_seconds: float = 10.0     # Cold-start floor for timeout safety net
+    default_timeout_seconds: float = 10.0   # Cold-start default timeout
     default_latency_seconds: float = 2.0    # Default latency estimate
     max_token_acquire_attempts: int = 1000  # Max attempts to acquire tokens before failing
 
@@ -119,20 +119,19 @@ class BootstrapConfig:
 # =============================================================================
 
 @dataclass
-class RampUpConfig:
-    """Completion-based concurrency ramp with congestion detection.
+class ConcurrencyControlConfig:
+    """State machine concurrency controller.
 
-    Concurrency scales linearly with completion progress:
-      0% complete → start_fraction (50%) of Little's Law
-      100% complete → target_fraction (90%) of Little's Law
+    Monitors throughput (concurrency/P50) and interval P100 (max latency per tick).
+    Ramps gently, holds at sweet spot, repairs on stress, recovers to healthy level.
 
-    Stop early if throughput drops OR queue starts backing up.
+    States: RAMPING → HOLDING → REPAIRING → RECOVERED → HOLDING
     """
-    start_fraction: float = 0.50                # Start at 50% of Little's Law cap
-    target_fraction: float = 0.90               # Ramp toward 90% of Little's Law cap
-    min_initial: int = 5                        # Never start below 5
-    measurement_window_seconds: float = 0.5     # Check every 0.5s (completion-driven)
-    min_completions_per_step: int = 3           # Need N completions to evaluate
+    ramp_step_pct: float = 0.05           # +5% of starting concurrency per tick (min 2)
+    repair_pct: float = 0.90              # cut to 90% of starting concurrency when repairing
+    p100_baseline_mult: float = 3.0       # baseline = P50 × 3. P100 above this = trouble
+    recovery_target_mult: float = 1.2     # interval P100 ≤ 1.2× baseline = queue drained
+    min_concurrency: int = 5              # hard floor
 
 
 # =============================================================================
@@ -255,7 +254,7 @@ DEFAULT_REPORTING_CONFIG = ReportingConfig()
 DEFAULT_BOOTSTRAP_CONFIG = BootstrapConfig()
 DEFAULT_THROUGHPUT_CONFIG = ThroughputConfig()
 DEFAULT_WARM_UP_CONFIG = WarmUpConfig()
-DEFAULT_RAMP_UP_CONFIG = RampUpConfig()
+DEFAULT_CONCURRENCY_CONTROL_CONFIG = ConcurrencyControlConfig()
 DEFAULT_CIRCUIT_BREAKER_CONFIG = CircuitBreakerConfig()
 DEFAULT_PID_CONTROLLER_CONFIG = PIDControllerConfig()
 DEFAULT_TPM_TRACKING_CONFIG = TPMTrackingConfig()
