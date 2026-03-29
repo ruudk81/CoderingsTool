@@ -385,7 +385,7 @@ class ProcessingConfig:
     """Global processing parameters affecting cache validity and performance"""
 
     # Rate limiting
-    rate_limit_headroom: float = 0.9  # Use 80% of API limits for safety
+    rate_limit_headroom: float = 0.9  # Use 90% of API limits for safety
 
     # Concurrency bounds
     # Cap at 200: even with 30K RPM, a single Python process can't efficiently

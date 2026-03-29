@@ -401,7 +401,7 @@ class ApiLimits:
 
 
 def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float,
-                                 headroom: float = 0.85) -> int:
+                                 headroom: float = 0.9) -> int:
     """Compute optimal concurrency using Little's Law: N = lambda * W
 
     Returns the raw Little's Law number (floor 5). Caller applies additional
