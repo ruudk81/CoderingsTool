@@ -470,8 +470,9 @@ class ConcurrencyStateMachine:
         self.holding_concurrency = None
 
         # Consecutive tick counters for sustained ratio checks
-        self.consecutive_p95_stressed = 0   # P95/P50 > holding_ratio
-        self.consecutive_p100_stressed = 0  # P100/P50 > stress_ratio
+        self.consecutive_p95_stressed = 0    # P95/P50 > holding_ratio
+        self.consecutive_p100_stressed = 0   # P100/P50 > stress_ratio
+        self.consecutive_inflight_stressed = 0  # max_inflight/P50 > inflight_ratio
 
         # Per-tick signal tracking
         self.interval_latencies = []
@@ -488,12 +489,13 @@ class ConcurrencyStateMachine:
         self.interval_latencies.clear()
         return p100
 
-    def evaluate(self, p50: float, p95: float, now: float) -> int:
+    def evaluate(self, p50: float, p95: float, now: float, max_inflight: float = 0.0) -> int:
         """Main tick evaluation. Returns new concurrency.
 
-        Two ratio signals:
-          P95/P50 > holding_ratio for N consecutive ticks → HOLDING
-          P100/P50 > stress_ratio for N consecutive ticks → REPAIRING
+        Three ratio signals:
+          P95/P50 > holding_ratio sustained → HOLDING (distribution widening)
+          P100/P50 > stress_ratio sustained → REPAIRING (completed tail bad)
+          max_inflight/P50 > inflight_ratio sustained → REPAIRING (tasks stuck, invisible to P100)
         """
         if self.bottleneck != "throughput":
             return self.current
@@ -505,6 +507,7 @@ class ConcurrencyStateMachine:
         # Compute ratios
         self.p95_ratio = p95 / p50
         self.p100_ratio = interval_p100 / p50
+        self.inflight_ratio = max_inflight / p50 if max_inflight > 0 else 0.0
 
         # Track consecutive ticks above thresholds
         if self.p95_ratio > self.config.holding_ratio:
@@ -517,8 +520,14 @@ class ConcurrencyStateMachine:
         else:
             self.consecutive_p100_stressed = 0
 
+        if self.inflight_ratio > self.config.inflight_ratio:
+            self.consecutive_inflight_stressed += 1
+        else:
+            self.consecutive_inflight_stressed = 0
+
         should_hold = self.consecutive_p95_stressed >= self.config.stress_consecutive
-        should_repair = self.consecutive_p100_stressed >= self.config.stress_consecutive
+        should_repair = (self.consecutive_p100_stressed >= self.config.stress_consecutive
+                         or self.consecutive_inflight_stressed >= self.config.stress_consecutive)
 
         if self.state == ConcurrencyState.RAMPING:
             if should_repair:
@@ -940,6 +949,7 @@ class IdeaExtractor:
 
         # Concurrency state machine
         self._concurrency_sm = None  # Initialized in _initialize_rate_limiters
+        self._inflight_starts = {}   # task_id -> api_start perf_counter timestamp
 
         # Initial avg_tokens preserved for diagnostics (set from tiktoken Phase 4, never updated)
         self.bootstrap_avg_tokens = None
@@ -1877,6 +1887,8 @@ class IdeaExtractor:
                 timeout = None if last_batch else self.latency_tracker.get_timeout(est_tokens)
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
                 api_start = time.perf_counter()
+                task_id = task.get('respondent_id', task.get('task_index'))
+                self._inflight_starts[task_id] = api_start
                 async with self.rate_limiter:
                     response = await asyncio.wait_for(
                         llm_create_async(
@@ -1893,6 +1905,7 @@ class IdeaExtractor:
                     )
 
                     latency = time.perf_counter() - api_start
+                    self._inflight_starts.pop(task_id, None)
                     self.latency_tracker.add(latency)
                     if self._concurrency_sm:
                         self._concurrency_sm.record_latency(latency)
@@ -2029,6 +2042,7 @@ class IdeaExtractor:
                         return self.create_fallback_response(task, reason="empty_ideas")
 
         except asyncio.TimeoutError:
+            self._inflight_starts.pop(task.get('respondent_id', task.get('task_index')), None)
             elapsed = time.perf_counter() - task_start
             self.stats['timeouts'] += 1
             if self.circuit_breaker:
@@ -2688,24 +2702,31 @@ class IdeaExtractor:
                     throughput = self.optimal_concurrency / p50 if p50 > 0 else 0
                     throughput_str = f" thru:{throughput:.0f}/s"
 
+                # Max in-flight duration (oldest task still running)
+                now_perf = time.perf_counter()
+                max_inflight = 0.0
+                if self._inflight_starts:
+                    max_inflight = max(now_perf - start for start in self._inflight_starts.values())
+
                 # State machine concurrency evaluation (same tick as report)
                 state_str = ""
-                interval_p100 = 0.0
                 if self._concurrency_sm and p50 > 0:
-                    # Sync with circuit breaker (may have changed concurrency externally)
                     self._concurrency_sm.current = self.semaphore.limit
-                    new_conc = self._concurrency_sm.evaluate(p50=p50, p95=p95, now=time.monotonic())
+                    new_conc = self._concurrency_sm.evaluate(
+                        p50=p50, p95=p95, now=time.monotonic(), max_inflight=max_inflight)
                     if new_conc != self.optimal_concurrency:
                         self.semaphore.set_limit(new_conc)
                         self.optimal_concurrency = new_conc
                     sm = self._concurrency_sm
                     p95r = getattr(sm, 'p95_ratio', 0)
                     p100r = getattr(sm, 'p100_ratio', 0)
+                    iflr = getattr(sm, 'inflight_ratio', 0)
                     state_str = (f" {sm.state.value}"
                                  f" p95:{p95r:.1f}x/{sm.consecutive_p95_stressed}"
-                                 f" p100:{p100r:.1f}x/{sm.consecutive_p100_stressed}")
+                                 f" p100:{p100r:.1f}x/{sm.consecutive_p100_stressed}"
+                                 f" ifl:{iflr:.1f}x/{sm.consecutive_inflight_stressed}")
 
-                # Latency percentiles (P100 = interval max, from state machine)
+                # Latency percentiles (P100 = interval max from state machine)
                 if self.latency_tracker.values:
                     iv_p100 = getattr(sm, 'p100_ratio', 0) * p50 if sm else float(max(vals))
                     latency_str = f" P50:{p50:.1f}s P95:{p95:.1f}s P100:{iv_p100:.1f}s"
