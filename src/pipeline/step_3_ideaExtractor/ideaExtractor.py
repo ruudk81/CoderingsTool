@@ -469,110 +469,102 @@ class ConcurrencyStateMachine:
         self.last_healthy_concurrency = starting
         self.holding_concurrency = None
 
-        # Consecutive tick counters for sustained ratio checks
-        self.consecutive_p95_stressed = 0    # P95/P50 > holding_ratio
-        self.consecutive_p100_stressed = 0   # P100/P50 > stress_ratio
-        self.consecutive_inflight_stressed = 0  # max_inflight/P50 > inflight_ratio
+        # Ratios for reporting
+        self.p95_ratio = 0.0
+        self.p100_ratio = 0.0
+        self.repairing_ticks = 0  # how long we've been in REPAIRING without recovery
+        self.signal_cutoff = 0.0  # only count in-flight tasks dispatched after this timestamp
 
-        # Per-tick signal tracking
-        self.interval_latencies = []
-
-    def record_latency(self, latency: float):
-        """Called from worker on each completion. Appends to interval buffer."""
-        self.interval_latencies.append(latency)
-
-    def _get_interval_p100(self) -> float:
-        """Return max latency since last evaluation, then clear buffer."""
-        if not self.interval_latencies:
-            return 0.0
-        p100 = max(self.interval_latencies)
-        self.interval_latencies.clear()
-        return p100
-
-    def evaluate(self, p50: float, p95: float, now: float, max_inflight: float = 0.0) -> int:
+    def evaluate(self, p50: float, inflight_p95: float, inflight_p100: float, now: float) -> int:
         """Main tick evaluation. Returns new concurrency.
 
-        Three ratio signals:
-          P95/P50 > holding_ratio sustained → HOLDING (distribution widening)
-          P100/P50 > stress_ratio sustained → REPAIRING (completed tail bad)
-          max_inflight/P50 > inflight_ratio sustained → REPAIRING (tasks stuck, invisible to P100)
+        Two in-flight ratio signals:
+          inflight_P95/P50 > holding_ratio → HOLDING
+          inflight_P100/P50 > inflight_ratio → REPAIRING
         """
         if self.bottleneck != "throughput":
             return self.current
 
-        interval_p100 = self._get_interval_p100()
-        if interval_p100 == 0 or p50 <= 0:
+        if p50 <= 0 or inflight_p100 <= 0:
             return self.current
 
-        # Compute ratios
-        self.p95_ratio = p95 / p50
-        self.p100_ratio = interval_p100 / p50
-        self.inflight_ratio = max_inflight / p50 if max_inflight > 0 else 0.0
+        # Compute ratios from in-flight durations
+        self.p95_ratio = inflight_p95 / p50
+        self.p100_ratio = inflight_p100 / p50
 
-        # Track consecutive ticks above thresholds
-        if self.p95_ratio > self.config.holding_ratio:
-            self.consecutive_p95_stressed += 1
-        else:
-            self.consecutive_p95_stressed = 0
-
-        if self.p100_ratio > self.config.stress_ratio:
-            self.consecutive_p100_stressed += 1
-        else:
-            self.consecutive_p100_stressed = 0
-
-        if self.inflight_ratio > self.config.inflight_ratio:
-            self.consecutive_inflight_stressed += 1
-        else:
-            self.consecutive_inflight_stressed = 0
-
-        should_hold = self.consecutive_p95_stressed >= self.config.stress_consecutive
-        should_repair = (self.consecutive_p100_stressed >= self.config.stress_consecutive
-                         or self.consecutive_inflight_stressed >= self.config.stress_consecutive)
+        should_hold = self.p95_ratio > self.config.holding_ratio
+        should_repair = self.p100_ratio > self.config.inflight_ratio
 
         if self.state == ConcurrencyState.RAMPING:
             if should_repair:
                 self.state = ConcurrencyState.REPAIRING
+                self.repairing_ticks = 0
+                self.signal_cutoff = time.perf_counter()
                 self.current = max(self.config.min_concurrency,
-                                   int(self.current * self.config.repair_pct))
+                                   int(self.last_healthy_concurrency * self.config.repair_pct))
             elif should_hold:
                 self.state = ConcurrencyState.HOLDING
                 self.holding_concurrency = self.current
                 self.last_healthy_concurrency = self.current
             else:
+                # Scale ramp step: full below 1.5x, linear taper to 0 at holding_ratio
+                taper_start = 1.5
+                if self.p95_ratio < taper_start:
+                    step = self.ramp_step
+                else:
+                    scale = max(0, (self.config.holding_ratio - self.p95_ratio)
+                                / (self.config.holding_ratio - taper_start))
+                    step = max(1, int(self.ramp_step * scale))
                 self.last_healthy_concurrency = self.current
-                self.current = self.current + self.ramp_step
+                self.current = self.current + step
 
         elif self.state == ConcurrencyState.HOLDING:
             self.holding_concurrency = self.current
             if should_repair:
                 self.state = ConcurrencyState.REPAIRING
+                self.repairing_ticks = 0
+                self.signal_cutoff = time.perf_counter()
                 self.current = max(self.config.min_concurrency,
-                                   int(self.current * self.config.repair_pct))
+                                   int(self.last_healthy_concurrency * self.config.repair_pct))
             elif not should_hold:
-                # P95 ratio dropped back — resume ramping
                 self.state = ConcurrencyState.RAMPING
                 self.current = self.current + self.ramp_step
 
         elif self.state == ConcurrencyState.REPAIRING:
-            if self.p100_ratio <= self.config.recovery_ratio:
+            self.repairing_ticks += 1
+            if self.p100_ratio <= self.config.inflight_ratio:
+                # P100 dropped below threshold — recovered
                 self.state = ConcurrencyState.RECOVERED
+                self.repairing_ticks = 0
+            elif self.repairing_ticks >= 3:
+                # Stuck in REPAIRING for 3 ticks — current level is still too high, cut again
+                self.last_healthy_concurrency = self.current
+                self.current = max(self.config.min_concurrency,
+                                   int(self.current * self.config.repair_pct))
+                self.repairing_ticks = 0
+                self.signal_cutoff = time.perf_counter()
 
         elif self.state == ConcurrencyState.RECOVERED:
             if should_repair:
                 self.state = ConcurrencyState.REPAIRING
+                self.repairing_ticks = 0
+                self.signal_cutoff = time.perf_counter()
                 self.current = max(self.config.min_concurrency,
-                                   int(self.current * self.config.repair_pct))
+                                   int(self.last_healthy_concurrency * self.config.repair_pct))
             elif should_hold:
                 self.state = ConcurrencyState.HOLDING
                 self.holding_concurrency = self.current
                 self.last_healthy_concurrency = self.current
-            elif self.current >= self.last_healthy_concurrency:
-                self.state = ConcurrencyState.HOLDING
-                self.current = self.last_healthy_concurrency
-                self.holding_concurrency = self.current
             else:
-                self.current = min(self.current + self.ramp_step,
-                                   self.last_healthy_concurrency)
+                # Ramp back to 95% of last healthy — don't return to the level that caused stress
+                recovery_target = int(self.last_healthy_concurrency * 0.95)
+                if self.current >= recovery_target:
+                    self.state = ConcurrencyState.HOLDING
+                    self.current = recovery_target
+                    self.holding_concurrency = self.current
+                    self.last_healthy_concurrency = self.current
+                else:
+                    self.current = min(self.current + self.ramp_step, recovery_target)
 
         return self.current
 
@@ -1880,11 +1872,13 @@ class IdeaExtractor:
             )
 
             async with self.semaphore:
-                # No timeout for last batch — when remaining tasks fit within concurrency,
-                # they're all in the final wave. Timeouts would only add wall time.
-                last_batch = (hasattr(self, '_task_queue') and self._task_queue is not None
-                              and self._task_queue.qsize() < self.optimal_concurrency)
-                timeout = None if last_batch else self.latency_tracker.get_timeout(est_tokens)
+                # Remove timeout when ETA < timeout — remaining tasks will finish before timeout fires
+                timeout_value = self.latency_tracker.get_timeout(est_tokens)
+                p50 = self.latency_tracker.get_p50() if self.latency_tracker.values else 1.0
+                throughput = self.optimal_concurrency / max(p50, 0.1)
+                remaining = getattr(self, '_total_tasks', 0) - self.stats['tasks_processed']
+                eta = remaining / throughput if throughput > 0 else float('inf')
+                timeout = None if eta < timeout_value else timeout_value
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
                 api_start = time.perf_counter()
                 task_id = task.get('respondent_id', task.get('task_index'))
@@ -1907,8 +1901,6 @@ class IdeaExtractor:
                     latency = time.perf_counter() - api_start
                     self._inflight_starts.pop(task_id, None)
                     self.latency_tracker.add(latency)
-                    if self._concurrency_sm:
-                        self._concurrency_sm.record_latency(latency)
 
                     # Record successful completion to circuit breaker
                     if self.circuit_breaker:
@@ -1984,7 +1976,7 @@ class IdeaExtractor:
                         )
                     else:
                         # Empty ideas: retry up to 2 more times before falling back
-                        logger.warning(f"Task {task['respondent_id']}: LLM returned empty ideas, retrying...")
+                        logger.debug(f"Task {task['respondent_id']}: LLM returned empty ideas, retrying...")
                         for empty_retry in range(2):
                             await self.tpm_bucket.wait_and_acquire(est_tokens)
                             retry_response = await asyncio.wait_for(
@@ -2047,7 +2039,7 @@ class IdeaExtractor:
             self.stats['timeouts'] += 1
             if self.circuit_breaker:
                 self.circuit_breaker.record_timeout()
-            print(f"DEFERRED: task {task['respondent_id']} after {elapsed:.1f}s (timeout was {timeout:.1f}s)")
+            logger.debug(f"DEFERRED: task {task['respondent_id']} after {elapsed:.1f}s (timeout was {timeout:.1f}s)")
             # Return None — caller collects for batch reprocessing
             return None
 
@@ -2641,7 +2633,7 @@ class IdeaExtractor:
         print(f"\n⏱ T+0.0s: Starting task processing")
 
         queue = asyncio.Queue()
-        self._task_queue = queue  # shared with process_task for tail mode detection
+        self._total_tasks = len(tasks)
         results = [None] * len(tasks)
         timed_out = []  # Collect timed-out tasks for batch retry
 
@@ -2702,34 +2694,38 @@ class IdeaExtractor:
                     throughput = self.optimal_concurrency / p50 if p50 > 0 else 0
                     throughput_str = f" thru:{throughput:.0f}/s"
 
-                # Max in-flight duration (oldest task still running)
+                # In-flight durations: P95 and P100 from currently running tasks
+                # Only count tasks dispatched after signal_cutoff (filters out old-era tasks)
                 now_perf = time.perf_counter()
-                max_inflight = 0.0
-                if self._inflight_starts:
-                    max_inflight = max(now_perf - start for start in self._inflight_starts.values())
+                inflight_p95 = 0.0
+                inflight_p100 = 0.0
+                cutoff = self._concurrency_sm.signal_cutoff if self._concurrency_sm else 0.0
+                fresh_starts = {k: v for k, v in self._inflight_starts.items() if v >= cutoff}
+                if fresh_starts:
+                    durations = sorted(now_perf - start for start in fresh_starts.values())
+                    inflight_p100 = durations[-1]
+                    idx_95 = int(len(durations) * 0.95)
+                    inflight_p95 = durations[min(idx_95, len(durations) - 1)]
 
                 # State machine concurrency evaluation (same tick as report)
                 state_str = ""
+                sm = None
                 if self._concurrency_sm and p50 > 0:
                     self._concurrency_sm.current = self.semaphore.limit
                     new_conc = self._concurrency_sm.evaluate(
-                        p50=p50, p95=p95, now=time.monotonic(), max_inflight=max_inflight)
+                        p50=p50, inflight_p95=inflight_p95, inflight_p100=inflight_p100,
+                        now=time.monotonic())
                     if new_conc != self.optimal_concurrency:
                         self.semaphore.set_limit(new_conc)
                         self.optimal_concurrency = new_conc
                     sm = self._concurrency_sm
-                    p95r = getattr(sm, 'p95_ratio', 0)
-                    p100r = getattr(sm, 'p100_ratio', 0)
-                    iflr = getattr(sm, 'inflight_ratio', 0)
                     state_str = (f" {sm.state.value}"
-                                 f" p95:{p95r:.1f}x/{sm.consecutive_p95_stressed}"
-                                 f" p100:{p100r:.1f}x/{sm.consecutive_p100_stressed}"
-                                 f" ifl:{iflr:.1f}x/{sm.consecutive_inflight_stressed}")
+                                 f" p95:{sm.p95_ratio:.1f}x"
+                                 f" p100:{sm.p100_ratio:.1f}x")
 
-                # Latency percentiles (P100 = interval max from state machine)
+                # Latency: P50 from completed, P95/P100 from in-flight
                 if self.latency_tracker.values:
-                    iv_p100 = getattr(sm, 'p100_ratio', 0) * p50 if sm else float(max(vals))
-                    latency_str = f" P50:{p50:.1f}s P95:{p95:.1f}s P100:{iv_p100:.1f}s"
+                    latency_str = f" P50:{p50:.1f}s P95:{inflight_p95:.1f}s P100:{inflight_p100:.1f}s"
 
                 # Bottleneck-dependent constraint info
                 active = self.semaphore.active
@@ -2741,7 +2737,7 @@ class IdeaExtractor:
                 else:
                     constraint_str = f"TPM:{tpm_pct:.0f}%"
 
-                timeout_info = f" deferred:{timeouts}" if timeouts > 0 else ""
+                timeout_info = f" | deferred:{timeouts}" if timeouts > 0 else ""
                 print(f"[STEP3] {completed}/{len(tasks)} |{throughput_str} | "
                       f"{constraint_str} |{latency_str} |{state_str}{timeout_info}")
                 last_report = now
@@ -2895,25 +2891,19 @@ class IdeaExtractor:
             pass
 
         elapsed = time.time() - start_time
+        timeouts = self.stats['timeouts']
+        permanently_failed = len(self.failure_log)
+        recovered = timeouts + self.stats['tasks_failed'] - permanently_failed
+
         print(f"\nCompleted {len(tasks)} tasks in {elapsed:.1f}s")
         print(f"- Successful: {self.stats['tasks_successful']}")
-        print(f"- Failed: {self.stats['tasks_failed']}")
-        print(f"- Rate limits: {self.stats['rate_limits']}")
-        timeouts = self.stats['timeouts']
-        if timeouts > 0:
-            print(f"- Timeouts: {timeouts}")
+        if permanently_failed > 0:
+            print(f"- Failed: {permanently_failed}")
+        if recovered > 0:
+            print(f"- Recovered: {recovered} (deferred/failed tasks retried successfully)")
         print(f"- Average: {elapsed/len(tasks):.2f}s/task")
-        if self._warm_up_calibrated:
-            print(f"- Token calibration: after {self._warm_up_target_samples} samples")
-        if self.v3_stats['threshold_adjustments'] > 0:
-            print(f"- Token corrections: {self.v3_stats['threshold_adjustments']}")
-            print(f"  - Initial avg_tokens: {self.bootstrap_avg_tokens}, Final: {self.avg_tokens}")
-        cb_trips = self.v3_stats.get('circuit_breaker_trips', 0)
-        cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
-        print(f"- Concurrency: {self.optimal_concurrency} (CB:{cb_state}, trips:{cb_trips})")
-        if self.v3_stats.get('pid_adjustments', 0) > 0:
-            print(f"- PID adjustments: {self.v3_stats['pid_adjustments']}")
-            print(f"  - TPM utilization: {self.v3_stats['min_tpm_utilization']:.0f}% - {self.v3_stats['max_tpm_utilization']:.0f}%")
+        sm_state = self._concurrency_sm.state.value if self._concurrency_sm else "N/A"
+        print(f"- Final concurrency: {self.optimal_concurrency} ({sm_state})")
 
         # Print PROCESSING_ERROR failure report
         if self.failure_log:
