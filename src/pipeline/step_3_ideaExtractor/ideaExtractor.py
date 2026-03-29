@@ -2896,17 +2896,24 @@ class IdeaExtractor:
         # Report every ~5% of tasks, min 10
         report_every_n = max(len(tasks) // 20, 10)
 
+        # Compute Little's Law components for reporting
+        latency_used = getattr(self, '_stored_p50', None) or DEFAULT_LATENCY_SECONDS
+        latency_source = "stored P50" if getattr(self, '_stored_p50', None) else "default"
+        little_law_raw = expected_throughput * latency_used
+
         print("\nRATE LIMITING SETUP - Adam Concurrency Controller + PID + Circuit Breaker")
         print(f"- Model: {self.model}")
         print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * headroom:,.0f} with headroom)")
         print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * headroom:,.0f} with headroom)")
         print(f"- Initial avg_tokens (tiktoken): {self.avg_tokens}")
-        print(f"- Max throughput (RPM/TPM): {expected_throughput:.1f}/s ({bottleneck} limited)")
-        print(f"- Little's Law: {target_conc}")
-        print(f"- Theoretical concurrency: {min(target_conc, len(tasks))} (min of Little's Law and tasks)")
+        print(f"- Theoretical throughput: RPM={rpm_throughput:.1f}/s, TPM={tpm_throughput:.1f}/s → {expected_throughput:.1f}/s ({bottleneck} bound)")
+        print(f"- Latency: {latency_used:.2f}s ({latency_source})")
+        print(f"- Little's Law: L = {expected_throughput:.1f}/s × {latency_used:.2f}s = {little_law_raw:.0f}")
+        print(f"- Theoretical concurrency: min(Little's Law, tasks) = min({little_law_raw:.0f}, {len(tasks)}) = {min(int(little_law_raw), len(tasks))}")
         if getattr(self, '_stored_empirical_capacity', None) is not None:
-            print(f"- Empirical capacity: {self._stored_empirical_capacity:.0f} (measured server concurrency)")
-        print(f"- Target concurrency: {self.optimal_concurrency} (0.9 × min of theoretical, empirical)")
+            print(f"- Target concurrency: {self.optimal_concurrency} (empirical capacity, measured over time)")
+        else:
+            print(f"- Target concurrency: {self.optimal_concurrency} (cold start cap, no empirical data)")
         print(f"- Bottleneck: {self._adam_controller.bottleneck}")
         if self._adam_controller.bottleneck == "throughput":
             print(f"- Adaptive: Adam controller (signals: headroom bias, pressure ratio)")
@@ -2989,7 +2996,8 @@ class IdeaExtractor:
                     vals = list(self.latency_tracker.values)
                     p50 = float(np.percentile(vals, 50))
                     p95 = float(np.percentile(vals, 95))
-                    latency_str = f" | P50:{p50:.1f}s P95:{p95:.1f}s"
+                    p100 = float(max(vals))
+                    latency_str = f" | P50:{p50:.1f}s P95:{p95:.1f}s P100:{p100:.1f}s"
 
                 queue_depth = queue.qsize()
                 cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
