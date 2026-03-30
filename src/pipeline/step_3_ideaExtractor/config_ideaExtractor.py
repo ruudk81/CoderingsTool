@@ -122,15 +122,15 @@ class BootstrapConfig:
 class ConcurrencyControlConfig:
     """State machine concurrency controller.
 
-    Monitors throughput (concurrency/P50) and interval P100 (max latency per tick).
-    Ramps gently, holds at sweet spot, repairs on stress, recovers to healthy level.
+    Monitors throughput (concurrency/P50) and in-flight P100 (max latency per tick).
+    Ramps up gently, holds steady at sweet spot, backs off on stress, recovers to healthy level.
 
-    States: RAMPING → HOLDING → REPAIRING → RECOVERED → HOLDING
+    States: RAMP-UP → STEADY ↔ BACKOFF → RECOVER → STEADY
     """
     ramp_step_pct: float = 0.025           # +2.5% of starting concurrency per tick (min 2)
-    repair_pct: float = 0.85              # cut to 85% of last healthy concurrency on REPAIRING
-    holding_ratio: float = 2.0            # inflight_P95/P50 > 2× → HOLDING
-    inflight_ratio: float = 4.0           # inflight_P100/P50 > 4× → REPAIRING
+    backoff_pct: float = 0.85              # cut to 85% of last healthy concurrency on BACKOFF
+    steady_ratio: float = 2.0             # inflight_P95/P50 > 2× → STEADY
+    inflight_ratio: float = 5.0           # inflight_P100/P50 > 5× → BACKOFF (after 2 consecutive ticks)
     min_concurrency: int = 5              # hard floor
 
 
@@ -140,21 +140,17 @@ class ConcurrencyControlConfig:
 
 @dataclass
 class CircuitBreakerConfig:
-    """Concurrency circuit breaker — reacts to sustained timeout RATE, not individual events.
+    """Concurrency circuit breaker — detects sustained timeout rate spikes.
 
-    Prevents death spiral: individual timeouts are retried by tenacity.
-    Only reduces concurrency when timeout rate exceeds threshold in sliding window.
+    Trigger-only mechanism: detects timeout rate > threshold, signals the caller
+    to trigger BACKOFF. Does not manage concurrency or recovery itself.
 
-    State machine: CLOSED → OPEN (tripped, cooldown) → RECOVERING → CLOSED.
+    Lifecycle: CLOSED → detects spike → trips (signals caller) → cooldown → CLOSED.
     """
-    window_seconds: float = 30.0          # Sliding window for timeout rate measurement
+    window_size: int = 100                # Count-based: last N completions (not time-based)
     trip_threshold: float = 0.05          # Trip if >5% of events are timeouts
     min_events_to_trip: int = 10          # Need enough events to be statistically meaningful
-    reduction_factor: float = 0.85        # Reduce concurrency by 15% when tripped
-    cooldown_seconds: float = 60.0        # No further reductions during cooldown
-    recovery_step_pct: float = 0.10       # Recover 10% per interval toward baseline
-    recovery_interval_seconds: float = 30.0  # Check recovery every 30s
-    min_concurrency: int = 10             # Hard floor
+    cooldown_drain_multiplier: float = 3.0  # Cooldown = drain_time × this multiplier
 
 
 # =============================================================================

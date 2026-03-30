@@ -64,14 +64,14 @@ MIN_SAMPLES = 10
 # EMA stabilises at this weight once sample_count reaches 20.
 _EMA_FLOOR_ALPHA = 0.05
 
-# Cold-start timeout = max(P99_MULTIPLIER × P99, TIMEOUT_FACTOR × P99)
+# Empirical timeout = max(P99_MULTIPLIER × P99, TIMEOUT_FACTOR × P99)
 # P99_MULTIPLIER: baseline multiplier, always applied
 # TIMEOUT_FACTOR: applied only when previous run had timeouts (0 otherwise)
-COLD_START_P99_MULTIPLIER = 1.2
-COLD_START_TIMEOUT_FACTOR = 2.0
+EMPIRICAL_P99_MULTIPLIER = 1.2
+EMPIRICAL_TIMEOUT_FACTOR = 2.0
 
 # Legacy: kept for backward compatibility with steps not yet migrated to P99
-COLD_START_P95_MULTIPLIER = 2.0
+EMPIRICAL_P95_MULTIPLIER = 2.0
 
 # Fields that may appear in a measurement dict (EMA-smoothed).
 _NUMERIC_FIELDS = ("p50_latency_s", "p95_latency_s", "p99_latency_s", "avg_tokens",
@@ -212,15 +212,15 @@ def apply_to_ramp_config(
         # Timeout = max(1.2 × P99, timeoutFactor × P99)
         # timeoutFactor = 2 if previous run had timeouts, 0 otherwise
         p99 = entry["p99_latency_s"]
-        timeout_factor = COLD_START_TIMEOUT_FACTOR if entry.get("had_timeouts") else 0
-        floor = max(COLD_START_P99_MULTIPLIER * p99, timeout_factor * p99)
+        timeout_factor = EMPIRICAL_TIMEOUT_FACTOR if entry.get("had_timeouts") else 0
+        floor = max(EMPIRICAL_P99_MULTIPLIER * p99, timeout_factor * p99)
         if hasattr(ramp_config, "timeout_floor_seconds"):
             ramp_config.timeout_floor_seconds = floor
         if hasattr(ramp_config, "default_timeout_seconds"):
             ramp_config.default_timeout_seconds = floor
     elif "p95_latency_s" in entry:
         # Fallback for phases that don't yet persist P99
-        floor = entry["p95_latency_s"] * COLD_START_P95_MULTIPLIER
+        floor = entry["p95_latency_s"] * EMPIRICAL_P95_MULTIPLIER
         if hasattr(ramp_config, "timeout_floor_seconds"):
             ramp_config.timeout_floor_seconds = floor
         if hasattr(ramp_config, "default_timeout_seconds"):

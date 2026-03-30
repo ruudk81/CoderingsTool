@@ -47,7 +47,7 @@ from pipeline.step_2_qualityFilter.prompts_qualityFilter import GRADER_INSTRUCTI
 
 from utils.llm import RateLimits, extract_rate_limits_from_response, create_client, llm_create_async, token_tracker
 from config import get_reasoning_params
-from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, COLD_START_P95_MULTIPLIER
+from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats, EMPIRICAL_P95_MULTIPLIER
 
 
 # =============================================================================
@@ -592,7 +592,7 @@ class Grader:
             _stored is not None and _stored.get("sample_count", 0) >= 10
         )
         _stored_timeout = (
-            _stored["p95_latency_s"] * COLD_START_P95_MULTIPLIER
+            _stored["p95_latency_s"] * EMPIRICAL_P95_MULTIPLIER
             if self._has_stored_stats and "p95_latency_s" in _stored
             else None
         )
