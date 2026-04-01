@@ -2780,14 +2780,14 @@ class IdeaExtractor:
                         p100r = sm.p100_ratio if sm else 0
                         latency_str = f" P50:{p50:.1f}s p95:{p95r:.1f}x p100:{p100r:.1f}x"
 
-                    print(f"[STEP3] {completed}/{len(tasks)} | {constraint_str} | thru:{throughput:.0f}/s |"
+                    print(f"[PHASE6] {completed}/{len(tasks)} | {constraint_str} | thru:{throughput:.0f}/s |"
                           f"{latency_str} |{state_str}{timeout_info}")
 
                 else:
                     # Rate-limited: PID + rate limiters handle pacing, report pace
                     throughput_samples.append(throughput)
                     smooth_thru = sum(throughput_samples) / len(throughput_samples)
-                    print(f"[STEP3] {completed}/{len(tasks)} | {constraint_str} | thru:{smooth_thru:.1f}/s |{timeout_info}")
+                    print(f"[PHASE6] {completed}/{len(tasks)} | {constraint_str} | thru:{smooth_thru:.1f}/s |{timeout_info}")
                 last_report = now
                 last_report_completed = completed
 
