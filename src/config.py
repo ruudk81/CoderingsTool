@@ -3,60 +3,100 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass, field
 
-# Load .env file if it exists (simple loader, no dependencies)
-def _load_dotenv():
-    """Load environment variables from .env file in project root."""
-    env_paths = [
-        Path(__file__).parent.parent / '.env',  # src/../.env
-        Path.cwd() / '.env',
-    ]
-    for env_path in env_paths:
-        if env_path.exists():
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        key, _, value = line.partition('=')
-                        key = key.strip()
-                        value = value.strip().strip('"').strip("'")
-                        if key and not os.environ.get(key):
-                            os.environ[key] = value
-            break
 
-_load_dotenv()
+# =============================================================================
+# DEPLOYMENT - provider + family
+# =============================================================================
 
-# File handling (only keep what's used)
-ALLOWED_EXTENSIONS = ['.sav']
+API_PROVIDER = "openai"  # Options: "openai" or "azure"
+MODEL_FAMILY = "gpt-5.4"
 
-DEFAULT_LANGUAGE = "Dutch"
+# Examples:
+#   MODEL_FAMILY = "gpt-4.1"  →  gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
+#   MODEL_FAMILY = "gpt-5"    →  gpt-5, gpt-5-mini, gpt-5-nano
+#   MODEL_FAMILY = "gpt-5.4"   
 
-# Language-specific labels for miscellaneous/catch-all code
-MISCELLANEOUS_CODE_LABELS = {
-    "Dutch": "Overig",
-    "English": "Other",
-    "German": "Sonstiges",
-    "French": "Autre",
-    "Spanish": "Otro",
+
+def get_model(tier: str = "default") -> str:
+    """Resolve a model name from the current MODEL_FAMILY and tier.
+
+    Args:
+        tier: "default", "mini", or "nano"
+    """
+    if tier == "default":
+        return MODEL_FAMILY
+    return f"{MODEL_FAMILY}-{tier}"
+
+# =============================================================================
+# STEP MODEL TIERS 
+# =============================================================================
+
+STEP_MODEL_TIERS = {
+    # Step 1: Preprocessing
+    "spell_check":      "nano",
+    # Step 2: Quality Filter
+    "quality_filter":   "nano",
+    # Step 3: Idea Extraction
+    "idea_extraction_context": "default",           # specifiers + dimension discovery
+    "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
+    "idea_extraction_abstraction_ladder": "nano",   # main extraction + retry
+    # Step 4: Taxonomy Classifier (P1-P7)
+    "classifier_p1":    "nano",      # Facet Discovery
+    "classifier_p2":    "default",   # Facet Consolidation
+    "classifier_p3":    "nano",      # Facet Assignment
+    "classifier_p4":    "nano",      # Attribute Discovery
+    "classifier_p5":    "nano",      # Attribute Chunk Consolidation
+    "classifier_p6":    "nano",      # Attribute Assignment
+    "classifier_p7":    "default",   # Cross-facet Attribute Consolidation
+    # Step 5: Code Generator (P8-P9)
+    "codegen_p8":       "default",
+    "codegen_p9":       "default",
+    # Step 6: Code Assigner
+    "code_assignment":  "nano",
 }
 
-# Language-specific labels for general/theme-level assignments
-GENERAL_CODE_LABELS = {
-    "Dutch": "algemeen",
-    "English": "overall",
-    "German": "allgemein",
-    "French": "général",
-    "Spanish": "general",
-}
+
+def get_step_model(phase: str) -> str:
+    """Resolve model name for a pipeline phase from the central tier mapping."""
+    return get_model(STEP_MODEL_TIERS[phase])
+
+# =============================================================================
+# REASONING PARAMS
+# =============================================================================
+
+_REASONING_FAMILIES = {"gpt-5"}
+REASONING_EFFORT = "none"   # minimal, low, medium, high - none only for >5.4
+TEXT_VERBOSITY = "low"      # minimal, low, medium, high
+
+
+def get_reasoning_params(model: str = None) -> dict:
+    """Return reasoning API params if the model is a reasoning model, else empty dict.
+
+    Usage in _llm_call: pass **get_reasoning_params(model) as kwargs to llm_create_async.
+    For chat models (gpt-4.1 family): returns {} — no extra params.
+    For reasoning models (gpt-5 family): returns {reasoning: {effort: ...}}.
+
+    NOTE: We only pass 'reasoning' (effort), NOT 'text' (verbosity).
+    The 'text' parameter conflicts with instructor's structured output format.
+    Instructor controls the output format; adding text.format overrides it
+    and causes InstructorRetryException on every call.
+    """
+    if model is None:
+        model = get_model()
+    for rf in _REASONING_FAMILIES:
+        if model == rf or model.startswith(rf + "-"):
+            return {
+                "reasoning": {"effort": REASONING_EFFORT},
+            }
+    return {}
+
+
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
+
 
 # =============================================================================
 # MODEL CONFIGURATION - CENTRALIZED FOR DEVELOPMENT PIPELINE
 # =============================================================================
-
-# =============================================================================
-# API PROVIDER CONFIGURATION
-# =============================================================================
-# Toggle between "openai" and "azure" here
-API_PROVIDER = "azure"  # Options: "openai" or "azure"
 
 # OpenAI settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -76,8 +116,7 @@ AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
 AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")
 
 # =============================================================================
-# MODEL LIMITS (context window + max output tokens)
-# Adjust based on your subscription tier if needed
+# HARDCODED MODEL LIMITS 
 # =============================================================================
 OPENAI_MODEL_LIMITS = {
     # GPT-4.1 family  
@@ -103,7 +142,7 @@ OPENAI_MODEL_LIMITS = {
 }
 
 # =============================================================================
-# MODEL PRICING (per 1M tokens) - Used by TokenTracker in llm.py
+# MODEL PRICING 
 # Update when OpenAI changes pricing: https://openai.com/api/pricing/
 # =============================================================================
 MODEL_PRICING = {
@@ -132,100 +171,6 @@ MODEL_PRICING = {
 # Default pricing for unknown models
 DEFAULT_PRICING = {"input": 1.00, "output": 4.00}
 
-# =============================================================================
-# MODEL FAMILY TOGGLE
-# =============================================================================
-# Switch this to change all pipeline models at once.
-# Each step uses get_model(tier) to resolve the actual model name.
-#
-# Supported families: "gpt-4.1", "gpt-5"
-# Tiers: "default" (full model), "mini", "nano"
-#
-# Examples:
-#   MODEL_FAMILY = "gpt-4.1"  →  gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
-#   MODEL_FAMILY = "gpt-5"    →  gpt-5, gpt-5-mini, gpt-5-nano
-#   MODEL_FAMILY = "gpt-5.4"   
-
-MODEL_FAMILY = "gpt-4.1"
-
-
-def get_model(tier: str = "default") -> str:
-    """Resolve a model name from the current MODEL_FAMILY and tier.
-
-    Args:
-        tier: "default", "mini", or "nano"
-    """
-    if tier == "default":
-        return MODEL_FAMILY
-    return f"{MODEL_FAMILY}-{tier}"
-
-
-# =============================================================================
-# STEP MODEL TIERS — single source of truth for which tier each pipeline phase uses
-# =============================================================================
-
-STEP_MODEL_TIERS = {
-    # Step 1: Preprocessing
-    "spell_check":      "nano",
-    # Step 2: Quality Filter
-    "quality_filter":   "nano",
-    # Step 3: Idea Extraction
-    "idea_extraction_context":              "default",  # specifiers + dimension discovery
-    "idea_extraction_taxonomy":             "default",  # domain discovery + consolidation
-    "idea_extraction_abstraction_ladder":    "nano",     # main extraction + retry
-    # Step 4: Taxonomy Classifier (P1-P7)
-    "classifier_p1":    "nano",      # Facet Discovery
-    "classifier_p2":    "default",   # Facet Consolidation
-    "classifier_p3":    "nano",      # Facet Assignment
-    "classifier_p4":    "nano",      # Attribute Discovery
-    "classifier_p5":    "nano",      # Attribute Chunk Consolidation
-    "classifier_p6":    "nano",      # Attribute Assignment
-    "classifier_p7":    "default",      # Cross-facet Attribute Consolidation
-    # Step 5: Code Generator (P8-P9)
-    "codegen_p8":       "default",
-    "codegen_p9":       "default",
-    # Step 6: Code Assigner
-    "code_assignment":  "nano",
-}
-
-
-def get_step_model(phase: str) -> str:
-    """Resolve model name for a pipeline phase from the central tier mapping."""
-    return get_model(STEP_MODEL_TIERS[phase])
-
-
-# Reasoning model families require reasoning_effort and text_verbosity parameters.
-# These are hardcoded defaults (minimal reasoning, medium verbosity) applied
-# automatically when using a reasoning model family like gpt-5.
-_REASONING_FAMILIES = {"gpt-5"}
-
-REASONING_EFFORT = "none"   # minimal, low, medium, high - none only for >5.4
-TEXT_VERBOSITY = "low"      # minimal, low, medium, high
-
-
-def get_reasoning_params(model: str = None) -> dict:
-    """Return reasoning API params if the model is a reasoning model, else empty dict.
-
-    Usage in _llm_call: pass **get_reasoning_params(model) as kwargs to llm_create_async.
-    For chat models (gpt-4.1 family): returns {} — no extra params.
-    For reasoning models (gpt-5 family): returns {reasoning: {effort: ...}}.
-
-    NOTE: We only pass 'reasoning' (effort), NOT 'text' (verbosity).
-    The 'text' parameter conflicts with instructor's structured output format.
-    Instructor controls the output format; adding text.format overrides it
-    and causes InstructorRetryException on every call.
-    """
-    if model is None:
-        model = get_model()
-    for rf in _REASONING_FAMILIES:
-        if model == rf or model.startswith(rf + "-"):
-            return {
-                "reasoning": {"effort": REASONING_EFFORT},
-            }
-    return {}
-
-
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 # =============================================================================
 # CLIENT FACTORY FUNCTIONS
@@ -516,3 +461,50 @@ DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
 DEFAULT_EXPORT_CLEANUP_CONFIG = ExportCleanupConfig()
 
 
+# =============================================================================
+# MISC
+# =============================================================================
+
+# Load .env file if it exists (simple loader, no dependencies)
+def _load_dotenv():
+    """Load environment variables from .env file in project root."""
+    env_paths = [
+        Path(__file__).parent.parent / '.env',  # src/../.env
+        Path.cwd() / '.env',
+    ]
+    for env_path in env_paths:
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, _, value = line.partition('=')
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        if key and not os.environ.get(key):
+                            os.environ[key] = value
+            break
+
+_load_dotenv()
+
+# File handling (only keep what's used)
+ALLOWED_EXTENSIONS = ['.sav']
+DEFAULT_LANGUAGE = "Dutch"
+
+# Language-specific labels for miscellaneous/catch-all code
+MISCELLANEOUS_CODE_LABELS = {
+    "Dutch": "Overig",
+    "English": "Other",
+    "German": "Sonstiges",
+    "French": "Autre",
+    "Spanish": "Otro",
+}
+
+# Language-specific labels for general/theme-level assignments
+GENERAL_CODE_LABELS = {
+    "Dutch": "algemeen",
+    "English": "overall",
+    "German": "allgemein",
+    "French": "général",
+    "Spanish": "general",
+}

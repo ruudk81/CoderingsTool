@@ -9,7 +9,7 @@ Usage:
 """
 
 PRINT_PROMPTS = False  # Toggle prompt printing
-EXPERIMENT_N  = 100  # n or None
+EXPERIMENT_N  = None  # n or None
 DISCOVER_DOMAINS = True  # True = Phase 3 discovers domains upfront; False = on-the-fly
 
 import sys
@@ -162,6 +162,13 @@ def run_step(config: StepConfig = None):
         verbose_reporter.stat_line(f"Subset: {config.experiment_n} responses")
 
     verbose_reporter.stat_line(f"Processing: {len(filtered_text)} responses")
+
+    if not filtered_text:
+        raise ValueError(
+            f"No meaningful responses to process. "
+            f"Total quality-filtered: {len(quality_filtered_text)}, "
+            f"after removing filtered-out: 0, experiment_n: {config.experiment_n}"
+        )
 
     start_time = time.time()
 
