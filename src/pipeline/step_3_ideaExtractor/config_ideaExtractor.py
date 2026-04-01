@@ -191,7 +191,7 @@ class TPMTrackingConfig:
     accurate utilization metrics for PID control.
     """
     sliding_window_seconds: float = 60.0    # Track TPM over last 60 seconds
-    target_utilization: float = 0.90        # Target 90% TPM utilization (10% buffer)
+    target_utilization: float = 1.00        # Target 100% of headroom-adjusted TPM limit (headroom provides the buffer)
 
 
 # =============================================================================
