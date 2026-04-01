@@ -56,7 +56,7 @@ GENERAL_CODE_LABELS = {
 # API PROVIDER CONFIGURATION
 # =============================================================================
 # Toggle between "openai" and "azure" here
-API_PROVIDER = "openai"  # Options: "openai" or "azure"
+API_PROVIDER = "azure"  # Options: "openai" or "azure"
 
 # OpenAI settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -146,7 +146,7 @@ DEFAULT_PRICING = {"input": 1.00, "output": 4.00}
 #   MODEL_FAMILY = "gpt-5"    →  gpt-5, gpt-5-mini, gpt-5-nano
 #   MODEL_FAMILY = "gpt-5.4"   
 
-MODEL_FAMILY = "gpt-5.4"
+MODEL_FAMILY = "gpt-4.1"
 
 
 def get_model(tier: str = "default") -> str:
@@ -170,7 +170,9 @@ STEP_MODEL_TIERS = {
     # Step 2: Quality Filter
     "quality_filter":   "nano",
     # Step 3: Idea Extraction
-    "segmentation":     "nano",
+    "idea_extraction_context":              "default",  # specifiers + dimension discovery
+    "idea_extraction_taxonomy":             "default",  # domain discovery + consolidation
+    "idea_extraction_abstraction_ladder":    "nano",     # main extraction + retry
     # Step 4: Taxonomy Classifier (P1-P7)
     "classifier_p1":    "nano",      # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation

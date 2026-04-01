@@ -17,12 +17,12 @@ from dataclasses import dataclass
 from config import get_step_model
 
 # =============================================================================
-# SEGMENTATION CONFIGURATION  
+# IDEA EXTRACTION CONFIGURATION
 # =============================================================================
 
 @dataclass
-class SegmentationConfig:
-    """Configuration for segmentation and description step"""
+class IdeaExtractionConfig:
+    """Configuration for idea extraction step"""
     max_tokens: int = 16000
     completion_reserve: int = 1000
     min_batch_size: int = 5  # Minimum responses per batch for efficiency
@@ -34,8 +34,10 @@ class SegmentationConfig:
     umap_n_jobs: int = 1
     max_code_examples: int = 5  # For verbose output
     max_sample_responses: int = 3  # For verbose output
-    # Model (derived from MODEL_FAMILY toggle in config.py)
-    model: str = get_step_model("segmentation")
+    # Models per stage (derived from MODEL_FAMILY toggle in config.py)
+    model_context: str = get_step_model("idea_extraction_context")
+    model_taxonomy: str = get_step_model("idea_extraction_taxonomy")
+    model_abstraction_ladder: str = get_step_model("idea_extraction_abstraction_ladder")
     temperature: float = 0.0  # Temperature for generation
     max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
     # Timeout configuration for API calls
@@ -131,7 +133,7 @@ class ConcurrencyControlConfig:
     backoff_pct: float = 0.85              # cut to 85% of last healthy concurrency on BACKOFF
     steady_ratio: float = 2.0             # inflight_P95/P50 > 2× → STEADY
     inflight_ratio: float = 5.0           # inflight_P100/P50 > 5× → BACKOFF (after 2 consecutive ticks)
-    min_concurrency: int = 5              # hard floor
+    min_concurrency: int = 2              # hard floor
 
 
 # =============================================================================
@@ -189,7 +191,7 @@ class TPMTrackingConfig:
     accurate utilization metrics for PID control.
     """
     sliding_window_seconds: float = 60.0    # Track TPM over last 60 seconds
-    target_utilization: float = 0.80        # Target 80% TPM utilization (20% buffer)
+    target_utilization: float = 0.90        # Target 90% TPM utilization (10% buffer)
 
 
 # =============================================================================
@@ -242,7 +244,11 @@ class SpecifierConfig:
 # DEFAULT INSTANCES
 # =============================================================================
 
-DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
+DEFAULT_IDEA_EXTRACTION_CONFIG = IdeaExtractionConfig()
+
+# Backward compatibility aliases (used by app_old.py)
+SegmentationConfig = IdeaExtractionConfig
+DEFAULT_SEGMENTATION_CONFIG = DEFAULT_IDEA_EXTRACTION_CONFIG
 DEFAULT_TOKEN_HISTORY_CONFIG = TokenHistoryConfig()
 DEFAULT_TIKTOKEN_OFFSET_CONFIG = TiktokenOffsetConfig()
 DEFAULT_TIMEOUT_CONFIG = TimeoutConfig()

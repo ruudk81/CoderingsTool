@@ -51,7 +51,7 @@ from pipeline.step_3_ideaExtractor import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
-from pipeline.step_3_ideaExtractor.config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
+from pipeline.step_3_ideaExtractor.config_ideaExtractor import IdeaExtractionConfig, DEFAULT_IDEA_EXTRACTION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
 from utils.modelPerfStats import (
     load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE,
@@ -415,7 +415,7 @@ def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_t
     allowed_rps = max(min(rpm_throughput, tpm_throughput), 0.0)
     target = allowed_rps * latency_seconds   # Little's Law
 
-    return int(max(target, 5))
+    return int(max(target, 2))
 
 
 def detect_bottleneck(rpm_limit: int, tpm_limit: int, avg_tokens: int,
@@ -482,9 +482,6 @@ class ConcurrencyStateMachine:
           inflight_P95/P50 > steady_ratio → STEADY
           inflight_P100/P50 > inflight_ratio → BACKOFF
         """
-        if self.bottleneck != "throughput":
-            return self.current
-
         if p50 <= 0 or inflight_p100 <= 0:
             return self.current
 
@@ -779,7 +776,7 @@ class IdeaExtractor:
         self,
         responses: List[models.QualityFilteredModel],
         var_lab: str,
-        config: Optional[SegmentationConfig] = None,
+        config: Optional[IdeaExtractionConfig] = None,
         model_config: Optional[ModelConfig] = None,
         processing_config: Optional[ProcessingConfig] = None,
         verbose: bool = False,
@@ -789,11 +786,15 @@ class IdeaExtractor:
 
         self.responses = responses
         self.var_lab = var_lab
-        self.config = config or DEFAULT_SEGMENTATION_CONFIG
+        self.config = config or DEFAULT_IDEA_EXTRACTION_CONFIG
         self.model_config = model_config or ModelConfig()  # kept for backward compat
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.warm_up_config = DEFAULT_WARM_UP_CONFIG
-        self.model = self.config.model
+        # Per-stage models
+        self.model_context = self.config.model_context
+        self.model_taxonomy = self.config.model_taxonomy
+        self.model_abstraction_ladder = self.config.model_abstraction_ladder
+        self.model = self.model_abstraction_ladder  # primary model for rate limiting + backward compat
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeasExtractedModel] = []
         self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)
@@ -812,8 +813,10 @@ class IdeaExtractor:
         # Initialize tokenizer for token estimation (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
-        # Initialize OpenAI client with instructor (supports OpenAI and Azure)
-        self.client = create_client(self.model, async_mode=True)
+        # Initialize OpenAI clients per stage (supports OpenAI and Azure)
+        unique_models = {self.model_context, self.model_taxonomy, self.model_abstraction_ladder}
+        self._clients = {m: create_client(m, async_mode=True) for m in unique_models}
+        self.client = self._clients[self.model_abstraction_ladder]  # backward compat for bulk path
 
         # Rate limiting setup - use fallback values for initial setup
         self.rate_limits = RateLimits(
@@ -852,6 +855,11 @@ class IdeaExtractor:
             if _stored and _stored.get("sample_count", 0) >= 10 and "empirical_capacity" in _stored
             else None
         )
+        self._stored_avg_tokens = (
+            int(_stored["avg_tokens"])
+            if _stored and _stored.get("sample_count", 0) >= 10 and "avg_tokens" in _stored
+            else None
+        )
         self._stored_p50 = (
             _stored["p50_latency_s"]
             if _stored and _stored.get("sample_count", 0) >= 10 and "p50_latency_s" in _stored
@@ -880,7 +888,11 @@ class IdeaExtractor:
         self.discover_domains = discover_domains
 
         # Calculate initial average tokens estimate
-        self.avg_tokens = self._calculate_avg_tokens()
+        # Prefer stored empirical avg_tokens (warm-up will recalibrate for this dataset)
+        if getattr(self, '_stored_avg_tokens', None) is not None:
+            self.avg_tokens = self._stored_avg_tokens
+        else:
+            self.avg_tokens = self._calculate_avg_tokens()
 
         # Rate limiting components (will be initialized after bootstrap)
         self.rate_limiter = None
@@ -936,6 +948,18 @@ class IdeaExtractor:
         # Failure tracking: set for O(1) lookup + list for detailed reporting
         self.failed_task_ids: set = set()
         self.failure_log = []  # List of {respondent_id, reason, error_type, response_preview}
+
+    def _get_client_and_model(self, stage: str) -> tuple:
+        """Return (client, model) for a given stage."""
+        if stage == "context":
+            m = self.model_context
+        elif stage == "taxonomy":
+            m = self.model_taxonomy
+        elif stage == "abstraction_ladder":
+            m = self.model_abstraction_ladder
+        else:
+            raise ValueError(f"Unknown stage: {stage}")
+        return self._clients[m], m
 
     def _calculate_avg_tokens(self) -> int:
         """Calculate average tokens per request for rate limiting.
@@ -1044,18 +1068,19 @@ class IdeaExtractor:
                 )
                 self._captured_consolidate2 = True
 
+        client, model = self._get_client_and_model("context")
         est_tokens = self._estimate_preprocessed_tokens(prompt)
         async with self.semaphore:
             await self.tpm_bucket.wait_and_acquire(est_tokens)
             await self.rate_limiter.acquire()
 
             response = await llm_create_async(
-                client=self.client,
-                model=self.model,
+                client=client,
+                model=model,
                 response_model=response_model,
                 prompt=prompt,
                 temperature=0.0,
-                **get_reasoning_params(self.model),
+                **get_reasoning_params(model),
             )
 
         if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
@@ -1159,18 +1184,19 @@ class IdeaExtractor:
             )
             self._captured_taxonomy_consolidation = True
 
+        client, model = self._get_client_and_model("context")
         est_tokens = self._estimate_preprocessed_tokens(prompt)
         async with self.semaphore:
             await self.tpm_bucket.wait_and_acquire(est_tokens)
             await self.rate_limiter.acquire()
 
             response = await llm_create_async(
-                client=self.client,
-                model=self.model,
+                client=client,
+                model=model,
                 response_model=PrimaryDimensionConsolidatedResponse,
                 prompt=prompt,
                 temperature=0.0,
-                **get_reasoning_params(self.model),
+                **get_reasoning_params(model),
             )
 
         if self.verbose_reporter.enabled:
@@ -1220,18 +1246,19 @@ class IdeaExtractor:
             )
             self._captured_domain_consolidation = True
 
+        client, model = self._get_client_and_model("taxonomy")
         est_tokens = self._estimate_preprocessed_tokens(prompt)
         async with self.semaphore:
             await self.tpm_bucket.wait_and_acquire(est_tokens)
             await self.rate_limiter.acquire()
 
             response = await llm_create_async(
-                client=self.client,
-                model=self.model,
+                client=client,
+                model=model,
                 response_model=DomainConsolidatedResponse,
                 prompt=prompt,
                 temperature=0.0,
-                **get_reasoning_params(self.model),
+                **get_reasoning_params(model),
             )
 
         if self.verbose_reporter.enabled:
@@ -1561,6 +1588,12 @@ class IdeaExtractor:
                         )
                         self._captured_domain_chunk = True
 
+                # Route to correct client based on group
+                if task['group'] <= 3:
+                    client, model = self._get_client_and_model("context")
+                else:
+                    client, model = self._get_client_and_model("taxonomy")
+
                 # === Count tokens from actual prompt, then acquire ===
                 est_tokens = self._estimate_preprocessed_tokens(prompt)
 
@@ -1569,12 +1602,12 @@ class IdeaExtractor:
                     await self.rate_limiter.acquire()
 
                     response = await llm_create_async(
-                        client=self.client,
-                        model=self.model,
+                        client=client,
+                        model=model,
                         response_model=response_model,
                         prompt=prompt,
                         temperature=0.0,
-                        **get_reasoning_params(self.model),
+                        **get_reasoning_params(model),
                     )
 
                     results.append({
@@ -2233,6 +2266,8 @@ class IdeaExtractor:
             target = min(int(self._stored_empirical_capacity), num_tasks)
         else:
             target = min(COLD_START_CAP, num_tasks)
+        # Cap at Little's Law: for rate-limited cases this is the binding constraint
+        target = min(target, little_law_cap)
         target = max(target, DEFAULT_CONCURRENCY_CONTROL_CONFIG.min_concurrency)
 
         self.semaphore = ConcurrencyGate(target)
@@ -2348,7 +2383,8 @@ class IdeaExtractor:
             self.pid_controller.reset()
 
         print(f"\n[WARM-UP] Token calibration from {len(self.actual_total_tokens)} samples: "
-              f"avg_tokens {old_avg} → {measured_avg_tokens}")
+              f"avg_tokens {old_avg} → {measured_avg_tokens}, "
+              f"Little's Law {old_conc} → {new_little_law_cap}")
 
         self._warm_up_calibrated = True
 
