@@ -393,6 +393,23 @@ class TiktokenOffsetLearner:
 
 
 
+# === TICK CONTEXT (shared state passed to per-tick strategy methods) ===============================================================================
+@dataclass
+class TickContext:
+    """Shared per-tick state passed to _tick_throughput / _tick_rate_limited."""
+    completed: int
+    total: int
+    tick_duration: float
+    throughput: float
+    p50: float
+    active: int
+    constraint_str: str
+    timeout_info: str
+    now: float           # time.time()
+    start_time: float
+    timeouts: int
+
+
 # === LITTLE'S LAW & CONCURRENCY CALCULATION ========================================================================================================
 @dataclass
 class ApiLimits:
@@ -2348,23 +2365,48 @@ class IdeaExtractor:
             fraction = (num_tasks - 50) / (500 - 50)
             return int(self.warm_up_config.sample_min + fraction * (self.warm_up_config.sample_max - self.warm_up_config.sample_min))
 
-    def _calibrate_from_warm_up(self, num_tasks: int) -> None:
-        """One-shot calibration: update token estimate AND recompute Little's Law concurrency.
+    def _calibrate_tokens_from_warm_up(self) -> tuple:
+        """One-shot calibration: update token estimate and arrival rate.
 
-        Fires once after enough warm-up completions. Uses measured latency and
-        token counts to recalculate optimal concurrency, update circuit breaker
-        baseline, and recalibrate PID arrival rate.
+        Shared by both strategies. Updates avg_tokens from measured data,
+        recalculates arrival rate, and resets PID. Does NOT touch concurrency
+        — that's strategy-specific.
+
+        Returns (old_avg_tokens, new_avg_tokens) for logging.
         """
         measured_avg_tokens = int(np.mean(list(self.actual_total_tokens)))
-        # P10 latency: median includes queuing time at high concurrency,
-        # which inflates Little's Law cap → positive feedback loop.
         measured_latency = float(np.percentile(list(self.latency_tracker.values), 10))
 
         old_avg = self.avg_tokens
-        old_conc = self.optimal_concurrency
-
         self.avg_tokens = measured_avg_tokens
         self.bootstrap_avg_tokens = measured_avg_tokens
+        self._warm_up_measured_latency = measured_latency  # stored for rate-limited concurrency recalc
+
+        # Recalculate arrival rate (tokens changed, so TPM rail changes)
+        headroom = self.processing_config.rate_limit_headroom
+        new_arrival_rate = min(
+            self.rate_limits.requests_per_minute * headroom / 60,
+            self.rate_limits.tokens_per_minute * headroom / measured_avg_tokens / 60
+        )
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0 / new_arrival_rate)
+        self.current_arrival_rate = new_arrival_rate
+
+        # Reset PID (we just recalibrated tokens)
+        if self.pid_controller:
+            self.pid_controller.reset()
+
+        self._warm_up_calibrated = True
+        return old_avg, measured_avg_tokens
+
+    def _calibrate_concurrency_from_warm_up(self, num_tasks: int) -> None:
+        """One-shot calibration for rate-limited strategy: tokens + concurrency.
+
+        Calls _calibrate_tokens_from_warm_up first, then recalculates
+        Little's Law concurrency from measured data and updates the semaphore.
+        Only called for rate-limited (RPM/TPM) bottleneck cases.
+        """
+        old_avg, new_avg = self._calibrate_tokens_from_warm_up()
+        old_conc = self.optimal_concurrency
 
         # Recalculate Little's Law with measured data
         api_limits = ApiLimits(
@@ -2373,34 +2415,117 @@ class IdeaExtractor:
         )
         headroom = self.processing_config.rate_limit_headroom
         new_little_law = compute_optimal_concurrency(
-            api_limits, measured_latency, measured_avg_tokens,
+            api_limits, self._warm_up_measured_latency, new_avg,
             headroom=headroom
         )
         new_little_law_cap = min(new_little_law, num_tasks)
 
-        # Recalculate arrival rate (tokens changed, so TPM rail changes)
-        new_arrival_rate = min(
-            self.rate_limits.requests_per_minute * headroom / 60,
-            self.rate_limits.tokens_per_minute * headroom / measured_avg_tokens / 60
-        )
-        self.rate_limiter = AsyncLimiter(1, time_period=1.0 / new_arrival_rate)
-        self.current_arrival_rate = new_arrival_rate
-
-        # Update semaphore if Little's Law changed (rate-limited cases)
         if new_little_law_cap != old_conc:
             self.semaphore.set_limit(new_little_law_cap)
             self.optimal_concurrency = new_little_law_cap
             print(f"\n[WARM-UP] concurrency {old_conc} → {new_little_law_cap} "
-                  f"(avg_tokens {old_avg} → {measured_avg_tokens})")
+                  f"(avg_tokens {old_avg} → {new_avg})")
         else:
-            print(f"\n[WARM-UP] avg_tokens {old_avg} → {measured_avg_tokens}, "
+            print(f"\n[WARM-UP] avg_tokens {old_avg} → {new_avg}, "
                   f"concurrency unchanged at {old_conc}")
 
-        # Reset PID (we just recalibrated tokens)
-        if self.pid_controller:
-            self.pid_controller.reset()
+    # === STRATEGY-SPECIFIC TICK METHODS =============================================
 
-        self._warm_up_calibrated = True
+    def _tick_throughput(self, ctx: TickContext, drain: float) -> str:
+        """Per-tick logic for throughput-bound strategy.
+
+        Computes in-flight P95/P100, evaluates circuit breaker and state machine,
+        updates concurrency, and returns the formatted progress line.
+        """
+        # In-flight durations: P95 and P100 from currently running tasks
+        # Only count tasks dispatched after signal_cutoff (filters out old-era tasks)
+        now_perf = time.perf_counter()
+        inflight_p95 = 0.0
+        inflight_p100 = 0.0
+        cutoff = self._concurrency_sm.signal_cutoff if self._concurrency_sm else 0.0
+        fresh_starts = {k: v for k, v in self._inflight_starts.items() if v >= cutoff}
+        if fresh_starts:
+            durations = sorted(now_perf - start for start in fresh_starts.values())
+            inflight_p100 = durations[-1]
+            idx_95 = int(len(durations) * 0.95)
+            inflight_p95 = durations[min(idx_95, len(durations) - 1)]
+
+        # Circuit breaker: detect timeout rate spike → trigger BACKOFF
+        if self.circuit_breaker and self._concurrency_sm:
+            cb_action = self.circuit_breaker.check(drain_time=drain)
+            if cb_action == 'tripped':
+                self.v3_stats['circuit_breaker_trips'] += 1
+                sm = self._concurrency_sm
+                sm.state = ConcurrencyState.BACKOFF
+                sm.backoff_ticks = 0
+                sm.signal_cutoff = time.perf_counter()
+                sm.current = max(sm.config.min_concurrency,
+                                 int(sm.last_healthy_concurrency * sm.config.backoff_pct))
+                self.semaphore.set_limit(sm.current)
+                self.optimal_concurrency = sm.current
+
+        # State machine concurrency evaluation
+        # Skip first 5s — let data accumulate before engaging
+        state_str = ""
+        warmup_elapsed = ctx.now - ctx.start_time
+        if self._concurrency_sm and ctx.p50 > 0 and warmup_elapsed >= 5.0:
+            self._concurrency_sm.current = self.semaphore.limit
+            new_conc = self._concurrency_sm.evaluate(
+                p50=ctx.p50, inflight_p95=inflight_p95, inflight_p100=inflight_p100,
+                now=time.monotonic())
+            if new_conc != self.optimal_concurrency:
+                self.semaphore.set_limit(new_conc)
+                self.optimal_concurrency = new_conc
+            sm = self._concurrency_sm
+            state_str = f" {sm.state.value}"
+        elif self._concurrency_sm and warmup_elapsed < 5.0:
+            state_str = " WARM-UP"
+
+        # Latency + ratios
+        latency_str = ""
+        if self.latency_tracker.values:
+            sm = self._concurrency_sm
+            p95r = sm.p95_ratio if sm else 0
+            p100r = sm.p100_ratio if sm else 0
+            latency_str = f" P50:{ctx.p50:.1f}s p95:{p95r:.1f}x p100:{p100r:.1f}x"
+
+        return (f"[PHASE6] {ctx.completed}/{ctx.total} | {ctx.constraint_str} | thru:{ctx.throughput:.0f}/s |"
+                f"{latency_str} |{state_str}{ctx.timeout_info}")
+
+    def _tick_rate_limited(self, ctx: TickContext, num_tasks: int) -> str:
+        """Per-tick logic for rate-limited (RPM/TPM) strategy.
+
+        Smooths throughput, periodically recalculates Little's Law concurrency,
+        and returns the formatted progress line.
+        """
+        self._throughput_samples.append(ctx.throughput)
+        smooth_thru = sum(self._throughput_samples) / len(self._throughput_samples)
+
+        # Recalculate Little's Law concurrency from actual data (every 10s)
+        if ctx.now - self._last_concurrency_check >= 10.0:
+            if self.latency_tracker.values and self.actual_total_tokens:
+                current_p50 = float(np.percentile(list(self.latency_tracker.values), 50))
+                api_limits = ApiLimits(
+                    self.rate_limits.tokens_per_minute,
+                    self.rate_limits.requests_per_minute
+                )
+                new_conc = min(
+                    compute_optimal_concurrency(
+                        api_limits, current_p50, self.avg_tokens,
+                        headroom=self.processing_config.rate_limit_headroom
+                    ),
+                    num_tasks
+                )
+                if new_conc != self.optimal_concurrency:
+                    old_conc = self.optimal_concurrency
+                    self.semaphore.set_limit(new_conc)
+                    self.optimal_concurrency = new_conc
+                    print(f"[ADJUST] concurrency {old_conc} → {new_conc}")
+            self._last_concurrency_check = ctx.now
+
+        return f"[PHASE6] {ctx.completed}/{ctx.total} | {ctx.constraint_str} | thru:{smooth_thru:.1f}/s |{ctx.timeout_info}"
+
+    # === SHARED ADJUSTMENT METHODS ================================================
 
     def _adjust_throughput_if_needed(self) -> bool:
         """Threshold-based token estimate correction.
@@ -2676,8 +2801,8 @@ class IdeaExtractor:
         last_report_completed = 0
         last_diagnostics = start_time
         last_adjustment = start_time
-        last_concurrency_check = start_time
-        throughput_samples = deque(maxlen=5)  # rolling window for smoothed throughput
+        self._last_concurrency_check = start_time
+        self._throughput_samples = deque(maxlen=5)  # rolling window for smoothed throughput
 
         while not queue.empty():
             await asyncio.sleep(0.1)  # 10 Hz — enough to track ramp and progress
@@ -2693,6 +2818,8 @@ class IdeaExtractor:
                 # TPM/RPM utilization (for reporting and PID)
                 tpm_pct = rpm_pct = 0.0
                 headroom = self.processing_config.rate_limit_headroom
+                current_tpm = current_rpm = 0.0
+                effective_tpm = effective_rpm = 0.0
                 if self.tpm_tracker and self.rate_limits:
                     current_tpm = await self.tpm_tracker.get_current_tpm()
                     effective_tpm = self.rate_limits.tokens_per_minute * headroom
@@ -2709,7 +2836,7 @@ class IdeaExtractor:
                     vals = list(self.latency_tracker.values)
                     p50 = float(np.percentile(vals, 50))
 
-                # In-flight count + drain time
+                # In-flight count + constraint string
                 active = self.semaphore.active
                 bn = self._bottleneck
                 if bn == "throughput":
@@ -2727,75 +2854,32 @@ class IdeaExtractor:
 
                 timeout_info = f" | deferred:{timeouts}" if timeouts > 0 else ""
 
+                # Build TickContext and dispatch to strategy-specific tick method
+                ctx = TickContext(
+                    completed=completed, total=len(tasks), tick_duration=tick_duration,
+                    throughput=throughput, p50=p50, active=active,
+                    constraint_str=constraint_str, timeout_info=timeout_info,
+                    now=now, start_time=start_time, timeouts=timeouts,
+                )
+
                 if bn == "throughput":
-                    # In-flight durations: P95 and P100 from currently running tasks
-                    # Only count tasks dispatched after signal_cutoff (filters out old-era tasks)
-                    now_perf = time.perf_counter()
-                    inflight_p95 = 0.0
-                    inflight_p100 = 0.0
-                    cutoff = self._concurrency_sm.signal_cutoff if self._concurrency_sm else 0.0
-                    fresh_starts = {k: v for k, v in self._inflight_starts.items() if v >= cutoff}
-                    if fresh_starts:
-                        durations = sorted(now_perf - start for start in fresh_starts.values())
-                        inflight_p100 = durations[-1]
-                        idx_95 = int(len(durations) * 0.95)
-                        inflight_p95 = durations[min(idx_95, len(durations) - 1)]
-
-                    # Circuit breaker: detect timeout rate spike → trigger BACKOFF
-                    if self.circuit_breaker and self._concurrency_sm:
-                        cb_action = self.circuit_breaker.check(drain_time=drain)
-                        if cb_action == 'tripped':
-                            self.v3_stats['circuit_breaker_trips'] += 1
-                            sm = self._concurrency_sm
-                            sm.state = ConcurrencyState.BACKOFF
-                            sm.backoff_ticks = 0
-                            sm.signal_cutoff = time.perf_counter()
-                            sm.current = max(sm.config.min_concurrency,
-                                             int(sm.last_healthy_concurrency * sm.config.backoff_pct))
-                            self.semaphore.set_limit(sm.current)
-                            self.optimal_concurrency = sm.current
-
-                    # State machine concurrency evaluation
-                    # Skip first 5s — let data accumulate before engaging
-                    state_str = ""
-                    warmup_elapsed = now - start_time
-                    if self._concurrency_sm and p50 > 0 and warmup_elapsed >= 5.0:
-                        self._concurrency_sm.current = self.semaphore.limit
-                        new_conc = self._concurrency_sm.evaluate(
-                            p50=p50, inflight_p95=inflight_p95, inflight_p100=inflight_p100,
-                            now=time.monotonic())
-                        if new_conc != self.optimal_concurrency:
-                            self.semaphore.set_limit(new_conc)
-                            self.optimal_concurrency = new_conc
-                        sm = self._concurrency_sm
-                        state_str = f" {sm.state.value}"
-                    elif self._concurrency_sm and warmup_elapsed < 5.0:
-                        state_str = " WARM-UP"
-
-                    # Latency + ratios
-                    latency_str = ""
-                    if self.latency_tracker.values:
-                        sm = self._concurrency_sm
-                        p95r = sm.p95_ratio if sm else 0
-                        p100r = sm.p100_ratio if sm else 0
-                        latency_str = f" P50:{p50:.1f}s p95:{p95r:.1f}x p100:{p100r:.1f}x"
-
-                    print(f"[PHASE6] {completed}/{len(tasks)} | {constraint_str} | thru:{throughput:.0f}/s |"
-                          f"{latency_str} |{state_str}{timeout_info}")
-
+                    print(self._tick_throughput(ctx, drain))
                 else:
-                    # Rate-limited: PID + rate limiters handle pacing, report pace
-                    throughput_samples.append(throughput)
-                    smooth_thru = sum(throughput_samples) / len(throughput_samples)
-                    print(f"[PHASE6] {completed}/{len(tasks)} | {constraint_str} | thru:{smooth_thru:.1f}/s |{timeout_info}")
+                    print(self._tick_rate_limited(ctx, len(tasks)))
+
                 last_report = now
                 last_report_completed = completed
 
-            # One-shot token calibration after warm-up
+            # One-shot warm-up calibration (strategy-specific)
             if (not self._warm_up_calibrated
                     and len(self.actual_total_tokens) >= self._warm_up_target_samples
                     and len(self.latency_tracker.values) >= self._warm_up_target_samples):
-                self._calibrate_from_warm_up(len(tasks))
+                if self._bottleneck == "throughput":
+                    old_avg, new_avg = self._calibrate_tokens_from_warm_up()
+                    print(f"\n[WARM-UP] avg_tokens {old_avg} → {new_avg}, "
+                          f"concurrency unchanged at {self.optimal_concurrency}")
+                else:
+                    self._calibrate_concurrency_from_warm_up(len(tasks))
 
             # INTERVAL: PID arrival rate adjustment + token correction
             # Rate-limited: PID every tick (primary controller), throughput-bound: every 20s (secondary)
@@ -2804,28 +2888,6 @@ class IdeaExtractor:
                 if not self._adjust_throughput_if_needed():
                     await self._apply_pid_adjustment()
                 last_adjustment = now
-
-            # INTERVAL: Recalculate Little's Law concurrency from actual data (10s, rate-limited only)
-            if self._bottleneck != "throughput" and now - last_concurrency_check >= 10.0:
-                if self.latency_tracker.values and self.actual_total_tokens:
-                    current_p50 = float(np.percentile(list(self.latency_tracker.values), 50))
-                    api_limits = ApiLimits(
-                        self.rate_limits.tokens_per_minute,
-                        self.rate_limits.requests_per_minute
-                    )
-                    new_conc = min(
-                        compute_optimal_concurrency(
-                            api_limits, current_p50, self.avg_tokens,
-                            headroom=self.processing_config.rate_limit_headroom
-                        ),
-                        len(tasks)
-                    )
-                    if new_conc != self.optimal_concurrency:
-                        old_conc = self.optimal_concurrency
-                        self.semaphore.set_limit(new_conc)
-                        self.optimal_concurrency = new_conc
-                        print(f"[ADJUST] concurrency {old_conc} → {new_conc}")
-                last_concurrency_check = now
 
             # Spawn extra workers if concurrency increased beyond current worker count
             if self.optimal_concurrency > num_workers:
