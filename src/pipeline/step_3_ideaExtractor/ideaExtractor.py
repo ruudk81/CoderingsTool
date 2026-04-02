@@ -488,8 +488,8 @@ class ConcurrencyStateMachine:
         self.last_healthy_concurrency = starting
         self.steady_concurrency = None
 
-        # Throughput-grounded targets (updated during healthy ticks)
-        self.last_healthy_throughput = 0.0  # completions/s when healthy
+        # Throughput-grounded targets (fed from cumulative healthy throughput)
+        self.last_healthy_throughput = 0.0  # cumulative successful completions/s from healthy states
         self.last_healthy_p50 = 0.0         # P50 when healthy
 
         # Ratios for reporting
@@ -540,8 +540,8 @@ class ConcurrencyStateMachine:
             self.stress_ticks = 0
         should_backoff = self.stress_ticks >= 2
 
-        # Track healthy throughput during non-stressed ticks
-        if not stressed and throughput > 0 and p50 > 0:
+        # Store cumulative healthy throughput (computed by caller from healthy states only)
+        if throughput > 0 and p50 > 0:
             self.last_healthy_throughput = throughput
             self.last_healthy_p50 = p50
 
@@ -2842,6 +2842,14 @@ class IdeaExtractor:
         self._last_concurrency_check = start_time
         self._throughput_samples = deque(maxlen=5)  # rolling window for smoothed throughput
 
+        # Cumulative healthy throughput: only count successful completions during
+        # WARM-UP, RAMP-UP, and STEADY states. Excludes BACKOFF/RECOVER (self-throttled)
+        # and excludes timeouts/failures. This gives the true server delivery rate.
+        self._healthy_completions = 0
+        self._healthy_elapsed = 0.0
+        self._last_healthy_successful = self.stats['tasks_successful']
+        self._last_healthy_time = start_time
+
         while not queue.empty():
             await asyncio.sleep(0.1)  # 10 Hz — enough to track ramp and progress
             now = time.time()
@@ -2867,12 +2875,28 @@ class IdeaExtractor:
                     effective_rpm = self.rate_limits.requests_per_minute * headroom
                     rpm_pct = current_rpm / effective_rpm * 100 if effective_rpm else 0
 
-                # Throughput (actual tick throughput)
-                throughput = completions_since_report / tick_duration if tick_duration > 0 else 0
+                # Throughput: cumulative from healthy states (WARM-UP, RAMP-UP, STEADY)
                 p50 = 0.0
                 if self.latency_tracker.values:
                     vals = list(self.latency_tracker.values)
                     p50 = float(np.percentile(vals, 50))
+
+                # Update healthy cumulative stats if in a healthy state
+                sm_state = self._concurrency_sm.state if self._concurrency_sm else None
+                in_healthy_state = (
+                    sm_state in (ConcurrencyState.RAMP_UP, ConcurrencyState.STEADY)
+                    or (sm_state is None)  # warm-up (before state machine engages)
+                )
+                current_successful = self.stats['tasks_successful']
+                if in_healthy_state:
+                    new_completions = current_successful - self._last_healthy_successful
+                    if new_completions > 0:
+                        self._healthy_completions += new_completions
+                        self._healthy_elapsed += now - self._last_healthy_time
+                self._last_healthy_successful = current_successful
+                self._last_healthy_time = now
+
+                throughput = self._healthy_completions / self._healthy_elapsed if self._healthy_elapsed > 0 else 0
 
                 # In-flight count + constraint string
                 active = self.semaphore.active
