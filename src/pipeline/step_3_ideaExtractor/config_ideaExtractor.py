@@ -130,7 +130,7 @@ class ConcurrencyControlConfig:
     States: RAMP-UP → STEADY ↔ BACKOFF → RECOVER → STEADY
     """
     ramp_step_pct: float = 0.025           # +2.5% of starting concurrency per tick (min 2)
-    backoff_pct: float = 0.85              # cut to 85% of last healthy concurrency on BACKOFF
+    backoff_throughput_pct: float = 0.90   # BACKOFF = 0.9 × healthy_throughput × healthy_p50 (cooling room)
     steady_ratio: float = 2.0             # inflight_P95/P50 > 2× → STEADY
     inflight_ratio: float = 5.0           # inflight_P100/P50 > 5× → BACKOFF (after 2 consecutive ticks)
     min_concurrency: int = 2              # hard floor

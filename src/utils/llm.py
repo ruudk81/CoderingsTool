@@ -274,6 +274,16 @@ class TokenTracker:
         ]
         return "\n".join(lines)
 
+    def snapshot(self) -> dict:
+        """Return current cumulative state as a plain dict (thread-safe copy)."""
+        with self._lock:
+            return {
+                "input_tokens": self.total_input_tokens,
+                "output_tokens": self.total_output_tokens,
+                "cost_usd": self.total_cost_usd,
+                "calls": self.call_count,
+            }
+
     def reset(self):
         """Reset all counters."""
         with self._lock:

@@ -52,7 +52,7 @@ from pipeline.step_3_ideaExtractor import models
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import IdeaExtractionConfig, DEFAULT_IDEA_EXTRACTION_CONFIG
-from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response
+from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response, token_tracker
 from utils.modelPerfStats import (
     load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE,
 )
@@ -468,8 +468,9 @@ class ConcurrencyState(Enum):
 class ConcurrencyStateMachine:
     """State machine concurrency controller.
 
-    Monitors throughput (concurrency/P50) and interval P100 (max latency per tick).
-    Ramps up gently, holds steady at sweet spot, backs off on stress, recovers to healthy level.
+    Monitors in-flight latency signals and observed throughput to discover the
+    server's hidden concurrency limit. BACKOFF and RECOVER targets are grounded
+    in measured throughput × P50, not arbitrary percentages of concurrency.
 
     States: RAMP-UP → STEADY ↔ BACKOFF → RECOVER → STEADY
     """
@@ -487,6 +488,10 @@ class ConcurrencyStateMachine:
         self.last_healthy_concurrency = starting
         self.steady_concurrency = None
 
+        # Throughput-grounded targets (updated during healthy ticks)
+        self.last_healthy_throughput = 0.0  # completions/s when healthy
+        self.last_healthy_p50 = 0.0         # P50 when healthy
+
         # Ratios for reporting
         self.p95_ratio = 0.0
         self.p100_ratio = 0.0
@@ -494,12 +499,29 @@ class ConcurrencyStateMachine:
         self.stress_ticks = 0   # consecutive ticks with P100 > inflight_ratio (need 2 to trigger BACKOFF)
         self.signal_cutoff = 0.0  # only count in-flight tasks dispatched after this timestamp
 
-    def evaluate(self, p50: float, inflight_p95: float, inflight_p100: float, now: float) -> int:
+    def _throughput_grounded_target(self, fraction: float) -> int:
+        """Compute concurrency target from measured throughput × P50.
+
+        Returns fraction × throughput × P50, floored at min_concurrency.
+        Falls back to fraction × last_healthy_concurrency if no throughput data yet.
+        """
+        if self.last_healthy_throughput > 0 and self.last_healthy_p50 > 0:
+            target = int(fraction * self.last_healthy_throughput * self.last_healthy_p50)
+        else:
+            # No throughput data yet — fall back to concurrency-based estimate
+            target = int(fraction * self.last_healthy_concurrency)
+        return max(self.config.min_concurrency, target)
+
+    def evaluate(self, p50: float, inflight_p95: float, inflight_p100: float,
+                 now: float, throughput: float = 0.0) -> int:
         """Main tick evaluation. Returns new concurrency.
 
         Two in-flight ratio signals:
           inflight_P95/P50 > steady_ratio → STEADY
           inflight_P100/P50 > inflight_ratio → BACKOFF
+
+        Throughput and P50 are tracked during healthy ticks to ground
+        BACKOFF/RECOVER targets in measured server capacity.
         """
         if p50 <= 0 or inflight_p100 <= 0:
             return self.current
@@ -518,14 +540,18 @@ class ConcurrencyStateMachine:
             self.stress_ticks = 0
         should_backoff = self.stress_ticks >= 2
 
+        # Track healthy throughput during non-stressed ticks
+        if not stressed and throughput > 0 and p50 > 0:
+            self.last_healthy_throughput = throughput
+            self.last_healthy_p50 = p50
+
         if self.state == ConcurrencyState.RAMP_UP:
             if should_backoff:
                 self.stress_ticks = 0
                 self.state = ConcurrencyState.BACKOFF
                 self.backoff_ticks = 0
                 self.signal_cutoff = time.perf_counter()
-                self.current = max(self.config.min_concurrency,
-                                   int(self.last_healthy_concurrency * self.config.backoff_pct))
+                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
             elif should_hold:
                 self.state = ConcurrencyState.STEADY
                 self.steady_concurrency = self.current
@@ -549,8 +575,7 @@ class ConcurrencyStateMachine:
                 self.state = ConcurrencyState.BACKOFF
                 self.backoff_ticks = 0
                 self.signal_cutoff = time.perf_counter()
-                self.current = max(self.config.min_concurrency,
-                                   int(self.last_healthy_concurrency * self.config.backoff_pct))
+                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
             elif not should_hold:
                 self.state = ConcurrencyState.RAMP_UP
                 self.current = self.current + self.ramp_step
@@ -562,10 +587,9 @@ class ConcurrencyStateMachine:
                 self.state = ConcurrencyState.RECOVER
                 self.backoff_ticks = 0
             elif self.backoff_ticks >= 3:
-                # Stuck in BACKOFF for 3 ticks — current level is still too high, cut again
-                self.last_healthy_concurrency = self.current
+                # Stuck in BACKOFF for 3 ticks — cut further from current level
                 self.current = max(self.config.min_concurrency,
-                                   int(self.current * self.config.backoff_pct))
+                                   int(self.current * self.config.backoff_throughput_pct))
                 self.backoff_ticks = 0
                 self.signal_cutoff = time.perf_counter()
 
@@ -575,15 +599,14 @@ class ConcurrencyStateMachine:
                 self.state = ConcurrencyState.BACKOFF
                 self.backoff_ticks = 0
                 self.signal_cutoff = time.perf_counter()
-                self.current = max(self.config.min_concurrency,
-                                   int(self.last_healthy_concurrency * self.config.backoff_pct))
+                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
             elif should_hold:
                 self.state = ConcurrencyState.STEADY
                 self.steady_concurrency = self.current
                 self.last_healthy_concurrency = self.current
             else:
-                # Ramp back to 95% of last healthy — don't return to the level that caused stress
-                recovery_target = int(self.last_healthy_concurrency * 0.95)
+                # Recover to 1.0 × healthy throughput × P50 — the level that was working
+                recovery_target = self._throughput_grounded_target(1.0)
                 if self.current >= recovery_target:
                     self.state = ConcurrencyState.STEADY
                     self.current = recovery_target
@@ -801,10 +824,12 @@ class IdeaExtractor:
         verbose: bool = False,
         prompt_printer=None,
         verbose_reporter: Optional['VerboseReporter'] = None,
-        discover_domains: bool = False):
+        discover_domains: bool = False,
+        cost_tracker=None):
 
         self.responses = responses
         self.var_lab = var_lab
+        self.cost_tracker = cost_tracker
         self.config = config or DEFAULT_IDEA_EXTRACTION_CONFIG
         self.model_config = model_config or ModelConfig()  # kept for backward compat
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
@@ -836,6 +861,14 @@ class IdeaExtractor:
         unique_models = {self.model_context, self.model_taxonomy, self.model_abstraction_ladder}
         self._clients = {m: create_client(m, async_mode=True) for m in unique_models}
         self.client = self._clients[self.model_abstraction_ladder]  # backward compat for bulk path
+
+        # Register model config with cost tracker
+        if self.cost_tracker:
+            self.cost_tracker.set_step_models("step_3_idea_extraction", {
+                "context": self.model_context,
+                "taxonomy": self.model_taxonomy,
+                "abstraction_ladder": self.model_abstraction_ladder,
+            })
 
         # Rate limiting setup - use fallback values for initial setup
         self.rate_limits = RateLimits(
@@ -1891,13 +1924,7 @@ class IdeaExtractor:
             )
 
             async with self.semaphore:
-                # Remove timeout when ETA < timeout — remaining tasks will finish before timeout fires
-                timeout_value = self.latency_tracker.get_timeout(est_tokens)
-                p50 = self.latency_tracker.get_p50() if self.latency_tracker.values else 1.0
-                throughput = self.optimal_concurrency / max(p50, 0.1)
-                remaining = getattr(self, '_total_tasks', 0) - self.stats['tasks_processed']
-                eta = remaining / throughput if throughput > 0 else float('inf')
-                timeout = None if eta < timeout_value else timeout_value
+                timeout = self.latency_tracker.get_timeout(est_tokens)
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
                 api_start = time.perf_counter()
                 task_id = task.get('respondent_id', task.get('task_index'))
@@ -2063,11 +2090,13 @@ class IdeaExtractor:
             return None
 
         except RateLimitError:
+            self._inflight_starts.pop(task.get('respondent_id', task.get('task_index')), None)
             self.stats['rate_limits'] += 1
             logger.warning(f"Task {task['respondent_id']} hit rate limit")
             raise
 
         except InstructorRetryException as e:
+            self._inflight_starts.pop(task.get('respondent_id', task.get('task_index')), None)
             # Concise output for 429 errors wrapped in InstructorRetryException
             error_str = str(e)
             if "429" in error_str or "RateLimitReached" in error_str:
@@ -2083,6 +2112,7 @@ class IdeaExtractor:
             raise
 
         except Exception as e:
+            self._inflight_starts.pop(task.get('respondent_id', task.get('task_index')), None)
             logger.error(f"Task {task['respondent_id']} failed: {type(e).__name__}: {e}")
             raise
 
@@ -2459,8 +2489,7 @@ class IdeaExtractor:
                 sm.state = ConcurrencyState.BACKOFF
                 sm.backoff_ticks = 0
                 sm.signal_cutoff = time.perf_counter()
-                sm.current = max(sm.config.min_concurrency,
-                                 int(sm.last_healthy_concurrency * sm.config.backoff_pct))
+                sm.current = sm._throughput_grounded_target(sm.config.backoff_throughput_pct)
                 self.semaphore.set_limit(sm.current)
                 self.optimal_concurrency = sm.current
 
@@ -2472,7 +2501,7 @@ class IdeaExtractor:
             self._concurrency_sm.current = self.semaphore.limit
             new_conc = self._concurrency_sm.evaluate(
                 p50=ctx.p50, inflight_p95=inflight_p95, inflight_p100=inflight_p100,
-                now=time.monotonic())
+                now=time.monotonic(), throughput=ctx.throughput)
             if new_conc != self.optimal_concurrency:
                 self.semaphore.set_limit(new_conc)
                 self.optimal_concurrency = new_conc
@@ -2489,7 +2518,8 @@ class IdeaExtractor:
             p100r = sm.p100_ratio if sm else 0
             latency_str = f" P50:{ctx.p50:.1f}s p95:{p95r:.1f}x p100:{p100r:.1f}x"
 
-        return (f"[PHASE6] {ctx.completed}/{ctx.total} | {ctx.constraint_str} | thru:{ctx.throughput:.0f}/s |"
+        arrival = int(ctx.throughput * ctx.p50) if ctx.p50 > 0 else 0
+        return (f"[PHASE6] {ctx.completed}/{ctx.total} | {ctx.constraint_str} | arrival:{arrival} | thru:{ctx.throughput:.0f}/s |"
                 f"{latency_str} |{state_str}{ctx.timeout_info}")
 
     def _tick_rate_limited(self, ctx: TickContext, num_tasks: int) -> str:
@@ -2688,6 +2718,7 @@ class IdeaExtractor:
         self._initialize_conservative_rate_limiters(limits, num_tasks=30)
 
         # === PHASE 3: Extract context specifiers, primary dimension, AND domains ===
+        _snap_before_context = token_tracker.snapshot() if self.cost_tracker else None
         self.verbose_reporter.stat_line("Extracting context specifiers, primary dimension, and domains...")
         self.generic_specifiers, taxonomy_result, categories_result = await self._extract_generic_specifiers()
 
@@ -2708,6 +2739,12 @@ class IdeaExtractor:
                 self.verbose_reporter.stat_line(f"Domains: {[c.key for c in self.domains]}")
             else:
                 self.verbose_reporter.stat_line(f"Domains: on-the-fly (no pre-discovered domains)")
+
+        # Record cost for context + discovery phases
+        if self.cost_tracker and _snap_before_context is not None:
+            self.cost_tracker.record_phase(
+                "step_3_idea_extraction", "context_and_discovery",
+                _snap_before_context, token_tracker.snapshot(), self.model_context)
 
         # === PHASE 4: Recalculate avg_tokens with REAL context ===
         # Stored empirical avg_tokens is more accurate than tiktoken — only recalculate if no stored data
@@ -2778,6 +2815,7 @@ class IdeaExtractor:
 
         print(f"\nWorkers: {num_workers}, Target concurrency: {self.optimal_concurrency}")
 
+        _snap_before_bulk = token_tracker.snapshot() if self.cost_tracker else None
         t_phase_start = time.time()
         print(f"\n⏱ T+0.0s: Starting task processing")
 
@@ -2840,7 +2878,7 @@ class IdeaExtractor:
                 active = self.semaphore.active
                 bn = self._bottleneck
                 if bn == "throughput":
-                    constraint_str = f"inflight:{active}/{self.optimal_concurrency}"
+                    constraint_str = f"inflight:{active}"
                 elif bn == "rpm":
                     rate_rps = current_rpm / 60 if current_rpm else 0
                     limit_rps = effective_rpm / 60
@@ -2919,7 +2957,13 @@ class IdeaExtractor:
 
                 last_diagnostics = now
 
+        t_loop_exit = time.time()
+        print(f"⏱ T+{t_loop_exit - t_phase_start:.1f}s: Monitoring loop exited (queue empty), waiting for {self.stats['tasks_processed']}/{len(tasks)} completed, awaiting queue.join()...")
+
         await queue.join()
+
+        t_join_done = time.time()
+        print(f"⏱ T+{t_join_done - t_phase_start:.1f}s: queue.join() done ({t_join_done - t_loop_exit:.1f}s drain)")
 
         for _ in workers:
             await queue.put(None)
@@ -2934,7 +2978,14 @@ class IdeaExtractor:
         sm_state = self._concurrency_sm.state.value if self._concurrency_sm else "N/A"
         print(f"  Final concurrency: {self.optimal_concurrency} (state: {sm_state})")
 
+        # Record cost for bulk extraction phase
+        if self.cost_tracker and _snap_before_bulk is not None:
+            self.cost_tracker.record_phase(
+                "step_3_idea_extraction", "bulk_extraction",
+                _snap_before_bulk, token_tracker.snapshot(), self.model_abstraction_ladder)
+
         # === RETRY PASS: retry timed-out + failed tasks with reduced concurrency ===
+        _snap_before_retry = token_tracker.snapshot() if self.cost_tracker else None
         # Collect all failed tasks: timed-out (from worker) + exceptions (from failure_log)
         failed_tasks_for_retry = []
         recovered = 0
@@ -3027,6 +3078,14 @@ class IdeaExtractor:
         else:
             # No failures — create fallback for any remaining None results (shouldn't happen)
             pass
+
+        # Record cost for retry phase (only if any retries happened)
+        if self.cost_tracker and _snap_before_retry is not None:
+            _snap_after_retry = token_tracker.snapshot()
+            if _snap_after_retry["calls"] > _snap_before_retry["calls"]:
+                self.cost_tracker.record_phase(
+                    "step_3_idea_extraction", "retry",
+                    _snap_before_retry, _snap_after_retry, self.model_abstraction_ladder)
 
         elapsed = time.time() - start_time
         timeouts = self.stats['timeouts']

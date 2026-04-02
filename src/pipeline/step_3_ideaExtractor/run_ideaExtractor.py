@@ -48,6 +48,7 @@ from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
+from utils.costTracker import CostTracker
 from utils import dataLoader
 
 # Import centralized test data config
@@ -172,6 +173,9 @@ def run_step(config: StepConfig = None):
 
     start_time = time.time()
 
+    # Initialize cost tracker
+    cost_tracker = CostTracker(filename=config.filename, variable_key=variable_key)
+
     # Run idea extraction
     extractor = IdeaExtractor(
         responses=filtered_text,
@@ -179,6 +183,7 @@ def run_step(config: StepConfig = None):
         verbose=config.verbose,
         prompt_printer=prompt_printer,
         discover_domains=DISCOVER_DOMAINS,
+        cost_tracker=cost_tracker,
     )
     encoded_text = extractor.extract()
 
@@ -226,6 +231,9 @@ def run_step(config: StepConfig = None):
         print(f"{'='*70}")
     else:
         print(f"\nAll {len(filtered_text)} responses processed successfully (0 PROCESSING_ERROR)")
+
+    # Finalize cost tracking for this step
+    cost_tracker.finalize_step("step_3_idea_extraction")
 
     print(f"\n'Idea extraction' completed in {elapsed_time:.2f} seconds.\n")
 
