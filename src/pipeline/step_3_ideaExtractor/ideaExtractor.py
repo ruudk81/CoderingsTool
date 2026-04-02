@@ -492,11 +492,14 @@ class ConcurrencyStateMachine:
         self.last_healthy_throughput = 0.0  # cumulative successful completions/s from healthy states
         self.last_healthy_p50 = 0.0         # P50 when healthy
 
-        # Ratios for reporting
+        # P50 drift detection: baseline set from first evaluate() call after warm-up
+        self.p50_baseline = 0.0
+
+        # Ratios for reporting (kept for diagnostics, no longer drive state transitions)
         self.p95_ratio = 0.0
         self.p100_ratio = 0.0
         self.backoff_ticks = 0  # how long we've been in BACKOFF without recovery
-        self.stress_ticks = 0   # consecutive ticks with P100 > inflight_ratio (need 2 to trigger BACKOFF)
+        self.stress_ticks = 0   # consecutive ticks with P50 drift (need 2 to trigger BACKOFF)
         self.signal_cutoff = 0.0  # only count in-flight tasks dispatched after this timestamp
 
     def _throughput_grounded_target(self, fraction: float) -> int:
@@ -513,25 +516,36 @@ class ConcurrencyStateMachine:
         return max(self.config.min_concurrency, target)
 
     def evaluate(self, p50: float, inflight_p95: float, inflight_p100: float,
-                 now: float, throughput: float = 0.0) -> int:
+                 now: float, throughput: float = 0.0, inflight: int = 0) -> int:
         """Main tick evaluation. Returns new concurrency.
 
-        Two in-flight ratio signals:
-          inflight_P95/P50 > steady_ratio → STEADY
-          inflight_P100/P50 > inflight_ratio → BACKOFF
+        P50 drift signals (continuous batching aware):
+          P50 > baseline × 1.2 → STEADY (server starting to slow)
+          P50 > baseline × 1.5 for 2 consecutive ticks → BACKOFF (real stress)
+
+        P95/P100 ratios are tracked for reporting but don't drive state transitions,
+        since continuous batching causes natural P100 spikes that aren't stress.
 
         Throughput and P50 are tracked during healthy ticks to ground
         BACKOFF/RECOVER targets in measured server capacity.
         """
-        if p50 <= 0 or inflight_p100 <= 0:
+        if p50 <= 0:
             return self.current
 
-        # Compute ratios from in-flight durations
-        self.p95_ratio = inflight_p95 / p50
-        self.p100_ratio = inflight_p100 / p50
+        # Compute ratios from in-flight durations (reporting only)
+        if inflight_p100 > 0:
+            self.p95_ratio = inflight_p95 / p50
+            self.p100_ratio = inflight_p100 / p50
 
-        should_hold = self.p95_ratio > self.config.steady_ratio
-        stressed = self.p100_ratio > self.config.inflight_ratio
+        # Set P50 baseline from first reading (5s warm-up already provides stable data)
+        if self.p50_baseline == 0:
+            self.p50_baseline = p50
+
+        # P50 drift: how much has P50 shifted from baseline
+        p50_drift = p50 / self.p50_baseline
+
+        should_hold = p50_drift > 1.2   # P50 drifted >20% above baseline
+        stressed = p50_drift > 1.5      # P50 drifted >50% above baseline
 
         # Require 2 consecutive ticks of stress before triggering BACKOFF
         if stressed:
@@ -557,16 +571,8 @@ class ConcurrencyStateMachine:
                 self.steady_concurrency = self.current
                 self.last_healthy_concurrency = self.current
             else:
-                # Scale ramp step: full below 1.5x, linear taper to 0 at steady_ratio
-                taper_start = 1.5
-                if self.p95_ratio < taper_start:
-                    step = self.ramp_step
-                else:
-                    scale = max(0, (self.config.steady_ratio - self.p95_ratio)
-                                / (self.config.steady_ratio - taper_start))
-                    step = max(1, int(self.ramp_step * scale))
                 self.last_healthy_concurrency = self.current
-                self.current = self.current + step
+                self.current = self.current + self.ramp_step
 
         elif self.state == ConcurrencyState.STEADY:
             self.steady_concurrency = self.current
@@ -2501,7 +2507,7 @@ class IdeaExtractor:
             self._concurrency_sm.current = self.semaphore.limit
             new_conc = self._concurrency_sm.evaluate(
                 p50=ctx.p50, inflight_p95=inflight_p95, inflight_p100=inflight_p100,
-                now=time.monotonic(), throughput=ctx.throughput)
+                now=time.monotonic(), throughput=ctx.throughput, inflight=ctx.active)
             if new_conc != self.optimal_concurrency:
                 self.semaphore.set_limit(new_conc)
                 self.optimal_concurrency = new_conc
@@ -2514,9 +2520,12 @@ class IdeaExtractor:
         latency_str = ""
         if self.latency_tracker.values:
             sm = self._concurrency_sm
+            baseline = sm.p50_baseline if sm and sm.p50_baseline > 0 else ctx.p50
+            drift_pct = int((ctx.p50 / baseline - 1) * 100) if baseline > 0 else 0
+            drift_str = f"+{drift_pct}%" if drift_pct >= 0 else f"{drift_pct}%"
             p95r = sm.p95_ratio if sm else 0
             p100r = sm.p100_ratio if sm else 0
-            latency_str = f" P50:{ctx.p50:.1f}s p95:{p95r:.1f}x p100:{p100r:.1f}x"
+            latency_str = f" P50:{ctx.p50:.1f}s({drift_str}) p95:{p95r:.1f}x p100:{p100r:.1f}x"
 
         arrival = int(ctx.throughput * ctx.p50) if ctx.p50 > 0 else 0
         return (f"[PHASE6] {ctx.completed}/{ctx.total} | {ctx.constraint_str} | arrival:{arrival} | thru:{ctx.throughput:.0f}/s |"
@@ -3145,6 +3154,7 @@ class IdeaExtractor:
         print(f"- PID adjustments: {self.v3_stats.get('pid_adjustments', 0)}")
         cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
         print(f"- Final concurrency: {self.optimal_concurrency} (CB:{cb_state}, trips:{self.v3_stats.get('circuit_breaker_trips', 0)})")
+        print(f"- Cached empirical capacity: {self.optimal_concurrency}")
 
         if self.verbose_reporter.enabled:
             token_stats = self.get_token_estimation_stats()
@@ -3205,15 +3215,9 @@ class IdeaExtractor:
                 measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
             if total_tasks > 0:
                 measurements["timeout_rate"] = self.stats['timeouts'] / total_tasks
-            # Empirical capacity: throughput-grounded natural concurrency (thru × P50),
-            # not the semaphore limit which may overshoot. This is the server's actual
-            # delivery rate expressed as concurrency via Little's Law.
-            sm = self._concurrency_sm
-            if sm and sm.last_healthy_throughput > 0 and sm.last_healthy_p50 > 0:
-                measurements["empirical_capacity"] = float(
-                    int(sm.last_healthy_throughput * sm.last_healthy_p50))
-            else:
-                measurements["empirical_capacity"] = float(self.optimal_concurrency)
+            # Empirical capacity: final concurrency where P50 was still stable.
+            # This is the highest proven level — next run starts here and ramps further.
+            measurements["empirical_capacity"] = float(self.optimal_concurrency)
             update_phase_stats(self._perf_stats, self.model, "step3_idea_extraction",
                                measurements, len(self.actual_total_tokens))
             save_stats(self._perf_stats)
