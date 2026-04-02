@@ -3205,9 +3205,15 @@ class IdeaExtractor:
                 measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
             if total_tasks > 0:
                 measurements["timeout_rate"] = self.stats['timeouts'] / total_tasks
-            # Empirical capacity: the discovered sweet spot (STEADY concurrency), not the panic-cut value
-            steady = self._concurrency_sm.steady_concurrency if self._concurrency_sm else None
-            measurements["empirical_capacity"] = float(steady or self.optimal_concurrency)
+            # Empirical capacity: throughput-grounded natural concurrency (thru × P50),
+            # not the semaphore limit which may overshoot. This is the server's actual
+            # delivery rate expressed as concurrency via Little's Law.
+            sm = self._concurrency_sm
+            if sm and sm.last_healthy_throughput > 0 and sm.last_healthy_p50 > 0:
+                measurements["empirical_capacity"] = float(
+                    int(sm.last_healthy_throughput * sm.last_healthy_p50))
+            else:
+                measurements["empirical_capacity"] = float(self.optimal_concurrency)
             update_phase_stats(self._perf_stats, self.model, "step3_idea_extraction",
                                measurements, len(self.actual_total_tokens))
             save_stats(self._perf_stats)
