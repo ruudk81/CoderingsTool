@@ -239,6 +239,47 @@ class SpecifierConfig:
 
 
 
+# =============================================================================
+# HEADER-AWARE CONCURRENCY CONTROLLER CONFIGURATION
+# =============================================================================
+
+@dataclass
+class HeaderAwareConfig:
+    """Header-aware concurrency controller thresholds.
+
+    Residual latency = observed latency - openai-processing-ms.
+    Baseline is learned from the first evaluation after warm-up.
+    All thresholds are relative to baseline (drift ratios), not absolute.
+
+    Same drift pattern as old P50-drift, but on a clean signal where
+    server processing time is subtracted out.
+    """
+    # Residual drift thresholds (relative to learned baseline)
+    drift_steady: float = 1.2             # drift > 1.2 → slowing → STEADY (hold)
+    drift_backoff: float = 1.5            # drift > 1.5 for 2 ticks → stressed → BACKOFF
+    drift_resume: float = 1.1             # drift < 1.1 in STEADY → resume RAMP-UP
+
+    # Trend thresholds (recent vs previous median ratio)
+    trend_recover_ratio: float = 0.8      # trend below this → recovering
+
+    # Header pressure (1.0 - remaining/limit)
+    budget_pressure_threshold: float = 0.9  # pressure above this → BACKOFF
+
+    # Tracker settings
+    tracker_window: int = 200             # max entries in residual tracker
+    median_window: int = 20              # samples for median computation
+    trend_recent: int = 10               # recent window for trend
+    trend_previous: int = 10             # previous window for trend
+
+    # Header detection
+    header_detection_samples: int = 10   # responses to check before declaring availability
+    header_detection_threshold: float = 0.8  # fraction that must have headers (8/10)
+
+    # Simplified circuit breaker (defense-in-depth)
+    cb_window: int = 100                 # count-based window
+    cb_trip_threshold: float = 0.05      # >5% timeout rate
+    cb_cooldown_s: float = 10.0          # fixed cooldown
+
 
 # =============================================================================
 # DEFAULT INSTANCES
@@ -261,3 +302,4 @@ DEFAULT_CIRCUIT_BREAKER_CONFIG = CircuitBreakerConfig()
 DEFAULT_PID_CONTROLLER_CONFIG = PIDControllerConfig()
 DEFAULT_TPM_TRACKING_CONFIG = TPMTrackingConfig()
 DEFAULT_SPECIFIER_CONFIG = SpecifierConfig()
+DEFAULT_HEADER_AWARE_CONFIG = HeaderAwareConfig()

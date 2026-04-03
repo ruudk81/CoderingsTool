@@ -176,6 +176,9 @@ def run_step(config: StepConfig = None):
     # Initialize cost tracker
     cost_tracker = CostTracker(filename=config.filename, variable_key=variable_key)
 
+    # Dataset key for performance stats cache (filename:variable_key)
+    dataset_key = f"{config.filename}:{variable_key}"
+
     # Run idea extraction
     extractor = IdeaExtractor(
         responses=filtered_text,
@@ -184,6 +187,7 @@ def run_step(config: StepConfig = None):
         prompt_printer=prompt_printer,
         discover_domains=DISCOVER_DOMAINS,
         cost_tracker=cost_tracker,
+        dataset_key=dataset_key,
     )
     encoded_text = extractor.extract()
 

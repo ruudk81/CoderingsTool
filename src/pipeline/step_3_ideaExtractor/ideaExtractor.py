@@ -1,3 +1,4 @@
+
 """
 IdeaExtractor  - Dimension-based idea extraction with hybrid rate limiting
 
@@ -9,17 +10,15 @@ Extracts structured ideas from survey responses using LLM with:
 - Rate limiting: state machine concurrency + PID arrival rate + circuit breaker
 - Template prefix enforcement for normalized idea phrasing
 
-Rate limiting strategy:
-1. RPM: AsyncLimiter (PID-adjustable arrival rate)
-2. TPM: TokenBucket (self-regulating via acquire/wait/reconcile)
-3. Concurrency: ConcurrencyGate (state machine: ramp-up, steady, backoff, recover)
-4. Circuit breaker: monitors timeout RATE, adjusts concurrency on sustained pressure
+Two-strategy dispatch based on detect_bottleneck():
+  Throughput-bound: state machine concurrency + circuit breaker (no PID)
+  Rate-limited: PID arrival rate + Little's Law concurrency (no state machine)
 
-Key features:
-1. Learned tiktoken→API token offset (accounts for ~300 token system overhead)
-2. PID arrival rate optimization (asymmetric: aggressive up, gentle down)
-3. State machine concurrency: ramp up gently, hold steady at sweet spot, back off on stress
-4. Circuit breaker for concurrency (reacts to rate, not individual timeouts)
+Shared infrastructure:
+1. RPM: AsyncLimiter (arrival rate pacing)
+2. TPM: TokenBucket (self-regulating via acquire/wait/reconcile)
+3. Concurrency: ConcurrencyGate (dynamic limit)
+4. Learned tiktoken→API token offset (~300 token system overhead)
 5. Live warm-up with one-shot calibration from production data
 """
 
@@ -54,7 +53,8 @@ from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConf
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import IdeaExtractionConfig, DEFAULT_IDEA_EXTRACTION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response, token_tracker
 from utils.modelPerfStats import (
-    load_stats, save_stats, update_phase_stats, get_phase_stats, STATS_FILE,
+    load_stats, save_stats, update_phase_stats, get_phase_stats,
+    get_dataset_phase_stats, update_dataset_phase_stats, STATS_FILE,
 )
 
 # === PROMPTS (builders + response models) =========================================================================
@@ -96,6 +96,8 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     DEFAULT_CIRCUIT_BREAKER_CONFIG,
     DEFAULT_PID_CONTROLLER_CONFIG,
     DEFAULT_TPM_TRACKING_CONFIG,
+    DEFAULT_HEADER_AWARE_CONFIG,
+    HeaderAwareConfig,
     WarmUpConfig,
 )
 
@@ -400,9 +402,12 @@ class TickContext:
     completed: int
     total: int
     tick_duration: float
-    throughput: float
+    throughput: float           # cumulative healthy throughput (completions/s)
+    tick_successful: int        # successful completions this tick (excludes failures/timeouts)
+    tick_rate: float            # tick_successful / tick_duration
     p50: float
     active: int
+    concurrency: int            # semaphore limit (what we control)
     constraint_str: str
     timeout_info: str
     now: float           # time.time()
@@ -464,165 +469,6 @@ class ConcurrencyState(Enum):
     BACKOFF = "BACKOFF"
     RECOVER = "RECOVER"
 
-
-class ConcurrencyStateMachine:
-    """State machine concurrency controller.
-
-    Monitors in-flight latency signals and observed throughput to discover the
-    server's hidden concurrency limit. BACKOFF and RECOVER targets are grounded
-    in measured throughput × P50, not arbitrary percentages of concurrency.
-
-    States: RAMP-UP → STEADY ↔ BACKOFF → RECOVER → STEADY
-    """
-
-    def __init__(self, starting: int, bottleneck: str = "throughput",
-                 config: 'ConcurrencyControlConfig' = None):
-        from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_CONCURRENCY_CONTROL_CONFIG
-        self.config = config or DEFAULT_CONCURRENCY_CONTROL_CONFIG
-        self.current = starting
-        self.starting = starting
-        self.bottleneck = bottleneck
-        self.ramp_step = max(2, int(starting * self.config.ramp_step_pct))
-
-        self.state = ConcurrencyState.RAMP_UP
-        self.last_healthy_concurrency = starting
-        self.steady_concurrency = None
-
-        # Throughput-grounded targets (fed from cumulative healthy throughput)
-        self.last_healthy_throughput = 0.0  # cumulative successful completions/s from healthy states
-        self.last_healthy_p50 = 0.0         # P50 when healthy
-
-        # P50 drift detection: baseline set from first evaluate() call after warm-up
-        self.p50_baseline = 0.0
-
-        # Ratios for reporting (kept for diagnostics, no longer drive state transitions)
-        self.p95_ratio = 0.0
-        self.p100_ratio = 0.0
-        self.backoff_ticks = 0  # how long we've been in BACKOFF without recovery
-        self.stress_ticks = 0   # consecutive ticks with P50 drift (need 2 to trigger BACKOFF)
-        self.signal_cutoff = 0.0  # only count in-flight tasks dispatched after this timestamp
-
-    def _throughput_grounded_target(self, fraction: float) -> int:
-        """Compute concurrency target from measured throughput × P50.
-
-        Returns fraction × throughput × P50, floored at min_concurrency.
-        Falls back to fraction × last_healthy_concurrency if no throughput data yet.
-        """
-        if self.last_healthy_throughput > 0 and self.last_healthy_p50 > 0:
-            target = int(fraction * self.last_healthy_throughput * self.last_healthy_p50)
-        else:
-            # No throughput data yet — fall back to concurrency-based estimate
-            target = int(fraction * self.last_healthy_concurrency)
-        return max(self.config.min_concurrency, target)
-
-    def evaluate(self, p50: float, inflight_p95: float, inflight_p100: float,
-                 now: float, throughput: float = 0.0, inflight: int = 0) -> int:
-        """Main tick evaluation. Returns new concurrency.
-
-        P50 drift signals (continuous batching aware):
-          P50 > baseline × 1.2 → STEADY (server starting to slow)
-          P50 > baseline × 1.5 for 2 consecutive ticks → BACKOFF (real stress)
-
-        P95/P100 ratios are tracked for reporting but don't drive state transitions,
-        since continuous batching causes natural P100 spikes that aren't stress.
-
-        Throughput and P50 are tracked during healthy ticks to ground
-        BACKOFF/RECOVER targets in measured server capacity.
-        """
-        if p50 <= 0:
-            return self.current
-
-        # Compute ratios from in-flight durations (reporting only)
-        if inflight_p100 > 0:
-            self.p95_ratio = inflight_p95 / p50
-            self.p100_ratio = inflight_p100 / p50
-
-        # Set P50 baseline from first reading (5s warm-up already provides stable data)
-        if self.p50_baseline == 0:
-            self.p50_baseline = p50
-
-        # P50 drift: how much has P50 shifted from baseline
-        p50_drift = p50 / self.p50_baseline
-
-        should_hold = p50_drift > 1.2   # P50 drifted >20% above baseline
-        stressed = p50_drift > 1.5      # P50 drifted >50% above baseline
-
-        # Require 2 consecutive ticks of stress before triggering BACKOFF
-        if stressed:
-            self.stress_ticks += 1
-        else:
-            self.stress_ticks = 0
-        should_backoff = self.stress_ticks >= 2
-
-        # Store cumulative healthy throughput (computed by caller from healthy states only)
-        if throughput > 0 and p50 > 0:
-            self.last_healthy_throughput = throughput
-            self.last_healthy_p50 = p50
-
-        if self.state == ConcurrencyState.RAMP_UP:
-            if should_backoff:
-                self.stress_ticks = 0
-                self.state = ConcurrencyState.BACKOFF
-                self.backoff_ticks = 0
-                self.signal_cutoff = time.perf_counter()
-                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
-            elif should_hold:
-                self.state = ConcurrencyState.STEADY
-                self.steady_concurrency = self.current
-                self.last_healthy_concurrency = self.current
-            else:
-                self.last_healthy_concurrency = self.current
-                self.current = self.current + self.ramp_step
-
-        elif self.state == ConcurrencyState.STEADY:
-            self.steady_concurrency = self.current
-            if should_backoff:
-                self.stress_ticks = 0
-                self.state = ConcurrencyState.BACKOFF
-                self.backoff_ticks = 0
-                self.signal_cutoff = time.perf_counter()
-                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
-            elif not should_hold:
-                self.state = ConcurrencyState.RAMP_UP
-                self.current = self.current + self.ramp_step
-
-        elif self.state == ConcurrencyState.BACKOFF:
-            self.backoff_ticks += 1
-            if self.p100_ratio <= self.config.inflight_ratio:
-                # P100 dropped below threshold — recovered
-                self.state = ConcurrencyState.RECOVER
-                self.backoff_ticks = 0
-            elif self.backoff_ticks >= 3:
-                # Stuck in BACKOFF for 3 ticks — cut further from current level
-                self.current = max(self.config.min_concurrency,
-                                   int(self.current * self.config.backoff_throughput_pct))
-                self.backoff_ticks = 0
-                self.signal_cutoff = time.perf_counter()
-
-        elif self.state == ConcurrencyState.RECOVER:
-            if should_backoff:
-                self.stress_ticks = 0
-                self.state = ConcurrencyState.BACKOFF
-                self.backoff_ticks = 0
-                self.signal_cutoff = time.perf_counter()
-                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
-            elif should_hold:
-                self.state = ConcurrencyState.STEADY
-                self.steady_concurrency = self.current
-                self.last_healthy_concurrency = self.current
-            else:
-                # Recover to 1.0 × healthy throughput × P50 — the level that was working
-                recovery_target = self._throughput_grounded_target(1.0)
-                if self.current >= recovery_target:
-                    self.state = ConcurrencyState.STEADY
-                    self.current = recovery_target
-                    self.steady_concurrency = self.current
-                    self.last_healthy_concurrency = self.current
-                else:
-                    recovery_step = max(1, self.ramp_step // 2)
-                    self.current = min(self.current + recovery_step, recovery_target)
-
-        return self.current
 
 # === REAL-TIME TPM TRACKER ========================================================================================================
 class RealTimeTPMTracker:
@@ -743,24 +589,285 @@ class PIDThroughputController:
         self.last_time = None
 
 
-# === CONCURRENCY CIRCUIT BREAKER ========================================================================================================
-class ConcurrencyCircuitBreaker:
-    """Detects sustained timeout rate spikes. Trigger-only — signals the caller
-    to engage BACKOFF, does not manage concurrency or recovery itself.
 
-    Lifecycle: CLOSED → detects spike → trips (caller triggers BACKOFF) → cooldown → CLOSED.
 
-    Uses count-based window (last N events) instead of time-based, so detection
-    speed scales naturally with throughput.
+# === ARCHIVED P50-DRIFT FALLBACK (header-unavailable path) ============================================
+from pipeline.step_3_ideaExtractor.dev._archived_p50_drift_state_machine import (
+    ConcurrencyStateMachine as ArchivedP50StateMachine,
+    ConcurrencyCircuitBreaker as ArchivedCircuitBreaker,
+)
+
+
+# === RESIDUAL LATENCY TRACKER =========================================================================
+
+class ResidualLatencyTracker:
+    """Tracks residual latency (observed - server processing) per API call.
+
+    Residual latency = observed_latency_ms - openai-processing-ms.
+    This is an inference signal: lower residual suggests less overhead outside
+    server processing. Rising residual can indicate queuing or pacing, but may
+    also reflect network/client overhead. Not a pure queue metric.
+
+    Entries are stored in insertion order for efficient median/trend computation.
     """
 
-    def __init__(self, config):
-        self.config = config
-        self._events: deque = deque(maxlen=config.window_size)
+    def __init__(self, config: HeaderAwareConfig = None):
+        self._config = config or DEFAULT_HEADER_AWARE_CONFIG
+        self._entries: deque = deque(maxlen=self._config.tracker_window)
+
+    def add(self, observed_latency_s: float, processing_ms: float):
+        """Record a residual latency measurement."""
+        observed_ms = observed_latency_s * 1000.0
+        residual_ms = max(0.0, observed_ms - processing_ms)
+        self._entries.append((time.monotonic(), residual_ms, processing_ms))
+
+    def _recent_n(self, n: int) -> list:
+        """Last n entries as list of (residual_ms, processing_ms)."""
+        entries = list(self._entries)
+        return [(r, p) for _, r, p in entries[-n:]]
+
+    def median_residual(self) -> float:
+        """Median residual latency over the last median_window entries."""
+        recent = self._recent_n(self._config.median_window)
+        if not recent:
+            return 0.0
+        residuals = sorted(r for r, _ in recent)
+        mid = len(residuals) // 2
+        if len(residuals) % 2 == 0 and len(residuals) >= 2:
+            return (residuals[mid - 1] + residuals[mid]) / 2.0
+        return residuals[mid]
+
+    def median_processing(self) -> float:
+        """Median server processing time over the last median_window entries."""
+        recent = self._recent_n(self._config.median_window)
+        if not recent:
+            return 0.0
+        procs = sorted(p for _, p in recent)
+        mid = len(procs) // 2
+        if len(procs) % 2 == 0 and len(procs) >= 2:
+            return (procs[mid - 1] + procs[mid]) / 2.0
+        return procs[mid]
+
+    def normalized_residual(self) -> float:
+        """Residual / processing ratio. Contextualizes absolute residual.
+
+        A 200ms residual at 300ms processing (0.67) is very different from
+        200ms at 4000ms processing (0.05).
+        """
+        med_proc = self.median_processing()
+        if med_proc <= 0:
+            return 0.0
+        return self.median_residual() / med_proc
+
+    def trend(self) -> float:
+        """Ratio of recent median vs previous median. >1.0 = growing residuals.
+
+        Compares the most recent `trend_recent` entries against the preceding
+        `trend_previous` entries. Returns 1.0 if insufficient data.
+        """
+        n_recent = self._config.trend_recent
+        n_previous = self._config.trend_previous
+        total_needed = n_recent + n_previous
+        if len(self._entries) < total_needed:
+            return 1.0
+
+        entries = list(self._entries)
+        recent = [r for _, r, _ in entries[-n_recent:]]
+        previous = [r for _, r, _ in entries[-(n_recent + n_previous):-n_recent]]
+
+        med_recent = sorted(recent)[len(recent) // 2]
+        med_previous = sorted(previous)[len(previous) // 2]
+
+        if med_previous <= 0:
+            return 1.0
+        return med_recent / med_previous
+
+    @property
+    def sample_count(self) -> int:
+        return len(self._entries)
+
+
+# === HEADER-AWARE CONCURRENCY CONTROLLER ===============================================================
+
+class HeaderAwareConcurrencyController:
+    """Concurrency controller driven by residual latency drift and header pressure.
+
+    Uses the same four states as the archived P50-drift machine (RAMP-UP, STEADY,
+    BACKOFF, RECOVER), but driven by a clean signal: residual latency from
+    OpenAI response headers.
+
+    Primary signal: residual drift from learned baseline.
+      - Baseline is set from the first evaluate() call (after warm-up).
+      - Drift = current_residual / baseline_residual.
+      - <1.2 drift → healthy (RAMP-UP)
+      - 1.2-1.5 drift → slowing (STEADY)
+      - >1.5 drift for 2 ticks → stressed (BACKOFF)
+      Same thresholds as old P50-drift, but on a signal that's independent of
+      our dispatch decisions (server processing time is subtracted out).
+
+    Secondary signal: header pressure (1.0 - remaining_requests / limit_requests)
+      - Catches short-window pacing that OpenAI can enforce within the minute.
+
+    States: RAMP-UP → STEADY ↔ BACKOFF → RECOVER → STEADY
+    """
+
+    def __init__(self, starting: int, config: 'ConcurrencyControlConfig' = None,
+                 header_config: HeaderAwareConfig = None):
+        from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_CONCURRENCY_CONTROL_CONFIG
+        self.cc_config = config or DEFAULT_CONCURRENCY_CONTROL_CONFIG
+        self.config = header_config or DEFAULT_HEADER_AWARE_CONFIG
+        self.current = starting
+        self.starting = starting
+        self.ramp_step = max(2, int(starting * self.cc_config.ramp_step_pct))
+
+        self.state = ConcurrencyState.RAMP_UP
+        self.last_healthy_concurrency = starting
+        self.steady_concurrency = None
+
+        # Throughput-grounded targets (same mechanism as archived machine)
+        self.last_healthy_throughput = 0.0
+        self.last_healthy_p50 = 0.0
+
+        # Residual baseline: learned from first evaluate() call after warm-up
+        self.residual_baseline = 0.0
+        self.residual_drift = 0.0  # current drift ratio for reporting
+
+        self.backoff_ticks = 0
+        self.stress_ticks = 0  # consecutive ticks meeting BACKOFF criteria
+        self.signal_cutoff = 0.0
+
+    def _throughput_grounded_target(self, fraction: float) -> int:
+        """Compute concurrency target from measured throughput × P50."""
+        if self.last_healthy_throughput > 0 and self.last_healthy_p50 > 0:
+            target = int(fraction * self.last_healthy_throughput * self.last_healthy_p50)
+        else:
+            target = int(fraction * self.last_healthy_concurrency)
+        return max(self.cc_config.min_concurrency, target)
+
+    def evaluate(self, median_residual_ms: float, normalized_residual: float,
+                 residual_trend: float, header_pressure: float,
+                 now: float, throughput: float = 0.0, p50: float = 0.0) -> int:
+        """Main tick evaluation. Returns new concurrency.
+
+        Uses residual drift from learned baseline (same pattern as P50 drift
+        but on a clean signal):
+          drift < 1.2 → healthy → RAMP-UP
+          drift 1.2-1.5 → slowing → STEADY
+          drift > 1.5 for 2 consecutive ticks → stressed → BACKOFF
+        """
+        cfg = self.config
+
+        # Update healthy throughput for target computation
+        if throughput > 0 and p50 > 0:
+            self.last_healthy_throughput = throughput
+            self.last_healthy_p50 = p50
+
+        # Learn baseline from first reading (warm-up provides stable data)
+        if self.residual_baseline == 0 and median_residual_ms > 0:
+            self.residual_baseline = median_residual_ms
+
+        # Compute drift from baseline
+        if self.residual_baseline > 0:
+            self.residual_drift = median_residual_ms / self.residual_baseline
+        else:
+            self.residual_drift = 1.0
+
+        # Classify signals (baseline-relative, same thresholds as P50 drift)
+        drift = self.residual_drift
+        should_hold = drift > cfg.drift_steady       # residual drifted >20% above baseline
+        stressed = drift > cfg.drift_backoff          # residual drifted >50% above baseline
+        is_budget_stressed = header_pressure > cfg.budget_pressure_threshold
+        can_resume = drift < cfg.drift_resume         # residual dropped back below 10% drift
+
+        # Stress confirmation: 2 consecutive ticks
+        if stressed or is_budget_stressed:
+            self.stress_ticks += 1
+        else:
+            self.stress_ticks = 0
+        should_backoff = self.stress_ticks >= 2
+
+        if self.state == ConcurrencyState.RAMP_UP:
+            if should_backoff:
+                self.stress_ticks = 0
+                self.state = ConcurrencyState.BACKOFF
+                self.backoff_ticks = 0
+                self.signal_cutoff = time.perf_counter()
+                self.current = self._throughput_grounded_target(self.cc_config.backoff_throughput_pct)
+            elif should_hold:
+                self.state = ConcurrencyState.STEADY
+                self.steady_concurrency = self.current
+                self.last_healthy_concurrency = self.current
+            else:
+                self.last_healthy_concurrency = self.current
+                self.current = self.current + self.ramp_step
+
+        elif self.state == ConcurrencyState.STEADY:
+            self.steady_concurrency = self.current
+            if should_backoff:
+                self.stress_ticks = 0
+                self.state = ConcurrencyState.BACKOFF
+                self.backoff_ticks = 0
+                self.signal_cutoff = time.perf_counter()
+                self.current = self._throughput_grounded_target(self.cc_config.backoff_throughput_pct)
+            elif can_resume:
+                self.state = ConcurrencyState.RAMP_UP
+                self.current = self.current + self.ramp_step
+
+        elif self.state == ConcurrencyState.BACKOFF:
+            self.backoff_ticks += 1
+            if residual_trend < cfg.trend_recover_ratio:
+                self.state = ConcurrencyState.RECOVER
+                self.backoff_ticks = 0
+            elif self.backoff_ticks >= 3:
+                self.current = max(self.cc_config.min_concurrency,
+                                   int(self.current * self.cc_config.backoff_throughput_pct))
+                self.backoff_ticks = 0
+                self.signal_cutoff = time.perf_counter()
+
+        elif self.state == ConcurrencyState.RECOVER:
+            if should_backoff:
+                self.stress_ticks = 0
+                self.state = ConcurrencyState.BACKOFF
+                self.backoff_ticks = 0
+                self.signal_cutoff = time.perf_counter()
+                self.current = self._throughput_grounded_target(self.cc_config.backoff_throughput_pct)
+            elif not should_hold:
+                # Recovered: residual drift back to healthy
+                if can_resume:
+                    self.state = ConcurrencyState.STEADY
+                    self.steady_concurrency = self.current
+                    self.last_healthy_concurrency = self.current
+                else:
+                    recovery_target = self._throughput_grounded_target(1.0)
+                    if self.current >= recovery_target:
+                        self.state = ConcurrencyState.STEADY
+                        self.current = recovery_target
+                        self.steady_concurrency = self.current
+                        self.last_healthy_concurrency = self.current
+                    else:
+                        recovery_step = max(1, self.ramp_step // 2)
+                        self.current = min(self.current + recovery_step, recovery_target)
+
+        return self.current
+
+
+# === SIMPLIFIED CIRCUIT BREAKER (defense-in-depth) =====================================================
+
+class SimplifiedCircuitBreaker:
+    """Simplified circuit breaker for the header-aware strategy.
+
+    Defense-in-depth: catches pathological scenarios that residual latency
+    can't detect (network failures, transport regressions, bad threshold tuning).
+
+    Simpler than the archived version: fixed cooldown, no drain-time scaling.
+    """
+
+    def __init__(self, config: HeaderAwareConfig = None):
+        self._config = config or DEFAULT_HEADER_AWARE_CONFIG
+        self._events: deque = deque(maxlen=self._config.cb_window)
         self._state = 'CLOSED'
         self._last_trip_time: Optional[float] = None
         self._trip_count: int = 0
-        self._cooldown_seconds: float = 0.0  # Set dynamically from drain time
 
     @property
     def state(self) -> str:
@@ -776,46 +883,31 @@ class ConcurrencyCircuitBreaker:
     def record_timeout(self):
         self._events.append('timeout')
 
-    def _get_timeout_rate(self) -> Tuple[float, int]:
-        """Returns (timeout_rate, total_events) in current window."""
-        total = len(self._events)
-        if total == 0:
-            return 0.0, 0
-        timeouts = sum(1 for t in self._events if t == 'timeout')
-        return timeouts / total, total
-
-    def check(self, drain_time: float = 0.0) -> Optional[str]:
-        """Called every tick. Returns 'tripped' or None.
-
-        drain_time: current inflight / throughput (seconds to drain in-flight tasks).
-        Used to compute cooldown duration.
-        """
+    def check(self) -> Optional[str]:
+        """Called every tick. Returns 'tripped' or None."""
         now = time.monotonic()
-        rate, total = self._get_timeout_rate()
 
         if self._state == 'CLOSED':
-            if total >= self.config.min_events_to_trip and rate > self.config.trip_threshold:
-                return self._trip(now, rate, total, drain_time)
+            total = len(self._events)
+            if total < 10:
+                return None
+            timeouts = sum(1 for e in self._events if e == 'timeout')
+            rate = timeouts / total
+            if rate > self._config.cb_trip_threshold:
+                self._state = 'OPEN'
+                self._last_trip_time = now
+                self._trip_count += 1
+                print(f"CIRCUIT BREAKER TRIPPED: timeout rate {rate:.1%} ({total} events)")
+                return 'tripped'
             return None
 
         elif self._state == 'OPEN':
             elapsed = now - self._last_trip_time if self._last_trip_time else 0
-            if elapsed < self._cooldown_seconds:
-                return None  # Still in cooldown
-            # Cooldown expired — back to monitoring
-            self._state = 'CLOSED'
+            if elapsed >= self._config.cb_cooldown_s:
+                self._state = 'CLOSED'
             return None
 
         return None
-
-    def _trip(self, now: float, rate: float, total: int, drain_time: float) -> str:
-        self._cooldown_seconds = max(5.0, drain_time * self.config.cooldown_drain_multiplier)
-        self._state = 'OPEN'
-        self._last_trip_time = now
-        self._trip_count += 1
-        print(f"⚡ CIRCUIT BREAKER TRIPPED: timeout rate {rate:.1%} "
-              f"({total} events) | cooldown {self._cooldown_seconds:.1f}s")
-        return 'tripped'
 
 
 # === MAIN IDEA EXTRACTOR CLASS ========================================================================================================
@@ -831,7 +923,8 @@ class IdeaExtractor:
         prompt_printer=None,
         verbose_reporter: Optional['VerboseReporter'] = None,
         discover_domains: bool = False,
-        cost_tracker=None):
+        cost_tracker=None,
+        dataset_key: str = ""):
 
         self.responses = responses
         self.var_lab = var_lab
@@ -864,9 +957,11 @@ class IdeaExtractor:
         self.encoding = get_tiktoken_encoding(self.model)
 
         # Initialize OpenAI clients per stage (supports OpenAI and Azure)
+        # capture_headers=True enables HeaderCaptureTransport for residual latency tracking
         unique_models = {self.model_context, self.model_taxonomy, self.model_abstraction_ladder}
-        self._clients = {m: create_client(m, async_mode=True) for m in unique_models}
+        self._clients = {m: create_client(m, async_mode=True, capture_headers=True) for m in unique_models}
         self.client = self._clients[self.model_abstraction_ladder]  # backward compat for bulk path
+        self._header_transport = getattr(self.client, '_header_transport', None)
 
         # Register model config with cost tracker
         if self.cost_tracker:
@@ -896,8 +991,12 @@ class IdeaExtractor:
         self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
 
         # Load persistent performance stats for cold-start calibration
+        # Dataset-scoped: keyed by filename:variable_key (e.g., "M000000:Qd1_combined_full")
+        self._dataset_key = dataset_key
         self._perf_stats = load_stats()
-        _stored = get_phase_stats(self._perf_stats, self.model, "step3_idea_extraction")
+        _stored = get_dataset_phase_stats(
+            self._perf_stats, self.model, "step3_idea_extraction", self._dataset_key
+        ) if self._dataset_key else None
         if (_stored and _stored.get("sample_count", 0) >= 10
                 and "p50_latency_s" in _stored):
             _stored_timeout = _stored["p50_latency_s"] * 6.0
@@ -963,9 +1062,10 @@ class IdeaExtractor:
         _tiktoken_default = _stored_tiktoken_offset if _stored_tiktoken_offset is not None else TIKTOKEN_API_OFFSET_DEFAULT
         self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
 
-        # Config for new rate limiting components
+        # Config for rate limiting components
         self.concurrency_control_config = DEFAULT_CONCURRENCY_CONTROL_CONFIG
         self.circuit_breaker_config = DEFAULT_CIRCUIT_BREAKER_CONFIG
+        self.header_aware_config = DEFAULT_HEADER_AWARE_CONFIG
         self.pid_config = DEFAULT_PID_CONTROLLER_CONFIG
         self.tpm_tracking_config = DEFAULT_TPM_TRACKING_CONFIG
 
@@ -976,9 +1076,17 @@ class IdeaExtractor:
         self.pid_controller = None
         self.current_arrival_rate = None
 
-        # Concurrency state machine
+        # Concurrency controller (header-aware or archived P50-drift fallback)
         self._concurrency_sm = None  # Initialized in _initialize_rate_limiters
         self._inflight_starts = {}   # task_id -> api_start perf_counter timestamp
+
+        # Header-aware controller state
+        self._residual_tracker = None  # Initialized in _initialize_rate_limiters for throughput-bound
+        self._header_detection_count = 0
+        self._header_detection_hits = 0   # count of responses WITH processing-ms
+        self._header_detected = None      # None=unknown, True/False after N checks
+        self._last_remaining_requests = 0
+        self._last_limit_requests = 0
 
         # Initial avg_tokens preserved for diagnostics (set from tiktoken Phase 4, never updated)
         self.bootstrap_avg_tokens = None
@@ -1958,6 +2066,28 @@ class IdeaExtractor:
                     if self.circuit_breaker:
                         self.circuit_breaker.record_completion()
 
+                    # --- Header-based residual latency tracking ---
+                    if self._header_transport and self._residual_tracker is not None:
+                        client_id = getattr(response, '_client_request_id', None)
+                        entry = None
+                        if client_id:
+                            entry = self._header_transport.get(client_id)
+                            if entry and entry['processing_ms'] > 0:
+                                self._residual_tracker.add(latency, entry['processing_ms'])
+                            if entry and entry['remaining_requests'] > 0:
+                                self._last_remaining_requests = entry['remaining_requests']
+                            if entry and entry['limit_requests'] > 0:
+                                self._last_limit_requests = entry['limit_requests']
+                        # Header detection: majority vote over first N responses
+                        if self._header_detected is None:
+                            self._header_detection_count += 1
+                            if client_id and entry and entry['processing_ms'] > 0:
+                                self._header_detection_hits += 1
+                            threshold = self.header_aware_config.header_detection_samples
+                            if self._header_detection_count >= threshold:
+                                required = int(threshold * self.header_aware_config.header_detection_threshold)
+                                self._header_detected = (self._header_detection_hits >= required)
+
                     usage = getattr(response, '_raw_response', None)
                     if usage:
                         usage = getattr(usage, 'usage', None)
@@ -2335,36 +2465,36 @@ class IdeaExtractor:
         )
         self._bottleneck = bottleneck
 
-        # Throughput-bound: state machine discovers server concurrency limit
+        # Throughput-bound: header-aware controller (falls back to P50-drift if headers unavailable)
         # Rate-limited: PID + rate limiters handle pacing, no state machine needed
         if bottleneck == "throughput":
-            self._concurrency_sm = ConcurrencyStateMachine(
-                starting=target, bottleneck=bottleneck,
-                config=DEFAULT_CONCURRENCY_CONTROL_CONFIG
+            self._residual_tracker = ResidualLatencyTracker(config=self.header_aware_config)
+            self._concurrency_sm = HeaderAwareConcurrencyController(
+                starting=target,
+                config=DEFAULT_CONCURRENCY_CONTROL_CONFIG,
+                header_config=self.header_aware_config,
             )
-            self.circuit_breaker = ConcurrencyCircuitBreaker(
-                config=self.circuit_breaker_config
-            )
+            self.circuit_breaker = SimplifiedCircuitBreaker(config=self.header_aware_config)
         else:
             self._concurrency_sm = None
             self.circuit_breaker = None
 
-        # PID components for arrival rate adjustment
-        self.tpm_tracker = RealTimeTPMTracker(
-            window_seconds=self.tpm_tracking_config.sliding_window_seconds
-        )
-        self.pid_controller = PIDThroughputController(
-            target_utilization=self.tpm_tracking_config.target_utilization,
-            kp_up=self.pid_config.kp_up,
-            kp_down=self.pid_config.kp_down,
-            ki=self.pid_config.ki,
-            kd=self.pid_config.kd,
-            min_adjustment=self.pid_config.min_adjustment,
-            max_adjustment=self.pid_config.max_adjustment,
-        )
-        self.rpm_tracker = RealTimeRPMTracker(
-            window_seconds=self.tpm_tracking_config.sliding_window_seconds
-        )
+            # PID components — only for rate-limited strategy
+            self.tpm_tracker = RealTimeTPMTracker(
+                window_seconds=self.tpm_tracking_config.sliding_window_seconds
+            )
+            self.pid_controller = PIDThroughputController(
+                target_utilization=self.tpm_tracking_config.target_utilization,
+                kp_up=self.pid_config.kp_up,
+                kp_down=self.pid_config.kp_down,
+                ki=self.pid_config.ki,
+                kd=self.pid_config.kd,
+                min_adjustment=self.pid_config.min_adjustment,
+                max_adjustment=self.pid_config.max_adjustment,
+            )
+            self.rpm_tracker = RealTimeRPMTracker(
+                window_seconds=self.tpm_tracking_config.sliding_window_seconds
+            )
 
         return target
 
@@ -2404,8 +2534,8 @@ class IdeaExtractor:
     def _calibrate_tokens_from_warm_up(self) -> tuple:
         """One-shot calibration: update token estimate and arrival rate.
 
-        Shared by both strategies. Updates avg_tokens from measured data,
-        recalculates arrival rate, and resets PID. Does NOT touch concurrency
+        Shared by both strategies. Updates avg_tokens from measured data
+        and recalculates arrival rate. Does NOT touch concurrency
         — that's strategy-specific.
 
         Returns (old_avg_tokens, new_avg_tokens) for logging.
@@ -2427,7 +2557,7 @@ class IdeaExtractor:
         self.rate_limiter = AsyncLimiter(1, time_period=1.0 / new_arrival_rate)
         self.current_arrival_rate = new_arrival_rate
 
-        # Reset PID (we just recalibrated tokens)
+        # Reset PID if active (rate-limited strategy only)
         if self.pid_controller:
             self.pid_controller.reset()
 
@@ -2465,20 +2595,123 @@ class IdeaExtractor:
             print(f"\n[WARM-UP] avg_tokens {old_avg} → {new_avg}, "
                   f"concurrency unchanged at {old_conc}")
 
+    # === FALLBACK: header-unavailable ================================================
+
+    def _fallback_to_p50_drift(self):
+        """Swap to archived P50-drift state machine when headers are unavailable.
+
+        This is a known-imperfect fallback: P50 drift is contaminated by our
+        own dispatch decisions. Used when openai-processing-ms is not returned
+        (e.g., Azure OpenAI, proxy setups, or future API changes).
+        See dev/_archived_p50_drift_state_machine.py for details and limitations.
+        """
+        current = self._concurrency_sm.current if self._concurrency_sm else self.optimal_concurrency
+        self._concurrency_sm = ArchivedP50StateMachine(
+            starting=current, bottleneck="throughput",
+            config=DEFAULT_CONCURRENCY_CONTROL_CONFIG,
+        )
+        self.circuit_breaker = ArchivedCircuitBreaker(config=self.circuit_breaker_config)
+        self._residual_tracker = None
+        print("[FALLBACK] openai-processing-ms not available — switching to P50-drift controller")
+
     # === STRATEGY-SPECIFIC TICK METHODS =============================================
 
     def _tick_throughput(self, ctx: TickContext, drain: float) -> str:
         """Per-tick logic for throughput-bound strategy.
 
-        Computes in-flight P95/P100, evaluates circuit breaker and state machine,
-        updates concurrency, and returns the formatted progress line.
+        Two branches:
+        - Header-aware (HeaderAwareConcurrencyController): uses residual latency + header pressure
+        - P50-drift fallback (ArchivedP50StateMachine): when headers unavailable
         """
-        # In-flight durations: P95 and P100 from currently running tasks
-        # Only count tasks dispatched after signal_cutoff (filters out old-era tasks)
+        warmup_elapsed = ctx.now - ctx.start_time
+
+        # Lazy fallback: if headers confirmed unavailable, swap to P50-drift
+        if (self._header_detected is False
+                and isinstance(self._concurrency_sm, HeaderAwareConcurrencyController)):
+            self._fallback_to_p50_drift()
+
+        # --- Branch 1: Header-aware controller ---
+        if isinstance(self._concurrency_sm, HeaderAwareConcurrencyController):
+            return self._tick_header_aware(ctx, drain, warmup_elapsed)
+
+        # --- Branch 2: P50-drift fallback (ArchivedP50StateMachine) ---
+        return self._tick_p50_drift_fallback(ctx, drain, warmup_elapsed)
+
+    def _tick_header_aware(self, ctx: TickContext, drain: float, warmup_elapsed: float) -> str:
+        """Header-aware tick: residual latency + header pressure drive concurrency."""
+        sm = self._concurrency_sm
+        tracker = self._residual_tracker
+
+        # Circuit breaker (simplified, defense-in-depth)
+        if self.circuit_breaker:
+            cb_action = self.circuit_breaker.check()
+            if cb_action == 'tripped':
+                self.v3_stats['circuit_breaker_trips'] += 1
+                sm.state = ConcurrencyState.BACKOFF
+                sm.backoff_ticks = 0
+                sm.signal_cutoff = time.perf_counter()
+                sm.current = sm._throughput_grounded_target(sm.cc_config.backoff_throughput_pct)
+                self.semaphore.set_limit(sm.current)
+                self.optimal_concurrency = sm.current
+
+        # State machine evaluation — skip first 5s
+        state_str = ""
+        if sm and tracker and tracker.sample_count >= 5 and warmup_elapsed >= 5.0:
+            median_res = tracker.median_residual()
+            norm_res = tracker.normalized_residual()
+            trend = tracker.trend()
+
+            # Header pressure: how close are we to budget exhaustion
+            header_pressure = 0.0
+            if self._last_limit_requests > 0:
+                header_pressure = 1.0 - (self._last_remaining_requests / self._last_limit_requests)
+
+            sm.current = self.semaphore.limit
+            new_conc = sm.evaluate(
+                median_residual_ms=median_res,
+                normalized_residual=norm_res,
+                residual_trend=trend,
+                header_pressure=header_pressure,
+                now=time.monotonic(),
+                throughput=ctx.throughput,
+                p50=ctx.p50,
+            )
+            if new_conc != self.optimal_concurrency:
+                self.semaphore.set_limit(new_conc)
+                self.optimal_concurrency = new_conc
+            state_str = f" {sm.state.value}"
+        elif warmup_elapsed < 5.0:
+            state_str = " WARM-UP"
+
+        # Format progress line
+        signal_str = ""
+        arrival = 0
+        if tracker and tracker.sample_count >= 5:
+            med_res = tracker.median_residual()
+            trend = tracker.trend()
+            med_proc = tracker.median_processing()
+            drift = sm.residual_drift if sm else 0.0
+            baseline = sm.residual_baseline if sm else 0.0
+            # arrival = completing/s × (proc + residual) — full round-trip Little's Law
+            total_round_trip_s = (med_proc + med_res) / 1000
+            arrival = int(ctx.tick_rate * total_round_trip_s) if total_round_trip_s > 0 else 0
+            drift_str = f"+{int((drift-1)*100)}%" if drift >= 1 else f"{int((drift-1)*100)}%"
+            signal_str = f" | proc:{med_proc/1000:.1f}s | residual:{med_res:.0f}ms({drift_str}) baseline:{baseline:.0f}ms"
+
+        conc_str = f" conc:{ctx.concurrency}" if ctx.concurrency != ctx.active else ""
+        return (f"[PHASE6] {ctx.completed}/{ctx.total} | inflight:{ctx.active}{conc_str} | arrival:{arrival}"
+                f" | completing:{ctx.tick_rate:.0f}/s"
+                f"{signal_str} |{state_str}{ctx.timeout_info}")
+
+    def _tick_p50_drift_fallback(self, ctx: TickContext, drain: float, warmup_elapsed: float) -> str:
+        """P50-drift fallback tick: identical to the archived state machine logic."""
+        sm = self._concurrency_sm
+
+        # In-flight durations (filtered by signal_cutoff)
         now_perf = time.perf_counter()
         inflight_p95 = 0.0
         inflight_p100 = 0.0
-        cutoff = self._concurrency_sm.signal_cutoff if self._concurrency_sm else 0.0
+        cutoff = sm.signal_cutoff if sm else 0.0
         fresh_starts = {k: v for k, v in self._inflight_starts.items() if v >= cutoff}
         if fresh_starts:
             durations = sorted(now_perf - start for start in fresh_starts.values())
@@ -2486,12 +2719,11 @@ class IdeaExtractor:
             idx_95 = int(len(durations) * 0.95)
             inflight_p95 = durations[min(idx_95, len(durations) - 1)]
 
-        # Circuit breaker: detect timeout rate spike → trigger BACKOFF
-        if self.circuit_breaker and self._concurrency_sm:
+        # Circuit breaker (archived version with drain_time)
+        if self.circuit_breaker and sm:
             cb_action = self.circuit_breaker.check(drain_time=drain)
             if cb_action == 'tripped':
                 self.v3_stats['circuit_breaker_trips'] += 1
-                sm = self._concurrency_sm
                 sm.state = ConcurrencyState.BACKOFF
                 sm.backoff_ticks = 0
                 sm.signal_cutoff = time.perf_counter()
@@ -2499,27 +2731,23 @@ class IdeaExtractor:
                 self.semaphore.set_limit(sm.current)
                 self.optimal_concurrency = sm.current
 
-        # State machine concurrency evaluation
-        # Skip first 5s — let data accumulate before engaging
+        # State machine evaluation — skip first 5s
         state_str = ""
-        warmup_elapsed = ctx.now - ctx.start_time
-        if self._concurrency_sm and ctx.p50 > 0 and warmup_elapsed >= 5.0:
-            self._concurrency_sm.current = self.semaphore.limit
-            new_conc = self._concurrency_sm.evaluate(
+        if sm and ctx.p50 > 0 and warmup_elapsed >= 5.0:
+            sm.current = self.semaphore.limit
+            new_conc = sm.evaluate(
                 p50=ctx.p50, inflight_p95=inflight_p95, inflight_p100=inflight_p100,
                 now=time.monotonic(), throughput=ctx.throughput, inflight=ctx.active)
             if new_conc != self.optimal_concurrency:
                 self.semaphore.set_limit(new_conc)
                 self.optimal_concurrency = new_conc
-            sm = self._concurrency_sm
             state_str = f" {sm.state.value}"
-        elif self._concurrency_sm and warmup_elapsed < 5.0:
+        elif sm and warmup_elapsed < 5.0:
             state_str = " WARM-UP"
 
         # Latency + ratios
         latency_str = ""
         if self.latency_tracker.values:
-            sm = self._concurrency_sm
             baseline = sm.p50_baseline if sm and sm.p50_baseline > 0 else ctx.p50
             drift_pct = int((ctx.p50 / baseline - 1) * 100) if baseline > 0 else 0
             drift_str = f"+{drift_pct}%" if drift_pct >= 0 else f"{drift_pct}%"
@@ -2527,9 +2755,9 @@ class IdeaExtractor:
             p100r = sm.p100_ratio if sm else 0
             latency_str = f" P50:{ctx.p50:.1f}s({drift_str}) p95:{p95r:.1f}x p100:{p100r:.1f}x"
 
-        arrival = int(ctx.throughput * ctx.p50) if ctx.p50 > 0 else 0
-        return (f"[PHASE6] {ctx.completed}/{ctx.total} | {ctx.constraint_str} | arrival:{arrival} | thru:{ctx.throughput:.0f}/s |"
-                f"{latency_str} |{state_str}{ctx.timeout_info}")
+        return (f"[PHASE6] {ctx.completed}/{ctx.total} | conc:{ctx.concurrency} | inflight:{ctx.active}"
+                f" | completing:{ctx.tick_rate:.0f}/s"
+                f" |{latency_str} |{state_str} [P50-DRIFT FALLBACK]{ctx.timeout_info}")
 
     def _tick_rate_limited(self, ctx: TickContext, num_tasks: int) -> str:
         """Per-tick logic for rate-limited (RPM/TPM) strategy.
@@ -2768,7 +2996,7 @@ class IdeaExtractor:
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line(f"\nUsing stored avg_tokens: {self.avg_tokens} (warm-up will recalibrate)")
 
-        # === PHASE 5: INITIALIZE RATE LIMITING (Little's Law + PID + Circuit Breaker) ===
+        # === PHASE 5: INITIALIZE RATE LIMITING ===
         self.bootstrap_avg_tokens = self.avg_tokens
 
         target_conc = self._initialize_rate_limiters(limits, len(tasks))
@@ -2777,7 +3005,8 @@ class IdeaExtractor:
         self._warm_up_target_samples = warm_up_samples
 
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"\nRate limiting: Theoretical + Empirical concurrency + PID + Circuit Breaker")
+            controller = "header-aware + circuit breaker" if self._bottleneck == "throughput" else "PID + rate limiters"
+            self.verbose_reporter.stat_line(f"\nRate limiting: {controller}")
             self.verbose_reporter.stat_line(f"Target concurrency: {self.optimal_concurrency}, calibration after {warm_up_samples} completions")
 
         # === PHASE 6: Print setup info and launch workers ===
@@ -2811,11 +3040,14 @@ class IdeaExtractor:
         else:
             print(f"- Target concurrency: {self.optimal_concurrency} (cold start cap, no empirical data)")
         print(f"- Bottleneck: {self._bottleneck}")
-        if sm:
-            print(f"- Controller: state machine (signals: in-flight P95/P100) ramp step: +{sm.ramp_step}")
+        if isinstance(sm, HeaderAwareConcurrencyController):
+            print(f"- Controller: header-aware (signals: residual latency + header pressure) ramp step: +{sm.ramp_step}")
+        elif sm:
+            print(f"- Controller: P50-drift fallback (signals: in-flight P95/P100) ramp step: +{sm.ramp_step}")
         else:
             print(f"- Controller: PID (target: {self.tpm_tracking_config.target_utilization:.0%} utilization)")
-        print(f"- Arrival rate: {self.current_arrival_rate:.2f}/s (PID-adjusted)")
+        if self._bottleneck != "throughput":
+            print(f"- Arrival rate: {self.current_arrival_rate:.2f}/s (PID-adjusted)")
         print(f"- Token calibration: after {warm_up_samples} completions")
         print(f"- Processing {len(tasks):,} tasks")
 
@@ -2846,6 +3078,7 @@ class IdeaExtractor:
         start_time = time.time()
         last_report = start_time
         last_report_completed = 0
+        last_tick_successful = 0
         last_diagnostics = start_time
         last_adjustment = start_time
         self._last_concurrency_check = start_time
@@ -2907,11 +3140,19 @@ class IdeaExtractor:
 
                 throughput = self._healthy_completions / self._healthy_elapsed if self._healthy_elapsed > 0 else 0
 
-                # In-flight count + constraint string
+                # In-flight and concurrency
                 active = self.semaphore.active
+                concurrency = self.semaphore.limit
+
+                # Tick-level successful completions (excludes failures/timeouts)
+                current_successful = self.stats['tasks_successful']
+                tick_successful = current_successful - last_tick_successful
+                tick_rate = tick_successful / tick_duration if tick_duration > 0 else 0.0
+
+                # Constraint string (rate-limited strategies only)
                 bn = self._bottleneck
                 if bn == "throughput":
-                    constraint_str = f"inflight:{active}"
+                    constraint_str = ""  # header-aware tick builds its own display
                 elif bn == "rpm":
                     rate_rps = current_rpm / 60 if current_rpm else 0
                     limit_rps = effective_rpm / 60
@@ -2928,9 +3169,11 @@ class IdeaExtractor:
                 # Build TickContext and dispatch to strategy-specific tick method
                 ctx = TickContext(
                     completed=completed, total=len(tasks), tick_duration=tick_duration,
-                    throughput=throughput, p50=p50, active=active,
-                    constraint_str=constraint_str, timeout_info=timeout_info,
-                    now=now, start_time=start_time, timeouts=timeouts,
+                    throughput=throughput, tick_successful=tick_successful,
+                    tick_rate=tick_rate, p50=p50, active=active,
+                    concurrency=concurrency, constraint_str=constraint_str,
+                    timeout_info=timeout_info, now=now, start_time=start_time,
+                    timeouts=timeouts,
                 )
 
                 if bn == "throughput":
@@ -2940,6 +3183,7 @@ class IdeaExtractor:
 
                 last_report = now
                 last_report_completed = completed
+                last_tick_successful = current_successful
 
             # One-shot warm-up calibration (strategy-specific)
             if (not self._warm_up_calibrated
@@ -2952,11 +3196,10 @@ class IdeaExtractor:
                 else:
                     self._calibrate_concurrency_from_warm_up(len(tasks))
 
-            # INTERVAL: PID arrival rate adjustment + token correction
-            # Rate-limited: PID every tick (primary controller), throughput-bound: every 20s (secondary)
-            pid_interval = 0 if self._bottleneck != "throughput" else ADJUSTMENT_INTERVAL
-            if now - last_adjustment >= pid_interval:
-                if not self._adjust_throughput_if_needed():
+            # INTERVAL: token correction + PID arrival rate (rate-limited only)
+            if now - last_adjustment >= (0 if self._bottleneck != "throughput" else ADJUSTMENT_INTERVAL):
+                self._adjust_throughput_if_needed()
+                if self._bottleneck != "throughput":
                     await self._apply_pid_adjustment()
                 last_adjustment = now
 
@@ -3151,10 +3394,18 @@ class IdeaExtractor:
         if offset_stats['min_offset'] is not None:
             print(f"  - Offset range: {offset_stats['min_offset']} to {offset_stats['max_offset']}")
         print(f"- Token corrections: {self.v3_stats['threshold_adjustments']}")
-        print(f"- PID adjustments: {self.v3_stats.get('pid_adjustments', 0)}")
+        if self._bottleneck != "throughput":
+            print(f"- PID adjustments: {self.v3_stats.get('pid_adjustments', 0)}")
         cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
-        print(f"- Final concurrency: {self.optimal_concurrency} (CB:{cb_state}, trips:{self.v3_stats.get('circuit_breaker_trips', 0)})")
+        controller_type = "header-aware" if isinstance(self._concurrency_sm, HeaderAwareConcurrencyController) else "P50-drift"
+        if self._bottleneck != "throughput":
+            controller_type = "PID"
+        print(f"- Final concurrency: {self.optimal_concurrency} (controller:{controller_type}, CB:{cb_state}, trips:{self.v3_stats.get('circuit_breaker_trips', 0)})")
         print(f"- Cached empirical capacity: {self.optimal_concurrency}")
+        if self._residual_tracker and self._residual_tracker.sample_count > 0:
+            print(f"- Residual latency: median={self._residual_tracker.median_residual():.0f}ms, "
+                  f"normalized={self._residual_tracker.normalized_residual():.2f}, "
+                  f"processing={self._residual_tracker.median_processing():.0f}ms")
 
         if self.verbose_reporter.enabled:
             token_stats = self.get_token_estimation_stats()
@@ -3201,25 +3452,30 @@ class IdeaExtractor:
                         idea.idea = _canonical_pattern.sub('', idea.idea).strip()
 
         # Persist empirical stats for cold-start calibration on next run
-        if len(self.latency_tracker.values) >= 5 and self.actual_total_tokens:
+        # Dataset-scoped: keyed by filename:variable_key
+        if len(self.latency_tracker.values) >= 5 and self.actual_total_tokens and self._dataset_key:
             tokens = list(self.actual_total_tokens)
-            total_tasks = self.stats['tasks_successful'] + self.stats['tasks_failed'] + self.stats['timeouts']
+            # Empirical capacity: 95% of last healthy concurrency (STEADY entry level).
+            # Gives headroom so the next run starts just below the proven ceiling
+            # and can ramp the last few percent.
+            sm = self._concurrency_sm
+            if sm and hasattr(sm, 'last_healthy_concurrency'):
+                empirical = float(int(sm.last_healthy_concurrency * 0.95))
+            else:
+                empirical = float(self.optimal_concurrency)
             measurements = {
                 "p50_latency_s": self.latency_tracker.get_p50(),
-                "p95_latency_s": self.latency_tracker.get_p95(),
-                "p99_latency_s": self.latency_tracker.get_p99(),
                 "avg_tokens": sum(tokens) / len(tokens),
-                "had_timeouts": self.stats['timeouts'] > 0,
+                "empirical_capacity": empirical,
+                "bottleneck": self._bottleneck,
             }
             if self.tiktoken_offset_learner.is_learned():
                 measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
-            if total_tasks > 0:
-                measurements["timeout_rate"] = self.stats['timeouts'] / total_tasks
-            # Empirical capacity: final concurrency where P50 was still stable.
-            # This is the highest proven level — next run starts here and ramps further.
-            measurements["empirical_capacity"] = float(self.optimal_concurrency)
-            update_phase_stats(self._perf_stats, self.model, "step3_idea_extraction",
-                               measurements, len(self.actual_total_tokens))
+            update_dataset_phase_stats(
+                self._perf_stats, self.model, "step3_idea_extraction",
+                self._dataset_key, measurements, len(self.actual_total_tokens),
+                overwrite_fields=["empirical_capacity", "bottleneck"]
+            )
             save_stats(self._perf_stats)
 
         self._stats.output_count = len(self._results)

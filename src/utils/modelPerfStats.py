@@ -136,6 +136,25 @@ def get_phase_stats(
     return stats.get("stats", {}).get(_model_key(model), {}).get(phase_key)
 
 
+def get_dataset_phase_stats(
+    stats: Dict[str, Any],
+    model: str,
+    phase_key: str,
+    dataset_key: str,
+) -> Optional[Dict[str, Any]]:
+    """Return stored stats for (provider:model, phase_key, dataset_key).
+
+    Used by step 3 where stats are scoped per dataset (filename:variable_key).
+    Returns None if the phase or dataset entry doesn't exist.
+    """
+    phase = get_phase_stats(stats, model, phase_key)
+    if phase and isinstance(phase, dict) and dataset_key in phase:
+        entry = phase[dataset_key]
+        if isinstance(entry, dict) and "sample_count" in entry:
+            return entry
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Update (EMA)
 # ---------------------------------------------------------------------------
@@ -178,6 +197,57 @@ def update_phase_stats(
 
     entry["sample_count"] = old_count + n_new_samples
     entry["last_updated"] = date.today().isoformat()
+
+
+def update_dataset_phase_stats(
+    stats: Dict[str, Any],
+    model: str,
+    phase_key: str,
+    dataset_key: str,
+    measurements: Dict[str, Any],
+    n_new_samples: int,
+    overwrite_fields: Optional[list] = None,
+) -> None:
+    """Update stats for a specific dataset within a phase.
+
+    Used by step 3 where stats are scoped per dataset (filename:variable_key).
+    Fields in `overwrite_fields` are written directly (not EMA'd) — used for
+    empirical_capacity (last-run is best evidence) and bottleneck type.
+
+    All other numeric fields are EMA'd as usual.
+    """
+    if n_new_samples <= 0:
+        return
+
+    overwrite = set(overwrite_fields or [])
+    _ema_fields = ("p50_latency_s", "avg_tokens", "tiktoken_offset")
+
+    model_stats = stats.setdefault("stats", {}).setdefault(_model_key(model), {})
+    phase = model_stats.setdefault(phase_key, {})
+    entry = phase.setdefault(dataset_key, {"sample_count": 0})
+
+    old_count = entry.get("sample_count", 0)
+    alpha = max(_EMA_FLOOR_ALPHA, 1.0 / min(old_count + n_new_samples, 20))
+
+    for field in _ema_fields:
+        if field not in measurements:
+            continue
+        measured = float(measurements[field])
+        if field in entry:
+            entry[field] = round(alpha * measured + (1.0 - alpha) * entry[field], 4)
+        else:
+            entry[field] = round(measured, 4)
+
+    # Overwrite fields: written directly (e.g., empirical_capacity, bottleneck)
+    for field in overwrite:
+        if field in measurements:
+            entry[field] = measurements[field]
+
+    entry["sample_count"] = old_count + n_new_samples
+    entry["last_updated"] = date.today().isoformat()
+
+    # Bump version to 2 (dataset-scoped entries)
+    stats["version"] = 2
 
 
 # ---------------------------------------------------------------------------

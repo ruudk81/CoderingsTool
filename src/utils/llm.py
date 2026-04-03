@@ -23,12 +23,17 @@ Usage:
     print(token_tracker.get_summary())
 """
 
+import uuid
+import time
+
+import httpx
 import instructor
 from openai import OpenAI, AsyncOpenAI
 from typing import Any, Optional, Type
 from pydantic import BaseModel
 from dataclasses import dataclass, field
 from threading import Lock
+from collections import OrderedDict
 
 from config import (
     API_PROVIDER,
@@ -174,6 +179,61 @@ class ProbeResponse(BaseModel):
 
 
 # =============================================================================
+# Header Capture Transport — transparent middleware for API response headers
+# =============================================================================
+
+class HeaderCaptureTransport(httpx.AsyncBaseTransport):
+    """Wraps an httpx async transport to capture OpenAI response headers.
+
+    Stores entries in a bounded dict keyed by client_request_id (from the
+    outgoing X-Client-Request-Id header). Provides O(1) lookup for correlating
+    headers with specific API calls under high concurrency.
+
+    Used by the header-aware concurrency controller to read:
+    - openai-processing-ms: server-side processing time
+    - x-ratelimit-remaining-requests/tokens: live budget counters
+    - x-ratelimit-reset-requests/tokens: window refill timing
+    """
+
+    def __init__(self, wrapped: httpx.AsyncBaseTransport, maxlen: int = 500):
+        self._wrapped = wrapped
+        self._maxlen = maxlen
+        self._store: OrderedDict = OrderedDict()
+        # Convenience: last response's processing_ms (racy under concurrency, use for trends only)
+        self.last_processing_ms: float = 0.0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        client_id = request.headers.get('x-client-request-id', '')
+        response = await self._wrapped.handle_async_request(request)
+
+        entry = {
+            'client_request_id': client_id,
+            'server_request_id': response.headers.get('x-request-id', ''),
+            'processing_ms': float(response.headers.get('openai-processing-ms', 0)),
+            'remaining_requests': int(response.headers.get('x-ratelimit-remaining-requests', 0)),
+            'remaining_tokens': int(response.headers.get('x-ratelimit-remaining-tokens', 0)),
+            'reset_requests': response.headers.get('x-ratelimit-reset-requests', ''),
+            'reset_tokens': response.headers.get('x-ratelimit-reset-tokens', ''),
+            'limit_requests': int(response.headers.get('x-ratelimit-limit-requests', 0)),
+            'limit_tokens': int(response.headers.get('x-ratelimit-limit-tokens', 0)),
+            'timestamp': time.monotonic(),
+        }
+        self.last_processing_ms = entry['processing_ms']
+
+        if client_id:
+            self._store[client_id] = entry
+            # Evict oldest if over capacity
+            while len(self._store) > self._maxlen:
+                self._store.popitem(last=False)
+
+        return response
+
+    def get(self, client_request_id: str) -> Optional[dict]:
+        """Look up captured headers by client request ID. O(1)."""
+        return self._store.get(client_request_id)
+
+
+# =============================================================================
 # Dynamic Rate Limits - Fetched from API Response Headers
 # =============================================================================
 @dataclass
@@ -308,7 +368,8 @@ def create_client(
     model: str,
     async_mode: bool = True,
     max_retries: int = DEFAULT_MAX_RETRIES,
-    azure_deployment: Optional[str] = None
+    azure_deployment: Optional[str] = None,
+    capture_headers: bool = False,
 ) -> Any:
     """
     Create an instructor-wrapped client for the configured provider.
@@ -318,39 +379,60 @@ def create_client(
         async_mode: Whether to create async client
         max_retries: Number of retries for failed requests (default: 3)
         azure_deployment: Optional Azure deployment name override (e.g., for codeGenerator)
+        capture_headers: If True, inject HeaderCaptureTransport to capture response headers.
+            The transport is accessible on the returned client as `_header_transport`.
+            Default False — no overhead for steps that don't need headers.
 
     Returns:
         Instructor-wrapped client with automatic retries
     """
+    transport = None
+
     if API_PROVIDER == "azure":
         # Azure: use TOOLS mode with chat.completions.create
         # (West Europe doesn't support Responses API yet)
         deployment = azure_deployment or AZURE_OPENAI_DEPLOYMENT_NAME
         azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/"
 
+        client_kwargs = {
+            'api_key': AZURE_OPENAI_API_KEY,
+            'base_url': azure_base_url,
+            'default_query': {"api-version": "2024-10-21"},
+            'max_retries': max_retries,
+        }
+
+        if capture_headers and async_mode:
+            base_http = httpx.AsyncClient()
+            transport = HeaderCaptureTransport(base_http._transport)
+            client_kwargs['http_client'] = httpx.AsyncClient(transport=transport)
+
         if async_mode:
-            base_client = AsyncOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                base_url=azure_base_url,
-                default_query={"api-version": "2024-10-21"},
-                max_retries=max_retries
-            )
+            base_client = AsyncOpenAI(**client_kwargs)
         else:
-            base_client = OpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                base_url=azure_base_url,
-                default_query={"api-version": "2024-10-21"},
-                max_retries=max_retries
-            )
-        return instructor.from_openai(base_client, mode=instructor.Mode.TOOLS)
+            base_client = OpenAI(**client_kwargs)
+
+        wrapped = instructor.from_openai(base_client, mode=instructor.Mode.TOOLS)
     else:
         # OpenAI: use RESPONSES_TOOLS mode with responses.create
-        return instructor.from_provider(
-            f"openai/{model}",
-            mode=instructor.Mode.RESPONSES_TOOLS,
-            async_client=async_mode,
-            api_key=OPENAI_API_KEY
-        )
+        if capture_headers and async_mode:
+            base_http = httpx.AsyncClient()
+            transport = HeaderCaptureTransport(base_http._transport)
+            http_client = httpx.AsyncClient(transport=transport)
+            base_client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
+            wrapped = instructor.from_openai(base_client, mode=instructor.Mode.RESPONSES_TOOLS)
+        else:
+            wrapped = instructor.from_provider(
+                f"openai/{model}",
+                mode=instructor.Mode.RESPONSES_TOOLS,
+                async_client=async_mode,
+                api_key=OPENAI_API_KEY
+            )
+
+    # Attach transport reference for callers that need header data
+    if transport:
+        wrapped._header_transport = transport
+
+    return wrapped
 
 
 # =============================================================================
@@ -407,6 +489,10 @@ async def llm_create_async(
         Response (Pydantic model if response_model provided, else raw response)
     """
     completion = None  # Will hold raw completion for token tracking
+
+    # Generate client request ID for header correlation (used by HeaderCaptureTransport)
+    client_request_id = str(uuid.uuid4())
+    kwargs.setdefault('extra_headers', {})['X-Client-Request-Id'] = client_request_id
 
     # Check if response_model is a List type (instructor's create_with_completion has a bug with List types)
     is_list_response = (response_model is not None and
@@ -477,21 +563,28 @@ async def llm_create_async(
     if track_usage and completion:
         _extract_and_track_usage(completion, model)
 
-    # Attach _raw_response to response for backwards compatibility with code that accesses usage directly
-    # This allows utilities like qualityFilter to still do token reconciliation
+    # Attach _raw_response and _client_request_id to response
+    # _raw_response: backwards compatibility for token reconciliation
+    # _client_request_id: correlation key for HeaderCaptureTransport lookup
     if completion and response is not completion:
         try:
-            # For list responses, we can't set attributes directly, so wrap in a list subclass
             if isinstance(response, list):
                 class ResponseList(list):
                     pass
                 wrapped = ResponseList(response)
                 wrapped._raw_response = completion
+                wrapped._client_request_id = client_request_id
                 return wrapped
             else:
                 response._raw_response = completion
+                response._client_request_id = client_request_id
         except (AttributeError, TypeError):
             pass  # Some responses don't allow attribute setting
+    else:
+        try:
+            response._client_request_id = client_request_id
+        except (AttributeError, TypeError):
+            pass
 
     return response
 
