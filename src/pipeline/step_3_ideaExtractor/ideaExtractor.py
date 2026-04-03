@@ -443,17 +443,23 @@ def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_t
 
 
 def detect_bottleneck(rpm_limit: int, tpm_limit: int, avg_tokens: int,
-                      starting_concurrency: int) -> str:
+                      starting_concurrency: int, avg_latency_s: float = 2.0) -> str:
     """Determine the binding constraint before processing starts.
 
-    If both RPM/s and TPM/s are far above the starting concurrency,
-    the bottleneck is server throughput (latency-bound), not rate limits.
+    Compares the API rate limit (req/s) against the expected request rate
+    at the starting concurrency. If the rate limit is at least 3× higher
+    than what we'd actually send, the bottleneck is server throughput.
+
+    Expected request rate = starting_concurrency / avg_latency (Little's Law).
     """
     rpm_per_second = rpm_limit / 60
     tpm_per_second = tpm_limit / 60 / max(avg_tokens, 1)
     api_throughput = min(rpm_per_second, tpm_per_second)
 
-    if api_throughput > starting_concurrency * 5:
+    # Expected request rate at starting concurrency
+    expected_rps = starting_concurrency / max(avg_latency_s, 0.1)
+
+    if api_throughput > expected_rps * 3:
         return "throughput"
     elif rpm_per_second <= tpm_per_second:
         return "rpm"
@@ -692,23 +698,22 @@ class ResidualLatencyTracker:
 class HeaderAwareConcurrencyController:
     """Concurrency controller driven by residual latency drift and header pressure.
 
-    Uses the same four states as the archived P50-drift machine (RAMP-UP, STEADY,
-    BACKOFF, RECOVER), but driven by a clean signal: residual latency from
-    OpenAI response headers.
-
     Primary signal: residual drift from learned baseline.
-      - Baseline is set from the first evaluate() call (after warm-up).
-      - Drift = current_residual / baseline_residual.
-      - <1.2 drift → healthy (RAMP-UP)
-      - 1.2-1.5 drift → slowing (STEADY)
-      - >1.5 drift for 2 ticks → stressed (BACKOFF)
-      Same thresholds as old P50-drift, but on a signal that's independent of
-      our dispatch decisions (server processing time is subtracted out).
+      drift = current_median_residual / baseline_residual
+      Baseline learned from first evaluate() after warm-up.
 
-    Secondary signal: header pressure (1.0 - remaining_requests / limit_requests)
-      - Catches short-window pacing that OpenAI can enforce within the minute.
+    Three states + one event:
+      States: RAMP-UP, STEADY, RECOVER
+      Event: BACKOFF (cut concurrency, then → RECOVER)
 
-    States: RAMP-UP → STEADY ↔ BACKOFF → RECOVER → STEADY
+    Drift thresholds:
+      < 1.1  → healthy (RAMP-UP)
+      1.2-1.5 → slowing (STEADY / RECOVER hold)
+      > 1.5  → BACKOFF event: cut to 0.9 × last_healthy, then RECOVER
+
+    BACKOFF is a single-tick event, not a persistent state.
+    After every cut → RECOVER. In RECOVER, if drift stays > 1.5 for
+    4 consecutive ticks → second cut (0.9 × current), counter resets.
     """
 
     def __init__(self, starting: int, config: 'ConcurrencyControlConfig' = None,
@@ -724,7 +729,7 @@ class HeaderAwareConcurrencyController:
         self.last_healthy_concurrency = starting
         self.steady_concurrency = None
 
-        # Throughput-grounded targets (same mechanism as archived machine)
+        # Throughput-grounded targets
         self.last_healthy_throughput = 0.0
         self.last_healthy_p50 = 0.0
 
@@ -732,29 +737,19 @@ class HeaderAwareConcurrencyController:
         self.residual_baseline = 0.0
         self.residual_drift = 0.0  # current drift ratio for reporting
 
+        # Consecutive ticks with drift > 1.5 (cross-state, for repeated BACKOFF cuts)
         self.backoff_ticks = 0
-        self.stress_ticks = 0  # consecutive ticks meeting BACKOFF criteria
         self.signal_cutoff = 0.0
 
-    def _throughput_grounded_target(self, fraction: float) -> int:
-        """Compute concurrency target from measured throughput × P50."""
-        if self.last_healthy_throughput > 0 and self.last_healthy_p50 > 0:
-            target = int(fraction * self.last_healthy_throughput * self.last_healthy_p50)
-        else:
-            target = int(fraction * self.last_healthy_concurrency)
-        return max(self.cc_config.min_concurrency, target)
+    def _backoff_cut(self, from_concurrency: int) -> int:
+        """Apply a BACKOFF cut: 0.9 × given concurrency, floored at min."""
+        return max(self.cc_config.min_concurrency,
+                   int(from_concurrency * self.cc_config.backoff_throughput_pct))
 
     def evaluate(self, median_residual_ms: float, normalized_residual: float,
                  residual_trend: float, header_pressure: float,
                  now: float, throughput: float = 0.0, p50: float = 0.0) -> int:
-        """Main tick evaluation. Returns new concurrency.
-
-        Uses residual drift from learned baseline (same pattern as P50 drift
-        but on a clean signal):
-          drift < 1.2 → healthy → RAMP-UP
-          drift 1.2-1.5 → slowing → STEADY
-          drift > 1.5 for 2 consecutive ticks → stressed → BACKOFF
-        """
+        """Main tick evaluation. Returns new concurrency."""
         cfg = self.config
 
         # Update healthy throughput for target computation
@@ -772,81 +767,60 @@ class HeaderAwareConcurrencyController:
         else:
             self.residual_drift = 1.0
 
-        # Classify signals (baseline-relative, same thresholds as P50 drift)
         drift = self.residual_drift
-        should_hold = drift > cfg.drift_steady       # residual drifted >20% above baseline
-        stressed = drift > cfg.drift_backoff          # residual drifted >50% above baseline
         is_budget_stressed = header_pressure > cfg.budget_pressure_threshold
-        can_resume = drift < cfg.drift_resume         # residual dropped back below 10% drift
+        is_stressed = drift > cfg.drift_backoff or is_budget_stressed
 
-        # Stress confirmation: 2 consecutive ticks
-        if stressed or is_budget_stressed:
-            self.stress_ticks += 1
+        # Cross-state consecutive stress counter (for repeated BACKOFF cuts)
+        if is_stressed:
+            self.backoff_ticks += 1
         else:
-            self.stress_ticks = 0
-        should_backoff = self.stress_ticks >= 2
+            self.backoff_ticks = 0
 
+        # --- RAMP-UP: keep increasing concurrency ---
         if self.state == ConcurrencyState.RAMP_UP:
-            if should_backoff:
-                self.stress_ticks = 0
-                self.state = ConcurrencyState.BACKOFF
-                self.backoff_ticks = 0
+            if is_stressed:
+                # BACKOFF event: cut, then RECOVER
+                self.current = self._backoff_cut(self.last_healthy_concurrency)
                 self.signal_cutoff = time.perf_counter()
-                self.current = self._throughput_grounded_target(self.cc_config.backoff_throughput_pct)
-            elif should_hold:
+                self.state = ConcurrencyState.RECOVER
+            elif drift > cfg.drift_steady:
+                # Slowing → STEADY (hold)
                 self.state = ConcurrencyState.STEADY
                 self.steady_concurrency = self.current
                 self.last_healthy_concurrency = self.current
             else:
+                # Healthy → keep ramping
                 self.last_healthy_concurrency = self.current
                 self.current = self.current + self.ramp_step
 
+        # --- STEADY: hold at current level ---
         elif self.state == ConcurrencyState.STEADY:
             self.steady_concurrency = self.current
-            if should_backoff:
-                self.stress_ticks = 0
-                self.state = ConcurrencyState.BACKOFF
-                self.backoff_ticks = 0
+            if is_stressed:
+                # BACKOFF event: cut, then RECOVER
+                self.current = self._backoff_cut(self.last_healthy_concurrency)
                 self.signal_cutoff = time.perf_counter()
-                self.current = self._throughput_grounded_target(self.cc_config.backoff_throughput_pct)
-            elif can_resume:
+                self.state = ConcurrencyState.RECOVER
+            elif drift < cfg.drift_resume:
+                # Back to healthy → resume ramping
                 self.state = ConcurrencyState.RAMP_UP
                 self.current = self.current + self.ramp_step
 
-        elif self.state == ConcurrencyState.BACKOFF:
-            self.backoff_ticks += 1
-            if residual_trend < cfg.trend_recover_ratio:
-                self.state = ConcurrencyState.RECOVER
-                self.backoff_ticks = 0
-            elif self.backoff_ticks >= 3:
-                self.current = max(self.cc_config.min_concurrency,
-                                   int(self.current * self.cc_config.backoff_throughput_pct))
-                self.backoff_ticks = 0
-                self.signal_cutoff = time.perf_counter()
-
+        # --- RECOVER: hold after BACKOFF, cautious path back ---
         elif self.state == ConcurrencyState.RECOVER:
-            if should_backoff:
-                self.stress_ticks = 0
-                self.state = ConcurrencyState.BACKOFF
+            if is_stressed and self.backoff_ticks >= 4:
+                # 4th consecutive stressed tick → second cut from current, reset counter
+                self.current = self._backoff_cut(self.current)
                 self.backoff_ticks = 0
                 self.signal_cutoff = time.perf_counter()
-                self.current = self._throughput_grounded_target(self.cc_config.backoff_throughput_pct)
-            elif not should_hold:
-                # Recovered: residual drift back to healthy
-                if can_resume:
-                    self.state = ConcurrencyState.STEADY
-                    self.steady_concurrency = self.current
-                    self.last_healthy_concurrency = self.current
-                else:
-                    recovery_target = self._throughput_grounded_target(1.0)
-                    if self.current >= recovery_target:
-                        self.state = ConcurrencyState.STEADY
-                        self.current = recovery_target
-                        self.steady_concurrency = self.current
-                        self.last_healthy_concurrency = self.current
-                    else:
-                        recovery_step = max(1, self.ramp_step // 2)
-                        self.current = min(self.current + recovery_step, recovery_target)
+                # Stay in RECOVER
+            elif drift < cfg.drift_resume:
+                # Stable → STEADY (one step from RAMP-UP)
+                self.state = ConcurrencyState.STEADY
+                self.steady_concurrency = self.current
+                self.last_healthy_concurrency = self.current
+            # else: drift 1.1-1.5 or stressed but < 4 ticks → hold in RECOVER
 
         return self.current
 
@@ -2459,9 +2433,10 @@ class IdeaExtractor:
         self.optimal_concurrency = target
 
         # Detect binding constraint
+        avg_latency = getattr(self, '_stored_p50', None) or DEFAULT_LATENCY_SECONDS
         bottleneck = detect_bottleneck(
             limits.requests_per_minute, limits.tokens_per_minute,
-            self.avg_tokens, target
+            self.avg_tokens, target, avg_latency_s=avg_latency
         )
         self._bottleneck = bottleneck
 
@@ -2642,15 +2617,14 @@ class IdeaExtractor:
         sm = self._concurrency_sm
         tracker = self._residual_tracker
 
-        # Circuit breaker (simplified, defense-in-depth)
+        # Circuit breaker (simplified, defense-in-depth) — triggers BACKOFF event
         if self.circuit_breaker:
             cb_action = self.circuit_breaker.check()
             if cb_action == 'tripped':
                 self.v3_stats['circuit_breaker_trips'] += 1
-                sm.state = ConcurrencyState.BACKOFF
-                sm.backoff_ticks = 0
+                sm.current = sm._backoff_cut(sm.last_healthy_concurrency)
                 sm.signal_cutoff = time.perf_counter()
-                sm.current = sm._throughput_grounded_target(sm.cc_config.backoff_throughput_pct)
+                sm.state = ConcurrencyState.RECOVER
                 self.semaphore.set_limit(sm.current)
                 self.optimal_concurrency = sm.current
 
@@ -2666,7 +2640,9 @@ class IdeaExtractor:
             if self._last_limit_requests > 0:
                 header_pressure = 1.0 - (self._last_remaining_requests / self._last_limit_requests)
 
-            sm.current = self.semaphore.limit
+            old_state = sm.state
+            old_conc = self.semaphore.limit
+            sm.current = old_conc
             new_conc = sm.evaluate(
                 median_residual_ms=median_res,
                 normalized_residual=norm_res,
@@ -2679,6 +2655,9 @@ class IdeaExtractor:
             if new_conc != self.optimal_concurrency:
                 self.semaphore.set_limit(new_conc)
                 self.optimal_concurrency = new_conc
+            # Log BACKOFF event (cut happened if state changed to RECOVER and concurrency dropped)
+            if sm.state == ConcurrencyState.RECOVER and old_state != ConcurrencyState.RECOVER and new_conc < old_conc:
+                print(f"[BACKOFF] concurrency {old_conc} → {new_conc} (drift +{int((sm.residual_drift-1)*100)}%)")
             state_str = f" {sm.state.value}"
         elif warmup_elapsed < 5.0:
             state_str = " WARM-UP"
