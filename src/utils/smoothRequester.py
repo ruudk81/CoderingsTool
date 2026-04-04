@@ -1411,18 +1411,22 @@ class SmoothRequester:
         if not tokens:
             return
 
-        sm = self._concurrency_controller
-        if sm and hasattr(sm, 'last_healthy_concurrency'):
-            empirical = float(int(sm.last_healthy_concurrency * 0.95))
-        else:
-            empirical = float(self.optimal_concurrency)
-
         measurements = {
             "p50_latency_s": self.latency_tracker.get_p50(),
             "avg_tokens": sum(tokens) / len(tokens),
-            "empirical_capacity": empirical,
             "has_server_headers": self._has_server_headers,
         }
+
+        # Only save empirical_capacity when server was the actual binding constraint.
+        # When rate-capped, the state machine's measurement is phantom — it ramped
+        # internally but never actually tested those concurrency levels.
+        rate_capped = self._rate_limit_concurrency <= self._server_concurrency
+        if not rate_capped:
+            sm = self._concurrency_controller
+            if sm and hasattr(sm, 'last_healthy_concurrency'):
+                measurements["empirical_capacity"] = float(int(sm.last_healthy_concurrency * 0.95))
+            else:
+                measurements["empirical_capacity"] = float(self.optimal_concurrency)
         if self.tiktoken_offset_learner.is_learned():
             measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
 
