@@ -523,11 +523,7 @@ class RealTimeRPMTracker:
             return len(self.samples) / max(now - self.samples[0], 1.0) * 60
 
 
-# Archived P50-drift fallback for System B
-from pipeline.step_3_ideaExtractor.dev._archived_p50_drift_state_machine import (
-    ConcurrencyStateMachine as ArchivedP50StateMachine,
-    ConcurrencyCircuitBreaker as ArchivedCircuitBreaker,
-)
+# Archived P50-drift fallback (imported conditionally in _setup_concurrency when no headers)
 
 
 # =============================================================================
@@ -708,49 +704,79 @@ class SmoothRequester:
         self.tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
 
     def _setup_concurrency(self, limits, num_tasks, has_server_headers):
-        """Create ConcurrencyGate + controller (System A or B)."""
+        """Set up integrated rate + concurrency control.
+
+        Both controls always created. The binding constraint (rate vs concurrency)
+        is determined continuously by min(rate_limit_concurrency, server_concurrency).
+        """
         headroom = self._headroom
         avg_latency = self._stored_p50 or DEFAULT_LATENCY_SECONDS
 
-        # Starting concurrency via Little's Law
+        # Rate-limit concurrency: what rate limits allow (Little's Law)
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        little_law_cap = min(
-            compute_optimal_concurrency(api_limits, avg_latency, self.avg_tokens, headroom),
-            num_tasks
+        self._rate_limit_concurrency = compute_optimal_concurrency(
+            api_limits, avg_latency, self.avg_tokens, headroom
         )
+
+        # Server concurrency: what we know about the server
         if self._stored_empirical_capacity is not None:
-            target = min(int(self._stored_empirical_capacity), num_tasks)
+            self._server_concurrency = int(self._stored_empirical_capacity)
         else:
-            target = min(COLD_START_CAP, num_tasks)
-        target = min(target, little_law_cap)
-        target = max(target, 2)
+            self._server_concurrency = COLD_START_CAP
 
-        self.semaphore = ConcurrencyGate(target)
-        self.optimal_concurrency = target
+        # Effective = min(rate, server, tasks)
+        effective = min(self._rate_limit_concurrency, self._server_concurrency, num_tasks)
+        effective = max(effective, 2)
 
-        # Determine which rate limit binds (for System B display)
+        self.semaphore = ConcurrencyGate(effective)
+        self.optimal_concurrency = effective
+
+        # Determine initial binding constraint
+        self._update_binding_constraint()
+
+        # Which rate limit is tighter (for display)
         rpm_thr = limits.requests_per_minute * headroom / 60
         tpm_thr = limits.tokens_per_minute * headroom / self.avg_tokens / 60
         self._rate_bottleneck = "RPM" if rpm_thr < tpm_thr else "TPM"
 
+        # --- Concurrency controller (depends on header availability) ---
         if has_server_headers:
-            # System A
             self._residual_tracker = ResidualLatencyTracker()
-            self._concurrency_controller = HeaderAwareConcurrencyController(starting=target)
+            self._concurrency_controller = HeaderAwareConcurrencyController(starting=effective)
             self.circuit_breaker = SimplifiedCircuitBreaker()
         else:
-            # System B
+            from pipeline.step_3_ideaExtractor.dev._archived_p50_drift_state_machine import (
+                ConcurrencyStateMachine as ArchivedP50StateMachine,
+                ConcurrencyCircuitBreaker as ArchivedCircuitBreaker,
+            )
             from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_CONCURRENCY_CONTROL_CONFIG, DEFAULT_CIRCUIT_BREAKER_CONFIG
             self._concurrency_controller = ArchivedP50StateMachine(
-                starting=target, bottleneck="throughput",
+                starting=effective, bottleneck="throughput",
                 config=DEFAULT_CONCURRENCY_CONTROL_CONFIG,
             )
             self.circuit_breaker = ArchivedCircuitBreaker(config=DEFAULT_CIRCUIT_BREAKER_CONFIG)
             self._residual_tracker = None
-            self.tpm_tracker = RealTimeTPMTracker()
-            self.rpm_tracker = RealTimeRPMTracker()
-            self.pid_controller = PIDThroughputController()
-            print("[SYSTEM B] No server-side headers — using P50-drift + PID")
+
+        # --- Rate pacing controller (always created) ---
+        self.tpm_tracker = RealTimeTPMTracker()
+        self.rpm_tracker = RealTimeRPMTracker()
+        self.pid_controller = PIDThroughputController()
+
+        print(f"- Binding constraint: {'rate-limited' if self._is_rate_limited else 'throughput-bound'}"
+              f" (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
+
+    def _update_binding_constraint(self):
+        """Recalculate which constraint binds. Called each tick."""
+        self._is_rate_limited = self._rate_limit_concurrency <= self._server_concurrency
+
+    def _recalculate_rate_limit_concurrency(self):
+        """Recalculate rate-limit concurrency from current avg_tokens and latency."""
+        headroom = self._headroom
+        latency = self.latency_tracker.get_p50() if self.latency_tracker.values else DEFAULT_LATENCY_SECONDS
+        api_limits = ApiLimits(self.rate_limits.tokens_per_minute, self.rate_limits.requests_per_minute)
+        self._rate_limit_concurrency = compute_optimal_concurrency(
+            api_limits, latency, self.avg_tokens, headroom
+        )
 
     # === TOKEN ESTIMATION =====================================================
 
@@ -806,12 +832,13 @@ class SmoothRequester:
         async with self.semaphore:
             timeout = self.latency_tracker.get_timeout()
             await self.tpm_bucket.wait_and_acquire(est_tokens)
-            api_start = time.perf_counter()
-            self._inflight_starts[task_id] = api_start
 
             try:
                 # Step 2: LLM call (owned by smoothRequester for header access)
+                # api_start is AFTER all gates so latency measures only API time
                 async with self.rate_limiter:
+                    api_start = time.perf_counter()
+                    self._inflight_starts[task_id] = api_start
                     response = await asyncio.wait_for(
                         llm_create_async(
                             client=self.client,
@@ -944,7 +971,65 @@ class SmoothRequester:
 
     # === TICK (monitoring + adjustment) ========================================
 
-    def _tick_system_a(self, completed, total, tick_rate, p50, throughput, active, concurrency, drain):
+    def _tick(self, completed, total, tick_rate, p50, throughput, active, concurrency,
+              current_tpm, effective_tpm, current_rpm, effective_rpm, num_tasks):
+        """Unified tick: recalculate binding constraint, activate right controller, format report."""
+        # Recalculate binding constraint (may shift mid-run)
+        self._recalculate_rate_limit_concurrency()
+        self._update_binding_constraint()
+
+        warmup_elapsed = time.time() - self._start_time
+        drain = active / throughput if throughput > 0 else 0
+        timeout_info = f" | deferred:{self.stats['timeouts']}" if self.stats['timeouts'] > 0 else ""
+        conc_str = f" conc:{concurrency}" if concurrency != active else ""
+
+        if self._is_rate_limited:
+            # Rate-limited: PID active, state machine idle
+            return self._tick_rate_limited(completed, total, tick_rate, throughput,
+                                          current_tpm, effective_tpm, current_rpm, effective_rpm,
+                                          num_tasks, timeout_info)
+        else:
+            # Throughput-bound: state machine active, PID idle
+            if self._has_server_headers:
+                return self._tick_concurrency_header_aware(
+                    completed, total, tick_rate, p50, throughput, active, concurrency,
+                    warmup_elapsed, drain, timeout_info, conc_str)
+            else:
+                return self._tick_concurrency_p50_drift(
+                    completed, total, tick_rate, p50, throughput, active, concurrency,
+                    warmup_elapsed, drain, timeout_info, conc_str, num_tasks)
+
+    def _tick_rate_limited(self, completed, total, tick_rate, throughput,
+                           current_tpm, effective_tpm, current_rpm, effective_rpm,
+                           num_tasks, timeout_info):
+        """Rate-limited tick: PID adjusts arrival rate, Little's Law recalculates concurrency."""
+        # Little's Law concurrency recalculation (every 10s)
+        if hasattr(self, '_last_conc_check') and (time.time() - self._last_conc_check) >= 10.0:
+            self._recalculate_rate_limit_concurrency()
+            new_conc = min(self._rate_limit_concurrency, self._server_concurrency, num_tasks)
+            new_conc = max(new_conc, 2)
+            if new_conc != self.optimal_concurrency:
+                old = self.optimal_concurrency
+                self.semaphore.set_limit(new_conc)
+                self.optimal_concurrency = new_conc
+                print(f"[ADJUST] concurrency {old} → {new_conc}")
+            self._last_conc_check = time.time()
+
+        # Display: show tighter rate limit
+        tpm_pct = current_tpm / effective_tpm * 100 if effective_tpm else 0
+        rpm_pct = current_rpm / effective_rpm * 100 if effective_rpm else 0
+        if self._rate_bottleneck == "TPM":
+            rate_tps = current_tpm / 60
+            limit_tps = effective_tpm / 60
+            fmt = lambda v: f"{v/1000:.1f}k" if v >= 1000 else f"{v:.0f}"
+            constraint = f"tok:{fmt(rate_tps)}/s | limit:{fmt(limit_tps)}/s | pace:{tpm_pct:.0f}%"
+        else:
+            constraint = f"req:{current_rpm/60:.1f}/s | limit:{effective_rpm/60:.1f}/s | pace:{rpm_pct:.0f}%"
+
+        return f"[PHASE6] {completed}/{total} | {constraint} | completing:{tick_rate:.0f}/s | thru:{throughput:.1f}/s |{timeout_info}"
+
+    def _tick_concurrency_header_aware(self, completed, total, tick_rate, p50, throughput,
+                                        active, concurrency, warmup_elapsed, drain, timeout_info, conc_str):
         """System A tick: residual drift evaluation + progress line."""
         sm = self._concurrency_controller
         tracker = self._residual_tracker
@@ -971,9 +1056,12 @@ class SmoothRequester:
             old_conc = self.semaphore.limit
             sm.current = old_conc
             new_conc = sm.evaluate(med_res, header_pressure, throughput, p50)
+            # Cap at rate limit concurrency
+            new_conc = min(new_conc, self._rate_limit_concurrency)
             if new_conc != self.optimal_concurrency:
                 self.semaphore.set_limit(new_conc)
                 self.optimal_concurrency = new_conc
+            self._server_concurrency = new_conc
             if sm.state == ConcurrencyState.RECOVER and old_state != ConcurrencyState.RECOVER and new_conc < old_conc:
                 print(f"[BACKOFF] concurrency {old_conc} → {new_conc} (drift +{int((sm.residual_drift-1)*100)}%)")
             state_str = f" {sm.state.value}"
@@ -999,12 +1087,12 @@ class SmoothRequester:
         return (f"[PHASE6] {completed}/{total} | inflight:{active}{conc_str} | arrival:{arrival}"
                 f" | completing:{tick_rate:.0f}/s{signal_str} |{state_str}{timeout_info}")
 
-    def _tick_system_b(self, completed, total, tick_rate, p50, throughput, active, concurrency,
-                       current_tpm, effective_tpm, current_rpm, effective_rpm, num_tasks):
-        """System B tick: P50-drift evaluation + PID + progress line."""
+    def _tick_concurrency_p50_drift(self, completed, total, tick_rate, p50, throughput,
+                                     active, concurrency, warmup_elapsed, drain, timeout_info, conc_str, num_tasks):
+        """Throughput-bound tick (no headers): P50-drift state machine."""
         sm = self._concurrency_controller
 
-        # In-flight P95/P100 for P50-drift
+        # In-flight P95/P100
         now_perf = time.perf_counter()
         cutoff = sm.signal_cutoff if sm else 0.0
         fresh = {k: v for k, v in self._inflight_starts.items() if v >= cutoff}
@@ -1016,7 +1104,7 @@ class SmoothRequester:
 
         # Circuit breaker
         if self.circuit_breaker and sm:
-            cb = self.circuit_breaker.check(drain_time=active / max(throughput, 0.01))
+            cb = self.circuit_breaker.check(drain_time=drain)
             if cb == 'tripped':
                 sm.state = ConcurrencyState.BACKOFF
                 sm.backoff_ticks = 0
@@ -1024,53 +1112,35 @@ class SmoothRequester:
                 sm.current = sm._throughput_grounded_target(sm.config.backoff_throughput_pct)
                 self.semaphore.set_limit(sm.current)
                 self.optimal_concurrency = sm.current
+                self._server_concurrency = sm.current
 
-        # State machine
+        # State machine evaluation
         state_str = ""
-        warmup_elapsed = time.time() - self._start_time
         if sm and p50 > 0 and warmup_elapsed >= 5.0:
             sm.current = self.semaphore.limit
             new_conc = sm.evaluate(
                 p50=p50, inflight_p95=inflight_p95, inflight_p100=inflight_p100,
                 now=time.monotonic(), throughput=throughput, inflight=active)
+            # Cap at rate limit concurrency
+            new_conc = min(new_conc, self._rate_limit_concurrency)
             if new_conc != self.optimal_concurrency:
                 self.semaphore.set_limit(new_conc)
                 self.optimal_concurrency = new_conc
+            self._server_concurrency = new_conc
             state_str = f" {sm.state.value}"
         elif warmup_elapsed < 5.0:
             state_str = " WARM-UP"
 
-        # Little's Law recalculation (every 10s)
-        if hasattr(self, '_last_conc_check') and (time.time() - self._last_conc_check) >= 10.0:
-            if self.latency_tracker.values and self.actual_total_tokens:
-                curr_p50 = self.latency_tracker.get_p50()
-                new_conc = min(
-                    compute_optimal_concurrency(
-                        ApiLimits(self.rate_limits.tokens_per_minute, self.rate_limits.requests_per_minute),
-                        curr_p50, self.avg_tokens, self._headroom
-                    ),
-                    num_tasks
-                )
-                if new_conc != self.optimal_concurrency:
-                    old = self.optimal_concurrency
-                    self.semaphore.set_limit(new_conc)
-                    self.optimal_concurrency = new_conc
-                    print(f"[ADJUST] concurrency {old} → {new_conc}")
-            self._last_conc_check = time.time()
+        # P50 drift display
+        latency_str = ""
+        if self.latency_tracker.values and sm:
+            baseline = sm.p50_baseline if hasattr(sm, 'p50_baseline') and sm.p50_baseline > 0 else p50
+            drift_pct = int((p50 / baseline - 1) * 100) if baseline > 0 else 0
+            drift_str = f"+{drift_pct}%" if drift_pct >= 0 else f"{drift_pct}%"
+            latency_str = f" | P50:{p50:.1f}s({drift_str})"
 
-        # Constraint display
-        tpm_pct = current_tpm / effective_tpm * 100 if effective_tpm else 0
-        rpm_pct = current_rpm / effective_rpm * 100 if effective_rpm else 0
-        if self._rate_bottleneck == "TPM":
-            rate_tps = current_tpm / 60
-            limit_tps = effective_tpm / 60
-            fmt = lambda v: f"{v/1000:.1f}k" if v >= 1000 else f"{v:.0f}"
-            constraint = f"tok:{fmt(rate_tps)}/s | limit:{fmt(limit_tps)}/s | pace:{tpm_pct:.0f}%"
-        else:
-            constraint = f"req:{current_rpm/60:.1f}/s | limit:{effective_rpm/60:.1f}/s | pace:{rpm_pct:.0f}%"
-
-        timeout_info = f" | deferred:{self.stats['timeouts']}" if self.stats['timeouts'] > 0 else ""
-        return f"[PHASE6] {completed}/{total} | {constraint} | thru:{throughput:.1f}/s |{state_str}{timeout_info}"
+        return (f"[PHASE6] {completed}/{total} | inflight:{active}{conc_str}"
+                f" | completing:{tick_rate:.0f}/s{latency_str} |{state_str} [NO-HEADERS]{timeout_info}")
 
     # === WARM-UP + PID ========================================================
 
@@ -1241,19 +1311,16 @@ class SmoothRequester:
                 concurrency = self.semaphore.limit
                 drain = active / throughput if throughput > 0 else 0
 
-                if self._has_server_headers:
-                    line = self._tick_system_a(completed, num_tasks, tick_rate, p50,
-                                              throughput, active, concurrency, drain)
-                else:
-                    # Get TPM/RPM utilization
-                    current_tpm = await self.tpm_tracker.get_current_tpm() if self.tpm_tracker else 0
-                    effective_tpm = self.rate_limits.tokens_per_minute * self._headroom
-                    current_rpm = await self.rpm_tracker.get_current_rpm() if self.rpm_tracker else 0
-                    effective_rpm = self.rate_limits.requests_per_minute * self._headroom
-                    line = self._tick_system_b(completed, num_tasks, tick_rate, p50,
-                                              throughput, active, concurrency,
-                                              current_tpm, effective_tpm, current_rpm, effective_rpm,
-                                              num_tasks)
+                # Get TPM/RPM utilization (always, for tick + PID)
+                current_tpm = await self.tpm_tracker.get_current_tpm() if self.tpm_tracker else 0
+                effective_tpm = self.rate_limits.tokens_per_minute * self._headroom
+                current_rpm = await self.rpm_tracker.get_current_rpm() if self.rpm_tracker else 0
+                effective_rpm = self.rate_limits.requests_per_minute * self._headroom
+
+                # Unified tick: determines binding constraint, activates right controller
+                line = self._tick(completed, num_tasks, tick_rate, p50, throughput,
+                                  active, concurrency, current_tpm, effective_tpm,
+                                  current_rpm, effective_rpm, num_tasks)
                 print(line)
 
                 last_report = now
@@ -1263,17 +1330,17 @@ class SmoothRequester:
             if (not self._warm_up_calibrated
                     and len(self.actual_total_tokens) >= self._warm_up_target_samples
                     and len(self.latency_tracker.values) >= self._warm_up_target_samples):
-                if self._has_server_headers:
+                if self._is_rate_limited:
+                    self._calibrate_concurrency(num_tasks)
+                else:
                     old, new = self._calibrate_tokens()
                     print(f"\n[WARM-UP] avg_tokens {old} → {new}, concurrency unchanged at {self.optimal_concurrency}")
-                else:
-                    self._calibrate_concurrency(num_tasks)
 
-            # Token correction + PID
-            pid_interval = 0 if not self._has_server_headers else ADJUSTMENT_INTERVAL
+            # Token correction + PID (PID active when rate-limited)
+            pid_interval = 0 if self._is_rate_limited else ADJUSTMENT_INTERVAL
             if now - last_adjustment >= pid_interval:
                 self._adjust_throughput_if_needed()
-                if not self._has_server_headers:
+                if self._is_rate_limited:
                     await self._apply_pid()
                 last_adjustment = now
 
