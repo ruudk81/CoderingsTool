@@ -10,9 +10,9 @@ Extracts structured ideas from survey responses using LLM with:
 - Rate limiting: state machine concurrency + PID arrival rate + circuit breaker
 - Template prefix enforcement for normalized idea phrasing
 
-Two-strategy dispatch based on detect_bottleneck():
-  Throughput-bound: state machine concurrency + circuit breaker (no PID)
-  Rate-limited: PID arrival rate + Little's Law concurrency (no state machine)
+Two systems, selected by header availability at startup:
+  System A (server-side data): header-aware concurrency + passive rate rails
+  System B (client-side data): P50-drift concurrency + PID rate pacing
 
 Shared infrastructure:
 1. RPM: AsyncLimiter (arrival rate pacing)
@@ -101,6 +101,15 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     WarmUpConfig,
 )
 
+# === RATE LIMITING (shared infrastructure from utils/rateLimiter.py) ===================================
+from utils.rateLimiter import (
+    TokenBucket, ConcurrencyGate, LatencyTracker, TiktokenOffsetLearner,
+    SimplifiedCircuitBreaker, ResidualLatencyTracker,
+    HeaderAwareConcurrencyController, ConcurrencyState,
+    PIDThroughputController, RealTimeTPMTracker, RealTimeRPMTracker,
+    ApiLimits, compute_optimal_concurrency,
+)
+
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
 from utils.cached_resources import get_tiktoken_encoding
@@ -151,249 +160,6 @@ GENERIC_SPECIFIER_CHUNK_SIZE = DEFAULT_SPECIFIER_CONFIG.chunk_size
 MAX_SPECIFIER_WORKERS = DEFAULT_SPECIFIER_CONFIG.max_workers
 
 
-# === RATE LIMITING CLASSES  ========================================================================================================
-class TokenBucket:
-    """Simple token bucket for TPM limiting"""
-    def __init__(self, tokens_per_minute):
-        self.tpm = tokens_per_minute
-        self.available = tokens_per_minute
-        self.last_update = time.monotonic()
-        self.lock = asyncio.Lock()
-
-    async def acquire(self, tokens_needed):
-        """Acquire tokens, returning wait time if not available"""
-        async with self.lock:
-            now = time.monotonic()
-            elapsed = now - self.last_update
-            # Regenerate tokens based on time elapsed
-            self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
-            self.last_update = now
-
-            if self.available >= tokens_needed:
-                self.available -= tokens_needed
-                return True
-            else:
-                # Calculate wait time
-                deficit = tokens_needed - self.available
-                wait_seconds = deficit * 60 / self.tpm
-                return wait_seconds
-
-    async def wait_and_acquire(self, tokens_needed):
-        """Wait if necessary and acquire tokens"""
-        attempts = 0
-        while attempts < MAX_TOKEN_ACQUIRE_ATTEMPTS:
-            attempts += 1
-            result = await self.acquire(tokens_needed)
-            if result is True:
-                return
-            else:
-                # result is wait_seconds
-                await asyncio.sleep(result)
-
-        raise RuntimeError(f"Failed to acquire {tokens_needed} tokens after {MAX_TOKEN_ACQUIRE_ATTEMPTS} attempts")
-
-    async def reconcile(self, delta_tokens: int) -> None:
-        """Reconcile actual token usage against estimate."""
-        if delta_tokens < 0:
-            async with self.lock:
-                self.available = min(self.tpm, self.available - delta_tokens)
-
-
-class ConcurrencyGate:
-    """Concurrency limiter that tracks exact active count and supports
-    both increase and decrease at runtime.
-
-    When limit decreases: in-flight requests drain naturally (no cancellation),
-    but new requests block until active < limit.
-    When limit increases: blocked requests wake immediately.
-
-    Uses asyncio futures for zero-overhead waiting (no polling/busy-wait).
-    asyncio is single-threaded (cooperative), so no locks needed.
-    """
-
-    def __init__(self, limit: int):
-        self._limit = limit
-        self._active = 0
-        self._waiters: deque = deque()  # asyncio.Future objects
-
-    @property
-    def limit(self) -> int:
-        return self._limit
-
-    @property
-    def active(self) -> int:
-        return self._active
-
-    def set_limit(self, new_limit: int):
-        """Change limit (up or down). Wakes blocked waiters if room opened."""
-        self._limit = max(1, new_limit)
-        self._wake_waiters()
-
-    def _wake_waiters(self):
-        """Wake waiting coroutines that can now proceed."""
-        while self._waiters and self._active < self._limit:
-            fut = self._waiters.popleft()
-            if not fut.done():
-                self._active += 1
-                fut.set_result(True)
-
-    async def acquire(self):
-        """Acquire a concurrency slot. Blocks if at limit."""
-        if self._active < self._limit:
-            self._active += 1
-            return
-        # At limit — create a future and wait
-        fut = asyncio.get_event_loop().create_future()
-        self._waiters.append(fut)
-        try:
-            await fut
-        except asyncio.CancelledError:
-            if fut.done() and not fut.cancelled():
-                # We were granted a slot but got cancelled — release it
-                self._active -= 1
-                self._wake_waiters()
-            else:
-                try:
-                    self._waiters.remove(fut)
-                except ValueError:
-                    pass
-            raise
-
-    def release(self):
-        """Release a concurrency slot and wake next waiter."""
-        self._active -= 1
-        self._wake_waiters()
-
-    async def __aenter__(self):
-        await self.acquire()
-        return self
-
-    async def __aexit__(self, *args):
-        self.release()
-
-
-class LatencyTracker:
-    """EMA tracker for latencies with step-type-aware timeout strategy.
-
-    Per strategy doc:
-    - Cold start: max(timeout_floor, default_timeout) — 20s for single-processing steps
-    - Adaptive: max(timeout_floor, min(P50×6, 180)) after warm-up data
-    - Retry: adaptive floor depends on bottleneck (60s for throughput-bound, timeout_floor for rate-limited)
-    """
-    def __init__(self, processing_config: Optional[ProcessingConfig] = None,
-                 timeout_floor: float = None, default_timeout: float = None):
-        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.timeout_floor = timeout_floor if timeout_floor is not None else TIMEOUT_FLOOR_SECONDS
-        self.default_timeout = default_timeout if default_timeout is not None else DEFAULT_TIMEOUT_SECONDS
-        self.ema = None
-        self.alpha = self.processing_config.latency_tracker_ema_alpha
-        self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
-        self.retry_mode = False  # Set True for batch retry
-
-    def add(self, value):
-        """Add a latency measurement"""
-        self.values.append(value)
-        if self.ema is None:
-            self.ema = value
-        else:
-            self.ema = self.alpha * value + (1 - self.alpha) * self.ema
-
-    def get_timeout(self, est_tokens=None):
-        """Safety-net timeout — only catches truly stuck requests.
-
-        Normal latency variance (1-30s) is NOT a problem. We only want to
-        catch requests that are genuinely stuck (network issues, server errors).
-        Aggressive timeouts are counterproductive: they defer legitimate slow
-        tasks, double API costs on retry, and trigger the circuit breaker.
-        """
-        if self.retry_mode:
-            # Adaptive at retry time — latency history is fully populated
-            if not self.values:
-                return 180.0  # Edge case: no data at all
-            p50 = float(np.percentile(list(self.values), 50))
-            retry_floor = self.retry_mode if isinstance(self.retry_mode, (int, float)) else 60.0
-            return max(retry_floor, min(p50 * 6.0, 180.0))
-
-        if not self.values:
-            return max(self.timeout_floor, self.default_timeout)  # Step-type-aware cold start
-
-        # Safety net: 6× P50, bounded by floor and ceiling
-        p50 = float(np.percentile(list(self.values), 50))
-        return max(self.timeout_floor, min(p50 * 6.0, 180.0))
-
-    def get_avg_latency(self):
-        """Get average latency for concurrency calculations."""
-        if not self.values:
-            return DEFAULT_LATENCY_SECONDS
-        return self.ema if self.ema is not None else DEFAULT_LATENCY_SECONDS
-
-    def get_p50(self) -> float:
-        """Return P50 (median) latency, or EMA fallback if fewer than 2 samples."""
-        if len(self.values) >= 2:
-            return float(np.percentile(list(self.values), 50))
-        return self.get_avg_latency()
-
-    def get_p95(self) -> float:
-        """Return P95 latency, or EMA fallback if fewer than 2 samples."""
-        if len(self.values) >= 2:
-            return float(np.percentile(list(self.values), 95))
-        return self.get_avg_latency()
-
-    def get_p99(self) -> float:
-        """Return P99 latency, or EMA fallback if fewer than 2 samples."""
-        if len(self.values) >= 2:
-            return float(np.percentile(list(self.values), 99))
-        return self.get_avg_latency()
-
-
-# === OPTIMAL STRATEGY CLASSES ========================================================================================================
-
-class TiktokenOffsetLearner:
-    """Learns the offset between tiktoken counts and actual API token counts.
-
-    The API always reports more tokens than tiktoken because of:
-    - System messages added by the API
-    - Instructor/structured output overhead
-    - Message formatting tokens
-
-    This class learns the average offset and applies it to estimates.
-    """
-    def __init__(self, default_offset: int = TIKTOKEN_API_OFFSET_DEFAULT):
-        self.default_offset = default_offset
-        self.offsets = deque(maxlen=TIKTOKEN_OFFSET_HISTORY_MAXLEN)
-        self._learned_offset = None
-
-    def record(self, tiktoken_count: int, api_count: int):
-        """Record a tiktoken vs API count pair to learn the offset."""
-        offset = api_count - tiktoken_count
-        self.offsets.append(offset)
-
-        # Update learned offset when we have enough samples
-        if len(self.offsets) >= TIKTOKEN_OFFSET_MIN_SAMPLES:
-            self._learned_offset = int(sum(self.offsets) / len(self.offsets))
-
-    def get_offset(self) -> int:
-        """Get the current offset to add to tiktoken counts."""
-        if self._learned_offset is not None:
-            return self._learned_offset
-        return self.default_offset
-
-    def is_learned(self) -> bool:
-        """Check if we have enough samples to trust the learned offset."""
-        return len(self.offsets) >= TIKTOKEN_OFFSET_MIN_SAMPLES
-
-    def get_stats(self) -> dict:
-        """Get statistics about the offset learning."""
-        return {
-            "samples": len(self.offsets),
-            "learned_offset": self._learned_offset,
-            "using_offset": self.get_offset(),
-            "is_learned": self.is_learned(),
-            "min_offset": min(self.offsets) if self.offsets else None,
-            "max_offset": max(self.offsets) if self.offsets else None,
-        }
-
-
 
 # === TICK CONTEXT (shared state passed to per-tick strategy methods) ===============================================================================
 @dataclass
@@ -415,187 +181,6 @@ class TickContext:
     timeouts: int
 
 
-# === LITTLE'S LAW & CONCURRENCY CALCULATION ========================================================================================================
-@dataclass
-class ApiLimits:
-    """API limits structure for Little's Law calculations"""
-    tokens_per_minute: int
-    requests_per_minute: int
-
-
-def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float,
-                                 headroom: float = 0.9) -> int:
-    """Compute optimal concurrency using Little's Law: N = lambda * W
-
-    Returns the raw Little's Law number (floor 5). Caller applies additional
-    headroom (e.g. * 0.90) and ramp-up strategy.
-    """
-    latency_seconds = max(float(latency_seconds or 0.5), 0.05)
-    avg_tokens = max(float(avg_tokens or 1.0), 1.0)
-
-    rpm_throughput = limits.requests_per_minute * headroom / 60
-    tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
-    allowed_rps = max(min(rpm_throughput, tpm_throughput), 0.0)
-    target = allowed_rps * latency_seconds   # Little's Law
-
-    import math
-    return max(math.ceil(target), 2)
-
-
-def detect_bottleneck(rpm_limit: int, tpm_limit: int, avg_tokens: int,
-                      starting_concurrency: int, avg_latency_s: float = 2.0) -> str:
-    """Determine the binding constraint before processing starts.
-
-    Compares the API rate limit (req/s) against the expected request rate
-    at the starting concurrency. If the rate limit is at least 3× higher
-    than what we'd actually send, the bottleneck is server throughput.
-
-    Expected request rate = starting_concurrency / avg_latency (Little's Law).
-    """
-    rpm_per_second = rpm_limit / 60
-    tpm_per_second = tpm_limit / 60 / max(avg_tokens, 1)
-    api_throughput = min(rpm_per_second, tpm_per_second)
-
-    # Expected request rate at starting concurrency
-    expected_rps = starting_concurrency / max(avg_latency_s, 0.1)
-
-    if api_throughput > expected_rps * 3:
-        return "throughput"
-    elif rpm_per_second <= tpm_per_second:
-        return "rpm"
-    else:
-        return "tpm"
-
-
-# === CONCURRENCY STATE MACHINE =========================================================================
-
-class ConcurrencyState(Enum):
-    RAMP_UP = "RAMP-UP"
-    STEADY = "STEADY"
-    BACKOFF = "BACKOFF"
-    RECOVER = "RECOVER"
-
-
-# === REAL-TIME TPM TRACKER ========================================================================================================
-class RealTimeTPMTracker:
-    """Tracks actual TPM usage in a sliding window for PID feedback."""
-    def __init__(self, window_seconds: float = 60.0):
-        self.window_seconds = window_seconds
-        self.samples = deque()  # (timestamp, tokens) pairs
-        self.lock = asyncio.Lock()
-
-    async def record(self, tokens: int):
-        async with self.lock:
-            now = time.monotonic()
-            self.samples.append((now, tokens))
-            self._prune_old_samples(now)
-
-    def _prune_old_samples(self, now: float):
-        cutoff = now - self.window_seconds
-        while self.samples and self.samples[0][0] < cutoff:
-            self.samples.popleft()
-
-    async def get_current_tpm(self) -> float:
-        async with self.lock:
-            now = time.monotonic()
-            self._prune_old_samples(now)
-            if not self.samples:
-                return 0.0
-            total_tokens = sum(t for _, t in self.samples)
-            elapsed = max(now - self.samples[0][0], 1.0)
-            return (total_tokens / elapsed) * 60
-
-
-# === REAL-TIME RPM TRACKER ========================================================================================================
-class RealTimeRPMTracker:
-    """Tracks actual RPM (requests per minute) in a sliding window for constraint visibility."""
-    def __init__(self, window_seconds: float = 60.0):
-        self.window_seconds = window_seconds
-        self.samples = deque()  # timestamps of completed requests
-        self.lock = asyncio.Lock()
-
-    async def record(self):
-        async with self.lock:
-            now = time.monotonic()
-            self.samples.append(now)
-            self._prune(now)
-
-    def _prune(self, now: float):
-        cutoff = now - self.window_seconds
-        while self.samples and self.samples[0] < cutoff:
-            self.samples.popleft()
-
-    async def get_current_rpm(self) -> float:
-        async with self.lock:
-            now = time.monotonic()
-            self._prune(now)
-            if not self.samples:
-                return 0.0
-            elapsed = max(now - self.samples[0], 1.0)
-            return (len(self.samples) / elapsed) * 60
-
-
-# === PID THROUGHPUT CONTROLLER ========================================================================================================
-class PIDThroughputController:
-    """PID controller for smooth arrival rate adjustment.
-
-    Asymmetric gains: aggressive when under-utilizing, gentle when over-utilizing.
-    Adjusts the arrival rate (requests/second) based on real-time TPM utilization.
-    """
-    def __init__(self, target_utilization: float = 0.80,
-                 kp_up: float = 0.4, kp_down: float = 0.2,
-                 ki: float = 0.05, kd: float = 0.1,
-                 min_adjustment: float = 0.02, max_adjustment: float = 0.15):
-        self.target = target_utilization
-        self.kp_up = kp_up
-        self.kp_down = kp_down
-        self.ki = ki
-        self.kd = kd
-        self.min_adjustment = min_adjustment
-        self.max_adjustment = max_adjustment
-        self.integral = 0.0
-        self.last_error = 0.0
-        self.last_time = None
-        self.adjustment_history = deque(maxlen=20)
-
-    def compute_adjustment(self, current_utilization: float) -> float:
-        """Returns multiplier for arrival rate. >1.0 = speed up, <1.0 = slow down."""
-        now = time.monotonic()
-        error = self.target - current_utilization
-
-        dt = 1.0
-        if self.last_time is not None:
-            dt = max(now - self.last_time, 0.1)
-        self.last_time = now
-
-        self.integral += error * dt
-        self.integral = max(-0.5, min(0.5, self.integral))
-
-        derivative = (error - self.last_error) / dt if dt > 0 else 0.0
-        self.last_error = error
-
-        kp = self.kp_up if error > 0 else self.kp_down
-        output = (kp * error) + (self.ki * self.integral) + (self.kd * derivative)
-        output = max(-self.max_adjustment, min(self.max_adjustment, output))
-
-        if abs(output) < self.min_adjustment:
-            adjustment = 1.0
-        else:
-            adjustment = 1.0 + output
-
-        self.adjustment_history.append({
-            "time": now, "utilization": current_utilization,
-            "error": error, "output": output, "adjustment": adjustment
-        })
-        return adjustment
-
-    def reset(self):
-        self.integral = 0.0
-        self.last_error = 0.0
-        self.last_time = None
-
-
-
 
 # === ARCHIVED P50-DRIFT FALLBACK (header-unavailable path) ============================================
 from pipeline.step_3_ideaExtractor.dev._archived_p50_drift_state_machine import (
@@ -604,284 +189,6 @@ from pipeline.step_3_ideaExtractor.dev._archived_p50_drift_state_machine import 
 )
 
 
-# === RESIDUAL LATENCY TRACKER =========================================================================
-
-class ResidualLatencyTracker:
-    """Tracks residual latency (observed - server processing) per API call.
-
-    Residual latency = observed_latency_ms - openai-processing-ms.
-    This is an inference signal: lower residual suggests less overhead outside
-    server processing. Rising residual can indicate queuing or pacing, but may
-    also reflect network/client overhead. Not a pure queue metric.
-
-    Entries are stored in insertion order for efficient median/trend computation.
-    """
-
-    def __init__(self, config: HeaderAwareConfig = None):
-        self._config = config or DEFAULT_HEADER_AWARE_CONFIG
-        self._entries: deque = deque(maxlen=self._config.tracker_window)
-
-    def add(self, observed_latency_s: float, processing_ms: float):
-        """Record a residual latency measurement."""
-        observed_ms = observed_latency_s * 1000.0
-        residual_ms = max(0.0, observed_ms - processing_ms)
-        self._entries.append((time.monotonic(), residual_ms, processing_ms))
-
-    def _recent_n(self, n: int) -> list:
-        """Last n entries as list of (residual_ms, processing_ms)."""
-        entries = list(self._entries)
-        return [(r, p) for _, r, p in entries[-n:]]
-
-    def median_residual(self) -> float:
-        """Median residual latency over the last median_window entries."""
-        recent = self._recent_n(self._config.median_window)
-        if not recent:
-            return 0.0
-        residuals = sorted(r for r, _ in recent)
-        mid = len(residuals) // 2
-        if len(residuals) % 2 == 0 and len(residuals) >= 2:
-            return (residuals[mid - 1] + residuals[mid]) / 2.0
-        return residuals[mid]
-
-    def median_processing(self) -> float:
-        """Median server processing time over the last median_window entries."""
-        recent = self._recent_n(self._config.median_window)
-        if not recent:
-            return 0.0
-        procs = sorted(p for _, p in recent)
-        mid = len(procs) // 2
-        if len(procs) % 2 == 0 and len(procs) >= 2:
-            return (procs[mid - 1] + procs[mid]) / 2.0
-        return procs[mid]
-
-    def normalized_residual(self) -> float:
-        """Residual / processing ratio. Contextualizes absolute residual.
-
-        A 200ms residual at 300ms processing (0.67) is very different from
-        200ms at 4000ms processing (0.05).
-        """
-        med_proc = self.median_processing()
-        if med_proc <= 0:
-            return 0.0
-        return self.median_residual() / med_proc
-
-    def trend(self) -> float:
-        """Ratio of recent median vs previous median. >1.0 = growing residuals.
-
-        Compares the most recent `trend_recent` entries against the preceding
-        `trend_previous` entries. Returns 1.0 if insufficient data.
-        """
-        n_recent = self._config.trend_recent
-        n_previous = self._config.trend_previous
-        total_needed = n_recent + n_previous
-        if len(self._entries) < total_needed:
-            return 1.0
-
-        entries = list(self._entries)
-        recent = [r for _, r, _ in entries[-n_recent:]]
-        previous = [r for _, r, _ in entries[-(n_recent + n_previous):-n_recent]]
-
-        med_recent = sorted(recent)[len(recent) // 2]
-        med_previous = sorted(previous)[len(previous) // 2]
-
-        if med_previous <= 0:
-            return 1.0
-        return med_recent / med_previous
-
-    @property
-    def sample_count(self) -> int:
-        return len(self._entries)
-
-
-# === HEADER-AWARE CONCURRENCY CONTROLLER ===============================================================
-
-class HeaderAwareConcurrencyController:
-    """Concurrency controller driven by residual latency drift and header pressure.
-
-    Primary signal: residual drift from learned baseline.
-      drift = current_median_residual / baseline_residual
-      Baseline learned from first evaluate() after warm-up.
-
-    Three states + one event:
-      States: RAMP-UP, STEADY, RECOVER
-      Event: BACKOFF (cut concurrency, then → RECOVER)
-
-    Drift thresholds:
-      < 1.1  → healthy (RAMP-UP)
-      1.2-1.5 → slowing (STEADY / RECOVER hold)
-      > 1.5  → BACKOFF event: cut to 0.9 × last_healthy, then RECOVER
-
-    BACKOFF is a single-tick event, not a persistent state.
-    After every cut → RECOVER. In RECOVER, if drift stays > 1.5 for
-    4 consecutive ticks → second cut (0.9 × current), counter resets.
-    """
-
-    def __init__(self, starting: int, config: 'ConcurrencyControlConfig' = None,
-                 header_config: HeaderAwareConfig = None):
-        from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_CONCURRENCY_CONTROL_CONFIG
-        self.cc_config = config or DEFAULT_CONCURRENCY_CONTROL_CONFIG
-        self.config = header_config or DEFAULT_HEADER_AWARE_CONFIG
-        self.current = starting
-        self.starting = starting
-        self.ramp_step = max(2, int(starting * self.cc_config.ramp_step_pct))
-
-        self.state = ConcurrencyState.RAMP_UP
-        self.last_healthy_concurrency = starting
-        self.steady_concurrency = None
-
-        # Throughput-grounded targets
-        self.last_healthy_throughput = 0.0
-        self.last_healthy_p50 = 0.0
-
-        # Residual baseline: learned from first evaluate() call after warm-up
-        self.residual_baseline = 0.0
-        self.residual_drift = 0.0  # current drift ratio for reporting
-
-        # Consecutive ticks with drift > 1.5 (cross-state, for repeated BACKOFF cuts)
-        self.backoff_ticks = 0
-        self.signal_cutoff = 0.0
-
-    def _backoff_cut(self, from_concurrency: int) -> int:
-        """Apply a BACKOFF cut: 0.9 × given concurrency, floored at min."""
-        return max(self.cc_config.min_concurrency,
-                   int(from_concurrency * self.cc_config.backoff_throughput_pct))
-
-    def evaluate(self, median_residual_ms: float, normalized_residual: float,
-                 residual_trend: float, header_pressure: float,
-                 now: float, throughput: float = 0.0, p50: float = 0.0) -> int:
-        """Main tick evaluation. Returns new concurrency."""
-        cfg = self.config
-
-        # Update healthy throughput for target computation
-        if throughput > 0 and p50 > 0:
-            self.last_healthy_throughput = throughput
-            self.last_healthy_p50 = p50
-
-        # Learn baseline from first reading (warm-up provides stable data)
-        if self.residual_baseline == 0 and median_residual_ms > 0:
-            self.residual_baseline = median_residual_ms
-
-        # Compute drift from baseline
-        if self.residual_baseline > 0:
-            self.residual_drift = median_residual_ms / self.residual_baseline
-        else:
-            self.residual_drift = 1.0
-
-        drift = self.residual_drift
-        is_budget_stressed = header_pressure > cfg.budget_pressure_threshold
-        is_stressed = drift > cfg.drift_backoff or is_budget_stressed
-
-        # Cross-state consecutive stress counter (for repeated BACKOFF cuts)
-        if is_stressed:
-            self.backoff_ticks += 1
-        else:
-            self.backoff_ticks = 0
-
-        # --- RAMP-UP: keep increasing concurrency ---
-        if self.state == ConcurrencyState.RAMP_UP:
-            if is_stressed:
-                # BACKOFF event: cut, then RECOVER
-                self.current = self._backoff_cut(self.last_healthy_concurrency)
-                self.signal_cutoff = time.perf_counter()
-                self.state = ConcurrencyState.RECOVER
-            elif drift > cfg.drift_steady:
-                # Slowing → STEADY (hold)
-                self.state = ConcurrencyState.STEADY
-                self.steady_concurrency = self.current
-                self.last_healthy_concurrency = self.current
-            else:
-                # Healthy → keep ramping
-                self.last_healthy_concurrency = self.current
-                self.current = self.current + self.ramp_step
-
-        # --- STEADY: hold at current level ---
-        elif self.state == ConcurrencyState.STEADY:
-            self.steady_concurrency = self.current
-            if is_stressed:
-                # BACKOFF event: cut, then RECOVER
-                self.current = self._backoff_cut(self.last_healthy_concurrency)
-                self.signal_cutoff = time.perf_counter()
-                self.state = ConcurrencyState.RECOVER
-            elif drift < cfg.drift_resume:
-                # Back to healthy → resume ramping
-                self.state = ConcurrencyState.RAMP_UP
-                self.current = self.current + self.ramp_step
-
-        # --- RECOVER: hold after BACKOFF, cautious path back ---
-        elif self.state == ConcurrencyState.RECOVER:
-            if is_stressed and self.backoff_ticks >= 4:
-                # 4th consecutive stressed tick → second cut from current, reset counter
-                self.current = self._backoff_cut(self.current)
-                self.backoff_ticks = 0
-                self.signal_cutoff = time.perf_counter()
-                # Stay in RECOVER
-            elif drift < cfg.drift_resume:
-                # Stable → STEADY (one step from RAMP-UP)
-                self.state = ConcurrencyState.STEADY
-                self.steady_concurrency = self.current
-                self.last_healthy_concurrency = self.current
-            # else: drift 1.1-1.5 or stressed but < 4 ticks → hold in RECOVER
-
-        return self.current
-
-
-# === SIMPLIFIED CIRCUIT BREAKER (defense-in-depth) =====================================================
-
-class SimplifiedCircuitBreaker:
-    """Simplified circuit breaker for the header-aware strategy.
-
-    Defense-in-depth: catches pathological scenarios that residual latency
-    can't detect (network failures, transport regressions, bad threshold tuning).
-
-    Simpler than the archived version: fixed cooldown, no drain-time scaling.
-    """
-
-    def __init__(self, config: HeaderAwareConfig = None):
-        self._config = config or DEFAULT_HEADER_AWARE_CONFIG
-        self._events: deque = deque(maxlen=self._config.cb_window)
-        self._state = 'CLOSED'
-        self._last_trip_time: Optional[float] = None
-        self._trip_count: int = 0
-
-    @property
-    def state(self) -> str:
-        return self._state
-
-    @property
-    def trip_count(self) -> int:
-        return self._trip_count
-
-    def record_completion(self):
-        self._events.append('ok')
-
-    def record_timeout(self):
-        self._events.append('timeout')
-
-    def check(self) -> Optional[str]:
-        """Called every tick. Returns 'tripped' or None."""
-        now = time.monotonic()
-
-        if self._state == 'CLOSED':
-            total = len(self._events)
-            if total < 10:
-                return None
-            timeouts = sum(1 for e in self._events if e == 'timeout')
-            rate = timeouts / total
-            if rate > self._config.cb_trip_threshold:
-                self._state = 'OPEN'
-                self._last_trip_time = now
-                self._trip_count += 1
-                print(f"CIRCUIT BREAKER TRIPPED: timeout rate {rate:.1%} ({total} events)")
-                return 'tripped'
-            return None
-
-        elif self._state == 'OPEN':
-            elapsed = now - self._last_trip_time if self._last_trip_time else 0
-            if elapsed >= self._config.cb_cooldown_s:
-                self._state = 'CLOSED'
-            return None
-
-        return None
 
 
 # === MAIN IDEA EXTRACTOR CLASS ========================================================================================================
@@ -2356,13 +1663,17 @@ class IdeaExtractor:
             ],
         )
 
-    async def _fetch_rate_limits_from_api(self) -> RateLimits:
-        """Make a minimal API call to fetch rate limits from response headers."""
+    async def _fetch_rate_limits_from_api(self) -> Tuple[RateLimits, bool]:
+        """Make a minimal API call to fetch rate limits and detect header availability.
+
+        Returns (rate_limits, has_server_headers). has_server_headers is True if
+        openai-processing-ms is present — determines System A (header-aware) vs
+        System B (client-side fallback).
+        """
         from openai import AsyncOpenAI
         from config import API_PROVIDER, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
 
         if API_PROVIDER == "azure":
-            # Azure uses deployment names, not model names — use the configured deployment
             deployment = AZURE_OPENAI_DEPLOYMENT_NAME
             client = AsyncOpenAI(
                 api_key=AZURE_OPENAI_API_KEY,
@@ -2386,22 +1697,28 @@ class IdeaExtractor:
                 input="Hi",
             )
 
-        return extract_rate_limits_from_response(response)
+        rate_limits = extract_rate_limits_from_response(response)
+        has_server_headers = 'openai-processing-ms' in response.headers
+        return rate_limits, has_server_headers
 
-    def _initialize_rate_limiters(self, limits, num_tasks: int, avg_latency_s: float = None) -> int:
-        """Initialize four-layer rate limiting with gradual ramp-up.
+    def _initialize_rate_limiters(self, limits, num_tasks: int,
+                                  has_server_headers: bool = True) -> int:
+        """Initialize rate pacing + concurrency control. Both always active.
 
-        Layer 1: RPM — AsyncLimiter with PID-adjustable arrival rate
-        Layer 2: TPM — TokenBucket (self-regulating)
-        Layer 3: Concurrency — ConcurrencyGate via Little's Law, with gradual ramp-up
-        Layer 4: Circuit breaker — monitors timeout rate, adjusts Layer 3 on sustained pressure
+        System A (has_server_headers=True): header-aware concurrency + passive rate rails
+        System B (has_server_headers=False): P50-drift concurrency + PID rate pacing
 
-        Returns target concurrency (what we're ramping toward).
+        Both systems use the same per-request flow:
+            semaphore → token_bucket → rate_limiter → API call
+
+        Returns target concurrency.
         """
         headroom = self.processing_config.rate_limit_headroom
-        avg_latency_s = avg_latency_s or DEFAULT_LATENCY_SECONDS
+        avg_latency_s = getattr(self, '_stored_p50', None) or DEFAULT_LATENCY_SECONDS
+        self._has_server_headers = has_server_headers
 
-        # Layer 1: RPM — AsyncLimiter (PID adjusts this via current_arrival_rate)
+        # --- Rate pacing (always active) ---
+        # RPM: AsyncLimiter
         arrival_rate = min(
             limits.requests_per_minute * headroom / 60,
             limits.tokens_per_minute * headroom / self.avg_tokens / 60
@@ -2409,52 +1726,39 @@ class IdeaExtractor:
         self.rate_limiter = AsyncLimiter(1, time_period=1.0 / arrival_rate)
         self.current_arrival_rate = arrival_rate
 
-        # Layer 2: TPM — TokenBucket (self-regulating via acquire/wait)
+        # TPM: TokenBucket
         self.tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
 
-        # Layer 3: Concurrency — capacity-relative starting + ramp to 90% of Little's Law
+        # --- Starting concurrency ---
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        little_law = compute_optimal_concurrency(
-            api_limits, avg_latency_s, self.avg_tokens,
-            headroom=headroom
+        little_law_cap = min(
+            compute_optimal_concurrency(api_limits, avg_latency_s, self.avg_tokens, headroom),
+            num_tasks
         )
-        little_law_cap = min(little_law, num_tasks)
-
-        # Starting concurrency = min(empirical capacity or cold start cap, num_tasks)
         if getattr(self, '_stored_empirical_capacity', None) is not None:
             target = min(int(self._stored_empirical_capacity), num_tasks)
         else:
             target = min(COLD_START_CAP, num_tasks)
-        # Cap at Little's Law: for rate-limited cases this is the binding constraint
         target = min(target, little_law_cap)
-        target = max(target, DEFAULT_CONCURRENCY_CONTROL_CONFIG.min_concurrency)
+        target = max(target, 2)
 
         self.semaphore = ConcurrencyGate(target)
         self.optimal_concurrency = target
 
-        # Detect binding constraint
-        avg_latency = getattr(self, '_stored_p50', None) or DEFAULT_LATENCY_SECONDS
-        bottleneck = detect_bottleneck(
-            limits.requests_per_minute, limits.tokens_per_minute,
-            self.avg_tokens, target, avg_latency_s=avg_latency
-        )
-        self._bottleneck = bottleneck
-
-        # Throughput-bound: header-aware controller (falls back to P50-drift if headers unavailable)
-        # Rate-limited: PID + rate limiters handle pacing, no state machine needed
-        if bottleneck == "throughput":
-            self._residual_tracker = ResidualLatencyTracker(config=self.header_aware_config)
-            self._concurrency_sm = HeaderAwareConcurrencyController(
-                starting=target,
-                config=DEFAULT_CONCURRENCY_CONTROL_CONFIG,
-                header_config=self.header_aware_config,
-            )
-            self.circuit_breaker = SimplifiedCircuitBreaker(config=self.header_aware_config)
+        # --- System-specific components ---
+        if has_server_headers:
+            # System A: header-aware concurrency + passive rate rails
+            self._residual_tracker = ResidualLatencyTracker()
+            self._concurrency_sm = HeaderAwareConcurrencyController(starting=target)
+            self.circuit_breaker = SimplifiedCircuitBreaker()
         else:
-            self._concurrency_sm = None
-            self.circuit_breaker = None
-
-            # PID components — only for rate-limited strategy
+            # System B: P50-drift concurrency + PID rate pacing
+            self._concurrency_sm = ArchivedP50StateMachine(
+                starting=target, bottleneck="throughput",
+                config=DEFAULT_CONCURRENCY_CONTROL_CONFIG,
+            )
+            self.circuit_breaker = ArchivedCircuitBreaker(config=self.circuit_breaker_config)
+            self._residual_tracker = None
             self.tpm_tracker = RealTimeTPMTracker(
                 window_seconds=self.tpm_tracking_config.sliding_window_seconds
             )
@@ -2470,6 +1774,7 @@ class IdeaExtractor:
             self.rpm_tracker = RealTimeRPMTracker(
                 window_seconds=self.tpm_tracking_config.sliding_window_seconds
             )
+            print("[SYSTEM B] No server-side headers — using P50-drift concurrency + PID rate pacing")
 
         return target
 
@@ -2912,7 +2217,7 @@ class IdeaExtractor:
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line("Fetching rate limits from API...")
 
-        limits = await self._fetch_rate_limits_from_api()
+        limits, has_server_headers = await self._fetch_rate_limits_from_api()
 
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             if self.verbose_reporter.enabled:
@@ -2978,13 +2283,13 @@ class IdeaExtractor:
         # === PHASE 5: INITIALIZE RATE LIMITING ===
         self.bootstrap_avg_tokens = self.avg_tokens
 
-        target_conc = self._initialize_rate_limiters(limits, len(tasks))
+        target_conc = self._initialize_rate_limiters(limits, len(tasks), has_server_headers)
         warm_up_samples = self._calculate_warm_up_sample_size(len(tasks))
         self._warm_up_calibrated = False
         self._warm_up_target_samples = warm_up_samples
 
         if self.verbose_reporter.enabled:
-            controller = "header-aware + circuit breaker" if self._bottleneck == "throughput" else "PID + rate limiters"
+            controller = "header-aware + circuit breaker" if self._has_server_headers else "PID + rate limiters"
             self.verbose_reporter.stat_line(f"\nRate limiting: {controller}")
             self.verbose_reporter.stat_line(f"Target concurrency: {self.optimal_concurrency}, calibration after {warm_up_samples} completions")
 
@@ -3018,14 +2323,14 @@ class IdeaExtractor:
             print(f"- Target concurrency: {self.optimal_concurrency} (empirical capacity, measured over time)")
         else:
             print(f"- Target concurrency: {self.optimal_concurrency} (cold start cap, no empirical data)")
-        print(f"- Bottleneck: {self._bottleneck}")
+        print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side fallback)'}")
         if isinstance(sm, HeaderAwareConcurrencyController):
             print(f"- Controller: header-aware (signals: residual latency + header pressure) ramp step: +{sm.ramp_step}")
         elif sm:
             print(f"- Controller: P50-drift fallback (signals: in-flight P95/P100) ramp step: +{sm.ramp_step}")
         else:
             print(f"- Controller: PID (target: {self.tpm_tracking_config.target_utilization:.0%} utilization)")
-        if self._bottleneck != "throughput":
+        if not self._has_server_headers:
             print(f"- Arrival rate: {self.current_arrival_rate:.2f}/s (PID-adjusted)")
         print(f"- Token calibration: after {warm_up_samples} completions")
         print(f"- Processing {len(tasks):,} tasks")
@@ -3128,19 +2433,13 @@ class IdeaExtractor:
                 tick_successful = current_successful - last_tick_successful
                 tick_rate = tick_successful / tick_duration if tick_duration > 0 else 0.0
 
-                # Constraint string (rate-limited strategies only)
-                bn = self._bottleneck
-                if bn == "throughput":
-                    constraint_str = ""  # header-aware tick builds its own display
-                elif bn == "rpm":
-                    rate_rps = current_rpm / 60 if current_rpm else 0
-                    limit_rps = effective_rpm / 60
-                    constraint_str = f"req:{rate_rps:.1f}/s | limit:{limit_rps:.1f}/s | pace:{rpm_pct:.0f}%"
-                else:
-                    rate_tps = current_tpm / 60 if current_tpm else 0
-                    limit_tps = effective_tpm / 60
-                    def _fmt_k(v): return f"{v/1000:.1f}k" if v >= 1000 else f"{v:.0f}"
-                    constraint_str = f"tok:{_fmt_k(rate_tps)}/s | limit:{_fmt_k(limit_tps)}/s | pace:{tpm_pct:.0f}%"
+                # Constraint string (System B only — System A builds its own display)
+                constraint_str = ""
+                if not self._has_server_headers:
+                    if self.tpm_tracker and self.rpm_tracker:
+                        rate_rps = current_rpm / 60 if current_rpm else 0
+                        limit_rps = effective_rpm / 60
+                        constraint_str = f"req:{rate_rps:.1f}/s | limit:{limit_rps:.1f}/s | pace:{rpm_pct:.0f}%"
                 drain = active / throughput if throughput > 0 else 0
 
                 timeout_info = f" | deferred:{timeouts}" if timeouts > 0 else ""
@@ -3155,7 +2454,7 @@ class IdeaExtractor:
                     timeouts=timeouts,
                 )
 
-                if bn == "throughput":
+                if self._has_server_headers:
                     print(self._tick_throughput(ctx, drain))
                 else:
                     print(self._tick_rate_limited(ctx, len(tasks)))
@@ -3168,7 +2467,7 @@ class IdeaExtractor:
             if (not self._warm_up_calibrated
                     and len(self.actual_total_tokens) >= self._warm_up_target_samples
                     and len(self.latency_tracker.values) >= self._warm_up_target_samples):
-                if self._bottleneck == "throughput":
+                if self._has_server_headers:
                     old_avg, new_avg = self._calibrate_tokens_from_warm_up()
                     print(f"\n[WARM-UP] avg_tokens {old_avg} → {new_avg}, "
                           f"concurrency unchanged at {self.optimal_concurrency}")
@@ -3176,9 +2475,9 @@ class IdeaExtractor:
                     self._calibrate_concurrency_from_warm_up(len(tasks))
 
             # INTERVAL: token correction + PID arrival rate (rate-limited only)
-            if now - last_adjustment >= (0 if self._bottleneck != "throughput" else ADJUSTMENT_INTERVAL):
+            if now - last_adjustment >= (0 if not self._has_server_headers else ADJUSTMENT_INTERVAL):
                 self._adjust_throughput_if_needed()
-                if self._bottleneck != "throughput":
+                if not self._has_server_headers:
                     await self._apply_pid_adjustment()
                 last_adjustment = now
 
@@ -3269,7 +2568,7 @@ class IdeaExtractor:
             retry_workers_count = max(5, min(len(failed_tasks_for_retry), num_workers // 10))
 
             # Retry timeout: generous for throughput-bound (server queuing), normal for rate-limited
-            if self._bottleneck == "throughput":
+            if self._has_server_headers:
                 self.latency_tracker.retry_mode = 60.0  # 60s floor — server may have been queuing
             else:
                 self.latency_tracker.retry_mode = self.latency_tracker.timeout_floor  # same as main batch
@@ -3373,11 +2672,11 @@ class IdeaExtractor:
         if offset_stats['min_offset'] is not None:
             print(f"  - Offset range: {offset_stats['min_offset']} to {offset_stats['max_offset']}")
         print(f"- Token corrections: {self.v3_stats['threshold_adjustments']}")
-        if self._bottleneck != "throughput":
+        if not self._has_server_headers:
             print(f"- PID adjustments: {self.v3_stats.get('pid_adjustments', 0)}")
         cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
         controller_type = "header-aware" if isinstance(self._concurrency_sm, HeaderAwareConcurrencyController) else "P50-drift"
-        if self._bottleneck != "throughput":
+        if not self._has_server_headers:
             controller_type = "PID"
         print(f"- Final concurrency: {self.optimal_concurrency} (controller:{controller_type}, CB:{cb_state}, trips:{self.v3_stats.get('circuit_breaker_trips', 0)})")
         print(f"- Cached empirical capacity: {self.optimal_concurrency}")
@@ -3446,7 +2745,7 @@ class IdeaExtractor:
                 "p50_latency_s": self.latency_tracker.get_p50(),
                 "avg_tokens": sum(tokens) / len(tokens),
                 "empirical_capacity": empirical,
-                "bottleneck": self._bottleneck,
+                "has_server_headers": self._has_server_headers,
             }
             if self.tiktoken_offset_learner.is_learned():
                 measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
