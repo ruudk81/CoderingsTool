@@ -1057,7 +1057,7 @@ class SmoothRequester:
         timeout_info = f" | deferred:{self.stats['timeouts']}" if self.stats['timeouts'] > 0 else ""
 
         return (f"[PHASE6] {completed}/{total} | inflight:{active}{conc_str} | {pace_str}"
-                f" | completing:{tick_rate:.0f}/s{latency_str} | {control_str}{timeout_info}")
+                f"{latency_str} | completing:{tick_rate:.0f}/s | {control_str}{timeout_info}")
 
     def _evaluate_concurrency_header_aware(self, sm, throughput, p50, warmup_elapsed):
         """Evaluate header-aware state machine. Updates server_concurrency. Returns state string."""
@@ -1319,8 +1319,12 @@ class SmoothRequester:
         await asyncio.gather(*workers)
 
         print(f"⏱ T+{time.time() - start_time:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred")
-        sm_state = self._concurrency_controller.state.value if self._concurrency_controller and hasattr(self._concurrency_controller, 'state') else "N/A"
-        print(f"  Final concurrency: {self.optimal_concurrency} (state: {sm_state})")
+        is_rate_capped = self._rate_limit_concurrency <= self._server_concurrency
+        if is_rate_capped:
+            print(f"  RATE-CAPPED at {self.optimal_concurrency} (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
+        else:
+            sm_state = self._concurrency_controller.state.value if self._concurrency_controller and hasattr(self._concurrency_controller, 'state') else "N/A"
+            print(f"  Final concurrency: {self.optimal_concurrency} (state: {sm_state})")
 
         # === RETRY PASS ===
         failed_for_retry = []
@@ -1379,13 +1383,17 @@ class SmoothRequester:
 
         # Summary
         wall_time = time.time() - start_time
+        rate_capped_final = self._rate_limit_concurrency <= self._server_concurrency
         print(f"\nCompleted {num_tasks} tasks in {wall_time:.1f}s")
         print(f"- Successful: {self.stats['tasks_successful']}")
         if recovered > 0:
             print(f"- Recovered: {recovered} (retried successfully)")
         print(f"- Rate limits: {self.stats['rate_limits']}")
         print(f"- Timeouts: {self.stats['timeouts']}")
-        print(f"- Final concurrency: {self.optimal_concurrency}")
+        if rate_capped_final:
+            print(f"- Rate-capped at concurrency {self.optimal_concurrency}")
+        else:
+            print(f"- Final concurrency: {self.optimal_concurrency}")
 
         # Save stats
         self._save_stats()
