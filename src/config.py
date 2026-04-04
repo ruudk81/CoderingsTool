@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 # DEPLOYMENT - provider + family
 # =============================================================================
 
+#API_PROVIDER = "openai"  # Options: "openai" or "azure"
+#MODEL_FAMILY = "gpt-5.4"
+
 API_PROVIDER = "azure"  # Options: "openai" or "azure"
 MODEL_FAMILY = "gpt-4.1"
 
