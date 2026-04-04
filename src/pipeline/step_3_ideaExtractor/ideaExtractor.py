@@ -2300,6 +2300,7 @@ class IdeaExtractor:
         rpm_throughput = limits.requests_per_minute * headroom / 60
         tpm_throughput = limits.tokens_per_minute * headroom / self.avg_tokens / 60
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
+        self._rate_bottleneck = bottleneck  # which rate limit binds (for System B display)
         expected_throughput = min(rpm_throughput, tpm_throughput)
 
         # Report every ~5% of tasks, min 10
@@ -2439,9 +2440,16 @@ class IdeaExtractor:
                 constraint_str = ""
                 if not self._has_server_headers:
                     if self.tpm_tracker and self.rpm_tracker:
-                        rate_rps = current_rpm / 60 if current_rpm else 0
-                        limit_rps = effective_rpm / 60
-                        constraint_str = f"req:{rate_rps:.1f}/s | limit:{limit_rps:.1f}/s | pace:{rpm_pct:.0f}%"
+                        rate_bn = getattr(self, '_rate_bottleneck', 'TPM')
+                        if rate_bn == "TPM":
+                            rate_tps = current_tpm / 60 if current_tpm else 0
+                            limit_tps = effective_tpm / 60
+                            def _fmt_k(v): return f"{v/1000:.1f}k" if v >= 1000 else f"{v:.0f}"
+                            constraint_str = f"tok:{_fmt_k(rate_tps)}/s | limit:{_fmt_k(limit_tps)}/s | pace:{tpm_pct:.0f}%"
+                        else:
+                            rate_rps = current_rpm / 60 if current_rpm else 0
+                            limit_rps = effective_rpm / 60
+                            constraint_str = f"req:{rate_rps:.1f}/s | limit:{limit_rps:.1f}/s | pace:{rpm_pct:.0f}%"
                 drain = active / throughput if throughput > 0 else 0
 
                 timeout_info = f" | deferred:{timeouts}" if timeouts > 0 else ""
