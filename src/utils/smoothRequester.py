@@ -572,6 +572,7 @@ class SmoothRequester:
         self._stored_p50 = None
         self._stored_empirical_capacity = None
         self._stored_avg_tokens = None
+        self._stored_was_rate_limited = None
         _stored_timeout = None
         _tiktoken_default = 300
 
@@ -586,6 +587,8 @@ class SmoothRequester:
                 self.avg_tokens = self._stored_avg_tokens
             if "tiktoken_offset" in _stored:
                 _tiktoken_default = int(_stored["tiktoken_offset"])
+            if "was_rate_limited" in _stored:
+                self._stored_was_rate_limited = _stored["was_rate_limited"]
 
         # Tiktoken offset learner
         self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
@@ -718,11 +721,11 @@ class SmoothRequester:
             api_limits, avg_latency, self.avg_tokens, headroom
         )
 
-        # Server concurrency: what we know about the server
-        # Ignore stored empirical_capacity if it's at or below rate_limit_concurrency —
-        # that means it was a rate-limited artifact, not a server capacity measurement
+        # Server concurrency: only use stored empirical_capacity if the previous
+        # run was concurrency-controlled (not rate-limited). If it was rate-limited,
+        # the achieved concurrency reflects rate limits, not server capacity.
         if (self._stored_empirical_capacity is not None
-                and self._stored_empirical_capacity > self._rate_limit_concurrency):
+                and not self._stored_was_rate_limited):
             self._server_concurrency = int(self._stored_empirical_capacity)
         else:
             self._server_concurrency = COLD_START_CAP
@@ -1467,9 +1470,10 @@ class SmoothRequester:
             "p50_latency_s": self.latency_tracker.get_p50(),
             "avg_tokens": sum(tokens) / len(tokens),
             "has_server_headers": self._has_server_headers,
+            "was_rate_limited": self._is_rate_limited,
         }
 
-        # Only save empirical_capacity when throughput-bound — if rate-limited,
+        # Only save empirical_capacity when concurrency-controlled — if rate-limited,
         # the achieved concurrency reflects rate limits, not server capacity
         if not self._is_rate_limited:
             sm = self._concurrency_controller
@@ -1483,7 +1487,7 @@ class SmoothRequester:
         update_dataset_phase_stats(
             self._perf_stats, self.model, self.phase_key,
             self.dataset_key, measurements, len(tokens),
-            overwrite_fields=["empirical_capacity", "has_server_headers"]
+            overwrite_fields=["empirical_capacity", "has_server_headers", "was_rate_limited"]
         )
         save_stats(self._perf_stats)
 
