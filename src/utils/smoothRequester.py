@@ -719,7 +719,10 @@ class SmoothRequester:
         )
 
         # Server concurrency: what we know about the server
-        if self._stored_empirical_capacity is not None:
+        # Ignore stored empirical_capacity if it's at or below rate_limit_concurrency —
+        # that means it was a rate-limited artifact, not a server capacity measurement
+        if (self._stored_empirical_capacity is not None
+                and self._stored_empirical_capacity > self._rate_limit_concurrency):
             self._server_concurrency = int(self._stored_empirical_capacity)
         else:
             self._server_concurrency = COLD_START_CAP
@@ -1460,18 +1463,20 @@ class SmoothRequester:
         if not tokens:
             return
 
-        sm = self._concurrency_controller
-        if sm and hasattr(sm, 'last_healthy_concurrency'):
-            empirical = float(int(sm.last_healthy_concurrency * 0.95))
-        else:
-            empirical = float(self.optimal_concurrency)
-
         measurements = {
             "p50_latency_s": self.latency_tracker.get_p50(),
             "avg_tokens": sum(tokens) / len(tokens),
-            "empirical_capacity": empirical,
             "has_server_headers": self._has_server_headers,
         }
+
+        # Only save empirical_capacity when throughput-bound — if rate-limited,
+        # the achieved concurrency reflects rate limits, not server capacity
+        if not self._is_rate_limited:
+            sm = self._concurrency_controller
+            if sm and hasattr(sm, 'last_healthy_concurrency'):
+                measurements["empirical_capacity"] = float(int(sm.last_healthy_concurrency * 0.95))
+            else:
+                measurements["empirical_capacity"] = float(self.optimal_concurrency)
         if self.tiktoken_offset_learner.is_learned():
             measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
 
