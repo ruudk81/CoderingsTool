@@ -255,7 +255,6 @@ class IdeaExtractor:
             samples_window=self.processing_config.latency_tracker_samples_window,
             timeout_floor=_stored_timeout if _stored_timeout else TIMEOUT_FLOOR_SECONDS,
             default_timeout=_stored_timeout if _stored_timeout else DEFAULT_TIMEOUT_SECONDS,
-            default_latency=DEFAULT_LATENCY_SECONDS,
         )
 
         # Generic specifiers (must be initialized before _calculate_avg_tokens)
