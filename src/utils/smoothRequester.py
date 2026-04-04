@@ -762,12 +762,16 @@ class SmoothRequester:
         self.rpm_tracker = RealTimeRPMTracker()
         self.pid_controller = PIDThroughputController()
 
-        print(f"- Binding constraint: {'rate-limited' if self._is_rate_limited else 'throughput-bound'}"
-              f" (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
+        # Binding constraint printed in process_all() RATE LIMITING SETUP block
 
     def _update_binding_constraint(self):
-        """Recalculate which constraint binds. Called each tick."""
+        """Recalculate which constraint binds. Called each tick. Logs on change."""
+        was_rate_limited = getattr(self, '_is_rate_limited', None)
         self._is_rate_limited = self._rate_limit_concurrency <= self._server_concurrency
+        if was_rate_limited is not None and was_rate_limited != self._is_rate_limited:
+            old = "rate-limited" if was_rate_limited else "throughput-bound"
+            new = "rate-limited" if self._is_rate_limited else "throughput-bound"
+            print(f"[BINDING] {old} → {new} (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
 
     def _recalculate_rate_limit_concurrency(self):
         """Recalculate rate-limit concurrency from current avg_tokens and latency."""
@@ -1250,6 +1254,8 @@ class SmoothRequester:
         print(f"- Initial avg_tokens ({token_src}): {self.avg_tokens}")
         print(f"- Target concurrency: {self.optimal_concurrency}")
         print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side)'}")
+        binding = "rate-limited" if self._is_rate_limited else "throughput-bound"
+        print(f"- Binding constraint: {binding} (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
         print(f"- Processing {num_tasks:,} tasks")
 
         # Queue + workers
