@@ -1284,6 +1284,30 @@ class IdeaExtractor:
             ],
         )
 
+    async def _fetch_rate_limits_from_api(self) -> RateLimits:
+        """Probe call to discover rate limits. Used by context extraction phases (1-3)."""
+        from openai import AsyncOpenAI
+        from config import API_PROVIDER, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+
+        if API_PROVIDER == "azure":
+            deployment = AZURE_OPENAI_DEPLOYMENT_NAME
+            client = AsyncOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/",
+                default_query={"api-version": "2024-10-21"},
+            )
+            response = await client.chat.completions.with_raw_response.create(
+                model=deployment,
+                messages=[{"role": "user", "content": "Hi"}],
+                max_completion_tokens=5,
+            )
+        else:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            response = await client.responses.with_raw_response.create(
+                model=self.model, input="Hi",
+            )
+        return extract_rate_limits_from_response(response)
+
     def _initialize_conservative_rate_limiters(self, limits: 'RateLimits', num_tasks: int = 20) -> None:
         """Initialize conservative rate limiters for context extraction phase.
 
@@ -1316,7 +1340,7 @@ class IdeaExtractor:
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line("Fetching rate limits from API...")
 
-        limits, has_server_headers = await self._fetch_rate_limits_from_api()
+        limits = await self._fetch_rate_limits_from_api()
 
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             if self.verbose_reporter.enabled:
