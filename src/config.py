@@ -8,11 +8,11 @@ from dataclasses import dataclass, field
 # DEPLOYMENT - provider + family
 # =============================================================================
 
-#API_PROVIDER = "openai"  # Options: "openai" or "azure"
-#MODEL_FAMILY = "gpt-5.4"
+API_PROVIDER = "openai"  # Options: "openai" or "azure"
+MODEL_FAMILY = "gpt-5.4"
 
-API_PROVIDER = "azure"  # Options: "openai" or "azure"
-MODEL_FAMILY = "gpt-4.1"
+#API_PROVIDER = "azure"  # Options: "openai" or "azure"
+#MODEL_FAMILY = "gpt-4.1"
 
 # Examples:
 #   MODEL_FAMILY = "gpt-4.1"  →  gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
@@ -42,7 +42,7 @@ STEP_MODEL_TIERS = {
     # Step 3: Idea Extraction
     "idea_extraction_context": "default",           # specifiers + dimension discovery
     "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
-    "idea_extraction_abstraction_ladder": "mini",   # main extraction + retry
+    "idea_extraction_abstraction_ladder": "nano",   # main extraction + retry
     # Step 4: Taxonomy Classifier (P1-P7)
     "classifier_p1":    "nano",      # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation

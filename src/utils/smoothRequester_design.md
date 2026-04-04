@@ -8,32 +8,37 @@ The caller only provides: task list, prepare function, parse function, config pa
 
 ## How It Works
 
-### Integrated Rate + Concurrency Control
+### Both Controllers Always Active
 
-Both rate pacing (RPM/TPM) and concurrency control are always active simultaneously. The binding constraint is determined continuously by:
+Rate pacing (PID + TokenBucket + AsyncLimiter) and concurrency control (state machine + ConcurrencyGate) run every tick simultaneously. Neither interferes because latency is measured after all gates — the state machine's signal (residual drift or P50 drift) is clean.
 
-```
-rate_limit_concurrency = Little's Law from RPM/TPM limits
-server_concurrency = discovered via state machine (empirical or cold start)
-effective = min(rate_limit_concurrency * 0.95, server_concurrency)
-```
+Effective concurrency = `min(rate_limit_concurrency, server_concurrency, num_tasks)`.
 
-The 0.95 bias favors rate limiting — exceeding rate limits causes 429 hard failures, while under-utilizing server capacity only costs throughput.
+Whichever is smaller naturally caps the system. No mode switching, no oscillation.
 
-### Binding Constraint Determines Active Controller
+### Dynamic State Display
 
-Each tick:
-- If rate-limited: PID adjusts arrival rate, state machine is idle
-- If throughput-bound: state machine adjusts concurrency, PID is idle
-- Binding can shift mid-run (logged as `[BINDING]`)
+Each tick, the `min()` determines what's reported:
 
-### Two Signal Sources (cleanly separated)
+- `RATE-CAPPED` — rate limits are the binding constraint
+- State machine state (`RAMP-UP`, `STEADY`, `BACKOFF (N→M)`, `RECOVER`) — server is the binding constraint
+- `WARM-UP` — first 5 seconds, building baseline data
+
+### Two Signal Sources
 
 Depending on header availability (one probe call at startup):
-- **With headers (OpenAI):** Concurrency via residual latency drift (observed - openai-processing-ms)
-- **Without headers (Azure):** Concurrency via P50 latency drift
+- **With headers (OpenAI):** `thru` = residual latency (observed - openai-processing-ms)
+- **Without headers (Azure):** `thru` = P50 observed latency in ms
 
-Both use the same integrated framework — only the concurrency signal source differs.
+Same display format, same label, different data source.
+
+### Report Line Format
+
+```
+[PHASE6] 500/1075 | inflight:92 | req:57/450 (13%) | thru:207ms/193ms (+7%) | completing:50/s | RAMP-UP
+[PHASE6] 693/1075 | inflight:106 | req:58/450 (13%) | thru:292ms/193ms (+50%) | completing:52/s | BACKOFF (106→95) | deferred:1
+[PHASE6] 20/50 | inflight:3 | tok:2.1k/2.2k (94%) | thru:2100ms/2100ms (+0%) | completing:1/s | RATE-CAPPED
+```
 
 ## Caller Interface
 
@@ -56,37 +61,20 @@ def fallback_fn(task, reason):
 results = await requester.process_all(tasks, prepare_fn, parse_fn, fallback_fn)
 ```
 
-The caller does NOT manage workers, gates, ticks, warm-up, PID, retry, inflight tracking, token estimation, or reporting.
+## Caching
 
-## What smoothRequester Owns
-
-1. Probe call (rate limits + header detection)
-2. Cache loading (empirical data from modelPerfStats)
-3. Rate pacing (TokenBucket + AsyncLimiter, PID-adjusted when rate-limited)
-4. Concurrency control (ConcurrencyGate + state machine)
-5. Worker management (queue, spawning, dynamic concurrency increase)
-6. Per-request gate (semaphore → token bucket → rate limiter → timeout)
-7. Per-request outcome recording (latency, tokens, headers, circuit breaker)
-8. Token estimation (tiktoken + learned offset)
-9. Tick evaluation (binding constraint → right controller → progress line)
-10. Warm-up calibration (one-shot token + concurrency recalibration)
-11. Monitoring and reporting (progress lines, BACKOFF events, BINDING shifts)
-12. Retry pass (timed-out + failed tasks, reduced concurrency)
-13. End-of-run stats (saved to cache for next run)
+- Empirical capacity: only saved when server was the binding constraint (not rate-capped). Prevents phantom measurements from rate-limited runs.
+- Per provider:model → phase → dataset_key in `model_perf_stats.json`
+- `was_rate_limited` not needed — determined by `min()` at save time
+- Other fields (p50, avg_tokens, tiktoken_offset) always saved, EMA'd across runs
 
 ## Cost Tracking
 
-smoothRequester does NOT calculate costs directly. It tracks token usage internally for estimation and reconciliation. The caller takes token snapshots before/after `process_all()` and passes them to CostTracker.
-
-## Verbose Reporting
-
-Progress lines are printed directly by smoothRequester. Format depends on binding constraint:
-- Throughput-bound: `inflight, arrival, completing/s, proc, residual, drift%, baseline, state`
-- Rate-limited: `tok or req rate, limit, pace%, completing/s, thru`
+smoothRequester does NOT calculate costs. The caller takes token snapshots before/after `process_all()` and passes them to CostTracker.
 
 ## Files
 
 - `src/utils/smoothRequester.py` — the orchestrator + all building block classes
 - `src/utils/llm.py` — HeaderCaptureTransport for response header capture
-- `src/utils/modelPerfStats.py` — empirical data cache (load/save)
+- `src/utils/modelPerfStats.py` — empirical data cache
 - `src/pipeline/step_3_ideaExtractor/dev/_archived_p50_drift_state_machine.py` — P50-drift fallback (no headers)
