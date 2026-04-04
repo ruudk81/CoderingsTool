@@ -1079,8 +1079,9 @@ class SmoothRequester:
         new_conc = sm.evaluate(med_res, header_pressure, throughput, p50)
         self._server_concurrency = new_conc
 
+        # Show BACKOFF as state on the tick when the cut happens
         if sm.state == ConcurrencyState.RECOVER and old_state != ConcurrencyState.RECOVER and new_conc < old_conc:
-            print(f"[BACKOFF] concurrency {old_conc} → {new_conc} (drift +{int((sm.residual_drift-1)*100)}%)")
+            return f" BACKOFF ({old_conc}→{new_conc})"
 
         return f" {sm.state.value}"
 
@@ -1099,10 +1100,16 @@ class SmoothRequester:
             inflight_p100 = durations[-1]
             inflight_p95 = durations[min(int(len(durations) * 0.95), len(durations) - 1)]
 
+        old_state = sm.state
+        old_conc = sm.current
         new_conc = sm.evaluate(
             p50=p50, inflight_p95=inflight_p95, inflight_p100=inflight_p100,
             now=time.monotonic(), throughput=throughput, inflight=active)
         self._server_concurrency = new_conc
+
+        # Show BACKOFF as state on the tick when the cut happens
+        if sm.state.value in ("RECOVER", "BACKOFF") and old_state.value not in ("RECOVER", "BACKOFF") and new_conc < old_conc:
+            return f" BACKOFF ({old_conc}→{new_conc})"
 
         return f" {sm.state.value}"
 
