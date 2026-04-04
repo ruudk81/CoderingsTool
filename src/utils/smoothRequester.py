@@ -1125,16 +1125,17 @@ class SmoothRequester:
         return old_avg, measured_avg
 
     def _calibrate_concurrency(self, num_tasks):
-        """System B warm-up: tokens + concurrency recalculation."""
+        """Warm-up: recalibrate tokens, then recalculate effective concurrency."""
         old_avg, new_avg = self._calibrate_tokens()
         old_conc = self.optimal_concurrency
-        new_conc = min(
-            compute_optimal_concurrency(
-                ApiLimits(self.rate_limits.tokens_per_minute, self.rate_limits.requests_per_minute),
-                self._warm_up_measured_latency, new_avg, self._headroom
-            ),
-            num_tasks
-        )
+
+        # Recalculate rate_limit_concurrency with measured data
+        self._recalculate_rate_limit_concurrency()
+
+        # Effective = min(rate, server, tasks) — same logic as tick
+        new_conc = min(self._rate_limit_concurrency, self._server_concurrency, num_tasks)
+        new_conc = max(new_conc, 2)
+
         if new_conc != old_conc:
             self.semaphore.set_limit(new_conc)
             self.optimal_concurrency = new_conc
