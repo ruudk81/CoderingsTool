@@ -1039,14 +1039,14 @@ class SmoothRequester:
             drift = sm.residual_drift if sm else 0.0
             drift_pct = int((drift - 1) * 100)
             drift_str = f"+{drift_pct}%" if drift_pct >= 0 else f"{drift_pct}%"
-            latency_str = f" | residual:{current:.0f}ms/{baseline:.0f}ms ({drift_str})"
+            latency_str = f" | thru:{current:.0f}ms/{baseline:.0f}ms ({drift_str})"
         elif not self._has_server_headers and self.latency_tracker.values:
             current_ms = p50 * 1000
             baseline_val = sm.p50_baseline if sm and hasattr(sm, 'p50_baseline') and sm.p50_baseline > 0 else p50
             baseline_ms = baseline_val * 1000
             drift_pct = int((p50 / baseline_val - 1) * 100) if baseline_val > 0 else 0
             drift_str = f"+{drift_pct}%" if drift_pct >= 0 else f"{drift_pct}%"
-            latency_str = f" | residual:{current_ms:.0f}ms/{baseline_ms:.0f}ms ({drift_str})"
+            latency_str = f" | thru:{current_ms:.0f}ms/{baseline_ms:.0f}ms ({drift_str})"
 
         # --- Dynamic state: which constraint actually binds ---
         is_rate_capped = (effective <= self._rate_limit_concurrency
@@ -1056,7 +1056,7 @@ class SmoothRequester:
         elif is_rate_capped:
             control_str = "RATE-CAPPED"
         else:
-            control_str = f"THROUGHPUT-CONTROLLED | {state_str.strip()}" if state_str.strip() else "THROUGHPUT-CONTROLLED"
+            control_str = state_str.strip() if state_str.strip() else "—"
 
         timeout_info = f" | deferred:{self.stats['timeouts']}" if self.stats['timeouts'] > 0 else ""
 
