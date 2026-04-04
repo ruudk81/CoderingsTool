@@ -1138,9 +1138,9 @@ class SmoothRequester:
         if new_conc != old_conc:
             self.semaphore.set_limit(new_conc)
             self.optimal_concurrency = new_conc
-            print(f"\n[WARM-UP] concurrency {old_conc} → {new_conc} (avg_tokens {old_avg} → {new_avg})")
+            print(f"[WARM-UP] concurrency {old_conc} → {new_conc} (avg_tokens {old_avg} → {new_avg})")
         else:
-            print(f"\n[WARM-UP] avg_tokens {old_avg} → {new_avg}, concurrency unchanged at {old_conc}")
+            print(f"[WARM-UP] avg_tokens {old_avg} → {new_avg}, concurrency unchanged at {old_conc}")
 
     def _adjust_throughput_if_needed(self):
         """Token estimate correction when actual exceeds estimate by >5%."""
@@ -1152,7 +1152,7 @@ class SmoothRequester:
             return False
         old = self.avg_tokens
         self.avg_tokens = int(actual_avg)
-        print(f"\n[TOKEN CORRECTION] avg_tokens: {old} → {self.avg_tokens} (actual {actual_avg:.0f}, +{(ratio-1)*100:.0f}%)\n")
+        print(f"[TOKEN CORRECTION] avg_tokens: {old} → {self.avg_tokens} (actual {actual_avg:.0f}, +{(ratio-1)*100:.0f}%)")
         return True
 
     async def _apply_pid(self):
