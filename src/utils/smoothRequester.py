@@ -864,7 +864,6 @@ class SmoothRequester:
 
                 latency = time.perf_counter() - api_start
                 self._inflight_starts.pop(task_id, None)
-                self.latency_tracker.add(latency)
 
                 if self.circuit_breaker:
                     self.circuit_breaker.record_completion()
@@ -912,6 +911,9 @@ class SmoothRequester:
                 self.stats['tasks_processed'] += 1
                 if result is not None:
                     self.stats['tasks_successful'] += 1
+                    # Only record latency for clean successes — keeps P50 clean
+                    # for Little's Law and timeout calculation
+                    self.latency_tracker.add(latency)
                 return result
 
             except asyncio.TimeoutError:
