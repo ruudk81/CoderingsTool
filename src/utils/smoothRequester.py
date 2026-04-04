@@ -1027,29 +1027,37 @@ class SmoothRequester:
 
         # --- Concurrency display ---
         conc_str = f" conc:{concurrency}" if concurrency != active else ""
-        conc_info = f"inflight:{active}{conc_str}"
 
-        # --- Server signal display (header-aware or P50) ---
-        signal_str = ""
+        # --- Latency display (P50 with baseline, works for both header and no-header) ---
+        latency_str = ""
         if self._has_server_headers and self._residual_tracker and self._residual_tracker.sample_count >= 5:
             med_res = self._residual_tracker.median_residual()
             med_proc = self._residual_tracker.median_processing()
-            drift = sm.residual_drift if sm else 0.0
             baseline = sm.residual_baseline if sm else 0.0
-            total_rt = (med_proc + med_res) / 1000
-            arrival = int(tick_rate * total_rt) if total_rt > 0 else 0
-            drift_str = f"+{int((drift-1)*100)}%" if drift >= 1 else f"{int((drift-1)*100)}%"
-            signal_str = f" | arrival:{arrival} | proc:{med_proc/1000:.1f}s | residual:{med_res:.0f}ms({drift_str})"
-        elif not self._has_server_headers and self.latency_tracker.values and sm:
-            baseline = sm.p50_baseline if hasattr(sm, 'p50_baseline') and sm.p50_baseline > 0 else p50
+            drift = sm.residual_drift if sm else 0.0
+            drift_pct = int((drift - 1) * 100)
+            drift_str = f"+{drift_pct}%" if drift_pct >= 0 else f"{drift_pct}%"
+            latency_str = f" | P50:{med_proc/1000:.1f}s | residual:{med_res:.0f}ms/{baseline:.0f}ms ({drift_str})"
+        elif not self._has_server_headers and self.latency_tracker.values:
+            baseline = sm.p50_baseline if sm and hasattr(sm, 'p50_baseline') and sm.p50_baseline > 0 else p50
             drift_pct = int((p50 / baseline - 1) * 100) if baseline > 0 else 0
             drift_str = f"+{drift_pct}%" if drift_pct >= 0 else f"{drift_pct}%"
-            signal_str = f" | P50:{p50:.1f}s({drift_str})"
+            latency_str = f" | P50:{p50:.1f}s/{baseline:.1f}s ({drift_str})"
+
+        # --- Dynamic state: which constraint actually binds ---
+        is_rate_capped = (effective <= self._rate_limit_concurrency
+                          and self._rate_limit_concurrency <= self._server_concurrency)
+        if warmup_elapsed < 5.0:
+            control_str = "WARM-UP"
+        elif is_rate_capped:
+            control_str = "RATE-CAPPED"
+        else:
+            control_str = state_str.strip() if state_str.strip() else "—"
 
         timeout_info = f" | deferred:{self.stats['timeouts']}" if self.stats['timeouts'] > 0 else ""
 
-        return (f"[PHASE6] {completed}/{total} | {conc_info} | {pace_str}"
-                f" | completing:{tick_rate:.0f}/s{signal_str} |{state_str}{timeout_info}")
+        return (f"[PHASE6] {completed}/{total} | inflight:{active}{conc_str} | {pace_str}"
+                f" | completing:{tick_rate:.0f}/s{latency_str} | {control_str}{timeout_info}")
 
     def _evaluate_concurrency_header_aware(self, sm, throughput, p50, warmup_elapsed):
         """Evaluate header-aware state machine. Updates server_concurrency. Returns state string."""
