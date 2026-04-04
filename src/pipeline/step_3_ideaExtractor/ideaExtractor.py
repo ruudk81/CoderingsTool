@@ -391,7 +391,8 @@ class IdeaExtractor:
             'tasks_failed': 0,
             'retries': 0,
             'rate_limits': 0,
-            'timeouts': 0
+            'timeouts': 0,
+            'empty_ladder_ideas': 0,  # ideas with text but all ladder fields empty (nano leniency)
         }
 
         # Failure tracking: set for O(1) lookup + list for detailed reporting
@@ -1418,13 +1419,22 @@ class IdeaExtractor:
                             # Clean idea text
                             idea_text = self._format_idea_text(normalized)
                             response_idea_id = str(i + 1)
+                            instance = taxonomy_resp.instance if taxonomy_resp else ""
+                            interpretation = taxonomy_resp.interpretation if taxonomy_resp else ""
+                            abstraction = taxonomy_resp.abstraction if taxonomy_resp else ""
+                            domain = taxonomy_resp.domain if taxonomy_resp else ""
+
+                            # Track silently failed ideas (text present but all ladder fields empty)
+                            if not instance and not interpretation and not abstraction:
+                                self.stats['empty_ladder_ideas'] += 1
+
                             ideas.append(models.IdeasExtractedSubmodel(
                                 idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                 idea=idea_text,
-                                instance=taxonomy_resp.instance if taxonomy_resp else "",
-                                interpretation=taxonomy_resp.interpretation if taxonomy_resp else "",
-                                abstraction=taxonomy_resp.abstraction if taxonomy_resp else "",
-                                domain=taxonomy_resp.domain if taxonomy_resp else "",
+                                instance=instance,
+                                interpretation=interpretation,
+                                abstraction=abstraction,
+                                domain=domain,
                                 valence=getattr(idea_response, 'valence', "") or "",
                             ))
 
@@ -2107,10 +2117,7 @@ class IdeaExtractor:
         self.v3_stats['threshold_adjustments'] += 1
         self.v3_stats['adjustments_made'] += 1
 
-        print(f"\n⚡ TOKEN ESTIMATE CORRECTION")
-        print(f"   Actual tokens ({actual_avg:.0f}) exceeded estimate ({current_avg:.0f}) by {(ratio-1)*100:.0f}%")
-        print(f"   avg_tokens: {old_avg} → {self.avg_tokens}")
-        print(f"   Tiktoken offset: {self.tiktoken_offset_learner.get_offset()} (learned: {self.tiktoken_offset_learner.is_learned()})")
+        print(f"\n[TOKEN CORRECTION] avg_tokens: {old_avg} → {self.avg_tokens} (actual {actual_avg:.0f}, +{(ratio-1)*100:.0f}%)\n")
 
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"Token estimate correction: {old_avg} → {self.avg_tokens}")
@@ -2690,6 +2697,8 @@ class IdeaExtractor:
             controller_type = "PID"
         print(f"- Final concurrency: {self.optimal_concurrency} (controller:{controller_type}, CB:{cb_state}, trips:{self.v3_stats.get('circuit_breaker_trips', 0)})")
         print(f"- Cached empirical capacity: {self.optimal_concurrency}")
+        if self.stats['empty_ladder_ideas'] > 0:
+            print(f"- Empty ladder ideas: {self.stats['empty_ladder_ideas']} (idea text present, taxonomy fields empty)")
         if self._residual_tracker and self._residual_tracker.sample_count > 0:
             print(f"- Residual latency: median={self._residual_tracker.median_residual():.0f}ms, "
                   f"normalized={self._residual_tracker.normalized_residual():.2f}, "
