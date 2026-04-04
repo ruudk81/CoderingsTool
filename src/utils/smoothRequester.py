@@ -765,9 +765,14 @@ class SmoothRequester:
         # Binding constraint printed in process_all() RATE LIMITING SETUP block
 
     def _update_binding_constraint(self):
-        """Recalculate which constraint binds. Called each tick. Logs on change."""
+        """Recalculate which constraint binds. Called each tick. Logs on change.
+
+        Biased toward rate limiting (0.95 factor): when rate and server limits are
+        close, prefer rate-limited mode because exceeding rate limits causes 429s
+        (hard failure) while under-utilizing server capacity only costs throughput.
+        """
         was_rate_limited = getattr(self, '_is_rate_limited', None)
-        self._is_rate_limited = self._rate_limit_concurrency <= self._server_concurrency
+        self._is_rate_limited = (self._rate_limit_concurrency * 0.95) <= self._server_concurrency
         if was_rate_limited is not None and was_rate_limited != self._is_rate_limited:
             old = "rate-limited" if was_rate_limited else "throughput-bound"
             new = "rate-limited" if self._is_rate_limited else "throughput-bound"
