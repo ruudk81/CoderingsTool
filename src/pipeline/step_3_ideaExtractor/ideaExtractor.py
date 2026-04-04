@@ -101,7 +101,10 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     WarmUpConfig,
 )
 
-# === RATE LIMITING (shared infrastructure from utils/rateLimiter.py) ===================================
+# === SMOOTH REQUESTER (orchestrator for bulk API processing) ==========================================
+from utils.smoothRequester import SmoothRequester
+
+# === RATE LIMITING (building blocks — used for conservative context extraction phases) =================
 from utils.rateLimiter import (
     TokenBucket, ConcurrencyGate, LatencyTracker, TiktokenOffsetLearner,
     SimplifiedCircuitBreaker, ResidualLatencyTracker,
@@ -1559,8 +1562,120 @@ class IdeaExtractor:
                 )
             ],
             idea_count=1,
-            template_prefix=self.template_prefix or ""  # V3: Use extracted template prefix
+            template_prefix=self.template_prefix or ""
         )
+
+    def _build_process_fn(self):
+        """Build the step-specific process function for SmoothRequester.
+
+        Returns a closure that captures all step-3 context (dimension, domains,
+        template prefix) and handles: prompt building, LLM call, response parsing.
+
+        The SmoothRequester wraps this in gate + timeout + outcome recording.
+        """
+        # Capture step-3 state in closure
+        extractor = self
+        config = self.config
+
+        async def process_fn(task: Dict, client, model: str):
+            """Step-3 idea extraction: prompt → LLM → ideas."""
+            # Build canonical phrasing
+            subject, phrasing_template = extractor._build_canonical_phrasing(extractor.primary_dimension)
+            dimension = get_dimension(extractor.primary_dimension)
+            dim_marker = dimension.domain_marker
+            template_prefix = phrasing_template.split(dim_marker)[0].strip() if dim_marker in phrasing_template else phrasing_template
+            if extractor.template_prefix is None:
+                extractor.template_prefix = template_prefix
+
+            # Build prompt
+            prompt = extractor._build_taxonomy_enriched_prompt(
+                task['response'], subject, phrasing_template,
+            )
+
+            # Capture first prompt for debugging
+            if extractor.prompt_printer and not extractor._captured_prompt:
+                extractor.prompt_printer.capture_prompt(
+                    step_name="idea_extraction",
+                    utility_name="IdeaExtractor",
+                    prompt_content=prompt,
+                    prompt_type="idea_extraction_v3",
+                    metadata={
+                        "model": model,
+                        "var_lab": extractor.var_lab,
+                        "respondent_id": task['respondent_id'],
+                        "primary_dimension": extractor.primary_dimension,
+                    }
+                )
+                extractor._captured_prompt = True
+
+            # Store prompt on task for smoothRequester's token estimation
+            task['prompt'] = prompt
+
+            # Create response model
+            AxisExtractionModel = create_extraction_model(
+                dimension=dimension,
+                template_prefix=template_prefix,
+                domains=getattr(extractor, 'domains', None),
+                model=model,
+            )
+
+            # LLM call (instructor handles pydantic retries)
+            response = await llm_create_async(
+                client=client,
+                model=model,
+                response_model=List[AxisExtractionModel],
+                prompt=prompt,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+                max_retries=3,
+                **get_reasoning_params(model),
+            )
+
+            # Parse response into ideas
+            ideas = []
+            for i, idea_response in enumerate(response):
+                normalized = extractor._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
+                if normalized and normalized not in ["", "NA", "N/A"]:
+                    taxonomy_resp = getattr(idea_response, 'abstraction_ladder', None)
+                    idea_text = extractor._format_idea_text(normalized)
+                    instance = taxonomy_resp.instance if taxonomy_resp else ""
+                    interpretation = taxonomy_resp.interpretation if taxonomy_resp else ""
+                    abstraction = taxonomy_resp.abstraction if taxonomy_resp else ""
+                    domain = taxonomy_resp.domain if taxonomy_resp else ""
+
+                    if not instance and not interpretation and not abstraction:
+                        extractor.stats['empty_ladder_ideas'] += 1
+
+                    ideas.append(models.IdeasExtractedSubmodel(
+                        idea_id=f"{task['respondent_id']}_{i+1}",
+                        idea=idea_text,
+                        instance=instance,
+                        interpretation=interpretation,
+                        abstraction=abstraction,
+                        domain=domain,
+                        valence=getattr(idea_response, 'valence', "") or "",
+                    ))
+
+            if ideas:
+                return models.IdeasExtractedModel(
+                    respondent_id=task['respondent_id'],
+                    response=task['response'],
+                    quality_filter=task.get('quality_filter', True),
+                    quality_filter_code=task.get('quality_filter_code', 0),
+                    response_ideas=ideas,
+                    idea_count=len(ideas),
+                    template_prefix=extractor.template_prefix or ""
+                )
+            return None  # empty — retry pass will handle
+
+        return process_fn
+
+    def _build_fallback_fn(self):
+        """Build the fallback function for SmoothRequester."""
+        extractor = self
+        def fallback_fn(task: Dict, reason: str):
+            return extractor.create_fallback_response(task, reason=reason)
+        return fallback_fn
 
     def get_failure_report(self, total_responses: int = None) -> str:
         """Return a formatted report of all PROCESSING_ERROR failures."""
@@ -2289,265 +2404,25 @@ class IdeaExtractor:
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line(f"\nUsing stored avg_tokens: {self.avg_tokens} (warm-up will recalibrate)")
 
-        # === PHASE 5: INITIALIZE RATE LIMITING ===
-        self.bootstrap_avg_tokens = self.avg_tokens
+        # === PHASE 5+6: BULK EXTRACTION via SmoothRequester ===
+        # SmoothRequester handles: rate pacing, concurrency control, workers,
+        # monitoring, warm-up, retry pass, cache stats — everything.
+        self._smooth_requester = SmoothRequester(
+            model=self.model_abstraction_ladder,
+            dataset_key=self._dataset_key,
+            phase_key="step3_idea_extraction",
+            num_tasks=len(tasks),
+            verbose=self.verbose_reporter.enabled,
+            processing_config=self.processing_config,
+        )
 
-        target_conc = self._initialize_rate_limiters(limits, len(tasks), has_server_headers)
-        warm_up_samples = self._calculate_warm_up_sample_size(len(tasks))
-        self._warm_up_calibrated = False
-        self._warm_up_target_samples = warm_up_samples
+        # Build step-specific process function and fallback
+        process_fn = self._build_process_fn()
+        fallback_fn = self._build_fallback_fn()
 
-        if self.verbose_reporter.enabled:
-            controller = "header-aware + circuit breaker" if self._has_server_headers else "PID + rate limiters"
-            self.verbose_reporter.stat_line(f"\nRate limiting: {controller}")
-            self.verbose_reporter.stat_line(f"Target concurrency: {self.optimal_concurrency}, calibration after {warm_up_samples} completions")
-
-        # === PHASE 6: Print setup info and launch workers ===
-        headroom = self.processing_config.rate_limit_headroom
-        rpm_throughput = limits.requests_per_minute * headroom / 60
-        tpm_throughput = limits.tokens_per_minute * headroom / self.avg_tokens / 60
-        bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
-        self._rate_bottleneck = bottleneck  # which rate limit binds (for System B display)
-        expected_throughput = min(rpm_throughput, tpm_throughput)
-
-        # Report every ~5% of tasks, min 10
-        report_every_n = max(len(tasks) // 20, 10)
-
-        # Compute Little's Law components for reporting
-        latency_used = getattr(self, '_stored_p50', None) or DEFAULT_LATENCY_SECONDS
-        latency_source = "stored P50" if getattr(self, '_stored_p50', None) else "default"
-        little_law_raw = expected_throughput * latency_used
-
-        sm = self._concurrency_sm
-        print("\nRATE LIMITING SETUP")
-        print(f"- Model: {self.model}")
-        print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * headroom:,.0f} with headroom)")
-        print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * headroom:,.0f} with headroom)")
-        token_source = "stored" if getattr(self, '_stored_avg_tokens', None) is not None else "tiktoken"
-        print(f"- Initial avg_tokens ({token_source}): {self.avg_tokens}")
-        print(f"- Theoretical throughput: RPM={rpm_throughput:.1f}/s, TPM={tpm_throughput:.1f}/s → {expected_throughput:.1f}/s ({bottleneck} bound)")
-        print(f"- Latency: {latency_used:.2f}s ({latency_source})")
-        print(f"- Little's Law: L = {expected_throughput:.1f}/s × {latency_used:.2f}s = {little_law_raw:.0f}")
-        print(f"- Theoretical concurrency: min(Little's Law, tasks) = min({little_law_raw:.0f}, {len(tasks)}) = {min(int(little_law_raw), len(tasks))}")
-        if getattr(self, '_stored_empirical_capacity', None) is not None:
-            print(f"- Target concurrency: {self.optimal_concurrency} (empirical capacity, measured over time)")
-        else:
-            print(f"- Target concurrency: {self.optimal_concurrency} (cold start cap, no empirical data)")
-        print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side fallback)'}")
-        if isinstance(sm, HeaderAwareConcurrencyController):
-            print(f"- Controller: header-aware (signals: residual latency + header pressure) ramp step: +{sm.ramp_step}")
-        elif sm:
-            print(f"- Controller: P50-drift fallback (signals: in-flight P95/P100) ramp step: +{sm.ramp_step}")
-        else:
-            print(f"- Controller: PID (target: {self.tpm_tracking_config.target_utilization:.0%} utilization)")
-        if not self._has_server_headers:
-            print(f"- Arrival rate: {self.current_arrival_rate:.2f}/s (PID-adjusted)")
-        print(f"- Token calibration: after {warm_up_samples} completions")
-        print(f"- Processing {len(tasks):,} tasks")
-
-        # Workers = target concurrency so they can fill slots
-        num_workers = min(self.optimal_concurrency, len(tasks))
-
-        print(f"\nWorkers: {num_workers}, Target concurrency: {self.optimal_concurrency}")
-
+        # Run bulk extraction
         _snap_before_bulk = token_tracker.snapshot() if self.cost_tracker else None
-        t_phase_start = time.time()
-        print(f"\n⏱ T+0.0s: Starting task processing")
-
-        queue = asyncio.Queue()
-        self._total_tasks = len(tasks)
-        results = [None] * len(tasks)
-        timed_out = []  # Collect timed-out tasks for batch retry
-
-        for i, task in enumerate(tasks):
-            task['result_index'] = i
-            task['task_index'] = i
-            await queue.put((i, task))
-
-        workers = []
-        for _ in range(num_workers):
-            w = asyncio.create_task(self.worker(queue, results, timed_out))
-            workers.append(w)
-
-        start_time = time.time()
-        last_report = start_time
-        last_report_completed = 0
-        last_tick_successful = 0
-        last_diagnostics = start_time
-        last_adjustment = start_time
-        self._last_concurrency_check = start_time
-        self._throughput_samples = deque(maxlen=5)  # rolling window for smoothed throughput
-
-        # Cumulative healthy throughput: only count successful completions during
-        # WARM-UP, RAMP-UP, and STEADY states. Excludes BACKOFF/RECOVER (self-throttled)
-        # and excludes timeouts/failures. This gives the true server delivery rate.
-        self._healthy_completions = 0
-        self._healthy_elapsed = 0.0
-        self._last_healthy_successful = self.stats['tasks_successful']
-        self._last_healthy_time = start_time
-
-        while not queue.empty():
-            await asyncio.sleep(0.1)  # 10 Hz — enough to track ramp and progress
-            now = time.time()
-
-            # Progress reporting + concurrency evaluation — synchronized
-            completed = self.stats['tasks_processed']
-            completions_since_report = completed - last_report_completed
-            if now - last_report >= 2.0 or completions_since_report >= report_every_n:
-                tick_duration = now - last_report
-                timeouts = self.stats['timeouts']
-
-                # TPM/RPM utilization (for reporting and PID)
-                tpm_pct = rpm_pct = 0.0
-                headroom = self.processing_config.rate_limit_headroom
-                current_tpm = current_rpm = 0.0
-                effective_tpm = effective_rpm = 0.0
-                if self.tpm_tracker and self.rate_limits:
-                    current_tpm = await self.tpm_tracker.get_current_tpm()
-                    effective_tpm = self.rate_limits.tokens_per_minute * headroom
-                    tpm_pct = current_tpm / effective_tpm * 100 if effective_tpm else 0
-                if self.rpm_tracker and self.rate_limits:
-                    current_rpm = await self.rpm_tracker.get_current_rpm()
-                    effective_rpm = self.rate_limits.requests_per_minute * headroom
-                    rpm_pct = current_rpm / effective_rpm * 100 if effective_rpm else 0
-
-                # Throughput: cumulative from healthy states (WARM-UP, RAMP-UP, STEADY)
-                p50 = 0.0
-                if self.latency_tracker.values:
-                    vals = list(self.latency_tracker.values)
-                    p50 = float(np.percentile(vals, 50))
-
-                # Update healthy cumulative stats if in a healthy state
-                sm_state = self._concurrency_sm.state if self._concurrency_sm else None
-                in_healthy_state = (
-                    sm_state in (ConcurrencyState.RAMP_UP, ConcurrencyState.STEADY)
-                    or (sm_state is None)  # warm-up (before state machine engages)
-                )
-                current_successful = self.stats['tasks_successful']
-                if in_healthy_state:
-                    new_completions = current_successful - self._last_healthy_successful
-                    if new_completions > 0:
-                        self._healthy_completions += new_completions
-                        self._healthy_elapsed += now - self._last_healthy_time
-                self._last_healthy_successful = current_successful
-                self._last_healthy_time = now
-
-                throughput = self._healthy_completions / self._healthy_elapsed if self._healthy_elapsed > 0 else 0
-
-                # In-flight and concurrency
-                active = self.semaphore.active
-                concurrency = self.semaphore.limit
-
-                # Tick-level successful completions (excludes failures/timeouts)
-                current_successful = self.stats['tasks_successful']
-                tick_successful = current_successful - last_tick_successful
-                tick_rate = tick_successful / tick_duration if tick_duration > 0 else 0.0
-
-                # Constraint string (System B only — System A builds its own display)
-                constraint_str = ""
-                if not self._has_server_headers:
-                    if self.tpm_tracker and self.rpm_tracker:
-                        rate_bn = getattr(self, '_rate_bottleneck', 'TPM')
-                        if rate_bn == "TPM":
-                            rate_tps = current_tpm / 60 if current_tpm else 0
-                            limit_tps = effective_tpm / 60
-                            def _fmt_k(v): return f"{v/1000:.1f}k" if v >= 1000 else f"{v:.0f}"
-                            constraint_str = f"tok:{_fmt_k(rate_tps)}/s | limit:{_fmt_k(limit_tps)}/s | pace:{tpm_pct:.0f}%"
-                        else:
-                            rate_rps = current_rpm / 60 if current_rpm else 0
-                            limit_rps = effective_rpm / 60
-                            constraint_str = f"req:{rate_rps:.1f}/s | limit:{limit_rps:.1f}/s | pace:{rpm_pct:.0f}%"
-                drain = active / throughput if throughput > 0 else 0
-
-                timeout_info = f" | deferred:{timeouts}" if timeouts > 0 else ""
-
-                # Build TickContext and dispatch to strategy-specific tick method
-                ctx = TickContext(
-                    completed=completed, total=len(tasks), tick_duration=tick_duration,
-                    throughput=throughput, tick_successful=tick_successful,
-                    tick_rate=tick_rate, p50=p50, active=active,
-                    concurrency=concurrency, constraint_str=constraint_str,
-                    timeout_info=timeout_info, now=now, start_time=start_time,
-                    timeouts=timeouts,
-                )
-
-                if self._has_server_headers:
-                    print(self._tick_throughput(ctx, drain))
-                else:
-                    print(self._tick_rate_limited(ctx, len(tasks)))
-
-                last_report = now
-                last_report_completed = completed
-                last_tick_successful = current_successful
-
-            # One-shot warm-up calibration (strategy-specific)
-            if (not self._warm_up_calibrated
-                    and len(self.actual_total_tokens) >= self._warm_up_target_samples
-                    and len(self.latency_tracker.values) >= self._warm_up_target_samples):
-                if self._has_server_headers:
-                    old_avg, new_avg = self._calibrate_tokens_from_warm_up()
-                    print(f"\n[WARM-UP] avg_tokens {old_avg} → {new_avg}, "
-                          f"concurrency unchanged at {self.optimal_concurrency}")
-                else:
-                    self._calibrate_concurrency_from_warm_up(len(tasks))
-
-            # INTERVAL: token correction + PID arrival rate (rate-limited only)
-            if now - last_adjustment >= (0 if not self._has_server_headers else ADJUSTMENT_INTERVAL):
-                self._adjust_throughput_if_needed()
-                if not self._has_server_headers:
-                    await self._apply_pid_adjustment()
-                last_adjustment = now
-
-            # Spawn extra workers if concurrency increased beyond current worker count
-            if self.optimal_concurrency > num_workers:
-                extra = self.optimal_concurrency - num_workers
-                for _ in range(extra):
-                    w = asyncio.create_task(self.worker(queue, results, timed_out))
-                    workers.append(w)
-                num_workers = self.optimal_concurrency
-
-            # Diagnostics
-            if self.verbose_reporter.enabled and now - last_diagnostics >= DIAGNOSTIC_INTERVAL:
-                bucket_status = self.get_token_bucket_status()
-                token_stats = self.get_token_estimation_stats()
-
-                if bucket_status['low_tokens']:
-                    self.verbose_reporter.stat_line(f"Token bucket low: {bucket_status['available_tokens']:,} tokens ({bucket_status['utilization_pct']:.1f}% utilized)")
-
-                if token_stats['status'] == 'learning' and token_stats['actual_samples'] >= 10:
-                    actual_avg = token_stats['avg_actual_total_tokens']
-                    current_avg = token_stats['current_avg_tokens']
-                    difference = actual_avg - current_avg
-                    pct_change = (difference / current_avg * 100) if current_avg > 0 else 0
-
-                    cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
-                    self.verbose_reporter.stat_line(
-                        f"Tokens: est={current_avg:.0f}, actual={actual_avg:.0f} ({pct_change:+.1f}%) | "
-                        f"Concurrency: {self.semaphore.active}/{self.optimal_concurrency} (CB:{cb_state})"
-                    )
-
-                last_diagnostics = now
-
-        t_loop_exit = time.time()
-        print(f"⏱ T+{t_loop_exit - t_phase_start:.1f}s: Monitoring loop exited (queue empty), waiting for {self.stats['tasks_processed']}/{len(tasks)} completed, awaiting queue.join()...")
-
-        await queue.join()
-
-        t_join_done = time.time()
-        print(f"⏱ T+{t_join_done - t_phase_start:.1f}s: queue.join() done ({t_join_done - t_loop_exit:.1f}s drain)")
-
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers)
-
-        t_main_done = time.time()
-        # Snapshot main-batch metrics before retry pass contaminates them
-        self._main_batch_successful = self.stats['tasks_successful']
-        self._main_batch_wall_time = t_main_done - t_phase_start
-        self._main_batch_p50 = self.latency_tracker.get_p50() if self.latency_tracker.values else 0.0
-        print(f"⏱ T+{t_main_done - t_phase_start:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred")
-        sm_state = self._concurrency_sm.state.value if self._concurrency_sm else "N/A"
-        print(f"  Final concurrency: {self.optimal_concurrency} (state: {sm_state})")
+        results = await self._smooth_requester.process_all(tasks, process_fn, fallback_fn)
 
         # Record cost for bulk extraction phase
         if self.cost_tracker and _snap_before_bulk is not None:
@@ -2555,168 +2430,28 @@ class IdeaExtractor:
                 "step_3_idea_extraction", "bulk_extraction",
                 _snap_before_bulk, token_tracker.snapshot(), self.model_abstraction_ladder)
 
-        # === RETRY PASS: retry timed-out + failed tasks with reduced concurrency ===
-        _snap_before_retry = token_tracker.snapshot() if self.cost_tracker else None
-        # Collect all failed tasks: timed-out (from worker) + exceptions (from failure_log)
-        failed_tasks_for_retry = []
-        recovered = 0
-
-        # Timed-out tasks (returned None from process_task)
-        if timed_out:
-            for task_index, task_data in timed_out:
-                failed_tasks_for_retry.append((task_index, task_data, 'timeout'))
-
-        # Exception failures (from failed_task_ids set — O(1) lookup)
-        if self.failed_task_ids:
-            for i, task in enumerate(tasks):
-                if str(task.get('respondent_id', '')) in self.failed_task_ids:
-                    failed_tasks_for_retry.append((i, task, 'exception'))
-
-        if failed_tasks_for_retry:
-            print(f"\n[RETRY PASS] Retrying {len(failed_tasks_for_retry)} failed tasks with reduced concurrency...")
-
-            # Save pre-retry state and clear for retry tracking
-            pre_retry_failure_log = list(self.failure_log)
-            pre_retry_timed_out_count = len(timed_out)
-            self.failed_task_ids.clear()
-            self.failure_log.clear()
-
-            # Reduced concurrency: 10% of workers, min 5
-            retry_workers_count = max(5, min(len(failed_tasks_for_retry), num_workers // 10))
-
-            # Retry timeout: generous for throughput-bound (server queuing), normal for rate-limited
-            if self._has_server_headers:
-                self.latency_tracker.retry_mode = 60.0  # 60s floor — server may have been queuing
-            else:
-                self.latency_tracker.retry_mode = self.latency_tracker.timeout_floor  # same as main batch
-
-            retry_queue = asyncio.Queue()
-            retry_timed_out = []
-            retry_results_map = {}  # task_index -> result
-
-            for orig_index, task_data, reason in failed_tasks_for_retry:
-                await retry_queue.put((orig_index, task_data))
-
-            retry_worker_tasks = []
-            for _ in range(retry_workers_count):
-                w = asyncio.create_task(self.worker(retry_queue, results, retry_timed_out))
-                retry_worker_tasks.append(w)
-
-            await retry_queue.join()
-            for _ in retry_worker_tasks:
-                await retry_queue.put(None)
-            await asyncio.gather(*retry_worker_tasks)
-
-            self.latency_tracker.retry_mode = False
-
-            # Count recoveries: check if result is a real response (not fallback with PROCESSING_ERROR)
-            def _is_fallback(result):
-                if result is None:
-                    return True
-                ideas = getattr(result, 'response_ideas', [])
-                return any(getattr(idea, 'idea', '').startswith('PROCESSING_ERROR') for idea in ideas)
-
-            recovered = 0
-            for orig_index, task_data, reason in failed_tasks_for_retry:
-                result = results[orig_index]
-                if not _is_fallback(result):
-                    recovered += 1
-
-            # Create permanent fallback for tasks still failed after retry (including retry timed-out)
-            for task_index, task_data in retry_timed_out:
-                if results[task_index] is None:
-                    self.stats['tasks_failed'] += 1
-                    self.failed_task_ids.add(str(task_data.get('respondent_id', 'unknown')))
-                    self.failure_log.append({
-                        'respondent_id': task_data.get('respondent_id', 'unknown'),
-                        'reason': 'timeout_after_retry',
-                        'error_type': 'Timeout',
-                        'response_preview': task_data.get('response', '')[:80]
-                    })
-                    results[task_index] = self.create_fallback_response(task_data, reason='timeout')
-
-            # Fallback for originally timed-out tasks that weren't recovered
-            for orig_index, task_data, reason in failed_tasks_for_retry:
-                if results[orig_index] is None:
-                    self.stats['tasks_failed'] += 1
-                    results[orig_index] = self.create_fallback_response(task_data, reason=reason)
-
-            still_failed = len(self.failure_log)
-            print(f"[RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
-            if still_failed > 0:
-                failed_ids_list = sorted(str(f['respondent_id']) for f in self.failure_log)
-                print(f"[RETRY PASS] Permanently failed IDs: {failed_ids_list[:20]}{'...' if still_failed > 20 else ''}")
-        else:
-            # No failures — create fallback for any remaining None results (shouldn't happen)
-            pass
-
-        # Record cost for retry phase (only if any retries happened)
-        if self.cost_tracker and _snap_before_retry is not None:
-            _snap_after_retry = token_tracker.snapshot()
-            if _snap_after_retry["calls"] > _snap_before_retry["calls"]:
-                self.cost_tracker.record_phase(
-                    "step_3_idea_extraction", "retry",
-                    _snap_before_retry, _snap_after_retry, self.model_abstraction_ladder)
-
-        elapsed = time.time() - start_time
-        timeouts = self.stats['timeouts']
-        permanently_failed = len(self.failure_log)
-
-        print(f"\nCompleted {len(tasks)} tasks in {elapsed:.1f}s")
-        print(f"- Successful: {self.stats['tasks_successful']}")
-        if permanently_failed > 0:
-            print(f"- Failed: {permanently_failed}")
-        if recovered > 0:
-            print(f"- Recovered: {recovered} (retried successfully)")
-        print(f"- Rate limits: {self.stats['rate_limits']}")
-        print(f"- Timeouts: {timeouts}")
-        print(f"- Average: {elapsed/len(tasks):.2f}s/task")
-        sm_state = self._concurrency_sm.state.value if self._concurrency_sm else "N/A"
-        print(f"- Final concurrency: {self.optimal_concurrency} ({sm_state})")
-
-        # Print PROCESSING_ERROR failure report
-        if self.failure_log:
-            print(f"\n{'='*70}")
-            print(self.get_failure_report(total_responses=len(tasks)))
-            print(f"{'='*70}")
-        else:
-            print(f"\nPROCESSING ERRORS: 0 of {len(tasks)} responses (0%)")
-
-        # Print strategy stats
-        offset_stats = self.tiktoken_offset_learner.get_stats()
-        print(f"\nSTRATEGY STATS:")
-        print(f"- Tiktoken offset: {offset_stats['using_offset']} tokens (learned: {offset_stats['is_learned']}, samples: {offset_stats['samples']})")
-        if offset_stats['min_offset'] is not None:
-            print(f"  - Offset range: {offset_stats['min_offset']} to {offset_stats['max_offset']}")
-        print(f"- Token corrections: {self.v3_stats['threshold_adjustments']}")
-        if not self._has_server_headers:
-            print(f"- PID adjustments: {self.v3_stats.get('pid_adjustments', 0)}")
-        cb_state = self.circuit_breaker.state if self.circuit_breaker else 'N/A'
-        controller_type = "header-aware" if isinstance(self._concurrency_sm, HeaderAwareConcurrencyController) else "P50-drift"
-        if not self._has_server_headers:
-            controller_type = "PID"
-        print(f"- Final concurrency: {self.optimal_concurrency} (controller:{controller_type}, CB:{cb_state}, trips:{self.v3_stats.get('circuit_breaker_trips', 0)})")
-        print(f"- Cached empirical capacity: {self.optimal_concurrency}")
-        if self.stats['empty_ladder_ideas'] > 0:
-            print(f"- Empty ladder ideas: {self.stats['empty_ladder_ideas']} (idea text present, taxonomy fields empty)")
-        if self._residual_tracker and self._residual_tracker.sample_count > 0:
-            print(f"- Residual latency: median={self._residual_tracker.median_residual():.0f}ms, "
-                  f"normalized={self._residual_tracker.normalized_residual():.2f}, "
-                  f"processing={self._residual_tracker.median_processing():.0f}ms")
-
-        if self.verbose_reporter.enabled:
-            token_stats = self.get_token_estimation_stats()
-
-            if token_stats['status'] == 'learning':
-                accuracy = max(0, 100 - (token_stats['avg_estimation_error'] / max(1, token_stats['avg_input_tokens'] + token_stats['avg_output_tokens']) * 100))
-                self.verbose_reporter.stat_line(f"Token estimation accuracy: {accuracy:.1f}% (avg error: {token_stats['avg_estimation_error']:.0f} tokens)")
-
-                if token_stats['actual_samples'] >= 10:
-                    actual_avg = token_stats['avg_actual_total_tokens']
-                    initial_avg = token_stats['initial_avg_tokens']
-                    self.verbose_reporter.stat_line(f"Token usage: Initial {initial_avg:.0f} → Actual {actual_avg:.0f}")
+        # Transfer stats from smoothRequester
+        self.stats.update(self._smooth_requester.stats)
+        self.failure_log = self._smooth_requester.failure_log
+        self.failed_task_ids = self._smooth_requester.failed_task_ids
+        self.optimal_concurrency = self._smooth_requester.optimal_concurrency
 
         return results
+
+    # === LEGACY: Everything below this line was the old processing loop ===
+    # Kept temporarily for reference — will be removed after verification.
+    def _REMOVED_initialize_rate_limiters(self, limits, num_tasks, has_server_headers):
+        """REMOVED — now handled by SmoothRequester."""
+        pass
+
+    def _PLACEHOLDER_old_code(self):
+        """Placeholder to prevent indentation errors from removed code below."""
+        pass
+
+    # The old phases 5-6, monitoring loop, worker, retry pass, tick methods, etc.
+    # are now in SmoothRequester.process_all(). These methods are no longer called
+    # but kept for reference during migration. DELETE after Phase 3 verification.
+
 
     def extract(self) -> List[models.IdeasExtractedModel]:
         """Main method to extract ideas from responses using bootstrap measurement and unified processing"""
@@ -2748,32 +2483,7 @@ class IdeaExtractor:
                     if idea.idea and 'canonical_phrasing:' in idea.idea:
                         idea.idea = _canonical_pattern.sub('', idea.idea).strip()
 
-        # Persist empirical stats for cold-start calibration on next run
-        # Dataset-scoped: keyed by filename:variable_key
-        if len(self.latency_tracker.values) >= 5 and self.actual_total_tokens and self._dataset_key:
-            tokens = list(self.actual_total_tokens)
-            # Empirical capacity: 95% of last healthy concurrency (STEADY entry level).
-            # Gives headroom so the next run starts just below the proven ceiling
-            # and can ramp the last few percent.
-            sm = self._concurrency_sm
-            if sm and hasattr(sm, 'last_healthy_concurrency'):
-                empirical = float(int(sm.last_healthy_concurrency * 0.95))
-            else:
-                empirical = float(self.optimal_concurrency)
-            measurements = {
-                "p50_latency_s": self.latency_tracker.get_p50(),
-                "avg_tokens": sum(tokens) / len(tokens),
-                "empirical_capacity": empirical,
-                "has_server_headers": self._has_server_headers,
-            }
-            if self.tiktoken_offset_learner.is_learned():
-                measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
-            update_dataset_phase_stats(
-                self._perf_stats, self.model, "step3_idea_extraction",
-                self._dataset_key, measurements, len(self.actual_total_tokens),
-                overwrite_fields=["empirical_capacity", "bottleneck"]
-            )
-            save_stats(self._perf_stats)
+        # Empirical stats are saved by SmoothRequester internally — no action needed here
 
         self._stats.output_count = len(self._results)
         self._stats.end_timing()
