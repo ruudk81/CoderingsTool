@@ -306,9 +306,11 @@ class IdeaExtractor:
 
         # Latency tracking (use stored P50 × 6 as empirical floor if available)
         self.latency_tracker = LatencyTracker(
-            processing_config=self.processing_config,
+            ema_alpha=self.processing_config.latency_tracker_ema_alpha,
+            samples_window=self.processing_config.latency_tracker_samples_window,
             timeout_floor=_stored_timeout if _stored_timeout else TIMEOUT_FLOOR_SECONDS,
             default_timeout=_stored_timeout if _stored_timeout else DEFAULT_TIMEOUT_SECONDS,
+            default_latency=DEFAULT_LATENCY_SECONDS,
         )
 
         # Generic specifiers (must be initialized before _calculate_avg_tokens)
