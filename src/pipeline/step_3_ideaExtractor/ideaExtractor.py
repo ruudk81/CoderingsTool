@@ -1565,21 +1565,16 @@ class IdeaExtractor:
             template_prefix=self.template_prefix or ""
         )
 
-    def _build_process_fn(self):
-        """Build the step-specific process function for SmoothRequester.
+    def _build_prepare_fn(self):
+        """Build the prepare function for SmoothRequester.
 
-        Returns a closure that captures all step-3 context (dimension, domains,
-        template prefix) and handles: prompt building, LLM call, response parsing.
-
-        The SmoothRequester wraps this in gate + timeout + outcome recording.
+        Returns prompt + LLM call parameters. The smoothRequester makes the call.
         """
-        # Capture step-3 state in closure
         extractor = self
         config = self.config
 
-        async def process_fn(task: Dict, client, model: str):
-            """Step-3 idea extraction: prompt → LLM → ideas."""
-            # Build canonical phrasing
+        def prepare_fn(task: Dict) -> Dict:
+            """Build prompt and call parameters for one task."""
             subject, phrasing_template = extractor._build_canonical_phrasing(extractor.primary_dimension)
             dimension = get_dimension(extractor.primary_dimension)
             dim_marker = dimension.domain_marker
@@ -1587,12 +1582,10 @@ class IdeaExtractor:
             if extractor.template_prefix is None:
                 extractor.template_prefix = template_prefix
 
-            # Build prompt
             prompt = extractor._build_taxonomy_enriched_prompt(
                 task['response'], subject, phrasing_template,
             )
 
-            # Capture first prompt for debugging
             if extractor.prompt_printer and not extractor._captured_prompt:
                 extractor.prompt_printer.capture_prompt(
                     step_name="idea_extraction",
@@ -1600,7 +1593,6 @@ class IdeaExtractor:
                     prompt_content=prompt,
                     prompt_type="idea_extraction_v3",
                     metadata={
-                        "model": model,
                         "var_lab": extractor.var_lab,
                         "respondent_id": task['respondent_id'],
                         "primary_dimension": extractor.primary_dimension,
@@ -1608,30 +1600,33 @@ class IdeaExtractor:
                 )
                 extractor._captured_prompt = True
 
-            # Store prompt on task for smoothRequester's token estimation
-            task['prompt'] = prompt
-
-            # Create response model
             AxisExtractionModel = create_extraction_model(
                 dimension=dimension,
                 template_prefix=template_prefix,
                 domains=getattr(extractor, 'domains', None),
-                model=model,
+                model=extractor.model,
             )
 
-            # LLM call (instructor handles pydantic retries)
-            response = await llm_create_async(
-                client=client,
-                model=model,
-                response_model=List[AxisExtractionModel],
-                prompt=prompt,
-                temperature=config.temperature,
-                max_tokens=config.max_tokens,
-                max_retries=3,
-                **get_reasoning_params(model),
-            )
+            return {
+                'prompt': prompt,
+                'response_model': List[AxisExtractionModel],
+                'temperature': config.temperature,
+                'max_tokens': config.max_tokens,
+                'max_retries': 3,
+                'extra_kwargs': get_reasoning_params(extractor.model),
+            }
 
-            # Parse response into ideas
+        return prepare_fn
+
+    def _build_parse_fn(self):
+        """Build the parse function for SmoothRequester.
+
+        Parses raw LLM response into IdeasExtractedModel.
+        """
+        extractor = self
+
+        def parse_fn(task: Dict, response) -> Optional[models.IdeasExtractedModel]:
+            """Parse LLM response into ideas."""
             ideas = []
             for i, idea_response in enumerate(response):
                 normalized = extractor._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
@@ -1666,9 +1661,9 @@ class IdeaExtractor:
                     idea_count=len(ideas),
                     template_prefix=extractor.template_prefix or ""
                 )
-            return None  # empty — retry pass will handle
+            return None
 
-        return process_fn
+        return parse_fn
 
     def _build_fallback_fn(self):
         """Build the fallback function for SmoothRequester."""
@@ -2416,13 +2411,14 @@ class IdeaExtractor:
             processing_config=self.processing_config,
         )
 
-        # Build step-specific process function and fallback
-        process_fn = self._build_process_fn()
+        # Build step-specific prepare + parse functions and fallback
+        prepare_fn = self._build_prepare_fn()
+        parse_fn = self._build_parse_fn()
         fallback_fn = self._build_fallback_fn()
 
         # Run bulk extraction
         _snap_before_bulk = token_tracker.snapshot() if self.cost_tracker else None
-        results = await self._smooth_requester.process_all(tasks, process_fn, fallback_fn)
+        results = await self._smooth_requester.process_all(tasks, prepare_fn, parse_fn, fallback_fn)
 
         # Record cost for bulk extraction phase
         if self.cost_tracker and _snap_before_bulk is not None:

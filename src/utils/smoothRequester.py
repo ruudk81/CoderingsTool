@@ -789,11 +789,19 @@ class SmoothRequester:
         stop=stop_after_attempt(5),
         reraise=True
     )
-    async def _execute_task(self, task, process_fn):
-        """Wrap process_fn in gate: semaphore → token bucket → rate limiter → timeout."""
+    async def _execute_task(self, task, prepare_fn, parse_fn):
+        """Full task execution: prepare → gate → LLM call → headers → tokens → parse.
+
+        The smoothRequester owns the LLM call so it can read headers and reconcile tokens.
+        prepare_fn: builds prompt + call parameters (step-specific)
+        parse_fn: parses raw LLM response into step result (step-specific)
+        """
         task_id = task.get('respondent_id', task.get('task_index', id(task)))
-        prompt = task.get('prompt', task.get('response', ''))
-        est_tokens = self.estimate_tokens(prompt) if prompt else self.avg_tokens
+
+        # Step 1: prepare (build prompt, response model — step-specific)
+        call_params = prepare_fn(task)
+        prompt = call_params['prompt']
+        est_tokens = self.estimate_tokens(prompt)
 
         async with self.semaphore:
             timeout = self.latency_tracker.get_timeout()
@@ -802,9 +810,19 @@ class SmoothRequester:
             self._inflight_starts[task_id] = api_start
 
             try:
+                # Step 2: LLM call (owned by smoothRequester for header access)
                 async with self.rate_limiter:
-                    result = await asyncio.wait_for(
-                        process_fn(task, self.client, self.model),
+                    response = await asyncio.wait_for(
+                        llm_create_async(
+                            client=self.client,
+                            model=self.model,
+                            prompt=prompt,
+                            response_model=call_params.get('response_model'),
+                            temperature=call_params.get('temperature', 0.0),
+                            max_tokens=call_params.get('max_tokens', 4000),
+                            max_retries=call_params.get('max_retries', 3),
+                            **call_params.get('extra_kwargs', {}),
+                        ),
                         timeout=timeout
                     )
 
@@ -815,9 +833,9 @@ class SmoothRequester:
                 if self.circuit_breaker:
                     self.circuit_breaker.record_completion()
 
-                # Header reading (System A)
+                # Step 3: Header reading (System A)
                 if self._header_transport and self._residual_tracker is not None:
-                    client_id = getattr(result, '_client_request_id', None) if result else None
+                    client_id = getattr(response, '_client_request_id', None)
                     if client_id:
                         entry = self._header_transport.get(client_id)
                         if entry and entry['processing_ms'] > 0:
@@ -827,9 +845,9 @@ class SmoothRequester:
                         if entry and entry.get('limit_requests', 0) > 0:
                             self._last_limit_requests = entry['limit_requests']
 
-                # Token reconciliation
-                raw = getattr(result, '_raw_response', None)
-                usage = getattr(raw, 'usage', None) if raw else getattr(result, 'usage', None)
+                # Step 4: Token reconciliation
+                raw = getattr(response, '_raw_response', None)
+                usage = getattr(raw, 'usage', None) if raw else getattr(response, 'usage', None)
                 if usage:
                     actual_in = getattr(usage, 'input_tokens', 0) or getattr(usage, 'prompt_tokens', 0)
                     actual_out = getattr(usage, 'output_tokens', 0) or getattr(usage, 'completion_tokens', 0)
@@ -844,17 +862,20 @@ class SmoothRequester:
                     delta = actual_total - est_tokens
                     await self.tpm_bucket.reconcile(delta)
 
-                    tiktoken_in = len(self.encoding.encode(prompt)) if prompt else 0
-                    if tiktoken_in > 0:
-                        self.tiktoken_offset_learner.record(tiktoken_in, actual_in)
+                    tiktoken_in = len(self.encoding.encode(prompt))
+                    self.tiktoken_offset_learner.record(tiktoken_in, actual_in)
 
                     if self.tpm_tracker:
                         await self.tpm_tracker.record(actual_total)
                     if self.rpm_tracker:
                         await self.rpm_tracker.record()
 
+                # Step 5: Parse response (step-specific)
+                result = parse_fn(task, response)
+
                 self.stats['tasks_processed'] += 1
-                self.stats['tasks_successful'] += 1
+                if result is not None:
+                    self.stats['tasks_successful'] += 1
                 return result
 
             except asyncio.TimeoutError:
@@ -879,7 +900,7 @@ class SmoothRequester:
 
     # === WORKER ===============================================================
 
-    async def _worker(self, queue, results, timed_out, process_fn, fallback_fn):
+    async def _worker(self, queue, results, timed_out, prepare_fn, parse_fn, fallback_fn):
         """Generic worker: pull task, execute, handle outcomes."""
         while True:
             task = None
@@ -889,7 +910,7 @@ class SmoothRequester:
                     break
 
                 task_index, task_data = task
-                result = await self._execute_task(task_data, process_fn)
+                result = await self._execute_task(task_data, prepare_fn, parse_fn)
                 if result is None:
                     timed_out.append((task_index, task_data))
                 else:
@@ -1126,12 +1147,14 @@ class SmoothRequester:
 
     # === PROCESS ALL ==========================================================
 
-    async def process_all(self, tasks: List[Dict], process_fn, fallback_fn=None) -> List:
+    async def process_all(self, tasks: List[Dict], prepare_fn, parse_fn,
+                          fallback_fn=None) -> List:
         """Main entry point. Processes all tasks with rate pacing + concurrency control.
 
         Args:
             tasks: list of task dicts
-            process_fn: async fn(task, client, model) -> result or None
+            prepare_fn: fn(task) -> dict with {prompt, response_model, temperature, max_tokens, ...}
+            parse_fn: fn(task, response) -> result or None
             fallback_fn: fn(task, reason) -> fallback result (optional)
 
         Returns: list of results (same order as tasks), None for permanently failed.
@@ -1170,7 +1193,7 @@ class SmoothRequester:
         num_workers = min(self.optimal_concurrency, num_tasks)
         workers = []
         for _ in range(num_workers):
-            w = asyncio.create_task(self._worker(queue, results, timed_out, process_fn, fallback_fn))
+            w = asyncio.create_task(self._worker(queue, results, timed_out, prepare_fn, parse_fn, fallback_fn))
             workers.append(w)
 
         print(f"\nWorkers: {num_workers}, Target concurrency: {self.optimal_concurrency}")
@@ -1258,7 +1281,7 @@ class SmoothRequester:
             if self.optimal_concurrency > num_workers:
                 extra = self.optimal_concurrency - num_workers
                 for _ in range(extra):
-                    w = asyncio.create_task(self._worker(queue, results, timed_out, process_fn, fallback_fn))
+                    w = asyncio.create_task(self._worker(queue, results, timed_out, prepare_fn, parse_fn, fallback_fn))
                     workers.append(w)
                 num_workers = self.optimal_concurrency
 
@@ -1303,7 +1326,7 @@ class SmoothRequester:
 
             retry_tasks = []
             for _ in range(retry_workers_n):
-                w = asyncio.create_task(self._worker(retry_queue, results, retry_timed_out, process_fn, fallback_fn))
+                w = asyncio.create_task(self._worker(retry_queue, results, retry_timed_out, prepare_fn, parse_fn, fallback_fn))
                 retry_tasks.append(w)
 
             await retry_queue.join()
