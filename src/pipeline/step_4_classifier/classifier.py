@@ -587,13 +587,26 @@ class TaxonomyClassifier:
         t_phase3 = time.time()
 
         # Build flat task list: one task per (domain, batch)
+        # Single-facet domains are auto-assigned without LLM call
         p3_tasks = []
+        partition_assignments: Dict[str, Dict[str, str]] = {}
+        p3_auto_assigned: Dict[str, int] = {}  # domain → idea count (for reporting)
         batch_size = self._facet_assignment_batch_size
         for domain_name in sorted(partition_facets.keys()):
             if not partition_facets[domain_name] or not label_mappings[domain_name].ideas:
                 continue
             facets = partition_facets[domain_name]
             ideas = label_mappings[domain_name].ideas
+
+            # Single-facet domain: auto-assign all ideas
+            if len(facets) == 1:
+                partition_assignments[domain_name] = {
+                    idea.idea_id: facets[0].facet_name for idea in ideas
+                }
+                p3_auto_assigned[domain_name] = len(ideas)
+                continue
+
+            # Multi-facet: create SR tasks
             facet_id_to_name = {f"F{i}": f.facet_name for i, f in enumerate(facets, 1)}
             idea_batches = [ideas[j:j + batch_size] for j in range(0, len(ideas), batch_size)]
             for batch_idx, batch_ideas in enumerate(idea_batches):
@@ -607,49 +620,52 @@ class TaxonomyClassifier:
                     'part_context': partition_contexts[domain_name],
                 })
 
-        p3_requester = SmoothRequester(
-            model=self._model_p3,
-            dataset_key=self._dataset_key,
-            phase_key="step4_p3_facet_assignment",
-            num_tasks=len(p3_tasks),
-            verbose=verbose,
-            known_limits=self._fetched_limits,
-            show_setup=False,
-            quiet=True,
-        )
-        p3_results = await p3_requester.process_all(
-            p3_tasks,
-            self._p3_prepare_fn(prompt_context),
-            self._p3_parse_fn(),
-            self._p3_fallback_fn(),
-        )
+        if p3_tasks:
+            p3_requester = SmoothRequester(
+                model=self._model_p3,
+                dataset_key=self._dataset_key,
+                phase_key="step4_p3_facet_assignment",
+                num_tasks=len(p3_tasks),
+                verbose=verbose,
+                known_limits=self._fetched_limits,
+                show_setup=False,
+                quiet=True,
+            )
+            p3_results = await p3_requester.process_all(
+                p3_tasks,
+                self._p3_prepare_fn(prompt_context),
+                self._p3_parse_fn(),
+                self._p3_fallback_fn(),
+            )
 
-        if verbose:
-            s = p3_requester.stats
-            t_sr = s.get('wall_time', 0)
-            print(f"    P3 assignment: {len(p3_tasks)} tasks, {t_sr:.1f}s "
-                  f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
-                  f"{s.get('recovered', 0)} retries)")
+            if verbose:
+                s = p3_requester.stats
+                t_sr = s.get('wall_time', 0)
+                auto_msg = f" + {len(p3_auto_assigned)} auto-assigned" if p3_auto_assigned else ""
+                print(f"    Assignment: {len(p3_tasks)} tasks, {t_sr:.1f}s "
+                      f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
+                      f"{s.get('recovered', 0)} retries){auto_msg}")
 
-        # Reassemble: merge batch-level dicts into per-domain assignments
-        partition_assignments: Dict[str, Dict[str, str]] = {}
-        for task, result in zip(p3_tasks, p3_results):
-            domain_name = task['domain_name']
-            if domain_name not in partition_assignments:
-                partition_assignments[domain_name] = {}
-            if result:
-                partition_assignments[domain_name].update(result)
+            # Reassemble: merge batch-level dicts into per-domain assignments
+            for task, result in zip(p3_tasks, p3_results):
+                domain_name = task['domain_name']
+                if domain_name not in partition_assignments:
+                    partition_assignments[domain_name] = {}
+                if result:
+                    partition_assignments[domain_name].update(result)
 
-        # __UNASSIGNED__ fallback for missing ideas per domain
-        for domain_name in partition_assignments:
-            ideas = label_mappings[domain_name].ideas
-            expected = {idea.idea_id for idea in ideas}
-            assigned = set(partition_assignments[domain_name].keys())
-            missing = expected - assigned
-            if missing:
-                print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
-                for idea_id in missing:
-                    partition_assignments[domain_name][idea_id] = "__UNASSIGNED__"
+            # __UNASSIGNED__ fallback for missing ideas per domain
+            for domain_name in partition_assignments:
+                ideas = label_mappings[domain_name].ideas
+                expected = {idea.idea_id for idea in ideas}
+                assigned = set(partition_assignments[domain_name].keys())
+                missing = expected - assigned
+                if missing:
+                    print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
+                    for idea_id in missing:
+                        partition_assignments[domain_name][idea_id] = "__UNASSIGNED__"
+        elif verbose and p3_auto_assigned:
+            print(f"    Assignment: all {len(p3_auto_assigned)} domains auto-assigned (1 facet each)")
 
         t_phase3 = time.time() - t_phase3
         if verbose:
@@ -658,7 +674,8 @@ class TaxonomyClassifier:
             for domain_name in sorted(partition_assignments):
                 n_assigned = len(partition_assignments[domain_name])
                 n_ideas = len(label_mappings[domain_name].ideas)
-                print(f"      {domain_name}: {n_assigned}/{n_ideas}")
+                auto_tag = " (auto)" if domain_name in p3_auto_assigned else ""
+                print(f"      {domain_name}: {n_assigned}/{n_ideas}{auto_tag}")
 
         if self.cost_tracker and _snap_p3 is not None:
             self.cost_tracker.record_phase(
@@ -953,9 +970,11 @@ class TaxonomyClassifier:
         t_phase6 = time.time()
 
         # Build flat task list: one task per (domain, facet, batch)
+        # Single-attribute facets are auto-assigned without LLM call
         p6_tasks = []
+        attribute_assignments: Dict[str, str] = {}
+        p6_auto_assigned: Dict[str, int] = {}  # facet_key → idea count (for reporting)
         batch_size = self._facet_assignment_batch_size
-        # Track per-facet idea sets for __UNASSIGNED__ fallback
         facet_idea_sets: Dict[str, List] = {}
 
         for domain_name, facet_attrs in domain_facet_attributes.items():
@@ -966,7 +985,17 @@ class TaxonomyClassifier:
                 if not facet_ideas:
                     continue
 
-                # Find facet description
+                facet_key = f"{domain_name}::{facet_name}"
+                facet_idea_sets[facet_key] = facet_ideas
+
+                # Single-attribute facet: auto-assign all ideas
+                if len(attributes) == 1:
+                    for idea in facet_ideas:
+                        attribute_assignments[idea.idea_id] = attributes[0].attribute_name
+                    p6_auto_assigned[facet_key] = len(facet_ideas)
+                    continue
+
+                # Multi-attribute: create SR tasks
                 facet_obj = None
                 for f in partition_facets.get(domain_name, []):
                     if f.facet_name == facet_name:
@@ -975,8 +1004,6 @@ class TaxonomyClassifier:
                 if not facet_obj:
                     continue
 
-                facet_key = f"{domain_name}::{facet_name}"
-                facet_idea_sets[facet_key] = facet_ideas
                 attr_id_to_name = {f"A{i}": a.attribute_name for i, a in enumerate(attributes, 1)}
                 idea_batches = [facet_ideas[j:j + batch_size] for j in range(0, len(facet_ideas), batch_size)]
 
@@ -992,8 +1019,6 @@ class TaxonomyClassifier:
                         'attr_id_to_name': attr_id_to_name,
                         'facet_key': facet_key,
                     })
-
-        attribute_assignments: Dict[str, str] = {}
 
         if p6_tasks:
             p6_requester = SmoothRequester(
@@ -1016,17 +1041,20 @@ class TaxonomyClassifier:
             if verbose:
                 s = p6_requester.stats
                 t_sr = s.get('wall_time', 0)
-                print(f"    P6 assignment: {len(p6_tasks)} tasks, {t_sr:.1f}s "
+                auto_msg = f" + {len(p6_auto_assigned)} auto-assigned" if p6_auto_assigned else ""
+                print(f"    Assignment: {len(p6_tasks)} tasks, {t_sr:.1f}s "
                       f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
-                      f"{s.get('recovered', 0)} retries)")
+                      f"{s.get('recovered', 0)} retries){auto_msg}")
 
             # Reassemble: merge batch-level dicts
             for task, result in zip(p6_tasks, p6_results):
                 if result:
                     attribute_assignments.update(result)
 
-            # __UNASSIGNED__ fallback per facet
+            # __UNASSIGNED__ fallback per facet (only for LLM-assigned facets)
             for facet_key, facet_ideas in facet_idea_sets.items():
+                if facet_key in p6_auto_assigned:
+                    continue
                 expected = {idea.idea_id for idea in facet_ideas}
                 assigned = {iid for iid in expected if iid in attribute_assignments}
                 missing = expected - assigned
@@ -1036,6 +1064,8 @@ class TaxonomyClassifier:
                           f"assignment in facet '{facet_name}'")
                     for idea_id in missing:
                         attribute_assignments[idea_id] = "__UNASSIGNED__"
+        elif verbose and p6_auto_assigned:
+            print(f"    Assignment: all {len(p6_auto_assigned)} facets auto-assigned (1 attribute each)")
 
         t_phase6 = time.time() - t_phase6
         if verbose:
@@ -1043,7 +1073,8 @@ class TaxonomyClassifier:
             for facet_key, facet_ideas in sorted(facet_idea_sets.items()):
                 n_assigned = sum(1 for idea in facet_ideas if idea.idea_id in attribute_assignments)
                 domain_name, facet_name = facet_key.split("::", 1)
-                print(f"      {domain_name}/{facet_name}: {n_assigned}/{len(facet_ideas)}")
+                auto_tag = " (auto)" if facet_key in p6_auto_assigned else ""
+                print(f"      {domain_name}/{facet_name}: {n_assigned}/{len(facet_ideas)}{auto_tag}")
 
         if self.cost_tracker and _snap_p6 is not None:
             self.cost_tracker.record_phase(

@@ -171,9 +171,11 @@ class LatencyTracker:
     """EMA tracker with adaptive timeout."""
 
     def __init__(self, ema_alpha=0.1, samples_window=100,
-                 timeout_floor=TIMEOUT_FLOOR_SECONDS, default_timeout=DEFAULT_TIMEOUT_SECONDS):
+                 timeout_floor=TIMEOUT_FLOOR_SECONDS, default_timeout=DEFAULT_TIMEOUT_SECONDS,
+                 timeout_multiplier=6.0):
         self.timeout_floor = timeout_floor
         self.default_timeout = default_timeout
+        self.timeout_multiplier = timeout_multiplier
         self.ema = None
         self.alpha = ema_alpha
         self.values = deque(maxlen=samples_window)
@@ -187,16 +189,17 @@ class LatencyTracker:
             self.ema = self.alpha * value + (1 - self.alpha) * self.ema
 
     def get_timeout(self):
+        m = self.timeout_multiplier
         if self.retry_mode:
             if not self.values:
                 return 180.0
             p50 = float(np.percentile(list(self.values), 50))
             retry_floor = self.retry_mode if isinstance(self.retry_mode, (int, float)) else 60.0
-            return max(retry_floor, min(p50 * 6.0, 180.0))
+            return max(retry_floor, min(p50 * m, 180.0))
         if not self.values:
             return max(self.timeout_floor, self.default_timeout)
         p50 = float(np.percentile(list(self.values), 50))
-        return max(self.timeout_floor, min(p50 * 6.0, 180.0))
+        return max(self.timeout_floor, min(p50 * m, 180.0))
 
     def get_p50(self):
         if len(self.values) >= 2:
@@ -923,13 +926,16 @@ class SmoothRequester:
         # Tiktoken offset learner
         self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
 
-        # Latency tracker
+        # Latency tracker — multiplier scales with task count:
+        # few tasks → ~1x (P50 is the latency), many tasks → 6x (need outlier headroom)
         _timeout = _stored_timeout or self._caller_default_timeout or TIMEOUT_FLOOR_SECONDS
+        _multiplier = min(6, round(math.log(max(num_tasks, 1)) + 1))
         self.latency_tracker = LatencyTracker(
             ema_alpha=self.processing_config.latency_tracker_ema_alpha,
             samples_window=self.processing_config.latency_tracker_samples_window,
             timeout_floor=_timeout,
             default_timeout=_timeout,
+            timeout_multiplier=float(_multiplier),
         )
 
         # Rate limiting components (initialized in _setup)
