@@ -127,11 +127,6 @@ MAX_SPECIFIER_WORKERS = DEFAULT_SPECIFIER_CONFIG.max_workers
 
 
 
-# === ARCHIVED P50-DRIFT FALLBACK (header-unavailable path) ============================================
-from pipeline.step_3_ideaExtractor.dev._archived_p50_drift_state_machine import (
-    ConcurrencyStateMachine as ArchivedP50StateMachine,
-    ConcurrencyCircuitBreaker as ArchivedCircuitBreaker,
-)
 
 
 

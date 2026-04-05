@@ -540,8 +540,229 @@ class HeaderAwareConcurrencyController:
 
 
 # =============================================================================
-# SYSTEM B: Client-Side Data — PID + P50-drift
+# SYSTEM B: Client-Side Data — P50-drift concurrency + PID rate pacing
+#
+# Fallback path for when server-side headers (openai-processing-ms) are not
+# available — e.g., Azure OpenAI, proxy setups, or future API changes.
+#
+# System A uses residual latency (observed - server processing time) as a
+# signal independent of our own dispatch decisions. System B only has P50
+# latency, which is contaminated by our concurrency changes: reducing
+# concurrency lowers P50 (fewer requests = less server load), making it look
+# like stress resolved, while increasing concurrency raises P50 from batch
+# scheduling noise. The controller therefore optimizes against its own shadow
+# rather than discovering the server's true capacity.
+#
+# Retained as a functional fallback so the pipeline works regardless of
+# header availability.
 # =============================================================================
+
+
+class P50DriftConcurrencyController:
+    """State machine concurrency controller driven by P50 latency drift.
+
+    Monitors in-flight latency signals and observed throughput to estimate the
+    server's concurrency limit. BACKOFF and RECOVER targets are grounded in
+    measured throughput × P50, not arbitrary percentages.
+
+    States: RAMP-UP → STEADY ↔ BACKOFF → RECOVER → STEADY
+
+    Signal: P50 drift from baseline.
+      >20% drift → STEADY (hold)
+      >50% drift for 2 consecutive ticks → BACKOFF
+    """
+
+    def __init__(self, starting: int, bottleneck: str = "throughput",
+                 config=None):
+        from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_CONCURRENCY_CONTROL_CONFIG
+        self.config = config or DEFAULT_CONCURRENCY_CONTROL_CONFIG
+        self.current = starting
+        self.starting = starting
+        self.bottleneck = bottleneck
+        self.ramp_step = max(2, int(starting * self.config.ramp_step_pct))
+
+        self.state = ConcurrencyState.RAMP_UP
+        self.last_healthy_concurrency = starting
+        self.steady_concurrency = None
+
+        # Throughput-grounded targets
+        self.last_healthy_throughput = 0.0
+        self.last_healthy_p50 = 0.0
+
+        # P50 drift detection
+        self.p50_baseline = 0.0
+
+        # Ratios for reporting (diagnostic only, don't drive transitions)
+        self.p95_ratio = 0.0
+        self.p100_ratio = 0.0
+        self.backoff_ticks = 0
+        self.stress_ticks = 0
+        self.signal_cutoff = 0.0
+
+    def _throughput_grounded_target(self, fraction: float) -> int:
+        """Compute concurrency target from measured throughput × P50."""
+        if self.last_healthy_throughput > 0 and self.last_healthy_p50 > 0:
+            target = int(fraction * self.last_healthy_throughput * self.last_healthy_p50)
+        else:
+            target = int(fraction * self.last_healthy_concurrency)
+        return max(self.config.min_concurrency, target)
+
+    def evaluate(self, p50: float, inflight_p95: float, inflight_p100: float,
+                 now: float, throughput: float = 0.0, inflight: int = 0) -> int:
+        """Main tick evaluation. Returns new concurrency."""
+        if p50 <= 0:
+            return self.current
+
+        if inflight_p100 > 0:
+            self.p95_ratio = inflight_p95 / p50
+            self.p100_ratio = inflight_p100 / p50
+
+        if self.p50_baseline == 0:
+            self.p50_baseline = p50
+
+        p50_drift = p50 / self.p50_baseline
+        should_hold = p50_drift > 1.2
+        stressed = p50_drift > 1.5
+
+        if stressed:
+            self.stress_ticks += 1
+        else:
+            self.stress_ticks = 0
+        should_backoff = self.stress_ticks >= 2
+
+        if throughput > 0 and p50 > 0:
+            self.last_healthy_throughput = throughput
+            self.last_healthy_p50 = p50
+
+        if self.state == ConcurrencyState.RAMP_UP:
+            if should_backoff:
+                self.stress_ticks = 0
+                self.state = ConcurrencyState.BACKOFF
+                self.backoff_ticks = 0
+                self.signal_cutoff = time.perf_counter()
+                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
+            elif should_hold:
+                self.state = ConcurrencyState.STEADY
+                self.steady_concurrency = self.current
+                self.last_healthy_concurrency = self.current
+            else:
+                self.last_healthy_concurrency = self.current
+                self.current = self.current + self.ramp_step
+
+        elif self.state == ConcurrencyState.STEADY:
+            self.steady_concurrency = self.current
+            if should_backoff:
+                self.stress_ticks = 0
+                self.state = ConcurrencyState.BACKOFF
+                self.backoff_ticks = 0
+                self.signal_cutoff = time.perf_counter()
+                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
+            elif not should_hold:
+                self.state = ConcurrencyState.RAMP_UP
+                self.current = self.current + self.ramp_step
+
+        elif self.state == ConcurrencyState.BACKOFF:
+            self.backoff_ticks += 1
+            if self.p100_ratio <= self.config.inflight_ratio:
+                self.state = ConcurrencyState.RECOVER
+                self.backoff_ticks = 0
+            elif self.backoff_ticks >= 3:
+                self.current = max(self.config.min_concurrency,
+                                   int(self.current * self.config.backoff_throughput_pct))
+                self.backoff_ticks = 0
+                self.signal_cutoff = time.perf_counter()
+
+        elif self.state == ConcurrencyState.RECOVER:
+            if should_backoff:
+                self.stress_ticks = 0
+                self.state = ConcurrencyState.BACKOFF
+                self.backoff_ticks = 0
+                self.signal_cutoff = time.perf_counter()
+                self.current = self._throughput_grounded_target(self.config.backoff_throughput_pct)
+            elif should_hold:
+                self.state = ConcurrencyState.STEADY
+                self.steady_concurrency = self.current
+                self.last_healthy_concurrency = self.current
+            else:
+                recovery_target = self._throughput_grounded_target(1.0)
+                if self.current >= recovery_target:
+                    self.state = ConcurrencyState.STEADY
+                    self.current = recovery_target
+                    self.steady_concurrency = self.current
+                    self.last_healthy_concurrency = self.current
+                else:
+                    recovery_step = max(1, self.ramp_step // 2)
+                    self.current = min(self.current + recovery_step, recovery_target)
+
+        return self.current
+
+
+class P50DriftCircuitBreaker:
+    """Timeout rate monitor for System B (P50-drift path).
+
+    Trigger-only — signals the caller to engage BACKOFF, does not manage
+    concurrency or recovery itself. Uses a fixed-size event window.
+
+    Lifecycle: CLOSED → detects spike → trips → cooldown → CLOSED.
+    """
+
+    def __init__(self, config):
+        self.config = config
+        self._events: deque = deque(maxlen=config.window_size)
+        self._state = 'CLOSED'
+        self._last_trip_time: Optional[float] = None
+        self._trip_count: int = 0
+        self._cooldown_seconds: float = 0.0
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def trip_count(self) -> int:
+        return self._trip_count
+
+    def record_completion(self):
+        self._events.append('ok')
+
+    def record_timeout(self):
+        self._events.append('timeout')
+
+    def _get_timeout_rate(self) -> Tuple[float, int]:
+        total = len(self._events)
+        if total == 0:
+            return 0.0, 0
+        timeouts = sum(1 for t in self._events if t == 'timeout')
+        return timeouts / total, total
+
+    def check(self, drain_time: float = 0.0) -> Optional[str]:
+        """Called every tick. Returns 'tripped' or None."""
+        now = time.monotonic()
+        rate, total = self._get_timeout_rate()
+
+        if self._state == 'CLOSED':
+            if total >= self.config.min_events_to_trip and rate > self.config.trip_threshold:
+                return self._trip(now, rate, total, drain_time)
+            return None
+
+        elif self._state == 'OPEN':
+            elapsed = now - self._last_trip_time if self._last_trip_time else 0
+            if elapsed < self._cooldown_seconds:
+                return None
+            self._state = 'CLOSED'
+            return None
+
+        return None
+
+    def _trip(self, now: float, rate: float, total: int, drain_time: float) -> str:
+        self._cooldown_seconds = max(5.0, drain_time * self.config.cooldown_drain_multiplier)
+        self._state = 'OPEN'
+        self._last_trip_time = now
+        self._trip_count += 1
+        print(f"CIRCUIT BREAKER TRIPPED: timeout rate {rate:.1%} "
+              f"({total} events) | cooldown {self._cooldown_seconds:.1f}s")
+        return 'tripped'
+
 
 class PIDThroughputController:
     """Asymmetric PID for arrival rate adjustment."""
@@ -847,16 +1068,12 @@ class SmoothRequester:
             self._concurrency_controller = HeaderAwareConcurrencyController(starting=effective)
             self.circuit_breaker = SimplifiedCircuitBreaker()
         else:
-            from pipeline.step_3_ideaExtractor.dev._archived_p50_drift_state_machine import (
-                ConcurrencyStateMachine as ArchivedP50StateMachine,
-                ConcurrencyCircuitBreaker as ArchivedCircuitBreaker,
-            )
             from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_CONCURRENCY_CONTROL_CONFIG, DEFAULT_CIRCUIT_BREAKER_CONFIG
-            self._concurrency_controller = ArchivedP50StateMachine(
+            self._concurrency_controller = P50DriftConcurrencyController(
                 starting=effective, bottleneck="throughput",
                 config=DEFAULT_CONCURRENCY_CONTROL_CONFIG,
             )
-            self.circuit_breaker = ArchivedCircuitBreaker(config=DEFAULT_CIRCUIT_BREAKER_CONFIG)
+            self.circuit_breaker = P50DriftCircuitBreaker(config=DEFAULT_CIRCUIT_BREAKER_CONFIG)
             self._residual_tracker = None
 
         # --- Rate pacing controller (always created) ---
