@@ -44,11 +44,11 @@ STEP_MODEL_TIERS = {
     "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": "nano",   # main extraction + retry
     # Step 4: Taxonomy Classifier (P1-P7)
-    "classifier_p1":    "nano",      # Facet Discovery
+    "classifier_p1":    "default",   # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation
     "classifier_p3":    "nano",      # Facet Assignment
-    "classifier_p4":    "nano",      # Attribute Discovery
-    "classifier_p5":    "nano",      # Attribute Chunk Consolidation
+    "classifier_p4":    "default",   # Attribute Discovery
+    "classifier_p5":    "default",   # Attribute Chunk Consolidation
     "classifier_p6":    "nano",      # Attribute Assignment
     "classifier_p7":    "default",   # Cross-facet Attribute Consolidation
     # Step 5: Code Generator (P8-P9)
