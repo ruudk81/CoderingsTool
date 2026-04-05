@@ -90,7 +90,7 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
         return (model, False, f"Static model: {model.__name__}")
 
     # Dynamic: idea_extraction
-    if prompt_type in ("idea_extraction", "idea_extraction_v3"):
+    if prompt_type == "idea_extraction":
         dimension_key = metadata.get("primary_dimension", "ATTRIBUTES_ASSOCIATIONS")
         dimension = get_dimension(dimension_key)
         template_prefix = metadata.get("template_prefix", "")
