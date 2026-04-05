@@ -654,8 +654,10 @@ class TaxonomyClassifier:
                 if result:
                     partition_assignments[domain_name].update(result)
 
-            # __UNASSIGNED__ fallback for missing ideas per domain
+            # __UNASSIGNED__ fallback for missing ideas (LLM-assigned domains only)
             for domain_name in partition_assignments:
+                if domain_name in p3_auto_assigned:
+                    continue
                 ideas = label_mappings[domain_name].ideas
                 expected = {idea.idea_id for idea in ideas}
                 assigned = set(partition_assignments[domain_name].keys())
