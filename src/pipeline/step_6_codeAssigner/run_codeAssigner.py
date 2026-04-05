@@ -22,6 +22,7 @@ from pipeline.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
+from utils.costTracker import CostTracker
 
 # Import step_6_codeAssigner components
 from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig
@@ -260,6 +261,7 @@ def run_code_assignment(
     prompt_printer=None,
     codes=None,
     attribute_assignments: Optional[Dict[str, str]] = None,
+    cost_tracker=None,
 ) -> List[CodeAssignedModel]:
     """Run code assignment and cache results."""
     assigner = CodeAssigner(
@@ -271,6 +273,7 @@ def run_code_assignment(
         prompt_printer=prompt_printer,
         codes=codes,
         attribute_assignments=attribute_assignments,
+        cost_tracker=cost_tracker,
     )
 
     assigned_results = assigner.assign_all()
@@ -357,6 +360,13 @@ def run_assignment():
     print(f"  Loaded codebook: {n_themes} themes, {n_partitions} partitions"
           f", {len(codes) if codes else 0} raw codes")
 
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[VARIABLE],
+        is_merged=False,
+        sample_size=SAMPLE_SIZE,
+    )
+    cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
+
     prompt_printer = PromptPrinter(
         enabled=True,
         print_realtime=PRINT_PROMPTS,
@@ -374,7 +384,10 @@ def run_assignment():
         prompt_printer=prompt_printer,
         codes=codes,
         attribute_assignments=all_attr_assignments,
+        cost_tracker=cost_tracker,
     )
+
+    cost_tracker.finalize_step("step_6_code_assigner")
 
     # Print assignment summary
     print_assignment_results(assigned_results)

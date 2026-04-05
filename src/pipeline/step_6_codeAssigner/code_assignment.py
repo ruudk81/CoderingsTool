@@ -52,7 +52,7 @@ from instructor.exceptions import InstructorRetryException
 
 from utils.llm import (
     create_client, llm_create_async,
-    RateLimits, extract_rate_limits_from_response,
+    RateLimits, extract_rate_limits_from_response, token_tracker,
 )
 from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats
 from utils.cached_resources import get_tiktoken_encoding
@@ -162,13 +162,20 @@ class CodeAssigner:
         prompt_printer=None,
         codes: List[CodeFromAttributes] = None,
         attribute_assignments: Optional[Dict[str, str]] = None,
+        cost_tracker=None,
     ):
+        self.cost_tracker = cost_tracker
         self._config = config
         self._ideas_models = ideas_models
         self._mece_results = mece_results
         self._partition_set = partition_set
         self._extraction_metadata = extraction_metadata
         self._codes = codes or []
+
+        if self.cost_tracker:
+            self.cost_tracker.set_step_models("step_6_code_assigner", {
+                "assignment": config.assignment_model,
+            })
 
         # Embedding pre-filter results (populated in Phase 3b if enabled)
         self._idea_code_candidates: Optional[Dict[str, List[int]]] = None
@@ -245,7 +252,14 @@ class CodeAssigner:
 
     def assign_all(self) -> List[CodeAssignedModel]:
         """Sync entry point. Returns list of CodeAssignedModel."""
+        _snap_before = token_tracker.snapshot() if self.cost_tracker else None
+
         results = asyncio.run(self._assign_all_async())
+
+        if self.cost_tracker and _snap_before is not None:
+            self.cost_tracker.record_phase(
+                "step_6_code_assigner", "assignment",
+                _snap_before, token_tracker.snapshot(), self._config.assignment_model)
 
         # Persist empirical stats for cold-start calibration on next run
         if (self._latency_tracker is not None
