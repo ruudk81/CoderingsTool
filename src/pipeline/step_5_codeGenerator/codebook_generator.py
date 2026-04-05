@@ -43,7 +43,7 @@ from pipeline.step_3_ideaExtractor.ideaExtractor import (
     RealTimeTPMTracker, RealTimeRPMTracker,
     ApiLimits, compute_optimal_concurrency,
 )
-from pipeline.step_2_qualityFilter.qualityFilter import (
+from utils.smoothRequester import (
     TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
 )
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import (

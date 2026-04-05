@@ -58,7 +58,7 @@ from pipeline.step_3_ideaExtractor.ideaExtractor import (
     PIDThroughputController,
     TiktokenOffsetLearner,
 )
-from pipeline.step_2_qualityFilter.qualityFilter import (
+from utils.smoothRequester import (
     TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
 )
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import (

@@ -130,7 +130,7 @@ def run_step(config: StepConfig = None):
 
     start_time = time.time()
 
-    grader = Grader(preprocessed_text, var_lab, verbose=config.verbose, prompt_printer=prompt_printer)
+    grader = Grader(preprocessed_text, var_lab, verbose=config.verbose, prompt_printer=prompt_printer, dataset_key=variable_key)
     quality_filtered_text = grader.grade()
 
     elapsed_time = time.time() - start_time
