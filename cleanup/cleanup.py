@@ -7,8 +7,8 @@ Interactive script that walks you through backup hygiene:
   2. Full src snapshots — large backup/ folders, suggest cleanup
   3. Old backup files — individual files in src/backup/ and src/utils/backup/
 
-Run:  python devs/cleanup.py
-      python devs/cleanup.py --dry-run   (preview only, no deletions)
+Run:  python cleanup/cleanup.py
+      python cleanup/cleanup.py --dry-run   (preview only, no deletions)
 """
 
 import os
@@ -535,10 +535,10 @@ def main():
 
     # Record last cleanup time (used by shell login reminder)
     if not args.dry_run:
-        marker = PROJECT_ROOT / "devs" / ".last_cleanup"
+        marker = PROJECT_ROOT / "cleanup" / ".last_cleanup"
         marker.touch()
 
-    print(f"\n{C.DIM}  Done. Run again anytime: python devs/cleanup.py{C.RESET}\n")
+    print(f"\n{C.DIM}  Done. Run again anytime: python cleanup/cleanup.py{C.RESET}\n")
 
 
 if __name__ == "__main__":
