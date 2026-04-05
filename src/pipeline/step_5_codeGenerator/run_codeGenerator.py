@@ -20,6 +20,7 @@ from pipeline.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
+from utils.costTracker import CostTracker
 
 # Import step_5_codeGenerator components
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
@@ -351,11 +352,18 @@ def run_codebook():
     survey_question, language, dataset_context, dimension_name, dimension_description = \
         _extract_metadata_context(extraction_metadata)
 
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[VARIABLE],
+        is_merged=False,
+        sample_size=SAMPLE_SIZE,
+    )
+    cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
+
     prompt_printer = PromptPrinter(
         enabled=True,
         print_realtime=PRINT_PROMPTS,
     )
-    generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer)
+    generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker)
     codebook_result = generator.generate(
         taxonomy_result=taxonomy_result,
         partition_set=partition_set,
@@ -366,6 +374,8 @@ def run_codebook():
         dimension_description=dimension_description,
         verbose=CONFIG.verbose if hasattr(CONFIG, 'verbose') else True,
     )
+
+    cost_tracker.finalize_step("step_5_code_generator")
 
     # Print codebook results
     print_codebook_results(codebook_result)

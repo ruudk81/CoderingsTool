@@ -32,7 +32,7 @@ from aiolimiter import AsyncLimiter
 
 from utils.llm import (
     create_client, llm_create_async, RateLimits,
-    extract_rate_limits_from_response,
+    extract_rate_limits_from_response, token_tracker,
 )
 from config import (
     ProcessingConfig, DEFAULT_PROCESSING_CONFIG, OPENAI_API_KEY,
@@ -146,9 +146,17 @@ class CodebookGenerator:
     P9.  CODEBOOK CONSOLIDATION:            Cross-domain, merge into MECE codebook
     """
 
-    def __init__(self, config: CodebookConfig, prompt_printer=None):
+    def __init__(self, config: CodebookConfig, prompt_printer=None, cost_tracker=None):
+        self.cost_tracker = cost_tracker
         self._model_p8 = config.model_p8
         self._model_p9 = config.model_p9
+
+        if self.cost_tracker:
+            self.cost_tracker.set_step_models("step_5_code_generator", {
+                "p8_code_generation": self._model_p8,
+                "p9_codebook_consolidation": self._model_p9,
+            })
+
         self._temperature = config.temperature
         self._max_tokens_code_from_attributes = config.max_tokens_code_from_attributes
         self._max_tokens_codebook_consolidation = config.max_tokens_codebook_consolidation
@@ -308,6 +316,8 @@ class CodebookGenerator:
         # =================================================================
         # PHASE 8 (P8): Per-domain Code Generation
         # =================================================================
+        _snap_p8 = token_tracker.snapshot() if self.cost_tracker else None
+
         if verbose:
             print(f"\n  Phase 8: Per-domain Code Generation...")
 
@@ -376,9 +386,16 @@ class CodebookGenerator:
             )
             code_frequencies[idx] = freq
 
+        if self.cost_tracker and _snap_p8 is not None:
+            self.cost_tracker.record_phase(
+                "step_5_code_generator", "p8_code_generation",
+                _snap_p8, token_tracker.snapshot(), self._model_p8)
+
         # =================================================================
         # PHASE 9 (P9): Cross-domain Codebook Consolidation
         # =================================================================
+        _snap_p9 = token_tracker.snapshot() if self.cost_tracker else None
+
         if verbose:
             print(f"\n  Phase 9: Codebook Consolidation...")
 
@@ -403,6 +420,11 @@ class CodebookGenerator:
                   f"(after consolidation)")
             for i, code in enumerate(all_codes, 1):
                 print(f"    {i}. {code.code_name}: {code.definition}")
+
+        if self.cost_tracker and _snap_p9 is not None:
+            self.cost_tracker.record_phase(
+                "step_5_code_generator", "p9_codebook_consolidation",
+                _snap_p9, token_tracker.snapshot(), self._model_p9)
 
         codebook_elapsed = time.time() - start_time
         if verbose:
