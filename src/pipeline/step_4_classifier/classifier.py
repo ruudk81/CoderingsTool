@@ -36,11 +36,11 @@ from typing import Dict, List, Optional, Set
 import nest_asyncio
 
 from utils.llm import (
-    RateLimits, extract_rate_limits_from_response, token_tracker,
+    RateLimits, token_tracker,
+    fetch_rate_limits as llm_fetch_rate_limits,
 )
 from config import (
-    DEFAULT_PROCESSING_CONFIG, OPENAI_API_KEY,
-    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params,
+    DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params,
 )
 
 from pipeline.step_3_ideaExtractor.dimension_data import (
@@ -313,7 +313,7 @@ class TaxonomyClassifier:
         # --- Fetch real rate limits from API headers ---
         if verbose:
             print("  Fetching rate limits from API...")
-        limits = await self._fetch_rate_limits_from_api()
+        limits, _ = await llm_fetch_rate_limits(self._model_p1_p2)
 
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             if verbose:
@@ -1832,43 +1832,6 @@ class TaxonomyClassifier:
         def fallback_fn(task: Dict, reason: str) -> List[ConsolidatedAttribute]:
             return []
         return fallback_fn
-
-    # =========================================================================
-    # DYNAMIC RATE LIMIT DISCOVERY
-    # =========================================================================
-
-    async def _fetch_rate_limits_from_api(self) -> RateLimits:
-        """Make a minimal API call to fetch rate limits from response headers."""
-        from openai import AsyncOpenAI
-
-        if API_PROVIDER == "azure":
-            from config import (
-                AZURE_OPENAI_ENDPOINT,
-                AZURE_OPENAI_API_KEY,
-                AZURE_OPENAI_DEPLOYMENT_NAME,
-            )
-            client = AsyncOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
-                default_query={"api-version": "2024-10-21"},
-            )
-            model = AZURE_OPENAI_DEPLOYMENT_NAME
-        else:
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            model = self._model_p1_p2
-
-        if API_PROVIDER == "azure":
-            response = await client.chat.completions.with_raw_response.create(
-                model=model,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_completion_tokens=5,
-            )
-        else:
-            response = await client.responses.with_raw_response.create(
-                model=model,
-                input="Hi",
-            )
-        return extract_rate_limits_from_response(response)
 
     # =========================================================================
     # HELPERS

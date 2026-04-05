@@ -36,11 +36,11 @@ from instructor.exceptions import InstructorRetryException
 
 from config import (
     API_PROVIDER, OPENAI_API_KEY,
-    AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
     FALLBACK_TPM, FALLBACK_RPM, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
 )
 from utils.llm import (
-    create_client, llm_create_async, RateLimits, extract_rate_limits_from_response,
+    create_client, llm_create_async, RateLimits,
+    fetch_rate_limits as llm_fetch_rate_limits,
     HeaderCaptureTransport,
 )
 from utils.modelPerfStats import (
@@ -1016,31 +1016,7 @@ class SmoothRequester:
 
     async def _fetch_rate_limits(self) -> Tuple[RateLimits, bool]:
         """Probe call: discover rate limits + header availability."""
-        from openai import AsyncOpenAI
-
-        if API_PROVIDER == "azure":
-            deployment = AZURE_OPENAI_DEPLOYMENT_NAME
-            client = AsyncOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/",
-                default_query={"api-version": "2024-10-21"},
-            )
-            model = deployment
-            response = await client.chat.completions.with_raw_response.create(
-                model=model,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_completion_tokens=5,
-            )
-        else:
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            model = self.model
-            response = await client.responses.with_raw_response.create(
-                model=model, input="Hi",
-            )
-
-        rate_limits = extract_rate_limits_from_response(response)
-        has_headers = 'openai-processing-ms' in response.headers
-        return rate_limits, has_headers
+        return await llm_fetch_rate_limits(self.model)
 
     def _setup_rate_pacing(self, limits):
         """Create TokenBucket + AsyncLimiter (always active, both systems)."""

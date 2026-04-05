@@ -278,6 +278,41 @@ def extract_rate_limits_from_response(response) -> RateLimits:
     )
 
 
+async def fetch_rate_limits(model: str) -> tuple:
+    """Probe API for rate limits and header availability.
+
+    Makes a minimal API call ("Hi") and extracts rate limits from
+    response headers. Also checks for openai-processing-ms header.
+
+    Args:
+        model: Model name (OpenAI) or deployment name (Azure)
+
+    Returns:
+        (RateLimits, has_server_headers: bool)
+    """
+    if API_PROVIDER == "azure":
+        client = AsyncOpenAI(
+            api_key=AZURE_OPENAI_API_KEY,
+            base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+            default_query={"api-version": "2024-10-21"},
+        )
+        response = await client.chat.completions.with_raw_response.create(
+            model=AZURE_OPENAI_DEPLOYMENT_NAME,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_completion_tokens=5,
+        )
+    else:
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        response = await client.responses.with_raw_response.create(
+            model=model,
+            input="Hi",
+        )
+
+    rate_limits = extract_rate_limits_from_response(response)
+    has_headers = 'openai-processing-ms' in response.headers
+    return rate_limits, has_headers
+
+
 @dataclass
 class TokenTracker:
     """Thread-safe token and cost tracking across all LLM calls."""
