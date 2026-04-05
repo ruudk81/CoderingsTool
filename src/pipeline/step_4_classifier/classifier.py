@@ -28,10 +28,12 @@ Usage:
 
 import asyncio
 import time
+import re
 import numpy as np
 import tiktoken
 from collections import deque
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field
@@ -41,7 +43,7 @@ from aiolimiter import AsyncLimiter
 
 from utils.llm import (
     create_client, llm_create_async, RateLimits,
-    extract_rate_limits_from_response,
+    extract_rate_limits_from_response, token_tracker,
 )
 from config import (
     ProcessingConfig, DEFAULT_PROCESSING_CONFIG, OPENAI_API_KEY,
@@ -52,14 +54,15 @@ from pipeline.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
 )
 from pipeline.step_3_ideaExtractor.ideaExtractor import (
-    ConcurrencyGate, ConcurrencyRamp,
-    RealTimeTPMTracker, RealTimeRPMTracker,
-    ApiLimits, compute_optimal_concurrency,
-    PIDThroughputController,
+    ConcurrencyGate,
     TiktokenOffsetLearner,
 )
 from utils.smoothRequester import (
+    SmoothRequester,
     TokenBucket, LatencyTracker, ConcurrencyCircuitBreaker,
+    RealTimeTPMTracker, RealTimeRPMTracker,
+    ApiLimits, compute_optimal_concurrency,
+    PIDThroughputController,
 )
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     RampUpConfig,
@@ -102,6 +105,127 @@ from .prompts_classifier import (
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
 nest_asyncio.apply()
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+class ConcurrencyRamp:
+    """Completion-based concurrency ramp with congestion detection.
+
+    Concurrency scales linearly with completion progress:
+      0% complete → start (50% of Little's Law)
+      100% complete → target (90% of Little's Law)
+
+    Stops early on throughput drop (2 consecutive) or queue congestion (>5% timeouts).
+    """
+    def __init__(self, config: 'RampUpConfig', little_law_cap: int, num_tasks: int):
+        self.config = config
+        self._num_tasks = num_tasks
+        self._done = False
+        self._stopped_concurrency = None
+        self._stop_reason = None
+
+        self._little_law_cap = little_law_cap
+        start = max(config.min_initial, int(little_law_cap * config.start_fraction))
+        target = min(int(little_law_cap * config.target_fraction), num_tasks)
+        self._start = start
+        self._target = max(target, start)
+        self._current = start
+
+        self._prev_throughput = None
+        self._declining_steps = 0
+        self._prev_completions_total = 0
+        self._prev_timeouts_total = 0
+
+    @property
+    def cap(self) -> int:
+        return self._target
+
+    def current_target(self) -> int:
+        return self._current
+
+    def is_done(self) -> bool:
+        return self._done
+
+    def stopped_concurrency(self) -> Optional[int]:
+        return self._stopped_concurrency
+
+    def recalibrate(self, new_little_law_cap: int):
+        """Update start/target from new Little's Law cap after warm-up calibration."""
+        self._little_law_cap = new_little_law_cap
+        new_start = max(self.config.min_initial, int(new_little_law_cap * self.config.start_fraction))
+        new_target = min(int(new_little_law_cap * self.config.target_fraction), self._num_tasks)
+        self._start = new_start
+        self._target = max(new_target, new_start)
+        self._current = new_start
+        self._done = False
+        self._stopped_concurrency = None
+        self._stop_reason = None
+        print(f"RAMP RECALIBRATED: {new_start} → {self._target} "
+              f"(Little's Law: {new_little_law_cap})")
+
+    def record_measurement(self, throughput: float, tpm_pct: float, rpm_pct: float,
+                           completions_total: int, timeouts_total: int, duration: float):
+        """Called every tick with current metrics. Advances ramp or stops on congestion."""
+        if self._done:
+            return
+
+        # Stop signal 1: throughput dropping
+        if self._prev_throughput is not None and self._prev_throughput > 0:
+            growth = (throughput - self._prev_throughput) / self._prev_throughput
+            if growth < -0.10:
+                self._declining_steps += 1
+            else:
+                self._declining_steps = max(0, self._declining_steps - 1)
+            if self._declining_steps >= 2:
+                self._stop('throughput_drop', self._current)
+                return
+
+        # Stop signal 2: queue congestion (timeouts appearing)
+        new_timeouts = timeouts_total - self._prev_timeouts_total
+        new_completions = completions_total - self._prev_completions_total
+        if new_timeouts > 0 and new_completions > 0:
+            timeout_rate = new_timeouts / (new_completions + new_timeouts)
+            if timeout_rate > 0.05:
+                self._stop('queue_congestion', self._current)
+                return
+
+        self._prev_throughput = throughput
+        self._prev_completions_total = completions_total
+        self._prev_timeouts_total = timeouts_total
+
+        # Completion-based ramp: advance proportional to progress
+        ramp_fraction = min(completions_total / self._num_tasks, 1.0)
+        new_conc = int(self._start + (self._target - self._start) * ramp_fraction)
+        new_conc = max(new_conc, self._current)
+
+        if new_conc >= self._target:
+            self._current = self._target
+            self._done = True
+            self._stopped_concurrency = self._target
+            self._stop_reason = 'target_reached'
+            print(f"RAMP COMPLETE: concurrency {self._target} "
+                  f"({self.config.target_fraction*100:.0f}% of Little's Law {self._little_law_cap})")
+        else:
+            self._current = new_conc
+
+    def _stop(self, reason: str, concurrency: int):
+        self._done = True
+        self._stopped_concurrency = concurrency
+        self._stop_reason = reason
+        label = 'THROUGHPUT DROP' if reason == 'throughput_drop' else 'QUEUE CONGESTION'
+        print(f"RAMP STOPPED ({label}): locking concurrency at {concurrency} "
+              f"(was ramping toward {self._target})")
+
+
+def _normalize_for_comparison(text: str) -> str:
+    """Strip template prefix and canonical_phrasing for similarity comparison."""
+    if ' → ' in text:
+        text = text.split(' → ', 1)[1]
+    text = re.sub(r'\bcanonical_phrasing:\s*', '', text)
+    return text.strip().lower()
 
 
 # =============================================================================
@@ -199,14 +323,23 @@ class TaxonomyClassifier:
     P7.  CROSS-FACET ATTR CONSOLIDATION:    Per domain, dedup across facets
     """
 
-    def __init__(self, config: CategoriesConfig, prompt_printer=None):
-        self._model_p1 = config.qr_model_p1
-        self._model_p2 = config.qr_model_p2
+    def __init__(self, config: CategoriesConfig, prompt_printer=None, dataset_key: str = "", cost_tracker=None):
+        self.cost_tracker = cost_tracker
+        self._model_p1_p2 = config.qr_model_p1_p2
         self._model_p3 = config.qr_model_p3
-        self._model_p4 = config.qr_model_p4
-        self._model_p5 = config.qr_model_p5
+        self._model_p4_p5 = config.qr_model_p4_p5
         self._model_p6 = config.qr_model_p6
         self._model_p7 = config.qr_model_p7
+
+        if self.cost_tracker:
+            self.cost_tracker.set_step_models("step_4_taxonomy_classifier", {
+                "p1_p2_facet_discovery_and_consolidation": self._model_p1_p2,
+                "p3_facet_assignment": self._model_p3,
+                "p4_p5_attribute_discovery_and_consolidation": self._model_p4_p5,
+                "p6_attribute_assignment": self._model_p6,
+                "p7_cross_facet_consolidation": self._model_p7,
+            })
+
         self._temperature = config.qr_temperature
         self._max_tokens_facet_discovery = config.qr_max_tokens_facet_discovery
         self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
@@ -232,6 +365,9 @@ class TaxonomyClassifier:
         self._label_source = config.label_source
         self._label_prefix = config.label_prefix
         self._include_valence = config.include_valence
+
+        # Dataset key for empirical stats cache (SmoothRequester)
+        self._dataset_key = dataset_key
 
         # Prompt capture (optional)
         self._prompt_printer = prompt_printer
@@ -362,7 +498,7 @@ class TaxonomyClassifier:
         self._perf_stats = load_stats()
 
         # Create one client per unique model
-        unique_models = {self._model_p1, self._model_p2, self._model_p3, self._model_p4, self._model_p5, self._model_p6, self._model_p7}
+        unique_models = {self._model_p1_p2, self._model_p3, self._model_p4_p5, self._model_p6, self._model_p7}
         self._clients = {m: create_client(model=m, async_mode=True) for m in unique_models}
 
         processing_config = DEFAULT_PROCESSING_CONFIG
@@ -410,8 +546,8 @@ class TaxonomyClassifier:
 
         if verbose:
             print(f"\n  [RATE LIMITING SETUP]")
-            print(f"  Models: P1={self._model_p1}, P2={self._model_p2}, "
-                  f"P3={self._model_p3}, P4={self._model_p4}, P5={self._model_p5}, "
+            print(f"  Models: P1+P2={self._model_p1_p2}, "
+                  f"P3={self._model_p3}, P4+P5={self._model_p4_p5}, "
                   f"P6={self._model_p6}, P7={self._model_p7}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
@@ -434,6 +570,8 @@ class TaxonomyClassifier:
         # =================================================================
         # PHASE 1 (P1): Per-domain Facet Discovery (concurrent)
         # =================================================================
+        _snap_p1p2 = token_tracker.snapshot() if self.cost_tracker else None
+
         if verbose:
             print(f"\n  Phase 1: Per-domain Facet Discovery...")
 
@@ -442,7 +580,7 @@ class TaxonomyClassifier:
             len(self._create_batches(mapping.labels))
             for mapping in label_mappings.values()
         )
-        p1_state = self._create_phase_ramp("P1", total_p1_chunks, model=self._model_p1,
+        p1_state = self._create_phase_ramp("P1", total_p1_chunks, model=self._model_p1_p2,
                                             phase_key="step4_p1_facet_discovery")
 
         facet_tasks = {}
@@ -463,7 +601,7 @@ class TaxonomyClassifier:
         facet_results_list = await self._run_with_ramp(
             facet_tasks.values(), p1_state
         )
-        self._collect_phase_stats(p1_state, self._model_p1, "step4_p1_facet_discovery")
+        self._collect_phase_stats(p1_state, self._model_p1_p2, "step4_p1_facet_discovery")
 
         partition_facets: Dict[str, List[DiscoveredFacet]] = {}
         partition_n_labels: Dict[str, int] = {}
@@ -488,64 +626,96 @@ class TaxonomyClassifier:
                 facet_names = [f.facet_name for f in partition_facets[name]]
                 print(f"    {name}: {facet_names}")
 
+        if self.cost_tracker and _snap_p1p2 is not None:
+            self.cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", "p1_p2_facet_discovery_and_consolidation",
+                _snap_p1p2, token_tracker.snapshot(), self._model_p1_p2)
+
         # =================================================================
-        # PHASE 3 (P3): Per-domain Facet Assignment (concurrent)
+        # PHASE 3 (P3): Per-domain Facet Assignment (SmoothRequester)
         # =================================================================
+        _snap_p3 = token_tracker.snapshot() if self.cost_tracker else None
+
         if verbose:
             print(f"\n  Phase 3: Per-domain Facet Assignment...")
 
         t_phase3 = time.time()
 
-        # Per-phase ramp: estimate total batches across all domains
-        total_p3_ideas = sum(
-            len(label_mappings[name].ideas)
-            for name in partition_facets
-            if partition_facets[name] and label_mappings[name].ideas
+        # Build flat task list: one task per (domain, batch)
+        p3_tasks = []
+        batch_size = self._facet_assignment_batch_size
+        for domain_name in sorted(partition_facets.keys()):
+            if not partition_facets[domain_name] or not label_mappings[domain_name].ideas:
+                continue
+            facets = partition_facets[domain_name]
+            ideas = label_mappings[domain_name].ideas
+            facet_id_to_name = {f"F{i}": f.facet_name for i, f in enumerate(facets, 1)}
+            idea_batches = [ideas[j:j + batch_size] for j in range(0, len(ideas), batch_size)]
+            for batch_idx, batch_ideas in enumerate(idea_batches):
+                p3_tasks.append({
+                    'domain_name': domain_name,
+                    'batch_idx': batch_idx,
+                    'total_batches': len(idea_batches),
+                    'batch_ideas': batch_ideas,
+                    'facets': facets,
+                    'facet_id_to_name': facet_id_to_name,
+                    'part_context': partition_contexts[domain_name],
+                })
+
+        p3_requester = SmoothRequester(
+            model=self._model_p3,
+            dataset_key=self._dataset_key,
+            phase_key="step4_p3_facet_assignment",
+            num_tasks=len(p3_tasks),
+            verbose=verbose,
         )
-        est_p3_batches = max(1, total_p3_ideas // self._facet_assignment_batch_size)
-        p3_state = self._create_phase_ramp("P3", est_p3_batches, model=self._model_p3,
-                                            phase_key="step4_p3_facet_assignment")
-
-        assignment_tasks = {
-            name: self._run_facet_assignment(
-                name, partition_facets[name],
-                label_mappings[name].ideas,
-                partition_contexts[name], prompt_context,
-                gate=p3_state.gate,
-                phase_state=p3_state,
-            )
-            for name in sorted(partition_facets.keys())
-            if partition_facets[name] and label_mappings[name].ideas
-        }
-
-        assignment_results_list = await self._run_with_ramp(
-            assignment_tasks.values(), p3_state
+        p3_results = await p3_requester.process_all(
+            p3_tasks,
+            self._p3_prepare_fn(prompt_context),
+            self._p3_parse_fn(),
+            self._p3_fallback_fn(),
         )
-        self._collect_phase_stats(p3_state, self._model_p3, "step4_p3_facet_assignment")
 
-        # idea_id -> facet_name per domain
+        # Reassemble: merge batch-level dicts into per-domain assignments
         partition_assignments: Dict[str, Dict[str, str]] = {}
-        for name, result in zip(assignment_tasks.keys(), assignment_results_list):
-            if isinstance(result, Exception):
-                print(f"  Facet assignment '{name}' FAILED: "
-                      f"{type(result).__name__}: {result}")
-                partition_assignments[name] = {}
-            else:
-                partition_assignments[name] = result
-                if verbose:
-                    n_assigned = len(result)
-                    n_ideas = len(label_mappings[name].ideas)
-                    print(f"    {name}: {n_assigned}/{n_ideas} ideas assigned")
+        for task, result in zip(p3_tasks, p3_results):
+            domain_name = task['domain_name']
+            if domain_name not in partition_assignments:
+                partition_assignments[domain_name] = {}
+            if result:
+                partition_assignments[domain_name].update(result)
+
+        # __UNASSIGNED__ fallback for missing ideas per domain
+        for domain_name in partition_assignments:
+            ideas = label_mappings[domain_name].ideas
+            expected = {idea.idea_id for idea in ideas}
+            assigned = set(partition_assignments[domain_name].keys())
+            missing = expected - assigned
+            if missing:
+                print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
+                for idea_id in missing:
+                    partition_assignments[domain_name][idea_id] = "__UNASSIGNED__"
 
         t_phase3 = time.time() - t_phase3
         if verbose:
+            for domain_name in sorted(partition_assignments):
+                n_assigned = len(partition_assignments[domain_name])
+                n_ideas = len(label_mappings[domain_name].ideas)
+                print(f"    {domain_name}: {n_assigned}/{n_ideas} ideas assigned")
             total_assigned = sum(len(a) for a in partition_assignments.values())
             print(f"  Phase 3 done in {t_phase3:.1f}s → "
                   f"{total_assigned} ideas assigned to facets")
 
+        if self.cost_tracker and _snap_p3 is not None:
+            self.cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", "p3_facet_assignment",
+                _snap_p3, token_tracker.snapshot(), self._model_p3)
+
         # =================================================================
         # PHASE 4 (P4): Per-facet Attribute Discovery (concurrent)
         # =================================================================
+        _snap_p4p5 = token_tracker.snapshot() if self.cost_tracker else None
+
         if verbose:
             print(f"\n  Phase 4: Per-facet Attribute Discovery...")
 
@@ -596,7 +766,7 @@ class TaxonomyClassifier:
                 size_max=self._p4_batch_size_max,
                 target=self._p4_target_batches,
             )))
-        p4_state = self._create_phase_ramp("P4", total_p4_chunks, model=self._model_p4,
+        p4_state = self._create_phase_ramp("P4", total_p4_chunks, model=self._model_p4_p5,
                                             phase_key="step4_p4_attribute_discovery")
 
         # Build actual coroutines
@@ -616,7 +786,7 @@ class TaxonomyClassifier:
         attr_results_list = await self._run_with_ramp(
             attr_coros.values(), p4_state
         )
-        self._collect_phase_stats(p4_state, self._model_p4, "step4_p4_attribute_discovery")
+        self._collect_phase_stats(p4_state, self._model_p4_p5, "step4_p4_attribute_discovery")
 
         # Collect attributes: domain -> facet -> [attributes]
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
@@ -652,9 +822,16 @@ class TaxonomyClassifier:
                   f"{total_attrs} attributes across "
                   f"{len(attr_coros)} facets")
 
+        if self.cost_tracker and _snap_p4p5 is not None:
+            self.cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", "p4_p5_attribute_discovery_and_consolidation",
+                _snap_p4p5, token_tracker.snapshot(), self._model_p4_p5)
+
         # =================================================================
         # PHASE 6 (P6): Per-facet Attribute Assignment
         # =================================================================
+        _snap_p6 = token_tracker.snapshot() if self.cost_tracker else None
+
         if verbose:
             print(f"\n  Phase 6: Per-facet Attribute Assignment...")
 
@@ -731,10 +908,17 @@ class TaxonomyClassifier:
             print(f"  Phase 6 done in {t_phase6:.1f}s → "
                   f"{len(attribute_assignments)} ideas with attributes")
 
+        if self.cost_tracker and _snap_p6 is not None:
+            self.cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", "p6_attribute_assignment",
+                _snap_p6, token_tracker.snapshot(), self._model_p6)
+
         # =================================================================
         # PHASE 7 (P7): Cross-facet Attribute Consolidation per domain
         # (now with frequency data from attribute assignments)
         # =================================================================
+        _snap_p7 = token_tracker.snapshot() if self.cost_tracker else None
+
         if verbose:
             print(f"\n  Phase 7: Cross-facet Attribute Consolidation...")
 
@@ -835,6 +1019,11 @@ class TaxonomyClassifier:
         taxonomy_elapsed = time.time() - start_time
         if verbose:
             print(f"\n  Taxonomy (P1-P7) complete in {taxonomy_elapsed:.1f}s")
+
+        if self.cost_tracker and _snap_p7 is not None:
+            self.cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", "p7_cross_facet_consolidation",
+                _snap_p7, token_tracker.snapshot(), self._model_p7)
 
         save_stats(self._perf_stats)
 
@@ -951,7 +1140,7 @@ class TaxonomyClassifier:
                     prompt_content=prompt,
                     prompt_type="facet_discovery",
                     metadata={
-                        "model": self._model_p1,
+                        "model": self._model_p1_p2,
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_facet_discovery,
                         "language": prompt_context.language,
@@ -1037,7 +1226,7 @@ class TaxonomyClassifier:
                 prompt_content=prompt,
                 prompt_type="facet_consolidation",
                 metadata={
-                    "model": self._model_p2,
+                    "model": self._model_p1_p2,
                     "temperature": 0.0,
                     "max_tokens": self._max_tokens_facet_discovery,
                     "language": prompt_context.language,
@@ -1049,7 +1238,7 @@ class TaxonomyClassifier:
 
         result = await self._llm_call(
             prompt, FacetConsolidatedResponse, self._max_tokens_facet_discovery,
-            temperature=0.0, model=self._model_p2, timeout=180.0,
+            temperature=0.0, model=self._model_p1_p2, timeout=180.0,
         )
         return result.facets
 
@@ -1141,53 +1330,27 @@ class TaxonomyClassifier:
         )
 
     # =========================================================================
-    # PHASE 3 (P3): PER-DOMAIN FACET ASSIGNMENT
+    # PHASE 3 (P3): PER-DOMAIN FACET ASSIGNMENT (SmoothRequester)
     # =========================================================================
 
-    async def _run_facet_assignment(
-        self,
-        domain_name: str,
-        facets: List[DiscoveredFacet],
-        ideas: List,
-        part_context: DomainContext,
-        prompt_context: PromptContext,
-        gate=None,
-        phase_state: PhaseRampState = None,
-    ) -> Dict[str, str]:
-        """Assign all ideas in a domain to discovered facets.
-
-        Returns: Dict[idea_id, facet_name]
-        """
-        # Build facet ID -> name mapping
-        facet_id_to_name = {}
-        for i, facet in enumerate(facets, 1):
-            facet_id_to_name[f"F{i}"] = facet.facet_name
-
-        # Batch ideas
-        batch_size = self._facet_assignment_batch_size
-        idea_batches = [
-            ideas[i:i + batch_size]
-            for i in range(0, len(ideas), batch_size)
-        ]
-
-        all_assignments: Dict[str, str] = {}
-
-        async def process_batch(batch_idx: int, batch_ideas: List):
+    def _p3_prepare_fn(self, prompt_context: PromptContext):
+        """Return prepare_fn closure for P3 facet assignment."""
+        def prepare_fn(task: Dict) -> Dict:
             prompt = build_facet_assignment_prompt(
                 survey_question=prompt_context.survey_question,
                 language=prompt_context.language,
                 dataset_context_section=prompt_context.dataset_context_section,
-                domain_name=domain_name,
-                domain_definition=part_context.partition_definition,
-                facets=facets,
-                other_label=None,  # No "other" for facet assignment
-                ideas=batch_ideas,
+                domain_name=task['domain_name'],
+                domain_definition=task['part_context'].partition_definition,
+                facets=task['facets'],
+                other_label=None,
+                ideas=task['batch_ideas'],
             )
 
             # Prompt capture (first batch per domain)
-            gate_key = f"qr_facet_assign_{domain_name}"
+            gate_key = f"qr_facet_assign_{task['domain_name']}"
             if (self._prompt_printer is not None
-                    and batch_idx == 0
+                    and task['batch_idx'] == 0
                     and gate_key not in self._captured_gates):
                 self._prompt_printer.capture_prompt(
                     step_name="qualitative_researcher",
@@ -1199,97 +1362,41 @@ class TaxonomyClassifier:
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_facet_assignment,
                         "language": prompt_context.language,
-                        "partition_name": domain_name,
-                        "batch_number": batch_idx + 1,
-                        "total_batches": len(idea_batches),
-                        "n_facets": len(facets),
+                        "partition_name": task['domain_name'],
+                        "batch_number": task['batch_idx'] + 1,
+                        "total_batches": task['total_batches'],
+                        "n_facets": len(task['facets']),
                         "dimension_name": prompt_context.dimension_name,
                     }
                 )
                 self._captured_gates.add(gate_key)
 
-            try:
-                result = await self._llm_call(
-                    prompt, FacetAssignmentBatch, self._max_tokens_facet_assignment,
-                    model=self._model_p3, timeout=60.0, gate=gate,
-                    phase_state=phase_state,
-                )
-                return result.assignments
-            except Exception as e:
-                print(f"    FACET ASSIGNMENT '{domain_name}' batch "
-                      f"{batch_idx + 1}/{len(idea_batches)} FAILED: "
-                      f"{type(e).__name__}: {e}")
-                self.failed_task_ids.update(idea.idea_id for idea in batch_ideas)
-                return []
+            return {
+                'prompt': prompt,
+                'response_model': FacetAssignmentBatch,
+                'temperature': self._temperature,
+                'max_tokens': self._max_tokens_facet_assignment,
+                'max_retries': 3,
+                'extra_kwargs': get_reasoning_params(self._model_p3),
+            }
+        return prepare_fn
 
-        self.failed_task_ids.clear()  # Reset before main pass
-        batch_results = await asyncio.gather(*(
-            process_batch(i, batch)
-            for i, batch in enumerate(idea_batches)
-        ))
+    def _p3_parse_fn(self):
+        """Return parse_fn closure for P3 facet assignment."""
+        def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
+            original_lookup = {idea.idea_id: idea for idea in task['batch_ideas']}
+            facet_id_to_name = task['facet_id_to_name']
+            assignments: Dict[str, str] = {}
 
-        # Retry pass: re-run truly failed batches with reduced concurrency.
-        # NOTE: Intentional divergence from strategy doc retry pattern.
-        # Strategy says: reuse the same processing function with reduced concurrency.
-        # P3/P6 use batch-level retry because assignment is batched (10 ideas per call);
-        # individual-task retry doesn't apply — the unit of failure is the batch.
-        failed_batch_indices = [
-            i for i, batch in enumerate(idea_batches)
-            if any(idea.idea_id in self.failed_task_ids for idea in batch)
-        ]
-        if failed_batch_indices:
-            print(f"    [RETRY PASS] Retrying {len(failed_batch_indices)} failed batches (facet assignment)...")
-            pre_retry_failed = set(self.failed_task_ids)
-            self.failed_task_ids.clear()
-
-            # Reduced concurrency: 10% of total batches, min 5
-            retry_sem = asyncio.Semaphore(max(5, len(failed_batch_indices) // 10))
-
-            async def retry_batch(batch_idx, batch_ideas):
-                async with retry_sem:
-                    return await process_batch(batch_idx, batch_ideas)
-
-            retry_results = await asyncio.gather(*(
-                retry_batch(i, idea_batches[i])
-                for i in failed_batch_indices
-            ))
-            recovered = 0
-            for orig_idx, retry_result in zip(failed_batch_indices, retry_results):
-                if len(retry_result) > 0:
-                    batch_results[orig_idx] = retry_result
-                    recovered += 1
-            still_failed = len(failed_batch_indices) - recovered
-            print(f"    [RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
-            if self.failed_task_ids:
-                print(f"    [RETRY PASS] Permanently failed ideas: {len(self.failed_task_ids)}")
-
-        # BP1: Build original idea lookup per batch for validation + content cross-check
-        from difflib import SequenceMatcher
-        import re as _re
-
-        def _normalize_for_comparison(text: str) -> str:
-            """Strip template prefix and canonical_phrasing: for similarity comparison."""
-            if ' → ' in text:
-                text = text.split(' → ', 1)[1]
-            text = _re.sub(r'\bcanonical_phrasing:\s*', '', text)
-            return text.strip().lower()
-
-        batch_idea_lookups = [
-            {idea.idea_id: idea for idea in batch} for batch in idea_batches
-        ]
-
-        for batch_idx, assignments in enumerate(batch_results):
-            original_lookup = batch_idea_lookups[batch_idx] if batch_idx < len(batch_idea_lookups) else {}
-
-            for assignment in assignments:
-                # BP1: Validate returned idea_id exists in original batch
+            for assignment in response.assignments:
+                # Validate returned idea_id exists in original batch
                 original_idea = original_lookup.get(assignment.idea_id)
                 if original_idea is None:
                     print(f"    ID DRIFT: LLM returned unexpected idea_id "
-                          f"'{assignment.idea_id}' in batch {batch_idx} — skipping")
+                          f"'{assignment.idea_id}' in batch {task['batch_idx']} — skipping")
                     continue
 
-                # Content cross-validation: compare returned instance vs original
+                # Content cross-validation
                 original_text = getattr(original_idea, 'idea', '') or getattr(original_idea, 'instance', '') or ''
                 returned_text = getattr(assignment, 'idea', '') or ''
                 if original_text and returned_text:
@@ -1304,30 +1411,25 @@ class TaxonomyClassifier:
                               f"original '{original_text}' (similarity: {similarity:.2f}) — skipping")
                         continue
 
-                # Fix 2 (BP6): Reject invalid facet_id — no raw string fallback
+                # Map facet_id to name
                 facet_name = facet_id_to_name.get(assignment.assigned_facet_id)
-                #if facet_name is None:
-                #    print(f"    WARNING: Invalid facet_id '{assignment.assigned_facet_id}' "
-                #          f"for idea '{original_idea.idea_id}' — skipping")
-                #    continue
 
-                # Fix 3: Detect duplicate assignments
-                if original_idea.idea_id in all_assignments:
+                # Detect duplicate assignments
+                if original_idea.idea_id in assignments:
                     print(f"    WARNING: Duplicate assignment for '{original_idea.idea_id}' — "
-                          f"overwriting '{all_assignments[original_idea.idea_id]}' with '{facet_name}'")
+                          f"overwriting '{assignments[original_idea.idea_id]}' with '{facet_name}'")
 
-                # BP1: Always store under ORIGINAL idea_id
-                all_assignments[original_idea.idea_id] = facet_name
+                assignments[original_idea.idea_id] = facet_name
 
-        # BP3 + BP4: Iterate ALL originals, create fallback for missing, count reconciliation
-        expected_all = {idea.idea_id for idea in ideas}
-        missing = expected_all - set(all_assignments.keys())
-        if missing:
-            print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
-            for idea_id in missing:
-                all_assignments[idea_id] = "__UNASSIGNED__"
+            return assignments
+        return parse_fn
 
-        return all_assignments
+    @staticmethod
+    def _p3_fallback_fn():
+        """Return fallback_fn closure for P3 facet assignment."""
+        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
+            return {}
+        return fallback_fn
 
     # =========================================================================
     # PHASE 6 (P6): PER-FACET ATTRIBUTE ASSIGNMENT
@@ -1456,16 +1558,6 @@ class TaxonomyClassifier:
                 print(f"    [RETRY PASS] Permanently failed ideas: {len(self.failed_task_ids)}")
 
         # BP1: Build original idea lookup per batch for validation + content cross-check
-        from difflib import SequenceMatcher
-        import re as _re
-
-        def _normalize_for_comparison(text: str) -> str:
-            """Strip template prefix and canonical_phrasing: for similarity comparison."""
-            if ' → ' in text:
-                text = text.split(' → ', 1)[1]
-            text = _re.sub(r'\bcanonical_phrasing:\s*', '', text)
-            return text.strip().lower()
-
         batch_idea_lookups = [
             {idea.idea_id: idea for idea in batch} for batch in idea_batches
         ]
@@ -1637,7 +1729,7 @@ class TaxonomyClassifier:
                     prompt_content=prompt,
                     prompt_type="attribute_discovery",
                     metadata={
-                        "model": self._model_p4,
+                        "model": self._model_p4_p5,
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_attribute_discovery,
                         "language": prompt_context.language,
@@ -1655,7 +1747,7 @@ class TaxonomyClassifier:
                 result = await self._llm_call(
                     prompt, AttributeDiscoveryResult,
                     self._max_tokens_attribute_discovery,
-                    model=self._model_p4, timeout=90.0,
+                    model=self._model_p4_p5, timeout=90.0,
                     gate=phase_state.gate if phase_state else None,
                     phase_state=phase_state,
                 )
@@ -1727,7 +1819,7 @@ class TaxonomyClassifier:
                 prompt_content=prompt,
                 prompt_type="attribute_chunk_consolidation",
                 metadata={
-                    "model": self._model_p5,
+                    "model": self._model_p4_p5,
                     "temperature": 0.0,
                     "max_tokens": self._max_tokens_attribute_discovery,
                     "language": prompt_context.language,
@@ -1742,7 +1834,7 @@ class TaxonomyClassifier:
         result = await self._llm_call(
             prompt, AttributeChunkConsolidatedResponse,
             self._max_tokens_attribute_discovery,
-            temperature=0.0, model=self._model_p5, timeout=180.0,
+            temperature=0.0, model=self._model_p4_p5, timeout=180.0,
         )
         return result.attributes
 
@@ -1861,7 +1953,7 @@ class TaxonomyClassifier:
             model = AZURE_OPENAI_DEPLOYMENT_NAME
         else:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            model = self._model_p1
+            model = self._model_p1_p2
 
         if API_PROVIDER == "azure":
             response = await client.chat.completions.with_raw_response.create(
@@ -2199,7 +2291,7 @@ class TaxonomyClassifier:
 
         Small phases (phase_state layers are None) skip layers 2-5 gracefully.
         """
-        use_model = model or self._model_p1
+        use_model = model or self._model_p1_p2
         client = self._clients[use_model]
         concurrency_ctx = gate if gate is not None else self._semaphore
 

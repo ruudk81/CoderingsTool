@@ -8,7 +8,6 @@ attribute discovery → attribute assignment.
 
 Always runs the full taxonomy pipeline (P1-P7).
 """
-
 import sys
 import io
 from pathlib import Path
@@ -19,10 +18,20 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
+from test_data import TEST_DATA
+
+FILENAME = TEST_DATA.filename
+VARIABLE = TEST_DATA.var_name
+SAMPLE_SIZE = TEST_DATA.sample_size
+
+PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
+EXPERIMENT_N = 200  # Limit number of responses for a test run (None = use all)
+
 from pipeline.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
+from utils.costTracker import CostTracker
 
 # Import step_4_classifier components
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
@@ -32,18 +41,6 @@ from pipeline.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
     TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel,
 )
-
-
-# =============================================================================
-from test_data import TEST_DATA
-
-FILENAME = TEST_DATA.filename
-VARIABLE = TEST_DATA.var_name
-SAMPLE_SIZE = TEST_DATA.sample_size
-
-PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-EXPERIMENT_N = None  # Limit number of responses for a test run (None = use all)
-
 
 # =============================================================================
 # CONFIGURATION
@@ -487,11 +484,19 @@ def run_taxonomy():
     survey_question, language, dataset_context, dimension_name, dimension_description = \
         _extract_metadata_context(extraction_metadata)
 
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[VARIABLE],
+        is_merged=False,
+        sample_size=SAMPLE_SIZE,
+    )
+
     prompt_printer = PromptPrinter(
         enabled=True,
         print_realtime=PRINT_PROMPTS,
     )
-    processor = TaxonomyClassifier(CONFIG, prompt_printer=prompt_printer)
+    cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
+
+    processor = TaxonomyClassifier(CONFIG, prompt_printer=prompt_printer, dataset_key=variable_key, cost_tracker=cost_tracker)
     taxonomy_result = processor.process(
         label_mappings=label_mappings,
         partition_set=partition_set,
@@ -502,6 +507,8 @@ def run_taxonomy():
         dimension_description=dimension_description,
         verbose=CONFIG.verbose,
     )
+
+    cost_tracker.finalize_step("step_4_taxonomy_classifier")
 
     # Print taxonomy results
     print_taxonomy_results(partition_set, label_mappings, taxonomy_result)
