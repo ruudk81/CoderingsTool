@@ -17,13 +17,7 @@ sys.path.insert(0, str(src_dir))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
-try:
-    from pipeline.test_data import TEST_DATA
-except ImportError:
-    exp_root = Path(__file__).parent.parent
-    if str(exp_root) not in sys.path:
-        sys.path.insert(0, str(exp_root))
-    from test_data import TEST_DATA
+from test_data import TEST_DATA
 
 from pipeline.step_4_classifier.models_classifier import TaxonomyResultsCache
 

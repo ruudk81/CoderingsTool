@@ -10,10 +10,7 @@ sys.path.insert(0, str(project_root / "src" / "steps"))
 from pipeline.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
-try:
-    from pipeline.test_data import TEST_DATA
-except ImportError:
-    from test_data import TEST_DATA
+from test_data import TEST_DATA
 
 FILENAME = TEST_DATA.filename
 VARIABLE = TEST_DATA.var_name

@@ -21,13 +21,7 @@ sys.path.insert(0, str(src_dir))
 from utils.cacheManager import generate_enhanced_variable_key
 
 # Import centralized test data config
-try:
-    from pipeline.test_data import TEST_DATA
-except ImportError:
-    exp_root = Path(__file__).parent.parent
-    if str(exp_root) not in sys.path:
-        sys.path.insert(0, str(exp_root))
-    from test_data import TEST_DATA
+from test_data import TEST_DATA
 
 # Import response models
 from pipeline.step_4_classifier.prompts_classifier import (
