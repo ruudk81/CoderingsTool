@@ -271,7 +271,7 @@ class TaxonomyClassifier:
     ) -> TaxonomyResult:
         """Run taxonomy stages (P1-P7): facets, attributes, assignments."""
         print(f"\n{'='*70}")
-        print(f"TAXONOMY DISCOVERY (P1-P7)")
+        print(f"TAXONOMY DISCOVERY (5 phases)")
         print(f"{'='*70}")
 
         prompt_context, partition_contexts, active_partitions = self._prepare_context(
@@ -285,8 +285,8 @@ class TaxonomyClassifier:
             n_partitions = len(active_partitions)
             print(f"  Processing {n_partitions} domains concurrently "
                   f"({total_labels} observations, {total_ideas} ideas)")
-            print(f"  Pipeline: P1 facet discovery → P3 facet assignment → "
-                  f"P4 attribute discovery → P7 consolidation")
+            print(f"  Pipeline: facet discovery → facet assignment → "
+                  f"attribute discovery → attribute assignment → cross-facet consolidation")
 
         async def _run():
             await self._initialize_async_resources(
@@ -357,7 +357,7 @@ class TaxonomyClassifier:
         _snap_p1p2 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 1: Per-domain Facet Discovery...")
+            print(f"\n  Phase 1: Facet Discovery + Consolidation")
 
         t_phase1 = time.time()
 
@@ -378,12 +378,6 @@ class TaxonomyClassifier:
                 'excluded': excluded,
             }
 
-            if verbose:
-                batch_size = self._compute_batch_size(len(mapping.labels))
-                print(f"    Domain '{name}': {len(mapping.labels)} observations, "
-                      f"{len(batches)} chunk(s) of ~{batch_size} "
-                      f"(overlap {self._chunk_overlap:.0%})")
-
             for chunk_idx, observations in enumerate(batches):
                 p1_tasks.append({
                     'domain_name': name,
@@ -393,6 +387,12 @@ class TaxonomyClassifier:
                     'part_context': partition_contexts[name],
                     'excluded_domains': excluded,
                 })
+
+        if verbose:
+            total_obs = sum(info['n_labels'] for info in domain_chunk_info.values())
+            max_chunks = max(info['n_batches'] for info in domain_chunk_info.values())
+            chunk_desc = "1 chunk each" if max_chunks == 1 else f"up to {max_chunks} chunks"
+            print(f"    Input: {len(domain_chunk_info)} domains, {total_obs} observations ({chunk_desc})")
 
         # P1 discovery via SmoothRequester
         p1_requester = SmoothRequester(
@@ -560,20 +560,16 @@ class TaxonomyClassifier:
             print(f"    P2 consolidation: {len(p2_tasks)} tasks, {t_consolidation:.1f}s "
                   f"({s.get('tasks_successful', 0)} ok, {s.get('timeouts', 0)} timeouts, "
                   f"{s.get('recovered', 0)} retries)")
-            for name in sorted(domain_chunk_facets.keys()):
-                n_raw = sum(len(cf) for cf in domain_chunk_facets[name])
-                n_final = len(partition_facets.get(name, []))
-                print(f"      {name}: {n_raw} raw → {n_final} facet(s)")
 
         phase1_elapsed = time.time() - t_phase1
         if verbose:
             total_facets = sum(len(f) for f in partition_facets.values())
-            print(f"  Phase 1 done in {phase1_elapsed:.1f}s → "
-                  f"{total_facets} facets across "
-                  f"{len(partition_facets)} domains")
+            print(f"    Results ({phase1_elapsed:.1f}s → {total_facets} facets):")
             for name in sorted(partition_facets.keys()):
-                facet_names = [f.facet_name for f in partition_facets[name]]
-                print(f"    {name}: {facet_names}")
+                n_raw = sum(len(cf) for cf in domain_chunk_facets.get(name, []))
+                facets = partition_facets.get(name, [])
+                facet_names = ", ".join(f.facet_name for f in facets) if facets else "(none)"
+                print(f"      {name}: {n_raw} raw → {len(facets)} facet(s): {facet_names}")
 
         if self.cost_tracker and _snap_p1p2 is not None:
             self.cost_tracker.record_phase(
@@ -586,7 +582,7 @@ class TaxonomyClassifier:
         _snap_p3 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 3: Per-domain Facet Assignment...")
+            print(f"\n  Phase 2: Facet Assignment")
 
         t_phase3 = time.time()
 
@@ -657,13 +653,12 @@ class TaxonomyClassifier:
 
         t_phase3 = time.time() - t_phase3
         if verbose:
+            total_assigned = sum(len(a) for a in partition_assignments.values())
+            print(f"    Results ({t_phase3:.1f}s → {total_assigned} ideas assigned):")
             for domain_name in sorted(partition_assignments):
                 n_assigned = len(partition_assignments[domain_name])
                 n_ideas = len(label_mappings[domain_name].ideas)
-                print(f"    {domain_name}: {n_assigned}/{n_ideas} ideas assigned")
-            total_assigned = sum(len(a) for a in partition_assignments.values())
-            print(f"  Phase 3 done in {t_phase3:.1f}s → "
-                  f"{total_assigned} ideas assigned to facets")
+                print(f"      {domain_name}: {n_assigned}/{n_ideas}")
 
         if self.cost_tracker and _snap_p3 is not None:
             self.cost_tracker.record_phase(
@@ -677,7 +672,7 @@ class TaxonomyClassifier:
         _snap_p4p5 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 4: Per-facet Attribute Discovery...")
+            print(f"\n  Phase 3: Attribute Discovery + Consolidation")
 
         t_phase4 = time.time()
 
@@ -926,11 +921,6 @@ class TaxonomyClassifier:
             print(f"    P5 consolidation: {len(p5_tasks)} tasks, {t_consolidation:.1f}s "
                   f"({s.get('tasks_successful', 0)} ok, {s.get('timeouts', 0)} timeouts, "
                   f"{s.get('recovered', 0)} retries)")
-            for facet_key in sorted(facet_chunk_attrs.keys()):
-                domain_name, facet_name = facet_key.split("::", 1)
-                n_raw = sum(len(ca) for ca in facet_chunk_attrs[facet_key])
-                n_final = len(domain_facet_attributes.get(domain_name, {}).get(facet_name, []))
-                print(f"      {domain_name}/{facet_name}: {n_raw} raw → {n_final} attribute(s)")
 
         t_phase4 = time.time() - t_phase4
         if verbose:
@@ -939,9 +929,13 @@ class TaxonomyClassifier:
                 for facet_attrs in domain_facet_attributes.values()
                 for attrs in facet_attrs.values()
             )
-            print(f"  Phase 4 done in {t_phase4:.1f}s → "
-                  f"{total_attrs} attributes across "
-                  f"{len(facet_chunk_attrs)} facets")
+            print(f"    Results ({t_phase4:.1f}s → {total_attrs} attributes across {len(facet_chunk_attrs)} facets):")
+            for facet_key in sorted(facet_chunk_attrs.keys()):
+                domain_name, facet_name = facet_key.split("::", 1)
+                n_raw = sum(len(ca) for ca in facet_chunk_attrs[facet_key])
+                attrs = domain_facet_attributes.get(domain_name, {}).get(facet_name, [])
+                attr_names = ", ".join(a.attribute_name for a in attrs) if attrs else "(none)"
+                print(f"      {domain_name}/{facet_name}: {n_raw} raw → {len(attrs)} attr(s): {attr_names}")
 
         if self.cost_tracker and _snap_p4p5 is not None:
             self.cost_tracker.record_phase(
@@ -954,7 +948,7 @@ class TaxonomyClassifier:
         _snap_p6 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 6: Per-facet Attribute Assignment...")
+            print(f"\n  Phase 4: Attribute Assignment")
 
         t_phase6 = time.time()
 
@@ -1045,13 +1039,11 @@ class TaxonomyClassifier:
 
         t_phase6 = time.time() - t_phase6
         if verbose:
-            # Per-facet summary
+            print(f"    Results ({t_phase6:.1f}s → {len(attribute_assignments)} ideas assigned):")
             for facet_key, facet_ideas in sorted(facet_idea_sets.items()):
                 n_assigned = sum(1 for idea in facet_ideas if idea.idea_id in attribute_assignments)
                 domain_name, facet_name = facet_key.split("::", 1)
-                print(f"    {domain_name}/{facet_name}: {n_assigned} ideas assigned")
-            print(f"  Phase 6 done in {t_phase6:.1f}s → "
-                  f"{len(attribute_assignments)} ideas with attributes")
+                print(f"      {domain_name}/{facet_name}: {n_assigned}/{len(facet_ideas)}")
 
         if self.cost_tracker and _snap_p6 is not None:
             self.cost_tracker.record_phase(
@@ -1065,7 +1057,7 @@ class TaxonomyClassifier:
         _snap_p7 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 7: Cross-facet Attribute Consolidation...")
+            print(f"\n  Phase 5: Cross-facet Attribute Consolidation")
 
         t_phase7 = time.time()
 
@@ -1114,10 +1106,18 @@ class TaxonomyClassifier:
                 self._p7_fallback_fn(),
             )
 
+            if verbose:
+                s = p7_requester.stats
+                t_sr = s.get('wall_time', 0)
+                print(f"    P7 consolidation: {len(p7_tasks)} tasks, {t_sr:.1f}s "
+                      f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
+                      f"{s.get('recovered', 0)} retries)")
+
+            _p7_domain_results = {}
             for task, result in zip(p7_tasks, p7_results):
                 domain_name = task['domain_name']
                 if not result:
-                    print(f"  P7 '{domain_name}' FAILED or returned empty")
+                    print(f"    WARNING: P7 '{domain_name}' returned empty")
                     continue
 
                 # Rebuild facet -> [attributes] from consolidated result
@@ -1160,9 +1160,7 @@ class TaxonomyClassifier:
                 if verbose:
                     after_count = sum(len(a) for a in new_facet_attrs.values())
                     remap_msg = f", {remapped} remapped" if remap else ""
-                    print(f"    {domain_name}: {before_count} → "
-                          f"{after_count} attributes "
-                          f"({len(new_facet_attrs)} facets{remap_msg})")
+                    _p7_domain_results[domain_name] = (before_count, after_count, len(new_facet_attrs), remap_msg)
 
         t_phase7 = time.time() - t_phase7
         if verbose:
@@ -1171,12 +1169,13 @@ class TaxonomyClassifier:
                 for facet_attrs in domain_facet_attributes.values()
                 for attrs in facet_attrs.values()
             )
-            print(f"  Phase 7 done in {t_phase7:.1f}s → "
-                  f"{total_attrs_after} consolidated attributes")
+            print(f"    Results ({t_phase7:.1f}s → {total_attrs_after} consolidated attributes):")
+            for domain_name, (before, after, n_facets, remap_msg) in sorted(_p7_domain_results.items()):
+                print(f"      {domain_name}: {before} → {after} attributes ({n_facets} facets{remap_msg})")
 
         taxonomy_elapsed = time.time() - start_time
         if verbose:
-            print(f"\n  Taxonomy (P1-P7) complete in {taxonomy_elapsed:.1f}s")
+            print(f"\n  Taxonomy complete in {taxonomy_elapsed:.1f}s")
 
         if self.cost_tracker and _snap_p7 is not None:
             self.cost_tracker.record_phase(
