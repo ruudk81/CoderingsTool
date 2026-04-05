@@ -870,11 +870,19 @@ class SmoothRequester:
         num_tasks: int = 0,
         verbose: bool = True,
         processing_config: Optional[ProcessingConfig] = None,
+        known_limits: Optional[RateLimits] = None,
+        show_setup: bool = True,
+        default_timeout: Optional[float] = None,
+        quiet: bool = False,
     ):
         self.model = model
         self.dataset_key = dataset_key
         self.phase_key = phase_key
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
+        self._known_limits = known_limits
+        self._show_setup = show_setup
+        self._caller_default_timeout = default_timeout
+        self._quiet = quiet
         self._headroom = self.processing_config.rate_limit_headroom
 
         # Tiktoken encoding for token estimation
@@ -916,11 +924,12 @@ class SmoothRequester:
         self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
 
         # Latency tracker
+        _timeout = _stored_timeout or self._caller_default_timeout or TIMEOUT_FLOOR_SECONDS
         self.latency_tracker = LatencyTracker(
             ema_alpha=self.processing_config.latency_tracker_ema_alpha,
             samples_window=self.processing_config.latency_tracker_samples_window,
-            timeout_floor=_stored_timeout or TIMEOUT_FLOOR_SECONDS,
-            default_timeout=_stored_timeout or DEFAULT_TIMEOUT_SECONDS,
+            timeout_floor=_timeout,
+            default_timeout=_timeout,
         )
 
         # Rate limiting components (initialized in _setup)
@@ -969,8 +978,18 @@ class SmoothRequester:
         self.client = create_client(self.model, async_mode=True, capture_headers=True)
         self._header_transport = getattr(self.client, '_header_transport', None)
 
-        # Probe call
-        limits, has_server_headers = await self._fetch_rate_limits()
+        if self._known_limits is not None:
+            # Skip probe — use caller-provided limits
+            limits = self._known_limits
+            # Determine header support from perf stats cache or default to True
+            _stored = get_dataset_phase_stats(
+                self._perf_stats, self.model, self.phase_key, self.dataset_key
+            ) if self.dataset_key else None
+            has_server_headers = (_stored or {}).get("has_server_headers", True)
+        else:
+            # Probe call
+            limits, has_server_headers = await self._fetch_rate_limits()
+
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             limits = RateLimits(FALLBACK_TPM, FALLBACK_RPM)
         self.rate_limits = limits
@@ -1528,23 +1547,19 @@ class SmoothRequester:
         num_tasks = len(tasks)
         await self._probe_and_setup(num_tasks)
 
-        # Print setup
-        headroom = self._headroom
-        rpm_thr = self.rate_limits.requests_per_minute * headroom / 60
-        tpm_thr = self.rate_limits.tokens_per_minute * headroom / self.avg_tokens / 60
-        expected = min(rpm_thr, tpm_thr)
-        latency_used = self._stored_p50 or DEFAULT_LATENCY_SECONDS
-
-        print("\nRATE LIMITING SETUP")
-        print(f"- Model: {self.model}")
-        print(f"- RPM limit: {self.rate_limits.requests_per_minute:,} ({self.rate_limits.requests_per_minute * headroom:,.0f} with headroom)")
-        print(f"- TPM limit: {self.rate_limits.tokens_per_minute:,} ({self.rate_limits.tokens_per_minute * headroom:,.0f} with headroom)")
-        token_src = "stored" if self._stored_avg_tokens else "tiktoken"
-        print(f"- Initial avg_tokens ({token_src}): {self.avg_tokens}")
-        print(f"- Target concurrency: {self.optimal_concurrency}")
-        print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side)'}")
-        print(f"- Rate limit concurrency: {self._rate_limit_concurrency} | Server concurrency: {self._server_concurrency}")
-        print(f"- Processing {num_tasks:,} tasks")
+        # Print setup (gated by show_setup)
+        if self._show_setup:
+            headroom = self._headroom
+            print("\nRATE LIMITING SETUP")
+            print(f"- Model: {self.model}")
+            print(f"- RPM limit: {self.rate_limits.requests_per_minute:,} ({self.rate_limits.requests_per_minute * headroom:,.0f} with headroom)")
+            print(f"- TPM limit: {self.rate_limits.tokens_per_minute:,} ({self.rate_limits.tokens_per_minute * headroom:,.0f} with headroom)")
+            token_src = "stored" if self._stored_avg_tokens else "tiktoken"
+            print(f"- Initial avg_tokens ({token_src}): {self.avg_tokens}")
+            print(f"- Target concurrency: {self.optimal_concurrency}")
+            print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side)'}")
+            print(f"- Rate limit concurrency: {self._rate_limit_concurrency} | Server concurrency: {self._server_concurrency}")
+            print(f"- Processing {num_tasks:,} tasks")
 
         # Queue + workers
         queue = asyncio.Queue()
@@ -1560,7 +1575,8 @@ class SmoothRequester:
             w = asyncio.create_task(self._worker(queue, results, timed_out, prepare_fn, parse_fn, fallback_fn))
             workers.append(w)
 
-        print(f"\nWorkers: {num_workers}, Target concurrency: {self.optimal_concurrency}")
+        if not self._quiet:
+            print(f"\nWorkers: {num_workers}, Target concurrency: {self.optimal_concurrency}")
 
         # Monitoring loop
         self._start_time = start_time = time.time()
@@ -1574,7 +1590,8 @@ class SmoothRequester:
         last_healthy_time = start_time
         report_every_n = max(num_tasks // 20, 10)
 
-        print(f"\n⏱ T+0.0s: Starting task processing")
+        if not self._quiet:
+            print(f"\n⏱ T+0.0s: Starting task processing")
 
         while not queue.empty():
             await asyncio.sleep(0.1)
@@ -1615,7 +1632,8 @@ class SmoothRequester:
                 line = self._tick(completed, num_tasks, tick_rate, p50, throughput,
                                   active, concurrency, current_tpm, effective_tpm,
                                   current_rpm, effective_rpm, num_tasks)
-                print(line)
+                if not self._quiet:
+                    print(line)
 
                 last_report = now
                 last_tick_successful = current_successful
@@ -1642,22 +1660,25 @@ class SmoothRequester:
 
         # Drain
         t_loop = time.time()
-        print(f"⏱ T+{t_loop - start_time:.1f}s: Monitoring loop exited, awaiting queue.join()...")
+        if not self._quiet:
+            print(f"⏱ T+{t_loop - start_time:.1f}s: Monitoring loop exited, awaiting queue.join()...")
         await queue.join()
         t_join = time.time()
-        print(f"⏱ T+{t_join - start_time:.1f}s: queue.join() done ({t_join - t_loop:.1f}s drain)")
+        if not self._quiet:
+            print(f"⏱ T+{t_join - start_time:.1f}s: queue.join() done ({t_join - t_loop:.1f}s drain)")
 
         for _ in workers:
             await queue.put(None)
         await asyncio.gather(*workers)
 
-        print(f"⏱ T+{time.time() - start_time:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred")
-        is_rate_capped = self._rate_limit_concurrency <= self._server_concurrency
-        if is_rate_capped:
-            print(f"  RATE-CAPPED at {self.optimal_concurrency} (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
-        else:
-            sm_state = self._concurrency_controller.state.value if self._concurrency_controller and hasattr(self._concurrency_controller, 'state') else "N/A"
-            print(f"  Final concurrency: {self.optimal_concurrency} (state: {sm_state})")
+        if not self._quiet:
+            print(f"⏱ T+{time.time() - start_time:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred")
+            is_rate_capped = self._rate_limit_concurrency <= self._server_concurrency
+            if is_rate_capped:
+                print(f"  RATE-CAPPED at {self.optimal_concurrency} (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
+            else:
+                sm_state = self._concurrency_controller.state.value if self._concurrency_controller and hasattr(self._concurrency_controller, 'state') else "N/A"
+                print(f"  Final concurrency: {self.optimal_concurrency} (state: {sm_state})")
 
         # === RETRY PASS ===
         failed_for_retry = []
@@ -1671,7 +1692,8 @@ class SmoothRequester:
 
         recovered = 0
         if failed_for_retry:
-            print(f"\n[RETRY PASS] Retrying {len(failed_for_retry)} failed tasks with reduced concurrency...")
+            if not self._quiet:
+                print(f"\n[RETRY PASS] Retrying {len(failed_for_retry)} failed tasks with reduced concurrency...")
             self.failed_task_ids.clear()
             self.failure_log.clear()
 
@@ -1712,21 +1734,26 @@ class SmoothRequester:
                         results[idx] = fallback_fn(data, reason)
 
             still_failed = sum(1 for r in results if r is None)
-            print(f"[RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
+            if not self._quiet:
+                print(f"[RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
 
         # Summary
         wall_time = time.time() - start_time
-        rate_capped_final = self._rate_limit_concurrency <= self._server_concurrency
-        print(f"\nCompleted {num_tasks} tasks in {wall_time:.1f}s")
-        print(f"- Successful: {self.stats['tasks_successful']}")
-        if recovered > 0:
-            print(f"- Recovered: {recovered} (retried successfully)")
-        print(f"- Rate limits: {self.stats['rate_limits']}")
-        print(f"- Timeouts: {self.stats['timeouts']}")
-        if rate_capped_final:
-            print(f"- Rate-capped at concurrency {self.optimal_concurrency}")
-        else:
-            print(f"- Final concurrency: {self.optimal_concurrency}")
+        self.stats['recovered'] = recovered
+        self.stats['wall_time'] = wall_time
+
+        if not self._quiet:
+            rate_capped_final = self._rate_limit_concurrency <= self._server_concurrency
+            print(f"\nCompleted {num_tasks} tasks in {wall_time:.1f}s")
+            print(f"- Successful: {self.stats['tasks_successful']}")
+            if recovered > 0:
+                print(f"- Recovered: {recovered} (retried successfully)")
+            print(f"- Rate limits: {self.stats['rate_limits']}")
+            print(f"- Timeouts: {self.stats['timeouts']}")
+            if rate_capped_final:
+                print(f"- Rate-capped at concurrency {self.optimal_concurrency}")
+            else:
+                print(f"- Final concurrency: {self.optimal_concurrency}")
 
         # Save stats
         self._save_stats()

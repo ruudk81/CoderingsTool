@@ -137,6 +137,27 @@ class ConcurrencyControlConfig:
 
 
 # =============================================================================
+# RAMP-UP CONFIGURATION
+# =============================================================================
+
+@dataclass
+class RampUpConfig:
+    """Completion-based concurrency ramp with congestion detection.
+
+    Concurrency scales linearly with completion progress:
+      0% complete → start_fraction (50%) of Little's Law
+      100% complete → target_fraction (90%) of Little's Law
+
+    Stop early if throughput drops OR queue starts backing up.
+    """
+    start_fraction: float = 0.50
+    target_fraction: float = 0.90
+    min_initial: int = 5
+    measurement_window_seconds: float = 0.5
+    min_completions_per_step: int = 3
+
+
+# =============================================================================
 # CIRCUIT BREAKER CONFIGURATION
 # =============================================================================
 
