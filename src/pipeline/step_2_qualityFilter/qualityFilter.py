@@ -78,6 +78,7 @@ class Grader:
         verbose: bool = False,
         prompt_printer: Optional[PromptPrinter] = None,
         dataset_key: str = "",
+        cost_tracker=None,
     ):
         self.responses = responses
         self.question = var_lab
@@ -85,6 +86,7 @@ class Grader:
         self.model = self.config.model
         self._is_nano = "nano" in self.model.lower()
         self._dataset_key = dataset_key
+        self.cost_tracker = cost_tracker
 
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
@@ -93,6 +95,11 @@ class Grader:
 
         self.stats = {}
         self.failure_log = []
+
+        if self.cost_tracker:
+            self.cost_tracker.set_step_models("step_2_quality_filter", {
+                "grading": self.model,
+            })
 
     # --- Prompt building ---
 
@@ -258,6 +265,8 @@ class Grader:
                 verbose=self.verbose_reporter.enabled,
             )
 
+            _snap_before = token_tracker.snapshot() if self.cost_tracker else None
+
             llm_results = asyncio.run(
                 requester.process_all(
                     tasks,
@@ -266,6 +275,11 @@ class Grader:
                     self._build_fallback_fn(),
                 )
             )
+
+            if self.cost_tracker and _snap_before is not None:
+                self.cost_tracker.record_phase(
+                    "step_2_quality_filter", "grading",
+                    _snap_before, token_tracker.snapshot(), self.model)
 
             self.stats = requester.stats
             self.failure_log = requester.failure_log

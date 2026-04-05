@@ -39,6 +39,7 @@ from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
+from utils.costTracker import CostTracker
 from utils import dataLoader
 
 from test_data import TEST_DATA
@@ -128,12 +129,16 @@ def run_step(config: StepConfig = None):
 
     verbose_reporter.stat_line(f"Processing: {len(preprocessed_text)} responses")
 
+    cost_tracker = CostTracker(filename=config.filename, variable_key=variable_key)
+
     start_time = time.time()
 
-    grader = Grader(preprocessed_text, var_lab, verbose=config.verbose, prompt_printer=prompt_printer, dataset_key=variable_key)
+    grader = Grader(preprocessed_text, var_lab, verbose=config.verbose, prompt_printer=prompt_printer, dataset_key=variable_key, cost_tracker=cost_tracker)
     quality_filtered_text = grader.grade()
 
     elapsed_time = time.time() - start_time
+
+    cost_tracker.finalize_step("step_2_quality_filter")
 
     cache_manager.save_to_cache(quality_filtered_text, config.filename, "quality_filter", variable_key, elapsed_time, var_lab=var_lab)
 
