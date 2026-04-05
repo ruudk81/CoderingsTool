@@ -1382,7 +1382,7 @@ class SmoothRequester:
 
         timeout_info = f" | deferred:{self.stats['timeouts']}" if self.stats['timeouts'] > 0 else ""
 
-        return (f"[PHASE6] {completed}/{total} | inflight:{active}{conc_str} | {pace_str}"
+        return (f"[{self.phase_key}] {completed}/{total} | inflight:{active}{conc_str} | {pace_str}"
                 f"{latency_str} | completing:{tick_rate:.0f}/s | {control_str}{timeout_info}")
 
     def _evaluate_concurrency_header_aware(self, sm, throughput, p50, warmup_elapsed):
