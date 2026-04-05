@@ -7,12 +7,12 @@ Interactive script that walks you through backup hygiene:
   1. Git status — unstaged/uncommitted changes, offer to commit + tag
   2. Full src snapshots — large backup/ folders, suggest cleanup
   3. Old backup files — individual files in src/backup/ and src/utils/backup/
+  4. Verbose logs — keep N most recent per cache key
 
 Run:  python cleanup/cleanup.py
       python cleanup/cleanup.py --dry-run   (preview only, no deletions)
 """
 
-import os
 import sys
 import shutil
 import subprocess
@@ -29,8 +29,8 @@ BACKUP_DIRS_INDIVIDUAL = [
     PROJECT_ROOT / "src" / "utils" / "backup",
 ]
 FILE_AGE_THRESHOLD_DAYS = 30
-EXPORTS_DIR = PROJECT_ROOT / "exports"
-EXPORT_KEEP_LATEST_N = 3
+VERBOSE_LOGS_DIR = PROJECT_ROOT / "exports" / "verbose_logs"
+VERBOSE_KEEP_PER_KEY = 2
 
 # ─── Terminal Colors ──────────────────────────────────────────────────────────
 
@@ -402,93 +402,74 @@ def stage_old_files(dry_run: bool, age_days: int = FILE_AGE_THRESHOLD_DAYS):
                 print(f"  {C.DIM}Skipped — no files deleted.{C.RESET}")
 
 
-# ─── Stage 4: Export Files ───────────────────────────────────────────────────
+# ─── Stage 4: Verbose Logs ──────────────────────────────────────────────────
 
-def _show_exports_summary():
-    """Print current sizes of all exports/ subdirectories."""
-    if not EXPORTS_DIR.exists():
-        return
-    print()
-    for subdir in sorted(EXPORTS_DIR.iterdir()):
-        if subdir.is_dir():
-            size = dir_size(subdir)
-            count = dir_file_count(subdir)
-            rel = subdir.relative_to(PROJECT_ROOT)
-            print(f"  {str(rel) + '/':.<45} {count:>4} files  {fmt_size(size):>10}")
+def _extract_cache_key(filename: str) -> str:
+    """Strip the _YYYYMMDD_HHMMSS.txt timestamp suffix to get the cache key."""
+    stem = Path(filename).stem  # drop .txt
+    # Timestamp is always _YYYYMMDD_HHMMSS (16 chars including leading _)
+    return stem[:-16] if len(stem) > 16 else stem
 
 
-def stage_exports(dry_run: bool, age_days: int = FILE_AGE_THRESHOLD_DAYS):
-    header(f"Stage 4: Export Files Older Than {age_days} Days")
+def stage_verbose_logs(dry_run: bool):
+    header(f"Stage 4: Verbose Logs (keep {VERBOSE_KEEP_PER_KEY} per cache key)")
 
-    if not EXPORTS_DIR.exists():
-        print(f"  {C.GREEN}No exports/ directory found. Nothing to do.{C.RESET}")
+    if not VERBOSE_LOGS_DIR.exists():
+        print(f"  {C.GREEN}No verbose_logs/ directory found. Nothing to do.{C.RESET}")
         return
 
-    # Import the cleanup module from src/utils/
-    src_path = str(PROJECT_ROOT / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
-    from utils.exportCleaner import collect_expired
-
-    expired = collect_expired(
-        exports_dir=EXPORTS_DIR,
-        max_age_days=age_days,
-        keep_latest_n=EXPORT_KEEP_LATEST_N,
-    )
-
-    if not expired:
-        print(f"  {C.GREEN}No export files to clean up. Clean!{C.RESET}")
-        _show_exports_summary()
+    # Collect all log files
+    log_files = sorted(VERBOSE_LOGS_DIR.glob("*.txt"))
+    if not log_files:
+        print(f"  {C.GREEN}No verbose log files. Clean!{C.RESET}")
         return
 
-    # Group display by subdirectory
+    # Group by cache key
     from collections import defaultdict
-    by_dir = defaultdict(list)
-    for ef in expired:
-        by_dir[ef.path.parent.name].append(ef)
+    groups: dict[str, list[Path]] = defaultdict(list)
+    for f in log_files:
+        key = _extract_cache_key(f.name)
+        groups[key].append(f)
 
-    total_size = sum(ef.size for ef in expired)
-    print(f"  Found {C.BOLD}{len(expired)}{C.RESET} files to delete, "
-          f"totaling {C.BOLD}{fmt_size(total_size)}{C.RESET}:\n")
+    # Sort each group newest-first (timestamp in filename = alphabetical order)
+    to_delete: list[Path] = []
+    for key in groups:
+        groups[key].sort(reverse=True)
+        to_delete.extend(groups[key][VERBOSE_KEEP_PER_KEY:])
 
-    for subdir_name, files in sorted(by_dir.items()):
-        print(f"\n  {C.CYAN}exports/{subdir_name}/{C.RESET}")
-        for ef in sorted(files, key=lambda e: -e.age_days):
-            age_color = C.RED if ef.age_days > 90 else C.YELLOW
-            print(f"    {ef.path.name}")
-            print(f"         {fmt_size(ef.size):>8}  |  "
-                  f"{age_color}{fmt_age(ef.age_days)}{C.RESET}")
+    if not to_delete:
+        print(f"  {C.GREEN}All cache keys have ≤ {VERBOSE_KEEP_PER_KEY} files. Nothing to do.{C.RESET}")
+        print(f"  {C.DIM}{len(log_files)} files across {len(groups)} cache keys{C.RESET}")
+        return
+
+    total_size = sum(f.stat().st_size for f in to_delete)
+    kept = len(log_files) - len(to_delete)
+
+    print(f"  {C.BOLD}{len(log_files)}{C.RESET} files across {C.BOLD}{len(groups)}{C.RESET} cache keys")
+    print(f"  {C.BOLD}{len(to_delete)}{C.RESET} files to delete ({C.BOLD}{fmt_size(total_size)}{C.RESET}), keeping {kept}\n")
+
+    # Show per-key breakdown
+    for key in sorted(groups):
+        total = len(groups[key])
+        excess = max(0, total - VERBOSE_KEEP_PER_KEY)
+        if excess == 0:
+            continue
+        print(f"  {C.CYAN}{key}{C.RESET}")
+        print(f"    {total} files → keep {VERBOSE_KEEP_PER_KEY}, delete {C.YELLOW}{excess}{C.RESET}")
 
     print()
     if dry_run:
-        print(f"  {C.DIM}[dry-run] Would delete these {len(expired)} files.{C.RESET}")
-        _show_exports_summary()
+        print(f"  {C.DIM}[dry-run] Would delete {len(to_delete)} files ({fmt_size(total_size)}).{C.RESET}")
         return
 
-    if ask_yn(f"Delete all {len(expired)} files ({fmt_size(total_size)})?"):
+    if ask_yn(f"Delete {len(to_delete)} old verbose logs ({fmt_size(total_size)})?"):
         freed = 0
-        for ef in expired:
-            ef.path.unlink()
-            freed += ef.size
-        print(f"  {C.GREEN}Deleted {len(expired)} files, freed {fmt_size(freed)}.{C.RESET}")
+        for f in to_delete:
+            freed += f.stat().st_size
+            f.unlink()
+        print(f"  {C.GREEN}Deleted {len(to_delete)} files, freed {fmt_size(freed)}.{C.RESET}")
     else:
-        if ask_yn("Select individual files to delete instead?"):
-            options = [ef.path.name for ef in expired]
-            selected = ask_choice("Which files should we delete?", options)
-            if selected:
-                freed = 0
-                for idx in selected:
-                    ef = expired[idx]
-                    ef.path.unlink()
-                    freed += ef.size
-                print(f"  {C.GREEN}Deleted {len(selected)} files, freed {fmt_size(freed)}.{C.RESET}")
-            else:
-                print(f"  {C.DIM}Skipped — no files deleted.{C.RESET}")
-        else:
-            print(f"  {C.DIM}Skipped.{C.RESET}")
-
-    _show_exports_summary()
+        print(f"  {C.DIM}Skipped — no files deleted.{C.RESET}")
 
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
@@ -496,7 +477,7 @@ def stage_exports(dry_run: bool, age_days: int = FILE_AGE_THRESHOLD_DAYS):
 def show_summary():
     header("Summary")
     total = 0
-    for d in BACKUP_DIRS_FULL_SNAPSHOTS + BACKUP_DIRS_INDIVIDUAL + [EXPORTS_DIR]:
+    for d in BACKUP_DIRS_FULL_SNAPSHOTS + BACKUP_DIRS_INDIVIDUAL + [VERBOSE_LOGS_DIR]:
         if d.exists():
             size = dir_size(d)
             total += size
@@ -528,7 +509,7 @@ def main():
             stage_git_status(args.dry_run)
         stage_full_snapshots(args.dry_run)
         stage_old_files(args.dry_run, age_threshold)
-        stage_exports(args.dry_run, age_threshold)
+        stage_verbose_logs(args.dry_run)
         show_summary()
     except KeyboardInterrupt:
         print(f"\n\n  {C.DIM}Interrupted. No further changes.{C.RESET}")
