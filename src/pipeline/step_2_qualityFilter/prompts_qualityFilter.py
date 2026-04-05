@@ -104,9 +104,6 @@ Output
 [Return only the category number: 1, 2, 3, 4, 5 - or "null"]
 </category>"""
 
-# Backward compat alias
-GRADER_INSTRUCTIONS = GRADER_INSTRUCTIONS_NANO
-
 
 # =============================================================================
 # PATTERN B: Mini/default — instructor + Pydantic response model
