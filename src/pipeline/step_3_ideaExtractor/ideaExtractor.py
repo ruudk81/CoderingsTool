@@ -394,7 +394,7 @@ class IdeaExtractor:
                     utility_name="IdeaExtractor",
                     prompt_content=prompt,
                     prompt_type="consolidate_specifiers_group1",
-                    metadata={"model": self.model, "survey_question": self.var_lab}
+                    metadata={"model": self._get_client_and_model("context")[1], "survey_question": self.var_lab}
                 )
                 self._captured_consolidate1 = True
         else:
@@ -409,7 +409,7 @@ class IdeaExtractor:
                     utility_name="IdeaExtractor",
                     prompt_content=prompt,
                     prompt_type="consolidate_specifiers_group2",
-                    metadata={"model": self.model, "survey_question": self.var_lab}
+                    metadata={"model": self._get_client_and_model("context")[1], "survey_question": self.var_lab}
                 )
                 self._captured_consolidate2 = True
 
@@ -525,7 +525,7 @@ class IdeaExtractor:
                 utility_name="IdeaExtractor",
                 prompt_content=prompt,
                 prompt_type="dimension_consolidation",
-                metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
+                metadata={"model": self._get_client_and_model("context")[1], "survey_question": self.var_lab, "language": self.language}
             )
             self._captured_taxonomy_consolidation = True
 
@@ -587,7 +587,7 @@ class IdeaExtractor:
                 utility_name="IdeaExtractor",
                 prompt_content=prompt,
                 prompt_type="domain_consolidation",
-                metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
+                metadata={"model": self._get_client_and_model("taxonomy")[1], "survey_question": self.var_lab, "language": self.language}
             )
             self._captured_domain_consolidation = True
 
@@ -852,7 +852,7 @@ class IdeaExtractor:
                             utility_name="IdeaExtractor",
                             prompt_content=prompt,
                             prompt_type="context_specifier_group1",
-                            metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
+                            metadata={"model": self._get_client_and_model("context")[1], "survey_question": self.var_lab, "language": self.language}
                         )
                         self._captured_context_specifier1 = True
                 elif task['group'] == 2:
@@ -870,7 +870,7 @@ class IdeaExtractor:
                             utility_name="IdeaExtractor",
                             prompt_content=prompt,
                             prompt_type="context_specifier_group2",
-                            metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
+                            metadata={"model": self._get_client_and_model("context")[1], "survey_question": self.var_lab, "language": self.language}
                         )
                         self._captured_context_specifier2 = True
                 elif task['group'] == 3:
@@ -895,7 +895,7 @@ class IdeaExtractor:
                             prompt_content=prompt,
                             prompt_type="dimension_chunk_decision_tree",
                             metadata={
-                                "model": self.model,
+                                "model": self._get_client_and_model("context")[1],
                                 "survey_question": self.var_lab,
                                 "language": self.language,
                                 "perspective": ctx['perspective'],
@@ -929,7 +929,7 @@ class IdeaExtractor:
                             utility_name="IdeaExtractor",
                             prompt_content=prompt,
                             prompt_type="domain_chunk",
-                            metadata={"model": self.model, "survey_question": self.var_lab, "language": self.language}
+                            metadata={"model": self._get_client_and_model("taxonomy")[1], "survey_question": self.var_lab, "language": self.language}
                         )
                         self._captured_domain_chunk = True
 
@@ -1085,8 +1085,9 @@ class IdeaExtractor:
                     step_name="idea_extraction",
                     utility_name="IdeaExtractor",
                     prompt_content=prompt,
-                    prompt_type="idea_extraction_v3",
+                    prompt_type="idea_extraction",
                     metadata={
+                        "model": extractor.model_abstraction_ladder,
                         "var_lab": extractor.var_lab,
                         "respondent_id": task['respondent_id'],
                         "primary_dimension": extractor.primary_dimension,
@@ -1125,12 +1126,11 @@ class IdeaExtractor:
             for i, idea_response in enumerate(response):
                 normalized = extractor._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                 if normalized and normalized not in ["", "NA", "N/A"]:
-                    taxonomy_resp = getattr(idea_response, 'abstraction_ladder', None)
                     idea_text = extractor._format_idea_text(normalized)
-                    instance = taxonomy_resp.instance if taxonomy_resp else ""
-                    interpretation = taxonomy_resp.interpretation if taxonomy_resp else ""
-                    abstraction = taxonomy_resp.abstraction if taxonomy_resp else ""
-                    domain = taxonomy_resp.domain if taxonomy_resp else ""
+                    instance = idea_response.instance
+                    interpretation = idea_response.interpretation
+                    abstraction = idea_response.abstraction
+                    domain = idea_response.domain
 
                     if not instance and not interpretation and not abstraction:
                         extractor.stats['empty_ladder_ideas'] += 1

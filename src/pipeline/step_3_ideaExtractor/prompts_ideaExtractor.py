@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import ClassVar, List, Literal, Optional
-from pydantic import BaseModel, Field, field_validator, create_model
+from pydantic import BaseModel, Field, field_validator
 
 try:
     from .dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
@@ -795,25 +795,11 @@ Begin processing now and provide your output as valid JSON following the respons
 """
 
 
-class SemanticTaxonomyResponse(BaseModel):
-    """Taxonomy response base class. Fields are overridden by create_extraction_model().
-
-    Abstraction ladder: instance → interpretation → abstraction (survey language).
-    Domain: L2 thematic domain.
-    Facet (L3) is assigned later in step 5, NOT here.
-
-    Note: ladder validation is tier-aware and applied in create_extraction_model(),
-    not here. See _make_ladder_validator().
-    """
-
-    instance: str = ""
-    interpretation: str = ""
-    abstraction: str = ""
-    domain: str = ""
-
-
 class TaxonomyEnrichedIdeaResponse(BaseModel):
     """Base model for extraction. Use create_extraction_model() for dimension-specific versions.
+
+    Fields are flat — no nesting. Dimension-specific descriptions and validators
+    are applied in create_extraction_model().
 
     Note: respondent_id and idea_id are NOT in the response model — they are
     known by the caller and assigned programmatically. This reduces output tokens
@@ -822,9 +808,17 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     idea: str = Field(
         description="The extracted idea — shortest verbatim span expressing the concept"
     )
-    abstraction_ladder: Optional[SemanticTaxonomyResponse] = Field(
-        default=None,
-        description="Abstraction ladder (instance → interpretation → abstraction) + domain classification"
+    instance: str = Field(
+        description="Verbatim span from response expressing this idea"
+    )
+    interpretation: str = Field(
+        description="What the respondent is really talking about — concrete meaning"
+    )
+    abstraction: str = Field(
+        description="Broader significance or theme this idea points to"
+    )
+    domain: str = Field(
+        description="Thematic domain this idea belongs to"
     )
     valence: Literal["+", "-", "0"] = Field(
         default="0",
@@ -841,8 +835,9 @@ def create_extraction_model(
 ) -> type[TaxonomyEnrichedIdeaResponse]:
     """Create dimension-specific extraction model with tier-aware validation.
 
-    template_prefix and domain_marker are baked in via class closure.
-    No ClassVar. Each call returns a fresh class. Safe for async.
+    Flat schema — instance, interpretation, abstraction, domain are top-level fields.
+    No nesting. This makes it easier for all model tiers (especially nano) to produce
+    valid output, and ensures field validators always fire.
 
     Ladder validation is tier-aware:
     - nano: lenient — coerce None/empty to "", never reject (retries are futile)
@@ -857,56 +852,57 @@ def create_extraction_model(
     # Build domain field — use label (survey language) not key (English)
     if domains:
         allowed_labels = tuple(c.label for c in domains) + ("Other",)
-        domain_field = (
-            Literal[allowed_labels],
-            Field(
-                description=(
-                    "Domain — which aspect of the entity does this concept belong to? One of: " +
-                    ", ".join(f"{c.label} ({c.definition})" for c in domains) +
-                    ", Other (does not fit any of the above)"
-                ),
-                examples=[c.label for c in domains[:3]]
-            )
+        _domain_description = (
+            "Domain — which aspect of the entity does this concept belong to? One of: " +
+            ", ".join(f"{c.label} ({c.definition})" for c in domains) +
+            ", Other (does not fit any of the above)"
         )
+        _domain_examples = [c.label for c in domains[:3]]
     else:
-        domain_field = (
-            str,
-            Field(
-                description=(
-                    f"Domain: which ASPECT of the entity does this concept belong to? "
-                    f"Use a short label (1-4 words) suitable for organizing a codebook section. "
-                    f"NOT a linguistic role ('moral attribute', 'functional trait') but a thematic category "
-                    f"('products and services', 'marketing and communication', 'social responsibility')."
-                ),
-            )
+        allowed_labels = None
+        _domain_description = (
+            f"Domain: which ASPECT of the entity does this concept belong to? "
+            f"Use a short label (1-4 words) suitable for organizing a codebook section. "
+            f"NOT a linguistic role ('moral attribute', 'functional trait') but a thematic category "
+            f"('products and services', 'marketing and communication', 'social responsibility')."
         )
+        _domain_examples = None
 
-    # Create base dimension-specific SemanticTaxonomyResponse
-    _BaseDimensionTaxonomy = create_model(
-        f"SemTax_{dimension_key}_b",
-        __base__=SemanticTaxonomyResponse,
-        instance=(str, Field(
-            description=prompt_rules.instance_instruction,
-        )),
-        interpretation=(str, Field(
-            description=prompt_rules.interpretation_instruction,
-        )),
-        abstraction=(str, Field(
-            description=prompt_rules.abstraction_instruction,
-        )),
-        domain=domain_field,
-    )
-
-    # Add fuzzy-match validator for domain (runs before Literal validation)
-    _label_map = {k.lower(): k for k in allowed_labels} if domains else {}
-    if domains:
+    # Build fuzzy-match lookup for domain normalization
+    _label_map = {k.lower(): k for k in allowed_labels} if allowed_labels else {}
+    if allowed_labels:
         _label_map.update({k.lower().replace(' ', '_'): k for k in allowed_labels})
-        # Also map English keys to labels for robustness
         for c in domains:
             _label_map[c.key.lower()] = c.label
             _label_map[c.key.lower().replace('_', ' ')] = c.label
 
-    class DimensionTaxonomy(_BaseDimensionTaxonomy):
+    class DimensionExtractionModel(TaxonomyEnrichedIdeaResponse):
+        _template_prefix: ClassVar[str] = _prefix
+        _domain_marker: ClassVar[str] = _marker
+
+        idea: str = Field(
+            description="Complete idea statement beginning with the canonical_phrasing template"
+        )
+        instance: str = Field(description=prompt_rules.instance_instruction)
+        interpretation: str = Field(description=prompt_rules.interpretation_instruction)
+        abstraction: str = Field(description=prompt_rules.abstraction_instruction)
+
+        if allowed_labels:
+            domain: Literal[allowed_labels] = Field(
+                description=_domain_description,
+                examples=_domain_examples,
+            )
+        else:
+            domain: str = Field(description=_domain_description)
+
+        @field_validator('idea', mode='before')
+        @classmethod
+        def validate_idea(cls, v: str) -> str:
+            """Basic validation — non-empty string only."""
+            if not isinstance(v, str) or not v.strip():
+                raise ValueError("idea must be a non-empty string.")
+            return v.strip()
+
         @field_validator('instance', 'interpretation', 'abstraction', mode='before')
         @classmethod
         def validate_ladder_field(cls, v: object) -> str:
@@ -944,30 +940,6 @@ def create_extraction_model(
             if normalized in _label_map:
                 return _label_map[normalized]
             return stripped
-
-    DimensionTaxonomy.__name__ = f"SemTax_{dimension_key}"
-    DimensionTaxonomy.__qualname__ = f"SemTax_{dimension_key}"
-
-    # Create dimension-specific extraction model with strict validators
-    class DimensionExtractionModel(TaxonomyEnrichedIdeaResponse):
-        _template_prefix: ClassVar[str] = _prefix
-        _domain_marker: ClassVar[str] = _marker
-
-        idea: str = Field(
-            description="Complete idea statement beginning with the canonical_phrasing template"
-        )
-        abstraction_ladder: Optional[DimensionTaxonomy] = Field(
-            default=None,
-            description="Abstraction ladder (instance → interpretation → abstraction) + domain classification"
-        )
-
-        @field_validator('idea', mode='before')
-        @classmethod
-        def validate_idea(cls, v: str) -> str:
-            """Basic validation — non-empty string only."""
-            if not isinstance(v, str) or not v.strip():
-                raise ValueError("idea must be a non-empty string.")
-            return v.strip()
 
     DimensionExtractionModel.__name__ = f"IdeaExtr_{dimension_key}"
     DimensionExtractionModel.__qualname__ = f"IdeaExtr_{dimension_key}"
