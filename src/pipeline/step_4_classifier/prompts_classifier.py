@@ -178,18 +178,26 @@ def build_facet_discovery_prompt(
         excluded_domains or []
     )
 
-    return f"""You are a qualitative research analyst specializing in survey response analysis.
+    return f"""You are a qualitative research analyst specializing in survey response analysis. 
 Your task is to identify the fewest recurring facets that provide full coverage of a set of observations from a survey.
 
-Here is the survey context:
+A facet is an analytical lens that groups descriptive qualities based on shared meaning. Facets must be:
+- Descriptive and data-grounded (not evaluative)
+- Internally coherent (one clear underlying concept)
+- Externally distinctive (ontologically distinct and semantically separable from other facets)
+- Strictly within domain boundaries
+- Supported by multiple observations or repeated patterns
+
+Here is the survey context you are working with:
 
 <survey_context>
 Survey question: "{survey_question}"
 Language: {language}
 {dataset_context_section}
+{dimension_description}
 </survey_context>
 
-Here is the taxonomy context you are working within:
+Here is the taxonomy context that defines your working framework:
 
 <taxonomy_context>
 This is the structure:
@@ -200,33 +208,12 @@ This is the structure:
 - Attribute (L4): {attribute_key_idea}
 </taxonomy_structure>
 
-You are working within this dimension:
-<taxonomy_dimension>
-{dimension_name} — {dimension_description}
-</taxonomy_dimension>
+You are working within this domain:
 
-And you are working within this domain:
 <taxonomy_domain>
 {partition_name} — {partition_definition}
 </taxonomy_domain>
 {excluded_block}
-Here is guidance on what facets are and how they should be defined:
-
-<facet_definition_guidance>
-Target abstraction level: FACET (L3)
-{facet_guidance}
-
-Each facet must:
-- Be a descriptive, data-grounded category based on shared meaning across multiple attributes
-- Be non-evaluative (no judgment, sentiment, or valence)
-- Stay strictly within the domain boundaries
-- Be internally coherent (one clear underlying concept)
-- Be externally distinctive:
-  * Ontologically distinct (no overlap, no subset/superset, no reframing of same phenomenon)
-  * Semantically separable (no ambiguity in coding; no "could go either way")
-- Be non-redundant (adds unique conceptual value; no duplicate concepts)
-- Be grounded in the data (supported by multiple attributes or repeated patterns)
-</facet_definition_guidance>
 </taxonomy_context>
 
 Here are the observations you need to analyze:
@@ -235,40 +222,32 @@ Here are the observations you need to analyze:
 {observations_block}
 </observations>
 
-# Instructions
-
-Before writing your final output, think through your analysis in the scratchpad field:
+Before providing your final output, you must work through your analysis systematically in a scratchpad section. Follow these steps:
 
 **Step 1: Cluster observations**
-Group similar observations together based on shared descriptive meaning. Identify recurring patterns in what is being said about {partition_name}.
-
-Focus on the type of quality, characteristic, principle, or practice being described.
+Group similar observations together based on shared descriptive meaning. Identify recurring patterns in what is being described. Focus on the type of quality, characteristic, principle, or practice being described, not on evaluation or sentiment.
 
 **Step 2: Identify candidate facets**
-Based on these clusters, identify candidate facets.
+Based on your clusters, identify candidate facets. For each candidate facet, assess:
+- The facet name (2-5 words in nl-NL)
+- The underlying type of quality or attribute it captures
+- Which observations support it
+- Whether it is internally coherent (captures one clear concept)
+- Whether it is ontologically distinct from other candidate facets
 
-For each candidate facet, assess:
-- the facet name
-- the underlying type of quality or attribute it captures
-- which observations support it
-- whether it is internally coherent
-- whether it is ontologically distinct from other candidate facets
-
-Remember: a facet identifies the analytical lens through which descriptive qualities are grouped. A facet captures a type of meaning, not a single concrete observation.
+Remember: a facet identifies an analytical lens, not a single concrete observation. It captures a type of meaning that recurs across multiple observations.
 
 **Step 3: Verify internal coherence**
-Check whether each candidate facet captures one clear underlying concept.
-
-Reject or split candidate facets that:
-- combine multiple different kinds of phenomena
-- mix descriptive content with evaluation
-- are too broad to support clear coding
+Check whether each candidate facet captures one clear underlying concept. Reject or split candidate facets that:
+- Combine multiple different kinds of phenomena
+- Mix descriptive content with evaluation
+- Are too broad to support clear coding
 
 **Step 4: Verify distinctness**
 Check each pair of candidate facets to ensure they are:
-- ontologically distinct (not overlapping in conceptual space; one is not a subset of another)
-- semantically separable (someone coding a response would clearly know which facet applies, with no "could go either way" situations)
-- not two different lenses on the same phenomenon
+- Ontologically distinct (not overlapping in conceptual space; one is not a subset of another)
+- Semantically separable (a coder would clearly know which facet applies, with no ambiguity)
+- Not two different lenses on the same phenomenon
 
 If two facets fail this test, consolidate them into one broader facet or redefine the boundaries more clearly.
 
@@ -279,33 +258,26 @@ Exclude facets that belong more naturally to other domains, including:
 {excluded_block_light}
 
 **Step 6: Prepare final output**
-Return only the dominant facets that pass all checks above.
+Retain only the dominant facets that pass all checks above. For each facet, prepare:
+- A short descriptive name in nl-NL (2-5 words)
+- A description in nl-NL of what the facet captures (1-2 sentences)
+- 3-5 representative observations from the input, using the exact observation text (not observation numbers)
 
-For each facet, provide:
-- a short descriptive name in {language} (2-5 words)
-- a description in {language} of what the facet captures (1-2 sentences)
-- 3-5 representative observations from the input, using the exact observation text
+Your response must be structured as valid JSON with two fields:
+1. "scratchpad": containing your step-by-step analytical reasoning (Steps 1-6)
+2. "facets": an array of discovered facets, each with "facet_name", "facet_description", and "example_observations"
 
-# Output Requirements
-
-Provide output as valid JSON following the response schema provided.
-
-# Language Requirement
-
-All output (facet names, descriptions, and example observations) must be written in {language}.
-
-# Final Notes
-
+Important requirements:
+- All output (facet names, descriptions, and example observations) must be in nl-NL
 - Facets must be descriptive, not evaluative
 - Facets must be grounded in repeated patterns across observations
-- Facets must be internally coherent
-- Facets must be externally distinctive
-- Facets must remain strictly within the included domain
 - Each facet must capture one type of quality, not multiple
-- All output must be in {language}
-- Use exact observation text in the examples, not observation numbers
+- Use exact observation text in the examples
+- Only include facets that strictly belong to the included domain
+- Aim for the fewest facets that provide full coverage of the observations
 
-Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
+Provide your complete analysis in the scratchpad field, then provide your final facets as a JSON array.
+"""
 
 class DiscoveredFacet(BaseModel):
     """A facet (L3) discovered from observations within a domain."""
