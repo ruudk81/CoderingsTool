@@ -1064,6 +1064,7 @@ class SmoothRequester:
         self.semaphore = ConcurrencyGate(effective)
         self.optimal_concurrency = effective
         self._initial_concurrency = effective
+        self._num_tasks = num_tasks
 
 
         # Which rate limit is tighter (for display)
@@ -1791,7 +1792,7 @@ class SmoothRequester:
         )
         ramped_above_start = (
             self.optimal_concurrency > self._initial_concurrency
-            and self._initial_concurrency < num_tasks
+            and self._initial_concurrency < self._num_tasks
         )
         if not rate_capped and controller_found_ceiling:
             # 2a: Found ceiling — save conservative estimate
