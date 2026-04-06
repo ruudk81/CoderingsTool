@@ -1063,6 +1063,7 @@ class SmoothRequester:
 
         self.semaphore = ConcurrencyGate(effective)
         self.optimal_concurrency = effective
+        self._initial_concurrency = effective
 
 
         # Which rate limit is tighter (for display)
@@ -1767,18 +1768,20 @@ class SmoothRequester:
             "has_server_headers": self._has_server_headers,
         }
 
-        # Only save empirical_capacity when the concurrency controller actually
-        # found a server-side ceiling. Two conditions must both be true:
+        # Save empirical_capacity when we have reliable signal about server
+        # concurrency. Condition 1 must be true, plus one of 2a or 2b:
         #
         # 1. Not rate-capped: when rate-limited, the state machine ramped
         #    internally but never actually tested those concurrency levels.
         #
-        # 2. Controller found a ceiling: the state machine must have exited
-        #    RAMP_UP — meaning it detected pressure and transitioned to
-        #    STEADY, BACKOFF, or RECOVER. If it stayed in RAMP_UP, it just
-        #    ran out of tasks before finding any limit, so its
-        #    last_healthy_concurrency is meaningless (it's just "how high
-        #    it happened to get").
+        # 2a. Controller found a ceiling: exited RAMP_UP (→ STEADY/BACKOFF/
+        #     RECOVER). Save last_healthy_concurrency * 0.95 (conservative).
+        #
+        # 2b. Controller stayed in RAMP_UP but ramped above the initial
+        #     concurrency, AND initial concurrency < num_tasks (so tasks
+        #     were queued behind the semaphore, not all dispatched at once).
+        #     The server handled this concurrency without pressure — save
+        #     the final concurrency as a validated lower bound.
         rate_capped = self._rate_limit_concurrency <= self._server_concurrency
         sm = self._concurrency_controller
         controller_found_ceiling = (
@@ -1786,11 +1789,19 @@ class SmoothRequester:
             and hasattr(sm, 'state')
             and sm.state != ConcurrencyState.RAMP_UP
         )
+        ramped_above_start = (
+            self.optimal_concurrency > self._initial_concurrency
+            and self._initial_concurrency < num_tasks
+        )
         if not rate_capped and controller_found_ceiling:
+            # 2a: Found ceiling — save conservative estimate
             if hasattr(sm, 'last_healthy_concurrency'):
                 measurements["empirical_capacity"] = float(int(sm.last_healthy_concurrency * 0.95))
             else:
                 measurements["empirical_capacity"] = float(self.optimal_concurrency)
+        elif not rate_capped and ramped_above_start:
+            # 2b: No pressure but ramped above start — save final as lower bound
+            measurements["empirical_capacity"] = float(self.optimal_concurrency)
         if self.tiktoken_offset_learner.is_learned():
             measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
 

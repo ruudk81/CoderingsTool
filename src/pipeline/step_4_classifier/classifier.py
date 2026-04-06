@@ -1087,7 +1087,7 @@ class TaxonomyClassifier:
                 verbose=verbose,
                 known_limits=self._fetched_limits,
                 show_setup=False,
-                quiet=True,
+                quiet=False,
             )
             p6_results = await p6_requester.process_all(
                 p6_tasks,
