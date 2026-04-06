@@ -515,11 +515,6 @@ def main():
         print(f"\n\n  {C.DIM}Interrupted. No further changes.{C.RESET}")
         sys.exit(0)
 
-    # Record last cleanup time (used by shell login reminder)
-    if not args.dry_run:
-        marker = PROJECT_ROOT / "cleanup" / ".last_cleanup"
-        marker.touch()
-
     print(f"\n{C.DIM}  Done. Run again anytime: python cleanup/cleanup.py{C.RESET}\n")
 
 
