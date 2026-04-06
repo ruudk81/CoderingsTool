@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, List, Literal, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 try:
@@ -701,30 +701,38 @@ def build_taxonomy_enriched_extraction_prompt(
     topic: str,
     intent: str,
     response: str,
-    canonical_phrasing: str,
     dimension: DimensionDefinition,
     domain_table: str,
 ) -> str:
     """Build the taxonomy-enriched idea extraction prompt."""
     examples_block = _format_dimension_examples(dimension)
 
-    return f"""You are an expert in extracting structured ideas from survey responses.
+    return f"""You are an expert in extracting and analyzing ideas from survey responses. 
+Your task is to systematically break down a survey response into atomic ideas, build an abstraction ladder for each idea, and classify each idea by domain and valence.
 
-<survey_context>
-Language: {language}
-Question ({language}): "{var_lab}"
-Respondent type: {perspective}
-Sector: {sector}
-Entity: {entity}
-Topic: {topic}
-Intent: {intent}
-</survey_context>
+The language you will be working in is:
+<language>
+{language}
+</language>
 
-<taxonomy_lens>
-Lens: "{dimension.noun_phrase_descriptor}"
-Anchor: {dimension.domain_marker}
-</taxonomy_lens>
+All your analysis, interpretations, abstractions, and classifications must be written in this language.
 
+Here is the survey question that was asked:
+<survey_question>
+{var_lab}
+</survey_question>
+
+Here is important context to help you understand the responses:
+<context>
+- Sector: {sector}
+- Entity of interest: {entity}
+- Topic: {topic}
+- Type of respondent: {perspective}
+- Question intent: {intent}
+- Responses vary in terms of: {dimension.noun_phrase_descriptor}
+</context>
+
+Here is the response you need to analyze:
 <response>
 {response}
 </response>
@@ -733,53 +741,47 @@ Anchor: {dimension.domain_marker}
 
 ## STEP 1 — SPLIT INTO ATOMIC IDEAS
 
-Extract ALL distinct ideas from the response. When in doubt → SPLIT. Over-splitting is preferred.
+Your first task is to extract ALL distinct ideas from the response. 
+More specifically: {dimension.instruction}
+When in doubt → SPLIT. Over-splitting is preferred.
 
-{dimension.instruction}
+Follow these splitting rules (NON-NEGOTIABLE):
+- Items joined by conjunctions (such as "and", "or", "en", "und", "et", "y", "ou") or commas that express DIFFERENT concepts must be SPLIT into separate ideas
+- Example: if a response says "faster and cheaper", this contains TWO ideas: (1) "faster", (2) "cheaper"
+- Each idea will get its own canonical phrasing, classification, and valence
+- Do not combine ideas that touch on different aspects or dimensions
 
-SPLITTING RULES (NON-NEGOTIABLE):
-- Items joined by conjunctions ("and", "or", "en", "und", "et", "y", "ou") or commas that express DIFFERENT concepts → SPLIT into separate ideas
-- Example: "faster and cheaper" → TWO ideas: (1) "faster", (2) "cheaper"
-- Each idea gets its own canonical phrasing, classification, and valence
+## STEP 2: BUILD THE ABSTRACTION LADDER
 
----
+For each atomic idea you identified, you must build a 3-rung ladder of increasing abstraction. All three rungs must be written in {language}.
 
-## STEP 2 — IDEA STATEMENT
+### Rung A: INSTANCE
+Extract the SHORTEST span from the original response that reflects this idea. 
+- Use the respondent's original wording in {language}. 
+- This should be a direct quote or minimal paraphrase.
 
-For each idea, extract the SHORTEST span from the response that captures it.
-
-Your output replaces {dimension.domain_marker} in: {canonical_phrasing}
-
-Rules:
-- Output ONLY the span — do NOT include the prefix or the marker token
-- Use {language}, preserve the respondent's original wording
-
-
----
-
-## STEP 2.5 — ABSTRACTION LADDER (all in {language})
-
-For each idea, build a 2-rung ladder of increasing abstraction from the instance:
-
-### A. INTERPRETATION (what is the respondent REALLY talking about?)
+### Rung B: INTERPRETATION
+What is the respondent REALLY talking about? 
 {dimension.prompt_rules.interpretation_instruction}
-- This requires INTERPRETATION, not just normalization
-- Different surface expressions pointing to the same meaning → same concept
+- This requires INTERPRETATION, not just normalization or cleaning up grammar. 
+- Think about the underlying concept or meaning. 
+- Different surface expressions that point to the same underlying meaning should receive the same interpretation. -
+- Write this interpretation in {language}. 
 
-### B. ABSTRACTION (what BROADER significance does this point to?)
-{dimension.prompt_rules.abstraction_instruction}
-- Must be more abstract than the interpretation
-- Do not repeat the instance or domain
-
----
+### Rung C: ABSTRACTION
+About the idea: {dimension.prompt_rules.abstraction_instruction}
+- This must be more abstract than the interpretation. 
+- Do not simply repeat the instance or add generic domain labels. 
+- Think about what larger theme or principle this represents. 
+- Write this abstraction in {language}. 
 
 ## STEP 3 — CLASSIFY
 
-For each idea, perform these steps (all in {language}):
+For each idea, perform two classification tasks:
 
-### A. DOMAIN ({dimension.prompt_rules.domain_diagnostic})
-Assign the idea to the single best-fitting domain from the table below. {dimension.prompt_rules.domain_instruction}
-- {domain_table}
+### A. DOMAIN ASSIGNMENT
+{dimension.prompt_rules.domain_diagnostic}
+{domain_table}
 
 ### B. VALENCE (direction of instance relative to domain)
 - "+" = the instance strengthens or reinforces this domain
@@ -789,25 +791,13 @@ Assign the idea to the single best-fitting domain from the table below. {dimensi
 
 ### Examples (your output must be in {language})
 
-{examples_block}Empty, irrelevant, or nonsensical response → return [].
+{examples_block}
 
 Begin processing now and provide your output as valid JSON following the response schema provided.
 """
 
-
 class TaxonomyEnrichedIdeaResponse(BaseModel):
-    """Base model for extraction. Use create_extraction_model() for dimension-specific versions.
-
-    Fields are flat — no nesting. Dimension-specific descriptions and validators
-    are applied in create_extraction_model().
-
-    Note: respondent_id and idea_id are NOT in the response model — they are
-    known by the caller and assigned programmatically. This reduces output tokens
-    and eliminates a source of validation failures on nano models.
-    """
-    idea: str = Field(
-        description="The extracted idea — shortest verbatim span expressing the concept"
-    )
+    """Response model"""
     instance: str = Field(
         description="Verbatim span from response expressing this idea"
     )
@@ -829,23 +819,16 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
 def create_extraction_model(
     *,
     dimension: DimensionDefinition,
-    template_prefix: str,
     domains: list[DomainItem] | None = None,
-    model: str = "",
 ) -> type[TaxonomyEnrichedIdeaResponse]:
-    """Create dimension-specific extraction model with tier-aware validation.
+    """Create dimension-specific extraction model.
 
-    Flat schema — instance, interpretation, abstraction, domain are top-level fields.
-    No nesting. This makes it easier for all model tiers (especially nano) to produce
-    valid output, and ensures field validators always fire.
+    Flat schema — instance, interpretation, abstraction, domain, valence.
+    All fields enforced non-empty via validation (triggers instructor retry).
 
-    Ladder validation is tier-aware:
-    - nano: lenient — coerce None/empty to "", never reject (retries are futile)
-    - mini/default: strict — reject None/empty (retries will succeed)
+    The LLM does NOT return an 'idea' field — idea is derived programmatically
+    from instance in the parse callback.
     """
-    _strict_ladder = "nano" not in model
-    _prefix = template_prefix.strip() if template_prefix else ""
-    _marker = dimension.domain_marker
     prompt_rules = dimension.prompt_rules
     dimension_key = dimension.key
 
@@ -877,53 +860,27 @@ def create_extraction_model(
             _label_map[c.key.lower().replace('_', ' ')] = c.label
 
     class DimensionExtractionModel(TaxonomyEnrichedIdeaResponse):
-        _template_prefix: ClassVar[str] = _prefix
-        _domain_marker: ClassVar[str] = _marker
-
-        idea: str = Field(
-            description="Complete idea statement beginning with the canonical_phrasing template"
-        )
         instance: str = Field(description=prompt_rules.instance_instruction)
         interpretation: str = Field(description=prompt_rules.interpretation_instruction)
         abstraction: str = Field(description=prompt_rules.abstraction_instruction)
 
-        if allowed_labels:
-            domain: Literal[allowed_labels] = Field(
-                description=_domain_description,
-                examples=_domain_examples,
-            )
-        else:
-            domain: str = Field(description=_domain_description)
-
-        @field_validator('idea', mode='before')
-        @classmethod
-        def validate_idea(cls, v: str) -> str:
-            """Basic validation — non-empty string only."""
-            if not isinstance(v, str) or not v.strip():
-                raise ValueError("idea must be a non-empty string.")
-            return v.strip()
+        domain: str = Field(
+            description=_domain_description,
+            **({"examples": _domain_examples} if _domain_examples else {}),
+            **({"json_schema_extra": {"enum": list(allowed_labels)}} if allowed_labels else {}),
+        )
 
         @field_validator('instance', 'interpretation', 'abstraction', mode='before')
         @classmethod
         def validate_ladder_field(cls, v: object) -> str:
-            """Tier-aware ladder validation (closure over _strict_ladder).
-
-            strict (mini/default): reject None/empty — retry will succeed.
-            lenient (nano): coerce to "" — retry is futile.
-            """
+            """Enforce non-empty string. Rejection triggers instructor retry."""
             if v is None:
-                if _strict_ladder:
-                    raise ValueError("Field must not be None. Provide a non-empty string value.")
-                return ""
+                raise ValueError("Field must not be None. Provide a non-empty string value.")
             if not isinstance(v, str):
-                if _strict_ladder:
-                    raise TypeError(f"Expected str, got {type(v).__name__}: {v!r}")
-                return str(v).strip().lower().rstrip('.,;:!?')
+                raise TypeError(f"Expected str, got {type(v).__name__}: {v!r}")
             stripped = v.strip()
             if not stripped:
-                if _strict_ladder:
-                    raise ValueError("Field must not be empty after stripping whitespace.")
-                return ""
+                raise ValueError("Field must not be empty after stripping whitespace.")
             return stripped.lower().rstrip('.,;:!?')
 
         @field_validator('domain', mode='before')
@@ -939,6 +896,10 @@ def create_extraction_model(
             normalized = stripped.lower().replace('_', ' ').replace('&', 'and').replace('  ', ' ').rstrip('.,;:')
             if normalized in _label_map:
                 return _label_map[normalized]
+            if allowed_labels:
+                raise ValueError(
+                    f"Domain '{stripped}' not recognized. Must be one of: {', '.join(allowed_labels)}"
+                )
             return stripped
 
     DimensionExtractionModel.__name__ = f"IdeaExtr_{dimension_key}"

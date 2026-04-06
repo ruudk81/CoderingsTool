@@ -20,7 +20,6 @@ import time
 import statistics
 import itertools
 import logging
-import unicodedata
 from typing import Dict, List, Optional, Union, Tuple
 from dataclasses import dataclass
 from collections import deque
@@ -334,17 +333,9 @@ class IdeaExtractor:
             "entity": "unknown",
         }
 
-        # Placeholder values for template estimation
-        placeholder_subject = "the subject"
-        placeholder_phrasing_template = "the subject is [ACTIONABLE_TAXONOMY_DIMENSION]"
-
         token_counts = []
         for response in sample_responses:
-            prompt = self._build_taxonomy_enriched_prompt(
-                response.response,
-                placeholder_subject,
-                placeholder_phrasing_template
-            )
+            prompt = self._build_taxonomy_enriched_prompt(response.response)
             prompt_tokens = len(self.encoding.encode(prompt))
             completion_tokens = int(prompt_tokens * 0.25)
             token_counts.append(prompt_tokens + completion_tokens)
@@ -970,37 +961,8 @@ class IdeaExtractor:
             finally:
                 queue.task_done()
 
-    def _build_canonical_phrasing(self, primary_dimension: str) -> tuple:
-        """Build canonical_term and canonical_phrasing programmatically.
-
-        Replaces the LLM-based subject extraction -- the anchor slot is always
-        the entity, so we just do a string substitution.
-
-        Returns:
-            (canonical_term, canonical_phrasing)
-        """
-        dimension = get_dimension(primary_dimension)
-        entity = self.generic_specifiers['entity']
-        canonical_term = entity.replace("_", " ").title()
-        canonical_phrasing = dimension.pattern.replace("[ANCHOR_SUBJECT]", canonical_term)
-        return canonical_term, canonical_phrasing
-
-    def _build_taxonomy_enriched_prompt(
-        self,
-        response: str,
-        subject: str,
-        phrasing_template: str,
-    ) -> str:
-        """Build taxonomy-enriched prompt for idea extraction.
-
-        Args:
-            response: The response text to extract ideas from
-            subject: The canonical subject/entity from survey question
-            phrasing_template: Template with domain marker placeholder
-
-        Returns:
-            Formatted prompt string
-        """
+    def _build_taxonomy_enriched_prompt(self, response: str) -> str:
+        """Build taxonomy-enriched prompt for idea extraction."""
         assert self.primary_dimension is not None, "primary_dimension must be set before building extraction prompt"
         dimension = get_dimension(self.primary_dimension)
 
@@ -1008,7 +970,7 @@ class IdeaExtractor:
         discovered_domains = getattr(self, 'domains', None)
         if discovered_domains:
             domain_table = (
-                "- Choose the most specific applicable domain from this predefined set; otherwise select Other:\n"
+                "Choose the most specific applicable domain from this predefined set; otherwise select Other:\n"
                 + "\n".join(
                     f"  • {c.label} = \"{c.definition}\"" for c in discovered_domains
                 )
@@ -1017,7 +979,7 @@ class IdeaExtractor:
         else:
             # During token estimation (_calculate_avg_tokens), domains haven't been
             # discovered yet — use a placeholder table for sizing purposes.
-            domain_table = "- (domains will be discovered during extraction)"
+            domain_table = "(domains will be discovered during extraction)"
 
         return build_taxonomy_enriched_extraction_prompt(
             language=self.language,
@@ -1028,7 +990,6 @@ class IdeaExtractor:
             topic=self.generic_specifiers['topic'],
             intent=self.generic_specifiers['intent'],
             response=response,
-            canonical_phrasing=phrasing_template,
             dimension=dimension,
             domain_table=domain_table,
         )
@@ -1069,16 +1030,9 @@ class IdeaExtractor:
 
         def prepare_fn(task: Dict) -> Dict:
             """Build prompt and call parameters for one task."""
-            subject, phrasing_template = extractor._build_canonical_phrasing(extractor.primary_dimension)
             dimension = get_dimension(extractor.primary_dimension)
-            dim_marker = dimension.domain_marker
-            template_prefix = phrasing_template.split(dim_marker)[0].strip() if dim_marker in phrasing_template else phrasing_template
-            if extractor.template_prefix is None:
-                extractor.template_prefix = template_prefix
 
-            prompt = extractor._build_taxonomy_enriched_prompt(
-                task['response'], subject, phrasing_template,
-            )
+            prompt = extractor._build_taxonomy_enriched_prompt(task['response'])
 
             if extractor.prompt_printer and not extractor._captured_prompt:
                 extractor.prompt_printer.capture_prompt(
@@ -1097,9 +1051,7 @@ class IdeaExtractor:
 
             AxisExtractionModel = create_extraction_model(
                 dimension=dimension,
-                template_prefix=template_prefix,
                 domains=getattr(extractor, 'domains', None),
-                model=extractor.model,
             )
 
             return {
@@ -1121,29 +1073,26 @@ class IdeaExtractor:
         extractor = self
 
         def parse_fn(task: Dict, response) -> Optional[models.IdeasExtractedModel]:
-            """Parse LLM response into ideas."""
+            """Parse LLM response into ideas.
+
+            idea is derived from instance — the LLM no longer returns an idea field.
+            All ladder fields are enforced non-empty by the Pydantic model.
+            """
             ideas = []
             for i, idea_response in enumerate(response):
-                normalized = extractor._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
-                if normalized and normalized not in ["", "NA", "N/A"]:
-                    idea_text = extractor._format_idea_text(normalized)
-                    instance = idea_response.instance
-                    interpretation = idea_response.interpretation
-                    abstraction = idea_response.abstraction
-                    domain = idea_response.domain
+                instance = idea_response.instance
+                if not instance or instance in ("NA", "N/A"):
+                    continue
 
-                    if not instance and not interpretation and not abstraction:
-                        extractor.stats['empty_ladder_ideas'] += 1
-
-                    ideas.append(models.IdeasExtractedSubmodel(
-                        idea_id=f"{task['respondent_id']}_{i+1}",
-                        idea=idea_text,
-                        instance=instance,
-                        interpretation=interpretation,
-                        abstraction=abstraction,
-                        domain=domain,
-                        valence=getattr(idea_response, 'valence', "") or "",
-                    ))
+                ideas.append(models.IdeasExtractedSubmodel(
+                    idea_id=f"{task['respondent_id']}_{i+1}",
+                    idea=instance,
+                    instance=instance,
+                    interpretation=idea_response.interpretation,
+                    abstraction=idea_response.abstraction,
+                    domain=idea_response.domain,
+                    valence=getattr(idea_response, 'valence', "") or "",
+                ))
 
             if ideas:
                 return models.IdeasExtractedModel(
@@ -1192,51 +1141,6 @@ class IdeaExtractor:
             lines.append(f"  Respondent {f['respondent_id']}: {reason_str} | \"{preview}...\"")
 
         return "\n".join(lines)
-
-    def _normalize_idea_text(self, text: str) -> str:
-        if not text:
-            return ""
-
-        text = unicodedata.normalize('NFC', text)
-        text = text.strip()
-        text = ' '.join(text.split())
-
-        zero_width_chars = ['\u200b', '\u200c', '\u200d', '\ufeff']
-        for char in zero_width_chars:
-            text = text.replace(char, '')
-
-        # Strip dimension marker token (e.g., "[EXPERIENCE_PERCEPTION]") that the
-        # LLM sometimes includes despite prompt instructions not to.
-        # We add the prefix programmatically in _format_idea_text, so the marker
-        # must not be in the LLM's output.
-        original = text
-        if self.primary_dimension:
-            dimension = get_dimension(self.primary_dimension)
-            marker = dimension.domain_marker  # e.g., "[EXPERIENCE_PERCEPTION]"
-            if marker and marker in text:
-                text = text.replace(marker, '').strip()
-                text = ' '.join(text.split())  # collapse any double spaces
-
-        # Strip template prefix if the LLM included it (we add it in _format_idea_text)
-        if self.template_prefix and text.lower().startswith(self.template_prefix.lower()):
-            text = text[len(self.template_prefix):].strip()
-
-        # If stripping left nothing, keep the original — don't discard real content
-        if not text:
-            return original
-
-        return text
-
-    def _format_idea_text(self, normalized_text: str) -> str:
-        """Prepend the template prefix to the LLM's verbatim span.
-
-        The LLM outputs just the idea content (e.g. "goede sfeer").
-        We prepend the canonical prefix (e.g. "Pinkpop →") to produce
-        the full idea statement: "Pinkpop → goede sfeer".
-        """
-        if self.template_prefix and not normalized_text.lower().startswith(self.template_prefix.lower()):
-            return f"{self.template_prefix} {normalized_text}"
-        return normalized_text
 
     def build_extraction_metadata(self, filename: str = "", var_name: str = "") -> 'models.ExtractionMetadata':
         """Build ExtractionMetadata from extracted context specifiers and taxonomy info.
@@ -1455,15 +1359,6 @@ class IdeaExtractor:
 
         nest_asyncio.apply()
         self._results = asyncio.run(self.process_all_tasks_async(tasks))
-
-        # Strip canonical_phrasing: leak from idea texts before further processing/caching
-        import re as _re
-        _canonical_pattern = _re.compile(r'\bcanonical_phrasing:\s*')
-        for result in self._results:
-            if result.response_ideas:
-                for idea in result.response_ideas:
-                    if idea.idea and 'canonical_phrasing:' in idea.idea:
-                        idea.idea = _canonical_pattern.sub('', idea.idea).strip()
 
         # Empirical stats are saved by SmoothRequester internally — no action needed here
 

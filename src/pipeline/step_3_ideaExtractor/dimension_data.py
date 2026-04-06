@@ -144,10 +144,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "initiative", "strategy",
         ),
         pattern="[ANCHOR_SUBJECT] → [PRESCRIPTIVE_CHANGE_OUTCOME_ENABLER]",
-        instruction=(
-            "Identify each distinct proposed action, improvement, or solution in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct proposed action, improvement, or solution in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one proposed action or improvement from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -232,10 +229,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "naming", "essence",
         ),
         pattern="[ANCHOR_SUBJECT] → [IDENTITY_DEFINITION]",
-        instruction=(
-            "Identify each distinct idea about what the entity IS, how it is defined, or why it exists. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct idea about what the entity IS, how it is defined, or why it exists.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one definition/identity concept from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -319,10 +313,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "participant", "owner", "audience",
         ),
         pattern="[ANCHOR_SUBJECT] → [ACTOR_TARGET]",
-        instruction=(
-            "Identify each distinct actor, stakeholder, or affected party mentioned in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct actor, stakeholder, or affected party mentioned in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one actor or affected party from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -405,10 +396,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "timing", "circumstance",
         ),
         pattern="[ANCHOR_SUBJECT] @ [CONTEXT_CONDITION]",
-        instruction=(
-            "Identify each distinct condition, context, or circumstance described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct condition, context, or circumstance described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one condition or contextual factor from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -491,10 +479,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "aspiration", "priority",
         ),
         pattern="[ANCHOR_SUBJECT] → [MOTIVATION_DRIVER]",
-        instruction=(
-            "Identify each distinct motivation, need, goal, or reason expressed in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct motivation, need, goal, or reason expressed in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one motivation or reason from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -578,10 +563,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "memory", "narrative",
         ),
         pattern="[ANCHOR_SUBJECT] → [EXPERIENCE_PERCEPTION]",
-        instruction=(
-            "Identify each distinct experience, perception, or impression described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct experience, perception, or impression described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one experience or perception from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -670,10 +652,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "praise", "ranking",
         ),
         pattern="[ANCHOR_SUBJECT] → [EVALUATION_PRIORITY]",
-        instruction=(
-            "Identify each distinct evaluative opinion, preference, or prioritization in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct evaluative opinion, preference, or prioritization in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one evaluation or preference from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -761,10 +740,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "performance", "service",
         ),
         pattern="[ANCHOR_SUBJECT] → [BEHAVIOR_FUNCTION]",
-        instruction=(
-            "Identify each distinct action, process, or functional behavior described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct action, process, or functional behavior described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one behavior or function from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -852,10 +828,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "reputation", "perception", "symbol",
         ),
         pattern="[ANCHOR_SUBJECT] → [ATTRIBUTE_ASSOCIATION]",
-        instruction=(
-            "Identify each distinct quality, trait, image, or association described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct quality, trait, image, or association described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one attribute or association from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -943,10 +916,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "relationship", "collaboration",
         ),
         pattern="[ANCHOR_SUBJECT] → [RELATION_DEPENDENCY]",
-        instruction=(
-            "Identify each distinct relationship, dependency, or comparison described in the response. "
-            "For each idea, produce one concise realization formatted according to the pattern."
-        ),
+        instruction="Identify each distinct relationship, dependency, or comparison described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one relationship or dependency from the response.",
             interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
@@ -1035,10 +1005,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             "unspecified_response",
         ),
         pattern="[ANCHOR_SUBJECT] → [GENERAL_STATEMENT]",
-        instruction=(
-            "Identify the core idea expressed in the response and represent it "
-            "concisely using the pattern."
-        ),
+        instruction="Identify the core idea expressed in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing the main idea of the response.",
             interpretation_instruction="What is the respondent really saying or expressing?",

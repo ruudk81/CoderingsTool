@@ -93,8 +93,7 @@ def resolve_response_model(prompt_entry: dict) -> Tuple[Optional[Type], bool, st
     if prompt_type == "idea_extraction":
         dimension_key = metadata.get("primary_dimension", "ATTRIBUTES_ASSOCIATIONS")
         dimension = get_dimension(dimension_key)
-        template_prefix = metadata.get("template_prefix", "")
-        model = create_extraction_model(dimension=dimension, template_prefix=template_prefix)
+        model = create_extraction_model(dimension=dimension)
         return (model, True, f"Dynamic model: List[DimensionTaxonomy_{dimension_key}] (dimension={dimension_key})")
 
     return (None, False, f"Unknown prompt type: {prompt_type}")
