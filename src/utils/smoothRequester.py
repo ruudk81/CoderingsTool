@@ -1758,13 +1758,27 @@ class SmoothRequester:
             "has_server_headers": self._has_server_headers,
         }
 
-        # Only save empirical_capacity when server was the actual binding constraint.
-        # When rate-capped, the state machine's measurement is phantom — it ramped
-        # internally but never actually tested those concurrency levels.
+        # Only save empirical_capacity when the concurrency controller actually
+        # found a server-side ceiling. Two conditions must both be true:
+        #
+        # 1. Not rate-capped: when rate-limited, the state machine ramped
+        #    internally but never actually tested those concurrency levels.
+        #
+        # 2. Controller found a ceiling: the state machine must have exited
+        #    RAMP_UP — meaning it detected pressure and transitioned to
+        #    STEADY, BACKOFF, or RECOVER. If it stayed in RAMP_UP, it just
+        #    ran out of tasks before finding any limit, so its
+        #    last_healthy_concurrency is meaningless (it's just "how high
+        #    it happened to get").
         rate_capped = self._rate_limit_concurrency <= self._server_concurrency
-        if not rate_capped:
-            sm = self._concurrency_controller
-            if sm and hasattr(sm, 'last_healthy_concurrency'):
+        sm = self._concurrency_controller
+        controller_found_ceiling = (
+            sm is not None
+            and hasattr(sm, 'state')
+            and sm.state != ConcurrencyState.RAMP_UP
+        )
+        if not rate_capped and controller_found_ceiling:
+            if hasattr(sm, 'last_healthy_concurrency'):
                 measurements["empirical_capacity"] = float(int(sm.last_healthy_concurrency * 0.95))
             else:
                 measurements["empirical_capacity"] = float(self.optimal_concurrency)
