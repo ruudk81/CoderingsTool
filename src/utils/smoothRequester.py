@@ -926,10 +926,17 @@ class SmoothRequester:
         # Tiktoken offset learner
         self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
 
-        # Latency tracker — multiplier scales with task count:
-        # few tasks → ~1x (P50 is the latency), many tasks → 6x (need outlier headroom)
+        # Latency tracker — timeout strategy depends on whether we have a calibrated
+        # concurrency ceiling. Without one, the phase is unconstrained (no rate or
+        # throughput pressure) so we use 180s and let the server finish. With a
+        # calibrated ceiling, we use the adaptive multiplier to cut outliers.
         _timeout = _stored_timeout or self._caller_default_timeout or TIMEOUT_FLOOR_SECONDS
-        _multiplier = min(6, round(math.log(max(num_tasks, 1)) + 1))
+        if self._stored_empirical_capacity is None:
+            # Unconstrained: no calibrated ceiling → generous timeout, no aggressive cuts
+            _multiplier = 180.0 / max(_timeout, 1.0)  # effectively 180s
+        else:
+            # Calibrated: adaptive multiplier scales with task count
+            _multiplier = min(6, round(math.log(max(num_tasks, 1)) + 1))
         self.latency_tracker = LatencyTracker(
             ema_alpha=self.processing_config.latency_tracker_ema_alpha,
             samples_window=self.processing_config.latency_tracker_samples_window,
@@ -1174,12 +1181,14 @@ class SmoothRequester:
                     self.circuit_breaker.record_completion()
 
                 # Step 3: Header reading (System A)
+                server_processing_ms = 0
                 if self._header_transport and self._residual_tracker is not None:
                     client_id = getattr(response, '_client_request_id', None)
                     if client_id:
                         entry = self._header_transport.get(client_id)
                         if entry and entry['processing_ms'] > 0:
-                            self._residual_tracker.add(latency, entry['processing_ms'])
+                            server_processing_ms = entry['processing_ms']
+                            self._residual_tracker.add(latency, server_processing_ms)
                         if entry and entry.get('remaining_requests', 0) > 0:
                             self._last_remaining_requests = entry['remaining_requests']
                         if entry and entry.get('limit_requests', 0) > 0:

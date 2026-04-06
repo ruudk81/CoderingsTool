@@ -161,7 +161,7 @@ def _debug_print_request(params: dict, provider: str, model: str):
             print(f"  {rm}")
 
     # Print other params
-    other_keys = ["model", "max_tokens", "max_output_tokens", "temperature"]
+    other_keys = ["model", "max_tokens", "max_output_tokens", "temperature", "reasoning", "text"]
     other_params = {k: v for k, v in params.items() if k in other_keys}
     if other_params:
         print("\n[OTHER PARAMS]")

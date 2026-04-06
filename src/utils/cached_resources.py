@@ -21,7 +21,7 @@ def get_tiktoken_encoding(model_name: str):
         with conditional_spinner(f"Loading tokenizer for {model_name}..."):
             return tiktoken.encoding_for_model(model_name)
     except KeyError:
-        logger.warning(f"Using cl100k_base encoding as fallback for {model_name}")
+        logger.debug(f"Using cl100k_base encoding as fallback for {model_name}")
         return tiktoken.get_encoding("cl100k_base")
 
 @conditional_cache_resource

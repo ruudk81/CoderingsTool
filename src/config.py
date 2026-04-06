@@ -23,9 +23,14 @@ MODEL_FAMILY = "gpt-5.4"
 def get_model(tier: str = "default") -> str:
     """Resolve a model name from the current MODEL_FAMILY and tier.
 
+    Applies FAMILY_TIER_OVERRIDES when the current MODEL_FAMILY has a mapping
+    (e.g. gpt-4.1 "nano" → "mini" because gpt-4.1-nano is too weak).
+
     Args:
         tier: "default", "mini", or "nano"
     """
+    overrides = FAMILY_TIER_OVERRIDES.get(MODEL_FAMILY, {})
+    tier = overrides.get(tier, tier)
     if tier == "default":
         return MODEL_FAMILY
     return f"{MODEL_FAMILY}-{tier}"
@@ -44,9 +49,11 @@ STEP_MODEL_TIERS = {
     "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": "nano",   # main extraction + retry
     # Step 4: Taxonomy Classifier (P1-P7)
-    "classifier_p1_p2": "default",   # Facet Discovery + Consolidation
+    "classifier_p1":    "mini",      # Facet Discovery
+    "classifier_p2":    "default",   # Facet Consolidation
     "classifier_p3":    "nano",      # Facet Assignment
-    "classifier_p4_p5": "default",   # Attribute Discovery + Consolidation
+    "classifier_p4":    "mini",      # Attribute Discovery
+    "classifier_p5":    "default",   # Attribute Consolidation
     "classifier_p6":    "nano",      # Attribute Assignment
     "classifier_p7":    "default",   # Cross-facet Attribute Consolidation
     # Step 5: Code Generator (P8-P9)
@@ -56,39 +63,59 @@ STEP_MODEL_TIERS = {
     "code_assignment":  "nano",
 }
 
+# Override tiers per model family (when target family needs different tier).
+# E.g. gpt-4.1 has no nano-quality equivalent to gpt-5.4-nano → use mini instead.
+FAMILY_TIER_OVERRIDES = {
+    "gpt-4.1": {
+        "nano": "mini",       # gpt-4.1-nano < gpt-5.4-nano → bump to mini
+        "mini": "default",    # gpt-4.1-mini < gpt-5.4-mini → bump to default
+    }
+}
+
 
 def get_step_model(phase: str) -> str:
     """Resolve model name for a pipeline phase from the central tier mapping."""
     return get_model(STEP_MODEL_TIERS[phase])
 
 # =============================================================================
-# REASONING PARAMS
+# REASONING PARAMS & VERBOSITY
 # =============================================================================
 
-_REASONING_FAMILIES = {"gpt-5"}
-REASONING_EFFORT = "none"   # minimal, low, medium, high - none only for >5.4
-TEXT_VERBOSITY = "low"      # minimal, low, medium, high
+REASONING_EFFORT = "none"   # none, minimal, low, medium, high — none only for ≥5.4
+TEXT_VERBOSITY = "medium"      # low, medium, high — default for all steps
+
+# Per-step verbosity overrides (None or absent = use TEXT_VERBOSITY default)
+STEP_VERBOSITY = {
+    # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
+    "classifier_p1": "low",
+    "classifier_p2": "low",
+    "classifier_p4": "low",
+    "classifier_p5": "low",
+    # All other steps: fall back to TEXT_VERBOSITY
+}
 
 
-def get_reasoning_params(model: str = None) -> dict:
+def get_step_verbosity(phase: str) -> str:
+    """Return verbosity for a pipeline phase. Falls back to TEXT_VERBOSITY."""
+    return STEP_VERBOSITY.get(phase, TEXT_VERBOSITY)
+
+
+def get_reasoning_params(model: str = None, phase: str = None) -> dict:
     """Return reasoning API params if the model is a reasoning model, else empty dict.
 
-    Usage in _llm_call: pass **get_reasoning_params(model) as kwargs to llm_create_async.
-    For chat models (gpt-4.1 family): returns {} — no extra params.
-    For reasoning models (gpt-5 family): returns {reasoning: {effort: ...}}.
-
-    NOTE: We only pass 'reasoning' (effort), NOT 'text' (verbosity).
-    The 'text' parameter conflicts with instructor's structured output format.
-    Instructor controls the output format; adding text.format overrides it
-    and causes InstructorRetryException on every call.
+    Args:
+        model: Model name. If None, uses default model.
+        phase: Pipeline phase key (e.g. "classifier_p1"). If provided, uses
+               per-step verbosity from STEP_VERBOSITY.
     """
     if model is None:
         model = get_model()
-    for rf in _REASONING_FAMILIES:
-        if model == rf or model.startswith(rf + "-"):
-            return {
-                "reasoning": {"effort": REASONING_EFFORT},
-            }
+    if ModelConfig.MODEL_TYPES.get(model) == "reasoning":
+        verbosity = get_step_verbosity(phase) if phase else TEXT_VERBOSITY
+        return {
+            "reasoning": {"effort": REASONING_EFFORT},
+            "text": {"verbosity": verbosity},
+        }
     return {}
 
 

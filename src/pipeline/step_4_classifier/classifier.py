@@ -159,17 +159,21 @@ class TaxonomyClassifier:
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None, dataset_key: str = "", cost_tracker=None):
         self.cost_tracker = cost_tracker
-        self._model_p1_p2 = config.qr_model_p1_p2
+        self._model_p1 = config.qr_model_p1
+        self._model_p2 = config.qr_model_p2
         self._model_p3 = config.qr_model_p3
-        self._model_p4_p5 = config.qr_model_p4_p5
+        self._model_p4 = config.qr_model_p4
+        self._model_p5 = config.qr_model_p5
         self._model_p6 = config.qr_model_p6
         self._model_p7 = config.qr_model_p7
 
         if self.cost_tracker:
             self.cost_tracker.set_step_models("step_4_taxonomy_classifier", {
-                "p1_p2_facet_discovery_and_consolidation": self._model_p1_p2,
+                "p1_facet_discovery": self._model_p1,
+                "p2_facet_consolidation": self._model_p2,
                 "p3_facet_assignment": self._model_p3,
-                "p4_p5_attribute_discovery_and_consolidation": self._model_p4_p5,
+                "p4_attribute_discovery": self._model_p4,
+                "p5_attribute_consolidation": self._model_p5,
                 "p6_attribute_assignment": self._model_p6,
                 "p7_cross_facet_consolidation": self._model_p7,
             })
@@ -315,7 +319,7 @@ class TaxonomyClassifier:
         # --- Fetch real rate limits from API headers ---
         if verbose:
             print("  Fetching rate limits from API...")
-        limits, _ = await llm_fetch_rate_limits(self._model_p1_p2)
+        limits, _ = await llm_fetch_rate_limits(self._model_p1)
 
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             if verbose:
@@ -334,8 +338,8 @@ class TaxonomyClassifier:
 
         if verbose:
             print(f"\n  [RATE LIMITING SETUP]")
-            print(f"  Models: P1+P2={self._model_p1_p2}, "
-                  f"P3={self._model_p3}, P4+P5={self._model_p4_p5}, "
+            print(f"  Models: P1={self._model_p1}, P2={self._model_p2}, "
+                  f"P3={self._model_p3}, P4={self._model_p4}, P5={self._model_p5}, "
                   f"P6={self._model_p6}, P7={self._model_p7}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
@@ -398,7 +402,7 @@ class TaxonomyClassifier:
 
         # P1 discovery via SmoothRequester
         p1_requester = SmoothRequester(
-            model=self._model_p1_p2,
+            model=self._model_p1,
             dataset_key=self._dataset_key,
             phase_key="step4_p1_facet_discovery",
             num_tasks=len(p1_tasks),
@@ -494,7 +498,7 @@ class TaxonomyClassifier:
         # Run P2 round 1
         if p2_tasks:
             p2_requester = SmoothRequester(
-                model=self._model_p1_p2,
+                model=self._model_p2,
                 dataset_key=self._dataset_key,
                 phase_key="step4_p2_facet_consolidation",
                 num_tasks=len(p2_tasks),
@@ -549,7 +553,7 @@ class TaxonomyClassifier:
                         'round': 2,
                     })
                 r2_requester = SmoothRequester(
-                    model=self._model_p1_p2,
+                    model=self._model_p2,
                     dataset_key=self._dataset_key,
                     phase_key="step4_p2_facet_consolidation",
                     num_tasks=len(r2_tasks),
@@ -588,7 +592,7 @@ class TaxonomyClassifier:
         if self.cost_tracker and _snap_p1p2 is not None:
             self.cost_tracker.record_phase(
                 "step_4_taxonomy_classifier", "p1_p2_facet_discovery_and_consolidation",
-                _snap_p1p2, token_tracker.snapshot(), self._model_p1_p2)
+                _snap_p1p2, token_tracker.snapshot(), self._model_p1)
 
         if self._debug_stop_after_phase == 2:
             if verbose:
@@ -797,7 +801,7 @@ class TaxonomyClassifier:
         # P4 discovery via SmoothRequester
         if p4_tasks:
             p4_requester = SmoothRequester(
-                model=self._model_p4_p5,
+                model=self._model_p4,
                 dataset_key=self._dataset_key,
                 phase_key="step4_p4_attribute_discovery",
                 num_tasks=len(p4_tasks),
@@ -896,7 +900,7 @@ class TaxonomyClassifier:
 
         if p5_tasks:
             p5_requester = SmoothRequester(
-                model=self._model_p4_p5,
+                model=self._model_p5,
                 dataset_key=self._dataset_key,
                 phase_key="step4_p5_attribute_consolidation",
                 num_tasks=len(p5_tasks),
@@ -959,7 +963,7 @@ class TaxonomyClassifier:
                         'facet_key': fk,
                     })
                 r2_requester = SmoothRequester(
-                    model=self._model_p4_p5,
+                    model=self._model_p5,
                     dataset_key=self._dataset_key,
                     phase_key="step4_p5_attribute_consolidation",
                     num_tasks=len(r2_tasks),
@@ -1009,7 +1013,7 @@ class TaxonomyClassifier:
         if self.cost_tracker and _snap_p4p5 is not None:
             self.cost_tracker.record_phase(
                 "step_4_taxonomy_classifier", "p4_p5_attribute_discovery_and_consolidation",
-                _snap_p4p5, token_tracker.snapshot(), self._model_p4_p5)
+                _snap_p4p5, token_tracker.snapshot(), self._model_p4)
 
         if self._debug_stop_after_phase == 5:
             if verbose:
@@ -1540,7 +1544,7 @@ class TaxonomyClassifier:
                     prompt_content=prompt,
                     prompt_type="facet_discovery",
                     metadata={
-                        "model": self._model_p1_p2,
+                        "model": self._model_p1,
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_facet_discovery,
                         "language": prompt_context.language,
@@ -1558,7 +1562,7 @@ class TaxonomyClassifier:
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_facet_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p1_p2),
+                'extra_kwargs': get_reasoning_params(self._model_p1),
             }
         return prepare_fn
 
@@ -1625,7 +1629,7 @@ class TaxonomyClassifier:
                     prompt_content=prompt,
                     prompt_type="facet_consolidation",
                     metadata={
-                        "model": self._model_p1_p2,
+                        "model": self._model_p2,
                         "temperature": 0.0,
                         "max_tokens": self._max_tokens_facet_discovery,
                         "language": prompt_context.language,
@@ -1641,7 +1645,7 @@ class TaxonomyClassifier:
                 'temperature': 0.0,
                 'max_tokens': self._max_tokens_facet_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p1_p2),
+                'extra_kwargs': get_reasoning_params(self._model_p2),
             }
         return prepare_fn
 
@@ -1691,7 +1695,7 @@ class TaxonomyClassifier:
                     prompt_content=prompt,
                     prompt_type="attribute_discovery",
                     metadata={
-                        "model": self._model_p4_p5,
+                        "model": self._model_p4,
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_attribute_discovery,
                         "language": prompt_context.language,
@@ -1711,7 +1715,7 @@ class TaxonomyClassifier:
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_attribute_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p4_p5),
+                'extra_kwargs': get_reasoning_params(self._model_p4),
             }
         return prepare_fn
 
@@ -1780,7 +1784,7 @@ class TaxonomyClassifier:
                     prompt_content=prompt,
                     prompt_type="attribute_chunk_consolidation",
                     metadata={
-                        "model": self._model_p4_p5,
+                        "model": self._model_p5,
                         "temperature": 0.0,
                         "max_tokens": self._max_tokens_attribute_discovery,
                         "language": prompt_context.language,
@@ -1798,7 +1802,7 @@ class TaxonomyClassifier:
                 'temperature': 0.0,
                 'max_tokens': self._max_tokens_attribute_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p4_p5),
+                'extra_kwargs': get_reasoning_params(self._model_p5),
             }
         return prepare_fn
 
