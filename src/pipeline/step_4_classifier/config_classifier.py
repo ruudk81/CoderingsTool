@@ -136,7 +136,7 @@ class CategoriesConfig:
 
     verbose: bool = True
 
-    # Set to a phase number (2, 5) to stop after that phase completes.
+    # Set to a phase number (1–7) to stop after that phase completes.
     # None = run full pipeline. Useful for testing specific phases without
     # waiting for the full pipeline.
     debug_stop_after_phase: Optional[int] = None

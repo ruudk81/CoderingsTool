@@ -25,7 +25,8 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-EXPERIMENT_N = 200  # Limit number of responses for a test run (None = use all)
+EXPERIMENT_N = None     # Limit number of responses for a test run (None = use all)
+STOP_AFTER_PHASE = 3   # None = full pipeline, 1–7 = stop after that phase
 
 from pipeline.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -48,10 +49,10 @@ from pipeline.step_4_classifier.models_classifier import (
 # All defaults defined in config_classifier.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="idea",           # show idea text only (includes template_prefix), not full ladder
-    label_prefix="",               # "" or any static prefix string
-    include_valence=False,         # prepend [+]/[-]/[0] valence tag to labels
-    debug_stop_after_phase=2,      # None = full pipeline, 2 = stop after P2, 5 = stop after P5
+    label_source="idea",                          # show idea text only (includes template_prefix), not full ladder
+    label_prefix="",                              # "" or any static prefix string
+    include_valence=False,                        # prepend [+]/[-]/[0] valence tag to labels
+    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–7 = stop after that phase
 )
 
 

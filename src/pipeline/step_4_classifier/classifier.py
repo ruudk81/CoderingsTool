@@ -430,6 +430,18 @@ class TaxonomyClassifier:
                   f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
                   f"{s.get('recovered', 0)} retries)")
 
+        if self._debug_stop_after_phase == 1:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P1 — skipping P2-P7")
+            return TaxonomyResult(
+                partition_n_labels={},
+                partition_n_batches={},
+                partition_facets={},
+                partition_assignments={},
+                partition_attributes={},
+                attribute_assignments={},
+            )
+
         # P2 consolidation per domain (SmoothRequester, concurrent)
         t_consolidation = time.time()
         partition_facets: Dict[str, List[DiscoveredFacet]] = {}
@@ -580,7 +592,7 @@ class TaxonomyClassifier:
 
         if self._debug_stop_after_phase == 2:
             if verbose:
-                print(f"\n  [DEBUG] Early stop after P2 — skipping P3-P7")
+                print(f"\n  [DEBUG] Early stop after P2 — skipping P3–P7")
             return TaxonomyResult(
                 partition_n_labels=partition_n_labels,
                 partition_n_batches=partition_n_batches,
@@ -698,6 +710,18 @@ class TaxonomyClassifier:
                 "step_4_taxonomy_classifier", "p3_facet_assignment",
                 _snap_p3, token_tracker.snapshot(), self._model_p3)
 
+        if self._debug_stop_after_phase == 3:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P3 — skipping P4–P7")
+            return TaxonomyResult(
+                partition_n_labels=partition_n_labels,
+                partition_n_batches=partition_n_batches,
+                partition_facets=partition_facets,
+                partition_assignments=partition_assignments,
+                partition_attributes={},
+                attribute_assignments={},
+            )
+
         # =================================================================
         # PHASE 4 (P4): Per-facet Attribute Discovery (SmoothRequester)
         # + PHASE 5 (P5): Attribute Consolidation (per-facet, sequential)
@@ -806,6 +830,18 @@ class TaxonomyClassifier:
             print(f"    P4 discovery: {len(p4_tasks)} tasks, {t_p4_discovery:.1f}s "
                   f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
                   f"{s.get('recovered', 0)} retries)")
+
+        if self._debug_stop_after_phase == 4:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P4 — skipping P5–P7")
+            return TaxonomyResult(
+                partition_n_labels=partition_n_labels,
+                partition_n_batches=partition_n_batches,
+                partition_facets=partition_facets,
+                partition_assignments=partition_assignments,
+                partition_attributes={},
+                attribute_assignments={},
+            )
 
         # P5 consolidation per facet (SmoothRequester, concurrent)
         t_consolidation = time.time()
@@ -977,7 +1013,7 @@ class TaxonomyClassifier:
 
         if self._debug_stop_after_phase == 5:
             if verbose:
-                print(f"\n  [DEBUG] Early stop after P5 — skipping P6-P7")
+                print(f"\n  [DEBUG] Early stop after P5 — skipping P6–P7")
             return TaxonomyResult(
                 partition_n_labels=partition_n_labels,
                 partition_n_batches=partition_n_batches,
@@ -1108,6 +1144,18 @@ class TaxonomyClassifier:
             self.cost_tracker.record_phase(
                 "step_4_taxonomy_classifier", "p6_attribute_assignment",
                 _snap_p6, token_tracker.snapshot(), self._model_p6)
+
+        if self._debug_stop_after_phase == 6:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P6 — skipping P7")
+            return TaxonomyResult(
+                partition_n_labels=partition_n_labels,
+                partition_n_batches=partition_n_batches,
+                partition_facets=partition_facets,
+                partition_assignments=partition_assignments,
+                partition_attributes=partition_attributes,
+                attribute_assignments=attribute_assignments,
+            )
 
         # =================================================================
         # PHASE 7 (P7): Cross-facet Attribute Consolidation per domain
