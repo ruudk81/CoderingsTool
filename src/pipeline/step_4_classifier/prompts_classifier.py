@@ -552,20 +552,6 @@ def valence_display(idea) -> str:
     return '[0]'
 
 
-def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
-    """Format ideas for assignment prompts — idea text only, no ladder."""
-    lines = []
-    for idea in ideas:
-        idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
-        idea_text = re.sub(r'\bcanonical_phrasing:\s*', '', idea_text).strip()
-        valence = valence_display(idea)
-        lines.append(
-            f"- idea_id: {idea.idea_id}\n"
-            f"  idea: {idea_text}\n"
-            f"  valence: {valence}"
-        )
-    return "\n".join(lines)
-
 
 def build_facet_assignment_prompt_single(
     *,
@@ -1069,7 +1055,7 @@ def _build_attribute_codebook_block(
     return "\n\n".join(lines)
 
 
-def build_attribute_assignment_prompt(
+def build_attribute_assignment_prompt_single(
     *,
     survey_question: str,
     language: str,
@@ -1077,13 +1063,13 @@ def build_attribute_assignment_prompt(
     facet_name: str,
     facet_description: str,
     attributes: List['DiscoveredAttribute'],
-    ideas: List,
+    idea_text: str,
+    idea_valence: str,
 ) -> str:
-    """Build prompt for assigning ideas to discovered attributes (L4) within a facet."""
+    """Build prompt for assigning a single idea to an attribute (L4) within a facet."""
     attribute_codebook = _build_attribute_codebook_block(attributes)
-    ideas_block = _build_ideas_block_for_facet_assignment(ideas)
 
-    return f"""You are a qualitative coding assistant. Your task is to assign survey response ideas to specific attributes within a facet. Each idea represents a distinct concept extracted from a survey response, and you must determine which attribute best captures the specific quality being described.
+    return f"""You are a qualitative coding assistant. Assign the survey response idea below to the attribute that best captures the specific quality being described.
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -1095,55 +1081,21 @@ Language: {language}
 Facet: {facet_name} -- {facet_description}
 </facet_context>
 
-Here are the attributes available for assignment. Each idea must be assigned to exactly ONE of these attributes:
-
 <attributes>
 {attribute_codebook}
 </attributes>
 
-Here are the ideas you need to assign to attributes:
+<idea>
+{idea_valence} {idea_text}
+</idea>
 
-<ideas_to_assign>
-{ideas_block}
-</ideas_to_assign>
+Assign this idea to the single best-fitting attribute. Return the attribute ID (e.g. "A1", "A2") and your confidence (0.0-1.0).
 
-For each idea in the list, follow these steps:
+Provide your response as valid JSON following the response schema provided."""
 
-1. Read the idea text carefully, noting what specific quality is being expressed.
 
-2. Compare the idea against each available attribute. Ask yourself: "Which attribute best captures the specific quality being described in this idea?" Consider:
-   - The core meaning of the idea text
-   - The descriptions provided for each attribute
-   - The examples given for each attribute
-   - Semantic similarity between the idea and attribute descriptions
-
-3. Assign the idea to exactly ONE attribute. You must return only the attribute ID (the code in [A#] brackets, such as "A1" or "A2"). Do NOT return the attribute name or description.
-
-4. Rate your confidence in this assignment on a scale from 0.0 to 1.0, where:
-   - 1.0 = completely certain this is the correct attribute
-   - 0.7-0.9 = confident but some ambiguity exists
-   - 0.5-0.6 = moderate confidence, could reasonably fit multiple attributes
-   - Below 0.5 = low confidence, significant ambiguity
-
-Important requirements:
-- Assign each idea to exactly ONE attribute
-- Return only the attribute ID (e.g., "A1"), not the attribute name
-- Echo back the exact idea_id and idea text from the input without modification
-- All output must be in {language}
-- Attribute IDs start at A1 — A0 does not exist; never return 'A0'
-- Never return an empty ID or a placeholder such as 'A?' — always pick the closest matching attribute
-- When uncertain, choose the attribute whose description best matches the core meaning of the idea; do not leave the assignment blank
-
-Provide your response as valid JSON matching the schema provided."""
-
-class AttributeAssignment(BaseModel):
-    """Single idea-to-attribute assignment."""
-    idea_id: str = Field(
-        ..., description="The EXACT idea_id from the input. Do not modify."
-    )
-    idea: str = Field(
-        ..., description="Echo back the EXACT idea text from the input for this idea_id."
-    )
+class AttributeAssignmentResult(BaseModel):
+    """Single idea-to-attribute assignment result."""
     assigned_attribute_id: str = Field(
         ..., description=(
             "The attribute ID from the [A#] prefix (e.g. 'A1', 'A3'). "
@@ -1152,13 +1104,6 @@ class AttributeAssignment(BaseModel):
     )
     confidence: float = Field(
         ..., description="Confidence in the assignment (0.0 to 1.0)"
-    )
-
-
-class AttributeAssignmentBatch(BaseModel):
-    """Batch of attribute assignments for multiple ideas."""
-    assignments: List[AttributeAssignment] = Field(
-        ..., description="One assignment per idea in the input batch"
     )
 
 

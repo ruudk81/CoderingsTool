@@ -30,7 +30,6 @@ import asyncio
 import time
 import re
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Set
 
 import nest_asyncio
@@ -72,8 +71,8 @@ from .prompts_classifier import (
     build_attribute_chunk_consolidation_prompt,
     AttributeChunkConsolidatedResponse,
     # P6: Attribute Assignment
-    build_attribute_assignment_prompt,
-    AttributeAssignmentBatch,
+    build_attribute_assignment_prompt_single,
+    AttributeAssignmentResult,
     # P7: Cross-facet Attribute Consolidation
     build_attribute_consolidation_prompt,
     AttributeConsolidatedResponse,
@@ -87,14 +86,6 @@ nest_asyncio.apply()
 # =============================================================================
 # HELPERS
 # =============================================================================
-
-def _normalize_for_comparison(text: str) -> str:
-    """Strip template prefix and canonical_phrasing for similarity comparison."""
-    if ' → ' in text:
-        text = text.split(' → ', 1)[1]
-    text = re.sub(r'\bcanonical_phrasing:\s*', '', text)
-    return text.strip().lower()
-
 
 # =============================================================================
 # SHARED DATACLASSES
@@ -183,7 +174,6 @@ class TaxonomyClassifier:
         self._max_tokens_facet_discovery = config.qr_max_tokens_facet_discovery
         self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
         self._max_tokens_attribute_discovery = config.qr_max_tokens_attribute_discovery
-        self._facet_assignment_batch_size = config.facet_assignment_batch_size
 
         # Batch sizing — P1 (facet discovery)
         self._batch_size_min = config.batch_size_min
@@ -1043,7 +1033,6 @@ class TaxonomyClassifier:
         p6_tasks = []
         attribute_assignments: Dict[str, str] = {}
         p6_auto_assigned: Dict[str, int] = {}  # facet_key → idea count (for reporting)
-        batch_size = self._facet_assignment_batch_size
         facet_idea_sets: Dict[str, List] = {}
 
         for domain_name, facet_attrs in domain_facet_attributes.items():
@@ -1064,7 +1053,7 @@ class TaxonomyClassifier:
                     p6_auto_assigned[facet_key] = len(facet_ideas)
                     continue
 
-                # Multi-attribute: create SR tasks
+                # Multi-attribute: one task per idea
                 facet_obj = None
                 for f in partition_facets.get(domain_name, []):
                     if f.facet_name == facet_name:
@@ -1074,16 +1063,16 @@ class TaxonomyClassifier:
                     continue
 
                 attr_id_to_name = {f"A{i}": a.attribute_name for i, a in enumerate(attributes, 1)}
-                idea_batches = [facet_ideas[j:j + batch_size] for j in range(0, len(facet_ideas), batch_size)]
-
-                for batch_idx, batch_ideas in enumerate(idea_batches):
+                for idea in facet_ideas:
+                    idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
+                    idea_text = re.sub(r'\bcanonical_phrasing:\s*', '', idea_text).strip()
                     p6_tasks.append({
                         'domain_name': domain_name,
                         'facet_name': facet_name,
                         'facet_description': facet_obj.facet_description,
-                        'batch_idx': batch_idx,
-                        'total_batches': len(idea_batches),
-                        'batch_ideas': batch_ideas,
+                        'idea_id': idea.idea_id,
+                        'idea_text': idea_text,
+                        'idea_valence': valence_display(idea),
                         'attributes': attributes,
                         'attr_id_to_name': attr_id_to_name,
                         'facet_key': facet_key,
@@ -1115,7 +1104,7 @@ class TaxonomyClassifier:
                       f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
                       f"{s.get('recovered', 0)} retries){auto_msg}")
 
-            # Reassemble: merge batch-level dicts
+            # Reassemble: merge per-idea results
             for task, result in zip(p6_tasks, p6_results):
                 if result:
                     attribute_assignments.update(result)
@@ -1373,22 +1362,22 @@ class TaxonomyClassifier:
     # =========================================================================
 
     def _p6_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P6 attribute assignment."""
+        """Return prepare_fn closure for P6 attribute assignment (single idea)."""
         def prepare_fn(task: Dict) -> Dict:
-            prompt = build_attribute_assignment_prompt(
+            prompt = build_attribute_assignment_prompt_single(
                 survey_question=prompt_context.survey_question,
                 language=prompt_context.language,
                 dataset_context_section=prompt_context.dataset_context_section,
                 facet_name=task['facet_name'],
                 facet_description=task['facet_description'],
                 attributes=task['attributes'],
-                ideas=task['batch_ideas'],
+                idea_text=task['idea_text'],
+                idea_valence=task['idea_valence'],
             )
 
-            # Prompt capture (first batch per facet)
+            # Prompt capture (first idea per facet)
             gate_key = f"qr_attr_assign_{task['domain_name']}_{task['facet_name']}"
             if (self._prompt_printer is not None
-                    and task['batch_idx'] == 0
                     and gate_key not in self._captured_gates):
                 self._prompt_printer.capture_prompt(
                     step_name="qualitative_researcher",
@@ -1402,8 +1391,6 @@ class TaxonomyClassifier:
                         "language": prompt_context.language,
                         "partition_name": task['domain_name'],
                         "facet_name": task['facet_name'],
-                        "batch_number": task['batch_idx'] + 1,
-                        "total_batches": task['total_batches'],
                         "n_attributes": len(task['attributes']),
                         "dimension_name": prompt_context.dimension_name,
                     }
@@ -1412,7 +1399,7 @@ class TaxonomyClassifier:
 
             return {
                 'prompt': prompt,
-                'response_model': AttributeAssignmentBatch,
+                'response_model': AttributeAssignmentResult,
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_facet_assignment,
                 'max_retries': 3,
@@ -1421,53 +1408,12 @@ class TaxonomyClassifier:
         return prepare_fn
 
     def _p6_parse_fn(self):
-        """Return parse_fn closure for P6 attribute assignment."""
+        """Return parse_fn closure for P6 attribute assignment (single idea)."""
         def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
-            original_lookup = {idea.idea_id: idea for idea in task['batch_ideas']}
-            attr_id_to_name = task['attr_id_to_name']
-            assignments: Dict[str, str] = {}
-
-            for assignment in response.assignments:
-                # Validate returned idea_id exists in original batch
-                original_idea = original_lookup.get(assignment.idea_id)
-                if original_idea is None:
-                    print(f"    ID DRIFT: LLM returned unexpected idea_id "
-                          f"'{assignment.idea_id}' in attr batch {task['batch_idx']} — skipping")
-                    continue
-
-                # Content cross-validation
-                original_text = getattr(original_idea, 'idea', '') or getattr(original_idea, 'instance', '') or ''
-                returned_text = getattr(assignment, 'idea', '') or ''
-                if original_text and returned_text:
-                    similarity = SequenceMatcher(
-                        None,
-                        _normalize_for_comparison(returned_text),
-                        _normalize_for_comparison(original_text),
-                    ).ratio()
-                    if similarity < 0.7:
-                        print(f"    CONTENT DRIFT: idea '{original_idea.idea_id}' — "
-                              f"returned '{returned_text}' doesn't match "
-                              f"original '{original_text}' (similarity: {similarity:.2f}) — skipping")
-                        continue
-
-                # Map attribute_id to name — single-attribute fallback
-                attr_name = attr_id_to_name.get(assignment.assigned_attribute_id)
-                if attr_name is None:
-                    if len(attr_id_to_name) == 1:
-                        attr_name = next(iter(attr_id_to_name.values()))
-                    else:
-                        print(f"    WARNING: Invalid attribute_id '{assignment.assigned_attribute_id}' "
-                              f"for idea '{original_idea.idea_id}' — skipping")
-                        continue
-
-                # Detect duplicate assignments
-                if original_idea.idea_id in assignments:
-                    print(f"    WARNING: Duplicate attr assignment for '{original_idea.idea_id}' — "
-                          f"overwriting '{assignments[original_idea.idea_id]}' with '{attr_name}'")
-
-                assignments[original_idea.idea_id] = attr_name
-
-            return assignments
+            attr_name = task['attr_id_to_name'].get(response.assigned_attribute_id)
+            if attr_name is None:
+                return {}
+            return {task['idea_id']: attr_name}
         return parse_fn
 
     @staticmethod
