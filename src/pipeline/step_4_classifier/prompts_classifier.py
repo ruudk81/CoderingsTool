@@ -542,7 +542,7 @@ def _build_facet_codebook_block(
     return "\n\n".join(lines)
 
 
-def _valence_display(idea) -> str:
+def valence_display(idea) -> str:
     """Map idea.valence to a readable tag for prompts."""
     val = str(getattr(idea, 'valence', '') or '0').strip()
     if val in ('+', '1', '+1', 'positive'):
@@ -558,7 +558,7 @@ def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
     for idea in ideas:
         idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
         idea_text = re.sub(r'\bcanonical_phrasing:\s*', '', idea_text).strip()
-        valence = _valence_display(idea)
+        valence = valence_display(idea)
         lines.append(
             f"- idea_id: {idea.idea_id}\n"
             f"  idea: {idea_text}\n"
@@ -567,7 +567,7 @@ def _build_ideas_block_for_facet_assignment(ideas: List) -> str:
     return "\n".join(lines)
 
 
-def build_facet_assignment_prompt(
+def build_facet_assignment_prompt_single(
     *,
     survey_question: str,
     language: str,
@@ -575,15 +575,13 @@ def build_facet_assignment_prompt(
     domain_name: str,
     domain_definition: str,
     facets: List[DiscoveredFacet],
-    other_label: Optional[str],
-    ideas: List,
+    idea_text: str,
+    idea_valence: str,
 ) -> str:
-    """Build prompt for assigning ideas to discovered facets (L3)."""
-    facet_codebook = _build_facet_codebook_block(facets, other_label)
-    ideas_block = _build_ideas_block_for_facet_assignment(ideas)
-    other_label_display = other_label or "Other"
+    """Build prompt for assigning a single idea to a facet (L3)."""
+    facet_codebook = _build_facet_codebook_block(facets)
 
-    return f"""You are a qualitative coding assistant. Your task is to assign survey response ideas to specific facets within a domain. Each idea represents a distinct concept extracted from a survey response, and you must determine which facet best captures the type of quality being described.
+    return f"""You are a qualitative coding assistant. Assign the survey response idea below to the facet that best captures the type of quality being described.
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -595,52 +593,21 @@ Language: {language}
 Domain: {domain_name} -- {domain_definition}
 </domain_context>
 
-Here are the facets available for assignment. Each idea must be assigned to exactly ONE of these facets:
-
 <facets>
 {facet_codebook}
 </facets>
 
-Here are the ideas you need to assign to facets:
+<idea>
+{idea_valence} {idea_text}
+</idea>
 
-<ideas_to_assign>
-{ideas_block}
-</ideas_to_assign>
+Assign this idea to the single best-fitting facet. Return the facet ID (e.g. "F1", "F2") and your confidence (0.0-1.0).
 
-For each idea in the list, follow these steps:
+Provide your response as valid JSON following the response schema provided."""
 
-1. Read the idea text carefully, noting the valence tag ([+] positive, [-] negative, [0] neutral) and what type of quality is being expressed.
 
-2. Compare the idea against each available facet. Ask yourself: "Which facet best captures the type of quality being described in this idea?" Consider:
-   - The core meaning of the idea text
-   - The descriptions provided for each facet
-   - The examples given for each facet
-   - Semantic similarity between the idea and facet descriptions
-
-3. Assign the idea to exactly ONE facet. You must return only the facet ID (the code in [F#] brackets, such as "F1" or "F2"). Do NOT return the facet name or description. Assign "{other_label_display}" ONLY if no facet fits at all.
-
-4. Rate your confidence in this assignment on a scale from 0.0 to 1.0, where:
-   - 1.0 = completely certain this is the correct facet
-   - 0.7-0.9 = confident but some ambiguity exists
-   - 0.5-0.6 = moderate confidence, could reasonably fit multiple facets
-   - Below 0.5 = low confidence, significant ambiguity
-
-Important requirements:
-- Assign each idea to exactly ONE facet
-- Return only the facet ID (e.g., "F1"), not the facet name
-- Echo back the exact idea_id and idea text from the input without modification
-- All output must be in {language}
-
-Provide your response as valid JSON matching the schema provided."""
-
-class FacetAssignment(BaseModel):
-    """Single idea-to-facet assignment."""
-    idea_id: str = Field(
-        ..., description="The EXACT idea_id from the input. Do not modify."
-    )
-    idea: str = Field(
-        ..., description="Echo back the EXACT idea text from the input for this idea_id."
-    )
+class FacetAssignmentResult(BaseModel):
+    """Single idea-to-facet assignment result."""
     assigned_facet_id: str = Field(
         ..., description=(
             "The facet ID from the [F#] prefix (e.g. 'F1', 'F3'). "
@@ -649,13 +616,6 @@ class FacetAssignment(BaseModel):
     )
     confidence: float = Field(
         ..., description="Confidence in the assignment (0.0 to 1.0)"
-    )
-
-
-class FacetAssignmentBatch(BaseModel):
-    """Batch of facet assignments for multiple ideas."""
-    assignments: List[FacetAssignment] = Field(
-        ..., description="One assignment per idea in the input batch"
     )
 
 

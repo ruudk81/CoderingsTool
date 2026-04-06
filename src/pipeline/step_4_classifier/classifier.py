@@ -61,8 +61,9 @@ from .prompts_classifier import (
     build_facet_consolidation_prompt,
     FacetConsolidatedResponse,
     # P3: Facet Assignment
-    build_facet_assignment_prompt,
-    FacetAssignmentBatch,
+    build_facet_assignment_prompt_single,
+    FacetAssignmentResult,
+    valence_display,
     # P4: Attribute Discovery
     build_attribute_discovery_prompt,
     AttributeDiscoveryResult,
@@ -616,12 +617,11 @@ class TaxonomyClassifier:
 
         t_phase3 = time.time()
 
-        # Build flat task list: one task per (domain, batch)
+        # Build flat task list: one task per idea
         # Single-facet domains are auto-assigned without LLM call
         p3_tasks = []
         partition_assignments: Dict[str, Dict[str, str]] = {}
         p3_auto_assigned: Dict[str, int] = {}  # domain → idea count (for reporting)
-        batch_size = self._facet_assignment_batch_size
         for domain_name in sorted(partition_facets.keys()):
             if not partition_facets[domain_name] or not label_mappings[domain_name].ideas:
                 continue
@@ -636,15 +636,16 @@ class TaxonomyClassifier:
                 p3_auto_assigned[domain_name] = len(ideas)
                 continue
 
-            # Multi-facet: create SR tasks
+            # Multi-facet: one task per idea
             facet_id_to_name = {f"F{i}": f.facet_name for i, f in enumerate(facets, 1)}
-            idea_batches = [ideas[j:j + batch_size] for j in range(0, len(ideas), batch_size)]
-            for batch_idx, batch_ideas in enumerate(idea_batches):
+            for idea in ideas:
+                idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
+                idea_text = re.sub(r'\bcanonical_phrasing:\s*', '', idea_text).strip()
                 p3_tasks.append({
                     'domain_name': domain_name,
-                    'batch_idx': batch_idx,
-                    'total_batches': len(idea_batches),
-                    'batch_ideas': batch_ideas,
+                    'idea_id': idea.idea_id,
+                    'idea_text': idea_text,
+                    'idea_valence': valence_display(idea),
                     'facets': facets,
                     'facet_id_to_name': facet_id_to_name,
                     'part_context': partition_contexts[domain_name],
@@ -659,7 +660,7 @@ class TaxonomyClassifier:
                 verbose=verbose,
                 known_limits=self._fetched_limits,
                 show_setup=False,
-                quiet=True,
+                quiet=False,
             )
             p3_results = await p3_requester.process_all(
                 p3_tasks,
@@ -676,7 +677,7 @@ class TaxonomyClassifier:
                       f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
                       f"{s.get('recovered', 0)} retries){auto_msg}")
 
-            # Reassemble: merge batch-level dicts into per-domain assignments
+            # Reassemble: merge per-idea results into per-domain assignments
             for task, result in zip(p3_tasks, p3_results):
                 domain_name = task['domain_name']
                 if domain_name not in partition_assignments:
@@ -1307,23 +1308,22 @@ class TaxonomyClassifier:
     # =========================================================================
 
     def _p3_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P3 facet assignment."""
+        """Return prepare_fn closure for P3 facet assignment (single idea)."""
         def prepare_fn(task: Dict) -> Dict:
-            prompt = build_facet_assignment_prompt(
+            prompt = build_facet_assignment_prompt_single(
                 survey_question=prompt_context.survey_question,
                 language=prompt_context.language,
                 dataset_context_section=prompt_context.dataset_context_section,
                 domain_name=task['domain_name'],
                 domain_definition=task['part_context'].partition_definition,
                 facets=task['facets'],
-                other_label=None,
-                ideas=task['batch_ideas'],
+                idea_text=task['idea_text'],
+                idea_valence=task['idea_valence'],
             )
 
-            # Prompt capture (first batch per domain)
+            # Prompt capture (first idea per domain)
             gate_key = f"qr_facet_assign_{task['domain_name']}"
             if (self._prompt_printer is not None
-                    and task['batch_idx'] == 0
                     and gate_key not in self._captured_gates):
                 self._prompt_printer.capture_prompt(
                     step_name="qualitative_researcher",
@@ -1336,8 +1336,6 @@ class TaxonomyClassifier:
                         "max_tokens": self._max_tokens_facet_assignment,
                         "language": prompt_context.language,
                         "partition_name": task['domain_name'],
-                        "batch_number": task['batch_idx'] + 1,
-                        "total_batches": task['total_batches'],
                         "n_facets": len(task['facets']),
                         "dimension_name": prompt_context.dimension_name,
                     }
@@ -1346,7 +1344,7 @@ class TaxonomyClassifier:
 
             return {
                 'prompt': prompt,
-                'response_model': FacetAssignmentBatch,
+                'response_model': FacetAssignmentResult,
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_facet_assignment,
                 'max_retries': 3,
@@ -1355,46 +1353,12 @@ class TaxonomyClassifier:
         return prepare_fn
 
     def _p3_parse_fn(self):
-        """Return parse_fn closure for P3 facet assignment."""
+        """Return parse_fn closure for P3 facet assignment (single idea)."""
         def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
-            original_lookup = {idea.idea_id: idea for idea in task['batch_ideas']}
-            facet_id_to_name = task['facet_id_to_name']
-            assignments: Dict[str, str] = {}
-
-            for assignment in response.assignments:
-                # Validate returned idea_id exists in original batch
-                original_idea = original_lookup.get(assignment.idea_id)
-                if original_idea is None:
-                    print(f"    ID DRIFT: LLM returned unexpected idea_id "
-                          f"'{assignment.idea_id}' in batch {task['batch_idx']} — skipping")
-                    continue
-
-                # Content cross-validation
-                original_text = getattr(original_idea, 'idea', '') or getattr(original_idea, 'instance', '') or ''
-                returned_text = getattr(assignment, 'idea', '') or ''
-                if original_text and returned_text:
-                    similarity = SequenceMatcher(
-                        None,
-                        _normalize_for_comparison(returned_text),
-                        _normalize_for_comparison(original_text),
-                    ).ratio()
-                    if similarity < 0.7:
-                        print(f"    CONTENT DRIFT: idea '{original_idea.idea_id}' — "
-                              f"returned '{returned_text}' doesn't match "
-                              f"original '{original_text}' (similarity: {similarity:.2f}) — skipping")
-                        continue
-
-                # Map facet_id to name
-                facet_name = facet_id_to_name.get(assignment.assigned_facet_id)
-
-                # Detect duplicate assignments
-                if original_idea.idea_id in assignments:
-                    print(f"    WARNING: Duplicate assignment for '{original_idea.idea_id}' — "
-                          f"overwriting '{assignments[original_idea.idea_id]}' with '{facet_name}'")
-
-                assignments[original_idea.idea_id] = facet_name
-
-            return assignments
+            facet_name = task['facet_id_to_name'].get(response.assigned_facet_id)
+            if facet_name is None:
+                return {}
+            return {task['idea_id']: facet_name}
         return parse_fn
 
     @staticmethod

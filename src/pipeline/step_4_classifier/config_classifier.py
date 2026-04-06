@@ -100,9 +100,9 @@ class CategoriesConfig:
     # P1: Facet Discovery (per-domain, chunked)
     qr_max_tokens_facet_discovery: int = 4000
 
-    # P3: Facet Assignment (per-domain, batched)
+    # P3: Facet Assignment (single idea per call)
     qr_max_tokens_facet_assignment: int = 4000
-    facet_assignment_batch_size: int = 10  # ideas per assignment call (nano-friendly)
+    facet_assignment_batch_size: int = 10  # P6 only (P3 uses single-item)
 
     # P4: Attribute Discovery (per facet within domain)
     qr_max_tokens_attribute_discovery: int = 4000
