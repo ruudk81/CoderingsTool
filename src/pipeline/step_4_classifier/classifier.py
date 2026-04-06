@@ -207,6 +207,8 @@ class TaxonomyClassifier:
         self._prompt_printer = prompt_printer
         self._captured_gates: Set[str] = set()
 
+        self._debug_stop_after_phase = config.debug_stop_after_phase
+
         # Rate limits — fetched once in _initialize_async_resources()
         self._fetched_limits = None
 
@@ -575,6 +577,18 @@ class TaxonomyClassifier:
             self.cost_tracker.record_phase(
                 "step_4_taxonomy_classifier", "p1_p2_facet_discovery_and_consolidation",
                 _snap_p1p2, token_tracker.snapshot(), self._model_p1_p2)
+
+        if self._debug_stop_after_phase == 2:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P2 — skipping P3-P7")
+            return TaxonomyResult(
+                partition_n_labels=partition_n_labels,
+                partition_n_batches=partition_n_batches,
+                partition_facets=partition_facets,
+                partition_assignments={},
+                partition_attributes={},
+                attribute_assignments={},
+            )
 
         # =================================================================
         # PHASE 3 (P3): Per-domain Facet Assignment (SmoothRequester)
@@ -960,6 +974,18 @@ class TaxonomyClassifier:
             self.cost_tracker.record_phase(
                 "step_4_taxonomy_classifier", "p4_p5_attribute_discovery_and_consolidation",
                 _snap_p4p5, token_tracker.snapshot(), self._model_p4_p5)
+
+        if self._debug_stop_after_phase == 5:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P5 — skipping P6-P7")
+            return TaxonomyResult(
+                partition_n_labels=partition_n_labels,
+                partition_n_batches=partition_n_batches,
+                partition_facets=partition_facets,
+                partition_assignments=partition_assignments,
+                partition_attributes=partition_attributes,
+                attribute_assignments={},
+            )
 
         # =================================================================
         # PHASE 6 (P6): Per-facet Attribute Assignment (SmoothRequester)
