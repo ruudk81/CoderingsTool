@@ -48,10 +48,10 @@ from pipeline.step_4_classifier.models_classifier import (
 # All defaults defined in config_classifier.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="idea",                # show idea text only (includes template_prefix), not full ladder
-    label_prefix="",                   # "" or any static prefix string
-    include_valence=True,              # prepend [+]/[-]/[0] valence tag to labels
-    # debug_stop_after_phase=2,        # uncomment to stop after P2
+    label_source="idea",           # show idea text only (includes template_prefix), not full ladder
+    label_prefix="",               # "" or any static prefix string
+    include_valence=False,         # prepend [+]/[-]/[0] valence tag to labels
+    debug_stop_after_phase=2,      # None = full pipeline, 2 = stop after P2, 5 = stop after P5
 )
 
 

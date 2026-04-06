@@ -6,6 +6,7 @@ attribute consolidation → cross-facet dedup.
 """
 
 from dataclasses import dataclass, field
+from typing import Optional
 from config import get_step_model
 
 
@@ -138,7 +139,7 @@ class CategoriesConfig:
     # Set to a phase number (2, 5) to stop after that phase completes.
     # None = run full pipeline. Useful for testing specific phases without
     # waiting for the full pipeline.
-    debug_stop_after_phase: int = None
+    debug_stop_after_phase: Optional[int] = None
 
 
 # =============================================================================
