@@ -932,8 +932,9 @@ class SmoothRequester:
         # calibrated ceiling, we use the adaptive multiplier to cut outliers.
         _timeout = _stored_timeout or self._caller_default_timeout or TIMEOUT_FLOOR_SECONDS
         if self._stored_empirical_capacity is None:
-            # Unconstrained: no calibrated ceiling → generous timeout, no aggressive cuts
-            _multiplier = 180.0 / max(_timeout, 1.0)  # effectively 180s
+            # Unconstrained: no calibrated ceiling → fixed 180s timeout
+            _timeout = 180.0
+            _multiplier = 1.0
         else:
             # Calibrated: adaptive multiplier scales with task count
             _multiplier = min(6, round(math.log(max(num_tasks, 1)) + 1))
