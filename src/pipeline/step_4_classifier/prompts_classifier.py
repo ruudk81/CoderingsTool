@@ -50,7 +50,7 @@ def _build_exclusion_block(
     lines = [f"- {name} -- {definition}" for name, definition in items]
     content = "\n".join(lines)
     return (
-        f"\nYou must NOT include categories that belong to these excluded areas:\n"
+        f"\nYou must NOT include {'facets' if tag_name == 'excluded_domains' else 'attributes'} that belong to these excluded {'domains' if tag_name == 'excluded_domains' else 'facets'}:\n"
         f"<{tag_name}>\n{content}\n</{tag_name}>\n"
     )
 
