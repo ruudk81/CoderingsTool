@@ -351,7 +351,7 @@ class TaxonomyClassifier:
         # PHASE 1 (P1): Per-domain Facet Discovery (SmoothRequester)
         # + PHASE 2 (P2): Facet Consolidation (per-domain, sequential)
         # =================================================================
-        _snap_p1p2 = token_tracker.snapshot() if self.cost_tracker else None
+        _snap_p1 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
             print(f"\n  Phase 1: Facet Discovery + Consolidation")
@@ -425,6 +425,11 @@ class TaxonomyClassifier:
                   f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
                   f"{s.get('recovered', 0)} retries)")
 
+        if self.cost_tracker and _snap_p1 is not None:
+            self.cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", "p1_facet_discovery",
+                _snap_p1, token_tracker.snapshot(), self._model_p1)
+
         if self._debug_stop_after_phase == 1:
             if verbose:
                 print(f"\n  [DEBUG] Early stop after P1 — skipping P2-P7")
@@ -438,6 +443,7 @@ class TaxonomyClassifier:
             )
 
         # P2 consolidation per domain (SmoothRequester, concurrent)
+        _snap_p2 = token_tracker.snapshot() if self.cost_tracker else None
         t_consolidation = time.time()
         partition_facets: Dict[str, List[DiscoveredFacet]] = {}
         partition_n_labels: Dict[str, int] = {}
@@ -580,10 +586,10 @@ class TaxonomyClassifier:
                 facet_names = ", ".join(f.facet_name for f in facets) if facets else "(none)"
                 print(f"      {name}: {n_raw} raw → {len(facets)} facet(s): {facet_names}")
 
-        if self.cost_tracker and _snap_p1p2 is not None:
+        if self.cost_tracker and _snap_p2 is not None:
             self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p1_p2_facet_discovery_and_consolidation",
-                _snap_p1p2, token_tracker.snapshot(), self._model_p1)
+                "step_4_taxonomy_classifier", "p2_facet_consolidation",
+                _snap_p2, token_tracker.snapshot(), self._model_p2)
 
         if self._debug_stop_after_phase == 2:
             if verbose:
@@ -721,7 +727,7 @@ class TaxonomyClassifier:
         # PHASE 4 (P4): Per-facet Attribute Discovery (SmoothRequester)
         # + PHASE 5 (P5): Attribute Consolidation (per-facet, sequential)
         # =================================================================
-        _snap_p4p5 = token_tracker.snapshot() if self.cost_tracker else None
+        _snap_p4 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
             print(f"\n  Phase 3: Attribute Discovery + Consolidation")
@@ -826,6 +832,11 @@ class TaxonomyClassifier:
                   f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
                   f"{s.get('recovered', 0)} retries)")
 
+        if self.cost_tracker and _snap_p4 is not None:
+            self.cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", "p4_attribute_discovery",
+                _snap_p4, token_tracker.snapshot(), self._model_p4)
+
         if self._debug_stop_after_phase == 4:
             if verbose:
                 print(f"\n  [DEBUG] Early stop after P4 — skipping P5–P7")
@@ -839,6 +850,7 @@ class TaxonomyClassifier:
             )
 
         # P5 consolidation per facet (SmoothRequester, concurrent)
+        _snap_p5 = token_tracker.snapshot() if self.cost_tracker else None
         t_consolidation = time.time()
         domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
         partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
@@ -1001,10 +1013,10 @@ class TaxonomyClassifier:
                 attr_names = ", ".join(a.attribute_name for a in attrs) if attrs else "(none)"
                 print(f"      {domain_name}/{facet_name}: {n_raw} raw → {len(attrs)} attr(s): {attr_names}")
 
-        if self.cost_tracker and _snap_p4p5 is not None:
+        if self.cost_tracker and _snap_p5 is not None:
             self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p4_p5_attribute_discovery_and_consolidation",
-                _snap_p4p5, token_tracker.snapshot(), self._model_p4)
+                "step_4_taxonomy_classifier", "p5_attribute_consolidation",
+                _snap_p5, token_tracker.snapshot(), self._model_p5)
 
         if self._debug_stop_after_phase == 5:
             if verbose:
