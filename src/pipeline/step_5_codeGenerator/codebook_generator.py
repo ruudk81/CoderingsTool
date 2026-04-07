@@ -75,7 +75,10 @@ from .prompts_codeGenerator import (
     ConsolidatedCode,
     # Attribute types needed for P8 input formatting
     DiscoveredAttribute,
+    # Enriched attributes for P8 representative samples
+    EnrichedAttribute,
 )
+from utils.embedder import SharedEmbedder, format_idea_text, find_representative_samples
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
 nest_asyncio.apply()
@@ -147,6 +150,7 @@ class CodebookGenerator:
     """
 
     def __init__(self, config: CodebookConfig, prompt_printer=None, cost_tracker=None):
+        self._config = config
         self.cost_tracker = cost_tracker
         self._model_p8 = config.model_p8
         self._model_p9 = config.model_p9
@@ -190,6 +194,8 @@ class CodebookGenerator:
         dimension_description: str = "",
         verbose: bool = False,
         prompt_printer=None,
+        classified_ideas: Optional[List] = None,
+        template_prefix: str = "",
     ) -> CodebookResult:
         """Run codebook stages (P8-P9) from a TaxonomyResult.
 
@@ -203,6 +209,8 @@ class CodebookGenerator:
             dimension_description: Description of the dimension
             verbose: Print progress information
             prompt_printer: Optional prompt printer (overrides __init__ printer)
+            classified_ideas: Taxonomy-classified ideas from step 4 (for embedding + representative samples)
+            template_prefix: Template prefix from extraction metadata
         """
         if prompt_printer is not None:
             self._prompt_printer = prompt_printer
@@ -233,10 +241,18 @@ class CodebookGenerator:
 
         partition_contexts = self._build_all_partition_contexts(partition_set)
 
+        # Flatten classified ideas for embedding
+        ideas_flat = []
+        if classified_ideas:
+            for resp_model in classified_ideas:
+                if resp_model.response_ideas:
+                    ideas_flat.extend(resp_model.response_ideas)
+
         async def _run():
             await self._initialize_async_resources(verbose)
             return await self._process_codebook_async(
-                taxonomy_result, partition_contexts, prompt_context, verbose
+                taxonomy_result, partition_contexts, prompt_context, verbose,
+                ideas_flat=ideas_flat, template_prefix=template_prefix,
             )
 
         return asyncio.run(_run())
@@ -304,6 +320,8 @@ class CodebookGenerator:
         partition_contexts: Dict[str, DomainContext],
         prompt_context: PromptContext,
         verbose: bool,
+        ideas_flat: Optional[List] = None,
+        template_prefix: str = "",
     ) -> CodebookResult:
         """Codebook stages P8-P9: code generation + consolidation."""
         partition_facets = taxonomy.partition_facets
@@ -312,6 +330,36 @@ class CodebookGenerator:
         attribute_assignments = taxonomy.attribute_assignments
 
         start_time = time.time()
+
+        # =================================================================
+        # EMBEDDING + REPRESENTATIVE SAMPLES
+        # =================================================================
+        enriched_by_domain = {}
+        self._idea_embeddings = {}
+
+        if ideas_flat:
+            if verbose:
+                print(f"\n  Computing representative samples "
+                      f"({len(ideas_flat)} ideas, code_source={self._config.code_source})...")
+
+            representatives, self._idea_embeddings = await self._compute_representative_samples(
+                ideas_flat, attribute_assignments, verbose,
+            )
+
+            enriched_by_domain = self._enrich_attributes_with_samples(
+                domain_facet_attributes, representatives,
+            )
+
+            if verbose:
+                n_enriched = sum(
+                    len(attrs)
+                    for facet_map in enriched_by_domain.values()
+                    for attrs in facet_map.values()
+                )
+                print(f"  Enriched {n_enriched} attributes with representative samples")
+                print(f"  Cached {len(self._idea_embeddings)} idea embeddings")
+        elif verbose:
+            print(f"\n  No classified ideas available — skipping representative samples")
 
         # =================================================================
         # PHASE 8 (P8): Per-domain Code Generation
@@ -341,12 +389,15 @@ class CodebookGenerator:
                 if other_name != domain_name
             ]
 
+            domain_enriched = enriched_by_domain.get(domain_name)
+
             p8_tasks[domain_name] = self._run_code_generation_from_attributes(
                 {domain_name: domain_attrs}, prompt_context,
                 attribute_assignments=domain_attr_assigns,
                 domain_name=domain_name,
                 domain_definition=partition_contexts[domain_name].partition_definition,
                 excluded_domains=excluded,
+                enriched_attributes=domain_enriched,
             )
 
         p8_state = self._create_phase_ramp("P8", len(p8_tasks), model=self._model_p8,
@@ -438,6 +489,112 @@ class CodebookGenerator:
         )
 
     # =========================================================================
+    # EMBEDDING + REPRESENTATIVE SAMPLES
+    # =========================================================================
+
+    async def _compute_representative_samples(
+        self,
+        ideas_flat: List,
+        attribute_assignments: Dict[str, str],
+        verbose: bool,
+    ):
+        """Embed ideas and select representative samples per attribute per valence.
+
+        Returns:
+            representatives: {(attr_name, valence_group) -> [idea, ...]} max N per group
+            all_embeddings: {idea_id -> np.ndarray} for caching
+        """
+        config = self._config
+        n = config.max_representative_samples
+
+        # Build lookup and group ideas by (attribute, valence_group)
+        groups: Dict[tuple, List] = {}
+        for idea in ideas_flat:
+            attr_name = attribute_assignments.get(idea.idea_id)
+            if not attr_name:
+                continue
+            valence = getattr(idea, "valence", "") or ""
+            valence_group = "negative" if valence == "-" else "positive_neutral"
+            key = (attr_name, valence_group)
+            groups.setdefault(key, []).append(idea)
+
+        if verbose:
+            n_groups = len(groups)
+            n_ideas_in_groups = sum(len(g) for g in groups.values())
+            print(f"  Grouped {n_ideas_in_groups} ideas into {n_groups} (attribute, valence) groups")
+
+        # Embed all ideas at once (deduplicated by text)
+        embedder = SharedEmbedder(
+            model=config.embedding_model,
+            batch_size=config.embedding_batch_size,
+            max_concurrent=config.embedding_max_concurrent,
+        )
+
+        # Build texts and track mapping
+        all_ideas_ordered = []
+        all_texts = []
+        for group_ideas in groups.values():
+            for idea in group_ideas:
+                all_ideas_ordered.append(idea)
+                all_texts.append(format_idea_text(idea, config.code_source))
+
+        if not all_texts:
+            return {}, {}
+
+        all_embeddings_array = await embedder.embed_texts(all_texts)
+
+        # Build idea_id -> embedding dict for caching
+        all_embeddings = {}
+        for idea, emb in zip(all_ideas_ordered, all_embeddings_array):
+            all_embeddings[idea.idea_id] = emb
+
+        # Select representative samples per group
+        representatives = {}
+        offset = 0
+        for key, group_ideas in groups.items():
+            group_size = len(group_ideas)
+            group_embeddings = all_embeddings_array[offset:offset + group_size]
+            offset += group_size
+
+            indices = find_representative_samples(group_embeddings, n=n)
+            representatives[key] = [group_ideas[i] for i in indices]
+
+        if verbose:
+            total_reps = sum(len(v) for v in representatives.values())
+            print(f"  Selected {total_reps} representative samples across {len(representatives)} groups")
+
+        return representatives, all_embeddings
+
+    def _enrich_attributes_with_samples(
+        self,
+        domain_facet_attributes: Dict[str, Dict[str, list]],
+        representatives: Dict[tuple, List],
+    ) -> Dict[str, Dict[str, List[EnrichedAttribute]]]:
+        """Enrich attributes with representative samples per valence.
+
+        Returns: {domain -> {facet -> [EnrichedAttribute, ...]}}
+        """
+        enriched = {}
+        for domain_name, facet_attrs in domain_facet_attributes.items():
+            enriched[domain_name] = {}
+            for facet_name, attrs in facet_attrs.items():
+                enriched_list = []
+                for attr in attrs:
+                    pos_samples = representatives.get(
+                        (attr.attribute_name, "positive_neutral"), []
+                    )
+                    neg_samples = representatives.get(
+                        (attr.attribute_name, "negative"), []
+                    )
+                    enriched_list.append(EnrichedAttribute(
+                        attribute=attr,
+                        positive_neutral_samples=pos_samples,
+                        negative_samples=neg_samples,
+                    ))
+                enriched[domain_name][facet_name] = enriched_list
+        return enriched
+
+    # =========================================================================
     # PHASE 8 (P8): CODE GENERATION FROM ATTRIBUTES
     # =========================================================================
 
@@ -479,6 +636,7 @@ class CodebookGenerator:
         domain_name: str = "",
         domain_definition: str = "",
         excluded_domains: Optional[List[tuple]] = None,
+        enriched_attributes: Optional[Dict[str, List[EnrichedAttribute]]] = None,
     ) -> CodeGenerationFromAttributesResult:
         """Generate codes from an attribute inventory (per-domain)."""
         prompt = build_code_from_attributes_prompt(
@@ -493,6 +651,7 @@ class CodebookGenerator:
             domain_attributes=domain_facet_attributes,
             attribute_assignments=attribute_assignments,
             excluded_domains=excluded_domains,
+            enriched_attributes=enriched_attributes,
         )
 
         all_attr_names = [

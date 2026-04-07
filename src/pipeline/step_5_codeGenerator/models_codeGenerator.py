@@ -5,7 +5,7 @@ Coding results cache for the codebook checkpoint.
 Imports taxonomy types from step 4 (upstream dependency).
 """
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 
 from pipeline.step_4_classifier.models_classifier import (
@@ -22,3 +22,7 @@ class CodingResultsCache(BaseModel):
     label_source: str = ""
     total_categories: int = 0
     raw_codes: List[Dict] = Field(default_factory=list)  # ConsolidatedCode dicts
+    # Cached embeddings for downstream reuse (step 6)
+    idea_embeddings: Optional[Dict[str, List[float]]] = None  # idea_id -> embedding vector
+    embedding_code_source: str = ""  # Text format used for embedding
+    embedding_model: str = ""  # Embedding model name

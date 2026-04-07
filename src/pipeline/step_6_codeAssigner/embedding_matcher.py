@@ -4,15 +4,16 @@ Embedding-based code pre-filtering for P10 assignment.
 Embeds ideas and codes, computes cosine similarity, and returns
 top-N candidate code indices per idea. Used to scope the P10
 assignment prompt to a small subset of relevant codes.
+
+Delegates embedding to SharedEmbedder (src/utils/embedder.py).
 """
 
-import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
-from utils.llm import create_embedding_client
+from utils.embedder import SharedEmbedder
 
 
 class EmbeddingMatcher:
@@ -24,62 +25,15 @@ class EmbeddingMatcher:
         batch_size: int = 100,
         max_concurrent: int = 5,
     ):
-        self._model = model
-        self._batch_size = batch_size
-        self._max_concurrent = max_concurrent
-        self._client = None
-
-    async def _ensure_client(self):
-        if self._client is None:
-            self._client = create_embedding_client(async_mode=True)
-
-    async def _embed_batch(self, texts: List[str]) -> List[np.ndarray]:
-        """Embed a single batch via OpenAI API."""
-        response = await self._client.embeddings.create(
-            input=texts,
-            model=self._model,
+        self._embedder = SharedEmbedder(
+            model=model,
+            batch_size=batch_size,
+            max_concurrent=max_concurrent,
         )
-        return [np.array(item.embedding, dtype=np.float32) for item in response.data]
-
-    async def _with_retries(self, fn, retries: int = 3, base: float = 0.8):
-        """Retry with exponential backoff."""
-        for i in range(retries):
-            try:
-                return await fn()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                if i == retries - 1:
-                    raise
-                await asyncio.sleep(base * (2 ** i))
 
     async def embed_texts(self, texts: List[str]) -> np.ndarray:
         """Embed texts in batches. Returns [N × dim] numpy array."""
-        await self._ensure_client()
-
-        if not texts:
-            return np.array([], dtype=np.float32)
-
-        # Create batches
-        batches = []
-        for i in range(0, len(texts), self._batch_size):
-            batches.append(texts[i:i + self._batch_size])
-
-        # Process concurrently with semaphore
-        semaphore = asyncio.Semaphore(self._max_concurrent)
-
-        async def process_batch(batch: List[str]) -> List[np.ndarray]:
-            async with semaphore:
-                return await self._with_retries(lambda: self._embed_batch(batch))
-
-        batch_results = await asyncio.gather(*[process_batch(b) for b in batches])
-
-        # Flatten
-        all_embeddings = []
-        for result in batch_results:
-            all_embeddings.extend(result)
-
-        return np.array(all_embeddings, dtype=np.float32)
+        return await self._embedder.embed_texts(texts)
 
     def compute_top_n(
         self,

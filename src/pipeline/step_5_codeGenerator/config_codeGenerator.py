@@ -29,6 +29,13 @@ class CodebookConfig:
     consolidation_max_items_per_call: int = 150
     consolidation_max_rounds: int = 5
 
+    # Embedding-based representative samples
+    code_source: str = "instance_interpretation"  # Text format for embedding: idea, instance, instance_interpretation, full_abstraction_ladder
+    embedding_model: str = "text-embedding-3-large"
+    embedding_batch_size: int = 100
+    embedding_max_concurrent: int = 5
+    max_representative_samples: int = 3  # Max samples per attribute per valence group
+
     # 4-layer rate limiting (reuses ClassifierRampConfig)
     ramp_config: ClassifierRampConfig = field(default_factory=ClassifierRampConfig)
 

@@ -30,6 +30,7 @@ from pipeline.step_5_codeGenerator.models_codeGenerator import CodingResultsCach
 # Import step_4_classifier (upstream output types)
 from pipeline.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
+    TaxonomyClassifiedModel,
 )
 
 
@@ -108,33 +109,69 @@ def load_taxonomy_cache(
     )
 
 
+def load_classified_ideas(
+    filename: str = FILENAME,
+    variable: str = VARIABLE,
+    sample_size: Optional[int] = SAMPLE_SIZE,
+    variable_key: Optional[str] = None,
+) -> Optional[List[TaxonomyClassifiedModel]]:
+    """Load step 4's taxonomy-classified growing model (ideas with attribute/valence)."""
+    if variable_key is None:
+        variable_key = generate_enhanced_variable_key(
+            selected_variables=[variable],
+            is_merged=False,
+            sample_size=sample_size,
+        )
+
+    cache_manager = CacheManager()
+    data = cache_manager.load_from_cache(
+        filename=filename,
+        step="taxonomy_classified",
+        variable_key=variable_key,
+        model_cls=TaxonomyClassifiedModel,
+    )
+
+    if data:
+        n_ideas = sum(
+            len(r.response_ideas) for r in data if r.response_ideas
+        )
+        print(f"Loaded classified ideas: {len(data)} responses, {n_ideas} ideas")
+    else:
+        print("WARNING: taxonomy_classified growing model not found in cache")
+
+    return data
+
+
 # =============================================================================
 # RESULTS PRINTING
 # =============================================================================
 
 def print_codebook_results(codebook_result: CodebookResult):
     """Print codebook results (P8-P9): codes with definitions and source attributes."""
+    codes = codebook_result.codes
+    n_pos = sum(1 for c in codes if getattr(c, 'valence', '') == 'positive')
+    n_neg = sum(1 for c in codes if getattr(c, 'valence', '') == 'negative')
+    n_neu = len(codes) - n_pos - n_neg
+
     print(f"\n{'='*80}")
-    print(f"CODEBOOK "
-          f"({len(codebook_result.codes)} codes)")
+    print(f"CODEBOOK ({len(codes)} codes: {n_pos} positive, {n_neg} negative, {n_neu} neutral)")
     print(f"{'='*80}")
 
-    for j, code in enumerate(codebook_result.codes, 1):
+    for j, code in enumerate(codes, 1):
         indicators = ", ".join(code.typical_indicators[:5]) if code.typical_indicators else "(none)"
         sources = ", ".join(code.source_attributes[:5]) if code.source_attributes else "(none)"
         valence = getattr(code, 'valence', '') or ''
         diagnostic = getattr(code, 'diagnostic_test', '') or ''
-        print(f"\n    [{j}] {code.code_name}")
+        valence_tag = f" ({valence})" if valence else ""
+        print(f"\n    [{j}] {code.code_name}{valence_tag}")
         print(f"        Definition: {code.definition}")
         if diagnostic:
             print(f"        Diagnostic: {diagnostic}")
-        if valence:
-            print(f"        Valence: {valence}")
         print(f"        Indicators: {indicators}")
         print(f"        Source attributes: {sources}")
 
     print(f"\n{'='*80}")
-    print(f"Total codes: {len(codebook_result.codes)}")
+    print(f"Total codes: {len(codes)}")
     print(f"{'='*80}\n")
 
 
@@ -198,6 +235,9 @@ def cache_mece_results(
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
     variable_key: Optional[str] = None,
+    idea_embeddings: Optional[Dict] = None,
+    embedding_code_source: str = "",
+    embedding_model: str = "",
 ) -> None:
     """Cache codebook results for later use by code assignment (step 6)."""
     if variable_key is None:
@@ -206,6 +246,14 @@ def cache_mece_results(
             is_merged=False,
             sample_size=sample_size,
         )
+
+    # Serialize numpy arrays to lists for Pydantic compatibility
+    serialized_embeddings = None
+    if idea_embeddings:
+        serialized_embeddings = {
+            idea_id: emb.tolist() if hasattr(emb, 'tolist') else emb
+            for idea_id, emb in idea_embeddings.items()
+        }
 
     n_codes = len(codebook_result.codes)
     mece_cache = CodingResultsCache(
@@ -216,6 +264,9 @@ def cache_mece_results(
         },
         total_categories=n_codes,
         raw_codes=[c.model_dump() for c in codebook_result.codes],
+        idea_embeddings=serialized_embeddings,
+        embedding_code_source=embedding_code_source,
+        embedding_model=embedding_model,
     )
 
     cache_manager = CacheManager()
@@ -301,6 +352,7 @@ def run_codebook():
     print("=" * 70)
 
     extraction_metadata = load_extraction_metadata()
+    classified_ideas = load_classified_ideas()
     taxonomy_cache = load_taxonomy_cache()
     if taxonomy_cache is None:
         print("\nERROR: No cached taxonomy results found.")
@@ -363,6 +415,10 @@ def run_codebook():
         enabled=True,
         print_realtime=PRINT_PROMPTS,
     )
+    template_prefix = ""
+    if extraction_metadata and getattr(extraction_metadata, "template_prefix", None):
+        template_prefix = extraction_metadata.template_prefix
+
     generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker)
     codebook_result = generator.generate(
         taxonomy_result=taxonomy_result,
@@ -373,6 +429,8 @@ def run_codebook():
         dimension_name=dimension_name,
         dimension_description=dimension_description,
         verbose=CONFIG.verbose if hasattr(CONFIG, 'verbose') else True,
+        classified_ideas=classified_ideas,
+        template_prefix=template_prefix,
     )
 
     cost_tracker.finalize_step("step_5_code_generator")
@@ -381,7 +439,12 @@ def run_codebook():
     print_codebook_results(codebook_result)
 
     # Cache for downstream use by step 6 (code assigner)
-    cache_mece_results(partition_set, pydantic_results, codebook_result)
+    cache_mece_results(
+        partition_set, pydantic_results, codebook_result,
+        idea_embeddings=getattr(generator, '_idea_embeddings', None),
+        embedding_code_source=CONFIG.code_source,
+        embedding_model=CONFIG.embedding_model,
+    )
 
     # Save prompts
     save_prompts_to_json(prompt_printer)

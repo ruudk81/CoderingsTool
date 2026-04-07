@@ -14,7 +14,21 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
 
+from dataclasses import dataclass, field as dc_field
+
 from pipeline.step_4_classifier.prompts_classifier import DiscoveredAttribute
+
+
+# =============================================================================
+# ENRICHED ATTRIBUTE (attribute + representative samples)
+# =============================================================================
+
+@dataclass
+class EnrichedAttribute:
+    """Attribute enriched with representative samples per valence group."""
+    attribute: DiscoveredAttribute
+    positive_neutral_samples: list = dc_field(default_factory=list)  # max 3 ideas
+    negative_samples: list = dc_field(default_factory=list)          # max 3 ideas
 
 
 # =============================================================================
@@ -47,6 +61,7 @@ def build_code_from_attributes_prompt(
     domain_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
     attribute_assignments: Optional[Dict[str, str]] = None,
     excluded_domains: Optional[List[Tuple[str, str]]] = None,
+    enriched_attributes: Optional[Dict[str, List[EnrichedAttribute]]] = None,
 ) -> str:
     """Generate codebook codes from a structured attribute inventory.
 
@@ -80,6 +95,13 @@ def build_code_from_attributes_prompt(
         for attr_name in attribute_assignments.values():
             attr_counts[attr_name] = attr_counts.get(attr_name, 0) + 1
 
+    # Build enriched lookup: attr_name -> EnrichedAttribute
+    enriched_lookup: Dict[str, EnrichedAttribute] = {}
+    if enriched_attributes:
+        for facet_name, enriched_list in enriched_attributes.items():
+            for ea in enriched_list:
+                enriched_lookup[ea.attribute.attribute_name] = ea
+
     # Build inventory: Facet > Attribute (single domain)
     facet_attrs = next(iter(domain_attributes.values()), {})
     inventory_lines = []
@@ -91,8 +113,33 @@ def build_code_from_attributes_prompt(
             line = f"- {attr.attribute_name}{freq_tag}: {attr.attribute_description}"
             if examples:
                 line += f" (e.g., {examples})"
+
+            # Add representative samples if available
+            ea = enriched_lookup.get(attr.attribute_name)
+            if ea:
+                if ea.positive_neutral_samples:
+                    line += "\n  Positive/neutral examples:"
+                    for sample in ea.positive_neutral_samples:
+                        line += f'\n    - "{sample.idea}"'
+                if ea.negative_samples:
+                    line += "\n  Negative examples:"
+                    for sample in ea.negative_samples:
+                        line += f'\n    - "{sample.idea}"'
+
             inventory_lines.append(line)
     inventory_block = "\n".join(inventory_lines)
+
+    # Representative samples guidance (only when enriched)
+    samples_guidance = ""
+    if enriched_lookup:
+        samples_guidance = """
+# Representative Samples
+
+Each attribute includes up to 3 representative examples per valence direction (positive/neutral and negative). These are actual survey responses selected as the most typical instances of each attribute. Use them to:
+- Understand the concrete meaning behind each attribute
+- Identify natural boundaries between phenomena
+- Ground your code definitions in observable patterns rather than abstract labels
+"""
 
     return f"""You are tasked with deriving a PARSIMONIOUS codebook with MUTUALLY EXCLUSIVE and COLLECTIVELY EXHAUSTIVE codes that represent conceptually and semantically distinct PHENOMENA from a taxonomy inventory of attributes. These attributes were derived from written responses to a survey question.
 
@@ -135,7 +182,7 @@ Here is the inventory of attributes for you to analyze:
 <attribute_inventory>
 {inventory_block}
 </attribute_inventory>
-
+{samples_guidance}
 # Code Derivation Rules
 <code_derivation_rules>
 
