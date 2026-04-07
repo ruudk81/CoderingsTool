@@ -26,7 +26,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 EXPERIMENT_N = None     # Limit number of responses for a test run (None = use all)
-STOP_AFTER_PHASE = 3   # None = full pipeline, 1–7 = stop after that phase
+STOP_AFTER_PHASE = None   # None = full pipeline, 1–7 = stop after that phase
 
 from pipeline.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -250,7 +250,7 @@ def save_results_to_file(
 
     output_filename = (
         f"{base_name}_{variable}_{sample_str}"
-        f"_step4_taxonomy_{date_str}.txt"
+        f"_step4_{date_str}.txt"
     )
     output_path = output_dir / output_filename
 

@@ -27,8 +27,8 @@ from test_data import TEST_DATA
 from pipeline.step_4_classifier.prompts_classifier import (
     FacetDiscoveryResult,
     FacetConsolidatedResponse,
-    FacetAssignmentBatch,
-    AttributeAssignmentBatch,
+    FacetAssignmentResult,
+    AttributeAssignmentResult,
     AttributeDiscoveryResult,
     AttributeChunkConsolidatedResponse,
     AttributeConsolidatedResponse,
@@ -48,8 +48,8 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 STATIC_PROMPT_MODELS = {
     "facet_discovery": FacetDiscoveryResult,
     "facet_consolidation": FacetConsolidatedResponse,
-    "facet_assignment": FacetAssignmentBatch,
-    "attribute_assignment": AttributeAssignmentBatch,
+    "facet_assignment": FacetAssignmentResult,
+    "attribute_assignment": AttributeAssignmentResult,
     "attribute_discovery": AttributeDiscoveryResult,
     "attribute_chunk_consolidation": AttributeChunkConsolidatedResponse,
     "attribute_consolidation": AttributeConsolidatedResponse,

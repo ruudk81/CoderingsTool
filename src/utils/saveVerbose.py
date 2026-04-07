@@ -143,7 +143,8 @@ class VerboseCapture:
         # Timestamp
         timestamp = self._start_time.strftime("%Y%m%d_%H%M%S") if self._start_time else datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        return f"{base_name_clean}_{var_key_clean}_step{self.run_until_step}_{timestamp}.txt"
+        sample_str = str(self.sample_size) if self.sample_size else "full"
+        return f"{base_name_clean}_{var_key_clean}_{sample_str}_step{self.run_until_step}_{timestamp}.txt"
 
     def _build_header(self) -> str:
         """Build the file header with metadata."""
