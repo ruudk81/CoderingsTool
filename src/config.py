@@ -91,6 +91,7 @@ STEP_VERBOSITY = {
     "classifier_p2": "low",
     "classifier_p4": "low",
     "classifier_p5": "low",
+    "classifier_p7": "low",
     # All other steps: fall back to TEXT_VERBOSITY
 }
 

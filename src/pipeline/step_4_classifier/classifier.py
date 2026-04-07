@@ -1356,7 +1356,7 @@ class TaxonomyClassifier:
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_facet_assignment,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p3),
+                'extra_kwargs': get_reasoning_params(self._model_p3, phase="classifier_p3"),
             }
         return prepare_fn
 
@@ -1421,7 +1421,7 @@ class TaxonomyClassifier:
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_facet_assignment,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p6),
+                'extra_kwargs': get_reasoning_params(self._model_p6, phase="classifier_p6"),
             }
         return prepare_fn
 
@@ -1490,7 +1490,7 @@ class TaxonomyClassifier:
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_facet_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p1),
+                'extra_kwargs': get_reasoning_params(self._model_p1, phase="classifier_p1"),
             }
         return prepare_fn
 
@@ -1573,7 +1573,7 @@ class TaxonomyClassifier:
                 'temperature': 0.0,
                 'max_tokens': self._max_tokens_facet_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p2),
+                'extra_kwargs': get_reasoning_params(self._model_p2, phase="classifier_p2"),
             }
         return prepare_fn
 
@@ -1643,7 +1643,7 @@ class TaxonomyClassifier:
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_attribute_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p4),
+                'extra_kwargs': get_reasoning_params(self._model_p4, phase="classifier_p4"),
             }
         return prepare_fn
 
@@ -1730,7 +1730,7 @@ class TaxonomyClassifier:
                 'temperature': 0.0,
                 'max_tokens': self._max_tokens_attribute_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p5),
+                'extra_kwargs': get_reasoning_params(self._model_p5, phase="classifier_p5"),
             }
         return prepare_fn
 
@@ -1822,7 +1822,7 @@ class TaxonomyClassifier:
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_attribute_discovery,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p7),
+                'extra_kwargs': get_reasoning_params(self._model_p7, phase="classifier_p7"),
             }
         return prepare_fn
 
