@@ -10,7 +10,7 @@ Uses step 3's taxonomy terminology (Dimension > Domain > Facet > Attribute):
 
 Handles:
 - Extracting text from idea objects based on configurable label_source
-- Computing composite text from stored fields (ladder, idea_rungs)
+- Computing composite text from stored fields (ladder, idea_interpretation)
 - Applying optional label_prefix (static or dynamic from idea fields)
 - Formatting pre-cluster results as prompt-injectable hints
 """
@@ -19,7 +19,7 @@ from typing import List, Optional, Tuple
 
 
 # Composite format names that are computed from stored fields, not direct attributes.
-COMPOSITE_FORMATS = frozenset({"ladder", "idea_rungs"})
+COMPOSITE_FORMATS = frozenset({"ladder", "idea_interpretation"})
 
 
 def _compute_ladder(idea) -> str:
@@ -35,10 +35,10 @@ def _compute_ladder(idea) -> str:
     return " → ".join(parts) if parts else (getattr(idea, 'idea', '') or '').strip()
 
 
-def _compute_idea_rungs(idea) -> str:
-    """Compute 'idea → interpretation → abstraction'."""
+def _compute_idea_interpretation(idea) -> str:
+    """Compute 'idea → interpretation'."""
     parts = []
-    for field in ('idea', 'interpretation', 'abstraction'):
+    for field in ('idea', 'interpretation'):
         val = (getattr(idea, field, '') or '').strip()
         if val:
             parts.append(val)
@@ -69,8 +69,8 @@ def format_label(
         label_source: Stored field name or composite format key.
             Stored fields: "idea", "instance", "interpretation", "abstraction", "facet", "domain"
             Computed composites:
-                "ladder"     — instance → interpretation → abstraction
-                "idea_rungs" — idea → interpretation → abstraction
+                "ladder"              — instance → interpretation → abstraction
+                "idea_interpretation" — idea → interpretation
         label_prefix: Optional static prefix prepended to each label.
         include_valence: If True, prepend a valence tag ([+], [-], [0]).
 
@@ -79,8 +79,8 @@ def format_label(
     """
     if label_source == "ladder":
         raw = _compute_ladder(idea)
-    elif label_source == "idea_rungs":
-        raw = _compute_idea_rungs(idea)
+    elif label_source == "idea_interpretation":
+        raw = _compute_idea_interpretation(idea)
     else:
         raw = (getattr(idea, label_source, '') or '').strip()
 

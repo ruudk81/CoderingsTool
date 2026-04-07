@@ -542,17 +542,6 @@ def _build_facet_codebook_block(
     return "\n\n".join(lines)
 
 
-def valence_display(idea) -> str:
-    """Map idea.valence to a readable tag for prompts."""
-    val = str(getattr(idea, 'valence', '') or '0').strip()
-    if val in ('+', '1', '+1', 'positive'):
-        return '[+]'
-    if val in ('-', '-1', 'negative'):
-        return '[-]'
-    return '[0]'
-
-
-
 def build_facet_assignment_prompt_single(
     *,
     survey_question: str,
@@ -561,8 +550,7 @@ def build_facet_assignment_prompt_single(
     domain_name: str,
     domain_definition: str,
     facets: List[DiscoveredFacet],
-    idea_text: str,
-    idea_valence: str,
+    idea_label: str,
 ) -> str:
     """Build prompt for assigning a single idea to a facet (L3)."""
     facet_codebook = _build_facet_codebook_block(facets)
@@ -584,7 +572,7 @@ Domain: {domain_name} -- {domain_definition}
 </facets>
 
 <idea>
-{idea_valence} {idea_text}
+{idea_label}
 </idea>
 
 Assign this idea to the single best-fitting facet. Return the facet ID (e.g. "F1", "F2") and your confidence (0.0-1.0).
@@ -1063,8 +1051,7 @@ def build_attribute_assignment_prompt_single(
     facet_name: str,
     facet_description: str,
     attributes: List['DiscoveredAttribute'],
-    idea_text: str,
-    idea_valence: str,
+    idea_label: str,
 ) -> str:
     """Build prompt for assigning a single idea to an attribute (L4) within a facet."""
     attribute_codebook = _build_attribute_codebook_block(attributes)
@@ -1086,7 +1073,7 @@ Facet: {facet_name} -- {facet_description}
 </attributes>
 
 <idea>
-{idea_valence} {idea_text}
+{idea_label}
 </idea>
 
 Assign this idea to the single best-fitting attribute. Return the attribute ID (e.g. "A1", "A2") and your confidence (0.0-1.0).

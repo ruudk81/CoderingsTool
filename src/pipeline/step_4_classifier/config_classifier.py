@@ -69,8 +69,8 @@ class CategoriesConfig:
     #   "idea"            — full idea text incl. template prefix
     #
     # Computed composites (assembled from stored fields by format_label()):
-    #   "ladder"     — instance → interpretation → abstraction
-    #   "idea_rungs" — idea → interpretation → abstraction
+    #   "ladder"              — instance → interpretation → abstraction
+    #   "idea_interpretation" — idea → interpretation
     label_source: str = "idea"
 
     # Optional prefix prepended to each label string before processing.

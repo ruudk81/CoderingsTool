@@ -28,7 +28,6 @@ Usage:
 
 import asyncio
 import time
-import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
@@ -62,7 +61,6 @@ from .prompts_classifier import (
     # P3: Facet Assignment
     build_facet_assignment_prompt_single,
     FacetAssignmentResult,
-    valence_display,
     # P4: Attribute Discovery
     build_attribute_discovery_prompt,
     AttributeDiscoveryResult,
@@ -638,13 +636,11 @@ class TaxonomyClassifier:
             # Multi-facet: one task per idea
             facet_id_to_name = {f"F{i}": f.facet_name for i, f in enumerate(facets, 1)}
             for idea in ideas:
-                idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
-                idea_text = re.sub(r'\bcanonical_phrasing:\s*', '', idea_text).strip()
+                idea_label = format_label(idea, self._label_source, self._label_prefix, self._include_valence)
                 p3_tasks.append({
                     'domain_name': domain_name,
                     'idea_id': idea.idea_id,
-                    'idea_text': idea_text,
-                    'idea_valence': valence_display(idea),
+                    'idea_label': idea_label,
                     'facets': facets,
                     'facet_id_to_name': facet_id_to_name,
                     'part_context': partition_contexts[domain_name],
@@ -1079,15 +1075,13 @@ class TaxonomyClassifier:
 
                 attr_id_to_name = {f"A{i}": a.attribute_name for i, a in enumerate(attributes, 1)}
                 for idea in facet_ideas:
-                    idea_text = getattr(idea, 'idea', '') or getattr(idea, 'instance', '') or ''
-                    idea_text = re.sub(r'\bcanonical_phrasing:\s*', '', idea_text).strip()
+                    idea_label = format_label(idea, self._label_source, self._label_prefix, self._include_valence)
                     p6_tasks.append({
                         'domain_name': domain_name,
                         'facet_name': facet_name,
                         'facet_description': facet_obj.facet_description,
                         'idea_id': idea.idea_id,
-                        'idea_text': idea_text,
-                        'idea_valence': valence_display(idea),
+                        'idea_label': idea_label,
                         'attributes': attributes,
                         'attr_id_to_name': attr_id_to_name,
                         'facet_key': facet_key,
@@ -1332,8 +1326,7 @@ class TaxonomyClassifier:
                 domain_name=task['domain_name'],
                 domain_definition=task['part_context'].partition_definition,
                 facets=task['facets'],
-                idea_text=task['idea_text'],
-                idea_valence=task['idea_valence'],
+                idea_label=task['idea_label'],
             )
 
             # Prompt capture (first idea per domain)
@@ -1397,8 +1390,7 @@ class TaxonomyClassifier:
                 facet_name=task['facet_name'],
                 facet_description=task['facet_description'],
                 attributes=task['attributes'],
-                idea_text=task['idea_text'],
-                idea_valence=task['idea_valence'],
+                idea_label=task['idea_label'],
             )
 
             # Prompt capture (first idea per facet)
