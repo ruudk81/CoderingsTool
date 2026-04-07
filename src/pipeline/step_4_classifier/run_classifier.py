@@ -332,6 +332,11 @@ def cache_taxonomy_results(
             iid: aname for iid, aname in taxonomy_result.attribute_assignments.items()
             if iid in domain_facet_ids and aname is not None
         }
+        # Raw (pre-P7) attribute assignments for this domain
+        domain_raw_attr_assigns = {
+            iid: aname for iid, aname in taxonomy_result.raw_attribute_assignments.items()
+            if iid in domain_facet_ids and aname is not None
+        }
         pydantic_results[name] = DomainResultModel(
             partition_name=name,
             n_labels=taxonomy_result.partition_n_labels.get(name, 0),
@@ -343,6 +348,11 @@ def cache_taxonomy_results(
                 for facet_name, attrs in taxonomy_result.partition_attributes.get(name, {}).items()
             },
             attribute_assignments=domain_attr_assigns,
+            raw_attributes={
+                facet_name: [a.model_dump() for a in attrs]
+                for facet_name, attrs in taxonomy_result.raw_partition_attributes.get(name, {}).items()
+            },
+            raw_attribute_assignments=domain_raw_attr_assigns,
         )
 
     taxonomy_cache = TaxonomyResultsCache(

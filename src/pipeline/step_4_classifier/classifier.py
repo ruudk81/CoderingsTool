@@ -130,6 +130,9 @@ class TaxonomyResult:
     partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
     partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]]  # domain -> {facet -> [attrs]}
     attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
+    # Pre-P7 snapshots (before cross-facet consolidation remaps)
+    raw_partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = field(default_factory=dict)
+    raw_attribute_assignments: Dict[str, str] = field(default_factory=dict)
 
 # =============================================================================
 # MAIN PROCESSOR
@@ -1151,6 +1154,13 @@ class TaxonomyClassifier:
                 "step_4_taxonomy_classifier", "p6_attribute_assignment",
                 _snap_p6, token_tracker.snapshot(), self._model_p6)
 
+        # Snapshot P6 state before P7 consolidation remaps
+        raw_attribute_assignments = dict(attribute_assignments)
+        raw_partition_attributes = {
+            d: {f: list(attrs) for f, attrs in facets.items()}
+            for d, facets in partition_attributes.items()
+        }
+
         if self._debug_stop_after_phase == 6:
             if verbose:
                 print(f"\n  [DEBUG] Early stop after P6 — skipping P7")
@@ -1161,6 +1171,8 @@ class TaxonomyClassifier:
                 partition_assignments=partition_assignments,
                 partition_attributes=partition_attributes,
                 attribute_assignments=attribute_assignments,
+                raw_partition_attributes=raw_partition_attributes,
+                raw_attribute_assignments=raw_attribute_assignments,
             )
 
         # =================================================================
@@ -1302,6 +1314,8 @@ class TaxonomyClassifier:
             partition_assignments=partition_assignments,
             partition_attributes=partition_attributes,
             attribute_assignments=attribute_assignments,
+            raw_partition_attributes=raw_partition_attributes,
+            raw_attribute_assignments=raw_attribute_assignments,
         )
 
     # =========================================================================

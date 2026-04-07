@@ -64,6 +64,9 @@ class DomainResultModel(BaseModel):
     facet_assignments: Dict[str, str] = Field(default_factory=dict)
     attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     attribute_assignments: Dict[str, str] = Field(default_factory=dict)
+    # Pre-P7 snapshots (before cross-facet consolidation remaps)
+    raw_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
+    raw_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
 
 
 class TaxonomyResultsCache(BaseModel):
