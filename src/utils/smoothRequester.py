@@ -67,6 +67,8 @@ THROUGHPUT_ADJUSTMENT_MIN_SAMPLES = 10
 THROUGHPUT_ADJUSTMENT_THRESHOLD = 1.05
 ADJUSTMENT_INTERVAL = 20  # seconds between PID adjustments (System B)
 DEFAULT_OUTPUT_RATIO = 0.25
+DISPATCH_DELAY_P50_THRESHOLD = 5.0   # seconds — no delay below this P50
+DISPATCH_DELAY_SPREAD_FACTOR = 12    # proportionality: delay = (p50 - threshold) / factor
 
 
 # =============================================================================
@@ -926,6 +928,10 @@ class SmoothRequester:
         # Tiktoken offset learner
         self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
 
+        # Dispatch delay: stagger heavy tasks to avoid server batch congestion
+        p50_estimate = self._stored_p50 or (self._caller_default_timeout or DEFAULT_TIMEOUT_SECONDS) / 5
+        self._dispatch_delay = max(0.0, (p50_estimate - DISPATCH_DELAY_P50_THRESHOLD) / DISPATCH_DELAY_SPREAD_FACTOR)
+
         # Latency tracker — timeout strategy depends on whether we have a calibrated
         # concurrency ceiling. Without one, the phase is unconstrained (no rate or
         # throughput pressure) so we use 180s and let the server finish. With a
@@ -1265,6 +1271,18 @@ class SmoothRequester:
                     break
 
                 task_index, task_data = task
+
+                # Stagger dispatch for heavy tasks (P50 > threshold)
+                if self._dispatch_delay > 0:
+                    async with self._dispatch_lock:
+                        seq = self._dispatch_seq
+                        self._dispatch_seq += 1
+                    if seq > 0:
+                        target_time = self._dispatch_start + (seq * self._dispatch_delay)
+                        now = time.perf_counter()
+                        if target_time > now:
+                            await asyncio.sleep(target_time - now)
+
                 result = await self._execute_task(task_data, prepare_fn, parse_fn)
                 if result is None:
                     timed_out.append((task_index, task_data))
@@ -1553,6 +1571,10 @@ class SmoothRequester:
             print(f"- Target concurrency: {self.optimal_concurrency}")
             print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side)'}")
             print(f"- Rate limit concurrency: {self._rate_limit_concurrency} | Server concurrency: {self._server_concurrency}")
+            if self._dispatch_delay > 0:
+                spread = self._dispatch_delay * (num_tasks - 1)
+                p50_src = "stored" if self._stored_p50 else "proxy"
+                print(f"- Dispatch delay ({p50_src}): {self._dispatch_delay:.2f}s/task → {spread:.1f}s spread over {num_tasks} tasks")
             print(f"- Processing {num_tasks:,} tasks")
 
         # Queue + workers
@@ -1562,6 +1584,11 @@ class SmoothRequester:
 
         for i, task in enumerate(tasks):
             await queue.put((i, task))
+
+        # Dispatch delay tracking for staggered initial burst
+        self._dispatch_seq = 0
+        self._dispatch_lock = asyncio.Lock()
+        self._dispatch_start = time.perf_counter()
 
         num_workers = min(self.optimal_concurrency, num_tasks)
         workers = []
