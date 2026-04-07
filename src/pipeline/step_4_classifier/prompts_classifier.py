@@ -26,6 +26,19 @@ if TYPE_CHECKING:
 # §0 DIMENSION CONTEXT BLOCK — shared helper for all prompts
 # =============================================================================
 
+def _extract_definition(instruction: str) -> str:
+    """Extract the 'Definition: ...' sentence (up to first newline) from an instruction string."""
+    marker = "Definition: "
+    idx = instruction.find(marker)
+    if idx == -1:
+        return instruction.strip()
+    rest = instruction[idx + len(marker):]
+    newline = rest.find("\n")
+    if newline != -1:
+        rest = rest[:newline]
+    return rest.strip()
+
+
 def _extract_key_idea(instruction: str) -> str:
     """Extract the 'Key idea: ...' sentence from an instruction string."""
     marker = "Key idea: "
@@ -158,13 +171,15 @@ def build_facet_discovery_prompt(
     # Dimension-specific guidance
     if dimension_def:
         rules = dimension_def.prompt_rules
-        facet_guidance = rules.facet_instruction
+        #facet_guidance = rules.facet_instruction
+        facet_definition = _extract_definition(rules.facet_instruction)
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
     else:
         facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
+        facet_definition = "A facet identifies the analytical lens through which the domain is being examined."
         facet_key_idea = "the analytical lens applied to the subject"
         attribute_key_idea = "the specific observable property being described"
         noun_phrase = dimension_name
@@ -181,7 +196,7 @@ def build_facet_discovery_prompt(
     return f"""You are a qualitative research analyst specializing in survey response analysis. 
 Your task is to identify the fewest recurring facets that provide full coverage of a set of observations from a survey.
 
-A facet is an analytical lens that groups descriptive qualities based on shared meaning. Facets must be:
+{facet_definition} Facets must be:
 - Descriptive and data-grounded (not evaluative)
 - Internally coherent (one clear underlying concept)
 - Externally distinctive (ontologically distinct and semantically separable from other facets)
@@ -229,7 +244,7 @@ Group similar observations together based on shared descriptive meaning. Identif
 
 **Step 2: Identify candidate facets**
 Based on your clusters, identify candidate facets. For each candidate facet, assess:
-- The facet name (2-5 words in nl-NL)
+- The facet name (2-5 words in {language})
 - The underlying type of quality or attribute it captures
 - Which observations support it
 - Whether it is internally coherent (captures one clear concept)
@@ -259,8 +274,8 @@ Exclude facets that belong more naturally to other domains, including:
 
 **Step 6: Prepare final output**
 Retain only the dominant facets that pass all checks above. For each facet, prepare:
-- A short descriptive name in nl-NL (2-5 words)
-- A description in nl-NL of what the facet captures (1-2 sentences)
+- A short descriptive name in {language} (2-5 words)
+- A description in {language} of what the facet captures (1-2 sentences)
 - 3-5 representative observations from the input, using the exact observation text (not observation numbers)
 
 Your response must be structured as valid JSON with two fields:
@@ -268,7 +283,7 @@ Your response must be structured as valid JSON with two fields:
 2. "facets": an array of discovered facets, each with "facet_name", "facet_description", and "example_observations"
 
 Important requirements:
-- All output (facet names, descriptions, and example observations) must be in nl-NL
+- All output (facet names, descriptions, and example observations) must be in {language}
 - Facets must be descriptive, not evaluative
 - Facets must be grounded in repeated patterns across observations
 - Each facet must capture one type of quality, not multiple
@@ -333,12 +348,14 @@ def build_facet_consolidation_prompt(
     if dimension_def:
         rules = dimension_def.prompt_rules
         facet_guidance = rules.facet_instruction
+        facet_definition = _extract_definition(rules.facet_instruction)
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
     else:
         facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
+        facet_definition = "A facet identifies the analytical lens through which the domain is being examined."
         facet_key_idea = "the analytical lens applied to the subject"
         attribute_key_idea = "the specific observable property being described"
         noun_phrase = dimension_name
@@ -353,6 +370,17 @@ def build_facet_consolidation_prompt(
 
     return f"""You are a taxonomy consolidation specialist for surveys.
 Your task is to merge multiple chunk-level facet analyses into a single, minimal set of mutually exclusive facets within a given domain.
+
+# What is a facet?
+
+{facet_definition} Facets must be:
+- Descriptive and data-grounded (not evaluative)
+- Internally coherent (one clear underlying concept)
+- Externally distinctive (ontologically distinct and semantically separable from other facets)
+- Strictly within domain boundaries
+- Supported by multiple observations or repeated patterns
+
+# Survey Context
 
 Here is the survey context:
 
@@ -371,21 +399,18 @@ Use the survey context to:
 - Avoid introducing facets that are not grounded in the question intent
 </survey_context_usage>
 
-Here is the taxonomy context you are working within:
+# Taxonomy Context
+
+Here is the taxonomy context that defines your working framework:
 
 <taxonomy_context>
 This is the structure:
 <taxonomy_structure>
-- Dimension (L1): {dimension_name}: {noun_phrase}
+- Dimension (L1): {dimension_name} — {dimension_description}
 - Domain (L2): {domain_key_idea}
 - Facet (L3): {facet_key_idea}
 - Attribute (L4): {attribute_key_idea}
 </taxonomy_structure>
-
-You are working within this dimension:
-<taxonomy_dimension>
-{dimension_name} — {dimension_description}
-</taxonomy_dimension>
 
 And you are working within this domain:
 <taxonomy_domain>
@@ -394,93 +419,85 @@ And you are working within this domain:
 {excluded_block}
 </taxonomy_context>
 
-Here are the facets you need to consolidate:
+Pay careful attention to:
+- The domain you are working within (this defines the scope of valid facets)
+- Any excluded domain (facets belonging to these must be removed)
+- The dimension (for broader context)
+
+# Chunk-Level Analyses to Consolidate
+
+Here are the facets discovered from analyzing different chunks of the survey data:
+
 <chunk_level_analyses>
 {chunk_results}
 </chunk_level_analyses>
 
-# Understanding Facets
+# Consolidation Rules
 
-Conceptualization:
-{facet_guidance}
+Apply these rules strictly when consolidating facets:
 
-# Facet Consolidation Rules
+**Rule 1: MERGE OVERLAP (MANDATORY)**
+All facets that conceptually overlap or are variants of the same idea MUST be merged into a single facet.
 
-<strict_consolidation_rule>
-1. MERGE OVERLAP (MANDATORY)
-All facets that conceptually overlap or are variants of the same idea must be merged.
+**Rule 2: ORTHOGONALITY (MAIN RULE)**
+For each pair of facets, ask: "Can a single observation plausibly fall under both?"
+- If YES → merge them
+- If DOUBTFUL → merge them
+- Only if CLEARLY NO → keep them separate
 
-2. ORTHOGONALITY (MAIN RULE)
-For each pair of facets:
-"Can a single observation plausibly fall under both?"
+**Rule 3: NO HIERARCHY**
+Facets must not have a general-to-specific or principle-to-application relationship.
+If one facet is a more general or specific version of another → merge them
 
-- Yes → merge
-- Doubt → merge
-- Only if clearly no → keep separate
+**Rule 4: NO OBJECT SPLITTING**
+Do not create separate facets based solely on the object being discussed (e.g., "humans" vs. "animals").
+If the same underlying principle or concept applies → merge them
 
-3. NO HIERARCHY
-Facets must not be:
-- general vs. specific
-- principle vs. application
-If this occurs → merge
+**Rule 5: MINIMALITY (MANDATORY)**
+Use the smallest number of facets that provides full coverage of the observations.
+If a facet is not strictly necessary to capture a distinct concept → remove it or merge it
 
-4. NO OBJECT SPLITTING
-Do not split based on object (e.g., humans vs. animals)
-If the same underlying principle applies → merge
+**Disambiguation Test:**
+For any pair of facets, ask: "Can a clear rule assign every observation to exactly one facet?"
+- If NO → merge them
 
-5. MINIMALITY (MANDATORY)
-Use the smallest number of facets that provides full coverage.
-If a facet is not strictly necessary → remove it
-</strict_consolidation_rule>
-
-<disambiguation_test>
-For any pair of facets:
-"Can a clear rule assign every observation to exactly one facet?"
-- No → merge
-</disambiguation_test>
-
-<precedence_rule>
-When rules conflict, prioritize:
-1. Non-overlap (orthogonality)
+**Precedence When Rules Conflict:**
+1. Non-overlap (orthogonality) is most important
 2. Minimality (merge unless clearly distinct)
 3. Clarity for annotation
 
-When in doubt → merge facets
-</precedence_rule>
+**When in doubt → merge facets**
 
-# Required Process
+# Step-by-Step Analysis Process
 
-Before writing your final output, think through your analysis in the scratchpad field:
+Before providing your final output, work through your analysis systematically in a scratchpad. Follow these steps:
 
-**Step 1 — Scan chunk-level facets**
-Review all facets from all chunks. Note recurring themes and obvious duplicates.
+**Step 1 -- Scan chunk-level facets**
+Review all facets from all chunks. Note recurring themes, similar concepts, and obvious duplicates.
 
-**Step 2 — Group overlapping facets**
-Group facets that describe the same or overlapping concepts across chunks.
+**Step 2 -- Group overlapping facets**
+Identify and group facets that describe the same or overlapping concepts across different chunks.
 
-**Step 3 — Apply orthogonality test**
-For each pair of candidate consolidated facets, ask: "Can a single observation plausibly fall under both?" If yes or doubtful → merge.
+**Step 3 -- Apply orthogonality test**
+For each pair of candidate consolidated facets, ask: "Can a single observation plausibly fall under both?" If yes or doubtful → merge them.
 
-**Step 4 — Apply disambiguation test**
-For each pair: "Can a clear rule assign every observation to exactly one facet?" If no → merge.
+**Step 4 -- Apply disambiguation test**
+For each pair of remaining facets, ask: "Can a clear rule assign every observation to exactly one facet?" If no → merge them.
 
-**Step 5 — Verify domain boundaries**
+**Step 5 -- Verify domain boundaries**
 Ensure each retained facet belongs to the included domain and not to any excluded domain:
 {excluded_block_light}
 
-**Step 6 — Prepare final output**
-Return only the minimal set of consolidated facets that pass all checks.
+**Step 6 -- Prepare final output**
+Confirm you have the minimal set of consolidated facets that pass all checks. Prepare the name, description, and representative observations for each.
+
+# Output Requirements
 
 For each consolidated facet, provide:
 - A short descriptive name (2-5 words)
 - A description of what the facet captures (1-2 sentences)
-- 3-5 representative observations selected from across the merged chunks (exact text)
-
-# Output Requirements
-
-Provide output as valid JSON following the response schema provided.
-
-# Language Requirement
+- The parent domain name: {domain_name}
+- 2-3 representative observations selected from across the merged chunks (exact text)
 
 All facet names and descriptions must be in {language}.
 
@@ -493,7 +510,7 @@ All facet names and descriptions must be in {language}.
 - Facets must remain strictly within the included domain
 - All output must be in {language}
 
-Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
+Begin by writing your step-by-step analysis in the scratchpad field, then provide your final consolidated facets in valid JSON format"""
 
 
 class FacetConsolidatedResponse(BaseModel):
@@ -621,7 +638,8 @@ def build_attribute_discovery_prompt(
     # Dimension-specific guidance
     if dimension_def:
         rules = dimension_def.prompt_rules
-        attribute_guidance = rules.attribute_instruction
+        #attribute_guidance = rules.attribute_instruction
+        attribute_definition = _extract_definition(rules.attribute_instruction)
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
@@ -631,6 +649,7 @@ def build_attribute_discovery_prompt(
             "An attribute identifies the specific observable property or feature being described. "
             "It is a named property — not a verbatim span from the response."
         )
+        attribute_definition = attribute_guidance
         attribute_key_idea = "the specific observable property being described"
         facet_key_idea = "the analytical lens applied to the subject"
         noun_phrase = dimension_name
@@ -644,48 +663,10 @@ def build_attribute_discovery_prompt(
         excluded_facets or []
     )
 
-    return f"""You are a qualitative research analyst specializing in survey response analysis. Your task is to identify the fewest recurring attributes that provide full coverage of a set of observations within a specific facet.
+    return f"""You are a qualitative research analyst specializing in survey response analysis. 
+Your task is to identify the fewest recurring attributes that provide full coverage of a set of observations within a specific facet.
 
-Here is the survey context:
-
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
-
-Here is the taxonomy context you are working within:
-
-<taxonomy_context>
-This is the structure:
-<taxonomy_structure>
-- Dimension (L1): {noun_phrase}
-- Domain (L2): {domain_key_idea}
-- Facet (L3): {facet_key_idea}
-- Attribute (L4): {attribute_key_idea}
-</taxonomy_structure>
-
-You are working within this dimension:
-<taxonomy_dimension>
-{dimension_name} — {dimension_description}
-</taxonomy_dimension>
-
-And you are working within this domain and facet:
-<taxonomy_domain>
-{domain_name} — {domain_definition}
-</taxonomy_domain>
-<taxonomy_facet>
-{facet_name} — {facet_description}
-</taxonomy_facet>
-{excluded_block}
-
-Here is guidance on what attributes are and how they should be defined:
-
-<attribute_definition_guidance>
-Target abstraction level: ATTRIBUTE (L4)
-{attribute_guidance}
-
-Each attribute must:
+{attribute_definition} An attribute must:
 - Be a descriptive, data-grounded category based on shared meaning across multiple observations
 - Be non-evaluative (no judgment, sentiment, or valence)
 - Stay strictly within the facet boundaries
@@ -695,7 +676,36 @@ Each attribute must:
   * Semantically separable (no ambiguity in coding; no "could go either way")
 - Be non-redundant (adds unique conceptual value; no duplicate concepts)
 - Be grounded in the data (supported by multiple observations or repeated patterns)
-</attribute_definition_guidance>
+
+Here is the survey context you are working with:
+
+<survey_context>
+Survey question: "{survey_question}"
+Language: {language}
+{dataset_context_section}
+</survey_context>
+
+Here is the taxonomy context that defines your working framework:
+
+<taxonomy_context>
+This is the structure:
+<taxonomy_structure>
+- Dimension (L1): {dimension_name} — {dimension_description}
+- Domain (L2): {domain_key_idea}
+- Facet (L3): {facet_key_idea}
+- Attribute (L4): {attribute_key_idea}
+</taxonomy_structure>
+
+You are working within this domain:
+<taxonomy_domain>
+{domain_name} — {domain_definition}
+</taxonomy_domain>
+
+And you are working within this facet:
+<taxonomy_facet>
+{facet_name} — {facet_description}
+</taxonomy_facet>
+{excluded_block}
 </taxonomy_context>
 
 Here are the observations you need to analyze:
@@ -775,7 +785,7 @@ All output (attribute names, descriptions, and example observations) must be wri
 - All output must be in {language}
 - Use exact observation text in the examples, not observation numbers
 
-Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
+Use your scratchpad field for Steps 1-6 to show your analytical thinking. Then provide your final output as valid JSON."""
 
 
 class DiscoveredAttribute(BaseModel):
@@ -836,6 +846,7 @@ def build_attribute_chunk_consolidation_prompt(
     if dimension_def:
         rules = dimension_def.prompt_rules
         attribute_guidance = rules.attribute_instruction
+        attribute_definition = _extract_definition(rules.attribute_instruction)
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
@@ -845,6 +856,7 @@ def build_attribute_chunk_consolidation_prompt(
             "An attribute identifies the specific observable property or feature being described. "
             "It is a named property -- not a verbatim span from the response."
         )
+        attribute_definition = attribute_guidance
         attribute_key_idea = "the specific observable property being described"
         facet_key_idea = "the analytical lens applied to the subject"
         noun_phrase = dimension_name
@@ -859,6 +871,17 @@ def build_attribute_chunk_consolidation_prompt(
 
     return f"""You are a taxonomy consolidation specialist for surveys.
 Your task is to merge multiple chunk-level attribute analyses into a single, minimal set of mutually exclusive attributes within a given facet.
+
+# What is an Attribute?
+
+{attribute_definition} An attribute must satisfy these requirements:
+- **Stay strictly within the facet boundaries**: It must belong to the included facet and not overlap with excluded facets
+- **Be internally coherent**: One clear underlying concept, not a mixture of different ideas
+- **Be externally distinctive**: 
+  * Ontologically distinct (no overlap, no subset/superset relationships, no reframing of the same phenomenon)
+  * Semantically separable (no ambiguity in coding; an observation should not "could go either way" between two attributes)
+
+# Survey Context
 
 Here is the survey context:
 
@@ -877,108 +900,106 @@ Use the survey context to:
 - Avoid introducing attributes that are not grounded in the question intent
 </survey_context_usage>
 
-Here is the taxonomy context you are working within:
+# Taxonomy Context
+
+Here is the taxonomy context that defines your working framework:
 
 <taxonomy_context>
 This is the structure:
 <taxonomy_structure>
-- Dimension (L1): {dimension_name}: {noun_phrase}
+- Dimension (L1): {dimension_name} -- {dimension_description}
 - Domain (L2): {domain_key_idea}
 - Facet (L3): {facet_key_idea}
 - Attribute (L4): {attribute_key_idea}
 </taxonomy_structure>
 
-You are working within this dimension:
-<taxonomy_dimension>
-{dimension_name} -- {dimension_description}
-</taxonomy_dimension>
+You are working within this domain:
 
-And you are working within this domain and facet:
 <taxonomy_domain>
 {domain_name}
 </taxonomy_domain>
+
+You are working within this facet:
+
 <taxonomy_facet>
 {facet_name} -- {facet_description}
 </taxonomy_facet>
 {excluded_block}
 </taxonomy_context>
 
-Here are the attributes you need to consolidate:
+Pay careful attention to:
+- The facet you are working within (this defines the scope of valid attributes)
+- Any excluded facets (attributes belonging to these must be removed)
+- The domain and dimension (for broader context)
+
+# Chunk-Level Analyses to Consolidate
+
+Here are the attributes discovered from analyzing different chunks of the survey data:
+
 <chunk_level_analyses>
 {chunk_results}
 </chunk_level_analyses>
 
-# Understanding Attributes
+# Consolidation Rules
 
-Conceptualization:
-{attribute_guidance}
+Apply these rules strictly when consolidating attributes:
 
-# Attribute Consolidation Rules
+**Rule 1: MERGE OVERLAP (MANDATORY)**
+All attributes that conceptually overlap or are variants of the same idea MUST be merged into a single attribute.
 
-<strict_consolidation_rule>
-1. MERGE OVERLAP (MANDATORY)
-All attributes that conceptually overlap or are variants of the same idea must be merged.
+**Rule 2: ORTHOGONALITY (MAIN RULE)**
+For each pair of attributes, ask: "Can a single observation plausibly fall under both?"
+- If YES → merge them
+- If DOUBTFUL → merge them
+- Only if CLEARLY NO → keep them separate
 
-2. ORTHOGONALITY (MAIN RULE)
-For each pair of attributes:
-"Can a single observation plausibly fall under both?"
+**Rule 3: NO HIERARCHY**
+Attributes must not have a general-to-specific or principle-to-application relationship.
+If one attribute is a more general or specific version of another → merge them
 
-- Yes -> merge
-- Doubt -> merge
-- Only if clearly no -> keep separate
+**Rule 4: NO OBJECT SPLITTING**
+Do not create separate attributes based solely on the object being discussed (e.g., "humans" vs. "animals").
+If the same underlying principle or concept applies → merge them
 
-3. NO HIERARCHY
-Attributes must not be:
-- general vs. specific
-- principle vs. application
-If this occurs -> merge
+**Rule 5: MINIMALITY (MANDATORY)**
+Use the smallest number of attributes that provides full coverage of the observations.
+If an attribute is not strictly necessary to capture a distinct concept → remove it or merge it
 
-4. NO OBJECT SPLITTING
-Do not split based on object (e.g., humans vs. animals)
-If the same underlying principle applies -> merge
+**Disambiguation Test:**
+For any pair of attributes, ask: "Can a clear rule assign every observation to exactly one attribute?"
+- If NO → merge them
 
-5. MINIMALITY (MANDATORY)
-Use the smallest number of attributes that provides full coverage.
-If an attribute is not strictly necessary -> remove it
-</strict_consolidation_rule>
-
-<disambiguation_test>
-For any pair of attributes:
-"Can a clear rule assign every observation to exactly one attribute?"
-- No -> merge
-</disambiguation_test>
-
-<precedence_rule>
-When rules conflict, prioritize:
-1. Non-overlap (orthogonality)
+**Precedence When Rules Conflict:**
+1. Non-overlap (orthogonality) is most important
 2. Minimality (merge unless clearly distinct)
 3. Clarity for annotation
 
-When in doubt -> merge attributes
-</precedence_rule>
+**When in doubt → merge attributes**
 
-# Required Process
+# Step-by-Step Analysis Process
 
-Before writing your final output, think through your analysis in the scratchpad field:
+Before providing your final output, work through your analysis systematically in a scratchpad. Follow these steps:
 
 **Step 1 -- Scan chunk-level attributes**
-Review all attributes from all chunks. Note recurring themes and obvious duplicates.
+Review all attributes from all chunks. Note recurring themes, similar concepts, and obvious duplicates.
 
 **Step 2 -- Group overlapping attributes**
-Group attributes that describe the same or overlapping concepts across chunks.
+Identify and group attributes that describe the same or overlapping concepts across different chunks.
 
 **Step 3 -- Apply orthogonality test**
-For each pair of candidate consolidated attributes, ask: "Can a single observation plausibly fall under both?" If yes or doubtful -> merge.
+For each pair of candidate consolidated attributes, ask: "Can a single observation plausibly fall under both?" If yes or doubtful → merge them.
 
 **Step 4 -- Apply disambiguation test**
-For each pair: "Can a clear rule assign every observation to exactly one attribute?" If no -> merge.
+For each pair of remaining attributes, ask: "Can a clear rule assign every observation to exactly one attribute?" If no → merge them.
 
 **Step 5 -- Verify facet boundaries**
 Ensure each retained attribute belongs to the included facet and not to any excluded facet:
 {excluded_block_light}
 
 **Step 6 -- Prepare final output**
-Return only the minimal set of consolidated attributes that pass all checks.
+Confirm you have the minimal set of consolidated attributes that pass all checks. Prepare the name, description, and representative observations for each.
+
+# Output Requirements
 
 For each consolidated attribute, provide:
 - A short descriptive name (2-5 words)
@@ -986,24 +1007,23 @@ For each consolidated attribute, provide:
 - The parent facet name: {facet_name}
 - 2-3 representative observations selected from across the merged chunks (exact text)
 
-# Output Requirements
-
 Provide output as valid JSON following the response schema provided.
 
 # Language Requirement
 
 All attribute names and descriptions must be in {language}.
 
-# Final Notes
+# Final Reminders
 
-- Attributes must be descriptive, not evaluative
-- Attributes must be grounded in repeated patterns across observations
-- Attributes must be internally coherent (one clear concept each)
-- Attributes must be externally distinctive (no overlap, no subset/superset)
-- Attributes must remain strictly within the included facet
+- Attributes must be **descriptive, not evaluative**
+- Attributes must be **internally coherent** (one clear concept each)
+- Attributes must be **externally distinctive** (no overlap, no subset/superset relationships)
+- Attributes must remain **strictly within the included facet**
+- Prioritize **minimality**: fewer attributes are better if they provide full coverage
+- **When in doubt, merge** rather than keep separate
 - All output must be in {language}
 
-Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
+Begin by writing your step-by-step analysis in the scratchpad field, then provide your final consolidated attributes in valid JSON format."""
 
 
 class AttributeChunkConsolidatedResponse(BaseModel):
@@ -1124,7 +1144,6 @@ def build_attribute_consolidation_prompt(
         attribute_guidance = rules.attribute_instruction
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
-        noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
     else:
         attribute_guidance = (
@@ -1133,7 +1152,6 @@ def build_attribute_consolidation_prompt(
         )
         attribute_key_idea = "the specific observable property being described"
         facet_key_idea = "the analytical lens applied to the subject"
-        noun_phrase = dimension_name
         domain_key_idea = "the subject the statement refers to"
 
     excluded_block = _build_exclusion_block(
@@ -1168,18 +1186,13 @@ Here is the taxonomy context you are working within:
 <taxonomy_context>
 This is the structure:
 <taxonomy_structure>
-- Dimension (L1): {dimension_name}: {noun_phrase}
+- Dimension (L1): {dimension_name} — {dimension_description}
 - Domain (L2): {domain_key_idea}
 - Facet (L3): {facet_key_idea}
 - Attribute (L4): {attribute_key_idea}
 </taxonomy_structure>
 
-You are working within this dimension:
-<taxonomy_dimension>
-{dimension_name} -- {dimension_description}
-</taxonomy_dimension>
-
-And you are working within this domain:
+You are working within this domain:
 <taxonomy_domain>
 {domain_name} -- {domain_definition}
 </taxonomy_domain>
@@ -1200,10 +1213,10 @@ Conceptualization:
 
 <strict_consolidation_rule>
 1. PREVALENCE WEIGHTING
-Codes MUST be primarily driven by the **number of ideas linked to attributes**.
+Attributes MUST be primarily driven by the **number of ideas linked to attributes**.
 
 - Attributes with HIGH idea counts MUST form the **core structure of the codebook**.
-- Attributes with LOW idea counts MUST NOT become standalone codes unless absolutely necessary.
+- Attributes with LOW idea counts MUST NOT become standalone attributes unless absolutely necessary.
 - LOW-prevalence attributes SHOULD be:
   - merged into the closest HIGH-prevalence phenomenon, OR
   - grouped into a broader combined phenomenon.
@@ -1219,7 +1232,7 @@ When in doubt:
 - MERGE rather than split
 - Especially when an attribute has relatively few ideas
 
-Attributes with low prevalence (e.g., <10-15 ideas) should almost never result in standalone codes.
+Attributes with low prevalence (e.g., <10-15 ideas) should almost never result in standalone attributes.
 
 3. MERGE OVERLAP (MANDATORY)
 All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different facets.
@@ -1287,7 +1300,7 @@ For each pair of candidate attributes, apply the orthogonality test and disambig
 Ensure each retained attribute belongs to this domain and not to any excluded domain:
 {excluded_block_light}
 
-**Step 5 -- Justify Low-Prevalence Codes (MANDATORY)**
+**Step 5 -- Justify Low-Prevalence Attributes (MANDATORY)**
 - If any attribute is primarily based on low idea counts:
 - Explicitly justify why it was NOT merged into a higher-prevalence phenomenon.
 
@@ -1318,7 +1331,7 @@ All attribute names and descriptions must be in {language}.
 - Each attribute must be assigned to exactly ONE parent facet (best fit)
 - All output must be in {language}
 
-Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
+Use your scratchpad field for Steps 1-6 to show your analytical thinking. Then provide your final output as valid JSON."""
 
 
 class ConsolidatedAttribute(BaseModel):
