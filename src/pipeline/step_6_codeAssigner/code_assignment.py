@@ -2,22 +2,14 @@
 Dual Assignment: Code + Attribute per Idea.
 
 Assigns each idea to exactly one MECE code and its best-matching attribute
-via a single LLM call. All partitions are processed concurrently with shared
-rate limiting.
-
-Rate limiting strategy (aligned with step 3 prompt processing strategy):
-  1. ConcurrencyGate: completion-based ramp from 50% → 90% of Little's Law
-  2. TokenBucket: TPM safety rail with reconciliation
-  3. AsyncLimiter: PID-adjusted RPM arrival rate
-  4. Timeout: generous safety net (60s floor, P95×3 adaptive)
-  + Circuit breaker: monitors timeout RATE, adjusts concurrency on sustained pressure
-  + Warm-up calibration: first 15-30 tasks calibrate tokens + latency → recalculate Little's Law
+via a single LLM call. All partitions are processed concurrently via
+SmoothRequester.
 
 Pipeline:
   1. Group ideas by partition (domain)
-  2. Fetch rate limits + estimate tokens via tiktoken (no probe calls)
-  3. Initialize 4-layer rate limiting with ramp
-  4. Queue + workers with warm-up calibration trigger
+  2. Embedding pre-filter (optional) — top-N candidates per idea
+  3. Build task list with scoped candidate codes
+  4. SmoothRequester dispatch (rate limiting, workers, retry)
   5. Collect assignments, build CodeAssignedModel list
 
 Usage:
@@ -37,50 +29,15 @@ Usage:
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
-import time
-import statistics
-from collections import deque
 from typing import Dict, List, Optional
 
-import numpy as np
 import nest_asyncio
-from aiolimiter import AsyncLimiter
-from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
-from instructor.exceptions import InstructorRetryException
 
-from utils.llm import (
-    create_client, llm_create_async,
-    RateLimits, extract_rate_limits_from_response, token_tracker,
-)
-from utils.modelPerfStats import load_stats, save_stats, update_phase_stats, get_phase_stats
-from utils.cached_resources import get_tiktoken_encoding
-from config import (
-    ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
-    OPENAI_API_KEY, API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
-    get_reasoning_params,
-)
+from utils.llm import token_tracker
+from utils.smoothRequester import SmoothRequester
+from config import get_reasoning_params
 
 from pipeline.step_3_ideaExtractor import models
-from pipeline.step_3_ideaExtractor.ideaExtractor import (
-    TokenBucket,
-    ConcurrencyGate,
-    LatencyTracker,
-    TiktokenOffsetLearner,
-    ConcurrencyRamp,
-    RealTimeTPMTracker,
-    RealTimeRPMTracker,
-    PIDThroughputController,
-    ConcurrencyCircuitBreaker,
-)
-from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
-    DEFAULT_RAMP_UP_CONFIG,
-    DEFAULT_CIRCUIT_BREAKER_CONFIG,
-    DEFAULT_PID_CONTROLLER_CONFIG,
-    DEFAULT_TPM_TRACKING_CONFIG,
-    DEFAULT_WARM_UP_CONFIG,
-)
 
 from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig, get_other_category_label
 from .models_codeAssigner import CodeAssignedSubmodel, CodeAssignedModel
@@ -93,63 +50,16 @@ from .prompts_codeAssigner import (
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
 from .models_codeAssigner import CodeAssignment, CodeAssignmentBatch
 
-@dataclass
-class ApiLimits:
-    """API limits for Little's Law calculations."""
-    tokens_per_minute: int
-    requests_per_minute: int
-
-
-def compute_optimal_concurrency(
-    limits: ApiLimits,
-    latency_seconds: float,
-    avg_tokens: float,
-    processing_config: Optional[ProcessingConfig] = None,
-    cap: Optional[int] = None,
-    min_conc: Optional[int] = None,
-    headroom: Optional[float] = None,
-) -> int:
-    """Compute optimal concurrency using Little's Law."""
-    config = processing_config or DEFAULT_PROCESSING_CONFIG
-    cap = cap if cap is not None else config.concurrency_cap_default
-    min_conc = min_conc if min_conc is not None else config.concurrency_min_default
-    headroom = headroom if headroom is not None else config.rate_limit_headroom
-
-    latency_seconds = max(float(latency_seconds or 0.5), 0.05)
-    avg_tokens = max(float(avg_tokens or 1.0), 1.0)
-
-    rpm_throughput = limits.requests_per_minute * headroom / 60
-    tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
-    allowed_rps = max(min(rpm_throughput, tpm_throughput), 0.0)
-    target = allowed_rps * latency_seconds  # Little's Law
-
-    return int(max(min(target, cap), min_conc))
-
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
 nest_asyncio.apply()
 
 logger = logging.getLogger(__name__)
 
-# Suppress verbose logging from external libraries during retries
-logging.getLogger("openai").setLevel(logging.ERROR)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("instructor").setLevel(logging.ERROR)
-
-# === PROCESSING CONSTANTS ===================================================
-
-PROGRESS_REPORT_INTERVAL = 2           # Seconds between progress reports
-PID_ADJUSTMENT_INTERVAL = 20           # Seconds between PID adjustments
-THROUGHPUT_ADJUSTMENT_THRESHOLD = 1.3  # Trigger threshold-based adjustment
-THROUGHPUT_ADJUSTMENT_MIN_SAMPLES = 10 # Min data points before adjusting
-ERROR_WINDOW_SIZE = 100                # Rolling window for token tracking
-DEFAULT_LATENCY_SECONDS = 0.8          # Default latency for nano (before warm-up)
-
 
 class CodeAssigner:
     """
     Assigns each idea to exactly one MECE category within its domain
-    partition. All partitions are processed concurrently through a shared
-    queue + workers pattern with TokenBucket, rate limiter, and retry.
+    partition. All partitions are processed concurrently via SmoothRequester.
     """
 
     def __init__(
@@ -163,6 +73,7 @@ class CodeAssigner:
         codes: List[CodeFromAttributes] = None,
         attribute_assignments: Optional[Dict[str, str]] = None,
         cost_tracker=None,
+        dataset_key: str = "",
     ):
         self.cost_tracker = cost_tracker
         self._config = config
@@ -171,13 +82,14 @@ class CodeAssigner:
         self._partition_set = partition_set
         self._extraction_metadata = extraction_metadata
         self._codes = codes or []
+        self._dataset_key = dataset_key
 
         if self.cost_tracker:
             self.cost_tracker.set_step_models("step_6_code_assigner", {
                 "assignment": config.assignment_model,
             })
 
-        # Embedding pre-filter results (populated in Phase 3b if enabled)
+        # Embedding pre-filter results (populated in Phase 2 if enabled)
         self._idea_code_candidates: Optional[Dict[str, List[int]]] = None
         self._per_task_resolutions: Dict[str, str] = {}
 
@@ -185,28 +97,8 @@ class CodeAssigner:
         self._prompt_printer = prompt_printer
         self._captured_assign_gates: set = set()
 
-        # Shared async resources — initialized in _assign_all_async()
-        self._client = None
-        self._rate_limiter = None
-        self._tpm_bucket = None
-        self._rate_limits = None
-
-        # 4-layer rate limiting components (initialized in _initialize_rate_limiters)
-        self._gate = None                   # ConcurrencyGate (replaces Semaphore)
-        self._latency_tracker = None        # LatencyTracker
-        self._tiktoken_learner = None       # TiktokenOffsetLearner
-        self._concurrency_ramp = None       # ConcurrencyRamp
-        self._tpm_tracker = None            # RealTimeTPMTracker
-        self._rpm_tracker = None            # RealTimeRPMTracker
-        self._pid_controller = None         # PIDThroughputController
-        self._circuit_breaker = None        # ConcurrencyCircuitBreaker
-        self._warm_up_done = False          # One-shot calibration flag
-
         # Tier-aware validation: nano → lenient field coercion; mini/default → strict
         configure_validation_mode(config.assignment_model)
-
-        # Tokenizer for local token estimation
-        self._encoding = get_tiktoken_encoding(config.assignment_model)
 
         # ID-based resolution maps — populated in _assign_all_async()
         self._id_to_label: Dict[str, str] = {}
@@ -215,31 +107,6 @@ class CodeAssigner:
 
         # Pre-assigned attributes from pipeline step 4a (idea_id -> attribute name)
         self._attribute_assignments: Dict[str, str] = attribute_assignments or {}
-
-        # Processing stats
-        self._stats = {
-            'tasks_processed': 0,
-            'tasks_successful': 0,
-            'tasks_failed': 0,
-            'rate_limits': 0,
-            'timeouts': 0,
-        }
-        self._failure_log: List[Dict] = []
-
-        # Token tracking
-        self._actual_total_tokens: deque = deque(maxlen=ERROR_WINDOW_SIZE)
-        self._avg_tokens: int = 0
-        self._current_arrival_rate: float = 0.0
-        self._adjustment_count: int = 0
-
-        # Persistent performance stats for cold-start calibration
-        self._perf_stats = load_stats()
-        _stored = get_phase_stats(self._perf_stats, config.assignment_model, "step6_code_assignment")
-        self._stored_timeout = (
-            _stored["p95_latency_s"]
-            if _stored and _stored.get("sample_count", 0) >= 10 and "p95_latency_s" in _stored
-            else None
-        )
 
     # =========================================================================
     # PUBLIC API
@@ -261,20 +128,6 @@ class CodeAssigner:
                 "step_6_code_assigner", "assignment",
                 _snap_before, token_tracker.snapshot(), self._config.assignment_model)
 
-        # Persist empirical stats for cold-start calibration on next run
-        if (self._latency_tracker is not None
-                and len(self._latency_tracker.values) >= 5
-                and self._actual_total_tokens):
-            tokens = list(self._actual_total_tokens)
-            measurements = {
-                "p50_latency_s": self._latency_tracker.get_p50(),
-                "p95_latency_s": self._latency_tracker.get_p95(),
-                "avg_tokens": sum(tokens) / len(tokens),
-            }
-            update_phase_stats(self._perf_stats, self._config.assignment_model,
-                               "step6_code_assignment", measurements, len(tokens))
-            save_stats(self._perf_stats)
-
         return results
 
     # =========================================================================
@@ -282,19 +135,12 @@ class CodeAssigner:
     # =========================================================================
 
     async def _assign_all_async(self) -> List[CodeAssignedModel]:
-        """Main async orchestration with 4-layer rate limiting + warm-up calibration."""
+        """Main async orchestration via SmoothRequester."""
         verbose = self._config.verbose
-        processing_config = DEFAULT_PROCESSING_CONFIG
-        headroom = processing_config.rate_limit_headroom
 
         # ── Phase 1: Setup ──────────────────────────────────────────────────
 
-        # 1a. Create async instructor client
-        self._client = create_client(
-            model=self._config.assignment_model, async_mode=True
-        )
-
-        # 1b. Build global facet lookup from P3 facet assignments
+        # 1a. Build global facet lookup from P3 facet assignments
         self._facet_lookup: Dict[str, str] = {}
         for name, mece_res in self._mece_results.items():
             if mece_res.facet_assignments:
@@ -303,7 +149,7 @@ class CodeAssigner:
         if verbose:
             print(f"  Facet lookup: {len(self._facet_lookup)} entries")
 
-        # 1c. Group all ideas by partition (domain)
+        # 1b. Group all ideas by partition (domain)
         partition_ideas = self._group_ideas_by_partition()
         total_ideas = sum(len(ideas) for ideas in partition_ideas.values())
 
@@ -319,27 +165,10 @@ class CodeAssigner:
             print("  WARNING: No ideas to assign")
             return self._build_output_models({}, {})
 
-        # 1e. Pre-build ID maps
+        # 1c. Pre-build ID maps
         self._build_id_maps()
 
-        # ── Phase 2: Fetch rate limits ───────────────────────────────────────
-
-        if verbose:
-            print("  Fetching rate limits from API...")
-        limits = await self._fetch_rate_limits()
-        self._rate_limits = limits
-
-        if verbose:
-            print(f"  Rate limits: TPM={limits.tokens_per_minute:,}, "
-                  f"RPM={limits.requests_per_minute:,}")
-
-        # ── Phase 3: Token estimation via tiktoken (no probe calls) ──────────
-
-        self._avg_tokens = self._estimate_avg_tokens(partition_ideas)
-        if verbose:
-            print(f"  Token estimate (tiktoken): {self._avg_tokens}")
-
-        # ── Phase 3b: Embedding pre-filtering ─────────────────────────────────
+        # ── Phase 2: Embedding pre-filtering ─────────────────────────────────
 
         if self._config.use_embedding_prefilter and self._codes:
             from .embedding_matcher import EmbeddingMatcher
@@ -385,7 +214,7 @@ class CodeAssigner:
                 print(f"  Embedding pre-filter: top-{top_n} candidates per idea → "
                       f"prompt codebook scoped from {len(self._codes)} to {top_n} codes")
 
-        # ── Phase 4: Build task list ─────────────────────────────────────────
+        # ── Phase 3: Build task list ─────────────────────────────────────────
 
         if not self._codes:
             if verbose:
@@ -420,180 +249,30 @@ class CodeAssigner:
                     'task_id_to_label': task_id_to_label,
                 })
 
-        total_batches = len(task_list)
+        total_tasks = len(task_list)
 
-        # ── Phase 5: Initialize 4-layer rate limiting ────────────────────────
+        # ── Phase 4: SmoothRequester dispatch ────────────────────────────────
 
-        little_law_cap = self._initialize_rate_limiters(
-            limits, total_batches, headroom
+        sr = SmoothRequester(
+            model=self._config.assignment_model,
+            dataset_key=self._dataset_key,
+            phase_key="step6_code_assignment",
+            num_tasks=total_tasks,
+            verbose=verbose,
         )
 
-        # Workers = initial ramp target (not static 200)
-        initial_conc = self._concurrency_ramp.current_target()
-        num_workers = min(total_batches, initial_conc)
-
-        # Warm-up target: 15-30 completions
-        warm_up_config = DEFAULT_WARM_UP_CONFIG
-        self._warm_up_target = min(
-            warm_up_config.sample_max,
-            max(warm_up_config.sample_min, total_batches // 10)
+        sr_results = await sr.process_all(
+            task_list,
+            self._prepare_fn,
+            self._parse_fn,
+            self._fallback_fn,
         )
 
-        rpm_throughput = limits.requests_per_minute * headroom / 60
-        tpm_throughput = limits.tokens_per_minute * headroom / max(self._avg_tokens, 1) / 60
-        arrival_rate = min(rpm_throughput, tpm_throughput)
-        bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
-
-        if verbose:
-            print(f"\n  [RATE LIMITING SETUP] — Completion-Based Ramp + PID + Circuit Breaker")
-            print(f"  Model: {self._config.assignment_model}")
-            print(f"  RPM: {limits.requests_per_minute:,} "
-                  f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
-            print(f"  TPM: {limits.tokens_per_minute:,} "
-                  f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
-            print(f"  Token estimate (tiktoken): {self._avg_tokens}")
-            print(f"  Expected throughput: {arrival_rate:.1f}/s ({bottleneck} limited)")
-            print(f"  Little's Law cap: {little_law_cap}")
-            print(f"  Ramp: {initial_conc} (50%) → {self._concurrency_ramp.cap} (90%)")
-            print(f"  Timeout: 60s safety net (P95×3 adaptive)")
-            print(f"  Workers: {num_workers}")
-            print(f"  Warm-up: calibrate after {self._warm_up_target} completions")
-            print(f"  Total tasks: {total_batches}")
-
-        # ── Phase 6: Queue + workers + main loop ─────────────────────────────
-
-        queue = asyncio.Queue()
-        results = [None] * total_batches
-        timed_out = []  # (index, task) tuples
-
-        for i, task in enumerate(task_list):
-            task['result_index'] = i
-            await queue.put(task)
-
-        workers = [
-            asyncio.create_task(self._worker(queue, results, timed_out))
-            for _ in range(num_workers)
-        ]
-
-        start_time = time.time()
-        last_report = start_time
-        last_pid = start_time
-        last_ramp = start_time
-
-        while self._stats['tasks_processed'] < total_batches:
-            await asyncio.sleep(0.1)
-            now = time.time()
-            elapsed = now - start_time
-            completed = self._stats['tasks_processed']
-
-            # Every 1s: circuit breaker + ramp
-            if now - last_ramp >= 1.0:
-                if self._circuit_breaker:
-                    self._circuit_breaker.check_and_adjust()
-                self._check_ramp_up(completed, self._stats['timeouts'], elapsed)
-                last_ramp = now
-
-            # Progress report with constraint visibility
-            if now - last_report >= PROGRESS_REPORT_INTERVAL:
-                await self._print_progress(
-                    completed, total_batches, total_ideas, elapsed
-                )
-                last_report = now
-
-            # One-shot warm-up calibration
-            if (not self._warm_up_done
-                    and len(self._actual_total_tokens) >= self._warm_up_target
-                    and len(self._latency_tracker.values) >= self._warm_up_target):
-                extra = self._calibrate_from_warm_up(limits, headroom, total_batches)
-                if extra > 0 and extra > len(workers):
-                    new_count = extra - len(workers)
-                    for _ in range(new_count):
-                        workers.append(
-                            asyncio.create_task(self._worker(queue, results, timed_out))
-                        )
-                    if verbose:
-                        print(f"  Workers: {len(workers)} (+{new_count} after calibration)")
-
-            # Every 20s: PID adjustment
-            if now - last_pid >= PID_ADJUSTMENT_INTERVAL:
-                await self._apply_pid_adjustment(headroom)
-                last_pid = now
-
-        # Drain and stop workers
-        await queue.join()
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers)
-
-        elapsed = time.time() - start_time
-
-        # ── Phase 7: Retry pass for true failures (timeouts + exceptions) ──
-
-        # Collect all failed tasks: timed-out + exception failures
-        retry_tasks = []
-        for idx, task in timed_out:
-            retry_tasks.append((idx, task))
-        for entry in self._failure_log:
-            retry_tasks.append((entry['result_index'], entry['task']))
-
-        if retry_tasks:
-            print(f"\n  [RETRY PASS] Retrying {len(retry_tasks)} failed tasks "
-                  f"({len(timed_out)} timeouts, {len(self._failure_log)} exceptions)...")
-
-            # Clear failure tracking for retry pass
-            pre_retry_failure_log = list(self._failure_log)
-            self._failure_log.clear()
-
-            # Generous timeout for retry
-            self._latency_tracker.retry_mode = True
-
-            # Queue-based retry with reduced concurrency
-            retry_queue = asyncio.Queue()
-            retry_timed_out = []
-            retry_workers_count = max(5, min(len(retry_tasks), num_workers // 10))
-
-            for idx, task in retry_tasks:
-                task['result_index'] = idx  # Preserve original index
-                await retry_queue.put(task)
-
-            retry_worker_list = [
-                asyncio.create_task(self._worker(retry_queue, results, retry_timed_out))
-                for _ in range(retry_workers_count)
-            ]
-
-            await retry_queue.join()
-            for _ in retry_worker_list:
-                await retry_queue.put(None)
-            await asyncio.gather(*retry_worker_list)
-
-            self._latency_tracker.retry_mode = False
-
-            # Count recoveries and handle per-task resolution for recovered tasks
-            recovered = 0
-            for idx, task in retry_tasks:
-                result = results[idx]
-                if result is not None and not isinstance(result, Exception):
-                    # Check if this was actually recovered (successful assignment)
-                    if hasattr(result, 'assignments') and result.assignments:
-                        # Per-task resolution for recovered tasks
-                        task_id_map = task.get('task_id_to_label')
-                        if task_id_map:
-                            idea = task['idea']
-                            raw_id = result.assignments[0].assigned_code_id or ''
-                            cat_id = self._normalize_id(raw_id)
-                            label = task_id_map.get(cat_id)
-                            if label:
-                                self._per_task_resolutions[idea.idea_id] = label
-                        recovered += 1
-
-            still_failed = len(self._failure_log) + len(retry_timed_out)
-            print(f"  [RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
-
-        # ── Phase 8: Collect assignments ─────────────────────────────────────
+        # ── Phase 5: Collect assignments + ID resolution ────────────────────
 
         assignment_lookup = {}
-        for i, result in enumerate(results):
-            if result is None or isinstance(result, Exception):
+        for result in sr_results:
+            if result is None:
                 continue
             for assignment in result.assignments:
                 assignment_lookup[assignment.idea_id] = assignment
@@ -601,7 +280,7 @@ class CodeAssigner:
         assigned_count = len(assignment_lookup)
 
         # Resolve category IDs to labels
-        # Per-task resolutions (from embedding pre-filter) take priority over global ID map
+        # Per-task resolutions (from parse_fn) take priority over global ID map
         id_resolution: Dict[str, str] = {}
         resolve_stats = {"resolved": 0, "fallback": 0, "unresolved": 0}
         has_prefilter = bool(self._idea_code_candidates)
@@ -613,7 +292,7 @@ class CodeAssigner:
                 resolve_stats["resolved"] += 1
                 continue
 
-            # Fix 8b (BP1): When pre-filter is active, do NOT fall back to global
+            # BP1: When pre-filter is active, do NOT fall back to global
             # because scoped C1-C5 map to DIFFERENT codes than global C1-C22
             if has_prefilter:
                 print(f"    WARNING: No scoped resolution for idea '{idea_id}' "
@@ -629,7 +308,6 @@ class CodeAssigner:
                 id_resolution[idea_id] = label
                 resolve_stats["resolved"] += 1
             elif raw_id:
-                # BP6: Log the fallback explicitly
                 print(f"    WARNING: Code ID '{cat_id}' not in global map for "
                       f"idea '{idea_id}' — assigning to 'other'")
                 id_resolution[idea_id] = self._other_label or ""
@@ -637,20 +315,8 @@ class CodeAssigner:
             else:
                 resolve_stats["unresolved"] += 1
 
-        # Final stats
         if verbose:
-            print(f"\n  Completed {total_batches} tasks in {elapsed:.1f}s")
-            print(f"  - Successful: {self._stats['tasks_successful']}")
-            print(f"  - Failed: {self._stats['tasks_failed']}")
-            if self._stats['rate_limits']:
-                print(f"  - Rate limits hit: {self._stats['rate_limits']}")
-            if self._stats['timeouts']:
-                print(f"  - Timeouts: {self._stats['timeouts']} (fallback)")
-            print(f"  - Average: {elapsed / max(total_batches, 1):.2f}s/task")
-            print(f"  - Assigned: {assigned_count}/{total_ideas} ideas")
-            if self._adjustment_count > 0:
-                print(f"  - Throughput adjustments: {self._adjustment_count}")
-
+            print(f"\n  Assigned: {assigned_count}/{total_ideas} ideas")
             print(f"\n  [ID RESOLUTION]")
             print(f"    Resolved: {resolve_stats['resolved']}")
             if resolve_stats['fallback']:
@@ -658,116 +324,22 @@ class CodeAssigner:
             if resolve_stats['unresolved']:
                 print(f"    Unresolved (no ID): {resolve_stats['unresolved']}")
 
-        if self._failure_log:
-            from collections import Counter
-            print(f"\n  PROCESSING ERRORS: {len(self._failure_log)} of {total_batches}")
-            for reason, count in Counter(f['error_type'] for f in self._failure_log).most_common():
-                print(f"    {count}x {reason}")
-
         output = self._build_output_models(assignment_lookup, id_resolution)
         if verbose:
             self._print_assignment_summary(output)
         return output
 
     # =========================================================================
-    # WORKER
+    # SMOOTHREQUESTER CALLBACKS
     # =========================================================================
 
-    async def _worker(
-        self,
-        queue: asyncio.Queue,
-        results: List,
-        timed_out: List,
-    ) -> None:
-        """Worker coroutine: pulls tasks from queue, processes with retry."""
-        while True:
-            try:
-                task = await queue.get()
-                if task is None:  # Sentinel
-                    break
-
-                try:
-                    result = await self._process_task_with_retry(task)
-                    if result is None:
-                        # Timeout — collect for fallback
-                        timed_out.append((task['result_index'], task))
-                    else:
-                        results[task['result_index']] = result
-                        self._stats['tasks_successful'] += 1
-
-                        # Fix 8c: Assert single assignment per task
-                        if len(result.assignments) != 1:
-                            print(f"    WARNING: Expected 1 assignment, got "
-                                  f"{len(result.assignments)} for task "
-                                  f"{task['result_index']}")
-
-                        # Per-task ID resolution (for embedding pre-filter scoped IDs)
-                        task_id_map = task.get('task_id_to_label')
-                        if task_id_map and result.assignments:
-                            idea = task['idea']
-                            raw_id = result.assignments[0].assigned_code_id or ''
-                            cat_id = self._normalize_id(raw_id)
-                            label = task_id_map.get(cat_id)
-                            if label:
-                                self._per_task_resolutions[idea.idea_id] = label
-                            else:
-                                # Fix 8a (BP6): Log resolution failure
-                                print(f"    WARNING: Code ID '{cat_id}' not in scoped "
-                                      f"candidates for idea '{idea.idea_id}'")
-                except Exception as e:
-                    error_type = type(e).__name__
-                    error_str = str(e)
-
-                    if "429" in error_str or "RateLimitReached" in error_str:
-                        if "token rate limit" in error_str.lower():
-                            error_type = "RateLimit_TPM"
-                        elif "call rate limit" in error_str.lower():
-                            error_type = "RateLimit_RPM"
-                        else:
-                            error_type = "RateLimit"
-                        self._stats['rate_limits'] += 1
-
-                    self._stats['tasks_failed'] += 1
-                    self._failure_log.append({
-                        'partition': task['partition_name'],
-                        'batch_idx': task['batch_idx'],
-                        'result_index': task['result_index'],
-                        'error_type': error_type,
-                        'task': task,  # Preserve full task for retry pass
-                    })
-                finally:
-                    self._stats['tasks_processed'] += 1
-                    queue.task_done()
-
-            except asyncio.CancelledError:
-                break
-
-    @retry(
-        retry=retry_if_exception_type((
-            RateLimitError,
-            APIConnectionError,
-            APITimeoutError,
-            InternalServerError,
-            InstructorRetryException,
-        )),
-        wait=wait_exponential_jitter(initial=2, max=60),
-        stop=stop_after_attempt(5),
-        reraise=True,
-    )
-    async def _process_task_with_retry(
-        self,
-        task: Dict,
-    ) -> Optional[CodeAssignmentBatch]:
-        """Process a single idea with 4-layer rate limiting + timeout.
-
-        Returns None on timeout (collected for fallback, no retry).
-        """
-        partition_name = task['partition_name']
+    def _prepare_fn(self, task: Dict) -> Dict:
+        """Build LLM call params for a single idea assignment."""
         idea = task['idea']
+        partition_name = task['partition_name']
         candidate_codes = task.get('candidate_codes', self._codes)
-        task_id_to_label = task.get('task_id_to_label', self._id_to_label)
+
         prompt = self._build_dual_assignment_prompt(idea, codes=candidate_codes)
-        response_model = CodeAssignmentResponse
 
         # Prompt capture (first task per partition)
         _assign_key = f"assign_{partition_name}"
@@ -792,340 +364,53 @@ class CodeAssigner:
             )
             self._captured_assign_gates.add(_assign_key)
 
-        est_tokens = self._avg_tokens
+        return {
+            'prompt': prompt,
+            'response_model': CodeAssignmentResponse,
+            'temperature': self._config.assignment_temperature,
+            'max_tokens': self._config.assignment_max_tokens,
+            'max_retries': 5,
+            'extra_kwargs': get_reasoning_params(self._config.assignment_model),
+        }
 
-        # 4-layer rate limiting: Gate → TPM bucket → RPM limiter → Timeout
-        async with self._gate:
-            # Compute timeout AFTER gate (uses current latency data)
-            timeout = self._latency_tracker.get_timeout(est_tokens)
-            await self._tpm_bucket.wait_and_acquire(est_tokens)
-            api_start = time.perf_counter()
+    def _parse_fn(self, task: Dict, response) -> Optional[CodeAssignmentBatch]:
+        """Parse LLM response into CodeAssignmentBatch + resolve per-task IDs."""
+        idea = task['idea']
+        task_id_to_label = task.get('task_id_to_label', self._id_to_label)
 
-            async with self._rate_limiter:
-                try:
-                    result = await asyncio.wait_for(
-                        llm_create_async(
-                            client=self._client,
-                            model=self._config.assignment_model,
-                            prompt=prompt,
-                            response_model=response_model,
-                            temperature=self._config.assignment_temperature,
-                            max_tokens=self._config.assignment_max_tokens,
-                            **get_reasoning_params(self._config.assignment_model),
-                        ),
-                        timeout=timeout,
-                    )
-                except asyncio.TimeoutError:
-                    self._stats['timeouts'] += 1
-                    if self._circuit_breaker:
-                        self._circuit_breaker.record_timeout()
-                    return None  # Collected for fallback
+        # Validate response
+        if response is None or not hasattr(response, 'assigned_code_id'):
+            return None
+        if not response.assigned_code_id:
+            return None
 
-                # Record latency
-                latency = time.perf_counter() - api_start
-                self._latency_tracker.add(latency)
-
-                # Circuit breaker feedback
-                if self._circuit_breaker:
-                    self._circuit_breaker.record_completion()
-
-                # Track actual token usage + reconcile
-                usage = getattr(result, '_raw_response', None)
-                if usage:
-                    usage = getattr(usage, 'usage', None)
-                if not usage:
-                    usage = getattr(result, 'usage', None)
-
-                if usage:
-                    input_tokens = (
-                        getattr(usage, 'input_tokens', 0)
-                        or getattr(usage, 'prompt_tokens', 0)
-                    )
-                    output_tokens = (
-                        getattr(usage, 'output_tokens', 0)
-                        or getattr(usage, 'completion_tokens', 0)
-                    )
-                    actual_total = (
-                        getattr(usage, 'total_tokens', 0)
-                        or (input_tokens + output_tokens)
-                    )
-
-                    self._actual_total_tokens.append(actual_total)
-
-                    # Reconcile token bucket
-                    delta = actual_total - est_tokens
-                    await self._tpm_bucket.reconcile(delta)
-
-                    # Learn tiktoken→API offset
-                    tiktoken_count = len(self._encoding.encode(prompt))
-                    self._tiktoken_learner.record(tiktoken_count, input_tokens)
-
-                    # Feed PID trackers
-                    if self._tpm_tracker:
-                        await self._tpm_tracker.record(actual_total)
-                    if self._rpm_tracker:
-                        await self._rpm_tracker.record()
-
-                # BP6: Validate response before accessing fields
-                if result is None or not hasattr(result, 'assigned_code_id'):
-                    print(f"    WARNING: Empty or invalid response for idea "
-                          f"'{idea.idea_id}' — skipping")
-                    return None
-
-                if not result.assigned_code_id:
-                    print(f"    WARNING: No code_id in response for idea "
-                          f"'{idea.idea_id}' — skipping")
-                    return None
-
-                # Wrap into batch format (idea_id from original task, not LLM)
-                wrapped = CodeAssignmentBatch(
-                    assignments=[CodeAssignment(
-                        idea_id=idea.idea_id,
-                        assigned_code_id=result.assigned_code_id,
-                        confidence=result.confidence,
-                        rationale=result.rationale,
-                    )]
-                )
-                return wrapped
-
-    # =========================================================================
-    # RATE LIMITING: INITIALIZATION + CALIBRATION + ADJUSTMENT
-    # =========================================================================
-
-    def _estimate_avg_tokens(self, partition_ideas: Dict) -> int:
-        """Estimate avg tokens per request via tiktoken (no API calls)."""
-        # Sample up to 20 ideas across partitions
-        all_ideas = []
-        for ideas in partition_ideas.values():
-            all_ideas.extend(ideas)
-        sample = all_ideas[:min(20, len(all_ideas))]
-
-        if not sample:
-            return 3000  # Conservative fallback
-
-        token_counts = []
-        for idea in sample:
-            prompt = self._build_dual_assignment_prompt(idea)
-            prompt_tokens = len(self._encoding.encode(prompt))
-            # Estimate output at ~15% of input (structured JSON response)
-            completion_tokens = int(prompt_tokens * 0.15)
-            token_counts.append(prompt_tokens + completion_tokens)
-
-        return int(statistics.mean(token_counts))
-
-    def _initialize_rate_limiters(
-        self,
-        limits: RateLimits,
-        num_tasks: int,
-        headroom: float,
-    ) -> int:
-        """Set up 4-layer rate limiting with completion-based ramp.
-
-        Returns the Little's Law cap (target concurrency).
-        """
-        avg_tokens = max(self._avg_tokens, 1)
-
-        # Arrival rate from RPM and TPM
-        rpm_throughput = limits.requests_per_minute * headroom / 60
-        tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
-        arrival_rate = min(rpm_throughput, tpm_throughput)
-        self._current_arrival_rate = arrival_rate
-
-        # Layer 1: RPM (AsyncLimiter)
-        self._rate_limiter = AsyncLimiter(
-            1, time_period=1.0 / max(arrival_rate, 0.01)
+        # Wrap into batch format (idea_id from original task, not LLM)
+        wrapped = CodeAssignmentBatch(
+            assignments=[CodeAssignment(
+                idea_id=idea.idea_id,
+                assigned_code_id=response.assigned_code_id,
+                confidence=response.confidence,
+                rationale=response.rationale,
+            )]
         )
 
-        # Layer 2: TPM (TokenBucket)
-        self._tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
-
-        # Little's Law cap
-        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        little_law_cap = compute_optimal_concurrency(
-            api_limits, DEFAULT_LATENCY_SECONDS, avg_tokens,
-            headroom=headroom,
-        )
-
-        # Layer 3: Concurrency (ConcurrencyGate + ramp)
-        initial_conc = max(5, int(little_law_cap * DEFAULT_RAMP_UP_CONFIG.start_fraction))
-        self._gate = ConcurrencyGate(initial_conc)
-        self._concurrency_ramp = ConcurrencyRamp(
-            DEFAULT_RAMP_UP_CONFIG, little_law_cap, num_tasks
-        )
-
-        # Layer 4: Circuit breaker
-        self._circuit_breaker = ConcurrencyCircuitBreaker(
-            DEFAULT_CIRCUIT_BREAKER_CONFIG, self._gate, initial_conc
-        )
-
-        # PID components
-        self._tpm_tracker = RealTimeTPMTracker(
-            window_seconds=DEFAULT_TPM_TRACKING_CONFIG.sliding_window_seconds
-        )
-        self._rpm_tracker = RealTimeRPMTracker(window_seconds=60.0)
-        self._pid_controller = PIDThroughputController(
-            target_utilization=DEFAULT_TPM_TRACKING_CONFIG.target_utilization,
-            kp_up=DEFAULT_PID_CONTROLLER_CONFIG.kp_up,
-            kp_down=DEFAULT_PID_CONTROLLER_CONFIG.kp_down,
-            ki=DEFAULT_PID_CONTROLLER_CONFIG.ki,
-            kd=DEFAULT_PID_CONTROLLER_CONFIG.kd,
-            min_adjustment=DEFAULT_PID_CONTROLLER_CONFIG.min_adjustment,
-            max_adjustment=DEFAULT_PID_CONTROLLER_CONFIG.max_adjustment,
-        )
-
-        # Latency + tiktoken offset (use stored P95 as cold-start floor if available)
-        if self._stored_timeout:
-            self._latency_tracker = LatencyTracker(
-                timeout_floor=self._stored_timeout,
-                default_timeout=self._stored_timeout,
-            )
+        # Per-task ID resolution (scoped C1-C5 from embedding pre-filter)
+        raw_id = response.assigned_code_id or ''
+        cat_id = self._normalize_id(raw_id)
+        label = task_id_to_label.get(cat_id)
+        if label:
+            self._per_task_resolutions[idea.idea_id] = label
         else:
-            self._latency_tracker = LatencyTracker()
-        self._tiktoken_learner = TiktokenOffsetLearner()
+            print(f"    WARNING: Code ID '{cat_id}' not in scoped "
+                  f"candidates for idea '{idea.idea_id}'")
 
-        return little_law_cap
+        return wrapped
 
-    def _calibrate_from_warm_up(
-        self,
-        limits: RateLimits,
-        headroom: float,
-        num_tasks: int,
-    ) -> int:
-        """One-shot calibration from first N real completions.
-
-        Returns new worker target (for spawning extra workers if needed).
-        """
-        self._warm_up_done = True
-
-        # Measured values
-        actual_avg_tokens = int(np.mean(list(self._actual_total_tokens)))
-        p10_latency = float(np.percentile(list(self._latency_tracker.values), 10))
-
-        # Recalculate Little's Law with measured data
-        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        new_cap = compute_optimal_concurrency(
-            api_limits, p10_latency, actual_avg_tokens,
-            headroom=headroom,
-        )
-
-        # Update token estimate
-        old_avg = self._avg_tokens
-        self._avg_tokens = actual_avg_tokens
-
-        # Recalibrate ramp
-        self._concurrency_ramp.recalibrate(new_cap)
-
-        # Update circuit breaker baseline
-        new_initial = self._concurrency_ramp.current_target()
-        self._circuit_breaker.baseline = new_initial
-
-        # Recalculate arrival rate
-        rpm_throughput = limits.requests_per_minute * headroom / 60
-        tpm_throughput = limits.tokens_per_minute * headroom / max(actual_avg_tokens, 1) / 60
-        new_arrival_rate = min(rpm_throughput, tpm_throughput)
-        self._current_arrival_rate = new_arrival_rate
-        self._rate_limiter = AsyncLimiter(
-            1, time_period=1.0 / max(new_arrival_rate, 0.01)
-        )
-
-        # Reset PID
-        self._pid_controller.reset()
-
-        if self._config.verbose:
-            print(f"\n  [WARM-UP CALIBRATION]")
-            print(f"    Tokens: {old_avg} → {actual_avg_tokens} (measured)")
-            print(f"    Latency P10: {p10_latency:.2f}s")
-            print(f"    Little's Law: {new_cap}")
-            print(f"    Arrival rate: {new_arrival_rate:.1f}/s")
-
-        # Return new ramp target for worker scaling
-        return min(num_tasks, self._concurrency_ramp.cap)
-
-    def _check_ramp_up(self, completions: int, timeouts: int, elapsed: float):
-        """Check and advance completion-based concurrency ramp."""
-        if self._concurrency_ramp is None or self._concurrency_ramp.is_done():
-            return
-
-        rate = completions / elapsed if elapsed > 0 else 0
-
-        self._concurrency_ramp.record_measurement(
-            throughput=rate,
-            tpm_pct=0,  # PID handles TPM, ramp uses throughput
-            rpm_pct=0,
-            completions_total=completions,
-            timeouts_total=timeouts,
-            duration=elapsed,
-        )
-
-        new_target = self._concurrency_ramp.current_target()
-        if new_target != self._gate.limit:
-            self._gate.set_limit(new_target)
-
-    async def _apply_pid_adjustment(self, headroom: float):
-        """PID-based arrival rate adjustment using real-time TPM utilization."""
-        if not self._tpm_tracker or not self._rate_limits:
-            return
-
-        current_tpm = await self._tpm_tracker.get_current_tpm()
-        tpm_limit = self._rate_limits.tokens_per_minute * headroom
-        if tpm_limit <= 0:
-            return
-
-        utilization = current_tpm / tpm_limit
-        adjustment = self._pid_controller.compute_adjustment(utilization)
-
-        if adjustment != 1.0:
-            self._current_arrival_rate *= adjustment
-            self._rate_limiter = AsyncLimiter(
-                1, time_period=1.0 / max(self._current_arrival_rate, 0.01)
-            )
-            self._adjustment_count += 1
-
-    async def _print_progress(
-        self,
-        completed: int,
-        total: int,
-        total_ideas: int,
-        elapsed: float,
-    ):
-        """Print progress with constraint visibility (TPM%, RPM%, Conc%)."""
-        rate = completed / elapsed if elapsed > 0 else 0
-        remaining = total - completed
-        eta_s = remaining / rate if rate > 0 else 0
-        eta_str = f"{eta_s / 60:.1f}m" if eta_s >= 60 else f"{eta_s:.0f}s"
-
-        # Constraint utilization
-        tpm_pct = rpm_pct = conc_pct = 0.0
-        if self._tpm_tracker and self._rate_limits:
-            current_tpm = await self._tpm_tracker.get_current_tpm()
-            tpm_limit = self._rate_limits.tokens_per_minute * DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
-            tpm_pct = (current_tpm / tpm_limit * 100) if tpm_limit > 0 else 0
-        if self._rpm_tracker and self._rate_limits:
-            current_rpm = await self._rpm_tracker.get_current_rpm()
-            rpm_limit = self._rate_limits.requests_per_minute * DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
-            rpm_pct = (current_rpm / rpm_limit * 100) if rpm_limit > 0 else 0
-        if self._gate:
-            conc_pct = (self._gate.active / max(self._gate.limit, 1) * 100)
-
-        cb_state = self._circuit_breaker.state if self._circuit_breaker else "N/A"
-
-        failed_str = (
-            f" Failed:{self._stats['tasks_failed']}"
-            if self._stats['tasks_failed'] else ""
-        )
-        deferred_str = (
-            f" Deferred:{self._stats['timeouts']}"
-            if self._stats['timeouts'] else ""
-        )
-
-        print(
-            f"  Progress: {completed}/{total} ({completed/total*100:.1f}%) "
-            f"Rate: {rate:.0f}/s | "
-            f"TPM:{tpm_pct:.0f}% RPM:{rpm_pct:.0f}% "
-            f"Conc:{self._gate.active}/{self._gate.limit}({conc_pct:.0f}%) "
-            f"CB:{cb_state} "
-            f"ETA: {eta_str}{failed_str}{deferred_str}"
-        )
+    @staticmethod
+    def _fallback_fn(task: Dict, reason: str) -> None:
+        """Fallback for permanently failed tasks. Returns None —
+        _build_output_models handles unassigned ideas with __UNASSIGNED__."""
+        return None
 
     # =========================================================================
     # ID-BASED RESOLUTION
@@ -1305,57 +590,6 @@ class CodeAssigner:
                   f"({unassigned_ideas/max(total_ideas,1)*100:.1f}%)")
 
         return output
-
-    # =========================================================================
-    # RATE LIMIT HELPERS
-    # =========================================================================
-
-    async def _fetch_rate_limits(self) -> RateLimits:
-        """Fetch rate limits from API headers."""
-        from openai import AsyncOpenAI
-
-        if API_PROVIDER == "azure":
-            from config import (
-                AZURE_OPENAI_ENDPOINT,
-                AZURE_OPENAI_API_KEY,
-                AZURE_OPENAI_DEPLOYMENT_NAME,
-            )
-            client = AsyncOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                base_url=(
-                    f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/"
-                    f"{AZURE_OPENAI_DEPLOYMENT_NAME}/"
-                ),
-                default_query={"api-version": "2024-10-21"},
-            )
-            model = AZURE_OPENAI_DEPLOYMENT_NAME
-        else:
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            model = self._config.assignment_model
-
-        if API_PROVIDER == "azure":
-            response = await client.chat.completions.with_raw_response.create(
-                model=model,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_completion_tokens=5,
-            )
-        else:
-            response = await client.responses.with_raw_response.create(
-                model=model,
-                input="Hi",
-            )
-        limits = extract_rate_limits_from_response(response)
-
-        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
-            if self._config.verbose:
-                print(f"  WARNING: Using fallback rate limits "
-                      f"(TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
-            return RateLimits(
-                tokens_per_minute=FALLBACK_TPM,
-                requests_per_minute=FALLBACK_RPM,
-            )
-        return limits
-
 
     # =========================================================================
     # REPORTING

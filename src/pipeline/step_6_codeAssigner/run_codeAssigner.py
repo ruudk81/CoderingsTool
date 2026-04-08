@@ -262,6 +262,7 @@ def run_code_assignment(
     codes=None,
     attribute_assignments: Optional[Dict[str, str]] = None,
     cost_tracker=None,
+    dataset_key: str = "",
 ) -> List[CodeAssignedModel]:
     """Run code assignment and cache results."""
     assigner = CodeAssigner(
@@ -274,6 +275,7 @@ def run_code_assignment(
         codes=codes,
         attribute_assignments=attribute_assignments,
         cost_tracker=cost_tracker,
+        dataset_key=dataset_key,
     )
 
     assigned_results = assigner.assign_all()
@@ -385,6 +387,7 @@ def run_assignment():
         codes=codes,
         attribute_assignments=all_attr_assignments,
         cost_tracker=cost_tracker,
+        dataset_key=f"{FILENAME}:{variable_key}",
     )
 
     cost_tracker.finalize_step("step_6_code_assigner")
