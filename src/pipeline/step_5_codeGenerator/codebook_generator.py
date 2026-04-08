@@ -11,9 +11,10 @@ Uses SmoothRequester for rate-limited LLM dispatch.
 """
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Set
+from typing import Dict, List, Literal, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field, create_model
 import nest_asyncio
@@ -271,12 +272,12 @@ class CodebookGenerator:
                 print(f"\n  Computing representative samples "
                       f"({len(ideas_flat)} ideas, code_source={self._config.code_source})...")
 
-            representatives, self._idea_embeddings = await self._compute_representative_samples(
+            representatives, group_counts, self._idea_embeddings = await self._compute_representative_samples(
                 ideas_flat, attribute_assignments, verbose,
             )
 
-            enriched_by_domain = self._enrich_attributes_with_samples(
-                domain_facet_attributes, representatives,
+            enriched_by_domain, residual_negative = self._enrich_attributes_with_samples(
+                domain_facet_attributes, representatives, group_counts,
             )
 
             if verbose:
@@ -285,7 +286,11 @@ class CodebookGenerator:
                     for facet_map in enriched_by_domain.values()
                     for attrs in facet_map.values()
                 )
+                n_residual = sum(len(v) for v in residual_negative.values())
                 print(f"  Enriched {n_enriched} attributes with representative samples")
+                print(f"  Valence threshold: floor(log(attribute_total)) AND {self._config.min_valence_share:.0%} share")
+                if n_residual:
+                    print(f"  Residual negative ideas (below threshold): {n_residual} across {len(residual_negative)} domains")
                 print(f"  Cached {len(self._idea_embeddings)} idea embeddings")
         elif verbose:
             print(f"\n  No classified ideas available — skipping representative samples")
@@ -333,6 +338,7 @@ class CodebookGenerator:
                 'excluded_domains': excluded,
                 'enriched_attributes': enriched_by_domain.get(domain_name),
                 'all_attr_names': all_attr_names,
+                'residual_negative': residual_negative.get(domain_name, []),
             })
 
         # Dispatch via SmoothRequester
@@ -470,6 +476,7 @@ class CodebookGenerator:
 
         Returns:
             representatives: {(attr_name, valence_group) -> [idea, ...]} max N per group
+            group_counts: {(attr_name, valence_group) -> int} total ideas per group
             all_embeddings: {idea_id -> np.ndarray} for caching
         """
         config = self._config
@@ -482,7 +489,12 @@ class CodebookGenerator:
             if not attr_name:
                 continue
             valence = getattr(idea, "valence", "") or ""
-            valence_group = "negative" if valence == "-" else "positive_neutral"
+            if valence == "+":
+                valence_group = "positive"
+            elif valence == "-":
+                valence_group = "negative"
+            else:
+                valence_group = "neutral"
             key = (attr_name, valence_group)
             groups.setdefault(key, []).append(idea)
 
@@ -515,51 +527,106 @@ class CodebookGenerator:
         for idea, emb in zip(all_ideas_ordered, all_embeddings_array):
             all_embeddings[idea.idea_id] = emb
 
-        # Select representative samples per group
+        # Select representative samples per group (deduplicated by instance text)
         representatives = {}
+        group_counts = {}
         offset = 0
         for key, group_ideas in groups.items():
             group_size = len(group_ideas)
+            group_counts[key] = group_size
             group_embeddings = all_embeddings_array[offset:offset + group_size]
             offset += group_size
 
-            indices = find_representative_samples(group_embeddings, n=n)
-            representatives[key] = [group_ideas[i] for i in indices]
+            # Get all indices sorted by distance to medoid
+            all_indices = find_representative_samples(group_embeddings, n=group_size)
+
+            # Deduplicate by instance text — keep first occurrence per unique instance
+            seen_instances = set()
+            deduped = []
+            for idx in all_indices:
+                instance = (getattr(group_ideas[idx], "instance", "") or "").strip().lower()
+                if instance not in seen_instances:
+                    seen_instances.add(instance)
+                    deduped.append(idx)
+                    if len(deduped) >= n:
+                        break
+
+            representatives[key] = [group_ideas[i] for i in deduped]
 
         if verbose:
             total_reps = sum(len(v) for v in representatives.values())
             print(f"  Selected {total_reps} representative samples across {len(representatives)} groups")
 
-        return representatives, all_embeddings
+        return representatives, group_counts, all_embeddings
 
     def _enrich_attributes_with_samples(
         self,
         domain_facet_attributes: Dict[str, Dict[str, list]],
         representatives: Dict[tuple, List],
-    ) -> Dict[str, Dict[str, List[EnrichedAttribute]]]:
+        group_counts: Dict[tuple, int],
+    ) -> Tuple[Dict[str, Dict[str, List[EnrichedAttribute]]], Dict[str, List]]:
         """Enrich attributes with representative samples per valence.
 
-        Returns: {domain -> {facet -> [EnrichedAttribute, ...]}}
+        Applies prevalence threshold: valence groups below min_ideas AND min_share
+        are suppressed from the attribute and their ideas collected as residuals.
+
+        Returns:
+            enriched: {domain -> {facet -> [EnrichedAttribute, ...]}}
+            residual_negative: {domain -> [(idea, attr_name), ...]} — below-threshold negative ideas
         """
+        min_share = self._config.min_valence_share
+
         enriched = {}
+        residual_negative: Dict[str, List] = {}
+
         for domain_name, facet_attrs in domain_facet_attributes.items():
             enriched[domain_name] = {}
             for facet_name, attrs in facet_attrs.items():
                 enriched_list = []
                 for attr in attrs:
-                    pos_samples = representatives.get(
-                        (attr.attribute_name, "positive_neutral"), []
+                    pos_count = group_counts.get((attr.attribute_name, "positive"), 0)
+                    neu_count = group_counts.get((attr.attribute_name, "neutral"), 0)
+                    neg_count = group_counts.get((attr.attribute_name, "negative"), 0)
+                    total = pos_count + neu_count + neg_count
+
+                    # Attribute-level absolute minimum: floor(log(attribute_total))
+                    min_ideas = max(2, int(math.log(max(total, 2))))
+
+                    # Check if negative group meets threshold
+                    neg_meets_threshold = (
+                        neg_count >= min_ideas
+                        and (neg_count / total if total > 0 else 0) >= min_share
                     )
-                    neg_samples = representatives.get(
-                        (attr.attribute_name, "negative"), []
-                    )
+
+                    pos_samples = representatives.get((attr.attribute_name, "positive"), [])
+                    neu_samples = representatives.get((attr.attribute_name, "neutral"), [])
+
+                    if neg_meets_threshold:
+                        neg_samples = representatives.get((attr.attribute_name, "negative"), [])
+                    else:
+                        neg_samples = []
+                        # Collect residual negative ideas for domain-level meta-code
+                        if neg_count > 0:
+                            residual_negative.setdefault(domain_name, [])
+                            all_neg = representatives.get((attr.attribute_name, "negative"), [])
+                            for idea in all_neg:
+                                residual_negative[domain_name].append((idea, attr.attribute_name))
+
+                    # Deduct suppressed negative from displayed count
+                    displayed_neg_count = neg_count if neg_meets_threshold else 0
+                    displayed_total = pos_count + neu_count + displayed_neg_count
+
                     enriched_list.append(EnrichedAttribute(
                         attribute=attr,
-                        positive_neutral_samples=pos_samples,
+                        positive_samples=pos_samples,
+                        neutral_samples=neu_samples,
                         negative_samples=neg_samples,
+                        positive_count=pos_count,
+                        neutral_count=neu_count,
+                        negative_count=displayed_neg_count,
                     ))
                 enriched[domain_name][facet_name] = enriched_list
-        return enriched
+        return enriched, residual_negative
 
     # =========================================================================
     # P8 SMOOTHREQUESTER CALLBACKS
@@ -611,6 +678,7 @@ class CodebookGenerator:
                 attribute_assignments=task['attribute_assignments'],
                 excluded_domains=task['excluded_domains'],
                 enriched_attributes=task['enriched_attributes'],
+                residual_negative=task['residual_negative'],
             )
 
             response_model = self._build_constrained_response_model(task['all_attr_names'])

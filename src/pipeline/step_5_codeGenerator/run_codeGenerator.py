@@ -43,11 +43,17 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 
+# Valence prevalence thresholds (for suppressing low-prevalence valence groups)
+MIN_VALENCE_SHARE = 0.10    # Min share of attribute total (e.g., 0.10 = 10%)
+# MIN_VALENCE_IDEAS: computed as floor(log(sample_size)) at runtime
+
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-CONFIG = CodebookConfig()
+CONFIG = CodebookConfig(
+    min_valence_share=MIN_VALENCE_SHARE,
+)
 
 
 # =============================================================================
@@ -213,7 +219,7 @@ def save_results_to_file(
 
     output_filename = (
         f"{base_name}_{variable}_{sample_str}"
-        f"_step5_codebook_{date_str}.txt"
+        f"_step5_{date_str}.txt"
     )
     output_path = output_dir / output_filename
 

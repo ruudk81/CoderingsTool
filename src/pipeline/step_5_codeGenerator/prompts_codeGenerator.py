@@ -27,13 +27,28 @@ from pipeline.step_4_classifier.prompts_classifier import DiscoveredAttribute
 class EnrichedAttribute:
     """Attribute enriched with representative samples per valence group."""
     attribute: DiscoveredAttribute
-    positive_neutral_samples: list = dc_field(default_factory=list)  # max 3 ideas
-    negative_samples: list = dc_field(default_factory=list)          # max 3 ideas
+    positive_samples: list = dc_field(default_factory=list)   # max 3 ideas
+    neutral_samples: list = dc_field(default_factory=list)    # max 3 ideas
+    negative_samples: list = dc_field(default_factory=list)   # max 3 ideas
+    positive_count: int = 0   # total ideas with valence +
+    neutral_count: int = 0    # total ideas with valence 0 or empty
+    negative_count: int = 0   # total ideas with valence -
 
 
 # =============================================================================
 # HELPERS (duplicated from classifier prompts for self-containment)
 # =============================================================================
+
+def _format_sample(sample) -> str:
+    """Format a representative sample as '- "instance → interpretation"'."""
+    instance = (getattr(sample, "instance", "") or "").strip()
+    interpretation = (getattr(sample, "interpretation", "") or "").strip()
+    if instance and interpretation:
+        return f'\n    - "{instance} → {interpretation}"'
+    elif instance:
+        return f'\n    - "{instance}"'
+    return ""
+
 
 def _extract_key_idea(instruction: str) -> str:
     """Extract the 'Key idea: ...' sentence from an instruction string."""
@@ -62,6 +77,7 @@ def build_code_from_attributes_prompt(
     attribute_assignments: Optional[Dict[str, str]] = None,
     excluded_domains: Optional[List[Tuple[str, str]]] = None,
     enriched_attributes: Optional[Dict[str, List[EnrichedAttribute]]] = None,
+    residual_negative: Optional[List] = None,
 ) -> str:
     """Generate codebook codes from a structured attribute inventory.
 
@@ -117,17 +133,50 @@ def build_code_from_attributes_prompt(
             # Add representative samples if available
             ea = enriched_lookup.get(attr.attribute_name)
             if ea:
-                if ea.positive_neutral_samples:
-                    line += "\n  Positive/neutral examples:"
-                    for sample in ea.positive_neutral_samples:
-                        line += f'\n    - "{sample.idea}"'
-                if ea.negative_samples:
-                    line += "\n  Negative examples:"
-                    for sample in ea.negative_samples:
-                        line += f'\n    - "{sample.idea}"'
+                has_negative = bool(ea.negative_samples)
+
+                if has_negative:
+                    # Three-way split: show valence headers
+                    for samples, count, marker, label in [
+                        (ea.positive_samples, ea.positive_count, "↑", "Positive valence"),
+                        (ea.neutral_samples, ea.neutral_count, "○", "Neutral"),
+                        (ea.negative_samples, ea.negative_count, "↓", "Negative valence"),
+                    ]:
+                        if samples:
+                            line += f"\n  {marker} [{count} ideas] {label}:"
+                            for sample in samples:
+                                line += _format_sample(sample)
+                else:
+                    # No negative: collapse positive + neutral, no valence headers
+                    combined = list(ea.positive_samples) + list(ea.neutral_samples)
+                    if combined:
+                        line += "\n  Representative responses:"
+                        for sample in combined[:6]:
+                            line += _format_sample(sample)
 
             inventory_lines.append(line)
     inventory_block = "\n".join(inventory_lines)
+
+    # Residual negative block (below-threshold negative ideas grouped per domain)
+    residual_block = ""
+    if residual_negative:
+        residual_lines = []
+        for idea, attr_name in residual_negative:
+            instance = (getattr(idea, "instance", "") or "").strip()
+            interpretation = (getattr(idea, "interpretation", "") or "").strip()
+            if instance and interpretation:
+                residual_lines.append(f'  - "{instance} → {interpretation}" (from: {attr_name})')
+            elif instance:
+                residual_lines.append(f'  - "{instance}" (from: {attr_name})')
+        if residual_lines:
+            residual_block = f"""
+
+## Residual negative-valence ideas
+
+The following ideas had negative valence but were too few per attribute to warrant separate codes. Derive ONE broad negative meta-code for this domain that captures their shared pattern:
+
+{chr(10).join(residual_lines)}
+"""
 
     # Representative samples guidance (only when enriched)
     samples_guidance = ""
@@ -182,7 +231,7 @@ Here is the inventory of attributes for you to analyze:
 <attribute_inventory>
 {inventory_block}
 </attribute_inventory>
-{samples_guidance}
+{residual_block}{samples_guidance}
 # Code Derivation Rules
 <code_derivation_rules>
 
