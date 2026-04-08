@@ -419,7 +419,8 @@ def run_codebook():
     if extraction_metadata and getattr(extraction_metadata, "template_prefix", None):
         template_prefix = extraction_metadata.template_prefix
 
-    generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker)
+    dataset_key = f"{FILENAME}:{variable_key}"
+    generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker, dataset_key=dataset_key)
     codebook_result = generator.generate(
         taxonomy_result=taxonomy_result,
         partition_set=partition_set,
