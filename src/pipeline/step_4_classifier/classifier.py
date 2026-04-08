@@ -131,6 +131,9 @@ class TaxonomyResult:
     # Pre-P7 snapshots (before cross-facet consolidation remaps)
     raw_partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = field(default_factory=dict)
     raw_attribute_assignments: Dict[str, str] = field(default_factory=dict)
+    # Assignment confidence scores (0.0-1.0)
+    facet_confidence: Dict[str, float] = field(default_factory=dict)
+    attribute_confidence: Dict[str, float] = field(default_factory=dict)
 
 # =============================================================================
 # MAIN PROCESSOR
@@ -204,6 +207,10 @@ class TaxonomyClassifier:
         self._captured_gates: Set[str] = set()
 
         self._debug_stop_after_phase = config.debug_stop_after_phase
+
+        # Assignment confidence scores (populated by P3/P6 parse_fns)
+        self._facet_confidence: Dict[str, float] = {}
+        self._attribute_confidence: Dict[str, float] = {}
 
         # Rate limits — fetched once in _initialize_async_resources()
         self._fetched_limits = None
@@ -347,6 +354,8 @@ class TaxonomyClassifier:
     ) -> TaxonomyResult:
         """Taxonomy stages P1-P7: facets, attributes, assignments."""
         start_time = time.time()
+        self._facet_confidence.clear()
+        self._attribute_confidence.clear()
 
         # =================================================================
         # PHASE 1 (P1): Per-domain Facet Discovery (SmoothRequester)
@@ -630,6 +639,8 @@ class TaxonomyClassifier:
                 partition_assignments[domain_name] = {
                     idea.idea_id: facets[0].facet_name for idea in ideas
                 }
+                for idea in ideas:
+                    self._facet_confidence[idea.idea_id] = 1.0
                 p3_auto_assigned[domain_name] = len(ideas)
                 continue
 
@@ -692,6 +703,7 @@ class TaxonomyClassifier:
                     print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
                     for idea_id in missing:
                         partition_assignments[domain_name][idea_id] = "__UNASSIGNED__"
+                        self._facet_confidence[idea_id] = 0.0
         elif verbose and p3_auto_assigned:
             print(f"    Assignment: all {len(p3_auto_assigned)} domains auto-assigned (1 facet each)")
 
@@ -720,6 +732,7 @@ class TaxonomyClassifier:
                 partition_assignments=partition_assignments,
                 partition_attributes={},
                 attribute_assignments={},
+                facet_confidence=self._facet_confidence,
             )
 
         # =================================================================
@@ -846,6 +859,7 @@ class TaxonomyClassifier:
                 partition_assignments=partition_assignments,
                 partition_attributes={},
                 attribute_assignments={},
+                facet_confidence=self._facet_confidence,
             )
 
         # P5 consolidation per facet (SmoothRequester, concurrent)
@@ -1027,6 +1041,7 @@ class TaxonomyClassifier:
                 partition_assignments=partition_assignments,
                 partition_attributes=partition_attributes,
                 attribute_assignments={},
+                facet_confidence=self._facet_confidence,
             )
 
         # =================================================================
@@ -1061,6 +1076,7 @@ class TaxonomyClassifier:
                 if len(attributes) == 1:
                     for idea in facet_ideas:
                         attribute_assignments[idea.idea_id] = attributes[0].attribute_name
+                        self._attribute_confidence[idea.idea_id] = 1.0
                     p6_auto_assigned[facet_key] = len(facet_ideas)
                     continue
 
@@ -1131,6 +1147,7 @@ class TaxonomyClassifier:
                           f"assignment in facet '{facet_name}'")
                     for idea_id in missing:
                         attribute_assignments[idea_id] = "__UNASSIGNED__"
+                        self._attribute_confidence[idea_id] = 0.0
         elif verbose and p6_auto_assigned:
             print(f"    Assignment: all {len(p6_auto_assigned)} facets auto-assigned (1 attribute each)")
 
@@ -1167,6 +1184,8 @@ class TaxonomyClassifier:
                 attribute_assignments=attribute_assignments,
                 raw_partition_attributes=raw_partition_attributes,
                 raw_attribute_assignments=raw_attribute_assignments,
+                facet_confidence=self._facet_confidence,
+                attribute_confidence=self._attribute_confidence,
             )
 
         # =================================================================
@@ -1310,6 +1329,8 @@ class TaxonomyClassifier:
             attribute_assignments=attribute_assignments,
             raw_partition_attributes=raw_partition_attributes,
             raw_attribute_assignments=raw_attribute_assignments,
+            facet_confidence=self._facet_confidence,
+            attribute_confidence=self._attribute_confidence,
         )
 
     # =========================================================================
@@ -1366,6 +1387,7 @@ class TaxonomyClassifier:
             facet_name = task['facet_id_to_name'].get(response.assigned_facet_id)
             if facet_name is None:
                 return {}
+            self._facet_confidence[task['idea_id']] = response.confidence
             return {task['idea_id']: facet_name}
         return parse_fn
 
@@ -1431,6 +1453,7 @@ class TaxonomyClassifier:
             attr_name = task['attr_id_to_name'].get(response.assigned_attribute_id)
             if attr_name is None:
                 return {}
+            self._attribute_confidence[task['idea_id']] = response.confidence
             return {task['idea_id']: attr_name}
         return parse_fn
 

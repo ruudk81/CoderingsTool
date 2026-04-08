@@ -108,7 +108,8 @@ def print_by_facet(ideas: List[TaxonomyClassifiedSubmodel], max_per_facet: Optio
             domain = idea.domain or ""
             attribute = idea.attribute or ""
 
-            print(f"\n  • {idea.idea_id}: \"{instance}\" → {interpretation} [{valence}]")
+            conf_str = f"  conf: {idea.facet_confidence:.2f}" if idea.facet_confidence is not None else ""
+            print(f"\n  • {idea.idea_id}: \"{instance}\" → {interpretation} [{valence}]{conf_str}")
             print(f"    Taxonomy: {domain} > {facet_name} > {attribute}")
 
         if max_per_facet and len(facet_ideas) > max_per_facet:
@@ -148,7 +149,8 @@ def print_by_domain(ideas: List[TaxonomyClassifiedSubmodel], max_per_facet: Opti
                 interpretation = idea.interpretation or ""
                 valence = idea.valence or "0"
                 attribute = idea.attribute or ""
-                print(f"    • {idea.idea_id}: \"{instance}\" → {interpretation} [{valence}]  attr: {attribute}")
+                conf_str = f"  conf: {idea.facet_confidence:.2f}" if idea.facet_confidence is not None else ""
+                print(f"    • {idea.idea_id}: \"{instance}\" → {interpretation} [{valence}]  attr: {attribute}{conf_str}")
 
             if max_per_facet and len(facet_ideas) > max_per_facet:
                 print(f"    ... ({len(facet_ideas) - max_per_facet} more)")

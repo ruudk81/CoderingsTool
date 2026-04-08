@@ -69,13 +69,15 @@ def load_ideas_with_raw_attributes(
             f"Run the taxonomy pipeline first."
         )
 
-    # Build raw attribute lookup from metadata
+    # Build raw attribute lookup and confidence lookup from metadata
     raw_attr_lookup: Dict[str, str] = {}
+    attr_conf_lookup: Dict[str, float] = {}
     has_raw_data = False
     for domain_result in taxonomy_cache.partition_results.values():
         if domain_result.raw_attribute_assignments:
             has_raw_data = True
         raw_attr_lookup.update(domain_result.raw_attribute_assignments)
+        attr_conf_lookup.update(domain_result.attribute_confidence)
 
     if not has_raw_data:
         print("WARNING: No raw P6 data found in cache — re-run the pipeline to populate.")
@@ -96,12 +98,15 @@ def load_ideas_with_raw_attributes(
         if resp.response_ideas:
             ideas.extend(resp.response_ideas)
 
-    # Override attribute with raw (pre-P7) value where available
+    # Override attribute with raw (pre-P7) value where available, and apply confidence
     if has_raw_data:
         for idea in ideas:
             raw_attr = raw_attr_lookup.get(idea.idea_id)
             if raw_attr is not None:
                 idea.attribute = raw_attr
+            conf = attr_conf_lookup.get(idea.idea_id)
+            if conf is not None:
+                idea.attribute_confidence = conf
 
     total = len(ideas)
     with_attr = sum(1 for i in ideas if i.attribute and i.attribute.strip())
@@ -141,7 +146,8 @@ def print_by_attribute(ideas: List[TaxonomyClassifiedSubmodel], max_per_attribut
             domain = idea.domain or ""
             facet = idea.facet or ""
 
-            print(f"\n  • Idea: {idea.idea_id} — \"{instance}\"")
+            conf_str = f"  conf: {idea.attribute_confidence:.2f}" if idea.attribute_confidence is not None else ""
+            print(f"\n  • Idea: {idea.idea_id} — \"{instance}\"{conf_str}")
             print(f"    Ladder: {instance} → {interpretation} → {abstraction} [{valence}]")
             print(f"    Taxonomy: {domain} > {facet} > {attr_name}")
 
@@ -189,7 +195,8 @@ def print_by_domain(ideas: List[TaxonomyClassifiedSubmodel], max_per_attribute: 
                     instance = idea.instance or ""
                     interpretation = idea.interpretation or ""
                     valence = idea.valence or "0"
-                    print(f"      • {idea.idea_id}: \"{instance}\" → {interpretation} [{valence}]")
+                    conf_str = f"  conf: {idea.attribute_confidence:.2f}" if idea.attribute_confidence is not None else ""
+                    print(f"      • {idea.idea_id}: \"{instance}\" → {interpretation} [{valence}]{conf_str}")
 
                 if max_per_attribute and len(attr_ideas) > max_per_attribute:
                     print(f"      ... ({len(attr_ideas) - max_per_attribute} more)")

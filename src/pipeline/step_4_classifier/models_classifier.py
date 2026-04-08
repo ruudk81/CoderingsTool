@@ -67,6 +67,9 @@ class DomainResultModel(BaseModel):
     # Pre-P7 snapshots (before cross-facet consolidation remaps)
     raw_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     raw_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
+    # Assignment confidence scores (0.0-1.0)
+    facet_confidence: Dict[str, float] = Field(default_factory=dict)
+    attribute_confidence: Dict[str, float] = Field(default_factory=dict)
 
 
 class TaxonomyResultsCache(BaseModel):
@@ -88,6 +91,8 @@ class TaxonomyClassifiedSubmodel(IdeasExtractedSubmodel):
     facet (L3) and attribute (L4) are inherited and populated by step 4 P3/P6.
     """
     partition_name: Optional[str] = None  # Domain partition this idea belongs to
+    facet_confidence: Optional[float] = None      # P3 assignment confidence (0.0-1.0)
+    attribute_confidence: Optional[float] = None   # P6 assignment confidence (0.0-1.0)
 
 
 class TaxonomyClassifiedModel(IdeasExtractedModel):

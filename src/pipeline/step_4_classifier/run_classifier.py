@@ -49,7 +49,7 @@ from pipeline.step_4_classifier.models_classifier import (
 # All defaults defined in config_classifier.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="idea",                          # show idea text only (includes template_prefix), not full ladder
+    label_source="idea_interpretation",           # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
     label_prefix="",                              # "" or any static prefix string
     include_valence=False,                        # prepend [+]/[-]/[0] valence tag to labels
     debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–7 = stop after that phase
@@ -270,13 +270,17 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
     Creates new model instances (does not mutate encoded_text) with facet (L3),
     attribute (L4), and partition_name populated from TaxonomyResultsCache.
     """
-    # Build global lookups: idea_id -> facet/attribute/partition name
+    # Build global lookups: idea_id -> facet/attribute/partition name + confidence
     facet_lookup = {}
     attr_lookup = {}
     partition_lookup = {}  # idea_id -> partition_name
+    facet_conf_lookup = {}
+    attr_conf_lookup = {}
     for domain_result in taxonomy_cache.partition_results.values():
         facet_lookup.update(domain_result.facet_assignments)
         attr_lookup.update(domain_result.attribute_assignments)
+        facet_conf_lookup.update(domain_result.facet_confidence)
+        attr_conf_lookup.update(domain_result.attribute_confidence)
         for idea_id in domain_result.facet_assignments:
             partition_lookup[idea_id] = domain_result.partition_name
 
@@ -289,6 +293,8 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
                 idea_data["facet"] = facet_lookup.get(idea.idea_id, idea.facet or "")
                 idea_data["attribute"] = attr_lookup.get(idea.idea_id, idea.attribute or "")
                 idea_data["partition_name"] = partition_lookup.get(idea.idea_id, idea.domain or "")
+                idea_data["facet_confidence"] = facet_conf_lookup.get(idea.idea_id)
+                idea_data["attribute_confidence"] = attr_conf_lookup.get(idea.idea_id)
                 new_ideas.append(TaxonomyClassifiedSubmodel(**idea_data))
 
         resp_data = resp.model_dump(exclude={"response_ideas"})
@@ -337,6 +343,15 @@ def cache_taxonomy_results(
             iid: aname for iid, aname in taxonomy_result.raw_attribute_assignments.items()
             if iid in domain_facet_ids and aname is not None
         }
+        # Confidence scores scoped to this domain
+        domain_facet_conf = {
+            iid: c for iid, c in taxonomy_result.facet_confidence.items()
+            if iid in domain_facet_ids
+        }
+        domain_attr_conf = {
+            iid: c for iid, c in taxonomy_result.attribute_confidence.items()
+            if iid in domain_facet_ids
+        }
         pydantic_results[name] = DomainResultModel(
             partition_name=name,
             n_labels=taxonomy_result.partition_n_labels.get(name, 0),
@@ -353,6 +368,8 @@ def cache_taxonomy_results(
                 for facet_name, attrs in taxonomy_result.raw_partition_attributes.get(name, {}).items()
             },
             raw_attribute_assignments=domain_raw_attr_assigns,
+            facet_confidence=domain_facet_conf,
+            attribute_confidence=domain_attr_conf,
         )
 
     taxonomy_cache = TaxonomyResultsCache(
