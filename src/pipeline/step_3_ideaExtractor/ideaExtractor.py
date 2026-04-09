@@ -1091,7 +1091,6 @@ class IdeaExtractor:
                     interpretation=idea_response.interpretation,
                     abstraction=idea_response.abstraction,
                     domain=idea_response.domain,
-                    valence=getattr(idea_response, 'valence', "") or "",
                 ))
 
             if ideas:
@@ -1389,7 +1388,6 @@ class IdeaExtractor:
                             'instance': idea.instance,
                             'facet': idea.facet,
                             'domain': idea.domain,
-                            'valence': idea.valence,
                         })
 
                 if valid_ideas and len(response_examples) < self.config.max_code_examples:

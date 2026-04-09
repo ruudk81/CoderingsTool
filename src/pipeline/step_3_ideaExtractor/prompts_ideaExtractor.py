@@ -686,7 +686,6 @@ def _format_dimension_examples(dimension: DimensionDefinition) -> str:
         lines.append(f"  interpretation: {ex.interpretation}")
         lines.append(f"  abstraction: {ex.abstraction}")
         lines.append(f"  domain: {ex.domain}")
-        lines.append(f"  valence: {ex.valence}")
         lines.append("")
     return "\n".join(lines)
 
@@ -708,7 +707,7 @@ def build_taxonomy_enriched_extraction_prompt(
     examples_block = _format_dimension_examples(dimension)
 
     return f"""You are an expert in extracting and analyzing ideas from survey responses. 
-Your task is to systematically break down a survey response into atomic ideas, build an abstraction ladder for each idea, and classify each idea by domain and valence.
+Your task is to systematically break down a survey response into atomic ideas, build an abstraction ladder for each idea, and classify each idea by domain.
 
 The language you will be working in is:
 <language>
@@ -748,7 +747,7 @@ When in doubt → SPLIT. Over-splitting is preferred.
 Follow these splitting rules (NON-NEGOTIABLE):
 - Items joined by conjunctions (such as "and", "or", "en", "und", "et", "y", "ou") or commas that express DIFFERENT concepts must be SPLIT into separate ideas
 - Example: if a response says "faster and cheaper", this contains TWO ideas: (1) "faster", (2) "cheaper"
-- Each idea will get its own canonical phrasing, classification, and valence
+- Each idea will get its own canonical phrasing and classification
 - Do not combine ideas that touch on different aspects or dimensions
 
 ## STEP 2: BUILD THE ABSTRACTION LADDER
@@ -777,17 +776,11 @@ About the idea: {dimension.prompt_rules.abstraction_instruction}
 
 ## STEP 3 — CLASSIFY
 
-For each idea, perform two classification tasks:
+For each idea, assign it to a domain:
 
-### A. DOMAIN ASSIGNMENT
+### DOMAIN ASSIGNMENT
 {dimension.prompt_rules.domain_diagnostic}
 {domain_table}
-
-### B. VALENCE (direction of instance relative to domain)
-- "+" = the instance strengthens or reinforces this domain
-- "-" = the instance weakens or undermines this domain
-- "0" = no directional effect on this domain
-- Valence is NOT sentiment or desirability
 
 ### Examples (your output must be in {language})
 
@@ -810,10 +803,6 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     domain: str = Field(
         description="Thematic domain this idea belongs to"
     )
-    valence: Literal["+", "-", "0"] = Field(
-        default="0",
-        description="Directional effect of the instance on the domain: +, -, or 0"
-    )
 
 
 def create_extraction_model(
@@ -823,7 +812,7 @@ def create_extraction_model(
 ) -> type[TaxonomyEnrichedIdeaResponse]:
     """Create dimension-specific extraction model.
 
-    Flat schema — instance, interpretation, abstraction, domain, valence.
+    Flat schema — instance, interpretation, abstraction, domain.
     All fields enforced non-empty via validation (triggers instructor retry).
 
     The LLM does NOT return an 'idea' field — idea is derived programmatically

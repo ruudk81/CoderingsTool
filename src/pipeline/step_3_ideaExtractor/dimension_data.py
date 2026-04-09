@@ -66,7 +66,6 @@ class DimensionExample:
     abstraction: str        # Ladder rung 3: broader significance
     domain: str             # Domain (L2): thematic domain
     facet: str              # Facet (L3): dimension-specific aspect
-    valence: str            # "+", "-", or "0"
 
 
 @dataclass(frozen=True)
@@ -188,7 +187,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="sustainable urban mobility",
                 domain="infrastructure and mobility",
                 facet="infrastructure expansion",
-                valence="+",
+
             ),
             DimensionExample(
                 survey_context="Hospital feedback (entity: City Hospital)",
@@ -198,7 +197,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="process efficiency",
                 domain="administrative processes",
                 facet="process simplification",
-                valence="+",
+
             ),
         ),
     ),
@@ -273,7 +272,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="brand purpose and identity",
                 domain="brand identity",
                 facet="purpose",
-                valence="0",
+
             ),
             DimensionExample(
                 survey_context="Municipal services survey (entity: Public Library)",
@@ -283,7 +282,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="institutional social value",
                 domain="institutional role",
                 facet="social function",
-                valence="+",
+
             ),
         ),
     ),
@@ -356,7 +355,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="stakeholder engagement in education",
                 domain="school community",
                 facet="responsibility",
-                valence="+",
+
             ),
             DimensionExample(
                 survey_context="Healthcare access (entity: Regional Clinic)",
@@ -366,7 +365,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="inclusive service design",
                 domain="patient demographics",
                 facet="affected party",
-                valence="-",
+
             ),
         ),
     ),
@@ -439,7 +438,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="infrastructure capacity management",
                 domain="technical infrastructure",
                 facet="time",
-                valence="-",
+
             ),
             DimensionExample(
                 survey_context="Public transit survey (entity: Metro Line 5)",
@@ -449,7 +448,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="usage pattern constraints",
                 domain="usage patterns",
                 facet="time",
-                valence="0",
+
             ),
         ),
     ),
@@ -522,7 +521,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="personal wellbeing",
                 domain="health and wellbeing",
                 facet="need",
-                valence="+",
+
             ),
             DimensionExample(
                 survey_context="Grocery store choice (entity: FreshMart)",
@@ -532,7 +531,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="convenience and accessibility",
                 domain="convenience and access",
                 facet="value",
-                valence="+",
+
             ),
         ),
     ),
@@ -606,7 +605,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="guest journey quality",
                 domain="guest journey",
                 facet="flow",
-                valence="-",
+
             ),
             DimensionExample(
                 survey_context="Theme park survey (entity: FunWorld)",
@@ -616,7 +615,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="experiential design",
                 domain="park ambiance",
                 facet="atmosphere",
-                valence="+",
+
             ),
         ),
         clarification=(
@@ -695,7 +694,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="onboard service standards",
                 domain="onboard services",
                 facet="quality",
-                valence="-",
+
             ),
             DimensionExample(
                 survey_context="University evaluation (entity: State University)",
@@ -705,7 +704,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="institutional academic standing",
                 domain="academic standing",
                 facet="reputation",
-                valence="+",
+
             ),
         ),
         clarification=(
@@ -783,7 +782,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="core banking functionality",
                 domain="transaction services",
                 facet="processing",
-                valence="0",
+
             ),
             DimensionExample(
                 survey_context="Software feedback (entity: ProjectHub)",
@@ -793,7 +792,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="data integrity management",
                 domain="data management",
                 facet="output",
-                valence="-",
+
             ),
         ),
         clarification=(
@@ -871,7 +870,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="financial service offering",
                 domain="products and services",
                 facet="functional",
-                valence="0",
+
             ),
             DimensionExample(
                 survey_context="Car brand perception (entity: Volvo)",
@@ -881,7 +880,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="brand trust and reliability",
                 domain="safety and engineering",
                 facet="functional",
-                valence="+",
+
             ),
         ),
         clarification=(
@@ -959,7 +958,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="supply reliability risk",
                 domain="supply reliability",
                 facet="dependency",
-                valence="-",
+
             ),
             DimensionExample(
                 survey_context="Retail ecosystem (entity: ShopLocal Platform)",
@@ -969,7 +968,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="platform ecosystem value",
                 domain="platform partnerships",
                 facet="influence",
-                valence="+",
+
             ),
         ),
         clarification=(
@@ -1048,7 +1047,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="gebrek aan merkbetrokkenheid",
                 domain="general",
                 facet="uncertain response",
-                valence="0",
+
             ),
             DimensionExample(
                 survey_context="City policy survey (entity: City Council)",
@@ -1058,7 +1057,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 abstraction="complexiteit van gemeentelijk beleid",
                 domain="general",
                 facet="general remark",
-                valence="0",
+
             ),
         ),
     ),
