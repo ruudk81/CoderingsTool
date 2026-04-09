@@ -276,11 +276,15 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
     partition_lookup = {}  # idea_id -> partition_name
     facet_conf_lookup = {}
     attr_conf_lookup = {}
+    facet_val_lookup = {}
+    attr_val_lookup = {}
     for domain_result in taxonomy_cache.partition_results.values():
         facet_lookup.update(domain_result.facet_assignments)
         attr_lookup.update(domain_result.attribute_assignments)
         facet_conf_lookup.update(domain_result.facet_confidence)
         attr_conf_lookup.update(domain_result.attribute_confidence)
+        facet_val_lookup.update(domain_result.facet_valence)
+        attr_val_lookup.update(domain_result.attribute_valence)
         for idea_id in domain_result.facet_assignments:
             partition_lookup[idea_id] = domain_result.partition_name
 
@@ -295,6 +299,13 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
                 idea_data["partition_name"] = partition_lookup.get(idea.idea_id, idea.domain or "")
                 idea_data["facet_confidence"] = facet_conf_lookup.get(idea.idea_id)
                 idea_data["attribute_confidence"] = attr_conf_lookup.get(idea.idea_id)
+                # Valence cascade: P6 (most precise) > P3 > step 3 (inherited)
+                idea_data["valence"] = (
+                    attr_val_lookup.get(idea.idea_id)
+                    or facet_val_lookup.get(idea.idea_id)
+                    or idea.valence
+                    or ""
+                )
                 new_ideas.append(TaxonomyClassifiedSubmodel(**idea_data))
 
         resp_data = resp.model_dump(exclude={"response_ideas"})
@@ -352,6 +363,15 @@ def cache_taxonomy_results(
             iid: c for iid, c in taxonomy_result.attribute_confidence.items()
             if iid in domain_facet_ids
         }
+        # Valence scoped to this domain
+        domain_facet_val = {
+            iid: v for iid, v in taxonomy_result.facet_valence.items()
+            if iid in domain_facet_ids
+        }
+        domain_attr_val = {
+            iid: v for iid, v in taxonomy_result.attribute_valence.items()
+            if iid in domain_facet_ids
+        }
         pydantic_results[name] = DomainResultModel(
             partition_name=name,
             n_labels=taxonomy_result.partition_n_labels.get(name, 0),
@@ -370,6 +390,8 @@ def cache_taxonomy_results(
             raw_attribute_assignments=domain_raw_attr_assigns,
             facet_confidence=domain_facet_conf,
             attribute_confidence=domain_attr_conf,
+            facet_valence=domain_facet_val,
+            attribute_valence=domain_attr_val,
         )
 
     taxonomy_cache = TaxonomyResultsCache(

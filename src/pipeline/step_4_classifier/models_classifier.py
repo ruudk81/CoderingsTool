@@ -70,6 +70,9 @@ class DomainResultModel(BaseModel):
     # Assignment confidence scores (0.0-1.0)
     facet_confidence: Dict[str, float] = Field(default_factory=dict)
     attribute_confidence: Dict[str, float] = Field(default_factory=dict)
+    # Assignment valence (+, -, 0)
+    facet_valence: Dict[str, str] = Field(default_factory=dict)
+    attribute_valence: Dict[str, str] = Field(default_factory=dict)
 
 
 class TaxonomyResultsCache(BaseModel):

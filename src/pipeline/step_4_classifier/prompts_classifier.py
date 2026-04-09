@@ -15,7 +15,7 @@ Organized in pipeline processing order:
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -592,7 +592,13 @@ Domain: {domain_name} -- {domain_definition}
 {idea_label}
 </idea>
 
-Assign this idea to the single best-fitting facet. Return the facet ID (e.g. "F1", "F2") and your confidence (0.0-1.0).
+### VALENCE (evaluation relative to facet)
+- "+" Positive — The attribute is described as meeting or enhancing the facet
+- "-" Negative — The attribute is described as failing to meet or detracting from the facet
+- "0" Neutral — The response is descriptive, ambiguous, or does not express evaluation
+- Valence is not emotional sentiment, but evaluative direction relative to the facet
+
+Assign this idea to the single best-fitting facet. Return the facet ID (e.g. "F1", "F2"), your confidence (0.0-1.0), and the valence (+, -, or 0).
 
 Provide your response as valid JSON following the response schema provided."""
 
@@ -607,6 +613,10 @@ class FacetAssignmentResult(BaseModel):
     )
     confidence: float = Field(
         ..., description="Confidence in the assignment (0.0 to 1.0)"
+    )
+    valence: Literal["+", "-", "0"] = Field(
+        default="0",
+        description="Evaluative direction relative to the facet: + positive, - negative, 0 neutral"
     )
 
 
@@ -1096,7 +1106,13 @@ Facet: {facet_name} -- {facet_description}
 {idea_label}
 </idea>
 
-Assign this idea to the single best-fitting attribute. Return the attribute ID (e.g. "A1", "A2") and your confidence (0.0-1.0).
+### VALENCE (evaluation relative to attribute)
+- "+" Positive — The response describes a positive instance of this attribute (meeting expectations, present, sufficient)
+- "-" Negative — The response describes a negative instance of this attribute (failing expectations, absent, insufficient)
+- "0" Neutral — The response is descriptive, ambiguous, or does not express evaluation
+- Valence is not emotional sentiment, but evaluative direction relative to the attribute
+
+Assign this idea to the single best-fitting attribute. Return the attribute ID (e.g. "A1", "A2"), your confidence (0.0-1.0), and the valence (+, -, or 0).
 
 Provide your response as valid JSON following the response schema provided."""
 
@@ -1111,6 +1127,10 @@ class AttributeAssignmentResult(BaseModel):
     )
     confidence: float = Field(
         ..., description="Confidence in the assignment (0.0 to 1.0)"
+    )
+    valence: Literal["+", "-", "0"] = Field(
+        default="0",
+        description="Evaluative direction relative to the attribute: + positive, - negative, 0 neutral"
     )
 
 

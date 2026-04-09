@@ -134,6 +134,9 @@ class TaxonomyResult:
     # Assignment confidence scores (0.0-1.0)
     facet_confidence: Dict[str, float] = field(default_factory=dict)
     attribute_confidence: Dict[str, float] = field(default_factory=dict)
+    # Assignment valence (+, -, 0)
+    facet_valence: Dict[str, str] = field(default_factory=dict)
+    attribute_valence: Dict[str, str] = field(default_factory=dict)
 
 # =============================================================================
 # MAIN PROCESSOR
@@ -208,9 +211,11 @@ class TaxonomyClassifier:
 
         self._debug_stop_after_phase = config.debug_stop_after_phase
 
-        # Assignment confidence scores (populated by P3/P6 parse_fns)
+        # Assignment confidence scores and valence (populated by P3/P6 parse_fns)
         self._facet_confidence: Dict[str, float] = {}
         self._attribute_confidence: Dict[str, float] = {}
+        self._facet_valence: Dict[str, str] = {}
+        self._attribute_valence: Dict[str, str] = {}
 
         # Rate limits — fetched once in _initialize_async_resources()
         self._fetched_limits = None
@@ -356,6 +361,8 @@ class TaxonomyClassifier:
         start_time = time.time()
         self._facet_confidence.clear()
         self._attribute_confidence.clear()
+        self._facet_valence.clear()
+        self._attribute_valence.clear()
 
         # =================================================================
         # PHASE 1 (P1): Per-domain Facet Discovery (SmoothRequester)
@@ -733,6 +740,7 @@ class TaxonomyClassifier:
                 partition_attributes={},
                 attribute_assignments={},
                 facet_confidence=self._facet_confidence,
+                facet_valence=self._facet_valence,
             )
 
         # =================================================================
@@ -860,6 +868,7 @@ class TaxonomyClassifier:
                 partition_attributes={},
                 attribute_assignments={},
                 facet_confidence=self._facet_confidence,
+                facet_valence=self._facet_valence,
             )
 
         # P5 consolidation per facet (SmoothRequester, concurrent)
@@ -1042,6 +1051,7 @@ class TaxonomyClassifier:
                 partition_attributes=partition_attributes,
                 attribute_assignments={},
                 facet_confidence=self._facet_confidence,
+                facet_valence=self._facet_valence,
             )
 
         # =================================================================
@@ -1186,6 +1196,8 @@ class TaxonomyClassifier:
                 raw_attribute_assignments=raw_attribute_assignments,
                 facet_confidence=self._facet_confidence,
                 attribute_confidence=self._attribute_confidence,
+                facet_valence=self._facet_valence,
+                attribute_valence=self._attribute_valence,
             )
 
         # =================================================================
@@ -1331,6 +1343,8 @@ class TaxonomyClassifier:
             raw_attribute_assignments=raw_attribute_assignments,
             facet_confidence=self._facet_confidence,
             attribute_confidence=self._attribute_confidence,
+            facet_valence=self._facet_valence,
+            attribute_valence=self._attribute_valence,
         )
 
     # =========================================================================
@@ -1388,6 +1402,7 @@ class TaxonomyClassifier:
             if facet_name is None:
                 return {}
             self._facet_confidence[task['idea_id']] = response.confidence
+            self._facet_valence[task['idea_id']] = response.valence
             return {task['idea_id']: facet_name}
         return parse_fn
 
@@ -1454,6 +1469,7 @@ class TaxonomyClassifier:
             if attr_name is None:
                 return {}
             self._attribute_confidence[task['idea_id']] = response.confidence
+            self._attribute_valence[task['idea_id']] = response.valence
             return {task['idea_id']: attr_name}
         return parse_fn
 
