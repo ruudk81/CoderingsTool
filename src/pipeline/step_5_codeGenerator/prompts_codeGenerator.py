@@ -8,7 +8,7 @@ Organized in pipeline processing order:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -75,11 +75,9 @@ def build_code_from_attributes_prompt(
     domain_definition: str,
     domain_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
     attribute_assignments: Optional[Dict[str, str]] = None,
-    excluded_domains: Optional[List[Tuple[str, str]]] = None,
     enriched_attributes: Optional[Dict[str, List[EnrichedAttribute]]] = None,
-    residual_negative: Optional[List] = None,
 ) -> str:
-    """Generate codebook codes from a structured attribute inventory.
+    """Generate themes from a structured attribute inventory.
 
     Args:
         dimension_def: DimensionDefinition for taxonomy structure lines (or None for fallback)
@@ -87,7 +85,7 @@ def build_code_from_attributes_prompt(
         domain_definition: Inclusion definition of the domain
         domain_attributes: {domain_name: {facet_name: [DiscoveredAttribute, ...]}}
         attribute_assignments: idea_id -> attribute_name, for frequency display
-        excluded_domains: list of (name, definition) for other domains
+        enriched_attributes: {facet_name: [EnrichedAttribute, ...]} for representative samples
     """
     # Dimension-specific taxonomy structure
     if dimension_def:
@@ -98,12 +96,6 @@ def build_code_from_attributes_prompt(
         noun_phrase = dimension_name
         domain_key_idea = "the subject the statement refers to"
         attribute_key_idea = "the specific observable property being described"
-
-    # Excluded domains block (names only, no definitions)
-    excluded_block_light = ""
-    if excluded_domains:
-        excl_names = [excl_name for excl_name, _ in excluded_domains]
-        excluded_block_light = "\n".join(f"- {name}" for name in excl_names)
 
     # Compute attribute frequencies
     attr_counts: Dict[str, int] = {}
@@ -130,67 +122,26 @@ def build_code_from_attributes_prompt(
             if examples:
                 line += f" (e.g., {examples})"
 
-            # Add representative samples if available
+            # Mixed valence: show ↑/↓ blocks with samples. Mono valence: no samples.
             ea = enriched_lookup.get(attr.attribute_name)
-            if ea:
-                has_negative = bool(ea.negative_samples)
-
-                if has_negative:
-                    # Three-way split: show valence headers
-                    for samples, count, marker, label in [
-                        (ea.positive_samples, ea.positive_count, "↑", "Positive valence"),
-                        (ea.neutral_samples, ea.neutral_count, "○", "Neutral"),
-                        (ea.negative_samples, ea.negative_count, "↓", "Negative valence"),
-                    ]:
-                        if samples:
-                            line += f"\n  {marker} [{count} ideas] {label}:"
-                            for sample in samples:
-                                line += _format_sample(sample)
-                else:
-                    # No negative: collapse positive + neutral, no valence headers
-                    combined = list(ea.positive_samples) + list(ea.neutral_samples)
-                    if combined:
-                        line += "\n  Representative responses:"
-                        for sample in combined[:6]:
-                            line += _format_sample(sample)
+            if ea and ea.negative_samples:
+                pos_neu_count = ea.positive_count + ea.neutral_count
+                pos_neu_samples = list(ea.positive_samples) + list(ea.neutral_samples)
+                if pos_neu_samples:
+                    line += f"\n  ↑ [{pos_neu_count} ideas] Positive valence:"
+                    for sample in pos_neu_samples:
+                        line += _format_sample(sample)
+                if ea.negative_samples:
+                    line += f"\n  ↓ [{ea.negative_count} ideas] Negative valence:"
+                    for sample in ea.negative_samples:
+                        line += _format_sample(sample)
 
             inventory_lines.append(line)
-    inventory_block = "\n".join(inventory_lines)
+    inventory_block = "\n\n".join(inventory_lines)
 
-    # Residual negative block (below-threshold negative ideas grouped per domain)
-    residual_block = ""
-    if residual_negative:
-        residual_lines = []
-        for idea, attr_name in residual_negative:
-            instance = (getattr(idea, "instance", "") or "").strip()
-            interpretation = (getattr(idea, "interpretation", "") or "").strip()
-            if instance and interpretation:
-                residual_lines.append(f'  - "{instance} → {interpretation}" (from: {attr_name})')
-            elif instance:
-                residual_lines.append(f'  - "{instance}" (from: {attr_name})')
-        if residual_lines:
-            residual_block = f"""
+    return f"""You are a senior brand insights strategist. Your task is to analyze a brand attribute taxonomy and identify key themes that reveal how the brand is perceived.
 
-## Residual negative-valence ideas
-
-The following ideas had negative valence but were too few per attribute to warrant separate codes. Derive ONE broad negative meta-code for this domain that captures their shared pattern:
-
-{chr(10).join(residual_lines)}
-"""
-
-    # Representative samples guidance (only when enriched)
-    samples_guidance = ""
-    if enriched_lookup:
-        samples_guidance = """
-# Representative Samples
-
-Each attribute includes up to 3 representative examples per valence direction (positive/neutral and negative). These are actual survey responses selected as the most typical instances of each attribute. Use them to:
-- Understand the concrete meaning behind each attribute
-- Identify natural boundaries between phenomena
-- Ground your code definitions in observable patterns rather than abstract labels
-"""
-
-    return f"""You are tasked with deriving a PARSIMONIOUS codebook with MUTUALLY EXCLUSIVE and COLLECTIVELY EXHAUSTIVE codes that represent conceptually and semantically distinct PHENOMENA from a taxonomy inventory of attributes. These attributes were derived from written responses to a survey question.
+You will be analyzing attributes within this specific context:
 
 # Survey Context
 
@@ -212,6 +163,7 @@ This is the structure:
 - Dimension (L1): {dimension_name}: {noun_phrase}
 - Domain (L2): {domain_key_idea}
 - Attribute (L3): {attribute_key_idea}
+- Valence (L4): Whether that attribute is positive, negative, neutral, mixed, or another polarity scheme you choose
 </taxonomy_structure>
 
 You are working within this dimension:
@@ -225,31 +177,25 @@ And you are working within this domain:
 </taxonomy_domain>
 </taxonomy_context>
 
-# Attribute Inventory
+Here is the attribute inventory you need to analyze:
 
-Here is the inventory of attributes for you to analyze:
 <attribute_inventory>
 {inventory_block}
 </attribute_inventory>
-{residual_block}{samples_guidance}
-# Code Derivation Rules
-<code_derivation_rules>
 
+Your analysis must:
+- Weigh both PREVALENCE (number of ideas per attribute) and VALENCE (positive/negative/neutral sentiment where available)
+- Cluster attributes into higher-level themes rather than just summarizing individual attributes
+
+# Required Process
+
+Before generating themes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
+
+<required_process>
 1. Phenomenon Rule
-- Codes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying phenomenon MUST be merged into a single code.
+- Themes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying phenomenon MUST be merged into a single theme.
 
-2. Dimension Rule
-Only include codes that belong to this domain:
-- {domain_name} — {domain_definition}
-
-Do not include codes that belong to these excluded domains:
-{excluded_block_light}
-
-3. Specificity Rule
-- Do NOT create separate codes simply because attributes differ in specificity. General statements and specific examples should be treated as indicators of the same phenomenon.
-- Example: "The train was delayed by 20 minutes" and "public transport is often late" both indicate unreliable punctuality and should be coded under the same broader phenomenon.
-
-4. Prevalence Weighting Rule
+2. Prevalence Weighting Rule
 The number of ideas linked to each attribute MUST guide code construction.
 * Attributes with HIGH idea counts MUST define the core structure of the codebook.
 * The codebook MUST be anchored in a small number of dominant phenomena, not a long tail of low-frequency codes.
@@ -259,36 +205,22 @@ LOW-prevalence attributes MUST be:
 * abstracted into a higher-level phenomenon aligned with dominant patterns, OR
 * combined into a broader conceptual category that captures their shared meaning.
 
-Balancing Constraint — Structured Differentiation: Do NOT collapse all attributes into a single dominant "meta-code." If multiple conceptually distinct high- or mid-prevalence patterns exist, they MUST be represented as separate codes.
+3. Mutual Exclusivity Rule
+Themes must represent clearly different phenomena so that responses can be coded consistently without ambiguity. If a trained coder would hesitate between two themes when coding a response, they must be merged.
 
-5. Mutual Exclusivity Rule
-Codes must represent clearly different phenomena so that responses can be coded consistently without ambiguity.
+4. Collectively Exhaustivity Rule
+Themes must cover all attributes.
+
+5. No Generic Sentiment Themes
+Every theme must describe a specific phenomenon. Avoid generic sentiment labels like "positive impression" or "negative feeling." If an attribute captures only diffuse sentiment without a specific subject, absorb it into the most relevant specific theme.
 
 6. Valence Sensitivity Rule
 - Generate separate codes for positive and negative phenomena.
 - Do NOT combine praise and criticism into a single code.
 - If the attributes contain both positive and negative aspects of similar phenomena, create distinct codes for each valence direction.
-</code_derivation_rules>
-
-# Required Process
-
-Before generating your final codes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
-
-<required_process>
-1. Identify higher-prevalence attributes (those with the largest idea count share) and treat them as anchors
-2. Group attributes into underlying phenomena, giving priority to higher-prevalence clusters.
-* Map low-prevalence attributes onto these dominant phenomena wherever possible.
-* Abstract low-prevalence attributes to a broader conceptual level rather than preserving them as standalone codes.
-* Only create a separate code for a low-prevalence attribute if it represents a clearly distinct phenomenon that cannot reasonably be merged without losing essential meaning.
-* Do NOT collapse conceptually distinct attributes into a single broad meta-code merely because one cluster is highly prevalent.
-3. Check for domain relevance - exclude any phenomena outside the allowed domain
-4. Check for valence distinctions and split positive vs negative where needed
-5. Name each phenomenon using a 3-5 word noun phrase
-6. Verify parsimony - ensure the codebook is dominated by high-prevalence phenomena and contains a minimal number of codes (typically 5-8)
-7. Explicitly justify any code that is primarily based on low-prevalence attributes instead of merging it
 </required_process>
 
-# Output Requirements
+Output Requirements
 
 Provide output as valid JSON following the response schema provided.
 
@@ -320,20 +252,19 @@ class CodeGenerationFromAttributesResult(BaseModel):
     """P8 output: codes derived from attributes."""
     scratchpad: str = Field(
         ..., description=(
-            "Step-by-step reasoning before deriving codes: "
-            "(1) identify higher-prevalence attributes (largest idea counts) and treat them as anchors, "
-            "(2) apply Prevalence Weighting Rule with Balancing Constraint, "
-            "(3) check for domain relevance - exclude any phenomena outside the allowed domain, "
-            "(4) check for valence distinctions and split positive vs negative where needed, "
-            "(5) name each phenomenon (3–5 word noun phrase), "
-            "(6) verify parsimony - ensure the codebook is dominated by high-prevalence phenomena and contains a minimal number of codes (typically 5–8), "
-            "(7) explicitly justify any code that is primarily based on low-prevalence attributes instead of merging it"
+            "Step-by-step reasoning before deriving themes: "
+            "(1) Phenomenon Rule — identify underlying phenomena and merge attributes, "
+            "(2) Prevalence Weighting Rule — anchor in high-prevalence phenomena, absorb low-prevalence, "
+            "(3) Mutual Exclusivity — if a coder would hesitate between two themes, merge them, "
+            "(4) Collective Exhaustivity — ensure all attributes are covered, "
+            "(5) No Generic Sentiment — absorb diffuse sentiment into specific themes, "
+            "(6) Valence Sensitivity — separate positive and negative phenomena"
         )
     )
     codes: List[CodeFromAttributes] = Field(
         ..., description=(
-            "Formal codes derived from the attribute inventory. "
-            "Codes should reflect dominant, high-prevalence phenomena, with low-prevalence attributes absorbed into broader codes where possible.")
+            "Themes derived from the attribute inventory. "
+            "Themes should reflect dominant, high-prevalence phenomena, with low-prevalence attributes absorbed into broader themes where possible.")
     )
 
 
@@ -350,46 +281,32 @@ def build_codebook_consolidation_prompt(
     dimension_description: str,
     dimension_def: Optional['DimensionDefinition'] = None,
     raw_codes: List[CodeFromAttributes],
-    code_provenance: Dict[int, str],
     code_frequencies: Optional[Dict[int, int]] = None,
 ) -> str:
     """Consolidate per-domain codes into a final parsimonious, MECE codebook.
 
     Args:
         raw_codes: All codes from P8 (per-domain)
-        code_provenance: Maps code index to domain_name
         code_frequencies: Maps code index to approximate idea count
         dimension_def: DimensionDefinition for dimension-specific diagnostics
     """
-    # Dimension-specific diagnostics
+    # Dimension-specific diagnostic stem
     if dimension_def:
-        domain_diagnostic = dimension_def.prompt_rules.domain_diagnostic
         code_diagnostic = dimension_def.prompt_rules.code_diagnostic
     else:
-        domain_diagnostic = "What question is being answered?"
         code_diagnostic = "This code is about …"
 
-    # Format raw codes with domain provenance tags and frequency
+    # Format candidate codes: one line per code
     code_lines = []
     for i, code in enumerate(raw_codes):
-        provenance = code_provenance.get(i, "")
-        domain_tag = f"({provenance}) " if provenance else ""
         freq = code_frequencies.get(i, 0) if code_frequencies else 0
         freq_tag = f" (~{freq} ideas)" if freq > 0 else ""
+        code_lines.append(f"[C{i+1}] {code.code_name}{freq_tag}: {code.definition}")
+    codes_block = "\n".join(code_lines)
 
-        attrs = ", ".join(code.source_attributes[:5]) if code.source_attributes else "—"
-        indicators = "; ".join(code.typical_indicators[:3]) if code.typical_indicators else "—"
-        code_lines.append(
-            f"[C{i+1}] {code.code_name}{freq_tag}\n" #{domain_tag}
-            f"      Definition: {code.definition}\n"
-            f"      Indicators: {indicators}\n"
-            f"      Source attributes: {attrs}"
-        )
-    codes_block = "\n\n".join(code_lines)
+    return f"""You are a senior brand insights strategist. Your task is to consolidate {len(raw_codes)} candidate themes into a parsimonious codebook where every code is mutually exclusive and collectively exhaustive.
 
-    return f"""You are an expert in qualitative research.
-
-Your task is to generate a parsimonious and unambiguous codebook from {len(raw_codes)} candidate codes. The codebook must contain codes that are mutually exclusive and collectively exhaustive. A critical aspect is that there is no conceptual overlap between codes, and codes should be semantically unambiguous through the lens of the coding dimension.
+# Survey Context
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -397,141 +314,52 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
+# Dimension Context
+
 <dimension_context>
 Dimension: {dimension_name} — {dimension_description}
 </dimension_context>
 
-<candidate_codes>
+# Candidate Themes
+
+These themes were generated per domain. Your job is to consolidate across domains — merge overlaps, remove redundancy, and produce a final codebook.
+
+<candidate_themes>
 {codes_block}
-</candidate_codes>
+</candidate_themes>
 
-Before generating your final codes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
+# Required Process
 
-<workflow>
-## STEP 1 — VALENCE SEPARATION (MANDATORY FIRST PASS)
+Before generating your final codebook, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
 
-Before any clustering:
-1. Assign each attribute a valence:
-    * Positive (praise / favorable evaluation)
-    * Negative (criticism / unfavorable evaluation)
-    * Neutral (only if purely descriptive)
-2. NEVER group or merge across valence boundaries
-3. If an attribute contains both positive and negative aspects:
-    * Split it into separate entries BEFORE proceeding
-4. Treat positive and negative versions of the same phenomenon as distinct codes
+<required_process>
+1. Valence Rule
+- NEVER merge across valence boundaries. Positive and negative versions of the same phenomenon are distinct codes.
+- If a candidate theme mixes positive and negative aspects, split it before proceeding.
 
-Rule: Opposite evaluations MUST NEVER be combined.
+2. Consolidation Rule
+- Merge aggressively within the same valence: if two themes could apply to the same response, they must be merged.
+- After merging, check every pair: would a trained coder hesitate between them? If yes, merge further or sharpen definitions until the ambiguity is gone.
 
-## STEP 2 — AGGRESSIVE MERGING WITHIN CLUSTERS
+3. Purity Rule
+- Each code must describe ONE phenomenon and ONE mechanism (value, functional property, perception, or cause — not a mix).
+- Each code must be explainable in one sentence without listing unrelated things.
+- Code names must not join unrelated concepts with "and" — abstract to a single phenomenon instead.
 
-Within each valence + question cluster:
+4. Prevalence Rule
+- High-frequency themes define the core structure of the codebook.
+- Low-frequency themes must be absorbed into broader codes unless they represent a clearly distinct phenomenon that cannot be merged upward.
+- Ask: "Does this code exist because it is conceptually necessary, or just because it appeared rarely?" If the latter, merge or remove.
+</required_process>
 
-Merge until a coder would NEVER hesitate between remaining codes.
+Each code must include a diagnostic_test that completes: "{code_diagnostic}"
+The diagnostic must be unique per code and must not overlap with any other code.
 
-Strict Merge Rule: If both can apply to the same sentence → merge
+# Output Requirements
 
-## STEP 3 — MECHANISM PURITY CHECK
+Provide output as valid JSON following the response schema provided.
 
-For each code, ask: Is this describing:
-* a value (e.g., fair, responsible)
-* a functional property (e.g., fast, easy to use)
-* a perception/judgment (e.g., reliable, outdated)
-* a cause/reason (e.g., due to specific actions or policies)
-
-If mixed → SPLIT
-
-## STEP 4 — NEIGHBOR STRESS TEST
-
-For every pair of same-valence codes, ask: "Would a trained coder hesitate between these?"
-
-If YES:
-1. Try sharpening definitions
-2. If still ambiguous → merge
-
-## STEP 5 — ONE-SENTENCE COVERAGE TEST
-
-Each code must pass: Can I explain what this covers in ONE sentence without listing multiple unrelated things?
-
-If NO → split
-
-## STEP 6 — NON-REDUNDANCY KILL STEP
-
-For each code: "If I delete this, do I lose meaning?"
-
-If NO → DELETE it
-
-## STEP 7 — FINAL DIAGNOSTIC UNIQUENESS CHECK
-
-Each code must complete the sentence:
-"{domain_diagnostic}"
-
-Rules:
-* The completion must be specific and distinct
-* It must reflect a SINGLE valence direction (positive OR negative)
-
-If two codes produce similar completions → MERGE
-
-If NO → delete
-
-## STEP 8 — PREVALENCE WEIGHTING & STRUCTURAL BALANCING
-
-Use attribute frequency to shape the FINAL codebook.
-
-8.1 Core Structure Rule
-- High-prevalence attributes MUST define the main codes
-- The codebook should be built around a small number of dominant phenomena
-
-8.2 Low-Prevalence Constraint
-Low-frequency attributes MUST NOT become standalone codes unless:
-- They represent a clearly distinct phenomenon, AND
-- They cannot be meaningfully merged upward
-
-Otherwise, they must be:
-- Abstracted into a higher-level code, OR
-- Combined into a broader shared category
-
-8.3 Balancing Constraint — Structured Differentiation
-- DO NOT collapse everything into a single dominant code
-- If multiple distinct high- or mid-prevalence patterns exist:→ they MUST remain separate
-
-8.4 Final Check
-Ask: "Does this code exist because it is conceptually necessary, or just because it appeared rarely?"
-
-If the latter → merge or remove
-</workflow>
-
-<hard_rules>
-### NO DOUBLE-BARREL CODES
-If a code name contains "and" joining unrelated concepts → abstract to single phenomenon code name
-
-### NO CAUSE + ATTRIBUTE MIX
-Do not combine a cause/reason with a descriptive attribute in a single code. Split into separate codes for each mechanism.
-</hard_rules>
-
-<validation_checklist>
-Before finalizing, verify each code passes:
-- Single valence only
-- Answers ONE question
-- Cannot co-occur with same-valence code
-- Mechanism is pure
-- One-sentence coverage
-- Diagnostic is unique
-- Prevalence weight rule with balancing constraint  
-</validation_checklist>
-
-<code_template>
-Each code must include:
-- **code_name**: 3–5 word noun phrase, must reflect ONE dimension only
-= **definition**: clear, interpretive claim — must specify what makes this DISTINCT
-- **diagnostic_test**: Must follow: "{code_diagnostic}" — must NOT overlap with any other code
-- **valence**: positive / negative / neutral
-- **typical_indicators**: concrete phrases (not abstract labels)
-- **source_attributes**: all merged origins
-</code_template>
-
-All output MUST be in {language}.
-
-Provide output as valid JSON following the response schema provided."""
+All output MUST be in {language}."""
 
 class ConsolidatedCode(BaseModel):
     """A consolidated code with diagnostic test for MECE verification."""
@@ -566,15 +394,11 @@ class CodebookConsolidationResult(BaseModel):
     """P9 output: consolidated codebook."""
     scratchpad: str = Field(
         ..., description=(
-            "Step-by-step reasoning following the 8-step workflow: "
-            "(1) pre-structure by valence, "
-            "(2) aggressive merging within clusters, "
-            "(3) mechanism purity check, "
-            "(4) neighbour stress test, "
-            "(5) one-sentence coverage test, "
-            "(6) non-redundancy kill step, "
-            "(8) final diagnostic uniqueness check, "
-            "(8) prevalence weighting and structural balancing check"
+            "Step-by-step reasoning: "
+            "(1) Valence Rule — separate by valence, never merge across boundaries, "
+            "(2) Consolidation Rule — aggressively merge within valence until no coder would hesitate, "
+            "(3) Purity Rule — one phenomenon, one mechanism per code, "
+            "(4) Prevalence Rule — high-frequency defines structure, absorb low-frequency upward"
         )
     )
     codes: List[ConsolidatedCode] = Field(
