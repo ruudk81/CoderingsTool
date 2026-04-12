@@ -76,6 +76,7 @@ def build_code_from_attributes_prompt(
     domain_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
     attribute_assignments: Optional[Dict[str, str]] = None,
     enriched_attributes: Optional[Dict[str, List[EnrichedAttribute]]] = None,
+    theme_count_hint: Optional[tuple] = None,
 ) -> str:
     """Generate themes from a structured attribute inventory.
 
@@ -86,6 +87,7 @@ def build_code_from_attributes_prompt(
         domain_attributes: {domain_name: {facet_name: [DiscoveredAttribute, ...]}}
         attribute_assignments: idea_id -> attribute_name, for frequency display
         enriched_attributes: {facet_name: [EnrichedAttribute, ...]} for representative samples
+        theme_count_hint: (low, high) theme count span from UMAP+HDBSCAN, or None
     """
     # Dimension-specific taxonomy structure
     if dimension_def:
@@ -139,7 +141,14 @@ def build_code_from_attributes_prompt(
             inventory_lines.append(line)
     inventory_block = "\n\n".join(inventory_lines)
 
-    return f"""You are a senior brand insights strategist. Your task is to analyze a brand attribute taxonomy and identify key themes that reveal how the brand is perceived.
+    # Theme count target — task-level framing (harmonic mean of attribute-count span)
+    if theme_count_hint is not None:
+        effective_n, target = theme_count_hint
+        theme_target_line = f" This domain has {effective_n} attribute inputs. Aim for approximately {target} themes — deviate only if your analysis clearly justifies it."
+    else:
+        theme_target_line = ""
+
+    return f"""You are a senior brand insights strategist. Your task is to analyze a brand attribute taxonomy and identify key themes that reveal how the brand is perceived.{theme_target_line}
 
 You will be analyzing attributes within this specific context:
 

@@ -15,7 +15,8 @@ class CodebookConfig:
     # LLM settings (derived from MODEL_FAMILY toggle)
     model_p8: str = get_step_model("codegen_p8")  # P8: Code Generation from Attributes
     model_p9: str = get_step_model("codegen_p9")  # P9: Codebook Consolidation
-    temperature: float = 0.3
+    temperature_p8: float = 0.3
+    temperature_p9: float = 0.0
 
     # P8: Code Generation from Attributes (per-domain)
     max_tokens_code_from_attributes: int = 16000

@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Set
 
+
 from pydantic import BaseModel, Field, create_model
 import nest_asyncio
 
@@ -137,7 +138,8 @@ class CodebookGenerator:
                 "p9_codebook_consolidation": self._model_p9,
             })
 
-        self._temperature = config.temperature
+        self._temperature_p8 = config.temperature_p8
+        self._temperature_p9 = config.temperature_p9
         self._max_tokens_code_from_attributes = config.max_tokens_code_from_attributes
         self._max_tokens_codebook_consolidation = config.max_tokens_codebook_consolidation
 
@@ -321,13 +323,33 @@ class CodebookGenerator:
                 for attr in facet_attrs
             ]
 
+            # Compute theme count hint from attribute count + valence splits
+            n_attrs = len(all_attr_names)
+            n_mixed = 0
+            enriched_domain = enriched_by_domain.get(domain_name)
+            if enriched_domain:
+                for ea_list in enriched_domain.values():
+                    for ea in ea_list:
+                        if ea.negative_samples:
+                            n_mixed += 1
+            effective_n = n_attrs + n_mixed
+            hint_low = max(2, math.ceil(math.log(max(effective_n, 2)) * 1.5))
+            hint_high = effective_n
+            # Harmonic mean: biases toward lower bound for parsimony
+            target = round(2 * hint_low * hint_high / (hint_low + hint_high))
+            theme_hint = (effective_n, target)
+
+            if verbose:
+                print(f"    {domain_name}: {n_attrs} attrs (+{n_mixed} mixed) → aim ~{target} themes")
+
             p8_tasks.append({
                 'domain_name': domain_name,
                 'domain_facet_attributes': {domain_name: domain_attrs},
                 'attribute_assignments': domain_attr_assigns,
                 'domain_definition': partition_contexts[domain_name].partition_definition,
-                'enriched_attributes': enriched_by_domain.get(domain_name),
+                'enriched_attributes': enriched_domain,
                 'all_attr_names': all_attr_names,
+                'theme_count_hint': theme_hint,
             })
 
         # Dispatch via SmoothRequester
@@ -648,6 +670,7 @@ class CodebookGenerator:
                 domain_attributes=task['domain_facet_attributes'],
                 attribute_assignments=task['attribute_assignments'],
                 enriched_attributes=task['enriched_attributes'],
+                theme_count_hint=task.get('theme_count_hint'),
             )
 
             response_model = self._build_constrained_response_model(task['all_attr_names'])
@@ -663,7 +686,7 @@ class CodebookGenerator:
                     prompt_type="code_generation_from_attributes",
                     metadata={
                         "model": self._model_p8,
-                        "temperature": self._temperature,
+                        "temperature": self._temperature_p8,
                         "max_tokens": self._max_tokens_code_from_attributes,
                         "language": prompt_context.language,
                         "n_total_attributes": len(task['all_attr_names']),
@@ -675,7 +698,7 @@ class CodebookGenerator:
             return {
                 'prompt': prompt,
                 'response_model': response_model,
-                'temperature': self._temperature,
+                'temperature': self._temperature_p8,
                 'max_tokens': self._max_tokens_code_from_attributes,
                 'max_retries': 2,
                 'extra_kwargs': get_reasoning_params(self._model_p8, phase="codegen_p8"),
@@ -724,7 +747,7 @@ class CodebookGenerator:
                     prompt_type="codebook_consolidation",
                     metadata={
                         "model": self._model_p9,
-                        "temperature": self._temperature,
+                        "temperature": self._temperature_p9,
                         "max_tokens": self._max_tokens_codebook_consolidation,
                         "language": prompt_context.language,
                         "n_raw_codes": len(task['raw_codes']),
@@ -736,7 +759,7 @@ class CodebookGenerator:
             return {
                 'prompt': prompt,
                 'response_model': CodebookConsolidationResult,
-                'temperature': self._temperature,
+                'temperature': self._temperature_p9,
                 'max_tokens': self._max_tokens_codebook_consolidation,
                 'max_retries': 2,
                 'extra_kwargs': get_reasoning_params(self._model_p9, phase="codegen_p9"),
