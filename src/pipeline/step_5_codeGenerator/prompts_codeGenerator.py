@@ -148,10 +148,14 @@ def build_code_from_attributes_prompt(
             theme_target_line = f" Aim for approximately {low} themes — deviate only if your analysis clearly justifies it."
         else:
             theme_target_line = f" Aim for between {low} and {high} themes — deviate only if your analysis clearly justifies it."
+        theme_range = f"{low}–{high}"
     else:
         theme_target_line = ""
+        theme_range = ""
 
-    return f"""You are a senior brand insights strategist. Your task is to analyze a brand attribute taxonomy and identify key themes that reveal how the brand is perceived.{theme_target_line}
+    return f"""You are a senior brand insights strategist. 
+Your task is to analyze a brand attribute taxonomy and identify key themes that reveal how the brand is perceived.
+{theme_target_line}
 
 You will be analyzing attributes within this specific context:
 
@@ -201,11 +205,11 @@ Your analysis must:
 
 # Required Process
 
-Before generating themes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
+Before generating {theme_range} themes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
 
 <required_process>
 1. Phenomenon Rule
-- Themes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying phenomenon MUST be merged into a single theme.
+- Your {theme_range} themes must represent underlying PHENOMENA rather than individual attributes. Multiple attributes describing different manifestations of the same underlying phenomenon MUST be merged into a single theme.
 
 2. Prevalence Weighting Rule
 The number of ideas linked to each attribute MUST guide code construction.
@@ -325,7 +329,8 @@ def build_codebook_consolidation_prompt(
 
     return f"""You are an expert in qualitative research.
 
-Your task is to generate a parsimonious and unambiguous codebook from {len(raw_codes)} candidate codes. The codebook must contain codes that are mutually exclusive and collectively exhaustive. A critical aspect is that there is no conceptual overlap between codes, and codes should be semantically unambiguous through the lens of the coding dimension.
+Your task is to generate a parsimonious and unambiguous codebook from {len(raw_codes)} candidate codes.
+The codebook must contain codes that are mutually exclusive and collectively exhaustive. A critical aspect is that there is no conceptual overlap between codes, and codes should be semantically unambiguous through the lens of the coding dimension.
 
 <survey_context>
 Survey question: "{survey_question}"

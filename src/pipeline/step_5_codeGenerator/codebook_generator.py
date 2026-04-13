@@ -54,6 +54,8 @@ from .prompts_codeGenerator import (
     # Enriched attributes for P8 representative samples
     EnrichedAttribute,
 )
+import numpy as np
+from utils.clusterer import estimate_theme_count
 from utils.embedder import SharedEmbedder, format_idea_text, find_representative_samples
 
 
@@ -323,24 +325,37 @@ class CodebookGenerator:
                 for attr in facet_attrs
             ]
 
-            # Compute theme count hint from attribute count + valence splits
-            n_attrs = len(all_attr_names)
-            n_mixed = 0
+            # Compute theme count hint via UMAP + HDBSCAN clustering
             enriched_domain = enriched_by_domain.get(domain_name)
-            if enriched_domain:
-                for ea_list in enriched_domain.values():
-                    for ea in ea_list:
-                        if ea.negative_samples:
-                            n_mixed += 1
-            effective_n = n_attrs + n_mixed
-            hint_low = max(2, math.ceil(math.log(max(effective_n, 2)) * 1.5))
-            hint_high = effective_n
-            # Harmonic mean: biases toward lower bound for parsimony
-            target = round(2 * hint_low * hint_high / (hint_low + hint_high))
-            theme_hint = (effective_n, target)
+
+            # Collect domain idea embeddings
+            domain_embedding_vectors = [
+                self._idea_embeddings[iid]
+                for iid in domain_facet_ids
+                if iid in self._idea_embeddings
+            ]
+
+            # min_attr_len = smallest idea count across attributes (not valence)
+            domain_attr_counts = {}
+            for attr_name in domain_attr_assigns.values():
+                domain_attr_counts[attr_name] = domain_attr_counts.get(attr_name, 0) + 1
+            min_attr_len = min(domain_attr_counts.values()) if domain_attr_counts else 2
+
+            if len(domain_embedding_vectors) >= 15:
+                theme_hint = estimate_theme_count(
+                    np.array(domain_embedding_vectors),
+                    n_components=15,
+                    min_cluster_size=min_attr_len,
+                )
+            else:
+                theme_hint = None
 
             if verbose:
-                print(f"    {domain_name}: {n_attrs} attrs (+{n_mixed} mixed) → aim ~{target} themes")
+                n_attrs = len(all_attr_names)
+                if theme_hint:
+                    print(f"    {domain_name}: {n_attrs} attrs, min_attr_len={min_attr_len} → cluster span {theme_hint[0]}–{theme_hint[1]}")
+                else:
+                    print(f"    {domain_name}: {n_attrs} attrs → no cluster hint (too few embeddings or no structure)")
 
             p8_tasks.append({
                 'domain_name': domain_name,
