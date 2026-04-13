@@ -87,7 +87,7 @@ def build_code_from_attributes_prompt(
         domain_attributes: {domain_name: {facet_name: [DiscoveredAttribute, ...]}}
         attribute_assignments: idea_id -> attribute_name, for frequency display
         enriched_attributes: {facet_name: [EnrichedAttribute, ...]} for representative samples
-        theme_count_hint: (low, high) theme count span from UMAP+HDBSCAN, or None
+        theme_count_hint: (low, high) theme count span from UMAP + HDBSCAN clustering, or None
     """
     # Dimension-specific taxonomy structure
     if dimension_def:
@@ -141,10 +141,13 @@ def build_code_from_attributes_prompt(
             inventory_lines.append(line)
     inventory_block = "\n\n".join(inventory_lines)
 
-    # Theme count target — task-level framing (harmonic mean of attribute-count span)
+    # Theme count target — data-driven span from UMAP + HDBSCAN clustering
     if theme_count_hint is not None:
-        effective_n, target = theme_count_hint
-        theme_target_line = f" This domain has {effective_n} attribute inputs. Aim for approximately {target} themes — deviate only if your analysis clearly justifies it."
+        low, high = theme_count_hint
+        if low == high:
+            theme_target_line = f" Aim for approximately {low} themes — deviate only if your analysis clearly justifies it."
+        else:
+            theme_target_line = f" Aim for between {low} and {high} themes — deviate only if your analysis clearly justifies it."
     else:
         theme_target_line = ""
 
@@ -305,17 +308,24 @@ def build_codebook_consolidation_prompt(
     else:
         code_diagnostic = "This code is about …"
 
-    # Format candidate codes: one line per code
+    # Format candidate codes: multi-line block per code
     code_lines = []
     for i, code in enumerate(raw_codes):
         freq = code_frequencies.get(i, 0) if code_frequencies else 0
         freq_tag = f" (~{freq} ideas)" if freq > 0 else ""
-        code_lines.append(f"[C{i+1}] {code.code_name}{freq_tag}: {code.definition}")
-    codes_block = "\n".join(code_lines)
+        attrs = ", ".join(code.source_attributes[:5]) if code.source_attributes else "—"
+        indicators = "; ".join(code.typical_indicators[:3]) if code.typical_indicators else "—"
+        code_lines.append(
+            f"[C{i+1}] {code.code_name}{freq_tag}\n"
+            f"      Definition: {code.definition}\n"
+            f"      Indicators: {indicators}\n"
+            f"      Source attributes: {attrs}"
+        )
+    codes_block = "\n\n".join(code_lines)
 
-    return f"""You are a senior brand insights strategist. Your task is to consolidate {len(raw_codes)} candidate themes into a parsimonious codebook where every code is mutually exclusive and collectively exhaustive.
+    return f"""You are an expert in qualitative research.
 
-# Survey Context
+Your task is to generate a parsimonious and unambiguous codebook from {len(raw_codes)} candidate codes. The codebook must contain codes that are mutually exclusive and collectively exhaustive. A critical aspect is that there is no conceptual overlap between codes, and codes should be semantically unambiguous through the lens of the coding dimension.
 
 <survey_context>
 Survey question: "{survey_question}"
@@ -323,52 +333,158 @@ Language: {language}
 {dataset_context_section}
 </survey_context>
 
-# Dimension Context
-
 <dimension_context>
 Dimension: {dimension_name} — {dimension_description}
 </dimension_context>
 
-# Candidate Themes
-
-These themes were generated per domain. Your job is to consolidate across domains — merge overlaps, remove redundancy, and produce a final codebook.
-
-<candidate_themes>
+<candidate_codes>
 {codes_block}
-</candidate_themes>
+</candidate_codes>
 
-# Required Process
+Before generating your final codes, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
 
-Before generating your final codebook, you MUST work through your analysis step-by-step in a scratchpad. In your scratchpad field:
+<workflow>
+## STEP 1 — VALENCE SEPARATION (MANDATORY FIRST PASS)
 
-<required_process>
-1. Valence Rule
-- NEVER merge across valence boundaries. Positive and negative versions of the same phenomenon are distinct codes.
-- If a candidate theme mixes positive and negative aspects, split it before proceeding.
+Before any clustering:
+1. Assign each code a valence:
+    * Positive (praise / favorable evaluation)
+    * Negative (criticism / unfavorable evaluation)
+    * Neutral (only if purely descriptive)
+2. NEVER group or merge across valence boundaries
+3. If a code contains both positive and negative aspects:
+    * Split it into separate entries BEFORE proceeding
+4. Treat positive and negative versions of the same phenomenon as distinct codes
 
-2. Consolidation Rule
-- Merge aggressively within the same valence: if two themes could apply to the same response, they must be merged.
-- After merging, check every pair: would a trained coder hesitate between them? If yes, merge further or sharpen definitions until the ambiguity is gone.
+Rule: Opposite evaluations MUST NEVER be combined.
 
-3. Purity Rule
-- Each code must describe ONE phenomenon and ONE mechanism (value, functional property, perception, or cause — not a mix).
-- Each code must be explainable in one sentence without listing unrelated things.
-- Code names must not join unrelated concepts with "and" — abstract to a single phenomenon instead.
+## STEP 2 — AGGRESSIVE MERGING WITHIN CLUSTERS
 
-4. Prevalence Rule
-- High-frequency themes define the core structure of the codebook.
-- Low-frequency themes must be absorbed into broader codes unless they represent a clearly distinct phenomenon that cannot be merged upward.
-- Ask: "Does this code exist because it is conceptually necessary, or just because it appeared rarely?" If the latter, merge or remove.
-</required_process>
+Within each valence cluster:
 
-Each code must include a diagnostic_test that completes: "{code_diagnostic}"
-The diagnostic must be unique per code and must not overlap with any other code.
+Merge until a coder would NEVER hesitate between remaining codes.
 
-# Output Requirements
+Strict Merge Rule: If both can apply to the same sentence → merge
 
-Provide output as valid JSON following the response schema provided.
+## STEP 3 — MECHANISM PURITY CHECK
 
-All output MUST be in {language}."""
+For each code, ask: Is this describing:
+* a value (e.g., fair, responsible)
+* a functional property (e.g., fast, easy to use)
+* a perception/judgment (e.g., reliable, outdated)
+* a cause/reason (e.g., due to specific actions or policies)
+
+If mixed → SPLIT
+
+## STEP 4 — NEIGHBOR STRESS TEST
+
+For every pair of same-valence codes, ask: "Would a trained coder hesitate between these?"
+
+If YES:
+1. Try sharpening definitions
+2. If still ambiguous → merge
+
+## STEP 5 — ONE-SENTENCE COVERAGE TEST
+
+Each code must pass: Can I explain what this covers in ONE sentence without listing multiple unrelated things?
+
+If NO → split
+
+## STEP 6 — NON-REDUNDANCY KILL STEP
+
+For each code: "If I delete this, do I lose meaning?"
+
+If NO → DELETE it
+
+## STEP 7 — FINAL DIAGNOSTIC UNIQUENESS CHECK
+
+Each code must complete the sentence:
+"{code_diagnostic}"
+
+Rules:
+* The completion must be specific and distinct
+* It must reflect a SINGLE valence direction (positive OR negative)
+
+If two codes produce similar completions → MERGE
+
+## STEP 8 — PREVALENCE WEIGHTING & STRUCTURAL BALANCING
+
+Use code frequency to shape the FINAL codebook.
+
+8.1 Core Structure Rule
+- High-prevalence codes MUST define the main codebook structure
+- The codebook should be built around a small number of dominant phenomena
+
+8.2 Low-Prevalence Constraint
+Low-frequency codes MUST NOT become standalone codes unless:
+- They represent a clearly distinct phenomenon, AND
+- They cannot be meaningfully merged upward
+
+Otherwise, they must be:
+- Abstracted into a higher-level code, OR
+- Combined into a broader shared category
+
+8.3 Balancing Constraint — Structured Differentiation
+- DO NOT collapse everything into a single dominant code
+- If multiple distinct high- or mid-prevalence patterns exist: → they MUST remain separate
+
+8.4 Final Check
+Ask: "Does this code exist because it is conceptually necessary, or just because it appeared rarely?"
+
+If the latter → merge or remove
+</workflow>
+
+<hard_rules>
+### NO DOUBLE-BARREL CODES
+If a code name contains "and" joining unrelated concepts → abstract to single phenomenon code name
+
+### NO CAUSE + ATTRIBUTE MIX
+Do not combine a cause/reason with a descriptive attribute in a single code. Split into separate codes for each mechanism.
+
+### ORTHOGONALITY TEST
+For any pair of codes: "Can a single observation plausibly fall under both?"
+- Yes → merge
+- Doubt → merge
+- Only if clearly no → keep separate
+
+### NO HIERARCHY
+Codes must not be general vs. specific, or principle vs. application.
+If this occurs → merge
+
+### NO OBJECT SPLITTING
+Do not split based on object (e.g., humans vs. animals).
+If the same underlying principle applies → merge
+
+### PRECEDENCE
+When rules conflict, prioritize:
+1. Non-overlap (orthogonality)
+2. Minimality (merge unless clearly distinct)
+3. Clarity for coding
+</hard_rules>
+
+<validation_checklist>
+Before finalizing, verify each code passes:
+- Single valence only
+- Cannot co-occur with same-valence code
+- Mechanism is pure
+- One-sentence coverage
+- Diagnostic is unique
+- Prevalence weight rule with balancing constraint
+</validation_checklist>
+
+<code_template>
+Each code must include:
+- **code_name**: 3–5 word noun phrase, must reflect ONE dimension only
+- **definition**: clear, interpretive claim — must specify what makes this DISTINCT
+- **diagnostic_test**: Must complete: "{code_diagnostic}" — must NOT overlap with any other code
+- **valence**: positive / negative / neutral
+- **typical_indicators**: concrete phrases (not abstract labels)
+- **source_attributes**: all merged origins
+</code_template>
+
+All output MUST be in {language}.
+
+Provide output as valid JSON following the response schema provided."""
 
 class ConsolidatedCode(BaseModel):
     """A consolidated code with diagnostic test for MECE verification."""
@@ -403,11 +519,15 @@ class CodebookConsolidationResult(BaseModel):
     """P9 output: consolidated codebook."""
     scratchpad: str = Field(
         ..., description=(
-            "Step-by-step reasoning: "
-            "(1) Valence Rule — separate by valence, never merge across boundaries, "
-            "(2) Consolidation Rule — aggressively merge within valence until no coder would hesitate, "
-            "(3) Purity Rule — one phenomenon, one mechanism per code, "
-            "(4) Prevalence Rule — high-frequency defines structure, absorb low-frequency upward"
+            "Step-by-step reasoning following the 8-step workflow: "
+            "(1) valence separation, "
+            "(2) aggressive merging within clusters, "
+            "(3) mechanism purity check, "
+            "(4) neighbor stress test, "
+            "(5) one-sentence coverage test, "
+            "(6) non-redundancy kill step, "
+            "(7) final diagnostic uniqueness check, "
+            "(8) prevalence weighting and structural balancing"
         )
     )
     codes: List[ConsolidatedCode] = Field(
