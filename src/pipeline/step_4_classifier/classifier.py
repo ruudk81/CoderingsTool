@@ -1,7 +1,7 @@
 """
-Taxonomy Classifier: Inductive taxonomy discovery pipeline (P1-P7).
+Taxonomy Classifier: Inductive taxonomy discovery pipeline (P1-P8).
 
-Pipeline (7 stages):
+Pipeline (8 stages):
   P1.  Facet Discovery (chunked, per domain) — dimension-specific semantics
   P2.  Facet Consolidation (per domain, hierarchical merge)
   P3.  Facet Assignment (batched, per domain) — assign ideas to discovered facets
@@ -9,8 +9,9 @@ Pipeline (7 stages):
   P5.  Attribute Chunk Consolidation (per facet, hierarchical merge)
   P6.  Attribute Assignment (per facet) — assign ideas to discovered attributes
   P7.  Cross-facet Attribute Consolidation (per domain) — dedup across facets
+  P8.  Cross-domain Attribute Consolidation — dedup across domains
 
-Per-domain steps (P1–P7) run CONCURRENTLY.
+Per-domain steps (P1–P7) run CONCURRENTLY. P8 runs globally after P7.
 
 Usage:
     from .classifier import TaxonomyClassifier
@@ -75,7 +76,11 @@ from .prompts_classifier import (
     build_attribute_consolidation_prompt,
     AttributeConsolidatedResponse,
     ConsolidatedAttribute,
+    # P8: Cross-domain Attribute Consolidation
+    CrossDomainConsolidatedResponse,
+    CrossDomainConsolidatedAttribute,
 )
+from .cross_domain_consolidator import CrossDomainConsolidator
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
 nest_asyncio.apply()
@@ -144,9 +149,9 @@ class TaxonomyResult:
 
 class TaxonomyClassifier:
     """
-    Taxonomy Classifier: Inductive taxonomy discovery pipeline (P1-P7).
+    Taxonomy Classifier: Inductive taxonomy discovery pipeline (P1-P8).
 
-    Pipeline (7 stages):
+    Pipeline (8 stages):
     P1.  FACET DISCOVERY:                   Per domain, chunked with overlap (concurrent)
     P2.  FACET CONSOLIDATION:               Per domain, hierarchical merge
     P3.  FACET ASSIGNMENT:                  Per domain, assign ideas to facets (concurrent)
@@ -154,10 +159,12 @@ class TaxonomyClassifier:
     P5.  ATTRIBUTE CHUNK CONSOLIDATION:     Per facet, hierarchical merge
     P6.  ATTRIBUTE ASSIGNMENT:              Per facet, assign ideas to attributes (concurrent)
     P7.  CROSS-FACET ATTR CONSOLIDATION:    Per domain, dedup across facets
+    P8.  CROSS-DOMAIN ATTR CONSOLIDATION:   Global, dedup across domains
     """
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None, dataset_key: str = "", cost_tracker=None):
         self.cost_tracker = cost_tracker
+        self._config = config
         self._model_p1 = config.qr_model_p1
         self._model_p2 = config.qr_model_p2
         self._model_p3 = config.qr_model_p3
@@ -165,6 +172,7 @@ class TaxonomyClassifier:
         self._model_p5 = config.qr_model_p5
         self._model_p6 = config.qr_model_p6
         self._model_p7 = config.qr_model_p7
+        self._model_p8 = config.qr_model_p8
 
         if self.cost_tracker:
             self.cost_tracker.set_step_models("step_4_taxonomy_classifier", {
@@ -175,6 +183,7 @@ class TaxonomyClassifier:
                 "p5_attribute_consolidation": self._model_p5,
                 "p6_attribute_assignment": self._model_p6,
                 "p7_cross_facet_consolidation": self._model_p7,
+                "p8_cross_domain_consolidation": self._model_p8,
             })
 
         self._temperature = config.qr_temperature

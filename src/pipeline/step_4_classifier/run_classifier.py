@@ -1,12 +1,12 @@
 #%%
 
 """
-Step 4: Taxonomy Classifier runner (P1-P7)
+Step 4: Taxonomy Classifier runner (P1-P8)
 
 Pipeline: domain discovery → facet discovery → facet assignment →
-attribute discovery → attribute assignment.
+attribute discovery → attribute assignment → cross-domain consolidation.
 
-Always runs the full taxonomy pipeline (P1-P7).
+Always runs the full taxonomy pipeline (P1-P8).
 """
 import sys
 import io
@@ -26,7 +26,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 EXPERIMENT_N = None     # Limit number of responses for a test run (None = use all)
-STOP_AFTER_PHASE = None   # None = full pipeline, 1–7 = stop after that phase
+STOP_AFTER_PHASE = None   # None = full pipeline, 1–8 = stop after that phase
 
 from pipeline.step_3_ideaExtractor import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -38,6 +38,7 @@ from utils.costTracker import CostTracker
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
 from pipeline.step_4_classifier.classifier import TaxonomyClassifier, TaxonomyResult
+from pipeline.step_4_classifier.cross_domain_consolidator import CrossDomainConsolidator
 from pipeline.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
     TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel,
@@ -52,7 +53,7 @@ CONFIG = CategoriesConfig(
     label_source="idea_interpretation",           # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
     label_prefix="",                              # "" or any static prefix string
     include_valence=False,                        # prepend [+]/[-]/[0] valence tag to labels
-    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–7 = stop after that phase
+    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–8 = stop after that phase
 )
 
 
@@ -454,6 +455,7 @@ def save_prompts_to_json(prompt_printer):
         "facet_discovery", "facet_consolidation", "facet_assignment",
         "attribute_discovery", "attribute_chunk_consolidation",
         "attribute_consolidation", "attribute_assignment",
+        "cross_domain_consolidation",
     }
 
     taxonomy_prompts = [
@@ -517,9 +519,9 @@ def _load_and_discover(extraction_metadata=None):
 # =============================================================================
 
 def run_taxonomy():
-    """Run taxonomy stages (P1-P7): facets, attributes, assignments."""
+    """Run taxonomy stages (P1-P8): facets, attributes, assignments, cross-domain consolidation."""
     print("=" * 70)
-    print("TAXONOMY PIPELINE (P1-P7)")
+    print("TAXONOMY PIPELINE (P1-P8)")
     print("=" * 70)
     print(f"\nDataset: {FILENAME}")
     print(f"Variable: {VARIABLE}")
@@ -559,13 +561,58 @@ def run_taxonomy():
         verbose=CONFIG.verbose,
     )
 
-    cost_tracker.finalize_step("step_4_taxonomy_classifier")
-
-    # Print taxonomy results
+    # Print taxonomy results (P1-P7)
     print_taxonomy_results(partition_set, label_mappings, taxonomy_result)
 
     # Cache taxonomy results (metadata + growing model)
     cache_taxonomy_results(partition_set, label_mappings, taxonomy_result, ideas_models=ideas_models)
+
+    # P8: Cross-domain attribute consolidation
+    if CONFIG.debug_stop_after_phase is None or CONFIG.debug_stop_after_phase >= 8:
+        # Load the just-cached taxonomy and growing model
+        cache_manager = CacheManager()
+        taxonomy_cache = cache_manager.load_metadata_from_cache(
+            filename=FILENAME, step="taxonomy",
+            variable_key=variable_key, model_cls=TaxonomyResultsCache,
+        )
+        classified = cache_manager.load_from_cache(
+            filename=FILENAME, step="taxonomy_classified",
+            variable_key=variable_key, model_cls=TaxonomyClassifiedModel,
+        )
+
+        if taxonomy_cache and classified:
+            import asyncio
+            consolidator = CrossDomainConsolidator(
+                config=CONFIG,
+                prompt_printer=prompt_printer,
+                dataset_key=variable_key,
+                cost_tracker=cost_tracker,
+                fetched_limits=processor._fetched_limits,
+            )
+            new_taxonomy, new_classified, merge_map, p8_stats = asyncio.run(
+                consolidator.consolidate(
+                    taxonomy_cache=taxonomy_cache,
+                    classified=classified,
+                    extraction_meta=extraction_metadata,
+                    verbose=CONFIG.verbose,
+                )
+            )
+
+            # Save consolidated results (overwrite P7 output)
+            cache_manager.save_metadata_to_cache(
+                metadata=new_taxonomy, filename=FILENAME,
+                step="taxonomy", variable_key=variable_key,
+            )
+            cache_manager.save_to_cache(
+                data=new_classified, filename=FILENAME,
+                step="taxonomy_classified", variable_key=variable_key,
+            )
+
+            if CONFIG.verbose and p8_stats["merges"] > 0:
+                print(f"\n  P8 saved: {p8_stats['attrs_before']} → {p8_stats['attrs_after']} attributes "
+                      f"({p8_stats['merges']} merges, {p8_stats['ideas_after']} ideas)")
+
+    cost_tracker.finalize_step("step_4_taxonomy_classifier")
 
     # Save prompts
     save_prompts_to_json(prompt_printer)
