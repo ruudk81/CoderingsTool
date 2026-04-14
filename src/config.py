@@ -48,7 +48,7 @@ STEP_MODEL_TIERS = {
     "idea_extraction_context": "default",           # specifiers + dimension discovery
     "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": "nano",   # main extraction + retry
-    # Step 4: Taxonomy Classifier (P1-P7)
+    # Step 4: Taxonomy Classifier (P1-P8)
     "classifier_p1":    "mini",      # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation
     "classifier_p3":    "nano",      # Facet Assignment
@@ -56,6 +56,7 @@ STEP_MODEL_TIERS = {
     "classifier_p5":    "default",   # Attribute Consolidation
     "classifier_p6":    "nano",      # Attribute Assignment
     "classifier_p7":    "default",   # Cross-facet Attribute Consolidation
+    "classifier_p8":    "default",   # Cross-domain Attribute Consolidation
     # Step 5: Code Generator (P8-P9)
     "codegen_p8":       "default",
     "codegen_p9":       "default",
@@ -92,6 +93,7 @@ STEP_VERBOSITY = {
     "classifier_p4": "low",
     "classifier_p5": "low",
     "classifier_p7": "low",
+    "classifier_p8": "low",
     # All other steps: fall back to TEXT_VERBOSITY
 }
 

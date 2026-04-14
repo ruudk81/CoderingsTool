@@ -1,8 +1,8 @@
 """
-Configuration for Taxonomy Classifier (P1-P7).
+Configuration for Taxonomy Classifier (P1-P8).
 
 Pipeline: facet discovery → facet assignment → attribute discovery →
-attribute consolidation → cross-facet dedup.
+attribute consolidation → cross-facet dedup → cross-domain dedup.
 """
 
 from dataclasses import dataclass, field
@@ -46,7 +46,7 @@ class ClassifierRampConfig:
 
 @dataclass
 class CategoriesConfig:
-    """Configuration for Taxonomy Classifier (P1-P7)."""
+    """Configuration for Taxonomy Classifier (P1-P8)."""
 
     # ==========================================================================
     # PARTITION SOURCE
@@ -84,7 +84,7 @@ class CategoriesConfig:
     include_valence: bool = False
 
     # ==========================================================================
-    # TAXONOMY CLASSIFIER PIPELINE (P1-P7)
+    # TAXONOMY CLASSIFIER PIPELINE (P1-P8)
     # ==========================================================================
 
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
@@ -95,6 +95,7 @@ class CategoriesConfig:
     qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Consolidation
     qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Assignment
     qr_model_p7: str = get_step_model("classifier_p7")    # P7: Cross-facet Attribute Consolidation
+    qr_model_p8: str = get_step_model("classifier_p8")    # P8: Cross-domain Attribute Consolidation
     qr_temperature: float = 0.3
 
     # P1: Facet Discovery (per-domain, chunked)
@@ -118,6 +119,14 @@ class CategoriesConfig:
     p4_target_batches: int = 5     # ideal number of chunks
     p4_chunk_overlap: float = 0.2  # overlap fraction between adjacent chunks
 
+    # P8: Cross-domain Attribute Consolidation
+    qr_max_tokens_cross_domain: int = 16000
+    p8_code_source: str = "instance_interpretation"    # embedding text: instance, instance_interpretation, full_abstraction_ladder
+    p8_embedding_model: str = "text-embedding-3-large"
+    p8_window_size: int = 10                           # max attributes per LLM call
+    p8_window_overlap: int = 2                         # overlap between adjacent windows (~20%)
+    p8_similarity_threshold: float = 0.6               # noise floor for pairwise cosine similarity
+
     # Hierarchical consolidation (shared by P2 and P5)
     # When chunk count or total item count exceeds these limits,
     # consolidation becomes hierarchical: group → consolidate → recurse.
@@ -137,7 +146,7 @@ class CategoriesConfig:
 
     verbose: bool = True
 
-    # Set to a phase number (1–7) to stop after that phase completes.
+    # Set to a phase number (1–8) to stop after that phase completes.
     # None = run full pipeline. Useful for testing specific phases without
     # waiting for the full pipeline.
     debug_stop_after_phase: Optional[int] = None
