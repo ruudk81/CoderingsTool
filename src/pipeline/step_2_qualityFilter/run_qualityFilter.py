@@ -112,6 +112,21 @@ def run_step(config: StepConfig = None):
     if config is None:
         config = STEP_CONFIG
 
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[config.var_name],
+        is_merged=False,
+        sample_size=config.sample_size,
+    )
+    cache_manager = CacheManager(CacheConfig())
+
+    if not config.force_recalc and cache_manager.is_cache_valid(config.filename, "quality_filter", variable_key):
+        quality_filtered_text = cache_manager.load_from_cache(
+            config.filename, "quality_filter", variable_key, models.QualityFilteredModel
+        )
+        verbose_reporter = VerboseReporter(config.verbose)
+        verbose_reporter.summary("QUALITY FILTER FROM CACHE", {"Input": f"{len(quality_filtered_text)} responses"})
+        return quality_filtered_text
+
     preprocessed_text, variable_key, cache_manager = load_step1_cache(config)
     var_lab = get_var_lab(config)
 

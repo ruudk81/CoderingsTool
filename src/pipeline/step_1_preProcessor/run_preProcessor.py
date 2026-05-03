@@ -116,6 +116,21 @@ def run_step(config: StepConfig = None):
     if config is None:
         config = STEP_CONFIG
 
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[config.var_name],
+        is_merged=False,
+        sample_size=config.sample_size,
+    )
+    cache_manager = CacheManager(CacheConfig())
+
+    if not config.force_recalc and cache_manager.is_cache_valid(config.filename, "preprocessed", variable_key):
+        preprocessed_text = cache_manager.load_from_cache(
+            config.filename, "preprocessed", variable_key, models.PreprocessedModel
+        )
+        verbose_reporter = VerboseReporter(config.verbose)
+        verbose_reporter.summary("PREPROCESSED FROM CACHE", {"Input": f"{len(preprocessed_text)} responses"})
+        return preprocessed_text
+
     raw_text_list, variable_key, cache_manager = load_step0_cache(config)
     var_lab = get_var_lab(config)
 

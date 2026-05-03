@@ -518,7 +518,7 @@ def _load_and_discover(extraction_metadata=None):
 # MAIN
 # =============================================================================
 
-def run_taxonomy():
+def run_taxonomy(force_recalc: bool = False):
     """Run taxonomy stages (P1-P8): facets, attributes, assignments, cross-domain consolidation."""
     print("=" * 70)
     print("TAXONOMY PIPELINE (P1-P8)")
@@ -533,15 +533,22 @@ def run_taxonomy():
           f"(target {CONFIG.target_batches} chunks)")
     print()
 
-    ideas_models, extraction_metadata, partition_set, label_mappings = _load_and_discover()
-    survey_question, language, dataset_context, dimension_name, dimension_description = \
-        _extract_metadata_context(extraction_metadata)
-
     variable_key = generate_enhanced_variable_key(
         selected_variables=[VARIABLE],
         is_merged=False,
         sample_size=SAMPLE_SIZE,
     )
+
+    if not force_recalc:
+        cache_manager = CacheManager()
+        if (cache_manager.is_metadata_cache_valid(FILENAME, "taxonomy", variable_key)
+                and cache_manager.is_cache_valid(FILENAME, "taxonomy_classified", variable_key)):
+            print("Taxonomy cache valid — skipping P1-P8 (use force_recalc=True to rerun).\n")
+            return None
+
+    ideas_models, extraction_metadata, partition_set, label_mappings = _load_and_discover()
+    survey_question, language, dataset_context, dimension_name, dimension_description = \
+        _extract_metadata_context(extraction_metadata)
 
     prompt_printer = PromptPrinter(
         enabled=True,

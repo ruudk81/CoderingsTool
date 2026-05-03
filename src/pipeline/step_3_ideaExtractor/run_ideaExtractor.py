@@ -130,6 +130,25 @@ def run_step(config: StepConfig = None):
     if config is None:
         config = STEP_CONFIG
 
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[config.var_name],
+        is_merged=False,
+        sample_size=config.sample_size,
+    )
+    cache_manager = CacheManager(CacheConfig())
+
+    if not config.force_recalc and cache_manager.is_cache_valid(config.filename, "extracted_ideas", variable_key):
+        encoded_text = cache_manager.load_from_cache(
+            config.filename, "extracted_ideas", variable_key, models.IdeasExtractedModel
+        )
+        verbose_reporter = VerboseReporter(config.verbose)
+        total_ideas = sum(item.idea_count for item in encoded_text)
+        verbose_reporter.summary("IDEAS FROM CACHE", {
+            "Responses": f"{len(encoded_text)}",
+            "Ideas": f"{total_ideas}",
+        })
+        return encoded_text, None, None
+
     # Load previous step output
     quality_filtered_text, variable_key, cache_manager = load_step2_cache(config)
 

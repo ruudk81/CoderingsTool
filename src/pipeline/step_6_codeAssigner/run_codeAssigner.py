@@ -331,11 +331,23 @@ def save_prompts_to_json(prompt_printer):
 # MAIN
 # =============================================================================
 
-def run_assignment():
+def run_assignment(force_recalc: bool = False):
     """Run code assignment (P10) from cached codebook + step 3 ideas."""
     print("=" * 70)
     print("CODE ASSIGNER (P10, loading from cache)")
     print("=" * 70)
+
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[VARIABLE],
+        is_merged=False,
+        sample_size=SAMPLE_SIZE,
+    )
+
+    if not force_recalc:
+        cache_manager = CacheManager()
+        if cache_manager.is_cache_valid(FILENAME, "taxonomy_codes", variable_key):
+            print("Code-assignment cache valid — skipping P10 (use force_recalc=True to rerun).\n")
+            return None
 
     # Load dependencies from cache — prefer step 4 enriched, fall back to step 3
     ideas_models = load_step4_enriched()
@@ -362,11 +374,6 @@ def run_assignment():
     print(f"  Loaded codebook: {n_themes} themes, {n_partitions} partitions"
           f", {len(codes) if codes else 0} raw codes")
 
-    variable_key = generate_enhanced_variable_key(
-        selected_variables=[VARIABLE],
-        is_merged=False,
-        sample_size=SAMPLE_SIZE,
-    )
     cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
 
     prompt_printer = PromptPrinter(

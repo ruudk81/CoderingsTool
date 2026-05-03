@@ -351,11 +351,23 @@ def _extract_metadata_context(extraction_metadata):
 # MAIN
 # =============================================================================
 
-def run_codebook():
+def run_codebook(force_recalc: bool = False):
     """Run codebook generation (P8-P9) from cached taxonomy results."""
     print("=" * 70)
     print("CODE GENERATOR (P8-P9, loading taxonomy from cache)")
     print("=" * 70)
+
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[VARIABLE],
+        is_merged=False,
+        sample_size=SAMPLE_SIZE,
+    )
+
+    if not force_recalc:
+        cache_manager = CacheManager()
+        if cache_manager.is_metadata_cache_valid(FILENAME, "mece_codes", variable_key):
+            print("Codebook cache valid — skipping P8-P9 (use force_recalc=True to rerun).\n")
+            return None
 
     extraction_metadata = load_extraction_metadata()
     classified_ideas = load_classified_ideas()
@@ -410,11 +422,6 @@ def run_codebook():
     survey_question, language, dataset_context, dimension_name, dimension_description = \
         _extract_metadata_context(extraction_metadata)
 
-    variable_key = generate_enhanced_variable_key(
-        selected_variables=[VARIABLE],
-        is_merged=False,
-        sample_size=SAMPLE_SIZE,
-    )
     cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
 
     prompt_printer = PromptPrinter(
