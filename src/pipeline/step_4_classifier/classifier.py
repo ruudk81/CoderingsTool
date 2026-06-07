@@ -185,6 +185,7 @@ class TaxonomyClassifier:
                 "p5_attribute_consolidation": self._model_p5,
                 "p6_attribute_assignment": self._model_p6,
                 "p7_cross_facet_consolidation": self._model_p7,
+                "p7_5_valence_merge": self._model_p7,
                 "p8_cross_domain_consolidation": self._model_p8,
             })
 

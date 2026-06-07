@@ -25,7 +25,7 @@ from itertools import combinations
 from typing import Dict, List, Optional, Tuple
 
 from config import get_reasoning_params
-from utils.llm import create_client, llm_create_async
+from utils.llm import create_client, llm_create_async, token_tracker
 
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.models_classifier import (
@@ -145,9 +145,10 @@ def detect_valence_splits(
 class ValenceConsolidator:
     """Collapses safe valence-split attribute pairs into one descriptive attribute."""
 
-    def __init__(self, config: CategoriesConfig):
+    def __init__(self, config: CategoriesConfig, cost_tracker=None):
         self._model = config.qr_model_p7
         self._temperature = config.qr_temperature
+        self._cost_tracker = cost_tracker
         self._label_sim_threshold = 0.6
         self._min_skew = 0.7
         self._min_count = 5
@@ -183,7 +184,13 @@ class ValenceConsolidator:
                     desc_lookup[(dom, a.get("attribute_name"))] = a.get("attribute_description", "")
 
         language = getattr(extraction_meta, "lang", "Dutch") or "Dutch"
+        _snap = token_tracker.snapshot() if self._cost_tracker else None
         names = await self._rename(merge_pairs, desc_lookup, language)
+        if self._cost_tracker and _snap is not None:
+            self._cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", "p7_5_valence_merge",
+                _snap, token_tracker.snapshot(), self._model,
+            )
 
         # Build merge map: (domain, old_name) -> (new_name, facet, new_desc)
         merge_map: Dict[Tuple[str, str], Tuple[str, str, str]] = {}

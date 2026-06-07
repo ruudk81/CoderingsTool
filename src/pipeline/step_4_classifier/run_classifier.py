@@ -589,7 +589,7 @@ def run_taxonomy(force_recalc: bool = False):
         )
         if v_taxonomy and v_classified:
             new_taxonomy, new_classified, _v_report, v_stats = asyncio.run(
-                ValenceConsolidator(CONFIG).consolidate(
+                ValenceConsolidator(CONFIG, cost_tracker=cost_tracker).consolidate(
                     v_taxonomy, v_classified, extraction_metadata, verbose=CONFIG.verbose,
                 )
             )
