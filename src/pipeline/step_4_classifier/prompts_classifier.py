@@ -165,9 +165,20 @@ def build_facet_discovery_prompt(
     partition_definition: str,
     observations: List[str],
     excluded_domains: Optional[List[Tuple[str, str]]] = None,
+    boundary_test: str = "",
+    exclusions: Optional[List[str]] = None,
 ) -> str:
     """Discover facets (L3) from a chunk of observations within a domain."""
     observations_block = "\n".join(f"{i}. {obs}" for i, obs in enumerate(observations, 1))
+
+    _boundary_lines = []
+    if boundary_test:
+        _boundary_lines.append(f"Boundary test: {boundary_test}")
+    if exclusions:
+        _boundary_lines.append(
+            "This domain EXCLUDES (these belong to other domains): " + "; ".join(exclusions)
+        )
+    domain_boundary_block = ("\n" + "\n".join(_boundary_lines)) if _boundary_lines else ""
 
     # Dimension-specific guidance
     if dimension_def:
@@ -227,7 +238,7 @@ This is the structure:
 You are working within this domain:
 
 <taxonomy_domain>
-{partition_name} — {partition_definition}
+{partition_name} — {partition_definition}{domain_boundary_block}
 </taxonomy_domain>
 {excluded_block}
 </taxonomy_context>
@@ -788,6 +799,7 @@ All output (attribute names, descriptions, and example observations) must be wri
 # Final Notes
 
 - Attributes must be descriptive, not evaluative
+- Never create attributes that differ only in evaluative direction (e.g. a positive and a negative version of the same concept). Capture the concept as ONE attribute; positive/negative is recorded separately as valence. A response that is only an overall judgment with no descriptive content ("good", "fine", "not great") belongs to a single residual overall-judgment attribute, never to positive/negative variants.
 - Attributes must be grounded in repeated patterns across observations
 - Attributes must be internally coherent
 - Attributes must be externally distinctive
@@ -956,7 +968,7 @@ Here are the attributes discovered from analyzing different chunks of the survey
 Apply these rules strictly when consolidating attributes:
 
 **Rule 1: MERGE OVERLAP (MANDATORY)**
-All attributes that conceptually overlap or are variants of the same idea MUST be merged into a single attribute.
+All attributes that conceptually overlap or are variants of the same idea MUST be merged into a single attribute. This includes variants that differ only in evaluative direction (e.g. "positive X" and "negative X" -> one attribute "X"); positive/negative is recorded separately as valence, not as separate attributes.
 
 **Rule 2: ORTHOGONALITY (MAIN RULE)**
 For each pair of attributes, ask: "Can a single observation plausibly fall under both?"
@@ -1256,7 +1268,7 @@ When in doubt:
 Attributes with low prevalence (e.g., <10-15 ideas) should almost never result in standalone attributes.
 
 3. MERGE OVERLAP (MANDATORY)
-All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different facets.
+All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different facets. This includes variants that differ only in evaluative direction (e.g. "positive X" and "negative X" -> one attribute "X"); positive/negative is recorded separately as valence, not as separate attributes.
 
 4. ORTHOGONALITY (MAIN RULE)
 For each pair of attributes:
@@ -1499,6 +1511,8 @@ Attributes with low prevalence (e.g., <10-15 ideas) should almost never result i
 3. MERGE OVERLAP (MANDATORY)
 All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different domains.
 
+RESPECT DOMAIN BOUNDARIES: each domain above may list what it "Excludes (belong to other domains)". Do NOT merge an attribute into a domain that excludes its concept, and never set a consolidated attribute's parent_domain to a domain whose Excludes covers it.
+
 4. ORTHOGONALITY (MAIN RULE)
 For each pair of attributes:
 "Can a single observation plausibly fall under both?"
@@ -1632,3 +1646,54 @@ class CrossDomainConsolidatedResponse(BaseModel):
     attributes: List[CrossDomainConsolidatedAttribute] = Field(
         ..., description="Deduplicated attributes, each assigned to its best domain and facet"
     )
+
+
+# =============================================================================
+# VALENCE-NEUTRAL RENAME (collapse valence-split attribute pairs)
+# =============================================================================
+
+class ValenceNeutralAttribute(BaseModel):
+    """One descriptive, valence-neutral attribute replacing a valence-split pair."""
+    pair_id: int = Field(..., description="The id of the attribute pair this replaces")
+    attribute_name: str = Field(
+        ..., description="One descriptive, valence-neutral attribute name (2-5 words)"
+    )
+    attribute_description: str = Field(
+        ..., description="A 1-2 sentence valence-neutral description"
+    )
+
+
+class ValenceNeutralRenameResponse(BaseModel):
+    """Neutral replacements for the supplied valence-split attribute pairs."""
+    attributes: List[ValenceNeutralAttribute] = Field(
+        ..., description="Exactly one neutral attribute per input pair_id"
+    )
+
+
+def build_valence_neutral_rename_prompt(pairs: list, language: str = "Dutch") -> str:
+    """Collapse valence-split attribute pairs into one descriptive, valence-neutral
+    attribute each. `pairs`: list of dicts with pair_id, name_a, desc_a, name_b,
+    desc_b, samples.
+    """
+    blocks = []
+    for p in pairs:
+        samples = ", ".join(f'"{s}"' for s in p.get("samples", []))
+        blocks.append(
+            f"[{p['pair_id']}]\n"
+            f'  A: "{p["name_a"]}" — {p.get("desc_a", "")}\n'
+            f'  B: "{p["name_b"]}" — {p.get("desc_b", "")}\n'
+            f"  example mentions: {samples}"
+        )
+    pairs_block = "\n\n".join(blocks)
+
+    return f"""You are cleaning up a taxonomy. Each numbered pair below wrongly split ONE concept by evaluative direction (valence): the two attributes mean the same thing, but one captures the positive side and the other the negative/neutral side. Valence has been baked into the attribute, which is wrong — valence is recorded separately per response.
+
+For each pair, produce ONE descriptive, valence-neutral attribute that covers both sides:
+- The name (2-5 words, in {language}) and description (1-2 sentences, in {language}) must be purely descriptive.
+- Do NOT encode positive/negative/good/bad — that direction is captured separately as valence.
+- Name the underlying subject the two share (e.g. a "positive impression" + "negative impression" pair becomes "overall impression").
+
+Pairs:
+{pairs_block}
+
+Return exactly one entry per pair_id. Begin now and provide your output as valid JSON following the response schema provided."""

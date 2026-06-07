@@ -41,6 +41,10 @@ class DomainDescription(BaseModel):
         ...,
         description="3-5 concrete words or phrases that indicate this partition"
     )
+    exclusions: List[str] = Field(
+        default_factory=list,
+        description="Concepts that belong to OTHER domains — what this partition excludes"
+    )
 
 
 class DomainSet(BaseModel):

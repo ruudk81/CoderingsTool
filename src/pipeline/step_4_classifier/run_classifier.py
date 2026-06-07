@@ -574,6 +574,35 @@ def run_taxonomy(force_recalc: bool = False):
     # Cache taxonomy results (metadata + growing model)
     cache_taxonomy_results(partition_set, label_mappings, taxonomy_result, ideas_models=ideas_models)
 
+    # P7.5: Valence-neutral attribute merge (collapse valence-split attribute pairs)
+    if CONFIG.debug_stop_after_phase is None or CONFIG.debug_stop_after_phase >= 8:
+        import asyncio
+        from pipeline.step_4_classifier.valence_consolidator import ValenceConsolidator
+        cache_manager = CacheManager()
+        v_taxonomy = cache_manager.load_metadata_from_cache(
+            filename=FILENAME, step="taxonomy",
+            variable_key=variable_key, model_cls=TaxonomyResultsCache,
+        )
+        v_classified = cache_manager.load_from_cache(
+            filename=FILENAME, step="taxonomy_classified",
+            variable_key=variable_key, model_cls=TaxonomyClassifiedModel,
+        )
+        if v_taxonomy and v_classified:
+            new_taxonomy, new_classified, _v_report, v_stats = asyncio.run(
+                ValenceConsolidator(CONFIG).consolidate(
+                    v_taxonomy, v_classified, extraction_metadata, verbose=CONFIG.verbose,
+                )
+            )
+            if v_stats["merges"] > 0:
+                cache_manager.save_metadata_to_cache(
+                    metadata=new_taxonomy, filename=FILENAME,
+                    step="taxonomy", variable_key=variable_key,
+                )
+                cache_manager.save_to_cache(
+                    data=new_classified, filename=FILENAME,
+                    step="taxonomy_classified", variable_key=variable_key,
+                )
+
     # P8: Cross-domain attribute consolidation
     if CONFIG.debug_stop_after_phase is None or CONFIG.debug_stop_after_phase >= 8:
         # Load the just-cached taxonomy and growing model

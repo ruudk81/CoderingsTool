@@ -222,8 +222,11 @@ class DomainDiscoverer:
         return DomainDescription(
             partition_name=ct_key,
             inclusion_definition=self._build_inclusion_definition(label, definition),
-            boundary_test=self._build_boundary_test(label, definition),
+            # Prefer the boundary_test/exclusions persisted by step 3; fall back to
+            # the locally-derived boundary_test for old caches that lack them.
+            boundary_test=ct_info.get('boundary_test') or self._build_boundary_test(label, definition),
             diagnostic_signals=self._build_diagnostic_signals(label, definition),
+            exclusions=ct_info.get('exclusions', []),
         )
 
     def _build_inclusion_definition(self, label: str, definition: str) -> str:

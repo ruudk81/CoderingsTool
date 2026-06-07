@@ -478,8 +478,10 @@ class CrossDomainConsolidator:
             entry_lookup[(entry.domain_name, entry.attribute_name)] = entry
 
         domain_defs = {}
+        domain_excl = {}
         for part in taxonomy_cache.partition_set.partitions:
             domain_defs[part.partition_name] = part.inclusion_definition
+            domain_excl[part.partition_name] = getattr(part, "exclusions", []) or []
 
         facet_descs: Dict[str, Dict[str, str]] = {}
         for domain_name, result in taxonomy_cache.partition_results.items():
@@ -502,6 +504,9 @@ class CrossDomainConsolidator:
         for domain_name in sorted(by_domain_facet.keys()):
             domain_def = domain_defs.get(domain_name, "")
             lines.append(f'Domain: "{domain_name}" — {domain_def}')
+            excl = domain_excl.get(domain_name, [])
+            if excl:
+                lines.append(f'  Excludes (belong to other domains): {"; ".join(excl)}')
             for facet_name in sorted(by_domain_facet[domain_name].keys()):
                 facet_desc = facet_descs.get(domain_name, {}).get(facet_name, "")
                 lines.append(f'  Facet: "{facet_name}" — {facet_desc}')

@@ -110,6 +110,8 @@ class DomainContext:
     """Partition-specific context."""
     partition_name: str
     partition_definition: str
+    boundary_test: str = ""
+    exclusions: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1505,6 +1507,8 @@ class TaxonomyClassifier:
                 dimension_description=prompt_context.dimension_description,
                 partition_name=task['domain_name'],
                 partition_definition=task['part_context'].partition_definition,
+                boundary_test=task['part_context'].boundary_test,
+                exclusions=task['part_context'].exclusions,
                 observations=task['observations'],
                 excluded_domains=task['excluded_domains'],
             )
@@ -1989,6 +1993,8 @@ class TaxonomyClassifier:
             contexts[part.partition_name] = DomainContext(
                 partition_name=part.partition_name,
                 partition_definition=part.inclusion_definition,
+                boundary_test=part.boundary_test,
+                exclusions=part.exclusions,
             )
         return contexts
 
