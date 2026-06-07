@@ -541,12 +541,14 @@ Your task is to identify **domains** (level 2 in the hierarchy) for the given di
 {domain_instruction}
 {domain_diagnostic}
 
-Your goal is to identify the **fewest domains possible** that provide **full coverage** of all the responses. Each domain must be:
+Your goal is the smallest set of domains that still gives every response a clear home — typically 4–8 domains. Fewer is better only if full coverage and distinctness both hold. Each domain must be:
 - **Ontologically distinct** — no two domains may share conceptual space. A domain must not be a subset of another domain, and two domains must not be two lenses on the same phenomenon.
 - **Semantically distant** — a coder assigning a response to a domain must not plausibly consider a neighboring domain. No "could go either way" situations.
 - Focused on ONE specific aspect (not a compound list of multiple concerns)
 - A natural grouping of related phenomena within the dimension
 - Strictly within the boundaries and through the lens of the primary dimension above
+
+NO broad evaluative catch-all: do not create a vague impression bucket such as "general impression", "overall reputation", or "character" that mixes many unrelated qualities. If such a domain would absorb a large share of responses, split it along sharper subject axes. EXCEPTION: a clean, well-defined "no/weak association" domain IS allowed when many responses genuinely express the absence of any association — this is a real response type, not a catch-all.
 
 ## CRITICAL REQUIREMENTS
 
@@ -554,6 +556,8 @@ Your goal is to identify the **fewest domains possible** that provide **full cov
 - The "key" field should be in English for technical consistency
 - Domain definitions must NOT contain examples or enumerations — no "such as", "like", "zoals"
 - Domains must be ontologically distinct and semantically distant — no shared conceptual space, no coder hesitation
+
+For EACH domain provide: a label, a one-sentence inclusion definition, a boundary_test (one yes/no question that decides membership), and exclusions (what does NOT belong, naming the neighbouring domain it is most easily confused with).
 
 Begin processing now and provide your output as **valid JSON** following the response schema provided."""
 
@@ -569,7 +573,13 @@ class DomainItem(BaseModel):
         examples=["Toegang en logistiek", "Waardepropositie", "Gastvrijheid en interactie"]
     )
     definition: str = Field(
-        description="Short clarification of domain label in {language} (1 sentence). CRITICAL: One focused boundary, not a compound list, no examples or enumerations"
+        description="Short inclusion definition in {language} (1 sentence). One focused subject axis, no examples or enumerations"
+    )
+    boundary_test: str = Field(
+        description="A single yes/no question in {language} that a coder asks to decide whether an idea belongs to THIS domain rather than a neighbouring one"
+    )
+    exclusions: List[str] = Field(
+        description="1-3 short phrases in {language} naming what does NOT belong here — especially the neighbouring domain(s) it is most easily confused with"
     )
 
 
@@ -594,8 +604,17 @@ def build_domain_consolidation_prompt(
     primary_dimension: str,
     chunk_results: str,
     domain_diagnostic: str,
+    chunk_responses: str = "",
 ) -> str:
     """Build the domain consolidation prompt."""
+    sample_block = ""
+    if chunk_responses:
+        sample_block = f"""
+Here is a random sample of actual survey responses — use them to judge whether two domains are truly distinct in the real data, not just as labels:
+<sample_responses>
+{chunk_responses}
+</sample_responses>
+"""
     return f"""You are a taxonomy consolidation specialist.
 Your task is to merge multiple chunk-level domain analyses into a single, coherent set of domains.
 
@@ -632,7 +651,7 @@ Here are the chunk-level domain analyses you need to consolidate:
 <chunk_level_analyses>
 {chunk_results}
 </chunk_level_analyses>
-
+{sample_block}
 ## YOUR TASK
 
 Your task is to consolidate these chunk-level domain lists into the fewest mutually exclusive domains needed for full coverage.
@@ -643,7 +662,8 @@ Important consolidation principles:
 - ENSURE ontological distinctness: no two domains may share conceptual space. A domain must not be a subset of another.
 - ENSURE semantic distance: a coder assigning a response must not plausibly hesitate between two domains. No "could go either way" situations.
 - MAINTAIN full coverage: the consolidated domains must collectively cover all concepts present in the chunk-level analyses
-- MINIMIZE the total number of domains while preserving meaningful distinctions
+- MINIMIZE the total number of domains while preserving meaningful distinctions — aim for 4–8 domains
+- NO broad evaluative catch-all: do not keep or create a vague impression bucket such as "general impression", "overall reputation", or "character" that mixes many unrelated qualities. If one domain would absorb a large share of responses, split it along sharper subject axes. EXCEPTION: a clean, well-defined "no/weak association" domain IS allowed when many responses genuinely express the absence of any association — this is a real response type, not a catch-all
 - All domains must stay strictly within the boundaries and through the lens of the primary dimension
 - Each domain definition must complete: "This domain covers responses about [single aspect]." Abstract boundary only, no examples or enumerations
 - All domain labels and definitions must be in the language specified above
@@ -657,7 +677,10 @@ In your scratchpad:
 3. For each group, determine an appropriate consolidated domain label and definition
 4. For each pair of surviving domains, ask: "Could a response plausibly belong to both?" If yes, merge them.
 5. Verify that your consolidated domains provide complete coverage of the original set
+6. For each surviving domain, write its boundary_test and exclusions. If you cannot state a clean boundary that separates it from its nearest neighbour, the two are not distinct — merge them.
 </scratchpad>
+
+For EACH consolidated domain provide: a label, a one-sentence inclusion definition, a boundary_test (one yes/no question that decides membership), and exclusions (what does NOT belong, naming the neighbouring domain it is most easily confused with).
 
 After completing your analysis in the scratchpad, provide your consolidated taxonomy as valid JSON inside <output> tags.
 

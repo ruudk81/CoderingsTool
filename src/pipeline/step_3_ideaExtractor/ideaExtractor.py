@@ -542,9 +542,18 @@ class IdeaExtractor:
 
         return response
 
-    async def _consolidate_domains(self, chunk_results: List[Dict], context_specifiers: Dict) -> DomainConsolidatedResponse:
+    async def _consolidate_domains(self, chunk_results: List[Dict], context_specifiers: Dict, sample_responses: Optional[List] = None) -> DomainConsolidatedResponse:
         """Consolidate chunk-level domain discoveries into a single set."""
         dimension = get_dimension(self.primary_dimension)
+
+        # Grounding sample of real responses (RC-6): judge distinctness against data, not labels
+        chunk_responses_text = ""
+        if sample_responses:
+            grounding_sample = random.sample(
+                sample_responses,
+                min(GENERIC_SPECIFIER_CHUNK_SIZE, len(sample_responses))
+            )
+            chunk_responses_text = "\n".join([f"- {r.response}" for r in grounding_sample])
 
         # Format chunk results for the consolidation prompt
         formatted_results = []
@@ -570,6 +579,7 @@ class IdeaExtractor:
             primary_dimension=self.primary_dimension,
             chunk_results="\n\n".join(formatted_results),
             domain_diagnostic=dimension.prompt_rules.domain_diagnostic,
+            chunk_responses=chunk_responses_text,
         )
 
         if self.prompt_printer and not self._captured_domain_consolidation:
@@ -783,7 +793,7 @@ class IdeaExtractor:
                     domains=category_results[0]['response'].domains
                 )
             else:
-                categories_consolidated = await self._consolidate_domains(category_results, context_specifiers)
+                categories_consolidated = await self._consolidate_domains(category_results, context_specifiers, sample_responses=sample)
 
             self.verbose_reporter.stat_line(f"  Domains: {[c.key for c in categories_consolidated.domains]}")
         else:
@@ -970,9 +980,12 @@ class IdeaExtractor:
         discovered_domains = getattr(self, 'domains', None)
         if discovered_domains:
             domain_table = (
-                "Choose the most specific applicable domain from this predefined set; otherwise select Other:\n"
+                "Pick the single best-fitting domain. The ✓ test and ✗ list are to help you CHOOSE BETWEEN "
+                "domains, not to reject a plausibly related idea — assign Other ONLY if the idea fits no domain at all.\n"
+                "Each domain lists its definition, ✓ a membership test, and ✗ neighbouring domains it should not be confused with:\n"
                 + "\n".join(
-                    f"  • {c.label} = \"{c.definition}\"" for c in discovered_domains
+                    f"  • {c.label} = \"{c.definition}\"\n      ✓ {c.boundary_test}\n      ✗ {', '.join(c.exclusions)}"
+                    for c in discovered_domains
                 )
                 + '\n  Other = "Does not fit any of the above thematic domains"'
             )

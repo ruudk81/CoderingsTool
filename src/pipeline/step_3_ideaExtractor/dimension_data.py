@@ -146,11 +146,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct proposed action, improvement, or solution in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one proposed action or improvement from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete change, action, or improvement this instance proposes — what specifically should be done.",
+            abstraction_instruction="What broader goal does this proposed change serve?",
             domain_instruction=(
-                "Definition: A domain identifies the part of the system, organization, or context that is the target of the proposed change. \n"
-                "Key idea: Domains specify what part of the system should change."
+                "Definition: A domain identifies which part of the system or organization is the target of the proposed change — one consistent target axis. \n"
+                "Key idea: Domains specify which part should change."
             ),
             domain_diagnostic="Question that needs to be answered: What is the target of the change?",
             facet_instruction=(
@@ -231,18 +231,18 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct idea about what the entity IS, how it is defined, or why it exists.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one definition/identity concept from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name what the entity IS according to this instance — the concrete identity, category, or purpose asserted.",
+            abstraction_instruction="What broader conception of the entity's nature or role does this definition point to?",
             domain_instruction=(
-                "Definition: A domain identifies the dimension of identity being articulated — what facet of the entity's nature, purpose, or classification is being described. \n"
-                "Key idea: Domains specify which dimension of identity is addressed."
+                "Definition: A domain groups identity statements by which thematic subject area of the entity's identity is being asserted — one consistent subject axis. \n"
+                "Key idea: Domains specify which area of what the entity IS is addressed — not the kind of identity claim being made (that is the facet) or the specific defining feature (that is the attribute)."
             ),
-            domain_diagnostic="Question that needs to be answered: Which dimension of identity is being described?",
+            domain_diagnostic="Question that needs to be answered: Which subject area of the entity's identity is being asserted?",
             facet_instruction=(
-                "Definition: A facet identifies the analytical lens through which an entity's identity is examined. Each facet must be independently analyzable. \n"
-                "Key idea: Facets specify which aspect of identity is being defined."
+                "Definition: A facet identifies the analytical lens through which identity is examined — the kind of identity claim being made (e.g., definitional, purposive, categorical, role-based), independent of subject area. Each facet must be independently analyzable. \n"
+                "Key idea: Facets specify what kind of identity claim is made, not which area of identity it concerns."
             ),
-            facet_diagnostic="What aspect of identity is being addressed?",
+            facet_diagnostic="What kind of identity claim is being made?",
             attribute_instruction=(
                 "Definition: An attribute identifies the specific defining characteristic or identity marker being articulated. "
                 "It is a named property that captures the precise feature of the entity's identity. \n"
@@ -315,8 +315,8 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct actor, stakeholder, or affected party mentioned in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one actor or affected party from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete actor, group, or affected party this instance refers to.",
+            abstraction_instruction="What broader stakeholder dynamic or pattern of involvement does this actor point to?",
             domain_instruction=(
                 "Definition: A domain identifies the sphere of activity or responsibility in which actors are involved. \n"
                 "Key idea: Domains specify in what sphere actors play a role."
@@ -398,18 +398,18 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct condition, context, or circumstance described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one condition or contextual factor from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete condition, situation, or circumstance this instance describes — when, where, or under what conditions.",
+            abstraction_instruction="What broader significance or downstream effect does this condition point to?",
             domain_instruction=(
-                "Definition: A domain identifies the type of context or environment being described — temporal, spatial, organizational, or situational. \n"
-                "Key idea: Domains specify what type of contextual environment is described."
+                "Definition: A domain groups conditions by which subject area or sphere the condition belongs to — one consistent subject axis. \n"
+                "Key idea: Domains specify which area the condition sits in — not which category of context it is (that is the facet) or the specific condition itself (that is the attribute)."
             ),
-            domain_diagnostic="Question that needs to be answered: What type of contextual environment is described?",
+            domain_diagnostic="Question that needs to be answered: Which subject area or sphere does this condition belong to?",
             facet_instruction=(
-                "Definition: A facet identifies the analytical lens through which contextual conditions are examined. Each facet must be independently analyzable. \n"
-                "Key idea: Facets specify what type of condition is described."
+                "Definition: A facet identifies the analytical lens through which contextual conditions are examined — the category of context (e.g., temporal, spatial, organizational, situational), independent of subject area. Each facet must be independently analyzable. \n"
+                "Key idea: Facets specify which category of context the condition is, not which area it sits in."
             ),
-            facet_diagnostic="What type of contextual dimension is described?",
+            facet_diagnostic="Which category of context is this — temporal, spatial, organizational, or situational?",
             attribute_instruction=(
                 "Definition: An attribute identifies the specific condition, circumstance, or contextual factor being mentioned. It is a named property that captures the precise situational feature. \n"
                 "Key idea: Attributes name the specific contextual condition."
@@ -481,11 +481,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct motivation, need, goal, or reason expressed in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one motivation or reason from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete need, goal, value, or reason this instance expresses — why it matters.",
+            abstraction_instruction="What broader underlying value or driver does this motivation reflect?",
             domain_instruction=(
-                "Definition: A domain identifies the life area, activity, or concern that the motivation relates to. \n"
-                "Key idea: Domains specify what area of life or concern drives the motivation."
+                "Definition: A domain identifies which life area or concern the motivation relates to — one consistent area axis. \n"
+                "Key idea: Domains specify which area of life drives the motivation."
             ),
             domain_diagnostic="Question that needs to be answered: What area of life or concern is the motivation about?",
             facet_instruction=(
@@ -565,8 +565,8 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct experience, perception, or impression described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one experience or perception from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete experience, feeling, or impression this instance conveys — what it was like, not whether it was good or bad.",
+            abstraction_instruction="What broader quality of the experience or journey does this point to?",
             domain_instruction=(
                 "Definition: A domain identifies the part of the experience or journey being described. \n"
                 "Key idea: Domains specify which part of the experience is described."
@@ -654,13 +654,13 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct evaluative opinion, preference, or prioritization in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one evaluation or preference from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete judgment or preference this instance expresses — what is assessed and in which direction.",
+            abstraction_instruction="What broader evaluative theme or standard does this judgment appeal to?",
             domain_instruction=(
-                "Definition: A domain identifies the aspect or dimension of the entity being evaluated — what part of the offering, experience, or organization is being judged. \n"
-                "Key idea: Domains specify what aspect is being evaluated."
+                "Definition: A domain groups judgments by which aspect or part of the entity the assessment is about — one consistent subject axis. \n"
+                "Key idea: Domains specify which aspect is judged — not the criterion the judgment is based on (that is the facet) or the specific positive/negative signal (that is the attribute)."
             ),
-            domain_diagnostic="Question that needs to be answered: What aspect of the entity is being evaluated?",
+            domain_diagnostic="Question that needs to be answered: Which aspect or part of the entity is being judged?",
             facet_instruction=(
                 "Definition: A facet identifies the analytical lens through which evaluations are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify on what criterion the evaluation is based."
@@ -742,8 +742,8 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct action, process, or functional behavior described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one behavior or function from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete action, process, or function this instance describes — what happens or how it works.",
+            abstraction_instruction="What broader capability or function does this behavior contribute to?",
             domain_instruction=(
                 "Definition: A domain identifies the process, system, or activity being described. \n"
                 "Key idea: Domains specify what system or process is described."
@@ -830,13 +830,13 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct quality, trait, image, or association described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one attribute or association from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete quality, trait, image, or association this instance expresses about the entity — the descriptive characteristic itself, not how good it is or what it does.",
+            abstraction_instruction="What broader image or perception of the entity does this characteristic point to?",
             domain_instruction=(
-                "Definition: A domain identifies the dimension or aspect of the entity being described — what part of its identity, offering, behavior, or perception is being characterized. \n"
-                "Key idea: Domains specify what dimension of the entity is being described."
+                "Definition: A domain groups associations by which thematic subject area of the entity the trait, image, or association refers to — one consistent subject axis. \n"
+                "Key idea: Domains specify which subject area the association is about — not the kind of quality it is (that is the facet) or the specific trait itself (that is the attribute)."
             ),
-            domain_diagnostic="Question that needs to be answered: What dimension of the entity is being described?",
+            domain_diagnostic="Question that needs to be answered: Which subject area of the entity does this association describe?",
             facet_instruction=(
                 "Definition: A facet identifies the analytical lens through which descriptive qualities are examined. Each facet must be independently analyzable. \n"
                 "Key idea: Facets specify what type of quality is described."
@@ -918,11 +918,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         instruction="Identify each distinct relationship, dependency, or comparison described in the response.",
         prompt_rules=PromptRules(
             instance_instruction="Select the minimal verbatim span expressing exactly one relationship or dependency from the response.",
-            interpretation_instruction="What does this instance MEAN in context? Name the concrete phenomenon or interpretation.",
-            abstraction_instruction="What BROADER significance or higher-level theme does this point to?",
+            interpretation_instruction="Name the concrete relationship, dependency, or comparison this instance describes — what is linked to what.",
+            abstraction_instruction="What broader relational pattern or systemic implication does this point to?",
             domain_instruction=(
-                "Definition: A domain identifies the system, context, or sphere in which the relationship exists. \n"
-                "Key idea: Domains specify in what sphere the relationship exists."
+                "Definition: A domain identifies which sphere or system the relationship exists in — one consistent sphere axis. \n"
+                "Key idea: Domains specify in which sphere the relationship exists."
             ),
             domain_diagnostic="Question that needs to be answered: In what sphere does this relationship exist?",
             facet_instruction=(
