@@ -619,6 +619,13 @@ def run_taxonomy(force_recalc: bool = False):
                 print(f"\n  P8 saved: {p8_stats['attrs_before']} → {p8_stats['attrs_after']} attributes "
                       f"({p8_stats['merges']} merges, {p8_stats['ideas_after']} ideas)")
 
+            if CONFIG.verbose and merge_map:
+                print(f"\n  P8 merge report ({len(merge_map)} remappings):")
+                for (src_domain, old_name), target in sorted(merge_map.items()):
+                    print(f"    \"{old_name}\" ({src_domain}) → "
+                          f"\"{target.new_attribute_name}\" "
+                          f"({target.new_domain} > {target.new_facet})")
+
     cost_tracker.finalize_step("step_4_taxonomy_classifier")
 
     # Save prompts

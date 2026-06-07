@@ -17,7 +17,7 @@ See dev/CONSOLIDATION_LOGIC.md for full algorithm documentation.
 import copy
 import time
 from collections import defaultdict
-from typing import Dict, List, NamedTuple, Optional, Set
+from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
 import numpy as np
 from scipy.cluster.hierarchy import linkage, leaves_list
@@ -153,24 +153,37 @@ class CrossDomainConsolidator:
             print(f"    P8 embedding: {sum(a.idea_count for a in attr_embeddings)} ideas, "
                   f"{len(attr_embeddings)} centroids ({t_embed:.1f}s)")
 
-        # Step 3: Seriate and build sliding windows
-        ordered = self._compute_attribute_order(attr_embeddings)
-        windows = self._build_sliding_windows(ordered)
+        # Steps 3-5: seriate → consolidate → remap. Requires ≥2 attributes
+        # (seriation needs ≥2 points; nothing to merge below that anyway).
+        if len(attr_embeddings) >= 2:
+            # Step 3: Seriate and build sliding windows
+            ordered = self._compute_attribute_order(attr_embeddings)
+            windows = self._build_sliding_windows(ordered)
 
-        if verbose:
-            print(f"    P8 grouping: {len(windows)} groups "
-                  f"(window={self._window_size}, overlap={self._window_overlap})")
+            if verbose:
+                print(f"    P8 grouping: {len(windows)} groups "
+                      f"(window={self._window_size}, overlap={self._window_overlap})")
 
-        # Step 4: LLM consolidation via SmoothRequester
-        results = await self._run_consolidation(
-            windows, attr_embeddings, inventory,
-            taxonomy_cache, extraction_meta, verbose,
-        )
+            # Step 4: LLM consolidation via SmoothRequester
+            results = await self._run_consolidation(
+                windows, attr_embeddings, inventory,
+                taxonomy_cache, extraction_meta, verbose,
+            )
 
-        # Step 5: Build merge map and remap
-        merge_map = self._build_merge_map(results, windows, attr_embeddings)
-        new_taxonomy = self._apply_remapping_to_cache(taxonomy_cache, merge_map, inventory)
-        new_classified = self._apply_remapping_to_growing_model(classified, merge_map)
+            # Step 5: Build merge map and remap
+            merge_map = self._build_merge_map(results, windows, attr_embeddings)
+            new_taxonomy = self._apply_remapping_to_cache(taxonomy_cache, merge_map)
+            new_classified = self._apply_remapping_to_growing_model(classified, merge_map)
+        else:
+            if verbose:
+                print(f"    P8 skipped: {len(attr_embeddings)} attribute(s) — "
+                      f"nothing to consolidate cross-domain")
+            windows = []
+            merge_map = {}
+            new_taxonomy = TaxonomyResultsCache.model_validate(
+                copy.deepcopy(taxonomy_cache.model_dump())
+            )
+            new_classified = classified
 
         t_total = time.time() - t_start
 
@@ -189,6 +202,10 @@ class CrossDomainConsolidator:
             for r in new_taxonomy.partition_results.values()
         )
 
+        violations = self._verify_consistency(
+            taxonomy_cache, new_taxonomy, classified, new_classified,
+        )
+
         if verbose:
             print(f"    Results ({t_total:.1f}s → {attrs_after} consolidated attributes):")
             # Show per-domain changes
@@ -204,8 +221,13 @@ class CrossDomainConsolidator:
                     remap_msg = f", {remap_count} remapped" if remap_count else ""
                     print(f"      {domain_name}: {old_n} → {new_n} attributes{remap_msg}")
 
-            if ideas_before != ideas_after:
-                print(f"    WARNING: idea count changed {ideas_before} → {ideas_after}")
+            if violations:
+                print(f"    P8 CONSISTENCY: {len(violations)} issue(s):")
+                for v in violations:
+                    print(f"      ⚠ {v}")
+            else:
+                print(f"    P8 consistency: OK "
+                      f"(idea count, valence/confidence, no orphans)")
 
         # Cost tracking
         if self._cost_tracker and _snap_p8 is not None:
@@ -220,6 +242,7 @@ class CrossDomainConsolidator:
             "ideas_after": ideas_after,
             "merges": len(merge_map),
             "groups": len(windows),
+            "consistency_violations": len(violations),
             "wall_time": t_total,
         }
 
@@ -558,17 +581,29 @@ class CrossDomainConsolidator:
         results: List[Optional[CrossDomainConsolidatedResponse]],
         windows: List[List[int]],
         attr_embeddings: List[AttributeEmbedding],
-    ) -> Dict[str, MergeTarget]:
-        """Build merge map from all group results.
+    ) -> Dict[Tuple[str, str], MergeTarget]:
+        """Build merge map from all group results, keyed by (domain, name).
+
+        Attribute names are not unique across domains, so each source must be
+        resolved to a concrete (domain, name) pair. The LLM returns bare source
+        names; we resolve them against the attributes actually present in the
+        group's window.
 
         "Merge wins, first group takes precedence."
         """
-        merge_map: Dict[str, MergeTarget] = {}
-        already_processed: set = set()
+        merge_map: Dict[Tuple[str, str], MergeTarget] = {}
+        already_processed: Set[Tuple[str, str]] = set()
 
-        for g, (window, response) in enumerate(zip(windows, results), 1):
+        for window, response in zip(windows, results):
             if not response:
                 continue
+
+            # Bare name -> concrete (domain, name) pairs actually in this window
+            members_by_name: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+            for idx in window:
+                a = attr_embeddings[idx]
+                members_by_name[a.attribute_name].append((a.domain_name, a.attribute_name))
+
             for consolidated in response.attributes:
                 target = MergeTarget(
                     new_attribute_name=consolidated.attribute_name,
@@ -577,34 +612,29 @@ class CrossDomainConsolidator:
                     new_description=consolidated.attribute_description,
                 )
                 for source_name in consolidated.source_attributes:
-                    if source_name in already_processed:
-                        continue
-                    already_processed.add(source_name)
-                    if source_name != consolidated.attribute_name:
-                        merge_map[source_name] = target
+                    # Resolve the bare name to the attributes in scope; unknown
+                    # names (LLM hallucinations) resolve to nothing and are skipped.
+                    for source_key in members_by_name.get(source_name, []):
+                        if source_key in already_processed:
+                            continue
+                        already_processed.add(source_key)
+                        # Skip true no-ops: same domain AND same name as the target
+                        if source_key != (target.new_domain, target.new_attribute_name):
+                            merge_map[source_key] = target
 
         return merge_map
 
     def _apply_remapping_to_cache(
         self,
         taxonomy_cache: TaxonomyResultsCache,
-        merge_map: Dict[str, MergeTarget],
-        inventory: List[AttributeEntry],
+        merge_map: Dict[Tuple[str, str], MergeTarget],
     ) -> TaxonomyResultsCache:
         """Apply merge map to taxonomy cache, returning a new copy."""
         new_cache = TaxonomyResultsCache.model_validate(
             copy.deepcopy(taxonomy_cache.model_dump())
         )
 
-        attr_source_domain: Dict[str, str] = {}
-        for entry in inventory:
-            attr_source_domain[entry.attribute_name] = entry.domain_name
-
-        for old_name, target in merge_map.items():
-            source_domain = attr_source_domain.get(old_name)
-            if not source_domain:
-                continue
-
+        for (source_domain, old_name), target in merge_map.items():
             source_result = new_cache.partition_results.get(source_domain)
             target_result = new_cache.partition_results.get(target.new_domain)
             if not source_result or not target_result:
@@ -617,28 +647,39 @@ class CrossDomainConsolidator:
             if not idea_ids_to_move:
                 continue
 
-            # Remove from source
+            # Remove from source, preserving valence/confidence to carry over
+            moved_valence: Dict[str, str] = {}
+            moved_confidence: Dict[str, float] = {}
             for iid in idea_ids_to_move:
                 del source_result.attribute_assignments[iid]
-                source_result.attribute_valence.pop(iid, None)
-                source_result.attribute_confidence.pop(iid, None)
+                val = source_result.attribute_valence.pop(iid, None)
+                conf = source_result.attribute_confidence.pop(iid, None)
+                if val is not None:
+                    moved_valence[iid] = val
+                if conf is not None:
+                    moved_confidence[iid] = conf
 
-            # Cross-domain: also move facet assignments
-            if source_domain != target.new_domain:
-                for iid in idea_ids_to_move:
+            # Move facet assignment to the target facet. For cross-domain merges
+            # the facet valence/confidence also move from source to target; for
+            # same-domain merges they already live in the right result object.
+            for iid in idea_ids_to_move:
+                if source_domain != target.new_domain:
                     old_facet_valence = source_result.facet_valence.pop(iid, None)
                     old_facet_conf = source_result.facet_confidence.pop(iid, None)
                     source_result.facet_assignments.pop(iid, None)
-
-                    target_result.facet_assignments[iid] = target.new_facet
                     if old_facet_valence:
                         target_result.facet_valence[iid] = old_facet_valence
                     if old_facet_conf:
                         target_result.facet_confidence[iid] = old_facet_conf
+                target_result.facet_assignments[iid] = target.new_facet
 
-            # Add to target
+            # Add to target (assignment + carried valence + confidence)
             for iid in idea_ids_to_move:
                 target_result.attribute_assignments[iid] = target.new_attribute_name
+            for iid, val in moved_valence.items():
+                target_result.attribute_valence[iid] = val
+            for iid, conf in moved_confidence.items():
+                target_result.attribute_confidence[iid] = conf
 
             # Remove old attribute from source attributes dict
             for facet_name, attrs_list in list(source_result.attributes.items()):
@@ -666,7 +707,7 @@ class CrossDomainConsolidator:
     def _apply_remapping_to_growing_model(
         self,
         classified: List[TaxonomyClassifiedModel],
-        merge_map: Dict[str, MergeTarget],
+        merge_map: Dict[Tuple[str, str], MergeTarget],
     ) -> List[TaxonomyClassifiedModel]:
         """Apply merge map to growing model, returning a new copy."""
         new_classified = []
@@ -675,10 +716,102 @@ class CrossDomainConsolidator:
             new_resp = TaxonomyClassifiedModel.model_validate(resp_dict)
             if new_resp.response_ideas:
                 for idea in new_resp.response_ideas:
-                    if idea.attribute and idea.attribute in merge_map:
-                        target = merge_map[idea.attribute]
+                    if not idea.attribute:
+                        continue
+                    target = merge_map.get((idea.partition_name, idea.attribute))
+                    if target:
                         idea.attribute = target.new_attribute_name
                         idea.facet = target.new_facet
                         idea.partition_name = target.new_domain
+                        idea.domain = target.new_domain  # keep both domain fields consistent
             new_classified.append(new_resp)
         return new_classified
+
+    # =========================================================================
+    # CONSISTENCY VERIFICATION
+    # =========================================================================
+
+    def _verify_consistency(
+        self,
+        before_cache: TaxonomyResultsCache,
+        after_cache: TaxonomyResultsCache,
+        before_classified: List[TaxonomyClassifiedModel],
+        after_classified: List[TaxonomyClassifiedModel],
+    ) -> List[str]:
+        """Verify P8 preserved data integrity. Returns a list of violations.
+
+        Catches regressions of the remap bugs (A: wrong/extra ideas remapped,
+        B: valence/confidence dropped) without needing a pre-P8 snapshot, since
+        both the before and after states are in scope during consolidation.
+
+          1. Idea count preserved — growing model and cache (P8 relabels only).
+          2. No idea lost its valence/confidence (attribute- or facet-level).
+          3. No assignment references an attribute absent from the taxonomy.
+        """
+        violations: List[str] = []
+
+        # 1. Idea count preserved (growing model + cache)
+        n_ideas_before = sum(
+            len(r.response_ideas) for r in before_classified if r.response_ideas
+        )
+        n_ideas_after = sum(
+            len(r.response_ideas) for r in after_classified if r.response_ideas
+        )
+        if n_ideas_before != n_ideas_after:
+            violations.append(
+                f"growing-model idea count changed: {n_ideas_before} → {n_ideas_after}"
+            )
+
+        n_cache_before = sum(
+            len(r.attribute_assignments)
+            for r in before_cache.partition_results.values()
+        )
+        n_cache_after = sum(
+            len(r.attribute_assignments)
+            for r in after_cache.partition_results.values()
+        )
+        if n_cache_before != n_cache_after:
+            violations.append(
+                f"cache idea count changed: {n_cache_before} → {n_cache_after}"
+            )
+
+        # 2. No valence/confidence dropped (per-idea-id sets must not shrink).
+        #    Union over all domains so cross-domain moves don't count as loss.
+        for field in (
+            "attribute_valence", "attribute_confidence",
+            "facet_valence", "facet_confidence",
+        ):
+            before_ids = {
+                iid
+                for r in before_cache.partition_results.values()
+                for iid in getattr(r, field)
+            }
+            after_ids = {
+                iid
+                for r in after_cache.partition_results.values()
+                for iid in getattr(r, field)
+            }
+            lost = before_ids - after_ids
+            if lost:
+                violations.append(f"{field}: {len(lost)} idea(s) lost their value")
+
+        # 3. No orphan assignments — assigned attribute must exist in the domain
+        #    (sentinels for unassigned ideas are not real attributes).
+        sentinels = {"__UNASSIGNED__", "(no attribute)"}
+        for domain_name, result in after_cache.partition_results.items():
+            known = {
+                a.get("attribute_name")
+                for attrs in result.attributes.values()
+                for a in attrs
+            }
+            orphans = {
+                aname for aname in result.attribute_assignments.values()
+                if aname not in known and aname not in sentinels
+            }
+            if orphans:
+                violations.append(
+                    f"{domain_name}: {len(orphans)} assigned attribute(s) "
+                    f"not in taxonomy: {sorted(orphans)[:3]}"
+                )
+
+        return violations

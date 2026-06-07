@@ -211,8 +211,8 @@ def main():
         print(f"\n{'─' * 80}")
         print(f"MERGE MAP ({len(merge_map)} remappings)")
         print(f"{'─' * 80}")
-        for old_name, target in sorted(merge_map.items()):
-            print(f"  \"{old_name}\" → \"{target.new_attribute_name}\" "
+        for (src_domain, old_name), target in sorted(merge_map.items()):
+            print(f"  \"{old_name}\" ({src_domain}) → \"{target.new_attribute_name}\" "
                   f"({target.new_domain} > {target.new_facet})")
 
     # Print consolidated taxonomy
