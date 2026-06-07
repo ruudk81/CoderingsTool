@@ -49,6 +49,11 @@ from pipeline.step_4_classifier.prompts_classifier import (
 # DATA STRUCTURES
 # =============================================================================
 
+# Placeholder attribute names that mark an idea as unassigned — never real
+# attributes, so they are excluded from consolidation and orphan checks.
+_SENTINEL_ATTRIBUTES = {"__UNASSIGNED__", "(no attribute)"}
+
+
 class AttributeEntry(NamedTuple):
     """One attribute in the global inventory."""
     domain_name: str
@@ -281,15 +286,20 @@ class CrossDomainConsolidator:
         self,
         classified: List[TaxonomyClassifiedModel],
     ) -> Dict[tuple, List[TaxonomyClassifiedSubmodel]]:
-        """Group ideas by (domain, attribute) from the growing model."""
+        """Group ideas by (domain, attribute) from the growing model.
+
+        Unassigned ideas (empty or sentinel attribute) are skipped — they are
+        not real attributes and must not enter the consolidation.
+        """
         groups: Dict[tuple, List[TaxonomyClassifiedSubmodel]] = defaultdict(list)
         for resp in classified:
             if not resp.response_ideas:
                 continue
             for idea in resp.response_ideas:
+                if not idea.attribute or idea.attribute in _SENTINEL_ATTRIBUTES:
+                    continue  # unassigned — not a real attribute to consolidate
                 domain = idea.partition_name or "(unknown)"
-                attr = idea.attribute or "(no attribute)"
-                groups[(domain, attr)].append(idea)
+                groups[(domain, idea.attribute)].append(idea)
         return groups
 
     # =========================================================================
@@ -307,8 +317,6 @@ class CrossDomainConsolidator:
         attr_counts = []
 
         for (domain, attr_name), ideas in sorted(ideas_per_attr.items()):
-            if attr_name == "(no attribute)":
-                continue
             texts = [format_idea_text(idea, self._code_source) for idea in ideas]
             attr_keys.append((domain, attr_name))
             attr_texts.append(texts)
@@ -797,7 +805,6 @@ class CrossDomainConsolidator:
 
         # 3. No orphan assignments — assigned attribute must exist in the domain
         #    (sentinels for unassigned ideas are not real attributes).
-        sentinels = {"__UNASSIGNED__", "(no attribute)"}
         for domain_name, result in after_cache.partition_results.items():
             known = {
                 a.get("attribute_name")
@@ -806,7 +813,7 @@ class CrossDomainConsolidator:
             }
             orphans = {
                 aname for aname in result.attribute_assignments.values()
-                if aname not in known and aname not in sentinels
+                if aname not in known and aname not in _SENTINEL_ATTRIBUTES
             }
             if orphans:
                 violations.append(
