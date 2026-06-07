@@ -5,7 +5,7 @@ Debug script for Code Generator prompts (P8-P9): Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
 Usage:
-    cd src && python -m steps.step_5_codeGenerator.debug_codebook_prompts
+    cd src && python -m pipeline.step_5_codeGenerator.debug_codebook_prompts
 """
 
 import sys
@@ -160,7 +160,7 @@ def main():
     if data is None:
         print(f"\nNo codebook prompts file found at: {prompts_file}")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m steps.step_5_codeGenerator.run_codeGenerator")
+        print("  cd src && python -m pipeline.step_5_codeGenerator.run_codeGenerator")
         return
 
     print(f"\nSession ID:    {data.get('session_id', 'unknown')}")

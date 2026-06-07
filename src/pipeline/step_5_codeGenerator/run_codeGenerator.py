@@ -26,6 +26,12 @@ from utils.costTracker import CostTracker
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.codebook_generator import CodebookGenerator, CodebookResult
 from pipeline.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
+from pipeline.step_5_codeGenerator.codebook_verifier import (
+    build_scorecard, format_scorecard, collect_taxonomy_attributes, collect_idea_assignments,
+)
+from pipeline.step_5_codeGenerator.neighbor_stress_test import run_neighbor_stress_test
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from config import MISCELLANEOUS_CODE_LABELS
 
 # Import step_4_classifier (upstream output types)
 from pipeline.step_4_classifier.models_classifier import (
@@ -321,6 +327,88 @@ def save_prompts_to_json(prompt_printer):
 
 
 # =============================================================================
+# SCORECARD
+# =============================================================================
+
+def apply_overig_sweep(
+    codebook_result: CodebookResult,
+    pydantic_results: Dict[str, DomainResultModel],
+    language: str,
+) -> Optional[str]:
+    """Route attributes no code placed into a single catch-all 'Overig' code.
+
+    Guarantees 100% attribute/idea coverage by construction. Mutates
+    codebook_result.codes. Returns the Overig code name, or None if nothing orphaned.
+    """
+    # Referenced = taxonomy attributes AND attributes ideas were actually assigned to
+    # (the latter catches step-4 dangling assignments → guarantees 100% idea coverage).
+    all_attrs = collect_taxonomy_attributes(pydantic_results)
+    idea_attrs = [a for a in collect_idea_assignments(pydantic_results).values() if a]
+    referenced = list(dict.fromkeys(all_attrs + idea_attrs))
+    covered = set()
+    for code in codebook_result.codes:
+        covered.update(code.source_attributes or [])
+    orphans = [a for a in referenced if a not in covered]
+    if not orphans:
+        return None
+
+    label = MISCELLANEOUS_CODE_LABELS.get(language, "Overig")
+    codebook_result.codes.append(ConsolidatedCode(
+        code_name=label,
+        definition="Catch-all voor antwoorden die geen specifieke code kregen "
+                   "(o.a. diffuus of algemeen oordeel zonder concreet onderwerp).",
+        diagnostic_test="valt buiten alle specifieke codes",
+        valence="neutral",
+        typical_indicators=[],
+        source_attributes=orphans,
+    ))
+    return label
+
+
+def run_and_save_scorecard(
+    codebook_result: CodebookResult,
+    pydantic_results: Dict[str, DomainResultModel],
+    variable_key: str,
+    overig_code_name: Optional[str] = None,
+):
+    """Build the post-P9 verification scorecard (PASS/FAIL), print it, persist as JSON."""
+    scorecard = build_scorecard(codebook_result.codes, pydantic_results, overig_code_name)
+    print("\n" + format_scorecard(scorecard))
+
+    scorecard_dir = project_root / "exports" / "codebook"
+    scorecard_dir.mkdir(parents=True, exist_ok=True)
+    base = Path(FILENAME).stem.replace(" ", "_")
+    path = scorecard_dir / f"{base}_{variable_key}_scorecard.json"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(scorecard.model_dump_json(indent=2))
+    print(f"Scorecard saved to: {path}")
+    return scorecard
+
+
+def save_neighbor_stress(
+    idea_embeddings: Optional[Dict],
+    pydantic_results: Dict[str, DomainResultModel],
+    variable_key: str,
+):
+    """Save the cross-domain attribute proximity report (planning aid — NOT a grade).
+
+    Not printed: high absolute similarity is a single-topic-survey artifact, not a
+    quality signal. Saved for on-demand inspection only.
+    """
+    report = run_neighbor_stress_test(idea_embeddings or {}, pydantic_results)
+    if report is None:
+        return None
+    out_dir = project_root / "exports" / "codebook"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = Path(FILENAME).stem.replace(" ", "_")
+    path = out_dir / f"{base}_{variable_key}_neighbor_stress.json"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(report.model_dump_json(indent=2))
+    print(f"Neighbor stress report (planning aid) saved to: {path}")
+    return report
+
+
+# =============================================================================
 # HELPERS
 # =============================================================================
 
@@ -389,31 +477,32 @@ def run_codebook(force_recalc: bool = False):
           f"across {len(pydantic_results)} domains")
 
     # Reconstruct taxonomy data for codebook generator
-    from pipeline.step_4_classifier.prompts_classifier import DiscoveredFacet, DiscoveredAttribute
+    from pipeline.step_4_classifier.prompts_classifier import DiscoveredAttribute
 
-    partition_facets = {}
     partition_assignments = {}
     partition_attributes = {}
-    partition_n_labels = {}
-    partition_n_batches = {}
     all_attr_assignments = {}
 
     for name, result in pydantic_results.items():
-        partition_facets[name] = [DiscoveredFacet(**f) for f in result.facets]
         partition_assignments[name] = result.facet_assignments
+        # P7-consolidated attributes carry only attribute_name + attribute_description;
+        # parent_facet (= the facet key) and example_observations are absent → default them.
         partition_attributes[name] = {
-            facet_name: [DiscoveredAttribute(**a) for a in attrs]
+            facet_name: [
+                DiscoveredAttribute(
+                    attribute_name=a["attribute_name"],
+                    attribute_description=a.get("attribute_description", ""),
+                    parent_facet=a.get("parent_facet", facet_name),
+                    example_observations=a.get("example_observations", []),
+                )
+                for a in attrs
+            ]
             for facet_name, attrs in result.attributes.items()
         }
-        partition_n_labels[name] = result.n_labels
-        partition_n_batches[name] = result.n_batches
         all_attr_assignments.update(result.attribute_assignments)
 
     from pipeline.step_5_codeGenerator.codebook_generator import TaxonomyResult
     taxonomy_result = TaxonomyResult(
-        partition_n_labels=partition_n_labels,
-        partition_n_batches=partition_n_batches,
-        partition_facets=partition_facets,
         partition_assignments=partition_assignments,
         partition_attributes=partition_attributes,
         attribute_assignments=all_attr_assignments,
@@ -449,8 +538,19 @@ def run_codebook(force_recalc: bool = False):
 
     cost_tracker.finalize_step("step_5_code_generator")
 
-    # Print codebook results
+    # Overig sweep: route any unplaced attribute into a catch-all → 100% coverage
+    overig_name = apply_overig_sweep(codebook_result, pydantic_results, language)
+
+    # Print codebook results (includes Overig if added)
     print_codebook_results(codebook_result)
+
+    # Post-P9 verification scorecard (PASS/FAIL against the definition of done)
+    run_and_save_scorecard(codebook_result, pydantic_results, variable_key, overig_name)
+
+    # Cross-domain attribute proximity — planning aid only (saved, not printed)
+    save_neighbor_stress(
+        getattr(generator, '_idea_embeddings', None), pydantic_results, variable_key
+    )
 
     # Cache for downstream use by step 6 (code assigner)
     cache_mece_results(

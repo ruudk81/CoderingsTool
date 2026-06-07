@@ -13,7 +13,7 @@ Uses SmoothRequester for rate-limited LLM dispatch.
 import asyncio
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional, Set
 
 
@@ -35,22 +35,17 @@ from pipeline.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
 )
 
-from pipeline.step_4_classifier.models_classifier import (
-    DomainSet, DomainResultModel, TaxonomyResultsCache, DomainDescription,
-)
+from pipeline.step_4_classifier.models_classifier import DomainSet
 
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from .prompts_codeGenerator import (
     # P8: Code Generation from Attributes
     build_code_from_attributes_prompt,
     CodeGenerationFromAttributesResult,
-    CodeFromAttributes,
     # P9: Codebook Consolidation
     build_codebook_consolidation_prompt,
     CodebookConsolidationResult,
     ConsolidatedCode,
-    # Attribute types needed for P8 input formatting
-    DiscoveredAttribute,
     # Enriched attributes for P8 representative samples
     EnrichedAttribute,
 )
@@ -83,25 +78,10 @@ class DomainContext:
 
 @dataclass
 class TaxonomyResult:
-    """Input from taxonomy stages P1-P7 (mirrors step_4_classifier.classifier.TaxonomyResult)."""
-    partition_n_labels: Dict[str, int]
-    partition_n_batches: Dict[str, int]
-    partition_facets: Dict[str, list]  # domain -> [DiscoveredFacet]
+    """Taxonomy input from step 4 — only the fields P8/P9 consume."""
     partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
     partition_attributes: Dict[str, Dict[str, list]]  # domain -> {facet -> [DiscoveredAttribute]}
     attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
-
-
-@dataclass
-class DomainResult:
-    """Per-domain pipeline result (v3)."""
-    partition_name: str
-    n_labels: int
-    n_batches: int
-    facets: list
-    facet_assignments: Dict[str, str]  # idea_id -> facet_name
-    attributes: Dict[str, list]  # facet_name -> attributes
-    attribute_assignments: Dict[str, str] = field(default_factory=dict)  # idea_id -> attribute_name
 
 
 @dataclass
@@ -269,6 +249,7 @@ class CodebookGenerator:
         # EMBEDDING + REPRESENTATIVE SAMPLES
         # =================================================================
         enriched_by_domain = {}
+        attribute_valence_counts: Dict[str, Dict[str, int]] = {}
         self._idea_embeddings = {}
 
         if ideas_flat:
@@ -279,6 +260,10 @@ class CodebookGenerator:
             representatives, group_counts, self._idea_embeddings = await self._compute_representative_samples(
                 ideas_flat, attribute_assignments, verbose,
             )
+
+            # Per-attribute valence breakdown for P9's prevalence-gated valence policy
+            for (attr_name, vgroup), count in group_counts.items():
+                attribute_valence_counts.setdefault(attr_name, {})[vgroup] = count
 
             enriched_by_domain = self._enrich_attributes_with_samples(
                 domain_facet_attributes, representatives, group_counts,
@@ -431,9 +416,19 @@ class CodebookGenerator:
         t_phase9 = time.time()
 
         if len(all_codes) > 0:
+            # Cross-domain attribute names — constrains P9 source_attributes to valid names
+            all_attr_names_global = sorted({
+                attr.attribute_name
+                for facet_map in domain_facet_attributes.values()
+                for facet_attrs in facet_map.values()
+                for attr in facet_attrs
+            })
+
             p9_tasks = [{
                 'raw_codes': all_codes,
                 'code_frequencies': code_frequencies,
+                'all_attr_names': all_attr_names_global,
+                'attribute_valence_counts': attribute_valence_counts,
             }]
 
             p9_requester = SmoothRequester(
@@ -455,7 +450,10 @@ class CodebookGenerator:
 
             consolidation_result = p9_results[0]
             if consolidation_result and consolidation_result.codes:
-                all_codes = consolidation_result.codes
+                # Convert constrained dynamic codes back to ConsolidatedCode for downstream
+                all_codes = [
+                    ConsolidatedCode(**c.model_dump()) for c in consolidation_result.codes
+                ]
                 codebook_narratives.append(
                     f"[consolidation] {consolidation_result.scratchpad}"
                 )
@@ -540,7 +538,7 @@ class CodebookGenerator:
                 all_texts.append(format_idea_text(idea, config.code_source))
 
         if not all_texts:
-            return {}, {}
+            return {}, {}, {}
 
         all_embeddings_array = await embedder.embed_texts(all_texts)
 
@@ -737,6 +735,39 @@ class CodebookGenerator:
     # P9 SMOOTHREQUESTER CALLBACKS
     # =========================================================================
 
+    @staticmethod
+    def _build_constrained_consolidation_model(attribute_names: List[str]):
+        """Build a CodebookConsolidationResult with source_attributes constrained
+        to an enum of valid (cross-domain) attribute names.
+
+        Guarantees P9 provenance is always valid, so the post-P9 coverage check
+        is sound (no invented or renamed source names)."""
+        if not attribute_names:
+            return CodebookConsolidationResult
+
+        AttrLiteral = Literal[tuple(attribute_names)]
+
+        ConstrainedCode = create_model(
+            "ConsolidatedCode",
+            code_name=(str, ConsolidatedCode.model_fields["code_name"]),
+            definition=(str, ConsolidatedCode.model_fields["definition"]),
+            diagnostic_test=(str, ConsolidatedCode.model_fields["diagnostic_test"]),
+            valence=(str, ConsolidatedCode.model_fields["valence"]),
+            typical_indicators=(List[str], ConsolidatedCode.model_fields["typical_indicators"]),
+            source_attributes=(List[AttrLiteral], Field(
+                default_factory=list,
+                description="Attribute names this code is derived from (must be exact names from the taxonomy)",
+            )),
+        )
+
+        ConstrainedResult = create_model(
+            "CodebookConsolidationResult",
+            scratchpad=(str, CodebookConsolidationResult.model_fields["scratchpad"]),
+            codes=(List[ConstrainedCode], Field(..., description="Final MECE codebook")),
+        )
+
+        return ConstrainedResult
+
     def _p9_prepare_fn(self, prompt_context: PromptContext):
         """Return prepare_fn closure for P9 codebook consolidation."""
         def prepare_fn(task: Dict) -> Dict:
@@ -749,7 +780,10 @@ class CodebookGenerator:
                 dimension_def=prompt_context.dimension_def,
                 raw_codes=task['raw_codes'],
                 code_frequencies=task['code_frequencies'],
+                attribute_valence_counts=task.get('attribute_valence_counts'),
             )
+
+            response_model = self._build_constrained_consolidation_model(task['all_attr_names'])
 
             # Prompt capture
             gate_key = "qr_codebook_consolidation"
@@ -773,7 +807,7 @@ class CodebookGenerator:
 
             return {
                 'prompt': prompt,
-                'response_model': CodebookConsolidationResult,
+                'response_model': response_model,
                 'temperature': self._temperature_p9,
                 'max_tokens': self._max_tokens_codebook_consolidation,
                 'max_retries': 2,

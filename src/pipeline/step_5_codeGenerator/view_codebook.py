@@ -5,7 +5,7 @@ View codebook results (P8-P9): codes with definitions, indicators, source attrib
 Loads from cached MECE results (step "mece_codes").
 
 Usage:
-    cd src && python -m steps.step_5_codeGenerator.view_codebook
+    cd src && python -m pipeline.step_5_codeGenerator.view_codebook
 """
 
 import sys
@@ -45,7 +45,7 @@ def main():
 
     if mece_cache is None:
         print("\nNo cached codebook results found.")
-        print("Run codebook generation first: RUN_MODE = 'codebook' or 'all'")
+        print("Run codebook generation first: python -m pipeline.step_5_codeGenerator.run_codeGenerator")
         return
 
     # Reconstruct ConsolidatedCode objects
