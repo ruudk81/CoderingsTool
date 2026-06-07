@@ -550,10 +550,11 @@ Your goal is the smallest set of domains that still gives every response a clear
 
 NO broad evaluative catch-all: do not create a vague impression bucket such as "general impression", "overall reputation", or "character" that mixes many unrelated qualities. If such a domain would absorb a large share of responses, split it along sharper subject axes. EXCEPTION: a clean, well-defined "no/weak association" domain IS allowed when many responses genuinely express the absence of any association — this is a real response type, not a catch-all.
 
+DESCRIPTIVE DOMAINS ONLY: every domain must name a DESCRIPTIVE subject/aspect of the entity — never a sentiment or judgment. Even if all responses in a group are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; the direction (positive/negative) is captured separately by valence, never by domains (which MUST be descriptive). Do not create evaluative domains (e.g. "reputation/appreciation", "good vs bad", "trust as a verdict"); reframe them descriptively as the subject being judged.
+
 ## CRITICAL REQUIREMENTS
 
 - All labels and definitions in your JSON output must be in the language specified in the <language> tags, which is {language}
-- The "key" field should be in English for technical consistency
 - Domain definitions must NOT contain examples or enumerations — no "such as", "like", "zoals"
 - Domains must be ontologically distinct and semantically distant — no shared conceptual space, no coder hesitation
 
@@ -565,8 +566,8 @@ Begin processing now and provide your output as **valid JSON** following the res
 class DomainItem(BaseModel):
     """A single domain discovered from the data."""
     key: str = Field(
-        description="Short identifier",
-        examples=["access_and_logistics", "value_proposition", "hospitality_and_interaction"]
+        default="",
+        description="Pipeline identifier — leave empty; the pipeline sets it equal to the label."
     )
     label: str = Field(
         description="Human-readable label in {language} (1-4 words)",
@@ -664,6 +665,7 @@ Important consolidation principles:
 - MAINTAIN full coverage: the consolidated domains must collectively cover all concepts present in the chunk-level analyses
 - MINIMIZE the total number of domains while preserving meaningful distinctions — aim for 4–8 domains
 - NO broad evaluative catch-all: do not keep or create a vague impression bucket such as "general impression", "overall reputation", or "character" that mixes many unrelated qualities. If one domain would absorb a large share of responses, split it along sharper subject axes. EXCEPTION: a clean, well-defined "no/weak association" domain IS allowed when many responses genuinely express the absence of any association — this is a real response type, not a catch-all
+- DESCRIPTIVE DOMAINS ONLY: every domain names a DESCRIPTIVE subject/aspect — never a sentiment or judgment. Even if all its responses are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; direction (positive/negative) is captured separately by valence, never by domains. Reframe any evaluative bucket (e.g. "reputation/appreciation", "good vs bad") descriptively as the subject being judged
 - All domains must stay strictly within the boundaries and through the lens of the primary dimension
 - Each domain definition must complete: "This domain covers responses about [single aspect]." Abstract boundary only, no examples or enumerations
 - All domain labels and definitions must be in the language specified above
@@ -690,6 +692,45 @@ class DomainConsolidatedResponse(BaseModel):
     """Consolidated domains after merging all chunks."""
     domains: List[DomainItem] = Field(
         description="Fewest mutually exclusive domains needed for full coverage, consolidated from all chunks"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# STAGE 5: Domain orthogonalization (one-shot, exemplar-grounded reformulation)
+# ═══════════════════════════════════════════════════════════════════════
+
+def build_orthogonalize_domains_prompt(
+    *, language, survey_question, sector, entity, topic, perspective, intent,
+    primary_dimension, domain_diagnostic, domains_block,
+) -> str:
+    """Re-describe ALL domains for maximal orthogonality (same count + same order),
+    WITHOUT reassigning any idea. Grounded in each domain's representative ideas."""
+    return f"""You are sharpening the boundaries of an existing set of survey-coding domains so they are, taken together, as mutually exclusive (orthogonal) as possible — WITHOUT changing which ideas belong where.
+
+Language: {language}   Survey question: {survey_question}
+Context: sector={sector}, entity={entity}, topic={topic}, perspective={perspective}, intent={intent}
+Primary dimension (the fixed lens): {primary_dimension}
+Domain question for this dimension: {domain_diagnostic}
+
+Current domains, each with its definition, current boundary, and most representative ideas (instance → interpretation → abstraction):
+
+{domains_block}
+
+## YOUR TASK
+Re-describe ALL domains so that together they are MAXIMALLY orthogonal — each a single subject axis within the dimension, with sharp, non-overlapping boundaries.
+- Keep the SAME number of domains and return them in the SAME ORDER (do not merge, split, add, or drop — only sharpen the wording).
+- For each domain provide: label, definition (one subject axis), boundary_test (a yes/no membership question), exclusions (the neighbouring domains it must not be confused with). Do NOT output a key.
+- DESCRIPTIVE DOMAINS ONLY: every domain names a DESCRIPTIVE subject/aspect — never a sentiment or judgment. Even if all its ideas are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; direction (positive/negative) is captured separately by valence, never by domains. Reframe any evaluative bucket (e.g. "reputation/appreciation", "good vs bad") descriptively as the subject being judged.
+- Use the representative ideas to find each domain's true center and the real boundaries between neighbours.
+- All labels and definitions in {language}.
+
+Provide your output as valid JSON following the response schema provided."""
+
+
+class ReformulatedDomains(BaseModel):
+    """Re-described domains for maximal orthogonality (same count + same order as input)."""
+    domains: List[DomainItem] = Field(
+        description="Same domains, same count and order, re-described for maximal orthogonality"
     )
 
 

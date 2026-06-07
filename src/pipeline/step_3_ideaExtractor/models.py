@@ -53,9 +53,9 @@ class ExtractionMetadata(BaseModel):
     primary_dimension_description: str = ""   # Context-specific description of the dimension
     decision_tree_stop_position: int = 0      # 1-10, which decision tree step triggered selection
     # Domains (L2, data-driven, replaces topical_categories)
-    domains: List[Dict[str, str]] = Field(
+    domains: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Data-driven domains [{key, label, definition}, ...]"
+        description="Data-driven domains [{key, label, definition, boundary_test, exclusions}, ...]"
     )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

@@ -66,6 +66,8 @@ from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     DomainConsolidatedResponse,
     create_extraction_model,
     consolidate_primary_dimension_by_majority,
+    build_orthogonalize_domains_prompt,
+    ReformulatedDomains,
 )
 
 # === DIMENSION DATA ===============================================================================================
@@ -93,6 +95,11 @@ from utils.smoothRequester import (
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
 from utils.cached_resources import get_tiktoken_encoding
+from utils.embedder import SharedEmbedder, find_representative_samples
+
+# Post-extraction domain orthogonalization (one-shot reformulation; no reassignment)
+ENABLE_DOMAIN_ORTHOGONALIZE = True
+ORTHOGONALIZE_TOP_N = 8   # representative exemplars per domain fed to the reformulation
 
 
 
@@ -173,6 +180,7 @@ class IdeaExtractor:
         self._captured_taxonomy_consolidation = False
         self._captured_domain_chunk = False
         self._captured_domain_consolidation = False
+        self._captured_domain_orthogonalize = False
         # Initialize tokenizer for token estimation (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
@@ -560,7 +568,7 @@ class IdeaExtractor:
         for idx, result in enumerate(chunk_results):
             chunk_response = result['response']
             cats_text = "\n".join([
-                f'    - {c.key}: "{c.label}" — {c.definition}'
+                f'    - "{c.label}" — {c.definition}'
                 for c in chunk_response.domains
             ])
             chunk_text = f"""Chunk {idx + 1}:
@@ -610,7 +618,7 @@ class IdeaExtractor:
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"  Domains consolidated:")
             for c in response.domains:
-                self.verbose_reporter.stat_line(f"    {c.key}: {c.label}")
+                self.verbose_reporter.stat_line(f"    {c.label}")
 
         return response
 
@@ -776,9 +784,9 @@ class IdeaExtractor:
                 self.verbose_reporter.stat_line(f"  Phase 3 chunk-level results:")
                 for r in category_results:
                     chunk_resp = r['response']
-                    cat_keys = [c.key for c in chunk_resp.domains]
+                    cat_labels = [c.label for c in chunk_resp.domains]
                     self.verbose_reporter.stat_line(
-                        f"    Chunk {r['chunk_idx']+1}: {len(cat_keys)} domains: {cat_keys}"
+                        f"    Chunk {r['chunk_idx']+1}: {len(cat_labels)} domains: {cat_labels}"
                     )
 
             # Consolidate domains — hard failure if no results
@@ -795,7 +803,7 @@ class IdeaExtractor:
             else:
                 categories_consolidated = await self._consolidate_domains(category_results, context_specifiers, sample_responses=sample)
 
-            self.verbose_reporter.stat_line(f"  Domains: {[c.key for c in categories_consolidated.domains]}")
+            self.verbose_reporter.stat_line(f"  Domains: {[c.label for c in categories_consolidated.domains]}")
         else:
             self.verbose_reporter.stat_line(f"  Phase 3: Skipped (on-the-fly domains)")
             categories_consolidated = DomainConsolidatedResponse(domains=[])
@@ -1188,9 +1196,14 @@ class IdeaExtractor:
             primary_dimension=self.primary_dimension or '',
             primary_dimension_description=self.primary_dimension_description or '',
             decision_tree_stop_position=self.decision_tree_stop_position,
-            # Domains
+            # Domains — persist the full boundary (used by the prototype + step 4's
+            # DomainDescription, which otherwise re-derives a weaker boundary_test).
             domains=[
-                {"key": c.key, "label": c.label, "definition": c.definition}
+                {
+                    "key": c.label, "label": c.label, "definition": c.definition,
+                    "boundary_test": getattr(c, "boundary_test", "") or "",
+                    "exclusions": list(getattr(c, "exclusions", []) or []),
+                }
                 for c in getattr(self, 'domains', []) or []
             ],
         )
@@ -1285,13 +1298,17 @@ class IdeaExtractor:
         # Store domains for use in per-response extraction model
         # Empty list (Phase 3 skipped) → None to trigger on-the-fly mode in model factories
         self.domains = categories_result.domains or None
+        # key is no longer produced by the LLM (removed from prompts) — set it from the label
+        if self.domains:
+            for _d in self.domains:
+                _d.key = _d.label
 
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"\nTaxonomy axis selected: {self.primary_dimension}")
             if self.primary_dimension_description:
                 self.verbose_reporter.stat_line(f"Description: {self.primary_dimension_description}")
             if self.domains:
-                self.verbose_reporter.stat_line(f"Domains: {[c.key for c in self.domains]}")
+                self.verbose_reporter.stat_line(f"Domains: {[c.label for c in self.domains]}")
             else:
                 self.verbose_reporter.stat_line(f"Domains: on-the-fly (no pre-discovered domains)")
 
@@ -1347,7 +1364,116 @@ class IdeaExtractor:
         self.failed_task_ids = self._smooth_requester.failed_task_ids
         self.optimal_concurrency = self._smooth_requester.optimal_concurrency
 
+        # === Post-extraction: orthogonalize domain descriptions (no reassignment) ===
+        if ENABLE_DOMAIN_ORTHOGONALIZE:
+            try:
+                await self._orthogonalize_domains(results)
+            except Exception as e:
+                self.verbose_reporter.stat_line(f"  Domain orthogonalize skipped ({type(e).__name__}: {e})")
+
         return results
+
+    async def _orthogonalize_domains(self, results: List[models.IdeasExtractedModel]) -> None:
+        """One-shot reformulation: re-describe domains for maximal orthogonality, grounded in
+        medoid exemplars. Sharpens label/definition/boundary_test/exclusions WITHOUT semantic
+        reassignment — if a label changes, ideas are deterministically renamed to follow their
+        domain slot (a rename, not a re-assignment). LLM decides; embeddings only select exemplars.
+        """
+        domains = getattr(self, 'domains', None)
+        if not domains:
+            return
+        gs = self.generic_specifiers
+
+        # group assigned ideas per domain (by current label) + interpretation text
+        by_label: Dict[str, list] = {d.label: [] for d in domains}
+        for resp in results:
+            for idea in (resp.response_ideas or []):
+                lab = (idea.domain or "").strip()
+                txt = (idea.interpretation or idea.instance or "").strip()
+                if lab in by_label and txt:
+                    by_label[lab].append((idea, txt))
+
+        # medoid → representative exemplars per domain
+        embedder = SharedEmbedder()
+        blocks = []
+        for d in domains:
+            items = by_label.get(d.label, [])
+            if items:
+                sub = await embedder.embed_texts([t for _, t in items])
+                reps = find_representative_samples(sub, n=min(ORTHOGONALIZE_TOP_N, len(items)))
+                ex_ideas = [items[r][0] for r in reps]
+            else:
+                ex_ideas = []
+            ex = "\n".join(
+                f"      • {(i.instance or '')[:40]} → {(i.interpretation or '')[:70]} → {(i.abstraction or '')[:60]}"
+                for i in ex_ideas
+            ) or "      (none)"
+            block = f"  {d.label}: {d.definition}"
+            if getattr(d, 'boundary_test', ''):
+                block += f"\n    current boundary_test: {d.boundary_test}"
+            if getattr(d, 'exclusions', None):
+                block += f"\n    current exclusions: {', '.join(d.exclusions)}"
+            block += f"\n    representative ideas:\n{ex}"
+            blocks.append(block)
+        domains_block = "\n\n".join(blocks)
+
+        diag = get_dimension(self.primary_dimension).prompt_rules.domain_diagnostic
+        prompt = build_orthogonalize_domains_prompt(
+            language=self.language, survey_question=self.var_lab,
+            sector=gs["domain"], entity=gs["entity"], topic=gs["topic"],
+            perspective=gs["perspective"], intent=gs["intent"],
+            primary_dimension=self.primary_dimension, domain_diagnostic=diag,
+            domains_block=domains_block,
+        )
+        client, model = self._get_client_and_model("taxonomy")
+
+        if self.prompt_printer and not self._captured_domain_orthogonalize:
+            self.prompt_printer.capture_prompt(
+                step_name="idea_extraction_domains",
+                utility_name="IdeaExtractor",
+                prompt_content=prompt,
+                prompt_type="domain_orthogonalize",
+                metadata={"model": model, "survey_question": self.var_lab, "language": self.language}
+            )
+            self._captured_domain_orthogonalize = True
+
+        est_tokens = self._estimate_preprocessed_tokens(prompt)
+        async with self.semaphore:
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
+            await self.rate_limiter.acquire()
+            res = await llm_create_async(
+                client=client, model=model, response_model=ReformulatedDomains,
+                prompt=prompt, temperature=0.0, **get_reasoning_params(model),
+            )
+
+        new = list(res.domains)
+        if len(new) != len(domains):
+            self.verbose_reporter.stat_line(
+                f"  Domain orthogonalize skipped (count mismatch: {len(new)} vs {len(domains)})")
+            return
+
+        # by-order remap: old label → new label (deterministic rename, NOT reassignment)
+        rename = {}
+        for old, nd in zip(domains, new):
+            nd.key = nd.label  # key mirrors label
+            rename[old.label] = nd.label
+        self.domains = new
+        for resp in results:
+            for idea in (resp.response_ideas or []):
+                lab = (idea.domain or "").strip()
+                if lab in rename:
+                    idea.domain = rename[lab]
+
+        relabeled = sum(1 for o, n in zip(domains, new) if o.label != n.label)
+        self.verbose_reporter.stat_line(
+            f"  Domain orthogonalize: re-described {len(new)} domains ({relabeled} relabeled, no reassignment)")
+        # Overview of the final domains carried forward to step 4 (label/definition/boundary/exclusions)
+        for old, nd in zip(domains, new):
+            head = f"{old.label} → {nd.label}" if old.label != nd.label else nd.label
+            self.verbose_reporter.stat_line(f"    • {head}")
+            self.verbose_reporter.stat_line(f"        def: {nd.definition}")
+            self.verbose_reporter.stat_line(f"        ✓ {nd.boundary_test}")
+            self.verbose_reporter.stat_line(f"        ✗ {', '.join(nd.exclusions)}")
 
     # === LEGACY: Everything below this line was the old processing loop ===
     # Kept temporarily for reference — will be removed after verification.
