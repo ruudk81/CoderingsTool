@@ -6,7 +6,6 @@ import hashlib
 import logging
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Type, TypeVar, List, Optional, Dict
 
@@ -222,31 +221,23 @@ class CacheDatabase:
                 return result
             return None
     
-    def is_cache_valid(self, 
-                      filename: str, 
+    def is_cache_valid(self,
+                      filename: str,
                       step_name: str,
-                      variable_key: str,
-                      max_age_days: Optional[int] = None) -> bool:
-        """Check if cache entry is valid based on age"""
+                      variable_key: str) -> bool:
+        """Check if a cache entry exists and its file is present."""
         cache_info = self.get_cache_info(filename, step_name, variable_key)
-        
+
         if not cache_info:
             return False
-        
+
         # Check if cache file exists
         cache_path = Path(cache_info['cache_path'])
         if not cache_path.exists():
             self.invalidate_cache(filename, step_name, variable_key)
             return False
-        
-        # Check age
-        if max_age_days is None:
-            max_age_days = self.config.max_cache_age_days
-        
-        created_at = datetime.fromisoformat(cache_info['created_at'])
-        age = datetime.now() - created_at
-        
-        return age <= timedelta(days=max_age_days)
+
+        return True
 
     def get_all_cached_steps(self, filename: str, variable_key: str) -> List[str]:
         """Get all valid cached step names for a filename and variable_key"""
@@ -295,10 +286,6 @@ class CacheManager:
 
         # Ensure cache directory exists
         self.config.cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Automatically cleanup old cache if enabled
-        if self.config.auto_cleanup:
-            self.cleanup_old_cache()
 
     def _calculate_file_hash(self, file_path: Path) -> str:
         """Calculate MD5 hash of a file with retry for Windows file handle issues"""
@@ -458,39 +445,6 @@ class CacheManager:
         """Invalidate cache entries"""
         self.db.invalidate_cache(filename, step, variable_key)
     
-    def cleanup_old_cache(self) -> int:
-        """Remove old cache entries and files"""
-        if not self.config.auto_cleanup:
-            return 0
-        
-        # Get cache info for files to delete
-        with self.db._get_connection() as conn:
-            cutoff_date = datetime.now() - timedelta(days=self.config.max_cache_age_days)
-            cursor = conn.execute('''
-                SELECT cache_path FROM cache_metadata 
-                WHERE created_at < ? OR status = 'invalid'
-            ''', (cutoff_date,))
-            
-            files_to_delete = [row['cache_path'] for row in cursor.fetchall()]
-            
-            # Delete database entries
-            conn.execute('''
-                DELETE FROM cache_metadata 
-                WHERE created_at < ? OR status = 'invalid'
-            ''', (cutoff_date,))
-        
-        # Delete actual files
-        deleted_count = 0
-        for file_path in files_to_delete:
-            try:
-                Path(file_path).unlink(missing_ok=True)
-                deleted_count += 1
-            except Exception as e:
-                logger.error(f"Error deleting {file_path}: {e}")
-        
-        logger.info(f"Cleaned up {deleted_count} old cache files")
-        return deleted_count
-
     def get_cached_steps_for_dataset(self, filename: str, variable_key: str) -> list:
         """
         Return list of step numbers that have valid cache entries for a dataset

@@ -426,10 +426,6 @@ class CacheConfig:
         "taxonomy_codes": "007",
     })
     
-    # Cache validity settings
-    max_cache_age_days: int = 30
-    auto_cleanup: bool = True  # Automatically cleanup old cache on initialization
-
     # File handling settings
     use_atomic_writes: bool = True
     
