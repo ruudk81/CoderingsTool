@@ -29,6 +29,15 @@ class AssignmentConfig:
     embedding_batch_size: int = 100
     embedding_max_concurrent: int = 5
 
+    # Consistency binding (same word → same single code).
+    # Group identical/near-identical instances before assigning, code one
+    # representative per cluster, broadcast that code to all members. Removes
+    # sampling-noise divergence at the source and saves LLM calls.
+    bind_enabled: bool = True
+    bind_use_embeddings: bool = True        # False = exact-normalized grouping only
+    bind_cosine_threshold: float = 0.85     # near-duplicate instance merge (measured: variants ~0.85-0.91, distinct ≤0.56)
+    bind_min_cluster_size: int = 2          # only bind groups of ≥ this size
+
     # Output
     verbose: bool = True
 

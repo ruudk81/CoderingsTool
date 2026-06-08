@@ -1,16 +1,18 @@
 """
-Dual Assignment: Code + Attribute per Idea.
+Code Assignment per Idea.
 
-Assigns each idea to exactly one MECE code and its best-matching attribute
-via a single LLM call. All partitions are processed concurrently via
+Assigns each idea to exactly one MECE code via a single LLM call (the attribute
+is pre-assigned by step 4). All partitions are processed concurrently via
 SmoothRequester.
 
 Pipeline:
   1. Group ideas by partition (domain)
-  2. Embedding pre-filter (optional) — top-N candidates per idea
-  3. Build task list with scoped candidate codes
-  4. SmoothRequester dispatch (rate limiting, workers, retry)
-  5. Collect assignments, build CodeAssignedModel list
+  2. Consistency binding — group identical/near-identical instances; dispatch
+     one representative per cluster, broadcast its code to all members
+  3. Embedding pre-filter (optional) — top-N candidates per idea
+  4. Build task list with scoped candidate codes
+  5. SmoothRequester dispatch (rate limiting, workers, retry)
+  6. Collect assignments, broadcast bound clusters, build CodeAssignedModel list
 
 Usage:
     from .code_assignment import CodeAssigner
@@ -54,6 +56,15 @@ from .models_codeAssigner import CodeAssignment, CodeAssignmentBatch
 nest_asyncio.apply()
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_instance(s: str) -> str:
+    """Canonical form of a verbatim instance: lowercase, strip punctuation,
+    collapse whitespace. Used to group occurrences of the same word for
+    consistency binding (and by view_code_divergence.py)."""
+    s = (s or "").lower().strip()
+    s = re.sub(r"[^\w\s]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 class CodeAssigner:
@@ -167,6 +178,14 @@ class CodeAssigner:
 
         # 1c. Pre-build ID maps
         self._build_id_maps()
+
+        # 1d. Consistency binding: group identical/near-identical instances so
+        # each cluster is coded once and broadcast (same word → same code).
+        rep_of: Dict[str, str] = {}
+        if self._config.bind_enabled:
+            partition_ideas, rep_of = await self._bind_clusters(
+                partition_ideas, total_ideas, verbose
+            )
 
         # ── Phase 2: Embedding pre-filtering ─────────────────────────────────
 
@@ -314,6 +333,17 @@ class CodeAssigner:
                 resolve_stats["fallback"] += 1
             else:
                 resolve_stats["unresolved"] += 1
+
+        # Broadcast each representative's assignment to all bound cluster members
+        if rep_of:
+            for member_id, rep_id in rep_of.items():
+                if member_id == rep_id:
+                    continue
+                if rep_id in assignment_lookup:
+                    assignment_lookup[member_id] = assignment_lookup[rep_id]
+                if rep_id in id_resolution:
+                    id_resolution[member_id] = id_resolution[rep_id]
+            assigned_count = len(assignment_lookup)
 
         if verbose:
             print(f"\n  Assigned: {assigned_count}/{total_ideas} ideas")
@@ -491,6 +521,121 @@ class CodeAssigner:
             idea=idea,
             facet_lookup=self._facet_lookup,
         )
+
+    # =========================================================================
+    # CONSISTENCY BINDING
+    # =========================================================================
+
+    @staticmethod
+    def _pick_representative(ideas: List):
+        """Representative of a bound cluster: an idea with the most common exact
+        instance form, breaking ties by the longest ladder (most informative)."""
+        from collections import Counter
+        form_counts = Counter(normalize_instance(i.instance) for i in ideas)
+        top_form = form_counts.most_common(1)[0][0]
+        candidates = [i for i in ideas if normalize_instance(i.instance) == top_form]
+        return max(
+            candidates,
+            key=lambda i: len((i.interpretation or "") + (i.abstraction or "")),
+        )
+
+    async def _bind_clusters(
+        self,
+        partition_ideas: Dict[str, List],
+        total_ideas: int,
+        verbose: bool,
+    ):
+        """Group identical/near-identical instances into clusters.
+
+        Returns (dispatch_partition_ideas, rep_of):
+          - dispatch_partition_ideas: partition→ideas, reduced to one
+            representative per bound cluster plus every singleton.
+          - rep_of: idea_id → representative idea_id (identity for singletons).
+        The caller dispatches only the representatives and broadcasts each
+        resolved code back to its cluster members.
+        """
+        from collections import defaultdict
+
+        # Flatten in the partition order used downstream
+        all_ideas = []
+        for pname in sorted(partition_ideas.keys()):
+            all_ideas.extend(partition_ideas[pname])
+
+        # 1. Exact-normalized grouping (deterministic backbone). Empty/blank
+        #    instances get a unique key so they are never bound.
+        exact_groups: Dict[str, list] = defaultdict(list)
+        for idea in all_ideas:
+            key = normalize_instance(idea.instance)
+            exact_groups[key if key else f"\x00{idea.idea_id}"].append(idea)
+
+        # 2. Optional near-duplicate merge via instance-embedding cosine
+        parent = {k: k for k in exact_groups}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        word_keys = [k for k in exact_groups if not k.startswith("\x00")]
+        if self._config.bind_use_embeddings and len(word_keys) > 1:
+            from sklearn.metrics.pairwise import cosine_similarity
+            from .embedding_matcher import EmbeddingMatcher
+
+            matcher = EmbeddingMatcher(
+                model=self._config.embedding_model,
+                batch_size=self._config.embedding_batch_size,
+                max_concurrent=self._config.embedding_max_concurrent,
+            )
+            embs = await matcher.embed_texts(word_keys)
+            sim = cosine_similarity(embs)
+            thr = self._config.bind_cosine_threshold
+            n = len(word_keys)
+            for i in range(n):
+                for j in range(i + 1, n):
+                    if sim[i, j] >= thr:
+                        union(word_keys[i], word_keys[j])
+
+        # 3. Form clusters, pick representatives, build the rep_of map
+        clusters: Dict[str, list] = defaultdict(list)
+        for k, ideas in exact_groups.items():
+            clusters[find(k)].extend(ideas)
+
+        rep_of: Dict[str, str] = {}
+        dispatch_ids = set()
+        n_clusters_bound = 0
+        n_ideas_bound = 0
+        for ideas in clusters.values():
+            if len(ideas) >= self._config.bind_min_cluster_size:
+                rep = self._pick_representative(ideas)
+                for idea in ideas:
+                    rep_of[idea.idea_id] = rep.idea_id
+                dispatch_ids.add(rep.idea_id)
+                n_clusters_bound += 1
+                n_ideas_bound += len(ideas)
+            else:
+                for idea in ideas:
+                    rep_of[idea.idea_id] = idea.idea_id
+                    dispatch_ids.add(idea.idea_id)
+
+        # 4. Reduce partition structure to dispatched ideas only
+        dispatch_partition_ideas: Dict[str, list] = defaultdict(list)
+        for pname in sorted(partition_ideas.keys()):
+            for idea in partition_ideas[pname]:
+                if idea.idea_id in dispatch_ids:
+                    dispatch_partition_ideas[pname].append(idea)
+
+        if verbose:
+            saved = total_ideas - len(dispatch_ids)
+            print(f"  Binding: {n_clusters_bound} clusters bound {n_ideas_bound} ideas "
+                  f"→ {len(dispatch_ids)} dispatched ({saved} fewer LLM calls)")
+
+        return dict(dispatch_partition_ideas), rep_of
 
     # =========================================================================
     # IDEA GROUPING & BATCHING
