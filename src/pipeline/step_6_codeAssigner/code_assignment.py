@@ -339,7 +339,7 @@ class CodeAssigner:
         partition_name = task['partition_name']
         candidate_codes = task.get('candidate_codes', self._codes)
 
-        prompt = self._build_dual_assignment_prompt(idea, codes=candidate_codes)
+        prompt = self._build_assignment_prompt(idea, codes=candidate_codes)
 
         # Prompt capture (first task per partition)
         _assign_key = f"assign_{partition_name}"
@@ -456,8 +456,8 @@ class CodeAssigner:
     # PROMPT BUILDING
     # =========================================================================
 
-    def _build_dual_assignment_prompt(self, idea, codes=None) -> str:
-        """Build prompt for dual assignment (code + attribute).
+    def _build_assignment_prompt(self, idea, codes=None) -> str:
+        """Build prompt for assigning a single idea to a code.
 
         Args:
             idea: The idea to assign.

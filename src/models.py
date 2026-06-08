@@ -92,7 +92,7 @@ class IdeasExtractedSubmodel(BaseModel):
     Abstraction ladder (extraction metadata): instance → interpretation → abstraction.
     """
     idea_id: str                          # Format: {respondent_id}_{sequence_number}
-    idea: str                             # Clean text (starts with template prefix)
+    idea: str                             # Verbatim span; set equal to `instance` (no template prefix)
     # --- Abstraction ladder (extraction metadata, NOT taxonomy levels) ---
     instance: str = ""                    # Rung 1: verbatim span from response
     interpretation: str = ""              # Rung 2: concrete meaning (survey language)

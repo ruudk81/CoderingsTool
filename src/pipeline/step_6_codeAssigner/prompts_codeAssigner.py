@@ -69,13 +69,17 @@ def build_code_assignment_prompt(
     """Build prompt for assigning a single idea to a code."""
     codes_block = _build_codes_block(codes, other_label)
 
-    # Format single idea
+    # Format single idea (verbatim response + abstraction ladder for disambiguation)
     valence = getattr(idea, 'valence', '') or '0'
     facet = (facet_lookup or {}).get(idea.idea_id, '') or getattr(idea, 'facet', '') or ''
     domain = getattr(idea, 'domain', '') or ''
+    interpretation = getattr(idea, 'interpretation', '') or ''
+    abstraction = getattr(idea, 'abstraction', '') or ''
 
     idea_block = (
-        f"idea: {idea.idea}\n"
+        f"response (verbatim): {idea.idea}\n"
+        f"interpretation: {interpretation}\n"
+        f"abstraction: {abstraction}\n"
         f"domain: {domain}\n"
         f"facet: {facet}\n"
         f"valence: {valence}"
@@ -100,7 +104,7 @@ Language: {language}
 </idea>
 
 <instructions>
-1. Read the idea text, domain, facet, and valence.
+1. Read the verbatim response together with its interpretation, abstraction, domain, facet, and valence. The verbatim response may be a bare word; use the interpretation and abstraction to disambiguate its intended meaning.
 2. Find the code whose definition best matches what the respondent is expressing.
 3. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
 4. Assign "{other_label_display}" only if NO code fits at all.
