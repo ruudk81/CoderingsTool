@@ -17,6 +17,14 @@ from pipeline.step_4_classifier.models_classifier import DomainSet, DomainResult
 from utils.verboseReporter import VerboseReporter
 
 
+# === SENTINELS ====================================================================================================
+# Step 6 assigns either a real code_name from the step-5 codebook, or this sentinel
+# for genuine no-fit ideas. The sentinel is rendered as NO_CODE_LABEL and excluded
+# from "real code" stats (it is not a codebook entry).
+UNASSIGNED_SENTINEL = "__UNASSIGNED__"
+NO_CODE_LABEL = "No Code Assigned"
+
+
 # === CANONICAL COLUMN DEFINITIONS (single source of truth) ========================================================
 # (dict_key, excel_header, column_width)
 EXPORT_COLUMNS = [
@@ -117,7 +125,9 @@ class ResultsExporter:
 
             if result.response_ideas:
                 for idea in result.response_ideas:
-                    code_info = code_to_info.get(idea.assigned_code) if idea.assigned_code else None
+                    raw_code = idea.assigned_code
+                    is_real_code = bool(raw_code) and raw_code != UNASSIGNED_SENTINEL
+                    code_info = code_to_info.get(raw_code) if is_real_code else None
 
                     # Theme info from partition
                     theme_name = idea.partition_name or ''
@@ -138,7 +148,7 @@ class ResultsExporter:
                         'facet': category,
                         'attribute': getattr(idea, 'attribute', ''),
                         'valence': getattr(idea, 'valence', ''),
-                        'code_label': idea.assigned_code or 'No Code Assigned',
+                        'code_label': raw_code if is_real_code else NO_CODE_LABEL,
                         'code_description': code_info['code_description'] if code_info else '',
                         'theme_name': theme_name,
                         'theme_description': theme_description,
@@ -196,7 +206,7 @@ class ResultsExporter:
         self.verbose_reporter.stat_line(f"Total rows exported: {len(export_data)}")
         self.verbose_reporter.stat_line(f"Unique respondents: {df['respondent_id'].nunique()}")
         self.verbose_reporter.stat_line(f"Unique ideas: {df['idea_id'].nunique()}")
-        self.verbose_reporter.stat_line(f"Unique codes assigned: {df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()}")
+        self.verbose_reporter.stat_line(f"Unique codes assigned: {df[df['code_label'] != NO_CODE_LABEL]['code_label'].nunique()}")
 
         return output_path
 
@@ -274,13 +284,13 @@ class ResultsExporter:
             ["Total Assignments", len(df)],
             ["Unique Respondents", df['respondent_id'].nunique()],
             ["Unique Ideas", df['idea_id'].nunique()],
-            ["Unique Codes", df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()],
+            ["Unique Codes", df[df['code_label'] != NO_CODE_LABEL]['code_label'].nunique()],
             ["Unique Themes", df[df['theme_name'] != '']['theme_name'].nunique()],
             ["", ""],
             ["Code Frequency", "Count"],
         ]
 
-        code_freq = df[df['code_label'] != 'No Code Assigned']['code_label'].value_counts()
+        code_freq = df[df['code_label'] != NO_CODE_LABEL]['code_label'].value_counts()
         for code, count in code_freq.items():
             summary_data.append([code, count])
 
