@@ -50,11 +50,11 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 OVERIG_TAIL_PCT = 0.10        # smallest attributes summing to ≤ this share of a group → "overig"
 SAVE_CSV = True
 
-# (title, group_by, show_attrs, csv_suffix)
+# (title, group_by, show_attrs, fold_tail, csv_suffix)
 VERSIONS = [
-    ("CODES ONLY",          "code",   False, "codes"),
-    ("CODES + ATTRIBUTES",   "code",   True,  "codes_attrs"),
-    ("DOMAINS + ATTRIBUTES", "domain", True,  "domains_attrs"),
+    ("CODES ONLY",          "code",   False, False, "codes"),
+    ("CODES + ATTRIBUTES",   "code",   True,  True,  "codes_attrs"),
+    ("DOMAINS + ATTRIBUTES", "domain", True,  False, "domains_attrs"),  # show all attrs
 ]
 
 _UNASSIGNED = "__UNASSIGNED__"
@@ -107,8 +107,12 @@ def _is_neg(valence: str) -> bool:
     return (valence or "").strip().lower() in _NEG_VALENCES
 
 
-def build_rows(responses: List, codebook, group_by: str, show_attrs: bool) -> tuple:
-    """Return (rows, base_n, n_responses, n_unassigned) grouped by code or domain."""
+def build_rows(responses: List, codebook, group_by: str, show_attrs: bool,
+               fold_tail: bool = True) -> tuple:
+    """Return (rows, base_n, n_responses, n_unassigned) grouped by code or domain.
+
+    fold_tail=False shows every attribute individually (no "overig" row).
+    """
     is_code = (group_by == "code")
     group_n: Counter = Counter()
     group_neg: Counter = Counter()
@@ -179,16 +183,19 @@ def build_rows(responses: List, codebook, group_by: str, show_attrs: bool) -> tu
             attrs.setdefault(a, 0)
 
         # Bottom-tail merge: smallest attributes summing to ≤ OVERIG_TAIL_PCT of gn,
-        # plus all unused (n=0), folded into one "overig" row.
-        threshold = OVERIG_TAIL_PCT * gn
-        tail, cum = [], 0
-        for a, an in sorted(attrs.items(), key=lambda kv: kv[1]):
-            if an == 0 or cum + an <= threshold:
-                tail.append(a)
-                cum += an
-            else:
-                break
-        tail_set = set(tail)
+        # plus all unused (n=0), folded into one "overig" row. Skipped when
+        # fold_tail is False (every attribute is then shown individually).
+        tail_set: set = set()
+        if fold_tail:
+            threshold = OVERIG_TAIL_PCT * gn
+            tail, cum = [], 0
+            for a, an in sorted(attrs.items(), key=lambda kv: kv[1]):
+                if an == 0 or cum + an <= threshold:
+                    tail.append(a)
+                    cum += an
+                else:
+                    break
+            tail_set = set(tail)
 
         def attr_row(a, an):
             apos, aneg = balance(an, cell_neg[key].get(a, 0))
@@ -277,10 +284,10 @@ def save_csv(suffix, group_label, rows, base_n, n_responses, n_unassigned):
 
 if __name__ == "__main__":
     responses, codebook = load_data()
-    for title, group_by, show_attrs, suffix in VERSIONS:
+    for title, group_by, show_attrs, fold_tail, suffix in VERSIONS:
         group_label = "code" if group_by == "code" else "domain"
         rows, base_n, n_responses, n_unassigned = build_rows(
-            responses, codebook, group_by, show_attrs)
+            responses, codebook, group_by, show_attrs, fold_tail)
         print_readout(title, group_label, rows, base_n, n_responses, n_unassigned)
         if SAVE_CSV:
             save_csv(suffix, group_label, rows, base_n, n_responses, n_unassigned)
