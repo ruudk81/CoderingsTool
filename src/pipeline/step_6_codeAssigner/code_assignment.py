@@ -37,7 +37,7 @@ import nest_asyncio
 
 from utils.llm import token_tracker
 from utils.smoothRequester import SmoothRequester
-from config import get_reasoning_params
+from config import get_reasoning_params, MISCELLANEOUS_CODE_LABELS
 
 from pipeline.step_3_ideaExtractor import models
 
@@ -127,6 +127,12 @@ class CodeAssigner:
         self._no_fit_id: Optional[str] = None
         self._no_fit_label: Optional[str] = None
 
+        # Provenance maps (attribute → home code idx, Overig code idx)
+        self._attr_to_code_idx: Dict[str, int] = {}
+        self._overig_code_idx: Optional[int] = None
+        # The no-fit option resolves to the Overig code when one exists, else __UNASSIGNED__
+        self._no_fit_resolves_to: str = "__UNASSIGNED__"
+
         # Pre-assigned attributes from pipeline step 4a (idea_id -> attribute name)
         self._attribute_assignments: Dict[str, str] = attribute_assignments or {}
 
@@ -187,7 +193,8 @@ class CodeAssigner:
             print("  WARNING: No ideas to assign")
             return self._build_output_models({}, {})
 
-        # 1c. Pre-build ID maps
+        # 1c. Pre-build provenance maps (Overig detection) + ID maps
+        self._build_provenance_maps()
         self._build_id_maps()
 
         # 1d. Consistency binding: group identical/near-identical instances so
@@ -252,13 +259,23 @@ class CodeAssigner:
             return []
 
         task_list = []
+        seeded_count = 0
         for partition_name in sorted(partition_ideas.keys()):
             ideas = partition_ideas[partition_name]
 
             for idea_idx, idea in enumerate(ideas):
                 # Determine codes for this idea
                 if self._idea_code_candidates and idea.idea_id in self._idea_code_candidates:
-                    candidate_indices = self._idea_code_candidates[idea.idea_id]
+                    candidate_indices = list(self._idea_code_candidates[idea.idea_id])
+                    # Provenance seeding: guarantee the idea's home code is shown,
+                    # so the top-N can never hide its coverage-guaranteed code.
+                    # (Overig is reachable via the no-fit option, so it is not seeded.)
+                    if self._config.seed_provenance_candidates:
+                        attr = (self._attribute_assignments.get(idea.idea_id) or "").strip()
+                        home = self._attr_to_code_idx.get(attr)
+                        if home is not None and home not in candidate_indices:
+                            candidate_indices.append(home)
+                            seeded_count += 1
                     candidate_codes = [self._codes[idx] for idx in candidate_indices]
                 else:
                     candidate_codes = self._codes
@@ -269,7 +286,7 @@ class CodeAssigner:
                 for ci, code in enumerate(candidate_codes, 1):
                     task_id_to_label[f"C{ci}"] = code.code_name
                 if self._config.allow_no_fit and self._no_fit_label:
-                    task_id_to_label[f"C{len(candidate_codes) + 1}"] = "__UNASSIGNED__"
+                    task_id_to_label[f"C{len(candidate_codes) + 1}"] = self._no_fit_resolves_to
 
                 task_list.append({
                     'idea': idea,
@@ -281,6 +298,12 @@ class CodeAssigner:
                 })
 
         total_tasks = len(task_list)
+
+        if verbose and self._config.seed_provenance_candidates and self._idea_code_candidates:
+            print(f"  Provenance seeding: added the home code to {seeded_count}/{total_tasks} "
+                  f"task candidate sets")
+        if verbose:
+            print(f"  No-fit option resolves to: {self._no_fit_resolves_to!r}")
 
         # ── Phase 4: SmoothRequester dispatch ────────────────────────────────
 
@@ -487,12 +510,40 @@ class CodeAssigner:
                 language = getattr(self._extraction_metadata, 'lang', 'Dutch') or 'Dutch'
             self._no_fit_id = f"C{len(self._codes) + 1}"
             self._no_fit_label = get_no_fit_label(language)
-            id_to_label[self._no_fit_id] = "__UNASSIGNED__"
+            id_to_label[self._no_fit_id] = self._no_fit_resolves_to
         else:
             self._no_fit_id = None
             self._no_fit_label = None
 
         self._id_to_label = id_to_label
+
+    def _build_provenance_maps(self) -> None:
+        """Map each step-5 attribute to its home code, and find the Overig code.
+
+        Used to guarantee that an idea's coverage-guaranteed code (the code whose
+        source_attributes includes the idea's step-4 attribute) is always in the
+        candidate set, even when the embedding pre-filter would not surface it.
+        """
+        self._attr_to_code_idx = {}
+        for i, code in enumerate(self._codes):
+            for attr in (getattr(code, 'source_attributes', None) or []):
+                key = (attr or "").strip()
+                if key and key not in self._attr_to_code_idx:
+                    self._attr_to_code_idx[key] = i
+
+        overig_names = {v.strip().lower() for v in MISCELLANEOUS_CODE_LABELS.values()} | {"overig"}
+        self._overig_code_idx = None
+        for i, code in enumerate(self._codes):
+            if (code.code_name or "").strip().lower() in overig_names:
+                self._overig_code_idx = i
+                break
+
+        # "No specific code fits" routes to the existing Overig code; only when
+        # the codebook has no Overig does it fall back to the __UNASSIGNED__ sentinel.
+        self._no_fit_resolves_to = (
+            self._codes[self._overig_code_idx].code_name
+            if self._overig_code_idx is not None else "__UNASSIGNED__"
+        )
 
     # =========================================================================
     # PROMPT BUILDING
@@ -734,10 +785,12 @@ class CodeAssigner:
 
                     resolved_label = id_resolution.get(idea.idea_id)
 
-                    # BP2: Create fallback for unassigned ideas
+                    # BP2: Ideas with no resolvable assignment (failed call or an
+                    # out-of-scope/invalid ID) fall back to the catch-all (Overig)
+                    # when one exists, else the __UNASSIGNED__ sentinel.
                     if not resolved_label:
                         unassigned_ideas += 1
-                        resolved_label = "__UNASSIGNED__"
+                        resolved_label = self._no_fit_resolves_to
 
                     idea_data = idea.model_dump()
                     explicit_fields = {
@@ -777,7 +830,8 @@ class CodeAssigner:
 
         # BP4: Count reconciliation
         if unassigned_ideas > 0:
-            print(f"    WARNING: {unassigned_ideas}/{total_ideas} ideas have no code assignment "
+            print(f"    {unassigned_ideas}/{total_ideas} ideas had no resolvable assignment "
+                  f"(failed call / out-of-scope ID) → routed to {self._no_fit_resolves_to!r} "
                   f"({unassigned_ideas/max(total_ideas,1)*100:.1f}%)")
 
         return output

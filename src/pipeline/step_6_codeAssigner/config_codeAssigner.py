@@ -25,10 +25,16 @@ class AssignmentConfig:
 
     # Embedding pre-filtering (scopes codebook to top-N codes per idea)
     use_embedding_prefilter: bool = True
-    embedding_top_n: int = 5
+    embedding_top_n: int = 8
     embedding_model: str = "text-embedding-3-large"
     embedding_batch_size: int = 100
     embedding_max_concurrent: int = 5
+
+    # Provenance seeding: when the pre-filter is active, always add the idea's
+    # "home" code (the code whose source_attributes covers the idea's step-4
+    # attribute) + the Overig code to its candidate set, so the top-N can never
+    # hide the code step 5 guarantees covers the idea. Prevents false no-fit.
+    seed_provenance_candidates: bool = True
 
     # Consistency binding (same word → same single code).
     # Group identical/near-identical instances before assigning, code one
