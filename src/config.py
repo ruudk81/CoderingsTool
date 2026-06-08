@@ -51,10 +51,10 @@ STEP_MODEL_TIERS = {
     # Step 4: Taxonomy Classifier (P1-P8)
     "classifier_p1":    "mini",      # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation
-    "classifier_p3":    "nano",      # Facet Assignment
+    "classifier_p3":    "mini",      # Facet Assignment
     "classifier_p4":    "mini",      # Attribute Discovery
     "classifier_p5":    "default",   # Attribute Consolidation
-    "classifier_p6":    "nano",      # Attribute Assignment
+    "classifier_p6":    "mini",      # Attribute Assignment
     "classifier_p7":    "default",   # Cross-facet Attribute Consolidation
     "classifier_p8":    "default",   # Cross-domain Attribute Consolidation
     # Step 5: Code Generator (P8-P9)
