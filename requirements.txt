@@ -15,6 +15,7 @@ pyreadstat>=1.2.0
 
 # Machine Learning / NLP
 scikit-learn>=1.5.0
+simplemma>=1.0.0            # language-aware lemmatization for step 6 consistency binding
 hdbscan>=0.8.30
 umap-learn>=0.5.0
 pacmap>=0.7.0               # Alternative to UMAP for dimensionality reduction

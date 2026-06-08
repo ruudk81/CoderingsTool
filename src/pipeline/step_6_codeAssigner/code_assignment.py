@@ -67,6 +67,17 @@ def normalize_instance(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Leading articles/determiners stripped before lemmatizing (so "een eekhoorn"
+# folds onto "eekhoorn"). Per language; unknown languages skip stripping.
+_ARTICLES = {
+    "nl": {"de", "het", "een", "die", "deze", "dat", "dit", "der", "den", "des"},
+    "en": {"the", "a", "an"},
+    "de": {"der", "die", "das", "ein", "eine", "den", "dem", "des"},
+    "fr": {"le", "la", "les", "un", "une", "des", "l"},
+    "es": {"el", "la", "los", "las", "un", "una", "unos", "unas"},
+}
+
+
 class CodeAssigner:
     """
     Assigns each idea to exactly one MECE category within its domain
@@ -538,6 +549,40 @@ class CodeAssigner:
             key=lambda i: len((i.interpretation or "") + (i.abstraction or "")),
         )
 
+    def _resolve_lemma_lang(self, verbose: bool) -> Optional[str]:
+        """Return a simplemma language code if lemmatization is enabled and
+        supported for the dataset language, else None (falls back to exact)."""
+        if not self._config.bind_lemmatize:
+            return None
+        lang = ""
+        if self._extraction_metadata:
+            lang = getattr(self._extraction_metadata, 'lang', '') or ""
+        code = lang.split("-")[0].lower() if lang else ""
+        if not code:
+            return None
+        try:
+            import simplemma
+            simplemma.lemmatize("test", lang=code)  # probe support
+        except (ImportError, ValueError) as e:
+            if verbose:
+                print(f"  Binding: lemmatization unavailable for lang '{code}' "
+                      f"({type(e).__name__}); using exact grouping")
+            return None
+        return code
+
+    def _instance_key(self, instance: str, lemma_lang: Optional[str]) -> str:
+        """Grouping key for an instance: normalized, optionally lemmatized
+        (article-stripped) per the dataset language."""
+        norm = normalize_instance(instance)
+        if not lemma_lang or not norm:
+            return norm
+        import simplemma
+        toks = norm.split()
+        if self._config.bind_strip_articles:
+            arts = _ARTICLES.get(lemma_lang, set())
+            toks = [t for t in toks if t not in arts] or toks
+        return " ".join(simplemma.lemmatize(t, lang=lemma_lang) for t in toks)
+
     async def _bind_clusters(
         self,
         partition_ideas: Dict[str, List],
@@ -560,11 +605,13 @@ class CodeAssigner:
         for pname in sorted(partition_ideas.keys()):
             all_ideas.extend(partition_ideas[pname])
 
-        # 1. Exact-normalized grouping (deterministic backbone). Empty/blank
-        #    instances get a unique key so they are never bound.
+        # 1. Group by normalized (and, when enabled, lemmatized) instance —
+        #    the deterministic backbone. Empty/blank instances get a unique key
+        #    so they are never bound.
+        lemma_lang = self._resolve_lemma_lang(verbose)
         exact_groups: Dict[str, list] = defaultdict(list)
         for idea in all_ideas:
-            key = normalize_instance(idea.instance)
+            key = self._instance_key(idea.instance, lemma_lang)
             exact_groups[key if key else f"\x00{idea.idea_id}"].append(idea)
 
         # 2. Optional near-duplicate merge via instance-embedding cosine
