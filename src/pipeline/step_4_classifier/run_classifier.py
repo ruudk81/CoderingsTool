@@ -61,12 +61,15 @@ CONFIG = CategoriesConfig(
 # =============================================================================
 
 def load_step3_ideas(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> List[models.IdeasExtractedModel]:
     """Load Step 3 extracted ideas from cache."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -92,12 +95,15 @@ def load_step3_ideas(
 
 
 def load_extraction_metadata(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Optional[models.ExtractionMetadata]:
     """Load ExtractionMetadata from cache (if available)."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -324,12 +330,15 @@ def cache_taxonomy_results(
     label_mappings: Dict[str, PartitionLabelMapping],
     taxonomy_result: TaxonomyResult,
     ideas_models: Optional[List[models.IdeasExtractedModel]] = None,
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Dict[str, DomainResultModel]:
     """Cache taxonomy results (P1-P7) for later use by codebook generation."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -518,8 +527,16 @@ def _load_and_discover(extraction_metadata=None):
 # MAIN
 # =============================================================================
 
-def run_taxonomy(force_recalc: bool = False):
-    """Run taxonomy stages (P1-P8): facets, attributes, assignments, cross-domain consolidation."""
+def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
+                 sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
+    """Run taxonomy stages (P1-P8): facets, attributes, assignments, cross-domain consolidation.
+
+    Dataset params default to the module-level TEST_DATA constants (so existing
+    callers like run_pipeline.py are unchanged); the UI passes them explicitly.
+    Rebinds the module globals once so the downstream helpers see the right dataset.
+    """
+    global FILENAME, VARIABLE, SAMPLE_SIZE
+    FILENAME, VARIABLE, SAMPLE_SIZE = filename, var_name, sample_size
     print("=" * 70)
     print("TAXONOMY PIPELINE (P1-P8)")
     print("=" * 70)

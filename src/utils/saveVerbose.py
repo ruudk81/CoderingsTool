@@ -236,7 +236,9 @@ class VerboseCapture:
         base_name_clean = base_name.replace(" ", "_")[:50]
         var_key_clean = variable_key.replace(" ", "_")
 
-        pattern = f"{base_name_clean}_{var_key_clean}_step{step}_*.txt"
+        # The on-disk name is {base}_{varkey}_{sample}_step{N}_{ts}.txt; the
+        # '*' absorbs the optional '{sample}_' segment between varkey and step.
+        pattern = f"{base_name_clean}_{var_key_clean}_*step{step}_*.txt"
 
         # Find matching files
         matching_files = list(output_dir.glob(pattern))

@@ -63,12 +63,15 @@ ASSIGNMENT_CONFIG = AssignmentConfig(
 # =============================================================================
 
 def load_step3_ideas(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> List[models.IdeasExtractedModel]:
     """Load Step 3 extracted ideas from cache."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -94,15 +97,18 @@ def load_step3_ideas(
 
 
 def load_step4_enriched(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Optional[List[TaxonomyClassifiedModel]]:
     """Load Step 4 enriched ideas (with facet/attribute/partition) from cache.
 
     Returns None if not cached (caller should fall back to step 3).
     """
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -123,12 +129,15 @@ def load_step4_enriched(
 
 
 def load_extraction_metadata(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Optional[models.ExtractionMetadata]:
     """Load ExtractionMetadata from cache (if available)."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -155,12 +164,15 @@ def load_extraction_metadata(
 
 
 def load_mece_cache(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Optional[CodingResultsCache]:
     """Load cached MECE results (codebook) from step 5."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -319,7 +331,7 @@ def save_prompts_to_json(prompt_printer):
     base = f"step6_codeAssigner_{variable_key}"
     assignment_prompts = [
         p for p in prompt_printer.prompts
-        if p.get("prompt_type") in {"taxonomy_codes", "dual_assignment"}
+        if p.get("prompt_type") in {"taxonomy_codes", "code_assignment"}
     ]
     if assignment_prompts:
         pp_assign = PromptPrinter(enabled=True)
@@ -331,8 +343,16 @@ def save_prompts_to_json(prompt_printer):
 # MAIN
 # =============================================================================
 
-def run_assignment(force_recalc: bool = False):
-    """Run code assignment (P10) from cached codebook + step 3 ideas."""
+def run_assignment(filename: str = FILENAME, var_name: str = VARIABLE,
+                   sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
+    """Run code assignment (P10) from cached codebook + step 3 ideas.
+
+    Dataset params default to the module-level TEST_DATA constants (so existing
+    callers like run_pipeline.py are unchanged); the UI passes them explicitly.
+    Rebinds the module globals once so downstream helpers see the right dataset.
+    """
+    global FILENAME, VARIABLE, SAMPLE_SIZE
+    FILENAME, VARIABLE, SAMPLE_SIZE = filename, var_name, sample_size
     print("=" * 70)
     print("CODE ASSIGNER (P10, loading from cache)")
     print("=" * 70)

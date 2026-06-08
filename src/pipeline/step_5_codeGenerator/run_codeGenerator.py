@@ -67,12 +67,15 @@ CONFIG = CodebookConfig(
 # =============================================================================
 
 def load_extraction_metadata(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Optional[models.ExtractionMetadata]:
     """Load ExtractionMetadata from cache (if available)."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -99,12 +102,15 @@ def load_extraction_metadata(
 
 
 def load_taxonomy_cache(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Optional[TaxonomyResultsCache]:
     """Load cached taxonomy results from step 4."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -122,12 +128,15 @@ def load_taxonomy_cache(
 
 
 def load_classified_ideas(
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Optional[List[TaxonomyClassifiedModel]]:
     """Load step 4's taxonomy-classified growing model (ideas with attribute/valence)."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -243,15 +252,18 @@ def cache_mece_results(
     partition_set: DomainSet,
     pydantic_results: Dict[str, DomainResultModel],
     codebook_result: CodebookResult,
-    filename: str = FILENAME,
-    variable: str = VARIABLE,
-    sample_size: Optional[int] = SAMPLE_SIZE,
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
     idea_embeddings: Optional[Dict] = None,
     embedding_code_source: str = "",
     embedding_model: str = "",
 ) -> None:
     """Cache codebook results for later use by code assignment (step 6)."""
+    filename = FILENAME if filename is None else filename
+    variable = VARIABLE if variable is None else variable
+    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
             selected_variables=[variable],
@@ -439,8 +451,16 @@ def _extract_metadata_context(extraction_metadata):
 # MAIN
 # =============================================================================
 
-def run_codebook(force_recalc: bool = False):
-    """Run codebook generation (P8-P9) from cached taxonomy results."""
+def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
+                 sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
+    """Run codebook generation (P8-P9) from cached taxonomy results.
+
+    Dataset params default to the module-level TEST_DATA constants (so existing
+    callers like run_pipeline.py are unchanged); the UI passes them explicitly.
+    Rebinds the module globals once so downstream helpers see the right dataset.
+    """
+    global FILENAME, VARIABLE, SAMPLE_SIZE
+    FILENAME, VARIABLE, SAMPLE_SIZE = filename, var_name, sample_size
     print("=" * 70)
     print("CODE GENERATOR (P8-P9, loading taxonomy from cache)")
     print("=" * 70)
