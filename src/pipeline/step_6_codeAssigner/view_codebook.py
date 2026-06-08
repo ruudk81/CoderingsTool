@@ -1,16 +1,23 @@
 #%%
 
 """
-View codebook: codes + attributes with assignment counts.
+View codebook: codes/domains + attributes with assignment counts.
 
-Read-only readout of the step-5 codebook annotated with the actual step-6
-assignment counts. Per code (and per attribute within it):
-  - n ideas and % of ASSIGNED ideas
-  - % of RESPONSES — unique non-filtered respondents who mention this code/attribute
+Read-only readout of the step-6 assignments in three lenses (each printed + saved
+to its own CSV):
+  1. codes only            (suffix _codes)
+  2. codes + attributes     (suffix _codes_attrs)   — the codebook view
+  3. domains + attributes   (suffix _domains_attrs)  — the taxonomy view
+
+Per group (code or domain) and per attribute within it:
+  - n ideas and % of the rows' idea base
+  - % of RESPONSES — unique non-filtered respondents who mention it
   - valence balance: x% (+) / y% (-), where (+) = positive+neutral, (-) = negative
-The smallest attributes per code (together ≤ OVERIG_TAIL_PCT of the code's ideas,
-plus any defined-but-unused ones) are folded into one "overig (k attrs)" row.
-`__UNASSIGNED__` is excluded from the % base and reported separately.
+The smallest attributes per group (together ≤ OVERIG_TAIL_PCT, plus any unused
+codebook attributes) fold into one "overig (k attrs)" row.
+
+Code views exclude the __UNASSIGNED__ sentinel from the % base (reported
+separately); the domain view covers every idea (each idea has a domain).
 
 Usage:
     cd src && python -m pipeline.step_6_codeAssigner.view_codebook
@@ -40,11 +47,19 @@ FILENAME = TEST_DATA.filename
 VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
-OVERIG_TAIL_PCT = 0.10        # smallest attributes summing to ≤ this share of a code → "overig"
+OVERIG_TAIL_PCT = 0.10        # smallest attributes summing to ≤ this share of a group → "overig"
 SAVE_CSV = True
+
+# (title, group_by, show_attrs, csv_suffix)
+VERSIONS = [
+    ("CODES ONLY",          "code",   False, "codes"),
+    ("CODES + ATTRIBUTES",   "code",   True,  "codes_attrs"),
+    ("DOMAINS + ATTRIBUTES", "domain", True,  "domains_attrs"),
+]
 
 _UNASSIGNED = "__UNASSIGNED__"
 _NO_ATTR = "(geen attribuut)"
+_NO_GROUP = "(geen)"
 _NEG_VALENCES = {"-", "-1", "neg", "negative"}
 
 
@@ -80,19 +95,24 @@ def _vsign(valence: str) -> str:
     return "~"
 
 
+def _derived_sign(pct_neg: float) -> str:
+    if pct_neg >= 55:
+        return "-"
+    if pct_neg <= 45:
+        return "+"
+    return "~"
+
+
 def _is_neg(valence: str) -> bool:
     return (valence or "").strip().lower() in _NEG_VALENCES
 
 
-def build_rows(responses: List, codebook) -> tuple:
-    """Return (rows, n_assigned, n_responses, n_unassigned).
-
-    rows: ordered dicts {level, code, attribute, valence, n, pct_ideas, pct_resp,
-    pct_pos, pct_neg}. pct_pos = positive+neutral share, pct_neg = negative share.
-    """
-    code_n: Counter = Counter()
-    code_neg: Counter = Counter()
-    code_resp: Dict[str, set] = defaultdict(set)
+def build_rows(responses: List, codebook, group_by: str, show_attrs: bool) -> tuple:
+    """Return (rows, base_n, n_responses, n_unassigned) grouped by code or domain."""
+    is_code = (group_by == "code")
+    group_n: Counter = Counter()
+    group_neg: Counter = Counter()
+    group_resp: Dict[str, set] = defaultdict(set)
     cell_n: Dict[str, Counter] = defaultdict(Counter)
     cell_neg: Dict[str, Counter] = defaultdict(Counter)
     cell_resp: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
@@ -103,92 +123,97 @@ def build_rows(responses: List, codebook) -> tuple:
         rid = str(resp.respondent_id)
         for idea in (resp.response_ideas or []):
             resp_with_ideas.add(rid)
-            code = (idea.assigned_code or "").strip()
-            if not code or code == _UNASSIGNED:
-                n_unassigned += 1
-                continue
+            if is_code:
+                key = (idea.assigned_code or "").strip()
+                if not key or key == _UNASSIGNED:
+                    n_unassigned += 1
+                    continue
+            else:
+                key = (getattr(idea, "partition_name", "") or idea.domain or "").strip() or _NO_GROUP
             attr = (idea.assigned_attribute or "").strip() or _NO_ATTR
             neg = _is_neg(idea.valence)
-            code_n[code] += 1
-            code_neg[code] += neg
-            code_resp[code].add(rid)
-            cell_n[code][attr] += 1
-            cell_neg[code][attr] += neg
-            cell_resp[code][attr].add(rid)
+            group_n[key] += 1
+            group_neg[key] += neg
+            group_resp[key].add(rid)
+            cell_n[key][attr] += 1
+            cell_neg[key][attr] += neg
+            cell_resp[key][attr].add(rid)
 
-    n_assigned = sum(code_n.values())
+    base_n = sum(group_n.values())
     n_responses = len(resp_with_ideas)
-    pct_i = lambda n: (100.0 * n / n_assigned) if n_assigned else 0.0
+    pct_i = lambda n: (100.0 * n / base_n) if base_n else 0.0
     pct_r = lambda k: (100.0 * k / n_responses) if n_responses else 0.0
 
     def balance(n, neg):
         return (100.0 * (n - neg) / n, 100.0 * neg / n) if n else (0.0, 0.0)
 
-    # Codebook lookup: code_name → (valence, source_attributes)
+    # Codebook lookup (code view only): code_name → (valence, source_attributes)
     cb = {}
-    for c in codebook.raw_codes:
-        d = c if isinstance(c, dict) else c.__dict__
-        cb[d["code_name"]] = (d.get("valence", ""), d.get("source_attributes", []) or [])
+    if is_code:
+        for c in codebook.raw_codes:
+            d = c if isinstance(c, dict) else c.__dict__
+            cb[d["code_name"]] = (d.get("valence", ""), d.get("source_attributes", []) or [])
 
-    all_codes = set(cb) | set(code_n)
-    ordered = sorted(all_codes, key=lambda c: (-code_n.get(c, 0), c.lower()))
+    keys = set(cb) | set(group_n) if is_code else set(group_n)
+    ordered = sorted(keys, key=lambda k: (-group_n.get(k, 0), k.lower()))
 
     rows = []
-    for code in ordered:
-        cn = code_n.get(code, 0)
-        valence, source_attrs = cb.get(code, ("", []))
-        cpos, cneg = balance(cn, code_neg.get(code, 0))
-        rows.append({"level": "code", "code": code, "attribute": "",
-                     "valence": _vsign(valence), "n": cn,
-                     "pct_ideas": pct_i(cn), "pct_resp": pct_r(len(code_resp.get(code, ()))),
-                     "pct_pos": cpos, "pct_neg": cneg})
+    for key in ordered:
+        gn = group_n.get(key, 0)
+        gpos, gneg = balance(gn, group_neg.get(key, 0))
+        if is_code:
+            valence = _vsign(cb.get(key, ("", []))[0])
+            source_attrs = cb.get(key, ("", []))[1]
+        else:
+            valence = _derived_sign(gneg)
+            source_attrs = []
+        rows.append({"level": "group", "group": key, "attribute": "", "valence": valence,
+                     "n": gn, "pct_ideas": pct_i(gn), "pct_resp": pct_r(len(group_resp.get(key, ()))),
+                     "pct_pos": gpos, "pct_neg": gneg})
 
-        # All attributes for this code: assigned (n>0) + defined-but-unused (n=0)
-        attrs = dict(cell_n.get(code, {}))
+        if not show_attrs:
+            continue
+
+        attrs = dict(cell_n.get(key, {}))
         for a in source_attrs:
             attrs.setdefault(a, 0)
 
-        # Bottom-tail merge: smallest attributes summing to ≤ OVERIG_TAIL_PCT of cn,
+        # Bottom-tail merge: smallest attributes summing to ≤ OVERIG_TAIL_PCT of gn,
         # plus all unused (n=0), folded into one "overig" row.
-        threshold = OVERIG_TAIL_PCT * cn
-        ascending = sorted(attrs.items(), key=lambda kv: kv[1])
+        threshold = OVERIG_TAIL_PCT * gn
         tail, cum = [], 0
-        for a, an in ascending:
+        for a, an in sorted(attrs.items(), key=lambda kv: kv[1]):
             if an == 0 or cum + an <= threshold:
                 tail.append(a)
                 cum += an
             else:
                 break
         tail_set = set(tail)
-        kept = sorted(((a, an) for a, an in attrs.items() if a not in tail_set),
-                      key=lambda kv: -kv[1])
 
-        for a, an in kept:
-            apos, aneg = balance(an, cell_neg[code].get(a, 0))
-            rows.append({"level": "attr", "code": code, "attribute": a, "valence": "",
-                         "n": an, "pct_ideas": pct_i(an),
-                         "pct_resp": pct_r(len(cell_resp[code].get(a, ()))),
-                         "pct_pos": apos, "pct_neg": aneg})
+        def attr_row(a, an):
+            apos, aneg = balance(an, cell_neg[key].get(a, 0))
+            return {"level": "attr", "group": key, "attribute": a, "valence": "",
+                    "n": an, "pct_ideas": pct_i(an),
+                    "pct_resp": pct_r(len(cell_resp[key].get(a, ()))),
+                    "pct_pos": apos, "pct_neg": aneg}
+
+        for a, an in sorted(((a, an) for a, an in attrs.items() if a not in tail_set),
+                            key=lambda kv: -kv[1]):
+            rows.append(attr_row(a, an))
 
         if len(tail_set) >= 2:
             tn = sum(attrs[a] for a in tail_set)
-            tneg = sum(cell_neg[code].get(a, 0) for a in tail_set)
-            tresp = set().union(*(cell_resp[code].get(a, set()) for a in tail_set)) if tail_set else set()
+            tneg = sum(cell_neg[key].get(a, 0) for a in tail_set)
+            tresp = set().union(*(cell_resp[key].get(a, set()) for a in tail_set))
             tpos, tnegpct = balance(tn, tneg)
-            rows.append({"level": "attr", "code": code,
-                         "attribute": f"overig ({len(tail_set)} attrs)", "valence": "",
-                         "n": tn, "pct_ideas": pct_i(tn), "pct_resp": pct_r(len(tresp)),
+            rows.append({"level": "attr", "group": key, "attribute": f"overig ({len(tail_set)} attrs)",
+                         "valence": "", "n": tn, "pct_ideas": pct_i(tn), "pct_resp": pct_r(len(tresp)),
                          "pct_pos": tpos, "pct_neg": tnegpct})
-        elif tail_set:  # single tail attr → show it individually
+        elif tail_set:
             a = next(iter(tail_set))
-            an = attrs[a]
-            apos, aneg = balance(an, cell_neg[code].get(a, 0))
-            rows.append({"level": "attr", "code": code, "attribute": a, "valence": "",
-                         "n": an, "pct_ideas": pct_i(an),
-                         "pct_resp": pct_r(len(cell_resp[code].get(a, ()))),
-                         "pct_pos": apos, "pct_neg": aneg})
+            rows.append(attr_row(a, attrs[a]))
 
-    return rows, n_assigned, n_responses, n_unassigned
+    return rows, base_n, n_responses, n_unassigned
 
 
 # =============================================================================
@@ -196,59 +221,54 @@ def build_rows(responses: List, codebook) -> tuple:
 # =============================================================================
 
 def _bal(r) -> str:
-    if not r["n"]:
-        return ""
-    return f"{r['pct_pos']:.0f}% (+) / {r['pct_neg']:.0f}% (-)"
+    return f"{r['pct_pos']:.0f}% (+) / {r['pct_neg']:.0f}% (-)" if r["n"] else ""
 
 
-def print_readout(rows, n_assigned, n_responses, n_unassigned):
-    n_total = n_assigned + n_unassigned
-    print(f"\n{'=' * 84}")
-    print(f"CODEBOOK — {FILENAME}")
-    print(f"{VARIABLE}  |  {n_assigned} assigned ideas (of {n_total}; {n_unassigned} unassigned)"
-          f"  |  {n_responses} responses")
+def print_readout(title, group_label, rows, base_n, n_responses, n_unassigned):
+    print(f"\n\n{'=' * 84}")
+    print(f"[{title}]  {FILENAME}")
+    print(f"{VARIABLE}  |  {base_n} ideas (base)"
+          + (f"; {n_unassigned} unassigned" if n_unassigned else "")
+          + f"  |  {n_responses} responses")
     print(f"{'=' * 84}")
-    print(f"{'code / attribute':46}{'n':>5}{'%idea':>7}{'%resp':>7}   {'balans (+/-)'}")
+    print(f"{group_label + ' / attribute':46}{'n':>5}{'%idea':>7}{'%resp':>7}   balans (+/-)")
     print(f"{'-' * 84}")
-
     for r in rows:
-        if r["level"] == "code":
-            label = f"[{r['valence']}] {r['code']}"
-            print(f"\n{label:46}{r['n']:>5}{r['pct_ideas']:>6.1f}%{r['pct_resp']:>6.1f}%   {_bal(r)}")
+        if r["level"] == "group":
+            print(f"\n{'[' + r['valence'] + '] ' + r['group']:46}"
+                  f"{r['n']:>5}{r['pct_ideas']:>6.1f}%{r['pct_resp']:>6.1f}%   {_bal(r)}")
         else:
-            label = f"    {r['attribute']}"
             tag = "" if r["n"] else "  (unused)"
-            print(f"{label:46}{r['n']:>5}{r['pct_ideas']:>6.1f}%{r['pct_resp']:>6.1f}%   {_bal(r)}{tag}")
-
+            print(f"{'    ' + r['attribute']:46}"
+                  f"{r['n']:>5}{r['pct_ideas']:>6.1f}%{r['pct_resp']:>6.1f}%   {_bal(r)}{tag}")
     print(f"\n{'-' * 84}")
-    print(f"{'TOTAAL (som codes)':46}{n_assigned:>5}{100.0:>6.1f}%")
+    print(f"{'TOTAAL':46}{base_n:>5}{100.0:>6.1f}%")
     if n_unassigned:
-        upct = 100.0 * n_unassigned / n_total if n_total else 0.0
-        print(f"{'__UNASSIGNED__ (excl. van %-basis)':46}{n_unassigned:>5}{upct:>6.1f}%  of {n_total} ideas")
+        print(f"{'__UNASSIGNED__ (excl. van %-basis)':46}{n_unassigned:>5}")
 
 
 # =============================================================================
 # CSV EXPORT
 # =============================================================================
 
-def save_csv(rows, n_assigned, n_responses, n_unassigned):
+def save_csv(suffix, group_label, rows, base_n, n_responses, n_unassigned):
     exports_dir = project_root / "exports"
     exports_dir.mkdir(exist_ok=True)
     base = Path(FILENAME).stem.replace(" ", "_")
-    csv_path = exports_dir / f"codebook_{base}_{VARIABLE}_{SAMPLE_SIZE}.csv"
+    csv_path = exports_dir / f"codebook_{base}_{VARIABLE}_{SAMPLE_SIZE}_{suffix}.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(["level", "code", "attribute", "valence", "n",
-                    "pct_of_assigned", "pct_of_responses", "pct_pos_neutral", "pct_neg"])
+        w.writerow(["level", group_label, "attribute", "valence", "n",
+                    "pct_of_base", "pct_of_responses", "pct_pos_neutral", "pct_neg"])
         for r in rows:
-            w.writerow([r["level"], r["code"], r["attribute"], r["valence"], r["n"],
+            w.writerow([r["level"], r["group"], r["attribute"], r["valence"], r["n"],
                         f"{r['pct_ideas']:.1f}", f"{r['pct_resp']:.1f}",
                         f"{r['pct_pos']:.1f}" if r["n"] else "",
                         f"{r['pct_neg']:.1f}" if r["n"] else ""])
-        w.writerow(["total", "TOTAAL", "", "", n_assigned, "100.0", "", "", ""])
+        w.writerow(["total", "TOTAAL", "", "", base_n, "100.0", "", "", ""])
         w.writerow(["unassigned", _UNASSIGNED, "", "", n_unassigned, "", "", "", ""])
         w.writerow(["meta", "responses", "", "", n_responses, "", "", "", ""])
-    print(f"\nCSV saved to: {csv_path}")
+    print(f"  CSV → {csv_path.name}")
 
 
 # =============================================================================
@@ -257,9 +277,12 @@ def save_csv(rows, n_assigned, n_responses, n_unassigned):
 
 if __name__ == "__main__":
     responses, codebook = load_data()
-    rows, n_assigned, n_responses, n_unassigned = build_rows(responses, codebook)
-    print_readout(rows, n_assigned, n_responses, n_unassigned)
-    if SAVE_CSV:
-        save_csv(rows, n_assigned, n_responses, n_unassigned)
+    for title, group_by, show_attrs, suffix in VERSIONS:
+        group_label = "code" if group_by == "code" else "domain"
+        rows, base_n, n_responses, n_unassigned = build_rows(
+            responses, codebook, group_by, show_attrs)
+        print_readout(title, group_label, rows, base_n, n_responses, n_unassigned)
+        if SAVE_CSV:
+            save_csv(suffix, group_label, rows, base_n, n_responses, n_unassigned)
 
 # %%
