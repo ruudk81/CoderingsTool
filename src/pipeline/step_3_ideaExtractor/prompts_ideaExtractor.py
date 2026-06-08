@@ -828,7 +828,7 @@ What is the respondent REALLY talking about?
 {dimension.prompt_rules.interpretation_instruction}
 - This requires INTERPRETATION, not just normalization or cleaning up grammar. 
 - Think about the underlying concept or meaning. 
-- Different surface expressions that point to the same underlying meaning should receive the same interpretation. -
+- Different surface expressions that point to the same underlying meaning should receive the same interpretation.
 - Write this interpretation in {language}. 
 
 ### Rung C: ABSTRACTION
