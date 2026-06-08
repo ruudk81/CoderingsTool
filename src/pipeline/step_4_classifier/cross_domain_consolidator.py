@@ -271,6 +271,8 @@ class CrossDomainConsolidator:
             for facet_name, attrs in result.attributes.items():
                 for attr_dict in attrs:
                     name = attr_dict.get("attribute_name", "?")
+                    if name in _SENTINEL_ATTRIBUTES:
+                        continue  # never inventory a sentinel (consistent with _collect_ideas_per_attribute)
                     desc = attr_dict.get("attribute_description", "")
                     count = attr_counts.get(name, 0)
                     inventory.append(AttributeEntry(

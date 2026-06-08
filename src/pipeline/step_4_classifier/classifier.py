@@ -212,7 +212,6 @@ class TaxonomyClassifier:
         # Label source for observation formatting
         self._label_source = config.label_source
         self._label_prefix = config.label_prefix
-        self._include_valence = config.include_valence
 
         # Dataset key for empirical stats cache (SmoothRequester)
         self._dataset_key = dataset_key
@@ -666,7 +665,7 @@ class TaxonomyClassifier:
             # Multi-facet: one task per idea
             facet_id_to_name = {f"F{i}": f.facet_name for i, f in enumerate(facets, 1)}
             for idea in ideas:
-                idea_label = format_label(idea, self._label_source, self._label_prefix, self._include_valence)
+                idea_label = format_label(idea, self._label_source, self._label_prefix)
                 p3_tasks.append({
                     'domain_name': domain_name,
                     'idea_id': idea.idea_id,
@@ -786,7 +785,7 @@ class TaxonomyClassifier:
 
             observations = []
             for idea in ideas:
-                label = format_label(idea, self._label_source, self._label_prefix, self._include_valence)
+                label = format_label(idea, self._label_source, self._label_prefix)
                 if label:
                     observations.append(label)
             if not observations:
@@ -1113,7 +1112,7 @@ class TaxonomyClassifier:
 
                 attr_id_to_name = {f"A{i}": a.attribute_name for i, a in enumerate(attributes, 1)}
                 for idea in facet_ideas:
-                    idea_label = format_label(idea, self._label_source, self._label_prefix, self._include_valence)
+                    idea_label = format_label(idea, self._label_source, self._label_prefix)
                     p6_tasks.append({
                         'domain_name': domain_name,
                         'facet_name': facet_name,

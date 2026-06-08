@@ -78,11 +78,6 @@ class CategoriesConfig:
     # Any literal string = static prefix for all labels
     label_prefix: str = ""
 
-    # Prepend a valence tag ([+], [-], [0]) to each label.
-    # Useful so the LLM can distinguish positive/negative observations during
-    # facet discovery (P1), facet assignment (P3), and attribute discovery (P4).
-    include_valence: bool = False
-
     # ==========================================================================
     # TAXONOMY CLASSIFIER PIPELINE (P1-P8)
     # ==========================================================================

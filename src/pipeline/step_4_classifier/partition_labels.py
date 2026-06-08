@@ -45,34 +45,22 @@ def _compute_idea_interpretation(idea) -> str:
     return " → ".join(parts)
 
 
-def _valence_tag(idea) -> str:
-    """Map idea.valence to a compact tag: [+], [-], or [0]."""
-    val = str(getattr(idea, 'valence', '') or '0').strip()
-    if val in ('1', '+1', 'positive'):
-        return '[+]'
-    if val in ('-1', 'negative'):
-        return '[-]'
-    return '[0]'
-
-
 def format_label(
     idea,
     label_source: str,
     label_prefix: str = "",
-    include_valence: bool = False,
 ) -> str:
     """Extract and format a single label from an idea object.
 
     Args:
         idea: Idea object with step 3 fields (idea, instance, interpretation,
-              abstraction, facet, domain, valence)
+              abstraction, facet, domain)
         label_source: Stored field name or composite format key.
             Stored fields: "idea", "instance", "interpretation", "abstraction", "facet", "domain"
             Computed composites:
                 "ladder"              — instance → interpretation → abstraction
                 "idea_interpretation" — idea → interpretation
         label_prefix: Optional static prefix prepended to each label.
-        include_valence: If True, prepend a valence tag ([+], [-], [0]).
 
     Returns:
         Formatted label string, or empty string if all fields are empty.
@@ -87,15 +75,6 @@ def format_label(
     if not raw:
         return ""
 
-    parts = []
-    if include_valence:
-        parts.append(_valence_tag(idea))
-    if label_prefix:
-        parts.append(label_prefix)
-    parts.append(raw)
-
-    if include_valence:
-        return " ".join(parts)
     if label_prefix:
         return f"{label_prefix}{raw}"
     return raw
@@ -105,7 +84,6 @@ def collect_unique_labels_with_domains(
     ideas: list,
     label_source: str = "ladder",
     label_prefix: str = "",
-    include_valence: bool = False,
 ) -> Tuple[List[str], List[Optional[str]]]:
     """Collect unique label strings and their corresponding domain (first seen).
 
@@ -115,7 +93,7 @@ def collect_unique_labels_with_domains(
     """
     seen: dict = {}  # label -> domain (first seen)
     for idea in ideas:
-        label = format_label(idea, label_source, label_prefix, include_valence)
+        label = format_label(idea, label_source, label_prefix)
         if label and label not in seen:
             domain = (getattr(idea, 'domain', '') or '') or None
             seen[label] = domain
@@ -128,7 +106,6 @@ def collect_unique_labels(
     ideas: list,
     label_source: str = "ladder",
     label_prefix: str = "",
-    include_valence: bool = False,
 ) -> List[str]:
     """Collect unique label strings from a list of idea objects.
 
@@ -136,14 +113,13 @@ def collect_unique_labels(
         ideas: List of idea objects (IdeasExtractedSubmodel)
         label_source: Stored field or composite format key. See format_label().
         label_prefix: Optional prefix to prepend
-        include_valence: If True, prepend a valence tag ([+], [-], [0]).
 
     Returns:
         List of unique label strings (preserving first-seen order).
     """
     seen = {}  # dict preserves insertion order
     for idea in ideas:
-        label = format_label(idea, label_source, label_prefix, include_valence)
+        label = format_label(idea, label_source, label_prefix)
         if label and label not in seen:
             seen[label] = True
     return list(seen.keys())

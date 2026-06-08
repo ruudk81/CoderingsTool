@@ -50,9 +50,8 @@ from pipeline.step_4_classifier.models_classifier import (
 # All defaults defined in config_classifier.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="idea_interpretation",           # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
+    label_source="ladder",                         # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
     label_prefix="",                              # "" or any static prefix string
-    include_valence=False,                        # prepend [+]/[-]/[0] valence tag to labels
     debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–8 = stop after that phase
 )
 
@@ -298,6 +297,7 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
                 idea_data["facet"] = facet_lookup.get(idea.idea_id, idea.facet or "")
                 idea_data["attribute"] = attr_lookup.get(idea.idea_id, idea.attribute or "")
                 idea_data["partition_name"] = partition_lookup.get(idea.idea_id, idea.domain or "")
+                idea_data["domain"] = idea_data["partition_name"]   # canonical: domain == partition_name (no casing drift)
                 idea_data["facet_confidence"] = facet_conf_lookup.get(idea.idea_id)
                 idea_data["attribute_confidence"] = attr_conf_lookup.get(idea.idea_id)
                 # Valence cascade: P6 (most precise) > P3 > step 3 (inherited)

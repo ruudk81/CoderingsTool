@@ -135,7 +135,6 @@ class DomainDiscoverer:
                 ideas,
                 label_source=self._config.label_source,
                 label_prefix=self._config.label_prefix,
-                include_valence=self._config.include_valence,
             )
             label_lists[ct] = labels
             domain_lists[ct] = domains
