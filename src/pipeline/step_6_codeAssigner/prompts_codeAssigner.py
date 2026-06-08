@@ -29,7 +29,7 @@ def configure_validation_mode(model: str) -> None:
 
 def _build_codes_block(
     codes: List[CodeFromAttributes],
-    other_label: Optional[str] = None,
+    no_fit_label: Optional[str] = None,
 ) -> str:
     """Format codes for assignment prompt (code-only, no attributes)."""
     lines = []
@@ -45,12 +45,11 @@ def _build_codes_block(
         block += f"    Indicators: {indicators}"
         lines.append(block)
 
-    if other_label:
+    if no_fit_label:
         n = len(codes) + 1
         lines.append(
-            f"[C{n}] {other_label}\n"
-            f"    Definition: Ideas that do not clearly fit any of the above codes.\n"
-            f"    Indicators: no matching indicators"
+            f"[C{n}] {no_fit_label}\n"
+            f"    Definition: Choose this only if the idea genuinely fits NONE of the codes above."
         )
 
     return "\n\n".join(lines)
@@ -62,12 +61,12 @@ def build_code_assignment_prompt(
     language: str,
     dataset_context_section: str,
     codes: List[CodeFromAttributes],
-    other_label: Optional[str],
+    no_fit_label: Optional[str],
     idea,
     facet_lookup: Optional[Dict[str, str]] = None,
 ) -> str:
     """Build prompt for assigning a single idea to a code."""
-    codes_block = _build_codes_block(codes, other_label)
+    codes_block = _build_codes_block(codes, no_fit_label)
 
     # Format single idea (verbatim response + abstraction ladder for disambiguation)
     valence = getattr(idea, 'valence', '') or '0'
@@ -85,7 +84,7 @@ def build_code_assignment_prompt(
         f"valence: {valence}"
     )
 
-    other_label_display = other_label or "Other"
+    no_fit_display = no_fit_label or "no matching code"
 
     return f"""You are a qualitative coding assistant. Assign the idea below to the best-matching code.
 
@@ -107,7 +106,7 @@ Language: {language}
 1. Read the verbatim response together with its interpretation, abstraction, domain, facet, and valence. The verbatim response may be a bare word; use the interpretation and abstraction to disambiguate its intended meaning.
 2. Find the code whose definition best matches what the respondent is expressing.
 3. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
-4. Assign "{other_label_display}" only if NO code fits at all.
+4. Choose "{no_fit_display}" only if NO code above fits the idea at all.
 5. Rate confidence: 0.90+ = clear, 0.70-0.89 = good, 0.50-0.69 = approximate, <0.50 = weak.
 6. Provide a brief rationale for your code choice.
 

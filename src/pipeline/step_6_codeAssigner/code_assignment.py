@@ -41,7 +41,7 @@ from config import get_reasoning_params
 
 from pipeline.step_3_ideaExtractor import models
 
-from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig, get_other_category_label
+from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig, get_no_fit_label
 from .models_codeAssigner import CodeAssignedSubmodel, CodeAssignedModel
 from pipeline.step_4_classifier.models_classifier import DomainSet, DomainResultModel
 from .prompts_codeAssigner import (
@@ -113,8 +113,8 @@ class CodeAssigner:
 
         # ID-based resolution maps — populated in _assign_all_async()
         self._id_to_label: Dict[str, str] = {}
-        self._other_id: Optional[str] = None
-        self._other_label: Optional[str] = None
+        self._no_fit_id: Optional[str] = None
+        self._no_fit_label: Optional[str] = None
 
         # Pre-assigned attributes from pipeline step 4a (idea_id -> attribute name)
         self._attribute_assignments: Dict[str, str] = attribute_assignments or {}
@@ -252,12 +252,13 @@ class CodeAssigner:
                 else:
                     candidate_codes = self._codes
 
-                # Build per-task ID map (scoped C1..CN → code_name)
+                # Build per-task ID map (scoped C1..CN → code_name). The no-fit
+                # option is the final ID and resolves to the __UNASSIGNED__ sentinel.
                 task_id_to_label = {}
                 for ci, code in enumerate(candidate_codes, 1):
                     task_id_to_label[f"C{ci}"] = code.code_name
-                if self._config.include_other_category and self._other_label:
-                    task_id_to_label[f"C{len(candidate_codes) + 1}"] = self._other_label
+                if self._config.allow_no_fit and self._no_fit_label:
+                    task_id_to_label[f"C{len(candidate_codes) + 1}"] = "__UNASSIGNED__"
 
                 task_list.append({
                     'idea': idea,
@@ -328,8 +329,8 @@ class CodeAssigner:
                 resolve_stats["resolved"] += 1
             elif raw_id:
                 print(f"    WARNING: Code ID '{cat_id}' not in global map for "
-                      f"idea '{idea_id}' — assigning to 'other'")
-                id_resolution[idea_id] = self._other_label or ""
+                      f"idea '{idea_id}' — marking __UNASSIGNED__")
+                id_resolution[idea_id] = "__UNASSIGNED__"
                 resolve_stats["fallback"] += 1
             else:
                 resolve_stats["unresolved"] += 1
@@ -379,7 +380,7 @@ class CodeAssigner:
                 step_name="taxonomy_codes",
                 utility_name="CodeAssigner",
                 prompt_content=prompt,
-                prompt_type="dual_assignment",
+                prompt_type="code_assignment",
                 metadata={
                     "model": self._config.assignment_model,
                     "temperature": self._config.assignment_temperature,
@@ -459,26 +460,26 @@ class CodeAssigner:
     def _build_id_maps(self) -> None:
         """Build ID-to-label maps from self._codes (ConsolidatedCode list).
 
-        Populates self._id_to_label, self._other_id, self._other_label.
+        Populates self._id_to_label, self._no_fit_id, self._no_fit_label.
+        The no-fit option is the final ID and resolves to __UNASSIGNED__ (its
+        display phrase, self._no_fit_label, is shown in the prompt only).
         """
         id_to_label: Dict[str, str] = {}
 
         for i, code in enumerate(self._codes, 1):
             id_to_label[f"C{i}"] = code.code_name
 
-        # Add "other" as final entry
-        if self._config.include_other_category:
+        # Add the no-fit option as final entry (resolves to __UNASSIGNED__)
+        if self._config.allow_no_fit:
             language = "Dutch"
             if self._extraction_metadata:
                 language = getattr(self._extraction_metadata, 'lang', 'Dutch') or 'Dutch'
-            other_label = get_other_category_label(language)
-            other_id = f"C{len(self._codes) + 1}"
-            id_to_label[other_id] = other_label
-            self._other_id = other_id
-            self._other_label = other_label
+            self._no_fit_id = f"C{len(self._codes) + 1}"
+            self._no_fit_label = get_no_fit_label(language)
+            id_to_label[self._no_fit_id] = "__UNASSIGNED__"
         else:
-            self._other_id = None
-            self._other_label = None
+            self._no_fit_id = None
+            self._no_fit_label = None
 
         self._id_to_label = id_to_label
 
@@ -510,14 +511,12 @@ class CodeAssigner:
             if parts:
                 dataset_context_section = "\n".join(parts)
 
-        other_label = get_other_category_label(language)
-
         return build_code_assignment_prompt(
             survey_question=survey_question,
             language=language,
             dataset_context_section=dataset_context_section,
             codes=codes,
-            other_label=other_label if self._config.include_other_category else None,
+            no_fit_label=self._no_fit_label,
             idea=idea,
             facet_lookup=self._facet_lookup,
         )
@@ -781,7 +780,7 @@ class CodeAssigner:
             code_order.append(code.code_name)
             code_valence[code.code_name] = getattr(code, 'valence', '') or ''
 
-        # Add any assigned codes not in the codebook (e.g., "overig/anders")
+        # Add any assigned codes not in the codebook (i.e., "__UNASSIGNED__")
         for code_name in code_stats:
             if code_name not in code_valence:
                 code_order.append(code_name)

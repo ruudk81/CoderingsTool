@@ -18,9 +18,10 @@ class AssignmentConfig:
     assignment_temperature: float = 0.1    # Low for consistent assignment
     assignment_max_tokens: int = 4000
 
-    # Fallback category for ideas that don't clearly fit any MECE category.
-    # Resolved by language from extraction_metadata.lang.
-    include_other_category: bool = True
+    # Offer the LLM an explicit "no code fits" option so it is never forced to
+    # mis-assign. Choosing it resolves to the __UNASSIGNED__ sentinel — step 6
+    # never invents a catch-all label that is absent from step 5's codebook.
+    allow_no_fit: bool = True
 
     # Embedding pre-filtering (scopes codebook to top-N codes per idea)
     use_embedding_prefilter: bool = True
@@ -43,26 +44,28 @@ class AssignmentConfig:
 
 
 # =============================================================================
-# OTHER CATEGORY LABELS
+# NO-FIT OPTION LABELS
 # =============================================================================
 
-# Language → "Other/Miscellaneous" label mapping
-OTHER_CATEGORY_LABELS: Dict[str, str] = {
-    "Dutch": "overig/anders",
-    "nl-NL": "overig/anders",
-    "English": "other/miscellaneous",
-    "en-GB": "other/miscellaneous",
-    "en-US": "other/miscellaneous",
-    "German": "sonstiges",
-    "de-DE": "sonstiges",
-    "French": "autre/divers",
-    "fr-FR": "autre/divers",
-    "Spanish": "otro/varios",
-    "es-ES": "otro/varios",
+# Language → display phrase for the "no code fits" prompt option. This is shown
+# to the LLM only; when chosen it resolves to __UNASSIGNED__, never to a label
+# written into assigned_code.
+NO_FIT_LABELS: Dict[str, str] = {
+    "Dutch": "geen passende code",
+    "nl-NL": "geen passende code",
+    "English": "no matching code",
+    "en-GB": "no matching code",
+    "en-US": "no matching code",
+    "German": "keine passende Kategorie",
+    "de-DE": "keine passende Kategorie",
+    "French": "aucun code correspondant",
+    "fr-FR": "aucun code correspondant",
+    "Spanish": "ningún código aplicable",
+    "es-ES": "ningún código aplicable",
 }
-OTHER_CATEGORY_DEFAULT = "other/miscellaneous"
+NO_FIT_DEFAULT = "no matching code"
 
 
-def get_other_category_label(language: str) -> str:
-    """Resolve the Other category label for a given language."""
-    return OTHER_CATEGORY_LABELS.get(language, OTHER_CATEGORY_DEFAULT)
+def get_no_fit_label(language: str) -> str:
+    """Resolve the no-fit display phrase for a given language."""
+    return NO_FIT_LABELS.get(language, NO_FIT_DEFAULT)
