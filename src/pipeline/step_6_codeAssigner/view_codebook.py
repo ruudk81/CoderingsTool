@@ -53,8 +53,8 @@ SAVE_CSV = True
 # (title, group_by, show_attrs, fold_tail, csv_suffix)
 VERSIONS = [
     ("CODES ONLY",          "code",   False, False, "codes"),
-    ("CODES + ATTRIBUTES",   "code",   True,  True,  "codes_attrs"),
     ("DOMAINS + ATTRIBUTES", "domain", True,  False, "domains_attrs"),  # show all attrs
+    ("CODES + ATTRIBUTES",   "code",   True,  True,  "codes_attrs"),
 ]
 
 _UNASSIGNED = "__UNASSIGNED__"
@@ -231,7 +231,7 @@ def _bal(r) -> str:
     return f"{r['pct_pos']:.0f}% (+) / {r['pct_neg']:.0f}% (-)" if r["n"] else ""
 
 
-def print_readout(title, group_label, rows, base_n, n_responses, n_unassigned):
+def print_readout(title, group_label, rows, base_n, n_responses, n_unassigned, compact=False):
     print(f"\n\n{'=' * 84}")
     print(f"[{title}]  {FILENAME}")
     print(f"{VARIABLE}  |  {base_n} ideas (base)"
@@ -242,7 +242,8 @@ def print_readout(title, group_label, rows, base_n, n_responses, n_unassigned):
     print(f"{'-' * 84}")
     for r in rows:
         if r["level"] == "group":
-            print(f"\n{'[' + r['valence'] + '] ' + r['group']:46}"
+            sep = "" if compact else "\n"
+            print(f"{sep}{'[' + r['valence'] + '] ' + r['group']:46}"
                   f"{r['n']:>5}{r['pct_ideas']:>6.1f}%{r['pct_resp']:>6.1f}%   {_bal(r)}")
         else:
             tag = "" if r["n"] else "  (unused)"
@@ -288,7 +289,8 @@ if __name__ == "__main__":
         group_label = "code" if group_by == "code" else "domain"
         rows, base_n, n_responses, n_unassigned = build_rows(
             responses, codebook, group_by, show_attrs, fold_tail)
-        print_readout(title, group_label, rows, base_n, n_responses, n_unassigned)
+        print_readout(title, group_label, rows, base_n, n_responses, n_unassigned,
+                      compact=not show_attrs)
         if SAVE_CSV:
             save_csv(suffix, group_label, rows, base_n, n_responses, n_unassigned)
 
