@@ -8,7 +8,7 @@ Modes:
   - "ladder": detailed view — instance → interpretation → abstraction → code + attribute + rationale
 
 Usage:
-    cd src && python -m steps.step_6_codeAssigner.view_assignments_codes
+    cd src && python -m pipeline.step_6_codeAssigner.view_assignments_codes
 """
 
 import sys
@@ -18,7 +18,6 @@ from typing import Dict, List, Optional
 
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
-sys.path.insert(0, str(project_root / "src" / "steps"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
@@ -116,11 +115,9 @@ def group_by_category(
 # DISPLAY
 # =============================================================================
 
-def _category_sort_key(item):
-    """Sort categories: parent-grouped, then by count descending."""
-    category, ideas = item
-    parent = ""
-    return (parent, -len(ideas))
+def _by_count_desc(item):
+    """Sort categories by idea count, descending."""
+    return -len(item[1])
 
 
 def print_idea_mode(grouped: Dict[str, Dict[str, List]]):
@@ -133,17 +130,15 @@ def print_idea_mode(grouped: Dict[str, Dict[str, List]]):
         print(f"PARTITION: {partition} ({total} ideas)")
         print(f"{'═' * 80}")
 
-        sorted_cats = sorted(categories.items(), key=_category_sort_key)
+        sorted_cats = sorted(categories.items(), key=_by_count_desc)
 
         for category, ideas in sorted_cats:
-            parent = ""
             avg_conf = (
                 sum(i.confidence or 0 for i in ideas) / len(ideas)
                 if ideas else 0
             )
 
-            header = f"[{parent}] " if parent else ""
-            print(f"\n  {header}{category} ({len(ideas)} ideas, avg conf: {avg_conf:.2f})")
+            print(f"\n  {category} ({len(ideas)} ideas, avg conf: {avg_conf:.2f})")
             print(f"  {'─' * 70}")
 
             sorted_ideas = sorted(
@@ -175,17 +170,15 @@ def print_ladder_mode(grouped: Dict[str, Dict[str, List]]):
         print(f"PARTITION: {partition} ({total} ideas)")
         print(f"{'═' * 80}")
 
-        sorted_cats = sorted(categories.items(), key=_category_sort_key)
+        sorted_cats = sorted(categories.items(), key=_by_count_desc)
 
         for category, ideas in sorted_cats:
-            parent = ""
             avg_conf = (
                 sum(i.confidence or 0 for i in ideas) / len(ideas)
                 if ideas else 0
             )
 
-            header = f"[{parent}] " if parent else ""
-            print(f"\n  {header}{category} ({len(ideas)} ideas, avg conf: {avg_conf:.2f})")
+            print(f"\n  {category} ({len(ideas)} ideas, avg conf: {avg_conf:.2f})")
             print(f"  {'─' * 70}")
 
             sorted_ideas = sorted(
@@ -250,32 +243,12 @@ def print_summary(grouped: Dict[str, Dict[str, List]]):
 # Category-grouped display (GROUP_BY = "category")
 # ---------------------------------------------------------------------------
 
-def _cat_group_sort_key(item):
-    """Sort by parent theme, then by count descending."""
-    category, ideas = item
-    parent = ""
-    return (parent, -len(ideas))
-
-
 def print_category_idea_mode(cat_grouped: Dict[str, List]):
     """Compact view grouped by category across all partitions."""
-    sorted_cats = sorted(cat_grouped.items(), key=_cat_group_sort_key)
+    sorted_cats = sorted(cat_grouped.items(), key=_by_count_desc)
 
-    current_parent = None
     for category, ideas in sorted_cats:
-        parent = ""
         avg_conf = sum(i.confidence or 0 for i in ideas) / len(ideas)
-
-        if parent != current_parent:
-            current_parent = parent
-            if parent:
-                print(f"\n{'═' * 80}")
-                print(f"THEME: {parent}")
-                print(f"{'═' * 80}")
-            else:
-                print(f"\n{'═' * 80}")
-                print(f"(no parent theme)")
-                print(f"{'═' * 80}")
 
         partition_counts = defaultdict(int)
         for idea in ideas:
@@ -308,23 +281,10 @@ def print_category_idea_mode(cat_grouped: Dict[str, List]):
 
 def print_category_ladder_mode(cat_grouped: Dict[str, List]):
     """Detailed ladder view grouped by category across all partitions."""
-    sorted_cats = sorted(cat_grouped.items(), key=_cat_group_sort_key)
+    sorted_cats = sorted(cat_grouped.items(), key=_by_count_desc)
 
-    current_parent = None
     for category, ideas in sorted_cats:
-        parent = ""
         avg_conf = sum(i.confidence or 0 for i in ideas) / len(ideas)
-
-        if parent != current_parent:
-            current_parent = parent
-            if parent:
-                print(f"\n{'═' * 80}")
-                print(f"THEME: {parent}")
-                print(f"{'═' * 80}")
-            else:
-                print(f"\n{'═' * 80}")
-                print(f"(no parent theme)")
-                print(f"{'═' * 80}")
 
         partition_counts = defaultdict(int)
         for idea in ideas:
@@ -366,16 +326,9 @@ def print_category_summary(cat_grouped: Dict[str, List]):
     print(f"{'═' * 80}")
 
     total = 0
-    sorted_cats = sorted(cat_grouped.items(), key=_cat_group_sort_key)
+    sorted_cats = sorted(cat_grouped.items(), key=_by_count_desc)
 
-    current_parent = None
     for category, ideas in sorted_cats:
-        parent = ""
-        if parent != current_parent:
-            current_parent = parent
-            if parent:
-                print(f"\n  [{parent}]")
-
         avg_conf = sum(i.confidence or 0 for i in ideas) / len(ideas)
         print(f"    {category:50s}  {len(ideas):4d} ideas  avg conf: {avg_conf:.2f}")
         total += len(ideas)
