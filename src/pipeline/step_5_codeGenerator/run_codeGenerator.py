@@ -29,7 +29,6 @@ from pipeline.step_5_codeGenerator.models_codeGenerator import CodingResultsCach
 from pipeline.step_5_codeGenerator.codebook_verifier import (
     build_scorecard, format_scorecard, collect_taxonomy_attributes, collect_idea_assignments,
 )
-from pipeline.step_5_codeGenerator.neighbor_stress_test import run_neighbor_stress_test
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from config import MISCELLANEOUS_CODE_LABELS
 
@@ -377,47 +376,20 @@ def apply_overig_sweep(
     return label
 
 
-def run_and_save_scorecard(
+def run_scorecard(
     codebook_result: CodebookResult,
     pydantic_results: Dict[str, DomainResultModel],
     variable_key: str,
     overig_code_name: Optional[str] = None,
 ):
-    """Build the post-P9 verification scorecard (PASS/FAIL), print it, persist as JSON."""
+    """Build the post-P9 verification scorecard (PASS/FAIL) and print it.
+
+    Console only — the PASS/FAIL readout is captured in the verbose log (which is
+    auto-pruned); no separate JSON file is written.
+    """
     scorecard = build_scorecard(codebook_result.codes, pydantic_results, overig_code_name)
     print("\n" + format_scorecard(scorecard))
-
-    scorecard_dir = project_root / "exports" / "codebook"
-    scorecard_dir.mkdir(parents=True, exist_ok=True)
-    base = Path(FILENAME).stem.replace(" ", "_")
-    path = scorecard_dir / f"{base}_{variable_key}_scorecard.json"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(scorecard.model_dump_json(indent=2))
-    print(f"Scorecard saved to: {path}")
     return scorecard
-
-
-def save_neighbor_stress(
-    idea_embeddings: Optional[Dict],
-    pydantic_results: Dict[str, DomainResultModel],
-    variable_key: str,
-):
-    """Save the cross-domain attribute proximity report (planning aid — NOT a grade).
-
-    Not printed: high absolute similarity is a single-topic-survey artifact, not a
-    quality signal. Saved for on-demand inspection only.
-    """
-    report = run_neighbor_stress_test(idea_embeddings or {}, pydantic_results)
-    if report is None:
-        return None
-    out_dir = project_root / "exports" / "codebook"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    base = Path(FILENAME).stem.replace(" ", "_")
-    path = out_dir / f"{base}_{variable_key}_neighbor_stress.json"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(report.model_dump_json(indent=2))
-    print(f"Neighbor stress report (planning aid) saved to: {path}")
-    return report
 
 
 # =============================================================================
@@ -593,12 +565,7 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
     print_codebook_results(codebook_result)
 
     # Post-P9 verification scorecard (PASS/FAIL against the definition of done)
-    run_and_save_scorecard(codebook_result, pydantic_results, variable_key, overig_name)
-
-    # Cross-domain attribute proximity — planning aid only (saved, not printed)
-    save_neighbor_stress(
-        getattr(generator, '_idea_embeddings', None), pydantic_results, variable_key
-    )
+    run_scorecard(codebook_result, pydantic_results, variable_key, overig_name)
 
     # Cache for downstream use by step 6 (code assigner)
     cache_mece_results(

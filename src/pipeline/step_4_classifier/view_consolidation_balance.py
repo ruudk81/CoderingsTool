@@ -23,7 +23,6 @@ Usage:
 """
 
 import sys
-import json
 import asyncio
 from pathlib import Path
 from collections import defaultdict, Counter
@@ -67,8 +66,6 @@ EMBEDDING_MODEL = CategoriesConfig.p8_embedding_model
 FILENAME = TEST_DATA.filename
 VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
-
-EXPORT_DIR = project_root / "exports" / "consolidation_balance"
 
 
 # =============================================================================
@@ -173,11 +170,9 @@ async def _run():
                                      final_sources, fin_records, thr)
     raw_q = {"size": core.quantiles(list(raw_counts.values())),
              "own_purity": core.quantiles([raw_purity[k] for k in raw_keys])}
-    fin_q = {"size": core.quantiles([r["count"] for r in fin_records.values()])}
 
     _print_report(raw_records, fin_records, raw_q, thr)
     _print_decision(decision)
-    _write_json(raw_records, list(fin_records.values()), decision, variable_key, raw_q, fin_q, thr)
 
 
 def _print_decision(decision):
@@ -247,27 +242,6 @@ def _print_report(raw_records, fin_records, raw_q, thr):
         print(f"  {cnt:>4}  {a}")
     print(f"\n  OVER-MERGE raw flags (spine heuristic): {n_over}")
     print(f"{'=' * 96}")
-
-
-def _write_json(raw_records, fin_records, decision, variable_key, raw_q, fin_q, thr):
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    out = {
-        "dataset": FILENAME, "variable_key": variable_key,
-        "n_raw": len(raw_records), "n_final": len(fin_records), "knn_k": KNN_K,
-        "config": {
-            "code_source": CODE_SOURCE, "size_large_q": SIZE_LARGE_Q, "size_small_q": SIZE_SMALL_Q,
-            "purity_distinct_q": PURITY_DISTINCT_Q, "purity_fused_q": PURITY_FUSED_Q,
-            "prod_k_min": PROD_K_MIN, "prod_k_band": PROD_K_BAND,
-            "min_split_sources": MIN_SPLIT_SOURCES, "residual_dominance": RESIDUAL_DOMINANCE,
-        },
-        "raw_distributions": raw_q, "final_distributions": fin_q, "thresholds": thr,
-        "over_merge_decision": decision,
-        "raw_attributes": raw_records, "final_attributes": fin_records,
-    }
-    path = EXPORT_DIR / f"{Path(FILENAME).stem}_{variable_key}.json"
-    with open(path, "w") as f:
-        json.dump(out, f, indent=2, ensure_ascii=False)
-    print(f"\nWrote {path}")
 
 
 def main():
