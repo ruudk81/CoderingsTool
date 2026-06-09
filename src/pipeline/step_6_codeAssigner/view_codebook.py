@@ -479,8 +479,10 @@ def write_legend_sheet(ws, legend):
     section("D — Attributen", "attribuut", legend["attributes"])
 
     ws.column_dimensions["A"].width = 5
-    ws.column_dimensions["B"].width = 38
-    ws.column_dimensions["C"].width = 95
+    for col in (2, 3):  # label + definitie → fit to the longest text (Excel caps at 255)
+        width = max((len(str(ws.cell(r, col).value)) for r in range(1, ws.max_row + 1)
+                     if ws.cell(r, col).value is not None), default=8)
+        ws.column_dimensions[get_column_letter(col)].width = min(width + 2, 255)
 
 
 # =============================================================================
