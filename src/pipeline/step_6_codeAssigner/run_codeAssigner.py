@@ -52,7 +52,6 @@ PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 # CONFIGURATION
 # =============================================================================
 ASSIGNMENT_CONFIG = AssignmentConfig(
-    assignment_model="gpt-4.1-nano",
     assignment_temperature=0.1,
     verbose=True,
 )
