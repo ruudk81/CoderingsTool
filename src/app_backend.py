@@ -367,6 +367,12 @@ def export_path(spec: DatasetSpec) -> Path:
     return results_xlsx_path(spec.filename, spec.var_name)
 
 
+def codebook_path(spec: DatasetSpec) -> Path:
+    """Canonical codebook-workbook path — imported from view_codebook (single source)."""
+    from pipeline.step_6_codeAssigner.view_codebook import codebook_xlsx_path
+    return codebook_xlsx_path(spec.filename, spec.var_name, spec.sample_size)
+
+
 def load_codebook(spec: DatasetSpec) -> Optional[Any]:
     """Step 5 codebook (CodingResultsCache) — has .raw_codes."""
     from models import CodingResultsCache

@@ -331,15 +331,26 @@ def render_results(step: int, spec: DatasetSpec):
                          width="stretch", hide_index=True)
 
     elif step == 7:
-        path = be.export_path(spec)
+        st.subheader(T("Export", "Export"))
+        _xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        path = be.export_path(spec)        # results workbook
+        cb = be.codebook_path(spec)        # codebook workbook
+        c1, c2 = st.columns(2)
+        with c1:
+            if path.exists():
+                st.download_button("⬇️ " + T("Resultaten (Excel)", "Results (Excel)"),
+                                   data=path.read_bytes(), file_name=path.name,
+                                   mime=_xlsx_mime, width="stretch")
+        with c2:
+            if cb.exists():
+                st.download_button("⬇️ " + T("Codeboek (Excel)", "Codebook (Excel)"),
+                                   data=cb.read_bytes(), file_name=cb.name,
+                                   mime=_xlsx_mime, width="stretch")
         if path.exists():
-            st.subheader(T("Export", "Export"))
-            st.download_button("⬇️ " + T("Download Excel", "Download Excel"),
-                               data=path.read_bytes(), file_name=path.name,
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             try:
                 import pandas as pd
-                df = pd.read_excel(path)
+                # mixed-type columns → str so Arrow can render the preview
+                df = pd.read_excel(path).astype(str)
                 st.caption(f"{len(df)} {T('rijen', 'rows')} · {len(df.columns)} {T('kolommen', 'columns')}")
                 st.dataframe(df.head(50), width="stretch", hide_index=True)
             except Exception as exc:

@@ -364,11 +364,26 @@ def print_readout(title, header_label, rows, base_n, n_responses, n_unassigned, 
         print(f"{'__UNASSIGNED__ (excl. van %-basis)':50}{n_unassigned:>8}")
 
 
+def codebook_export_dir() -> Path:
+    return project_root / "exports" / "codebook"
+
+
+def _codebook_stem(filename: str, var_name: str, sample_size) -> str:
+    base = Path(filename).stem.replace(" ", "_")
+    size = sample_size if sample_size is not None else "full"   # avoid "_None" for full samples
+    return f"codebook_{base}_{var_name}_{size}"
+
+
+def codebook_xlsx_path(filename: str, var_name: str, sample_size) -> Path:
+    """Canonical codebook workbook path — view_codebook AND the app (app_backend) import this,
+    so the name/folder can't drift apart."""
+    return codebook_export_dir() / f"{_codebook_stem(filename, var_name, sample_size)}.xlsx"
+
+
 def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
-    exports_dir = project_root / "exports" / "codebook"
+    exports_dir = codebook_export_dir()
     exports_dir.mkdir(parents=True, exist_ok=True)
-    base = Path(FILENAME).stem.replace(" ", "_")
-    csv_path = exports_dir / f"codebook_{base}_{VARIABLE}_{SAMPLE_SIZE}_{suffix}.csv"
+    csv_path = exports_dir / f"{_codebook_stem(FILENAME, VARIABLE, SAMPLE_SIZE)}_{suffix}.csv"
     netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
@@ -456,10 +471,9 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
 
 
 def save_xlsx(wb):
-    exports_dir = project_root / "exports" / "codebook"
+    exports_dir = codebook_export_dir()
     exports_dir.mkdir(parents=True, exist_ok=True)
-    base = Path(FILENAME).stem.replace(" ", "_")
-    path = exports_dir / f"codebook_{base}_{VARIABLE}_{SAMPLE_SIZE}.xlsx"
+    path = codebook_xlsx_path(FILENAME, VARIABLE, SAMPLE_SIZE)
     wb.save(path)
     print(f"\nXLSX → {path}")
     return path
