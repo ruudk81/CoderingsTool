@@ -31,7 +31,7 @@ import csv
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -462,6 +462,7 @@ def save_xlsx(wb):
     path = exports_dir / f"codebook_{base}_{VARIABLE}_{SAMPLE_SIZE}.xlsx"
     wb.save(path)
     print(f"\nXLSX → {path}")
+    return path
 
 
 _BLOCK_FILL = PatternFill("solid", fgColor="366092")   # dark blue (matches sheet headers)
@@ -521,13 +522,30 @@ VERSIONS = [
     ("TAXONOMIE (ruwe attr)", "Taxonomie (fijn)", "domain / facet / raw attribute", ("dfa", "raw"),          "taxonomie_raw"),
 ]
 
-if __name__ == "__main__":
+def export_codebook(filename: str = None, var_name: str = None,
+                    sample_size: Optional[int] = None, *,
+                    write_csv: bool = SAVE_CSV, write_xlsx: bool = SAVE_XLSX,
+                    print_console: bool = False) -> Optional[Path]:
+    """Write the codebook/taxonomy readouts (CSV + XLSX) to exports/codebook/.
+
+    Runs AFTER step 6 — reads taxonomy_codes (6) + mece_codes (5) + taxonomy (4) +
+    extracted_ideas (3) from cache. Returns the xlsx path (None if write_xlsx=False).
+
+    Dataset params default to TEST_DATA (so the standalone `python -m ...view_codebook`
+    dev run is unchanged); the app passes them explicitly. Rebinds the module globals
+    once so load_data/save_csv/save_xlsx (which read them in-body) see the right dataset.
+    """
+    global FILENAME, VARIABLE, SAMPLE_SIZE
+    FILENAME = FILENAME if filename is None else filename
+    VARIABLE = VARIABLE if var_name is None else var_name
+    SAMPLE_SIZE = SAMPLE_SIZE if sample_size is None else sample_size
+
     responses, codebook, raw_map, metadata, tax = load_data()
     attr_sources = {
         "consolidated": lambda i: i.assigned_attribute,
         "raw": lambda i: raw_map.get(i.idea_id, ""),
     }
-    wb = Workbook() if SAVE_XLSX else None
+    wb = Workbook() if write_xlsx else None
     if wb is not None:
         wb.remove(wb.active)
         write_legend_sheet(wb.create_sheet(title="Legenda"),
@@ -542,13 +560,18 @@ if __name__ == "__main__":
             rows, base_n, n_resp, n_una = build_domain_facet_attr(
                 responses, fold_tail=True, attr_of=attr_sources[spec[1]])
             compact = False
-        print_readout(title, header, rows, base_n, n_resp, n_una, compact)
-        if SAVE_CSV:
+        if print_console:
+            print_readout(title, header, rows, base_n, n_resp, n_una, compact)
+        if write_csv:
             save_csv(suffix, header, rows, base_n, n_resp, n_una)
         if wb is not None:
             write_xlsx_sheet(wb.create_sheet(title=sheet_name), header,
                              rows, base_n, n_resp, n_una)
-    if wb is not None:
-        save_xlsx(wb)
+    return save_xlsx(wb) if wb is not None else None
+
+
+if __name__ == "__main__":
+    # Standalone dev run: uses TEST_DATA + prints the readouts to the terminal.
+    export_codebook(print_console=True)
 
 # %%

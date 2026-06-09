@@ -54,6 +54,21 @@ Run: from the project root → `streamlit run src/app.py --server.headless true`
       (`{varkey}_{sample}_step{N}`) → verbose-log display was broken. Now lenient.
 - [x] Fixed the local `~/.zshrc` auto-venv hook (subdirs like `src/` lost the venv on `cd`).
 
+### 2026-06-09
+- [x] **"Run all steps (1-7)" button** (sidebar, 2-step confirm). Backend `run_all_steps` is a
+      generator that cascade-invalidates then force-reruns steps 1→7 sequentially, streaming a
+      per-step ✅/❌ line via `st.status`, stopping on the first failure. No verbose interleaving:
+      strictly sequential blocking runs + `sys.stdout.flush()` between steps. Lands on step 7 on
+      success, the failed step otherwise.
+- [x] **Dual export at the Export step (7)**. Step 7 now produces BOTH deliverables:
+      `run_export` (results workbook `_codering.xlsx` + 4 `.sav`) AND `export_codebook`
+      (codebook/taxonomy CSV + XLSX). `view_codebook.py`'s `__main__` was refactored into
+      `export_codebook(filename, var_name, sample_size, *, write_csv, write_xlsx, print_console)`
+      — standalone `python -m …view_codebook` is unchanged (prints readouts + writes files).
+- [x] **Fix**: `run_export.run_step` now returns a **dict** of paths, and the results workbook was
+      renamed `_code_assignments.xlsx` → `_codering.xlsx`. Updated `export_path()` + the step-7
+      dispatch so the "done" probe (`is_step_done(7)`) and the results view find the file again.
+
 ---
 
 ## To be done (next)
@@ -78,6 +93,13 @@ Run: from the project root → `streamlit run src/app.py --server.headless true`
 - [ ] **id_column on resume.** For datasets loaded from cache, `id_column` defaults to
       `TEST_DATA.id_column`; only matters if step 0 is force-recalculated (re-reads SPSS).
       Consider persisting it (it's not in `cache_metadata`).
+- [ ] **Codebook download in the step-7 results view.** The export step already writes the
+      codebook XLSX/CSVs (`exports/codebook/`), but `render_results(7)` only offers the results
+      workbook. Add a download button for the codebook workbook (needs a `codebook_export_path`
+      helper mirroring `view_codebook`'s naming).
+- [ ] **Full-sample codebook filename quirk.** `view_codebook.export_codebook` puts the literal
+      `SAMPLE_SIZE` in the filename, so a full-sample dataset becomes `…_None.xlsx`. Normalize to
+      `full` (like `run_export`/`VerboseCapture` do) before wiring a UI download.
 
 ### Lower priority / later
 - [ ] **Multi-variable merge.** New pipeline is single-variable only (test data uses a

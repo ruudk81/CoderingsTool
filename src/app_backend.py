@@ -335,9 +335,22 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
         return "Codes assigned to ideas"
 
     if step == 7:
+        # Two exports at the Export step: (1) the results workbook + .sav (run_export),
+        # (2) the codebook/taxonomy readouts CSV+XLSX (export_codebook, from step 6 data).
         from pipeline.step_7_export.run_export import run_step as r, StepConfig as C
-        path = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, force_recalc=force_recalc))
-        return f"Exported to {Path(path).name}" if path else "Export complete"
+        paths = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, force_recalc=force_recalc))
+        from pipeline.step_6_codeAssigner.view_codebook import export_codebook
+        cb_path = export_codebook(filename=f, var_name=vn, sample_size=ss)
+        # run_export returns a dict {"excel": ..., <sav suffixes>...}; the codebook
+        # export returns its xlsx path. Summarize both deliverables.
+        results_xlsx = paths.get("excel") if isinstance(paths, dict) else paths
+        n_sav = sum(1 for k in paths if k != "excel") if isinstance(paths, dict) else 0
+        bits = []
+        if results_xlsx:
+            bits.append(f"results: {Path(results_xlsx).name} (+{n_sav} .sav)")
+        if cb_path:
+            bits.append(f"codebook: {Path(cb_path).name}")
+        return "Exported — " + (", ".join(bits) if bits else "complete")
 
     raise ValueError(f"Unknown step {step}")
 
@@ -347,9 +360,9 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
 # =============================================================================
 
 def export_path(spec: DatasetSpec) -> Path:
-    """Where step 7 writes the Excel file (mirrors resultsExporter naming)."""
+    """Where step 7 writes the results Excel workbook (mirrors resultsExporter naming)."""
     stem = Path(spec.filename).stem
-    return PROJECT_ROOT / "exports" / f"{stem}_{spec.var_name}_code_assignments.xlsx"
+    return PROJECT_ROOT / "exports" / f"{stem}_{spec.var_name}_codering.xlsx"
 
 
 def load_codebook(spec: DatasetSpec) -> Optional[Any]:
