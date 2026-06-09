@@ -247,6 +247,9 @@ def build_domain_facet_attr(responses, fold_tail):
         rows.append(_row(0, d, _derived_sign(_balance(dom[d])[1]), dom[d], pct_i, pct_r))
         for f in sorted(df[d], key=lambda k: -df[d][k].n):
             rows.append(_row(1, f, _derived_sign(_balance(df[d][f])[1]), df[d][f], pct_i, pct_r))
+            # A facet with a single attribute carries no extra info → show the facet only
+            if len(dfa[d][f]) == 1:
+                continue
             attrs = list(dfa[d][f].items())
             kept, tail = _fold_tail(attrs, df[d][f].n, fold_tail)
             for a, cell in sorted(kept, key=lambda kv: -kv[1].n):
