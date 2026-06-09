@@ -43,7 +43,7 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import IdeaExtractionCon
 from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response, token_tracker
 from utils.modelPerfStats import (
     load_stats, save_stats, update_phase_stats, get_phase_stats,
-    get_dataset_phase_stats, update_dataset_phase_stats, STATS_FILE,
+    get_dataset_phase_stats_or_prior, update_dataset_phase_stats, STATS_FILE,
 )
 
 # === PROMPTS (builders + response models) =========================================================================
@@ -222,9 +222,11 @@ class IdeaExtractor:
         # Dataset-scoped: keyed by filename:variable_key (e.g., "M000000:Qd1_combined_full")
         self._dataset_key = dataset_key
         self._perf_stats = load_stats()
-        _stored = get_dataset_phase_stats(
-            self._perf_stats, self.model, "step3_idea_extraction", self._dataset_key
-        ) if self._dataset_key else None
+        _stored, self._stats_origin = (
+            get_dataset_phase_stats_or_prior(
+                self._perf_stats, self.model, "step3_idea_extraction", self._dataset_key)
+            if self._dataset_key else (None, "cold")
+        )
         if (_stored and _stored.get("sample_count", 0) >= 10
                 and "p50_latency_s" in _stored):
             _stored_timeout = _stored["p50_latency_s"] * 6.0

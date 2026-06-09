@@ -48,6 +48,7 @@ Phase keys:
 
 import json
 import os
+import statistics
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -153,6 +154,69 @@ def get_dataset_phase_stats(
         if isinstance(entry, dict) and "sample_count" in entry:
             return entry
     return None
+
+
+def get_phase_prior(
+    stats: Dict[str, Any],
+    model: str,
+    phase_key: str,
+    exclude_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Synthesize a model+phase 'warm' prior from sibling dataset cases.
+
+    Aggregates (median) the infra/timing fields across all other dataset entries
+    under the same (provider:model, phase) that have >= MIN_SAMPLES samples.
+    Returns a synthetic stats dict, or None if no qualifying siblings exist.
+
+    In-memory only — never persisted. Lets a new case reuse the measured
+    concurrency ceiling + latency instead of cold-starting from scratch.
+    """
+    phase = get_phase_stats(stats, model, phase_key)
+    if not isinstance(phase, dict):
+        return None
+    siblings = [
+        e for k, e in phase.items()
+        if k != exclude_key and isinstance(e, dict)
+        and e.get("sample_count", 0) >= MIN_SAMPLES
+    ]
+    if not siblings:
+        return None
+
+    prior: Dict[str, Any] = {}
+    for field in ("empirical_capacity", "p50_latency_s", "avg_tokens", "tiktoken_offset"):
+        vals = [e[field] for e in siblings if field in e]
+        if vals:
+            prior[field] = statistics.median(vals)
+
+    # has_server_headers is a model property: True if any sibling saw headers.
+    headers = [e["has_server_headers"] for e in siblings if "has_server_headers" in e]
+    if headers:
+        prior["has_server_headers"] = any(headers)
+
+    if not prior:
+        return None
+    # sample_count set to MIN_SAMPLES so downstream >= MIN_SAMPLES gates pass.
+    prior["sample_count"] = MIN_SAMPLES
+    return prior
+
+
+def get_dataset_phase_stats_or_prior(
+    stats: Dict[str, Any],
+    model: str,
+    phase_key: str,
+    dataset_key: str,
+) -> tuple[Optional[Dict[str, Any]], str]:
+    """Tiered lookup: exact case (hot) -> model+phase prior (warm) -> None (cold).
+
+    Returns (entry, origin) with origin in {'hot', 'warm', 'cold'}.
+    """
+    exact = get_dataset_phase_stats(stats, model, phase_key, dataset_key)
+    if exact is not None:
+        return exact, "hot"
+    prior = get_phase_prior(stats, model, phase_key, exclude_key=dataset_key)
+    if prior is not None:
+        return prior, "warm"
+    return None, "cold"
 
 
 # ---------------------------------------------------------------------------

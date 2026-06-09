@@ -44,7 +44,7 @@ from utils.llm import (
     HeaderCaptureTransport,
 )
 from utils.modelPerfStats import (
-    load_stats, save_stats, get_dataset_phase_stats, update_dataset_phase_stats,
+    load_stats, save_stats, get_dataset_phase_stats_or_prior, update_dataset_phase_stats,
 )
 from utils.cached_resources import get_tiktoken_encoding
 
@@ -901,11 +901,13 @@ class SmoothRequester:
         self.actual_total_tokens = deque(maxlen=50)
         self.estimation_errors = deque(maxlen=50)
 
-        # Load empirical data from cache
+        # Load empirical data from cache — exact case (hot), else model+phase prior (warm)
         self._perf_stats = load_stats()
-        _stored = get_dataset_phase_stats(
-            self._perf_stats, model, phase_key, dataset_key
-        ) if dataset_key else None
+        self._stored_entry, self._stats_origin = (
+            get_dataset_phase_stats_or_prior(self._perf_stats, model, phase_key, dataset_key)
+            if dataset_key else (None, "cold")
+        )
+        _stored = self._stored_entry
 
         self._stored_p50 = None
         self._stored_empirical_capacity = None
@@ -1001,11 +1003,8 @@ class SmoothRequester:
         if self._known_limits is not None:
             # Skip probe — use caller-provided limits
             limits = self._known_limits
-            # Determine header support from perf stats cache or default to True
-            _stored = get_dataset_phase_stats(
-                self._perf_stats, self.model, self.phase_key, self.dataset_key
-            ) if self.dataset_key else None
-            has_server_headers = (_stored or {}).get("has_server_headers", True)
+            # Determine header support from perf stats cache (hot/warm) or default to True
+            has_server_headers = (self._stored_entry or {}).get("has_server_headers", True)
         else:
             # Probe call
             limits, has_server_headers = await self._fetch_rate_limits()
@@ -1569,6 +1568,7 @@ class SmoothRequester:
             token_src = "stored" if self._stored_avg_tokens else "tiktoken"
             print(f"- Initial avg_tokens ({token_src}): {self.avg_tokens}")
             print(f"- Target concurrency: {self.optimal_concurrency}")
+            print(f"- Start: {self._stats_origin}")
             print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side)'}")
             print(f"- Rate limit concurrency: {self._rate_limit_concurrency} | Server concurrency: {self._server_concurrency}")
             if self._dispatch_delay > 0:
