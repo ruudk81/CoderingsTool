@@ -34,6 +34,7 @@ import models
 from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
 from pipeline.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from pipeline.step_4_classifier.models_classifier import TaxonomyResultsCache
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
@@ -113,6 +114,22 @@ def load_step6_cache(config: StepConfig):
     partition_set = mece_cache.partition_set
     partition_results = mece_cache.partition_results
 
+    # Load extraction metadata from step 3 (for the legend's dimension row)
+    metadata = cache_manager.load_metadata_from_cache(
+        filename=config.filename,
+        step="extracted_ideas",
+        variable_key=variable_key,
+        model_cls=models.ExtractionMetadata,
+    )
+
+    # Load step-4 taxonomy cache (for raw/fine attributes: raw_attributes + raw_attribute_assignments)
+    tax = cache_manager.load_metadata_from_cache(
+        filename=config.filename,
+        step="taxonomy",
+        variable_key=variable_key,
+        model_cls=TaxonomyResultsCache,
+    )
+
     # Load quality filtered text (optional)
     quality_filtered_text = None
     try:
@@ -122,7 +139,7 @@ def load_step6_cache(config: StepConfig):
     except Exception:
         pass
 
-    return code_assigned_results, codes, partition_set, partition_results, quality_filtered_text, variable_key
+    return code_assigned_results, codes, partition_set, partition_results, metadata, tax, quality_filtered_text, variable_key
 
 
 def get_var_lab(config: StepConfig) -> str:
@@ -137,7 +154,7 @@ def run_step(config: StepConfig = None):
     if config is None:
         config = STEP_CONFIG
 
-    code_assigned_results, codes, partition_set, partition_results, quality_filtered_text, variable_key = load_step6_cache(config)
+    code_assigned_results, codes, partition_set, partition_results, metadata, tax, quality_filtered_text, variable_key = load_step6_cache(config)
     var_lab = get_var_lab(config)
 
     verbose_reporter = VerboseReporter(config.verbose)
@@ -150,23 +167,26 @@ def run_step(config: StepConfig = None):
 
     # Run export
     exporter = ResultsExporter(verbose=config.verbose)
-    excel_path = exporter.export_to_excel(
+    paths = exporter.export(
         code_assigned_results,
         codes,
         partition_set,
         partition_results,
-        config.filename,
-        config.var_name,
-        quality_filtered_text=quality_filtered_text,
+        metadata,
+        tax=tax,
+        quality_filtered=quality_filtered_text,
+        filename=config.filename,
+        var_name=config.var_name,
+        var_lab=var_lab,
         export_dir=None,
     )
 
     elapsed_time = time.time() - start_time
 
-    verbose_reporter.stat_line(f"Output: {excel_path}")
+    verbose_reporter.stat_line(f"Output: {paths.get('excel')}")
     print(f"\n'Export' completed in {elapsed_time:.2f} seconds.\n")
 
-    return excel_path
+    return paths
 
 
 # =============================================================================
@@ -193,12 +213,13 @@ if __name__ == "__main__":
     print("=" * 70)
 
     try:
-        excel_path = run_step(config)
+        paths = run_step(config)
 
         print("\n" + "=" * 70)
         print("EXPORT COMPLETE")
         print("=" * 70)
-        print(f"Excel file: {excel_path}")
+        for k, v in paths.items():
+            print(f"{k:>12}: {v}")
         print("=" * 70)
 
     finally:

@@ -10,10 +10,15 @@ to its own CSV):
 Raw attributes are the pre-consolidation (pre-P7/P8) step-4 assignments, read
 from the taxonomy cache's `raw_attribute_assignments`.
 
-Per row: n ideas + % of the lens' idea base, % of RESPONSES (unique non-filtered
-respondents), and valence balance x% (+) / y% (-) where (+) = positive+neutral,
-(-) = negative. The smallest children per parent (together ≤ OVERIG_TAIL_PCT) fold
-into one "overig (k …)" row.
+Per row, two counts:
+  - BRUTO = n ideas (mentions) + % of the readout's idea base — a respondent who
+    repeats the same code/attribute counts each time.
+  - NETTO = unique respondents (deduped per category) + % normalized per depth so
+    each level sums to 100%. Netto does not nest through the hierarchy (a respondent
+    in a domain via two facets counts once for the domain but once per facet).
+Plus a valence balance x% (+) / y% (-) where (+) = positive+neutral, (-) = negative
+(idea-level / bruto). The smallest children per parent (together ≤ OVERIG_TAIL_PCT)
+fold into one "overig (k …)" row.
 
 The codebook lens excludes the __UNASSIGNED__ sentinel from the % base (reported
 separately); the taxonomy lens covers every idea (each idea has a domain/facet).
@@ -191,11 +196,26 @@ def _merge_cells(cells):
     return m
 
 
-def _row(depth, label, valence, cell, pct_i, pct_r):
+def _row(depth, label, valence, cell, pct_i):
     pos, neg = _balance(cell)
-    return {"depth": depth, "label": label, "valence": valence, "n": cell.n,
-            "pct_ideas": pct_i(cell.n), "pct_resp": pct_r(len(cell.resp)),
+    return {"depth": depth, "label": label, "valence": valence,
+            "n": cell.n, "n_resp": len(cell.resp),        # bruto (ideas) / netto (unique respondents)
+            "pct_bruto": pct_i(cell.n), "pct_netto": 0.0,  # pct_netto filled by _normalize_netto
             "pct_pos": pos, "pct_neg": neg}
+
+
+def _normalize_netto(rows):
+    """Netto % = a row's unique-respondent count as a share of all rows at the same
+    depth, so each depth sums to 100% (the deduped counterpart of bruto %). Netto
+    does not nest through the hierarchy — a respondent in a domain via two facets
+    counts once for the domain but once per facet — so it is normalized per depth."""
+    totals = defaultdict(int)
+    for r in rows:
+        totals[r["depth"]] += r["n_resp"]
+    for r in rows:
+        t = totals[r["depth"]]
+        r["pct_netto"] = (100.0 * r["n_resp"] / t) if t else 0.0
+    return rows
 
 
 # =============================================================================
@@ -229,7 +249,6 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
     base_n = sum(c.n for c in grp.values())
     n_responses = len(resp_with_ideas)
     pct_i = lambda n: (100.0 * n / base_n) if base_n else 0.0
-    pct_r = lambda k: (100.0 * k / n_responses) if n_responses else 0.0
 
     # code view: include defined-but-unused codes + source_attributes
     src_attrs: Dict[str, list] = {}
@@ -246,7 +265,7 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
     for key in sorted(grp, key=lambda k: (_is_catchall(k), -grp[k].n, k.lower())):
         gc = grp[key]
         valence = cv.get(key, "~") if is_code else _derived_sign(_balance(gc)[1])
-        rows.append(_row(0, key, valence, gc, pct_i, pct_r))
+        rows.append(_row(0, key, valence, gc, pct_i))
         if not show_attrs:
             continue
         items = {a: c for a, c in cell.get(key, {}).items()}
@@ -254,14 +273,14 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
             items.setdefault(a, _Cell())
         kept, tail = _fold_tail(list(items.items()), gc.n, fold_tail)
         for a, c in sorted(kept, key=lambda kv: (_is_catchall(kv[0]), -kv[1].n)):
-            rows.append(_row(1, a, "", c, pct_i, pct_r))
+            rows.append(_row(1, a, "", c, pct_i))
         if len(tail) >= 2:
-            rows.append(_row(1, f"overig ({len(tail)} attrs)", "", _merge_cells([c for _, c in tail]), pct_i, pct_r))
+            rows.append(_row(1, f"overig ({len(tail)} attrs)", "", _merge_cells([c for _, c in tail]), pct_i))
         elif tail:
             a, c = tail[0]
-            rows.append(_row(1, a, "", c, pct_i, pct_r))
+            rows.append(_row(1, a, "", c, pct_i))
 
-    return rows, base_n, n_responses, n_unassigned
+    return _normalize_netto(rows), base_n, n_responses, n_unassigned
 
 
 def build_domain_facet_attr(responses, fold_tail, attr_of):
@@ -291,28 +310,27 @@ def build_domain_facet_attr(responses, fold_tail, attr_of):
     base_n = sum(c.n for c in dom.values())
     n_responses = len(resp_with_ideas)
     pct_i = lambda n: (100.0 * n / base_n) if base_n else 0.0
-    pct_r = lambda k: (100.0 * k / n_responses) if n_responses else 0.0
 
     rows = []
     for d in sorted(dom, key=lambda k: (_is_catchall(k), -dom[k].n, k.lower())):
-        rows.append(_row(0, d, _derived_sign(_balance(dom[d])[1]), dom[d], pct_i, pct_r))
+        rows.append(_row(0, d, _derived_sign(_balance(dom[d])[1]), dom[d], pct_i))
         for f in sorted(df[d], key=lambda k: (_is_catchall(k), -df[d][k].n)):
-            rows.append(_row(1, f, _derived_sign(_balance(df[d][f])[1]), df[d][f], pct_i, pct_r))
+            rows.append(_row(1, f, _derived_sign(_balance(df[d][f])[1]), df[d][f], pct_i))
             # A facet with a single attribute carries no extra info → show the facet only
             if len(dfa[d][f]) == 1:
                 continue
             attrs = list(dfa[d][f].items())
             kept, tail = _fold_tail(attrs, df[d][f].n, fold_tail)
             for a, cell in sorted(kept, key=lambda kv: (_is_catchall(kv[0]), -kv[1].n)):
-                rows.append(_row(2, a, "", cell, pct_i, pct_r))
+                rows.append(_row(2, a, "", cell, pct_i))
             if len(tail) >= 2:
                 rows.append(_row(2, f"overig ({len(tail)} attrs)", "",
-                                 _merge_cells([c for _, c in tail]), pct_i, pct_r))
+                                 _merge_cells([c for _, c in tail]), pct_i))
             elif tail:
                 a, cell = tail[0]
-                rows.append(_row(2, a, "", cell, pct_i, pct_r))
+                rows.append(_row(2, a, "", cell, pct_i))
 
-    return rows, base_n, n_responses, 0
+    return _normalize_netto(rows), base_n, n_responses, 0
 
 
 # =============================================================================
@@ -324,24 +342,26 @@ def _bal(r) -> str:
 
 
 def print_readout(title, header_label, rows, base_n, n_responses, n_unassigned, compact=False):
-    print(f"\n\n{'=' * 86}")
+    netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
+    print(f"\n\n{'=' * 104}")
     print(f"[{title}]  {FILENAME}")
     print(f"{VARIABLE}  |  {base_n} ideas (base)"
           + (f"; {n_unassigned} unassigned" if n_unassigned else "")
           + f"  |  {n_responses} responses")
-    print(f"{'=' * 86}")
-    print(f"{header_label:50}{'n':>5}{'%idea':>7}{'%resp':>7}   balans (+/-)")
-    print(f"{'-' * 86}")
+    print("bruto = ideeën (mentions)  ·  netto = unieke respondenten (ontdubbeld per categorie, % per niveau)")
+    print(f"{'=' * 104}")
+    print(f"{header_label:50}{'n bruto':>8}{'% bruto':>8}{'n netto':>8}{'% netto':>8}   balans (+/-)")
+    print(f"{'-' * 104}")
     for r in rows:
         indent = "    " * r["depth"]
         label = f"{indent}[{r['valence']}] {r['label']}" if r["valence"] else f"{indent}{r['label']}"
         sep = "\n" if (r["depth"] == 0 and not compact) else ""
         tag = "" if r["n"] else "  (unused)"
-        print(f"{sep}{label:50}{r['n']:>5}{r['pct_ideas']:>6.1f}%{r['pct_resp']:>6.1f}%   {_bal(r)}{tag}")
-    print(f"\n{'-' * 86}")
-    print(f"{'TOTAAL':50}{base_n:>5}{100.0:>6.1f}%")
+        print(f"{sep}{label:50}{r['n']:>8}{r['pct_bruto']:>7.1f}%{r['n_resp']:>8}{r['pct_netto']:>7.1f}%   {_bal(r)}{tag}")
+    print(f"\n{'-' * 104}")
+    print(f"{'TOTAAL':50}{base_n:>8}{100.0:>7.1f}%{netto_base:>8}{100.0:>7.1f}%")
     if n_unassigned:
-        print(f"{'__UNASSIGNED__ (excl. van %-basis)':50}{n_unassigned:>5}")
+        print(f"{'__UNASSIGNED__ (excl. van %-basis)':50}{n_unassigned:>8}")
 
 
 def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
@@ -349,18 +369,19 @@ def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
     exports_dir.mkdir(parents=True, exist_ok=True)
     base = Path(FILENAME).stem.replace(" ", "_")
     csv_path = exports_dir / f"codebook_{base}_{VARIABLE}_{SAMPLE_SIZE}_{suffix}.csv"
+    netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(["depth", "label", "valence", "n",
-                    "pct_of_base", "pct_of_responses", "pct_pos_neutral", "pct_neg"])
+        w.writerow(["depth", "label", "valence", "n_bruto", "pct_bruto",
+                    "n_netto", "pct_netto", "pct_pos_neutral", "pct_neg"])
         for r in rows:
             w.writerow([r["depth"], r["label"], r["valence"], r["n"],
-                        f"{r['pct_ideas']:.1f}", f"{r['pct_resp']:.1f}",
+                        f"{r['pct_bruto']:.1f}", r["n_resp"], f"{r['pct_netto']:.1f}",
                         f"{r['pct_pos']:.1f}" if r["n"] else "",
                         f"{r['pct_neg']:.1f}" if r["n"] else ""])
-        w.writerow(["", "TOTAAL", "", base_n, "100.0", "", "", ""])
-        w.writerow(["", _UNASSIGNED, "", n_unassigned, "", "", "", ""])
-        w.writerow(["", "responses", "", n_responses, "", "", "", ""])
+        w.writerow(["", "TOTAAL", "", base_n, "100.0", netto_base, "100.0", "", ""])
+        w.writerow(["", _UNASSIGNED, "", n_unassigned, "", "", "", "", ""])
+        w.writerow(["", "responses", "", n_responses, "", "", "", "", ""])
     print(f"  CSV → {csv_path.name}")
 
 
@@ -378,7 +399,7 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
     metrics, collapsible row groups, coloured valence."""
     hier = header_label.split(" / ")                 # ["domain","facet","attribute"] | ["code"]
     nh = len(hier)
-    cols = hier + ["val", "n", "% ideeën", "% resp", "% (+)", "% (-)"]
+    cols = hier + ["val", "n bruto", "% bruto", "n netto", "% netto", "% (+)", "% (-)"]
     ncol = len(cols)
 
     ws.append(cols)
@@ -394,8 +415,8 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
         # store percentages as fractions so the cells are true Excel percentages
         pos = round(r["pct_pos"], 1) / 100 if r["n"] else None
         neg = round(r["pct_neg"], 1) / 100 if r["n"] else None
-        ws.append(hcells + [r["valence"], r["n"], round(r["pct_ideas"], 1) / 100,
-                            round(r["pct_resp"], 1) / 100, pos, neg])
+        ws.append(hcells + [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100,
+                            r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neg])
         ri = ws.max_row
         bold = (r["depth"] == 0)
         for c in range(1, ncol + 1):
@@ -405,17 +426,21 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
                 cell.alignment = Alignment(horizontal="center")
             elif bold:
                 cell.font = Font(bold=True)
-        ws.cell(ri, nh + 2).number_format = "0"                 # n
-        for c in range(nh + 3, nh + 7):                          # % columns (native percent)
+        ws.cell(ri, nh + 2).number_format = "0"                 # n bruto
+        ws.cell(ri, nh + 4).number_format = "0"                 # n netto
+        for c in (nh + 3, nh + 5, nh + 6, nh + 7):              # % columns (native percent)
             ws.cell(ri, c).number_format = "0.0%"
         ws.row_dimensions[ri].outline_level = min(r["depth"], 7)
 
     last_data = ws.max_row
-    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 1.0, None, None, None])
+    netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
+    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 1.0, netto_base, 1.0, None, None])
     for c in range(1, ncol + 1):
         ws.cell(ws.max_row, c).font = Font(bold=True)
-    ws.cell(ws.max_row, nh + 2).number_format = "0"
-    ws.cell(ws.max_row, nh + 3).number_format = "0.0%"
+    ws.cell(ws.max_row, nh + 2).number_format = "0"             # n bruto
+    ws.cell(ws.max_row, nh + 3).number_format = "0.0%"          # % bruto
+    ws.cell(ws.max_row, nh + 4).number_format = "0"             # n netto
+    ws.cell(ws.max_row, nh + 5).number_format = "0.0%"          # % netto
     ws.append([])
     ws.append([f"responses: {n_responses}"])
     if n_unassigned:
