@@ -50,6 +50,8 @@ st.session_state.setdefault("step", 0)
 st.session_state.setdefault("language", ui.DEFAULT_LANGUAGE)
 st.session_state.setdefault("spec", None)          # DatasetSpec | None
 st.session_state.setdefault("last_run", None)       # (step, summary) just executed
+st.session_state.setdefault("run_all", False)       # full-run view is active
+st.session_state.setdefault("run_all_confirm", False)  # 2-step confirm armed
 
 lang = st.session_state.language
 
@@ -127,6 +129,34 @@ def render_sidebar(status: dict, max_done: int):
                 st.session_state.last_run = None
                 st.toast(T(f"Cache gewist vanaf stap {cur}", f"Cache cleared from step {cur}"))
                 st.rerun()
+
+        # Run all steps 1-7 (2-step confirm: a full run costs minutes + LLM credits)
+        with st.expander("⏩ " + T("Alles draaien (1-7)", "Run all (1-7)")):
+            st.caption(T("Herberekent stap 1 t/m 7 volledig opnieuw. Dit kost meerdere "
+                         "minuten en LLM-credits (€).",
+                         "Fully recomputes steps 1-7. This takes several minutes and "
+                         "LLM credits (€)."))
+            if not st.session_state.run_all_confirm:
+                if st.button("⏩ " + T("Alles opnieuw draaien", "Re-run all steps"),
+                             width="stretch", key="run_all_arm"):
+                    st.session_state.run_all_confirm = True
+                    st.rerun()
+            else:
+                st.warning(T("Weet je het zeker? Stap 1-7 worden opnieuw berekend.",
+                             "Are you sure? Steps 1-7 will be recomputed."))
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("✅ " + T("Bevestig", "Confirm"), type="primary",
+                                 width="stretch", key="run_all_go"):
+                        st.session_state.run_all = True
+                        st.session_state.run_all_confirm = False
+                        st.session_state.last_run = None
+                        st.rerun()
+                with c2:
+                    if st.button("✖️ " + T("Annuleer", "Cancel"),
+                                 width="stretch", key="run_all_cancel"):
+                        st.session_state.run_all_confirm = False
+                        st.rerun()
 
 # =============================================================================
 # STEP 0 — upload / select dataset
@@ -290,6 +320,48 @@ def render_results(step: int, spec: DatasetSpec):
                 st.caption(T(f"Voorbeeld niet beschikbaar: {exc}", f"Preview unavailable: {exc}"))
 
 # =============================================================================
+# RUN ALL — sequential force-recompute of steps 1-7 (full-width, streamed)
+# =============================================================================
+
+def page_run_all():
+    spec = st.session_state.spec
+    cm = get_cache_manager()
+    st.header("⏩ " + T("Alle stappen draaien (1-7)", "Running all steps (1-7)"))
+    st.caption(T("Live voortgang in de terminal; samenvatting per stap hieronder.",
+                 "Live progress in the terminal; per-step summary below."))
+
+    failed_step = None
+    with st.status(T("Bezig met stap 1-7…", "Running steps 1-7…"),
+                   expanded=True) as status_box:
+        for res in be.run_all_steps(spec, cm):
+            if res.ok:
+                status_box.update(label=T(f"Stap {res.step} ({step_name(res.step)}) klaar",
+                                          f"Step {res.step} ({step_name(res.step)}) done"))
+                st.write(f"✅ **{res.step}. {step_name(res.step)}** — {res.summary}")
+            else:
+                st.write(f"❌ **{res.step}. {step_name(res.step)}** — "
+                         f"{res.summary.replace('__ERROR__', '')}")
+                failed_step = res.step
+        if failed_step is None:
+            status_box.update(label=T("Alle stappen voltooid ✅", "All steps complete ✅"),
+                              state="complete")
+        else:
+            status_box.update(label=T(f"Gestopt bij stap {failed_step} ❌",
+                                      f"Stopped at step {failed_step} ❌"), state="error")
+
+    # One-shot: clear the flag immediately so a reconnect/rerun can't re-trigger.
+    st.session_state.run_all = False
+    if failed_step is None:
+        st.session_state.step = LAST_STEP
+        st.toast(T("Pipeline voltooid — ga naar Export.", "Pipeline complete — see Export."))
+    else:
+        st.session_state.step = failed_step
+        st.toast(T(f"Mislukt bij stap {failed_step}.", f"Failed at step {failed_step}."))
+    # Manual continue (not auto-rerun) so the finished summary stays readable.
+    if st.button(T("Doorgaan", "Continue"), type="primary", key="run_all_done"):
+        st.rerun()
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -302,7 +374,9 @@ else:
     status = be.step_status(spec, cm)
     max_done = be.max_completed_step(spec, cm)
     render_sidebar(status, max_done)
-    if st.session_state.step == 0:
+    if st.session_state.run_all:
+        page_run_all()
+    elif st.session_state.step == 0:
         page_select_dataset()
     else:
         page_step(st.session_state.step, status, max_done)

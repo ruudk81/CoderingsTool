@@ -253,6 +253,44 @@ def run_step(step: int, spec: DatasetSpec, force_recalc: bool = False) -> str:
     return summary
 
 
+@dataclass
+class StepResult:
+    """One step's outcome during a full run."""
+    step: int
+    ok: bool
+    summary: str
+
+
+def run_all_steps(spec: DatasetSpec, cm: CacheManager,
+                  first_step: int = 1, last_step: int = LAST_STEP):
+    """Force-recompute steps first_step..last_step sequentially.
+
+    Generator: yields a StepResult after each step so the caller (UI) can stream
+    progress between blocking steps. Stops on the first failure (exception OR the
+    safety-guard warning string). Cascade-invalidates first_step..LAST_STEP ONCE
+    up front, so a mid-run failure leaves every downstream step correctly
+    "not done" in the cache.
+
+    Each step runs via run_step() — same per-step VerboseCapture log + cache save
+    as a single-step run. The runs are strictly sequential and blocking, so no
+    step's verbose output can interleave with the next; sys.stdout.flush() drains
+    the buffer between steps as belt-and-suspenders.
+    """
+    invalidate_from(first_step, spec, cm)
+    for step in range(first_step, last_step + 1):
+        try:
+            summary = run_step(step, spec, force_recalc=True)
+            sys.stdout.flush()
+            ok = "⚠️ WAARSCHUWING" not in summary
+            yield StepResult(step, ok, summary)
+            if not ok:
+                return
+        except Exception as exc:  # noqa: BLE001 — surface, don't crash the loop
+            sys.stdout.flush()
+            yield StepResult(step, False, f"__ERROR__ {exc}")
+            return
+
+
 def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
     f, idc, vn, ss = spec.filename, spec.id_column, spec.var_name, spec.sample_size
 
