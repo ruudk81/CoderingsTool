@@ -368,10 +368,11 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
         hcells = [""] * nh
         if r["depth"] < nh:
             hcells[r["depth"]] = r["label"]
-        pos = round(r["pct_pos"], 1) if r["n"] else None
-        neg = round(r["pct_neg"], 1) if r["n"] else None
-        ws.append(hcells + [r["valence"], r["n"], round(r["pct_ideas"], 1),
-                            round(r["pct_resp"], 1), pos, neg])
+        # store percentages as fractions so the cells are true Excel percentages
+        pos = round(r["pct_pos"], 1) / 100 if r["n"] else None
+        neg = round(r["pct_neg"], 1) / 100 if r["n"] else None
+        ws.append(hcells + [r["valence"], r["n"], round(r["pct_ideas"], 1) / 100,
+                            round(r["pct_resp"], 1) / 100, pos, neg])
         ri = ws.max_row
         bold = (r["depth"] == 0)
         for c in range(1, ncol + 1):
@@ -382,16 +383,16 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
             elif bold:
                 cell.font = Font(bold=True)
         ws.cell(ri, nh + 2).number_format = "0"                 # n
-        for c in range(nh + 3, nh + 7):                          # % columns
-            ws.cell(ri, c).number_format = '0.0"%"'
+        for c in range(nh + 3, nh + 7):                          # % columns (native percent)
+            ws.cell(ri, c).number_format = "0.0%"
         ws.row_dimensions[ri].outline_level = min(r["depth"], 7)
 
     last_data = ws.max_row
-    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 100.0, None, None, None])
+    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 1.0, None, None, None])
     for c in range(1, ncol + 1):
         ws.cell(ws.max_row, c).font = Font(bold=True)
     ws.cell(ws.max_row, nh + 2).number_format = "0"
-    ws.cell(ws.max_row, nh + 3).number_format = '0.0"%"'
+    ws.cell(ws.max_row, nh + 3).number_format = "0.0%"
     ws.append([])
     ws.append([f"responses: {n_responses}"])
     if n_unassigned:
