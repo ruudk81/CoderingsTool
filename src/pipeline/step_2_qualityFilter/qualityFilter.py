@@ -310,32 +310,51 @@ class Grader:
         total = len(merged_results)
         llm_processed = len(items_to_process)
         pre_filtered_count = len(pre_filtered_items)
-        llm_dont_know = sum(1 for r in merged_results if r.quality_filter_code == 99999997)
-        llm_gibberish = sum(1 for r in merged_results if r.quality_filter_code == 99999999)
-        llm_filtered = llm_dont_know + llm_gibberish
-        meaningful = sum(1 for r in merged_results if not r.quality_filter)
+
+        # Count codes assigned by the LLM only (graded items), so pre-filtered
+        # empties are not conflated with LLM-assigned absence (code 99999998).
+        llm_graded = list(llm_results_map.values())
+        llm_dont_know = sum(1 for r in llm_graded if r.quality_filter_code == 99999997)
+        llm_absence   = sum(1 for r in llm_graded if r.quality_filter_code == 99999998)
+        llm_gibberish = sum(1 for r in llm_graded if r.quality_filter_code == 99999999)
+        llm_error     = sum(1 for r in llm_graded if r.quality_filter_code == -1)
+        llm_meaningful = sum(1 for r in llm_graded if r.quality_filter_code is None)
+        llm_filtered = llm_dont_know + llm_absence + llm_gibberish
+
+        # Honest totals: a response is filtered iff quality_filter is True.
+        total_filtered = sum(1 for r in merged_results if r.quality_filter)
+        meaningful = total - total_filtered
 
         print(f"\n{'─' * 60}")
         print(f"SUMMARY ({total} total responses)")
         print(f"{'─' * 60}")
         print(f"  Pre-filtered (empty/NA, code 99999998): {pre_filtered_count:>5}")
         print(f"  LLM evaluated:                          {llm_processed:>5}")
-        print(f"    → Don't know (99999997):              {llm_dont_know:>5}")
-        print(f"    → Gibberish  (99999999):              {llm_gibberish:>5}")
-        print(f"    → Meaningful (null):                  {meaningful:>5}")
+        print(f"    → Don't know       (99999997):        {llm_dont_know:>5}")
+        print(f"    → Absence/deferral (99999998):        {llm_absence:>5}")
+        print(f"    → Gibberish        (99999999):        {llm_gibberish:>5}")
+        print(f"    → Meaningful       (null):            {llm_meaningful:>5}")
+        if llm_error:
+            print(f"    → Errors           (-1):             {llm_error:>5}")
         print(f"{'─' * 60}")
-        print(f"  Total filtered out:                     {pre_filtered_count + llm_filtered:>5}  ({(pre_filtered_count + llm_filtered) / total * 100:.1f}%)")
+        print(f"  Total filtered out:                     {total_filtered:>5}  ({total_filtered / total * 100:.1f}%)")
         print(f"  Total meaningful (passed):              {meaningful:>5}  ({meaningful / total * 100:.1f}%)")
         print(f"{'─' * 60}")
 
-        # Show filtered examples
+        # Show filtered examples — sample LLM-assigned codes across ALL filter
+        # categories (incl. 99999998 absence/deferral, the easiest to over-flag).
+        code_labels = {
+            99999997: "don't know",
+            99999998: "absence/deferral",
+            99999999: "gibberish/nonsense",
+        }
         filtered_examples = []
-        for result in merged_results:
-            if (result.quality_filter
-                    and len(filtered_examples) < self.config.max_filter_examples
-                    and result.quality_filter_code in (99999997, 99999999)):
-                code_label = "don't know" if result.quality_filter_code == 99999997 else "gibberish/off-topic"
-                filtered_examples.append(f'"{result.response}" ({code_label})')
+        for result in llm_graded:
+            label = code_labels.get(result.quality_filter_code)
+            if label:
+                filtered_examples.append(f'"{result.response}" ({label})')
+                if len(filtered_examples) >= self.config.max_filter_examples:
+                    break
         if filtered_examples:
             self.verbose_reporter.sample_list("Sample LLM-filtered responses", filtered_examples)
 

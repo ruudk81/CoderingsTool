@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 # SHARED PROMPT BODY (categories + decision rules, used by both variants)
 # =============================================================================
 
-_CATEGORIES_BLOCK = """A response should ONLY be classified as noise if it matches one of the following categories WITHOUT AMBIGUITY:
+_CATEGORIES_BLOCK = """A response should be flagged as noise ONLY if it clearly and unambiguously matches one of the categories below.
+If a response CLEARLY carries substantive content about the question, it is meaningful: do NOT flag it.
 
 **Category 1: Don't know / Not knowing the answer**
 Explicit statements of not knowing, such as:
@@ -31,14 +32,14 @@ Explicit statement of absence, such as:
 - Empty placeholders: "-", "?", "N/A"
 - Equivalent phrases in any language
 
-**Category 3: Absence of answer / Not addressing the question**
-Not addressing the question, by explicit statments such as:
+**Category 3: Deferral / Referring elsewhere**
+The response explicitly points to an answer given elsewhere instead of answering here, such as:
 - "Already mentioned it"
 - "See previous question"
 - "It's written above"
 - "As said before"
-- "Already done"
 - Equivalent phrases in any language
+This category requires an EXPLICIT pointer elsewhere. A brief on-topic answer does NOT belong here — being short is not the same as not addressing the question.
 
 **Category 4: No text / Empty**
 Item nonresponse, such as:
@@ -54,8 +55,8 @@ Random or meaningless text, such as:
 - Placeholder text: "lorem ipsum", "test"
 """
 
-_CONTEXT_BLOCK = """You are a strict quality filter for survey responses.
-Your task is to evaluate whether a survey response should be flagged as low-quality or kept for analysis.
+_CONTEXT_BLOCK = """You are a quality filter for open-ended survey responses.
+Your task is to decide whether a response genuinely carries NO substantive content, and should NOT be KEPT for analysis.
 
 Here is the survey context:
 <survey_context>
@@ -65,7 +66,7 @@ Language:
 Survey question:
 {var_lab}
 
-Type of responses: Coarse, brief, informal, and low-effort statements, with occasional bursts of strong emotion or rare detailed insights.
+About these responses: they are often short, informal, and briefly worded. Brevity is normal and is NOT a reason to filter — a short answer that says anything substantive about the question is a valid response.
 </survey_context>
 
 Here is the response you need to evaluate:
@@ -82,7 +83,7 @@ _DECISION_RULE = """First, work through your evaluation following these three st
 
 1 → Don't know / Not knowing the answer
 2 → Not applicable  / Not having the answer
-3 → Absence of answer / Not addressing the question
+3 → Deferral / Referring elsewhere
 4 → No text / Empty
 5 → Invalid test / Nonsense
 null → Keep the response"""
@@ -125,7 +126,7 @@ class QualityFilterStructuredResponse(BaseModel):
             "Quality filter category: "
             "1 = don't know / not knowing the answer; "
             "2 = not applicable / not having the answer; "
-            "3 = absence of answer / not addressing the question; "
+            "3 = deferral / explicitly referring to an answer given elsewhere; "
             "4 = no text / empty; "
             "5 = invalid text / nonsense; "
             "null = keep the response (meaningful)"
