@@ -41,13 +41,13 @@ def get_model(tier: str = "default") -> str:
 
 STEP_MODEL_TIERS = {
     # Step 1: Preprocessing
-    "spell_check":      "nano",
+    "spell_check":      "mini",
     # Step 2: Quality Filter
-    "quality_filter":   "nano",
+    "quality_filter":   "mini",
     # Step 3: Idea Extraction
     "idea_extraction_context": "default",           # specifiers + dimension discovery
     "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
-    "idea_extraction_abstraction_ladder": "nano",   # main extraction + retry
+    "idea_extraction_abstraction_ladder": "mini",   # main extraction + retry
     # Step 4: Taxonomy Classifier (P1-P8)
     "classifier_p1":    "mini",      # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation
@@ -61,7 +61,7 @@ STEP_MODEL_TIERS = {
     "codegen_p8":       "default",
     "codegen_p9":       "default",
     # Step 6: Code Assigner
-    "code_assignment":  "nano",
+    "code_assignment":  "mini",
 }
 
 # Override tiers per model family (when target family needs different tier).
