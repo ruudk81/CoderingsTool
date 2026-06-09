@@ -3,8 +3,12 @@
 """
 View codebook / taxonomy: step-6 assignments in two readouts (each printed + saved
 to its own CSV):
-  1. CODEBOOK   — codes only                   (_codebook)
-  2. TAXONOMIE  — domain → facet → attribute    (_taxonomie)
+  1. CODEBOOK   — codes only                       (_codebook)
+  2. TAXONOMIE  — domain → facet → attribute        (_taxonomie)
+  3. TAXONOMIE  — domain → facet → RAW attribute     (_taxonomie_raw)
+
+Raw attributes are the pre-consolidation (pre-P7/P8) step-4 assignments, read
+from the taxonomy cache's `raw_attribute_assignments`.
 
 Per row: n ideas + % of the lens' idea base, % of RESPONSES (unique non-filtered
 respondents), and valence balance x% (+) / y% (-) where (+) = positive+neutral,
@@ -29,6 +33,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
+from pipeline.step_4_classifier.models_classifier import TaxonomyResultsCache
 from models import CodingResultsCache
 
 from test_data import TEST_DATA
@@ -57,7 +62,8 @@ _NEG_VALENCES = {"-", "-1", "neg", "negative"}
 # =============================================================================
 
 def load_data():
-    """Load step-6 response models + the step-5 codebook from cache."""
+    """Load step-6 response models, the step-5 codebook, and the step-4 raw
+    attribute assignments (idea_id → raw attribute, pre-consolidation)."""
     variable_key = generate_enhanced_variable_key(
         selected_variables=[VARIABLE], is_merged=False, sample_size=SAMPLE_SIZE,
     )
@@ -68,7 +74,12 @@ def load_data():
     codebook = cm.load_metadata_from_cache(FILENAME, "mece_codes", variable_key, CodingResultsCache)
     if not codebook:
         raise FileNotFoundError("No mece_codes cache — run step 5 first.")
-    return results, codebook
+    tax = cm.load_metadata_from_cache(FILENAME, "taxonomy", variable_key, TaxonomyResultsCache)
+    raw_map: Dict[str, str] = {}
+    if tax:
+        for dr in tax.partition_results.values():
+            raw_map.update(getattr(dr, "raw_attribute_assignments", {}) or {})
+    return results, codebook, raw_map
 
 
 # =============================================================================
@@ -217,8 +228,12 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
     return rows, base_n, n_responses, n_unassigned
 
 
-def build_domain_facet_attr(responses, fold_tail):
-    """Three-level taxonomy: domain → facet → attribute (pure taxonomy, no codes)."""
+def build_domain_facet_attr(responses, fold_tail, attr_of):
+    """Three-level taxonomy: domain → facet → attribute (pure taxonomy, no codes).
+
+    attr_of(idea) -> the attribute label (consolidated `assigned_attribute`, or the
+    raw pre-consolidation attribute via a idea_id lookup).
+    """
     dom: Dict[str, _Cell] = defaultdict(_Cell)
     df: Dict[str, Dict[str, _Cell]] = defaultdict(lambda: defaultdict(_Cell))
     dfa: Dict[str, Dict[str, Dict[str, _Cell]]] = \
@@ -231,7 +246,7 @@ def build_domain_facet_attr(responses, fold_tail):
             resp_with_ideas.add(rid)
             d = (getattr(idea, "partition_name", "") or idea.domain or "").strip() or _NO_GROUP
             f = (idea.facet or "").strip() or _NO_FACET
-            a = (idea.assigned_attribute or "").strip() or _NO_ATTR
+            a = (attr_of(idea) or "").strip() or _NO_ATTR
             neg = _is_neg(idea.valence)
             dom[d].add(rid, neg)
             df[d][f].add(rid, neg)
@@ -319,12 +334,17 @@ def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
 
 # (title, header_label, builder spec, csv_suffix)
 VERSIONS = [
-    ("CODEBOOK",  "code",                       ("groups", "code", False, False), "codebook"),
-    ("TAXONOMIE", "domain / facet / attribute",  ("dfa",),                        "taxonomie"),
+    ("CODEBOOK",            "code",                          ("groups", "code", False, False), "codebook"),
+    ("TAXONOMIE",            "domain / facet / attribute",     ("dfa", "consolidated"), "taxonomie"),
+    ("TAXONOMIE (ruwe attr)", "domain / facet / raw attribute", ("dfa", "raw"),          "taxonomie_raw"),
 ]
 
 if __name__ == "__main__":
-    responses, codebook = load_data()
+    responses, codebook, raw_map = load_data()
+    attr_sources = {
+        "consolidated": lambda i: i.assigned_attribute,
+        "raw": lambda i: raw_map.get(i.idea_id, ""),
+    }
     for title, header, spec, suffix in VERSIONS:
         if spec[0] == "groups":
             _, group_by, show_attrs, fold = spec
@@ -333,7 +353,7 @@ if __name__ == "__main__":
             compact = not show_attrs
         else:
             rows, base_n, n_resp, n_una = build_domain_facet_attr(
-                responses, fold_tail=True)
+                responses, fold_tail=True, attr_of=attr_sources[spec[1]])
             compact = False
         print_readout(title, header, rows, base_n, n_resp, n_una, compact)
         if SAVE_CSV:
