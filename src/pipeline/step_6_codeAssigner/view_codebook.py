@@ -1,22 +1,18 @@
 #%%
 
 """
-View codebook: codes/domains + attributes (+ codes) with assignment counts.
-
-Read-only readout of the step-6 assignments in four lenses (each printed + saved
+View codebook / taxonomy: step-6 assignments in two readouts (each printed + saved
 to its own CSV):
-  1. codes only               (_codes)
-  2. domains + attributes      (_domains_attrs)    — taxonomy view
-  3. codes + attributes        (_codes_attrs)      — codebook view
-  4. domain → attribute → code (_domain_attr_code) — full chain (3 levels)
+  1. CODEBOOK   — code → attribute            (_codebook)
+  2. TAXONOMIE  — domain → facet → attribute   (_taxonomie)
 
 Per row: n ideas + % of the lens' idea base, % of RESPONSES (unique non-filtered
 respondents), and valence balance x% (+) / y% (-) where (+) = positive+neutral,
 (-) = negative. The smallest children per parent (together ≤ OVERIG_TAIL_PCT) fold
 into one "overig (k …)" row.
 
-Code lenses exclude the __UNASSIGNED__ sentinel from the % base (reported
-separately); the domain lenses cover every idea (each idea has a domain).
+The codebook lens excludes the __UNASSIGNED__ sentinel from the % base (reported
+separately); the taxonomy lens covers every idea (each idea has a domain/facet).
 
 Usage:
     cd src && python -m pipeline.step_6_codeAssigner.view_codebook
@@ -51,6 +47,7 @@ SAVE_CSV = True
 
 _UNASSIGNED = "__UNASSIGNED__"
 _NO_ATTR = "(geen attribuut)"
+_NO_FACET = "(geen facet)"
 _NO_GROUP = "(geen)"
 _NEG_VALENCES = {"-", "-1", "neg", "negative"}
 
@@ -97,14 +94,6 @@ def _derived_sign(pct_neg: float) -> str:
 
 def _is_neg(valence: str) -> bool:
     return (valence or "").strip().lower() in _NEG_VALENCES
-
-
-def _code_valence_lookup(codebook) -> Dict[str, str]:
-    out = {}
-    for c in codebook.raw_codes:
-        d = c if isinstance(c, dict) else c.__dict__
-        out[d["code_name"]] = _vsign(d.get("valence", ""))
-    return out
 
 
 class _Cell:
@@ -228,12 +217,11 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
     return rows, base_n, n_responses, n_unassigned
 
 
-def build_domain_attr_code(responses, codebook, fold_tail):
-    """Three-level: domain → attribute → code."""
-    code_sign = _code_valence_lookup(codebook)
+def build_domain_facet_attr(responses, fold_tail):
+    """Three-level taxonomy: domain → facet → attribute (pure taxonomy, no codes)."""
     dom: Dict[str, _Cell] = defaultdict(_Cell)
-    da: Dict[str, Dict[str, _Cell]] = defaultdict(lambda: defaultdict(_Cell))
-    dac: Dict[str, Dict[str, Dict[str, _Cell]]] = \
+    df: Dict[str, Dict[str, _Cell]] = defaultdict(lambda: defaultdict(_Cell))
+    dfa: Dict[str, Dict[str, Dict[str, _Cell]]] = \
         defaultdict(lambda: defaultdict(lambda: defaultdict(_Cell)))
     resp_with_ideas: set = set()
 
@@ -242,12 +230,12 @@ def build_domain_attr_code(responses, codebook, fold_tail):
         for idea in (resp.response_ideas or []):
             resp_with_ideas.add(rid)
             d = (getattr(idea, "partition_name", "") or idea.domain or "").strip() or _NO_GROUP
+            f = (idea.facet or "").strip() or _NO_FACET
             a = (idea.assigned_attribute or "").strip() or _NO_ATTR
-            c = (idea.assigned_code or "").strip() or _UNASSIGNED
             neg = _is_neg(idea.valence)
             dom[d].add(rid, neg)
-            da[d][a].add(rid, neg)
-            dac[d][a][c].add(rid, neg)
+            df[d][f].add(rid, neg)
+            dfa[d][f][a].add(rid, neg)
 
     base_n = sum(c.n for c in dom.values())
     n_responses = len(resp_with_ideas)
@@ -257,18 +245,18 @@ def build_domain_attr_code(responses, codebook, fold_tail):
     rows = []
     for d in sorted(dom, key=lambda k: (-dom[k].n, k.lower())):
         rows.append(_row(0, d, _derived_sign(_balance(dom[d])[1]), dom[d], pct_i, pct_r))
-        for a in sorted(da[d], key=lambda k: -da[d][k].n):
-            rows.append(_row(1, a, "", da[d][a], pct_i, pct_r))
-            codes = list(dac[d][a].items())
-            kept, tail = _fold_tail(codes, da[d][a].n, fold_tail)
-            for c, cell in sorted(kept, key=lambda kv: -kv[1].n):
-                rows.append(_row(2, c, code_sign.get(c, "~"), cell, pct_i, pct_r))
+        for f in sorted(df[d], key=lambda k: -df[d][k].n):
+            rows.append(_row(1, f, _derived_sign(_balance(df[d][f])[1]), df[d][f], pct_i, pct_r))
+            attrs = list(dfa[d][f].items())
+            kept, tail = _fold_tail(attrs, df[d][f].n, fold_tail)
+            for a, cell in sorted(kept, key=lambda kv: -kv[1].n):
+                rows.append(_row(2, a, "", cell, pct_i, pct_r))
             if len(tail) >= 2:
-                rows.append(_row(2, f"overig ({len(tail)} codes)", "",
+                rows.append(_row(2, f"overig ({len(tail)} attrs)", "",
                                  _merge_cells([c for _, c in tail]), pct_i, pct_r))
             elif tail:
-                c, cell = tail[0]
-                rows.append(_row(2, c, code_sign.get(c, "~"), cell, pct_i, pct_r))
+                a, cell = tail[0]
+                rows.append(_row(2, a, "", cell, pct_i, pct_r))
 
     return rows, base_n, n_responses, 0
 
@@ -328,10 +316,8 @@ def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
 
 # (title, header_label, builder spec, csv_suffix)
 VERSIONS = [
-    ("CODES ONLY",             "code",                     ("groups", "code",   False, False), "codes"),
-    ("DOMAINS + ATTRIBUTES",    "domain / attribute",       ("groups", "domain", True,  False), "domains_attrs"),
-    ("CODES + ATTRIBUTES",      "code / attribute",         ("groups", "code",   True,  True),  "codes_attrs"),
-    ("DOMAIN -> ATTRIBUTE -> CODE", "domain / attribute / code", ("dac",), "domain_attr_code"),
+    ("CODEBOOK",  "code / attribute",           ("groups", "code", True, True), "codebook"),
+    ("TAXONOMIE", "domain / facet / attribute",  ("dfa",),                       "taxonomie"),
 ]
 
 if __name__ == "__main__":
@@ -341,12 +327,10 @@ if __name__ == "__main__":
             _, group_by, show_attrs, fold = spec
             rows, base_n, n_resp, n_una = build_groups(
                 responses, codebook, group_by, show_attrs, fold)
-            compact = not show_attrs
         else:
-            rows, base_n, n_resp, n_una = build_domain_attr_code(
-                responses, codebook, fold_tail=True)
-            compact = False
-        print_readout(title, header, rows, base_n, n_resp, n_una, compact)
+            rows, base_n, n_resp, n_una = build_domain_facet_attr(
+                responses, fold_tail=True)
+        print_readout(title, header, rows, base_n, n_resp, n_una)
         if SAVE_CSV:
             save_csv(suffix, header, rows, base_n, n_resp, n_una)
 
