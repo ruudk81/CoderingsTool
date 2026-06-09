@@ -389,6 +389,14 @@ def load_assignments(spec: DatasetSpec) -> Optional[List[Any]]:
                               CodeAssignedModel)
 
 
+def load_quality_filtered(spec: DatasetSpec) -> Optional[List[Any]]:
+    """Step 2 per-response models (carry quality_filter_code)."""
+    from models import QualityFilteredModel
+    cm = CacheManager()
+    return cm.load_from_cache(spec.filename, "quality_filter", spec.variable_key,
+                              QualityFilteredModel)
+
+
 def find_verbose_log(spec: DatasetSpec, step: int) -> Optional[str]:
     """Latest captured console log for a step, or None."""
     path = VerboseCapture.find_latest_log(spec.filename, spec.variable_key, step)

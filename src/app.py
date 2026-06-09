@@ -309,6 +309,24 @@ def page_step(step: int, status: dict, max_done: int):
 
 def render_results(step: int, spec: DatasetSpec):
     """Lazy, light result views. Rich tabular output lives in the step-7 export."""
+    if step == 2:
+        data = be.load_quality_filtered(spec)
+        if data:
+            import collections
+            # Meaningful responses carry no filter code (None); 0 also = meaningful.
+            labels = {None: T("Betekenisvol", "Meaningful"),
+                      0: T("Betekenisvol", "Meaningful"),
+                      99999997: T("Weet niet / geen mening", "Don't know"),
+                      99999998: T("Geen antwoord / leeg", "No answer / empty"),
+                      99999999: T("Betekenisloos", "Gibberish")}
+            counts = collections.Counter(getattr(d, "quality_filter_code", None) for d in data)
+            total = len(data) or 1
+            st.subheader(T("Kwaliteitsfilter — uitsplitsing", "Quality filter — breakdown"))
+            rows = [{T("categorie", "category"): labels.get(code, str(code)),
+                     "n": n, "%": f"{100 * n / total:.1f}"}
+                    for code, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+            st.dataframe(rows, width="stretch", hide_index=True)
+
     if step == 5:
         codes = be.load_codebook(spec)
         if codes and codes.raw_codes:
@@ -321,6 +339,7 @@ def render_results(step: int, spec: DatasetSpec):
         models = be.load_assignments(spec)
         if models:
             import collections
+            import random
             counter = collections.Counter()
             for m in models:
                 for idea in (m.response_ideas or []):
@@ -329,6 +348,27 @@ def render_results(step: int, spec: DatasetSpec):
             st.subheader(T("Codefrequenties", "Code frequencies"))
             st.dataframe([{"code": c, "n": n} for c, n in counter.most_common()],
                          width="stretch", hide_index=True)
+
+            # QA drill-down: inspect one respondent's assignments + rationale ("is this right?")
+            coded = [m for m in models if any(i.assigned_code for i in (m.response_ideas or []))]
+            if coded:
+                st.divider()
+                st.subheader("🔍 " + T("Inspecteer een respondent", "Inspect a respondent"))
+                rk = f"qa6_{spec.variable_key}"
+                if rk not in st.session_state:
+                    st.session_state[rk] = random.randrange(len(coded))
+                if st.button("🎲 " + T("Andere respondent", "Another respondent"), key="qa6_roll"):
+                    st.session_state[rk] = random.randrange(len(coded))
+                m = coded[st.session_state[rk] % len(coded)]
+                st.markdown(f"**{T('Respondent', 'Respondent')}:** `{m.respondent_id}`")
+                st.markdown(f"> {m.response}")
+                for i in (m.response_ideas or []):
+                    if not i.assigned_code:
+                        continue
+                    conf = f" · {i.confidence:.2f}" if i.confidence is not None else ""
+                    st.markdown(f"- **{i.assigned_code}**{conf} — _{i.idea or i.instance}_")
+                    if i.rationale:
+                        st.caption(f"&nbsp;&nbsp;&nbsp;↳ {i.rationale}")
 
     elif step == 7:
         st.subheader(T("Export", "Export"))
