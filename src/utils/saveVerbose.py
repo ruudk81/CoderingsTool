@@ -246,10 +246,12 @@ class VerboseCapture:
         if not matching_files:
             return None
 
-        # Sort by filename (timestamp is at the end, so alphabetical = chronological)
-        matching_files.sort(reverse=True)
-
-        return matching_files[0]
+        # Pick the newest by actual modification time. Sorting by filename is
+        # unreliable here: the on-disk names come in two formats (with/without a
+        # duplicated sample segment, e.g. `_2500_2500_step6_` vs `_2500_step6_`),
+        # so they diverge BEFORE the trailing timestamp and alphabetical order
+        # no longer matches chronological order.
+        return max(matching_files, key=lambda p: p.stat().st_mtime)
 
     @staticmethod
     def load_log_content(log_path: Path) -> Optional[str]:

@@ -326,6 +326,13 @@ def render_results(step: int, spec: DatasetSpec):
 def page_run_all():
     spec = st.session_state.spec
     cm = get_cache_manager()
+    # Clear the flag UP FRONT — this run owns the loop. The loop blocks for minutes;
+    # if the SSH tunnel/browser reconnects meanwhile, Streamlit starts a second script
+    # run that would see run_all=True, re-enter here, and call invalidate_from(1) AGAIN,
+    # wiping caches out from under the in-flight run (e.g. "No taxonomy_codes cache" at
+    # step 7). With the flag already false, any concurrent rerun renders the normal page
+    # and the loop runs exactly once.
+    st.session_state.run_all = False
     st.header("⏩ " + T("Alle stappen draaien (1-7)", "Running all steps (1-7)"))
     st.caption(T("Live voortgang in de terminal; samenvatting per stap hieronder.",
                  "Live progress in the terminal; per-step summary below."))
@@ -349,8 +356,6 @@ def page_run_all():
             status_box.update(label=T(f"Gestopt bij stap {failed_step} ❌",
                                       f"Stopped at step {failed_step} ❌"), state="error")
 
-    # One-shot: clear the flag immediately so a reconnect/rerun can't re-trigger.
-    st.session_state.run_all = False
     if failed_step is None:
         st.session_state.step = LAST_STEP
         st.toast(T("Pipeline voltooid — ga naar Export.", "Pipeline complete — see Export."))

@@ -360,9 +360,10 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
 # =============================================================================
 
 def export_path(spec: DatasetSpec) -> Path:
-    """Where step 7 writes the results Excel workbook (mirrors resultsExporter naming)."""
+    """Where step 7 writes the results Excel workbook (mirrors resultsExporter naming:
+    exports/coderingen/{stem}_{var}_codering.xlsx)."""
     stem = Path(spec.filename).stem
-    return PROJECT_ROOT / "exports" / f"{stem}_{spec.var_name}_codering.xlsx"
+    return PROJECT_ROOT / "exports" / "coderingen" / f"{stem}_{spec.var_name}_codering.xlsx"
 
 
 def load_codebook(spec: DatasetSpec) -> Optional[Any]:
