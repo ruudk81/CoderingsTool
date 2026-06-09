@@ -3,8 +3,8 @@
 """
 View codebook / taxonomy: step-6 assignments in two readouts (each printed + saved
 to its own CSV):
-  1. CODEBOOK   — code → attribute            (_codebook)
-  2. TAXONOMIE  — domain → facet → attribute   (_taxonomie)
+  1. CODEBOOK   — codes only                   (_codebook)
+  2. TAXONOMIE  — domain → facet → attribute    (_taxonomie)
 
 Per row: n ideas + % of the lens' idea base, % of RESPONSES (unique non-filtered
 respondents), and valence balance x% (+) / y% (-) where (+) = positive+neutral,
@@ -316,8 +316,8 @@ def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
 
 # (title, header_label, builder spec, csv_suffix)
 VERSIONS = [
-    ("CODEBOOK",  "code / attribute",           ("groups", "code", True, True), "codebook"),
-    ("TAXONOMIE", "domain / facet / attribute",  ("dfa",),                       "taxonomie"),
+    ("CODEBOOK",  "code",                       ("groups", "code", False, False), "codebook"),
+    ("TAXONOMIE", "domain / facet / attribute",  ("dfa",),                        "taxonomie"),
 ]
 
 if __name__ == "__main__":
@@ -327,10 +327,12 @@ if __name__ == "__main__":
             _, group_by, show_attrs, fold = spec
             rows, base_n, n_resp, n_una = build_groups(
                 responses, codebook, group_by, show_attrs, fold)
+            compact = not show_attrs
         else:
             rows, base_n, n_resp, n_una = build_domain_facet_attr(
                 responses, fold_tail=True)
-        print_readout(title, header, rows, base_n, n_resp, n_una)
+            compact = False
+        print_readout(title, header, rows, base_n, n_resp, n_una, compact)
         if SAVE_CSV:
             save_csv(suffix, header, rows, base_n, n_resp, n_una)
 
