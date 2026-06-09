@@ -292,7 +292,8 @@ def run_all_steps(spec: DatasetSpec, cm: CacheManager,
 
 
 def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
-    f, idc, vn, ss = spec.filename, spec.id_column, spec.var_name, spec.sample_size
+    f, idc, vn, ss, vl = (spec.filename, spec.id_column, spec.var_name,
+                          spec.sample_size, spec.var_lab)
 
     if step == 0:
         from pipeline.step_0_dataLoader.run_dataLoader import run_step as r, StepConfig as C
@@ -301,7 +302,7 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
 
     if step == 1:
         from pipeline.step_1_preProcessor.run_preProcessor import run_step as r, StepConfig as C
-        data = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, force_recalc=force_recalc))
+        data = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, var_lab=vl, force_recalc=force_recalc))
         return f"{len(data)} responses preprocessed"
 
     if step == 2:
@@ -312,7 +313,7 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
 
     if step == 3:
         from pipeline.step_3_ideaExtractor.run_ideaExtractor import run_step as r, StepConfig as C
-        ideas, _, _ = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, force_recalc=force_recalc))
+        ideas, _, _ = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, var_lab=vl, force_recalc=force_recalc))
         total = sum(len(m.response_ideas) for m in ideas
                     if getattr(m, "response_ideas", None))
         return f"{total} ideas extracted from {len(ideas)} responses"
@@ -338,7 +339,7 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
         # Two exports at the Export step: (1) the results workbook + .sav (run_export),
         # (2) the codebook/taxonomy readouts CSV+XLSX (export_codebook, from step 6 data).
         from pipeline.step_7_export.run_export import run_step as r, StepConfig as C
-        paths = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, force_recalc=force_recalc))
+        paths = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, var_lab=vl, force_recalc=force_recalc))
         from pipeline.step_6_codeAssigner.view_codebook import export_codebook
         cb_path = export_codebook(filename=f, var_name=vn, sample_size=ss)
         # run_export returns a dict {"excel": ..., <sav suffixes>...}; the codebook

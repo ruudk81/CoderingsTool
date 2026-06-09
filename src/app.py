@@ -216,14 +216,22 @@ def page_select_dataset():
         sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
                                       value=500, step=50) if limit else None
 
+        # Survey question — editable LLM context (fix typos/formatting, inject domain context).
+        try:
+            spss_lab = loader.get_varlab(up.name, text_var)
+            spss_lab = spss_lab[spss_lab.rfind("]") + 1:].strip()
+        except Exception:
+            spss_lab = text_var
+        var_lab = st.text_area(
+            "📝 " + T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
+            value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
+            help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van Merk X').",
+                   "Fix formatting/spelling or add context (e.g. 'the squirrel is Merk X's logo')."))
+
         if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
-            try:
-                var_lab = loader.get_varlab(up.name, text_var)
-                var_lab = var_lab[var_lab.rfind("]") + 1:].strip()
-            except Exception:
-                var_lab = text_var
             spec = DatasetSpec(filename=up.name, var_name=text_var,
-                               sample_size=sample_size, id_column=id_col, var_lab=var_lab)
+                               sample_size=sample_size, id_column=id_col,
+                               var_lab=(var_lab or "").strip() or text_var)
             st.session_state.spec = spec
             be.run_step(0, spec, force_recalc=False)  # load + cache
             st.session_state.step = 1
@@ -237,10 +245,28 @@ def page_step(step: int, status: dict, max_done: int):
     spec = st.session_state.spec
     st.header(f"{step}. {step_name(step)}")
 
-    if spec.var_lab:
-        st.info(f"**{T('Vraag', 'Question')}:** {spec.var_lab}  \n"
-                f"**Data:** {spec.var_name} · "
-                f"{spec.sample_size if spec.sample_size is not None else T('volledig', 'full')}")
+    st.caption(f"**Data:** {spec.var_name} · "
+               f"{spec.sample_size if spec.sample_size is not None else T('volledig', 'full')}")
+    # The survey question is LLM context (spell-check + extraction + classification).
+    # It's editable; applying a change re-runs from step 1 (where the context first matters).
+    _vk = f"varlab_{spec.variable_key}"
+    st.session_state.setdefault(_vk, spec.var_lab or "")
+    with st.expander("📝 " + T("Enquêtevraag / context", "Survey question / context")):
+        edited = st.text_area(
+            T("Vraag (LLM-context — corrigeer opmaak/spelling of voeg context toe)",
+              "Question (LLM context — fix formatting/spelling or add context)"),
+            key=_vk, height=80,
+            help=T("Bv. 'de eekhoorn is het logo van Merk X'. Toepassen herverwerkt vanaf stap 1.",
+                   "E.g. 'the squirrel is Merk X's logo'. Applying reprocesses from step 1."))
+        if edited.strip() != (spec.var_lab or "").strip():
+            if st.button("💾 " + T("Toepassen (herverwerk vanaf stap 1)",
+                                   "Apply (reprocess from step 1)"), key="apply_varlab"):
+                spec.var_lab = edited.strip()
+                be.invalidate_from(1, spec, get_cache_manager())
+                st.session_state.last_run = None
+                st.toast(T("Vraag bijgewerkt — draai opnieuw vanaf stap 1.",
+                           "Question updated — re-run from step 1."))
+                st.rerun()
 
     prev_done = (step == 0) or status.get(step - 1, False)
     done = status[step]

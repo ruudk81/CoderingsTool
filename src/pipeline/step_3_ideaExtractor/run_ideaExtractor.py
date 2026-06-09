@@ -66,6 +66,7 @@ class StepConfig:
     id_column: str = TEST_DATA.id_column
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
+    var_lab: Optional[str] = None   # UI override for the survey question (None → fetch from SPSS)
 
     # Output settings
     verbose: bool = True
@@ -117,7 +118,9 @@ def load_step2_cache(config: StepConfig):
 
 
 def get_var_lab(config: StepConfig) -> str:
-    """Get variable label from data file."""
+    """Get variable label (UI override if set, else from the data file)."""
+    if config.var_lab:
+        return config.var_lab
     loader = dataLoader.DataLoader(data_dir=str(data_dir), verbose=False)
     return loader.get_varlab(filename=config.filename, var_name=config.var_name)
 
