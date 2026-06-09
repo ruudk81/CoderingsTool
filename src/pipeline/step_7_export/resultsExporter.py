@@ -56,6 +56,21 @@ _HDR_FONT = Font(bold=True, color="FFFFFF")
 _WRAP = Alignment(wrap_text=True, vertical="top")
 
 
+# === OUTPUT PATHS (single source of truth — the app imports these) ================================
+def results_export_dir(export_dir=None) -> Path:
+    """Folder the results deliverables go in (default exports/coderingen/)."""
+    if export_dir is None:
+        export_dir = Path(__file__).resolve().parents[3] / "exports" / "coderingen"
+    return Path(export_dir)
+
+
+def results_xlsx_path(filename: str, var_name: str, export_dir=None) -> Path:
+    """Canonical path of the results workbook. ResultsExporter.export() AND the app
+    (app_backend.export_path) call THIS, so the name/folder can't drift apart."""
+    base = f"{Path(filename).stem}_{var_name}"
+    return results_export_dir(export_dir) / f"{base}_codering.xlsx"
+
+
 def _green_scale() -> ColorScaleRule:
     """0 -> light green, 1 -> dark green (fresh instance per use)."""
     return ColorScaleRule(start_type="num", start_value=0, start_color="C6EFCE",
@@ -275,14 +290,12 @@ class ResultsExporter:
             cat.attributes_raw, lambda idea: cat.raw_map.get(idea.idea_id))
 
         # output paths — final deliverables go in their own subfolder
-        if export_dir is None:
-            export_dir = Path(__file__).resolve().parents[3] / "exports" / "coderingen"
-        export_dir = Path(export_dir)
+        export_dir = results_export_dir(export_dir)
         export_dir.mkdir(parents=True, exist_ok=True)
         base = f"{Path(filename).stem}_{var_name}"
 
         # Excel (one workbook, 5 sheets)
-        xlsx_path = export_dir / f"{base}_codering.xlsx"
+        xlsx_path = results_xlsx_path(filename, var_name, export_dir)
         self._write_excel(xlsx_path, cat, codes_df, codes_collabels,
                           grof_df, grof_collabels, fijn_df, fijn_collabels, long_df)
 

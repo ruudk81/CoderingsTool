@@ -68,45 +68,78 @@ Run: from the project root → `streamlit run src/app.py --server.headless true`
 - [x] **Fix**: `run_export.run_step` now returns a **dict** of paths, and the results workbook was
       renamed `_code_assignments.xlsx` → `_codering.xlsx`. Updated `export_path()` + the step-7
       dispatch so the "done" probe (`is_step_done(7)`) and the results view find the file again.
+- [x] **Fix (export path moved again)**: `resultsExporter` now writes to `exports/coderingen/`;
+      `export_path` updated to match (was the old `exports/` root → step 7 falsely "not done").
+- [x] **Fix (verbose-log retrieval)**: `saveVerbose.find_latest_log` picked the newest by
+      filename, but on-disk names have two formats (`…_2500_2500_stepN_` vs `…_2500_stepN_`) so
+      alphabetical ≠ chronological → wrong/older log shown per step. Now sorts by `mtime`.
+- [x] **Fix (run-all re-entrancy)**: `page_run_all` kept `run_all=True` during the minutes-long
+      blocking loop; an SSH/browser reconnect spawned a 2nd run that re-entered and called
+      `invalidate_from(1)` again, wiping caches mid-run ("No taxonomy_codes cache" at step 7).
+      Flag is now cleared up front → the loop runs exactly once.
 
 ---
 
-## To be done (next)
+## Audit: app_old → new app gaps (2026-06-09)
 
-### High priority
-- [ ] **Long-running steps block the UI.** A step (3/4/5/6) runs synchronously behind a
-      spinner; live progress only shows in the terminal/verbose log. Options: run the step in
-      a background thread/process and stream progress, or at least a `st.status()` with periodic
-      log tailing. (User flagged this on day 1.)
-- [ ] **Result renderers for steps 1–4** (deferred on purpose):
-  - step 1 — sample of before/after preprocessed text.
-  - step 2 — counts per filter category (meaningful / empty / don't-know / gibberish).
-  - step 3 — sample responses with extracted ideas + abstraction ladder.
-  - step 4 — taxonomy tree (domain → facet → attribute, with valence).
+Systematic gap analysis (app_old was ~3410 lines, battle-tested; the new app is a fresh
+rewrite, so most recent bugs are new-app bugs, not things app_old got wrong). Grouped by
+priority. **Agreed work order:** P0 hardening → var_lab → codebook download → QA view →
+quality-filter breakdown.
 
-### Medium priority
-- [ ] **Error persistence.** A failed run shows a transient `last_run` error that disappears on
-      the next rerun. Persist/surface it (and link to the verbose log) until acknowledged.
-- [ ] **Cost display.** Show `token_tracker` summary (tokens + €) per run, per step.
-- [ ] **Advanced settings panel.** `app_old.py` had per-step model/param overrides in the
-      sidebar; not ported. Decide what (if anything) to expose for the new pipeline.
-- [ ] **id_column on resume.** For datasets loaded from cache, `id_column` defaults to
-      `TEST_DATA.id_column`; only matters if step 0 is force-recalculated (re-reads SPSS).
-      Consider persisting it (it's not in `cache_metadata`).
-- [ ] **Codebook download in the step-7 results view.** The export step already writes the
-      codebook XLSX/CSVs (`exports/codebook/`), but `render_results(7)` only offers the results
-      workbook. Add a download button for the codebook workbook (needs a `codebook_export_path`
-      helper mirroring `view_codebook`'s naming).
-- [ ] **Full-sample codebook filename quirk.** `view_codebook.export_codebook` puts the literal
-      `SAMPLE_SIZE` in the filename, so a full-sample dataset becomes `…_None.xlsx`. Normalize to
-      `full` (like `run_export`/`VerboseCapture` do) before wiring a UI download.
+### P0 — drift couplings (the "keeps biting" class) — DO FIRST
+The new app re-derives paths/names/keys that are actually *produced elsewhere*; if the source
+changes, it breaks silently. The recent surprises (export path → `coderingen/`, verbose-log
+returning the wrong file) are exactly this class.
+- [ ] **Exporters return their canonical path; the app reads it back** instead of re-deriving.
+      Applies to the results workbook (`export_path`) and the codebook XLSX. Source of truth =
+      `resultsExporter` / `view_codebook`, not a mirrored string in `app_backend`.
+- [ ] **One source of truth for step → cache-step-names → done-check.** `_STEP_DB_STEPS`
+      and `is_step_done` (app_backend.py) independently hardcode the same magic strings
+      (`taxonomy_codes`, `mece_codes`, `*_metadata`, …). Collapse into one per-step descriptor;
+      ideally have runners expose their own cache step-name so the app imports it.
+- [ ] (lower) the verbose-log glob and `variable_key` are also hand-mirrors — currently
+      mitigated (mtime sort; shared key convention). Revisit only if they bite.
 
-### Lower priority / later
-- [ ] **Multi-variable merge.** New pipeline is single-variable only (test data uses a
-      pre-combined `Qd1_combined`); `app_old.py` supported selecting+merging multiple SPSS vars.
-      Re-add only if the pipeline grows it.
-- [ ] **Dedicated results page** beyond step 7 (cross-step summary / export browser).
-- [ ] **AppTest coverage** for the run/re-run/invalidate flows (not just render).
+### P1 — functional regressions
+- [ ] **var_lab editable + threaded through the pipeline.** The survey question is load-bearing
+      LLM context: fix bad/garbled SPSS labels AND inject domain context (e.g. "eekhoorn = Merk X
+      logo", bank names) so the LLM doesn't err. Now it's display-only and every runner re-fetches
+      from SPSS. Add an edit field (upload + resume), `var_lab` on `StepConfig` (steps 1/3/7),
+      `get_var_lab` prefers it (fallback SPSS), and editing it invalidates from step 1.
+- [ ] **Cache-corruption recovery** (app_old `_load_or_recover`): on a corrupt / closed-file read,
+      invalidate that row + recover instead of looping on the same error. (Do when it bites.)
+- [ ] **Error persistence.** `last_run` error clears on the first rerun; keep it visible until
+      acknowledged, translate it, add a remediation hint + link to the verbose log.
+
+### P2 — user-value gaps
+- [ ] **Codebook download** at step 7 (file already generated in `exports/codebook/`; just a
+      button + a path helper). Note the full-sample `…_None.xlsx` naming quirk first.
+- [ ] **QA drill-down at step 6**: respondent → ideas → assigned code + rationale + confidence,
+      with re-roll. app_old's core "is this output trustworthy?" view; the aggregate tables in
+      `render_results` don't replace it.
+- [ ] **Quality-filter breakdown** (step 2): counts per category (meaningful / don't-know /
+      no-response / gibberish) + %, from the cached `QualityFilteredModel.quality_filter_code`.
+- [ ] **Result renderers for steps 1, 3, 4** (1: before/after sample; 3: response → ideas +
+      abstraction ladder; 4: taxonomy tree). [deferred]
+- [ ] **Per-step stat counts** in summaries (unique / single-vs-multi ideas; #domains/#facets/
+      #attributes; responses/ideas/assigned) — currently static or minimal text.
+- [ ] **Upload preview with metrics** (total / non-empty / unique / sample + first 10 rows)
+      before spending LLM credits.
+- [ ] **Text-variable validation** that *blocks* (not just filters) numeric selection on upload.
+
+### Can stay dropped (old-pipeline-specific / cosmetic)
+Multi-variable merge, advanced per-step model overrides, `st.balloons()`, the category/theme
+sample browsers, file-size-MB in the cache list.
+
+### Other known constraints
+- [ ] **Long-running *single* steps block the UI** (run-all now streams via `st.status`; single
+      steps still block behind a spinner). Background execution + live log tail is the real fix.
+- [ ] **Full-sample codebook filename quirk**: `export_codebook` writes `…_None.xlsx` for a
+      full-sample dataset; normalize to `full` (like `run_export`/`VerboseCapture`) before the download.
+- [ ] **id_column on resume** defaults to `TEST_DATA`; only matters if step 0 is force-recomputed.
+- [ ] **Cost display** — `token_tracker` summary (tokens + €) per run/step.
+- [ ] **AppTest coverage** for the run / re-run / invalidate flows (not just render).
 
 ---
 

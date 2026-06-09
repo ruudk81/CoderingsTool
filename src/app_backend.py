@@ -58,18 +58,25 @@ STEP_LABELS = {
     7: "Export",
 }
 
-# DB step_names to invalidate when a step is re-run (cascade source-of-truth).
-# Metadata caches are stored under a '_metadata' suffix (see CacheManager).
-_STEP_DB_STEPS: Dict[int, List[str]] = {
-    0: ["data"],
-    1: ["preprocessed"],
-    2: ["quality_filter"],
-    3: ["extracted_ideas", "extracted_ideas_metadata"],
-    4: ["taxonomy_metadata", "taxonomy_classified"],
-    5: ["mece_codes_metadata"],
-    6: ["taxonomy_codes"],
-    7: [],  # export is an xlsx file on disk, handled separately
+# Single source of truth for each step's cache contract. Both is_step_done (probe)
+# and invalidate_from (cascade) derive from THIS one table, so they cannot drift
+# apart (the old bug class). Each entry is (base_step_name, is_metadata); the
+# on-disk DB step_name for a metadata entry is f"{base}_metadata" (cacheManager
+# convention). Step 7 has no cache row — "done" = the export file exists.
+STEP_CACHE: Dict[int, tuple] = {
+    0: (("data", False),),
+    1: (("preprocessed", False),),
+    2: (("quality_filter", False),),
+    3: (("extracted_ideas", False), ("extracted_ideas", True)),
+    4: (("taxonomy", True), ("taxonomy_classified", False)),
+    5: (("mece_codes", True),),
+    6: (("taxonomy_codes", False),),
+    7: (),
 }
+
+
+def _db_step_name(base: str, is_metadata: bool) -> str:
+    return f"{base}_metadata" if is_metadata else base
 
 
 # =============================================================================
@@ -161,26 +168,19 @@ def list_cached_datasets() -> List[DatasetSpec]:
 # =============================================================================
 
 def is_step_done(step: int, spec: DatasetSpec, cm: CacheManager) -> bool:
-    """Probe the cache exactly the way each runner does before skipping."""
-    f, vk = spec.filename, spec.variable_key
-    if step == 0:
-        return cm.is_cache_valid(f, "data", vk)
-    if step == 1:
-        return cm.is_cache_valid(f, "preprocessed", vk)
-    if step == 2:
-        return cm.is_cache_valid(f, "quality_filter", vk)
-    if step == 3:
-        return cm.is_cache_valid(f, "extracted_ideas", vk)
-    if step == 4:
-        return (cm.is_metadata_cache_valid(f, "taxonomy", vk)
-                and cm.is_cache_valid(f, "taxonomy_classified", vk))
-    if step == 5:
-        return cm.is_metadata_cache_valid(f, "mece_codes", vk)
-    if step == 6:
-        return cm.is_cache_valid(f, "taxonomy_codes", vk)
-    if step == 7:
+    """Probe the cache the same way each runner does before skipping. Derives the
+    cache step-names from STEP_CACHE so it can't drift from invalidate_from."""
+    if step == LAST_STEP:
         return export_path(spec).exists()
-    return False
+    entries = STEP_CACHE.get(step, ())
+    if not entries:
+        return False
+    f, vk = spec.filename, spec.variable_key
+    return all(
+        (cm.is_metadata_cache_valid(f, base, vk) if is_meta
+         else cm.is_cache_valid(f, base, vk))
+        for base, is_meta in entries
+    )
 
 
 def step_status(spec: DatasetSpec, cm: CacheManager) -> Dict[int, bool]:
@@ -206,18 +206,18 @@ def invalidate_from(step: int, spec: DatasetSpec, cm: CacheManager) -> List[str]
     """
     invalidated: List[str] = []
     for s in range(step, LAST_STEP + 1):
-        for db_step in _STEP_DB_STEPS.get(s, []):
-            cm.db.invalidate_cache(spec.filename, db_step, spec.variable_key)
-            invalidated.append(db_step)
-    # Step 7 is a file, not a cache row
-    if step <= LAST_STEP:
-        xlsx = export_path(spec)
-        if xlsx.exists():
-            try:
-                xlsx.unlink()
-                invalidated.append("export.xlsx")
-            except OSError:
-                pass
+        for base, is_meta in STEP_CACHE.get(s, ()):
+            name = _db_step_name(base, is_meta)
+            cm.db.invalidate_cache(spec.filename, name, spec.variable_key)
+            invalidated.append(name)
+    # Step 7 (export) is a file on disk, not a cache row
+    xlsx = export_path(spec)
+    if xlsx.exists():
+        try:
+            xlsx.unlink()
+            invalidated.append(xlsx.name)
+        except OSError:
+            pass
     return invalidated
 
 
@@ -360,10 +360,10 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
 # =============================================================================
 
 def export_path(spec: DatasetSpec) -> Path:
-    """Where step 7 writes the results Excel workbook (mirrors resultsExporter naming:
-    exports/coderingen/{stem}_{var}_codering.xlsx)."""
-    stem = Path(spec.filename).stem
-    return PROJECT_ROOT / "exports" / "coderingen" / f"{stem}_{spec.var_name}_codering.xlsx"
+    """Canonical results-workbook path — imported from resultsExporter so it can't
+    drift from where step 7 actually writes (the old export_path bug class)."""
+    from pipeline.step_7_export.resultsExporter import results_xlsx_path
+    return results_xlsx_path(spec.filename, spec.var_name)
 
 
 def load_codebook(spec: DatasetSpec) -> Optional[Any]:
