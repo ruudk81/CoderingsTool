@@ -38,7 +38,7 @@ sys.path.insert(0, str(project_root / "src"))
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
 from pipeline.step_4_classifier.models_classifier import TaxonomyResultsCache
-from models import CodingResultsCache
+from models import CodingResultsCache, ExtractionMetadata
 
 from test_data import TEST_DATA
 
@@ -84,7 +84,30 @@ def load_data():
     if tax:
         for dr in tax.partition_results.values():
             raw_map.update(getattr(dr, "raw_attribute_assignments", {}) or {})
-    return results, codebook, raw_map
+    metadata = cm.load_metadata_from_cache(FILENAME, "extracted_ideas", variable_key, ExtractionMetadata)
+    return results, codebook, raw_map, metadata, tax
+
+
+def build_legend(codebook, metadata, tax):
+    """Collect (label, definition) reference lists for codes + taxonomy levels."""
+    codes = [(c.get("code_name", ""), c.get("definition", "")) for c in codebook.raw_codes]
+    dimension, domains = [], []
+    if metadata:
+        if metadata.primary_dimension:
+            dimension = [(metadata.primary_dimension, metadata.primary_dimension_description or "")]
+        domains = [(d.get("label", ""), d.get("definition", "")) for d in (metadata.domains or [])]
+    facets, attrs = {}, {}
+    if tax:
+        for dr in tax.partition_results.values():
+            for f in (dr.facets or []):
+                if isinstance(f, dict) and f.get("facet_name"):
+                    facets.setdefault(f["facet_name"], f.get("facet_description", ""))
+            for flist in (dr.attributes or {}).values():
+                for a in (flist or []):
+                    if isinstance(a, dict) and a.get("attribute_name"):
+                        attrs.setdefault(a["attribute_name"], a.get("attribute_description", ""))
+    return {"codes": codes, "dimension": dimension, "domains": domains,
+            "facets": list(facets.items()), "attributes": list(attrs.items())}
 
 
 # =============================================================================
@@ -416,6 +439,50 @@ def save_xlsx(wb):
     print(f"\nXLSX → {path}")
 
 
+_BLOCK_FILL = PatternFill("solid", fgColor="366092")   # dark blue (matches sheet headers)
+_BLOCK_FONT = Font(bold=True, color="FFFFFF", size=12)
+_SUB_FILL = PatternFill("solid", fgColor="8EAADB")     # lighter blue
+_SUB_FONT = Font(bold=True, color="1F3864")
+_COLH_FILL = PatternFill("solid", fgColor="D9E1F2")    # very light blue
+_COLH_FONT = Font(bold=True)
+_WRAP = Alignment(wrap_text=True, vertical="top")
+
+
+def write_legend_sheet(ws, legend):
+    """Reference sheet: codebook + taxonomy elements with number/label/definition."""
+    NCOL = 3
+
+    def banner(text, fill, font):
+        ws.append([text])
+        r = ws.max_row
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=NCOL)
+        ws.cell(r, 1).fill, ws.cell(r, 1).font = fill, font
+
+    def section(sub_title, label_name, items):
+        if sub_title:
+            banner(sub_title, _SUB_FILL, _SUB_FONT)
+        ws.append(["nr", label_name, "definitie"])
+        hr = ws.max_row
+        for c in range(1, NCOL + 1):
+            ws.cell(hr, c).fill, ws.cell(hr, c).font = _COLH_FILL, _COLH_FONT
+        for i, (label, definition) in enumerate(items, 1):
+            ws.append([i, label, definition])
+            ws.cell(ws.max_row, 3).alignment = _WRAP
+        ws.append([])  # white line after the section
+
+    banner("CODEBOEK", _BLOCK_FILL, _BLOCK_FONT)
+    section("", "code", legend["codes"])
+    banner("TAXONOMIE", _BLOCK_FILL, _BLOCK_FONT)
+    section("A — Dimensie", "dimensie", legend["dimension"])
+    section("B — Domeinen", "domein", legend["domains"])
+    section("C — Facetten", "facet", legend["facets"])
+    section("D — Attributen", "attribuut", legend["attributes"])
+
+    ws.column_dimensions["A"].width = 5
+    ws.column_dimensions["B"].width = 38
+    ws.column_dimensions["C"].width = 95
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -428,7 +495,7 @@ VERSIONS = [
 ]
 
 if __name__ == "__main__":
-    responses, codebook, raw_map = load_data()
+    responses, codebook, raw_map, metadata, tax = load_data()
     attr_sources = {
         "consolidated": lambda i: i.assigned_attribute,
         "raw": lambda i: raw_map.get(i.idea_id, ""),
@@ -436,6 +503,8 @@ if __name__ == "__main__":
     wb = Workbook() if SAVE_XLSX else None
     if wb is not None:
         wb.remove(wb.active)
+        write_legend_sheet(wb.create_sheet(title="Legenda"),
+                           build_legend(codebook, metadata, tax))
     for title, sheet_name, header, spec, suffix in VERSIONS:
         if spec[0] == "groups":
             _, group_by, show_attrs, fold = spec
