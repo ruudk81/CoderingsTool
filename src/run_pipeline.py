@@ -32,7 +32,7 @@ from config import CacheConfig
 # PIPELINE CONFIGURATION
 # =============================================================================
 
-RUN_UNTIL_STEP = 6           
+RUN_UNTIL_STEP = 7           
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 

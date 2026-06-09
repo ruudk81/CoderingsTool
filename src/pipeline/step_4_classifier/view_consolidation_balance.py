@@ -1,40 +1,22 @@
 #%%
 
 """
-View consolidation balance: per-attribute diagnostic for over-merge (catch-all),
-on TWO axes — SIZE and SEPARABILITY — so we can steer P7/P8 consolidation
-deterministically instead of via the blunt absolute "<10-15 ideas -> almost
-never standalone" rule in the prompts.
+View consolidation balance: read-only diagnostic for over-merge (catch-all) in the
+step-4 taxonomy. Thin wrapper around `consolidation_balance_core` — it loads the
+cached taxonomy + growing model, runs the shared measurement + the threshold-free
+over-merge decision, and prints two sections:
 
-Read-only, deterministic. No merges, no cache writes, no prompt changes.
+  RAW SPINE       — every pre-P7 raw attribute on two axes (SIZE via pooled
+                    quartiles; SEPARABILITY via kNN own_purity), joined to the
+                    post-P8 final bucket its ideas ended up in. Diagnostic only.
+  OVER-MERGE      — per catch-all bucket (>= 2 source attributes), the threshold-
+  DECISION          free verdict the corrector uses: a source is "own cluster" iff
+                    its within-bucket neighbours are more itself than its co-merged
+                    siblings; SPLIT iff >= MIN_SPLIT_SOURCES non-residual,
+                    within-domain own-clusters. No magic threshold.
 
-Spine = the PRE-P7 raw attribute inventory (raw_attributes /
-raw_attribute_assignments from the metadata cache) — where the lever fires. Each
-raw attribute is measured, given the action label the steering WOULD assign, and
-joined (by idea_id) to the POST-P8 final attribute its ideas ended up in.
-
-AXIS 1 — SIZE: idea count per attribute (moment-based: LARGE >= Q3, SMALL <= Q1).
-
-AXIS 2 — SEPARABILITY via a kNN graph over idea points (NOT centroids).
-  Centroid cosine compresses to noise on single-topic surveys (everything 0.78-
-  0.97) and regresses large attributes to the global mean. A neighbour test is
-  RANK-based, so it keeps full 0-1 contrast under that compression.
-    own_purity  = of a member's k nearest neighbours, fraction in the SAME attr.
-                    high -> own neighbourhood -> DISTINCT (separable) -> protect
-                    low  -> points sit among others -> FUSED -> merging is honest
-    nearest/mix = the other attribute A's points most neighbour, and how strongly
-                    -> "are they neighbours anyway?"
-  Caveat: own_purity is mildly size-biased upward (a large attr fills more of the
-  space). The catch-all verdict therefore uses SIBLING-MIXING within a bucket,
-  which is symmetric and size-fair.
-
-Cross table -> action label:
-                  FUSED (low purity)        DISTINCT (high purity)
-    SMALL    MERGE (eagerness)         PROTECT (override eagerness)
-    LARGE    RESISTANCE: merge-w-buur  RESISTANCE: keep
-
-Over-merge flag: a raw attr MERGED away while it was DISTINCT (a separable
-cluster) — a merge the steering would have resisted.
+Read-only: no merges, no cache writes, no prompt changes. The actual correction is
+`consolidation_corrector.py`, wired into step 5.
 
 Usage:
     cd src && python -m pipeline.step_4_classifier.view_consolidation_balance
@@ -47,18 +29,17 @@ from pathlib import Path
 from collections import defaultdict, Counter
 
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
 
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from utils.embedder import SharedEmbedder, format_idea_text
 from pipeline.step_4_classifier.models_classifier import (
     TaxonomyClassifiedModel,
     TaxonomyResultsCache,
 )
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
+from pipeline.step_4_classifier import consolidation_balance_core as core
 
 from test_data import TEST_DATA
 
@@ -67,22 +48,21 @@ from test_data import TEST_DATA
 # CONFIGURATION
 # =============================================================================
 
-KNN_K = 10                  # neighbours per idea point
+KNN_K = 10                  # neighbours per idea point (spine purity)
 
-SIZE_LARGE_Q = 0.75         # count >= this quantile -> LARGE
-SIZE_SMALL_Q = 0.25         # count <= this quantile -> SMALL
-PURITY_DISTINCT_Q = 0.75    # own_purity >= this quantile -> DISTINCT (separable)
-PURITY_FUSED_Q = 0.25       # own_purity <= this quantile -> FUSED
+SIZE_LARGE_Q = 0.75         # count >= this quantile -> LARGE (spine)
+SIZE_SMALL_Q = 0.25         # count <= this quantile -> SMALL (spine)
+PURITY_DISTINCT_Q = 0.75    # own_purity >= this quantile -> DISTINCT (spine)
+PURITY_FUSED_Q = 0.25       # own_purity <= this quantile -> FUSED (spine)
 
-# Catch-all final bucket: holds >= this share of its domain, OR fused >= this many
-# DISTINCT (separable) raw sources.
-CATCHALL_SHARE = 0.50
-CATCHALL_MIN_DISTINCT_SOURCES = 2
+# Over-merge decision (threshold-free; passed straight to core.over_merge_decision).
+PROD_K_MIN = 5
+PROD_K_BAND = 2
+MIN_SPLIT_SOURCES = 2       # >= this many non-residual own-clusters to split a bucket
+RESIDUAL_DOMINANCE = 0.60   # share (or name == bucket name) above which a source is the residual
 
 CODE_SOURCE = CategoriesConfig.p8_code_source
 EMBEDDING_MODEL = CategoriesConfig.p8_embedding_model
-
-_SENTINEL_ATTRIBUTES = {"__UNASSIGNED__", "(no attribute)", ""}
 
 FILENAME = TEST_DATA.filename
 VARIABLE = TEST_DATA.var_name
@@ -92,142 +72,11 @@ EXPORT_DIR = project_root / "exports" / "consolidation_balance"
 
 
 # =============================================================================
-# DATA COLLECTION
+# SPINE (diagnostic, view-only)
 # =============================================================================
-
-def _index_growing_model(classified):
-    """idea_id -> {text, final (domain, attr), is_sentinel}. Post-P8 state."""
-    idx = {}
-    for resp in classified:
-        for idea in (resp.response_ideas or []):
-            attr = (idea.attribute or "").strip()
-            idx[idea.idea_id] = {
-                "text": format_idea_text(idea, CODE_SOURCE),
-                "final": (idea.partition_name or "(unknown)", attr),
-                "is_sentinel": attr in _SENTINEL_ATTRIBUTES,
-            }
-    return idx
-
-
-def _collect_raw_groups(taxonomy_cache):
-    """(domain, raw_attr) -> [idea_id] and -> facet. Pre-P7 inventory."""
-    groups = defaultdict(list)
-    raw_facet = {}
-    for domain, res in taxonomy_cache.partition_results.items():
-        raw_assign = getattr(res, "raw_attribute_assignments", None) or {}
-        attr_to_facet = {}
-        for facet, attrs in (getattr(res, "raw_attributes", None) or {}).items():
-            for a in attrs:
-                attr_to_facet[a.get("attribute_name")] = facet
-        for idea_id, attr in raw_assign.items():
-            attr = (attr or "").strip()
-            if attr in _SENTINEL_ATTRIBUTES:
-                continue
-            key = (domain, attr)
-            groups[key].append(idea_id)
-            raw_facet.setdefault(key, attr_to_facet.get(attr, "(unknown)"))
-    return groups, raw_facet
-
-
-def _collect_final_groups(idea_index):
-    """(domain, final_attr) -> [idea_id]. Post-P8."""
-    groups = defaultdict(list)
-    for idea_id, info in idea_index.items():
-        if not info["is_sentinel"]:
-            groups[info["final"]].append(idea_id)
-    return groups
-
-
-# =============================================================================
-# EMBEDDING + kNN GRAPH
-# =============================================================================
-
-async def _embed_ideas(idea_index, needed_ids):
-    """Embed each needed idea once. Returns (ids_order, matrix, gidx)."""
-    ids = [i for i in sorted(needed_ids) if i in idea_index]
-    texts = [idea_index[i]["text"] for i in ids]
-    embedder = SharedEmbedder(model=EMBEDDING_MODEL)
-    matrix = await embedder.embed_texts(texts)
-    gidx = {i: pos for pos, i in enumerate(ids)}
-    return ids, matrix, gidx
-
-
-def _knn_indices(matrix, k):
-    """k nearest neighbour global indices per point (self excluded)."""
-    nbrs = NearestNeighbors(n_neighbors=k + 1, metric="cosine").fit(matrix)
-    _dist, idx = nbrs.kneighbors(matrix)
-    return [[j for j in row if j != i][:k] for i, row in enumerate(idx)]
-
-
-def _label_list(groups, gidx, n):
-    """Global-index -> attr_key (or None) for one grouping."""
-    labels = [None] * n
-    for key, ids in groups.items():
-        for i in ids:
-            pos = gidx.get(i)
-            if pos is not None:
-                labels[pos] = key
-    return labels
-
-
-def _neighbour_stats(groups, gidx, nbr_idx, labels):
-    """Per attr: own_purity, nearest foreign attr + mixing fraction."""
-    purity, nn = {}, {}
-    for key, ids in groups.items():
-        members = [gidx[i] for i in ids if i in gidx]
-        if not members:
-            continue
-        same = total = 0
-        foreign = Counter()
-        for m in members:
-            for j in nbr_idx[m]:
-                total += 1
-                lab = labels[j]
-                if lab == key:
-                    same += 1
-                elif lab is not None:
-                    foreign[lab] += 1
-        purity[key] = same / total if total else 0.0
-        if foreign:
-            nb, cnt = foreign.most_common(1)[0]
-            nn[key] = {"attr": nb, "mixing": cnt / total, "cross_domain": nb[0] != key[0]}
-        else:
-            nn[key] = {"attr": None, "mixing": 0.0, "cross_domain": False}
-    return purity, nn
-
-
-def _sibling_mixing(sources, groups, gidx, nbr_idx, labels):
-    """Per source in a final bucket: fraction of neighbours that are {own, sibling, outside}."""
-    src_set = set(sources)
-    out = {}
-    for key in sources:
-        members = [gidx[i] for i in groups[key] if i in gidx]
-        if not members:
-            continue
-        own = sib = outside = total = 0
-        for m in members:
-            for j in nbr_idx[m]:
-                total += 1
-                lab = labels[j]
-                if lab == key:
-                    own += 1
-                elif lab in src_set:
-                    sib += 1
-                else:
-                    outside += 1
-        if total:
-            out[key] = {"own": own / total, "sibling": sib / total, "outside": outside / total}
-    return out
-
-
-def _quantiles(values):
-    arr = np.array(values, dtype=float)
-    return {"q1": float(np.percentile(arr, 25)), "median": float(np.percentile(arr, 50)),
-            "q3": float(np.percentile(arr, 75)), "min": float(arr.min()), "max": float(arr.max())}
-
 
 def _classify(count, purity, thr):
-    """(size, separability) -> action label."""
+    """(size, separability) -> action label, for the diagnostic spine."""
     size = "LARGE" if count >= thr["size_large"] else "SMALL" if count <= thr["size_small"] else "MID"
     sep = "DISTINCT" if purity >= thr["purity_distinct"] else "FUSED" if purity <= thr["purity_fused"] else "MID"
     if size == "SMALL" and sep == "FUSED":
@@ -241,6 +90,31 @@ def _classify(count, purity, thr):
     else:
         action = "-"
     return size, sep, action
+
+
+def _build_raw_records(raw_keys, raw_meta, raw_counts, raw_dom_total, raw_purity, raw_nn,
+                       raw_dominant_final, final_sources, fin_records, thr):
+    records = []
+    for k in raw_keys:
+        d, a = k
+        size, sep, action = _classify(raw_counts[k], raw_purity[k], thr)
+        df = raw_dominant_final.get(k)
+        merged = df is not None and len(final_sources.get(df, set())) > 1
+        fr = fin_records.get(df)
+        records.append({
+            "domain": d, "facet": raw_meta.get(k, {}).get("facet", "(unknown)"), "attribute": a,
+            "count": raw_counts[k], "share_of_domain": round(raw_counts[k] / raw_dom_total[d], 3),
+            "own_purity": round(raw_purity[k], 3),
+            "nearest_attr": (f"{raw_nn[k]['attr'][0]} / {raw_nn[k]['attr'][1]}" if raw_nn[k]["attr"] else None),
+            "mixing": round(raw_nn[k]["mixing"], 3), "nn_cross_domain": raw_nn[k]["cross_domain"],
+            "size_class": size, "separability": sep, "action": action,
+            "merged_away": merged,
+            "final_domain": df[0] if df else None, "final_attribute": df[1] if df else None,
+            "final_count": fr["count"] if fr else None,
+            "final_cross_domain": (df is not None and df[0] != d),
+            "over_merge_flag": merged and sep == "DISTINCT",
+        })
+    return records
 
 
 # =============================================================================
@@ -259,32 +133,26 @@ async def _run():
     if taxonomy_cache is None:
         raise FileNotFoundError("No taxonomy metadata cache — run step 4 first.")
 
-    idea_index = _index_growing_model(classified)
-    raw_groups, raw_facet = _collect_raw_groups(taxonomy_cache)
-    final_groups = _collect_final_groups(idea_index)
+    idea_index = core.index_growing_model(classified, CODE_SOURCE)
+    raw_groups, raw_meta = core.collect_raw_groups(taxonomy_cache)
+    final_groups = core.collect_final_groups(idea_index)
     if len(raw_groups) < 2:
         raise ValueError(f"Only {len(raw_groups)} raw attribute(s) — nothing to diagnose.")
+    final_sources, raw_dominant_final = core.join_raw_to_final(raw_groups, idea_index)
 
     needed = {i for ids in raw_groups.values() for i in ids} | \
              {i for ids in final_groups.values() for i in ids}
-    ids_order, matrix, gidx = await _embed_ideas(idea_index, needed)
-    nbr_idx = _knn_indices(matrix, KNN_K)
+    ids_order, matrix, gidx = await core.embed_ideas(idea_index, needed, EMBEDDING_MODEL)
     n = len(ids_order)
 
-    raw_labels = _label_list(raw_groups, gidx, n)
-    fin_labels = _label_list(final_groups, gidx, n)
-    raw_purity, raw_nn = _neighbour_stats(raw_groups, gidx, nbr_idx, raw_labels)
-    fin_purity, _fin_nn = _neighbour_stats(final_groups, gidx, nbr_idx, fin_labels)
+    nbr_idx = core.knn_indices(matrix, KNN_K)
+    raw_labels = core.label_list(raw_groups, gidx, n)
+    raw_purity, raw_nn = core.neighbour_stats(raw_groups, gidx, nbr_idx, raw_labels)
 
     raw_counts = {k: len([i for i in raw_groups[k] if i in gidx]) for k in raw_purity}
-    fin_counts = {k: len([i for i in final_groups[k] if i in gidx]) for k in fin_purity}
     raw_dom_total = defaultdict(int)
     for (d, _a), c in raw_counts.items():
         raw_dom_total[d] += c
-    fin_dom_total = defaultdict(int)
-    for (d, _a), c in fin_counts.items():
-        fin_dom_total[d] += c
-
     raw_keys = list(raw_counts)
     thr = {
         "size_large": float(np.percentile(list(raw_counts.values()), SIZE_LARGE_Q * 100)),
@@ -293,100 +161,59 @@ async def _run():
         "purity_fused": float(np.percentile([raw_purity[k] for k in raw_keys], PURITY_FUSED_Q * 100)),
     }
 
-    # raw -> final join; which raw sources feed each final
-    final_sources = defaultdict(set)
-    raw_dominant_final = {}
-    for k in raw_keys:
-        finals = Counter(idea_index[i]["final"] for i in raw_groups[k]
-                         if i in idea_index and not idea_index[i]["is_sentinel"])
-        if not finals:
-            raw_dominant_final[k] = None
+    fin_records = core.build_final_records(final_groups, gidx, final_sources, MIN_SPLIT_SOURCES)
+    decision = core.over_merge_decision(
+        fin_records, final_groups, gidx, matrix, raw_labels,
+        k_min=PROD_K_MIN, k_band=PROD_K_BAND,
+        min_split_sources=MIN_SPLIT_SOURCES, residual_dominance=RESIDUAL_DOMINANCE,
+    )
+
+    raw_records = _build_raw_records(raw_keys, raw_meta, raw_counts, raw_dom_total,
+                                     raw_purity, raw_nn, raw_dominant_final,
+                                     final_sources, fin_records, thr)
+    raw_q = {"size": core.quantiles(list(raw_counts.values())),
+             "own_purity": core.quantiles([raw_purity[k] for k in raw_keys])}
+    fin_q = {"size": core.quantiles([r["count"] for r in fin_records.values()])}
+
+    _print_report(raw_records, fin_records, raw_q, thr)
+    _print_decision(decision)
+    _write_json(raw_records, list(fin_records.values()), decision, variable_key, raw_q, fin_q, thr)
+
+
+def _print_decision(decision):
+    print(f"\n{'=' * 96}")
+    print("OVER-MERGE DECISION — within-bucket own vs sibling (threshold-free)")
+    print("  own = S-members' within-B neighbours that are S ; sibling = that are a co-merged source")
+    print("  own_cluster = own > sibling ; SPLIT iff >= "
+          f"{MIN_SPLIT_SOURCES} non-residual within-domain own-clusters")
+    print(f"{'=' * 96}")
+    n_split = 0
+    for b in sorted(decision, key=lambda x: -x["count"]):
+        head = (f"\n[{b['domain']}] {b['attribute']}  n={b['count']} ({b['share']*100:.0f}%)  "
+                f"floor={b['floor']}  eligible={b['n_eligible']}")
+        if not b["measurable"]:
+            print(head + f"  -> NOT MEASURABLE ({b.get('note', '')})")
             continue
-        raw_dominant_final[k] = finals.most_common(1)[0][0]
-        for fk in finals:
-            final_sources[fk].add(k)
-
-    # raw records
-    raw_records = []
-    for k in raw_keys:
-        d, a = k
-        size, sep, action = _classify(raw_counts[k], raw_purity[k], thr)
-        df = raw_dominant_final.get(k)
-        merged = df is not None and len(final_sources.get(df, set())) > 1
-        over_merge = merged and sep == "DISTINCT"
-        raw_records.append({
-            "domain": d, "facet": raw_facet.get(k, "(unknown)"), "attribute": a,
-            "count": raw_counts[k], "share_of_domain": round(raw_counts[k] / raw_dom_total[d], 3),
-            "own_purity": round(raw_purity[k], 3),
-            "nearest_attr": (f"{raw_nn[k]['attr'][0]} / {raw_nn[k]['attr'][1]}" if raw_nn[k]["attr"] else None),
-            "mixing": round(raw_nn[k]["mixing"], 3), "nn_cross_domain": raw_nn[k]["cross_domain"],
-            "size_class": size, "separability": sep, "action": action,
-            "merged_away": merged,
-            "final_domain": df[0] if df else None, "final_attribute": df[1] if df else None,
-            "final_count": fin_counts.get(df) if df else None,
-            "final_cross_domain": (df is not None and df[0] != d),
-            "over_merge_flag": over_merge,
-        })
-
-    # final records + catch-all detection
-    fin_records = {}
-    for k in fin_purity:
-        d, a = k
-        share = fin_counts[k] / fin_dom_total[d]
-        sources = final_sources.get(k, set())
-        n_distinct_src = sum(
-            1 for s in sources
-            if raw_counts.get(s, 0) >= thr["size_small"] and raw_purity.get(s, 0) >= thr["purity_distinct"]
-        )
-        is_catchall = share >= CATCHALL_SHARE or n_distinct_src >= CATCHALL_MIN_DISTINCT_SOURCES
-        fin_records[k] = {
-            "domain": d, "attribute": a, "count": fin_counts[k], "share": round(share, 3),
-            "own_purity": round(fin_purity[k], 3), "n_sources": len(sources),
-            "n_distinct_sources": n_distinct_src, "catch_all": bool(is_catchall),
-        }
-
-    catchall_detail = _catchall_breakdown(fin_records, final_sources, raw_groups, gidx,
-                                          nbr_idx, raw_labels, raw_counts, raw_purity)
-
-    raw_q = {"size": _quantiles(list(raw_counts.values())),
-             "own_purity": _quantiles([raw_purity[k] for k in raw_keys])}
-    fin_q = {"size": _quantiles(list(fin_counts.values())),
-             "own_purity": _quantiles(list(fin_purity.values()))}
-
-    _print_report(raw_records, list(fin_records.values()), catchall_detail, raw_q, fin_q, thr)
-    _write_json(raw_records, list(fin_records.values()), catchall_detail, variable_key, raw_q, fin_q, thr)
+        n_split += b["verdict"] == "SPLIT"
+        print(head + f"  =>  {b['verdict']}  ({b['n_split']} source(s) to split out)")
+        for s in b["sources"]:
+            if s["residual"]:
+                tag = "RESIDUAL"
+            elif s["cross_domain"]:
+                tag = "cross-domain (v1: keep)"
+            elif s["own_cluster"]:
+                tag = "OWN-CLUSTER -> split"
+            else:
+                tag = "interleaved"
+            unstable = "" if s["stable"] else "  UNSTABLE"
+            print(f"    {s['count']:>4} {s['share']*100:>3.0f}%  own={s['own']:.3f} sib={s['sibling']:.3f}  "
+                  f"sep={s['separability']:.3f} k={s['k']}  -> {tag:<24}{unstable} | {s['attribute']}")
+    measurable = sum(1 for b in decision if b["measurable"])
+    print(f"\n  buckets to SPLIT: {n_split} / {measurable} measurable multi-source buckets")
+    print(f"{'=' * 96}")
 
 
-def _catchall_breakdown(fin_records, final_sources, raw_groups, gidx, nbr_idx,
-                        raw_labels, raw_counts, raw_purity):
-    """For each catch-all bucket, per-source own/sibling/outside neighbour mix."""
-    detail = []
-    for fk, rec in fin_records.items():
-        if not rec["catch_all"]:
-            continue
-        sources = sorted(final_sources.get(fk, set()), key=lambda s: -raw_counts.get(s, 0))
-        mix = _sibling_mixing(sources, raw_groups, gidx, nbr_idx, raw_labels)
-        src_rows = []
-        for s in sources:
-            m = mix.get(s, {"own": 0, "sibling": 0, "outside": 0})
-            verdict = "interleaves w/ siblings" if m["sibling"] >= m["own"] else "own cluster"
-            src_rows.append({
-                "domain": s[0], "attribute": s[1], "count": raw_counts.get(s, 0),
-                "own_purity": round(raw_purity.get(s, 0), 3),
-                "sibling_mix": round(m["sibling"], 3), "outside_mix": round(m["outside"], 3),
-                "verdict": verdict,
-            })
-        n_own = sum(1 for r in src_rows if r["verdict"] == "own cluster")
-        detail.append({
-            "domain": fk[0], "attribute": fk[1], "count": rec["count"], "share": rec["share"],
-            "bucket_verdict": ("OVER-MERGE (separable sources)" if n_own >= 2
-                               else "interleaved (merge defensible)"),
-            "sources": src_rows,
-        })
-    return detail
-
-
-def _print_report(raw_records, fin_records, catchall_detail, raw_q, fin_q, thr):
+def _print_report(raw_records, fin_records, raw_q, thr):
     print(f"\n{'=' * 96}")
     print("CONSOLIDATION BALANCE  (raw pre-P7 spine -> post-P8, size x separability via kNN)")
     print(f"{FILENAME}  |  {VARIABLE}  |  n={SAMPLE_SIZE}  |  "
@@ -400,25 +227,13 @@ def _print_report(raw_records, fin_records, catchall_detail, raw_q, fin_q, thr):
     print(f"  THRESHOLDS:  LARGE>={thr['size_large']:.0f}  SMALL<={thr['size_small']:.0f}  "
           f"DISTINCT>={thr['purity_distinct']:.3f}  FUSED<={thr['purity_fused']:.3f}")
 
-    # ---- THE STAR: catch-all deep dive (are the fused sources really neighbours?) ----
-    print(f"\n{'=' * 96}\nCATCH-ALL DEEP DIVE — were the fused sources actually neighbours?")
-    for c in sorted(catchall_detail, key=lambda x: -x["count"]):
-        print(f"\n  [{c['domain']}] {c['attribute']}  n={c['count']} ({c['share']*100:.0f}% v domein)"
-              f"  => {c['bucket_verdict']}")
-        for s in c["sources"]:
-            print(f"      {s['count']:>4}  purity={s['own_purity']:.3f}  "
-                  f"sibling-mix={s['sibling_mix']:.3f}  outside={s['outside_mix']:.3f}  "
-                  f"-> {s['verdict']:<24} | {s['attribute']}")
-
-    # ---- spine (compact) ----
     print(f"\n{'=' * 96}\nRAW SPINE (size x separability -> steering action):")
     by_domain = defaultdict(list)
     for r in raw_records:
         by_domain[r["domain"]].append(r)
     for dom in sorted(by_domain):
-        rows = sorted(by_domain[dom], key=lambda r: -r["count"])
         print(f"\n  {dom}:")
-        for r in rows:
+        for r in sorted(by_domain[dom], key=lambda r: -r["count"]):
             flag = "  <<< OVER-MERGE" if r["over_merge_flag"] else ""
             join = "MERGED" if r["merged_away"] else "kept/renamed"
             print(f"    {r['count']:>4} {r['share_of_domain']*100:>3.0f}%  "
@@ -427,17 +242,14 @@ def _print_report(raw_records, fin_records, catchall_detail, raw_q, fin_q, thr):
 
     actions = Counter(r["action"] for r in raw_records)
     n_over = sum(1 for r in raw_records if r["over_merge_flag"])
-    n_catch = sum(1 for c in catchall_detail if c["bucket_verdict"].startswith("OVER-MERGE"))
     print(f"\n{'=' * 96}\nSUMMARY:")
-    for a, nn_ in sorted(actions.items(), key=lambda x: -x[1]):
-        print(f"  {nn_:>4}  {a}")
-    print(f"\n  OVER-MERGE raw flags: {n_over}")
-    print(f"  CATCH-ALL buckets: {len(catchall_detail)}  "
-          f"(verdict OVER-MERGE / separable: {n_catch})")
+    for a, cnt in sorted(actions.items(), key=lambda x: -x[1]):
+        print(f"  {cnt:>4}  {a}")
+    print(f"\n  OVER-MERGE raw flags (spine heuristic): {n_over}")
     print(f"{'=' * 96}")
 
 
-def _write_json(raw_records, fin_records, catchall_detail, variable_key, raw_q, fin_q, thr):
+def _write_json(raw_records, fin_records, decision, variable_key, raw_q, fin_q, thr):
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     out = {
         "dataset": FILENAME, "variable_key": variable_key,
@@ -445,10 +257,11 @@ def _write_json(raw_records, fin_records, catchall_detail, variable_key, raw_q, 
         "config": {
             "code_source": CODE_SOURCE, "size_large_q": SIZE_LARGE_Q, "size_small_q": SIZE_SMALL_Q,
             "purity_distinct_q": PURITY_DISTINCT_Q, "purity_fused_q": PURITY_FUSED_Q,
-            "catchall_share": CATCHALL_SHARE, "catchall_min_distinct_sources": CATCHALL_MIN_DISTINCT_SOURCES,
+            "prod_k_min": PROD_K_MIN, "prod_k_band": PROD_K_BAND,
+            "min_split_sources": MIN_SPLIT_SOURCES, "residual_dominance": RESIDUAL_DOMINANCE,
         },
         "raw_distributions": raw_q, "final_distributions": fin_q, "thresholds": thr,
-        "catch_all_buckets": catchall_detail,
+        "over_merge_decision": decision,
         "raw_attributes": raw_records, "final_attributes": fin_records,
     }
     path = EXPORT_DIR / f"{Path(FILENAME).stem}_{variable_key}.json"

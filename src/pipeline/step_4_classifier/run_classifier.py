@@ -585,10 +585,8 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         verbose=CONFIG.verbose,
     )
 
-    # Print taxonomy results (P1-P7)
-    print_taxonomy_results(partition_set, label_mappings, taxonomy_result)
-
-    # Cache taxonomy results (metadata + growing model)
+    # Cache taxonomy results (metadata + growing model). The taxonomy is displayed
+    # once at the very end (post P7.5/P8/P9), so the readout reflects the final state.
     cache_taxonomy_results(partition_set, label_mappings, taxonomy_result, ideas_models=ideas_models)
 
     # P7.5: Valence-neutral attribute merge (collapse valence-split attribute pairs)
@@ -672,12 +670,60 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                           f"\"{target.new_attribute_name}\" "
                           f"({target.new_domain} > {target.new_facet})")
 
+    # P9: Post-hoc over-merge correction (default on). Splits over-merged catch-all
+    # buckets back apart along provenance seams, writing corrected_* to NEW cache keys
+    # (the consolidated taxonomy / taxonomy_classified stay intact). Step 5 reads these.
+    corrected_taxonomy = None
+    if CONFIG.correction_enabled and (CONFIG.debug_stop_after_phase is None or CONFIG.debug_stop_after_phase >= 8):
+        cache_manager = CacheManager()
+        c_taxonomy = cache_manager.load_metadata_from_cache(
+            filename=FILENAME, step="taxonomy", variable_key=variable_key, model_cls=TaxonomyResultsCache)
+        c_classified = cache_manager.load_from_cache(
+            filename=FILENAME, step="taxonomy_classified", variable_key=variable_key, model_cls=TaxonomyClassifiedModel)
+        if c_taxonomy and c_classified:
+            import asyncio
+            from pipeline.step_4_classifier.consolidation_corrector import ConsolidationCorrector
+            corrected_taxonomy, corrected_classified, _c_map, _c_stats, _c_dec = asyncio.run(
+                ConsolidationCorrector(CONFIG, prompt_printer=prompt_printer,
+                                       dataset_key=variable_key, cost_tracker=cost_tracker).consolidate(
+                    c_taxonomy, c_classified, extraction_metadata, verbose=CONFIG.verbose))
+            cache_manager.save_metadata_to_cache(
+                metadata=corrected_taxonomy, filename=FILENAME,
+                step="taxonomy_corrected", variable_key=variable_key)
+            cache_manager.save_to_cache(
+                data=corrected_classified, filename=FILENAME,
+                step="taxonomy_classified_corrected", variable_key=variable_key)
+
+    # Display the final taxonomy — corrected when correction ran, else post-P8.
+    if CONFIG.verbose:
+        final_tax = corrected_taxonomy or CacheManager().load_metadata_from_cache(
+            filename=FILENAME, step="taxonomy", variable_key=variable_key, model_cls=TaxonomyResultsCache)
+        if final_tax is not None:
+            _print_final_taxonomy(final_tax, use_corrected=corrected_taxonomy is not None)
+
     cost_tracker.finalize_step("step_4_taxonomy_classifier")
 
     # Save prompts
     save_prompts_to_json(prompt_printer)
 
     return partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer
+
+
+def _print_final_taxonomy(tax_cache, use_corrected):
+    """Domain > Facet > Attribute [idea count] readout of the final taxonomy."""
+    from collections import Counter
+    label = "CORRECTED " if use_corrected else ""
+    print(f"\n{'=' * 70}\n{label}TAXONOMY (final)\n{'=' * 70}")
+    for domain in sorted(tax_cache.partition_results):
+        res = tax_cache.partition_results[domain]
+        attrs = res.corrected_attributes if use_corrected else res.attributes
+        assigns = res.corrected_attribute_assignments if use_corrected else res.attribute_assignments
+        counts = Counter(assigns.values())
+        print(f"\nDOMAIN: {domain}  ({sum(counts.values())} ideas)")
+        for facet in sorted(attrs):
+            print(f"  {facet}:")
+            for a in sorted(attrs[facet], key=lambda a: -counts.get(a.get("attribute_name"), 0)):
+                print(f"    - {a.get('attribute_name')} [{counts.get(a.get('attribute_name'), 0)} ideas]")
 
 
 if __name__ == "__main__":

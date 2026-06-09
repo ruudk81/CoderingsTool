@@ -419,6 +419,8 @@ class CacheConfig:
         "taxonomy_classified": "005",  # growing model with enriched facet/attribute
         "taxonomy_xdomain": "005",             # cross-domain consolidated metadata
         "taxonomy_classified_xdomain": "005",  # cross-domain consolidated growing model
+        "taxonomy_corrected": "005",             # post-hoc over-merge corrected metadata (step 5)
+        "taxonomy_classified_corrected": "005",  # post-hoc over-merge corrected growing model
         # Step 5: code generator (dev, P8-P9)
         "mece_codes": "006",
         "mece_codes_metadata": "006",

@@ -274,9 +274,9 @@ class ResultsExporter:
             responses, filtered, cat, var_name, var_lab, resp_text,
             cat.attributes_raw, lambda idea: cat.raw_map.get(idea.idea_id))
 
-        # output paths
+        # output paths — final deliverables go in their own subfolder
         if export_dir is None:
-            export_dir = Path(__file__).resolve().parents[3] / "exports"
+            export_dir = Path(__file__).resolve().parents[3] / "exports" / "coderingen"
         export_dir = Path(export_dir)
         export_dir.mkdir(parents=True, exist_ok=True)
         base = f"{Path(filename).stem}_{var_name}"

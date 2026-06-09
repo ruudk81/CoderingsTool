@@ -451,6 +451,19 @@ def _extract_metadata_context(extraction_metadata):
 # MAIN
 # =============================================================================
 
+def _project_corrected(corrected_taxonomy):
+    """A copy of the corrected taxonomy where the corrected_* fields are exposed as
+    the plain `attributes` / `attribute_assignments` — so the whole codebook chain
+    (reconstruction, mece_codes cache, step 6) consumes corrected attributes with no
+    further code change."""
+    import copy
+    proj = TaxonomyResultsCache.model_validate(copy.deepcopy(corrected_taxonomy.model_dump()))
+    for r in proj.partition_results.values():
+        r.attributes = r.corrected_attributes
+        r.attribute_assignments = r.corrected_attribute_assignments
+    return proj
+
+
 def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
                  sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
     """Run codebook generation (P8-P9) from cached taxonomy results.
@@ -486,7 +499,22 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
         return None
 
     partition_set = taxonomy_cache.partition_set
+
+    # Prefer the CORRECTED taxonomy (produced by step 4's post-hoc over-merge
+    # correction) when present; else the consolidated taxonomy. Step 5 only READS —
+    # the correction itself runs in step 4 (run_classifier).
+    cache_manager = CacheManager()
     pydantic_results = taxonomy_cache.partition_results
+    if cache_manager.is_metadata_cache_valid(FILENAME, "taxonomy_corrected", variable_key):
+        corrected_tax = cache_manager.load_metadata_from_cache(
+            FILENAME, "taxonomy_corrected", variable_key, TaxonomyResultsCache)
+        if corrected_tax is not None:
+            pydantic_results = _project_corrected(corrected_tax).partition_results
+            corrected_cls = cache_manager.load_from_cache(
+                FILENAME, "taxonomy_classified_corrected", variable_key, TaxonomyClassifiedModel)
+            if corrected_cls:
+                classified_ideas = corrected_cls
+            print("  Using CORRECTED taxonomy (over-merge correction from step 4)")
 
     n_facets = sum(len(r.facets) for r in pydantic_results.values())
     n_attrs = sum(

@@ -122,6 +122,17 @@ class CategoriesConfig:
     p8_window_overlap: int = 2                         # overlap between adjacent windows (~20%)
     p8_similarity_threshold: float = 0.6               # noise floor for pairwise cosine similarity
 
+    # Post-hoc over-merge correction (consolidation_corrector, runs in step 5).
+    # Splits over-merged catch-all buckets back apart along provenance seams, using
+    # the THRESHOLD-FREE within-bucket own>sibling decision (no magic threshold).
+    correction_enabled: bool = True                    # DEFAULT ON (runs at step 5 start)
+    correction_code_source: str = "instance_interpretation"  # embedding text (mirror p8)
+    correction_embedding_model: str = "text-embedding-3-large"
+    correction_k_min: int = 5                          # min neighbours for a measurable source
+    correction_k_band: int = 2                         # own>sibling verdict checked across k ± band
+    correction_min_split_sources: int = 2              # >= this many own-clusters to split a bucket
+    correction_residual_dominance: float = 0.60        # share above which a source is the bucket's residual
+
     # Hierarchical consolidation (shared by P2 and P5)
     # When chunk count or total item count exceeds these limits,
     # consolidation becomes hierarchical: group → consolidate → recurse.

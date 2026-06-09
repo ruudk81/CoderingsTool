@@ -71,6 +71,11 @@ class DomainResultModel(BaseModel):
     # Pre-P7 snapshots (before cross-facet consolidation remaps)
     raw_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     raw_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
+    # Post-hoc over-merge correction (consolidation_corrector, step 5). Empty =
+    # uncorrected; populated copy of attributes/attribute_assignments with separable
+    # over-merged buckets split back along provenance seams. Consumed by step 5.
+    corrected_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
+    corrected_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
     # Assignment confidence scores (0.0-1.0)
     facet_confidence: Dict[str, float] = Field(default_factory=dict)
     attribute_confidence: Dict[str, float] = Field(default_factory=dict)
@@ -100,6 +105,8 @@ class TaxonomyClassifiedSubmodel(IdeasExtractedSubmodel):
     partition_name: Optional[str] = None  # Domain partition this idea belongs to
     facet_confidence: Optional[float] = None      # P3 assignment confidence (0.0-1.0)
     attribute_confidence: Optional[float] = None   # P6 assignment confidence (0.0-1.0)
+    corrected_attribute: Optional[str] = None  # post-hoc over-merge correction (None = unchanged)
+    corrected_facet: Optional[str] = None
 
 
 class TaxonomyClassifiedModel(IdeasExtractedModel):
