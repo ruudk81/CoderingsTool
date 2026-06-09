@@ -28,6 +28,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List
 
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
@@ -49,6 +53,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 OVERIG_TAIL_PCT = 0.10        # smallest children summing to ≤ this share of a parent → "overig"
 SAVE_CSV = True
+SAVE_XLSX = True              # one workbook, one worksheet per readout
 
 _UNASSIGNED = "__UNASSIGNED__"
 _NO_ATTR = "(geen attribuut)"
@@ -105,6 +110,14 @@ def _derived_sign(pct_neg: float) -> str:
 
 def _is_neg(valence: str) -> bool:
     return (valence or "").strip().lower() in _NEG_VALENCES
+
+
+_CATCHALL = {"other", "overig", "rest", _NO_GROUP, _NO_FACET, _NO_ATTR}
+
+
+def _is_catchall(label: str) -> bool:
+    """A catch-all / placeholder group that should sort to the bottom."""
+    return (label or "").strip().lower() in {c.lower() for c in _CATCHALL}
 
 
 class _Cell:
@@ -207,7 +220,7 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
             grp.setdefault(name, _Cell())
 
     rows = []
-    for key in sorted(grp, key=lambda k: (-grp[k].n, k.lower())):
+    for key in sorted(grp, key=lambda k: (_is_catchall(k), -grp[k].n, k.lower())):
         gc = grp[key]
         valence = cv.get(key, "~") if is_code else _derived_sign(_balance(gc)[1])
         rows.append(_row(0, key, valence, gc, pct_i, pct_r))
@@ -217,7 +230,7 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
         for a in src_attrs.get(key, []):
             items.setdefault(a, _Cell())
         kept, tail = _fold_tail(list(items.items()), gc.n, fold_tail)
-        for a, c in sorted(kept, key=lambda kv: -kv[1].n):
+        for a, c in sorted(kept, key=lambda kv: (_is_catchall(kv[0]), -kv[1].n)):
             rows.append(_row(1, a, "", c, pct_i, pct_r))
         if len(tail) >= 2:
             rows.append(_row(1, f"overig ({len(tail)} attrs)", "", _merge_cells([c for _, c in tail]), pct_i, pct_r))
@@ -258,16 +271,16 @@ def build_domain_facet_attr(responses, fold_tail, attr_of):
     pct_r = lambda k: (100.0 * k / n_responses) if n_responses else 0.0
 
     rows = []
-    for d in sorted(dom, key=lambda k: (-dom[k].n, k.lower())):
+    for d in sorted(dom, key=lambda k: (_is_catchall(k), -dom[k].n, k.lower())):
         rows.append(_row(0, d, _derived_sign(_balance(dom[d])[1]), dom[d], pct_i, pct_r))
-        for f in sorted(df[d], key=lambda k: -df[d][k].n):
+        for f in sorted(df[d], key=lambda k: (_is_catchall(k), -df[d][k].n)):
             rows.append(_row(1, f, _derived_sign(_balance(df[d][f])[1]), df[d][f], pct_i, pct_r))
             # A facet with a single attribute carries no extra info → show the facet only
             if len(dfa[d][f]) == 1:
                 continue
             attrs = list(dfa[d][f].items())
             kept, tail = _fold_tail(attrs, df[d][f].n, fold_tail)
-            for a, cell in sorted(kept, key=lambda kv: -kv[1].n):
+            for a, cell in sorted(kept, key=lambda kv: (_is_catchall(kv[0]), -kv[1].n)):
                 rows.append(_row(2, a, "", cell, pct_i, pct_r))
             if len(tail) >= 2:
                 rows.append(_row(2, f"overig ({len(tail)} attrs)", "",
@@ -309,8 +322,8 @@ def print_readout(title, header_label, rows, base_n, n_responses, n_unassigned, 
 
 
 def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
-    exports_dir = project_root / "exports"
-    exports_dir.mkdir(exist_ok=True)
+    exports_dir = project_root / "exports" / "codebook"
+    exports_dir.mkdir(parents=True, exist_ok=True)
     base = Path(FILENAME).stem.replace(" ", "_")
     csv_path = exports_dir / f"codebook_{base}_{VARIABLE}_{SAMPLE_SIZE}_{suffix}.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -329,14 +342,88 @@ def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
 
 
 # =============================================================================
+# XLSX EXPORT
+# =============================================================================
+
+_HDR_FILL = PatternFill("solid", fgColor="366092")
+_HDR_FONT = Font(bold=True, color="FFFFFF")
+_VAL_COLOR = {"+": "2E7D32", "-": "C62828", "~": "777777"}
+
+
+def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
+    """Write one readout to a worksheet: hierarchy split into columns, numeric
+    metrics, collapsible row groups, coloured valence."""
+    hier = header_label.split(" / ")                 # ["domain","facet","attribute"] | ["code"]
+    nh = len(hier)
+    cols = hier + ["val", "n", "% ideeën", "% resp", "% (+)", "% (-)"]
+    ncol = len(cols)
+
+    ws.append(cols)
+    for c in range(1, ncol + 1):
+        cell = ws.cell(1, c)
+        cell.fill, cell.font = _HDR_FILL, _HDR_FONT
+        cell.alignment = Alignment(horizontal="center")
+
+    for r in rows:
+        hcells = [""] * nh
+        if r["depth"] < nh:
+            hcells[r["depth"]] = r["label"]
+        pos = round(r["pct_pos"], 1) if r["n"] else None
+        neg = round(r["pct_neg"], 1) if r["n"] else None
+        ws.append(hcells + [r["valence"], r["n"], round(r["pct_ideas"], 1),
+                            round(r["pct_resp"], 1), pos, neg])
+        ri = ws.max_row
+        bold = (r["depth"] == 0)
+        for c in range(1, ncol + 1):
+            cell = ws.cell(ri, c)
+            if c == nh + 1 and r["valence"] in _VAL_COLOR:      # val column
+                cell.font = Font(bold=True, color=_VAL_COLOR[r["valence"]])
+                cell.alignment = Alignment(horizontal="center")
+            elif bold:
+                cell.font = Font(bold=True)
+        ws.cell(ri, nh + 2).number_format = "0"                 # n
+        for c in range(nh + 3, nh + 7):                          # % columns
+            ws.cell(ri, c).number_format = '0.0"%"'
+        ws.row_dimensions[ri].outline_level = min(r["depth"], 7)
+
+    last_data = ws.max_row
+    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 100.0, None, None, None])
+    for c in range(1, ncol + 1):
+        ws.cell(ws.max_row, c).font = Font(bold=True)
+    ws.cell(ws.max_row, nh + 2).number_format = "0"
+    ws.cell(ws.max_row, nh + 3).number_format = '0.0"%"'
+    ws.append([])
+    ws.append([f"responses: {n_responses}"])
+    if n_unassigned:
+        ws.append([f"__UNASSIGNED__ (excl. van %-basis): {n_unassigned}"])
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(ncol)}{last_data}"
+    ws.sheet_properties.outlinePr.summaryBelow = False
+    for c in range(1, ncol + 1):
+        width = max((len(str(ws.cell(r, c).value)) for r in range(1, last_data + 1)
+                     if ws.cell(r, c).value is not None), default=8)
+        ws.column_dimensions[get_column_letter(c)].width = min(max(width + 2, 8), 55)
+
+
+def save_xlsx(wb):
+    exports_dir = project_root / "exports" / "codebook"
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    base = Path(FILENAME).stem.replace(" ", "_")
+    path = exports_dir / f"codebook_{base}_{VARIABLE}_{SAMPLE_SIZE}.xlsx"
+    wb.save(path)
+    print(f"\nXLSX → {path}")
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
-# (title, header_label, builder spec, csv_suffix)
+# (title, sheet_name, header_label, builder spec, csv_suffix)
 VERSIONS = [
-    ("CODEBOOK",            "code",                          ("groups", "code", False, False), "codebook"),
-    ("TAXONOMIE",            "domain / facet / attribute",     ("dfa", "consolidated"), "taxonomie"),
-    ("TAXONOMIE (ruwe attr)", "domain / facet / raw attribute", ("dfa", "raw"),          "taxonomie_raw"),
+    ("CODEBOOK",             "Codeboek",         "code",                          ("groups", "code", False, False), "codebook"),
+    ("TAXONOMIE",             "Taxonomie (grof)", "domain / facet / attribute",     ("dfa", "consolidated"), "taxonomie"),
+    ("TAXONOMIE (ruwe attr)", "Taxonomie (fijn)", "domain / facet / raw attribute", ("dfa", "raw"),          "taxonomie_raw"),
 ]
 
 if __name__ == "__main__":
@@ -345,7 +432,10 @@ if __name__ == "__main__":
         "consolidated": lambda i: i.assigned_attribute,
         "raw": lambda i: raw_map.get(i.idea_id, ""),
     }
-    for title, header, spec, suffix in VERSIONS:
+    wb = Workbook() if SAVE_XLSX else None
+    if wb is not None:
+        wb.remove(wb.active)
+    for title, sheet_name, header, spec, suffix in VERSIONS:
         if spec[0] == "groups":
             _, group_by, show_attrs, fold = spec
             rows, base_n, n_resp, n_una = build_groups(
@@ -358,5 +448,10 @@ if __name__ == "__main__":
         print_readout(title, header, rows, base_n, n_resp, n_una, compact)
         if SAVE_CSV:
             save_csv(suffix, header, rows, base_n, n_resp, n_una)
+        if wb is not None:
+            write_xlsx_sheet(wb.create_sheet(title=sheet_name), header,
+                             rows, base_n, n_resp, n_una)
+    if wb is not None:
+        save_xlsx(wb)
 
 # %%
