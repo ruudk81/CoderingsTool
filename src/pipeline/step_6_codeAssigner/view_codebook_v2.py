@@ -75,12 +75,17 @@ def _within_parent_shares(rows):
 
 def write_sheet_v2(ws, header_label, rows, base_n, n_responses, n_unassigned):
     """Write one readout to a worksheet — v2 styling. Same contract as
-    `view_codebook.write_xlsx_sheet`, so it generalizes to any sheet (nh columns)."""
+    `view_codebook.write_xlsx_sheet`, so it generalizes to any sheet (nh columns).
+    The within-parent `% ouder` column (and inline shares) appear only where the
+    sheet nests (nh > 1); a flat sheet like Codeboek (nh == 1) omits them."""
     hier = header_label.split(" / ")                 # ["domain","facet","attribute"] | ["code"]
     nh = len(hier)
-    cols = hier + ["val", "n bruto", "% bruto", "% ouder", "n netto", "% netto", "% (+)", "% (-)"]
+    nested = nh > 1
+    cols = hier + ["val", "n bruto", "% bruto"] + (["% ouder"] if nested else []) \
+        + ["n netto", "% netto", "% (+)", "% (-)"]
     ncol = len(cols)
     col = {name: i for i, name in enumerate(cols, start=1)}   # 1-based index by header name
+    pct_cols = [n for n in ("% bruto", "% ouder", "% netto", "% (+)", "% (-)") if n in col]
 
     shares, sole = _within_parent_shares(rows)
 
@@ -102,8 +107,11 @@ def write_sheet_v2(ws, header_label, rows, base_n, n_responses, n_unassigned):
             hcells[d] = BULLETS.get(d, "") + r["label"] + suffix
         pos = round(r["pct_pos"], 1) / 100 if r["n"] else None
         neg = round(r["pct_neg"], 1) / 100 if r["n"] else None
-        ws.append(hcells + [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100, ouder,
-                            r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neg])
+        metrics = [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100]
+        if nested:
+            metrics.append(ouder)
+        metrics += [r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neg]
+        ws.append(hcells + metrics)
         ri = ws.max_row
         bold = (d == 0)
         for c in range(1, ncol + 1):
@@ -115,13 +123,14 @@ def write_sheet_v2(ws, header_label, rows, base_n, n_responses, n_unassigned):
                 cell.font = Font(bold=True)
         ws.cell(ri, col["n bruto"]).number_format = "0"
         ws.cell(ri, col["n netto"]).number_format = "0"
-        for name in ("% bruto", "% ouder", "% netto", "% (+)", "% (-)"):
+        for name in pct_cols:
             ws.cell(ri, col[name]).number_format = "0.0%"
         ws.row_dimensions[ri].outline_level = min(d, 7)
 
     last_data = ws.max_row
     netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
-    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 1.0, None, netto_base, 1.0, None, None])
+    total_metrics = ["", base_n, 1.0] + ([None] if nested else []) + [netto_base, 1.0, None, None]
+    ws.append(["TOTAAL"] + [""] * (nh - 1) + total_metrics)
     tr = ws.max_row
     for c in range(1, ncol + 1):
         ws.cell(tr, c).font = Font(bold=True)
@@ -156,25 +165,56 @@ def _apply_widths_v2(ws, nh, ncol, last_data):
 # =============================================================================
 # ENTRY POINT
 # =============================================================================
+def _append_leeswijzer(ws):
+    """Append a small v2 reading guide below the reused production legend."""
+    ws.append([])
+    ws.append(["Leeswijzer v2"])
+    ws.cell(ws.max_row, 1).font = Font(bold=True)
+    for line in (
+        "•  = facet     –  = attribuut",
+        "(NN%) achter een facet/attribuut = aandeel binnen de ouder "
+        "(facet binnen domein, attribuut binnen facet), o.b.v. bruto — telt op tot 100% per ouder.",
+        "Kolom '% ouder' toont ditzelfde aandeel, sorteerbaar.",
+    ):
+        ws.append([line])
+
+
 def export_codebook_v2(filename: str = None, var_name: str = None,
                        sample_size=None) -> Path:
-    """Build the v2 Taxonomie (grof) workbook and write `..._v2.xlsx`.
+    """Build the v2 workbook (Legenda, Codeboek, Taxonomie grof, Taxonomie fijn)
+    and write `..._v2.xlsx`.
 
-    Rebinds the `view_codebook` module globals so its cache-reading `load_data`
-    sees the right dataset — the same pattern the production `export_codebook` uses.
+    Reuses the production data builders and legend from `view_codebook` (read-only)
+    and rebinds its module globals so `load_data` sees the right dataset — the same
+    pattern the production `export_codebook` uses.
     """
     vc.FILENAME = TEST_DATA.filename if filename is None else filename
     vc.VARIABLE = TEST_DATA.var_name if var_name is None else var_name
     vc.SAMPLE_SIZE = TEST_DATA.sample_size if sample_size is None else sample_size
 
     responses, codebook, raw_map, metadata, tax = vc.load_data()
-    rows, base_n, n_resp, n_una = vc.build_domain_facet_attr(
-        responses, fold_tail=True, attr_of=lambda i: i.assigned_attribute)
+    attr_sources = {
+        "consolidated": lambda i: i.assigned_attribute,
+        "raw": lambda i: raw_map.get(i.idea_id, ""),
+    }
 
     wb = Workbook()
     wb.remove(wb.active)
-    ws = wb.create_sheet(title="Taxonomie (grof)")
-    write_sheet_v2(ws, "domain / facet / attribute", rows, base_n, n_resp, n_una)
+
+    # Tab 1 — Legenda: reuse the production legend, then append the v2 reading guide.
+    legend_ws = wb.create_sheet(title="Legenda")
+    vc.write_legend_sheet(legend_ws, vc.build_legend(codebook, metadata, tax))
+    _append_leeswijzer(legend_ws)
+
+    # Tabs 2-4 — Codeboek, Taxonomie (grof), Taxonomie (fijn), in the production order.
+    for _title, sheet_name, header, spec, _suffix in vc.VERSIONS:
+        if spec[0] == "groups":
+            _, group_by, show_attrs, fold = spec
+            rows, base_n, n_resp, n_una = vc.build_groups(responses, codebook, group_by, show_attrs, fold)
+        else:
+            rows, base_n, n_resp, n_una = vc.build_domain_facet_attr(
+                responses, fold_tail=True, attr_of=attr_sources[spec[1]])
+        write_sheet_v2(wb.create_sheet(title=sheet_name), header, rows, base_n, n_resp, n_una)
 
     out_dir = vc.codebook_export_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
