@@ -25,6 +25,8 @@ from openpyxl.utils import get_column_letter
 
 from test_data import TEST_DATA
 from pipeline.step_6_codeAssigner import view_codebook as vc
+from pipeline.step_7_export.resultsExporter import build_catalog, ResultsExporter
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 
 
 # =============================================================================
@@ -201,9 +203,17 @@ def export_codebook_v2(filename: str = None, var_name: str = None,
     wb = Workbook()
     wb.remove(wb.active)
 
-    # Tab 1 — Legenda: reuse the production legend, then append the v2 reading guide.
+    # Tab 1 — Legenda: reuse step 7's canonical catalog legend — Codeboek + A/B/C
+    # (facetten per domein) + D Attributen (grof) + E Attributen (fijn), all WITH
+    # definitions. The old view_codebook.build_legend read a different, name-deduped
+    # source that didn't match the tabs; build_catalog is the single source of truth
+    # for the full grof/fijn taxonomy. (_write_legend_sheet is reused as-is, kept
+    # single-source until v2 is promoted.) A v2 reading guide is appended below it.
+    codes = [ConsolidatedCode(**c) if isinstance(c, dict) else c for c in (codebook.raw_codes or [])]
+    cat = build_catalog(codes, codebook.partition_set, codebook.partition_results,
+                        metadata, responses, tax)
     legend_ws = wb.create_sheet(title="Legenda")
-    vc.write_legend_sheet(legend_ws, vc.build_legend(codebook, metadata, tax))
+    ResultsExporter(verbose=False)._write_legend_sheet(legend_ws, cat)
     _append_leeswijzer(legend_ws)
 
     # Tabs 2-4 — Codeboek, Taxonomie (grof), Taxonomie (fijn), in the production order.
