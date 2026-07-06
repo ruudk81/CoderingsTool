@@ -130,7 +130,7 @@ def run_step(config: StepConfig = None):
 
     # Apply sample size truncation
     original_count = len(raw_text_list)
-    if config.sample_size and len(raw_text_list) > config.sample_size:
+    if isinstance(config.sample_size, int) and len(raw_text_list) > config.sample_size:
         raw_text_list = raw_text_list[:config.sample_size]
         verbose_reporter.stat_line(f"Truncated: {len(raw_text_list)} of {original_count} responses (sample_size={config.sample_size})")
     else:
