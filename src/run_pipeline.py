@@ -145,6 +145,14 @@ def run_pipeline(
         from pipeline.step_7_export.run_export import run_step as run_step_7, StepConfig as Step7Config
         config_7 = Step7Config(force_recalc=step_force(7))
         run_step_7(config_7)
+        # Also write the standalone codebook/taxonomy readout to exports/codebook/
+        # (same call the Streamlit app makes at the Export step — reused as-is).
+        from pipeline.step_6_codeAssigner.view_codebook import export_codebook
+        export_codebook(
+            filename=TEST_DATA.filename,
+            var_name=TEST_DATA.var_name,
+            sample_size=TEST_DATA.sample_size,
+        )
 
     # --- Summary ---
     elapsed = time.time() - pipeline_start
