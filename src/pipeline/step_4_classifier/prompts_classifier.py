@@ -448,37 +448,28 @@ Here are the facets discovered from analyzing different chunks of the survey dat
 
 Apply these rules strictly when consolidating facets:
 
-**Rule 1: MERGE OVERLAP (MANDATORY)**
-All facets that conceptually overlap or are variants of the same idea MUST be merged into a single facet.
+Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping by these rules, in order.
 
-**Rule 2: ORTHOGONALITY (MAIN RULE)**
-For each pair of facets, ask: "Can a single observation plausibly fall under both?"
-- If YES → merge them
-- If DOUBTFUL → merge them
-- Only if CLEARLY NO → keep them separate
+**1. DIMENSION FIRST (orthogonality — the guardrail).**
+For each concept, determine WHICH underlying dimension it answers.
+- Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one facet (e.g. socio-economic class vs political orientation vs age are different dimensions).
+- Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
+- Do NOT create separate facets based only on the object discussed (e.g. "humans" vs "animals") when the same underlying value applies — an object is not a dimension.
 
-**Rule 3: NO HIERARCHY**
-Facets must not have a general-to-specific or principle-to-application relationship.
-If one facet is a more general or specific version of another → merge them
+**2. PREVALENCE SETS GRANULARITY (within a dimension only).**
+- A high-count value keeps its own facet — never dissolve a well-supported concept.
+- Several thin, same-dimension values are GROUPED into one facet that still names the shared value/contrast in plain language.
+Prevalence decides how finely to split WITHIN a dimension; it NEVER licenses merging ACROSS dimensions.
 
-**Rule 4: NO OBJECT SPLITTING**
-Do not create separate facets based solely on the object being discussed (e.g., "humans" vs. "animals").
-If the same underlying principle or concept applies → merge them
+**3. LIFT, DON'T FLATTEN.**
+When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
+FORBIDDEN: empty containers that only name the dimension ("target-group positioning", "institutional trust", "size").
+REQUIRED: a stateable value a reader can picture ("a bank for ordinary people", "a trustworthy bank", "a small bank").
 
-**Rule 5: MINIMALITY (MANDATORY)**
-Use the smallest number of facets that provides full coverage of the observations.
-If a facet is not strictly necessary to capture a distinct concept → remove it or merge it
+**4. PLAIN, MEANINGFUL LABELS.**
+Name every surviving facet in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
 
-**Disambiguation Test:**
-For any pair of facets, ask: "Can a clear rule assign every observation to exactly one facet?"
-- If NO → merge them
-
-**Precedence When Rules Conflict:**
-1. Non-overlap (orthogonality) is most important
-2. Minimality (merge unless clearly distinct)
-3. Clarity for annotation
-
-**When in doubt → merge facets**
+**Precedence when rules conflict:** 1 (orthogonality) > 2 (prevalence grouping) > 4 (label clarity).
 
 # Step-by-Step Analysis Process
 
@@ -490,11 +481,11 @@ Review all facets from all chunks. Note recurring themes, similar concepts, and 
 **Step 2 -- Group overlapping facets**
 Identify and group facets that describe the same or overlapping concepts across different chunks.
 
-**Step 3 -- Apply orthogonality test**
-For each pair of candidate consolidated facets, ask: "Can a single observation plausibly fall under both?" If yes or doubtful → merge them.
+**Step 3 -- Apply the dimension test**
+For each pair of candidate facets, ask: "Do these answer the SAME underlying dimension, or DIFFERENT dimensions?" Different dimensions (or opposite poles of one dimension) → keep separate; same dimension and same meaning → group.
 
-**Step 4 -- Apply disambiguation test**
-For each pair of remaining facets, ask: "Can a clear rule assign every observation to exactly one facet?" If no → merge them.
+**Step 4 -- Group thin same-dimension facets by prevalence**
+Within a dimension, keep high-count values as their own facet; group several thin same-dimension values under one meaningful, plainly-named facet. Never merge across dimensions.
 
 **Step 5 -- Verify domain boundaries**
 Ensure each retained facet belongs to the included domain and not to any excluded domain:
@@ -532,8 +523,8 @@ class FacetConsolidatedResponse(BaseModel):
             "Step-by-step reasoning before consolidating facets: "
             "(1) scan chunk-level facets for recurring themes and duplicates, "
             "(2) group overlapping facets across chunks, "
-            "(3) apply orthogonality test — merge if observation could fall under both, "
-            "(4) apply disambiguation test — merge if no clear assignment rule, "
+            "(3) apply the dimension test — keep different dimensions or opposite poles separate, "
+            "(4) group thin same-dimension facets by prevalence into meaningful, plainly-named facets, "
             "(5) verify domain boundaries — exclude facets belonging to other domains, "
             "(6) prepare final minimal set of consolidated facets"
         )
@@ -967,37 +958,29 @@ Here are the attributes discovered from analyzing different chunks of the survey
 
 Apply these rules strictly when consolidating attributes:
 
-**Rule 1: MERGE OVERLAP (MANDATORY)**
-All attributes that conceptually overlap or are variants of the same idea MUST be merged into a single attribute. This includes variants that differ only in evaluative direction (e.g. "positive X" and "negative X" -> one attribute "X"); positive/negative is recorded separately as valence, not as separate attributes.
+Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping by these rules, in order.
 
-**Rule 2: ORTHOGONALITY (MAIN RULE)**
-For each pair of attributes, ask: "Can a single observation plausibly fall under both?"
-- If YES → merge them
-- If DOUBTFUL → merge them
-- Only if CLEARLY NO → keep them separate
+**1. DIMENSION FIRST (orthogonality — the guardrail).**
+For each concept, determine WHICH underlying dimension it answers.
+- Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one attribute (e.g. socio-economic class vs political orientation vs age are different dimensions).
+- Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
+- Do NOT create separate attributes based only on the object discussed (e.g. "humans" vs "animals") when the same underlying value applies — an object is not a dimension.
 
-**Rule 3: NO HIERARCHY**
-Attributes must not have a general-to-specific or principle-to-application relationship.
-If one attribute is a more general or specific version of another → merge them
+**2. PREVALENCE SETS GRANULARITY (within a dimension only).**
+- A high-count value keeps its own attribute — never dissolve a well-supported concept.
+- Several thin, same-dimension values are GROUPED into one attribute that still names the shared value/contrast in plain language.
+- Variants that differ only in evaluative direction ("positive X" and "negative X") collapse to ONE attribute "X"; the direction is recorded separately as valence, not as separate attributes.
+Prevalence decides how finely to split WITHIN a dimension; it NEVER licenses merging ACROSS dimensions.
 
-**Rule 4: NO OBJECT SPLITTING**
-Do not create separate attributes based solely on the object being discussed (e.g., "humans" vs. "animals").
-If the same underlying principle or concept applies → merge them
+**3. LIFT, DON'T FLATTEN.**
+When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
+FORBIDDEN: empty containers that only name the dimension ("target-group positioning", "institutional trust", "size").
+REQUIRED: a stateable value a reader can picture ("a bank for ordinary people", "a trustworthy bank", "a small bank").
 
-**Rule 5: MINIMALITY (MANDATORY)**
-Use the smallest number of attributes that provides full coverage of the observations.
-If an attribute is not strictly necessary to capture a distinct concept → remove it or merge it
+**4. PLAIN, MEANINGFUL LABELS.**
+Name every surviving attribute in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
 
-**Disambiguation Test:**
-For any pair of attributes, ask: "Can a clear rule assign every observation to exactly one attribute?"
-- If NO → merge them
-
-**Precedence When Rules Conflict:**
-1. Non-overlap (orthogonality) is most important
-2. Minimality (merge unless clearly distinct)
-3. Clarity for annotation
-
-**When in doubt → merge attributes**
+**Precedence when rules conflict:** 1 (orthogonality) > 2 (prevalence grouping) > 4 (label clarity).
 
 # Step-by-Step Analysis Process
 
@@ -1009,11 +992,11 @@ Review all attributes from all chunks. Note recurring themes, similar concepts, 
 **Step 2 -- Group overlapping attributes**
 Identify and group attributes that describe the same or overlapping concepts across different chunks.
 
-**Step 3 -- Apply orthogonality test**
-For each pair of candidate consolidated attributes, ask: "Can a single observation plausibly fall under both?" If yes or doubtful → merge them.
+**Step 3 -- Apply the dimension test**
+For each pair of candidate attributes, ask: "Do these answer the SAME underlying dimension, or DIFFERENT dimensions?" Different dimensions (or opposite poles of one dimension) → keep separate; same dimension and same meaning → group.
 
-**Step 4 -- Apply disambiguation test**
-For each pair of remaining attributes, ask: "Can a clear rule assign every observation to exactly one attribute?" If no → merge them.
+**Step 4 -- Group thin same-dimension attributes by prevalence**
+Within a dimension, keep high-count values as their own attribute; group several thin same-dimension values under one meaningful, plainly-named attribute. Never merge across dimensions.
 
 **Step 5 -- Verify facet boundaries**
 Ensure each retained attribute belongs to the included facet and not to any excluded facet:
@@ -1042,8 +1025,8 @@ All attribute names and descriptions must be in {language}.
 - Attributes must be **internally coherent** (one clear concept each)
 - Attributes must be **externally distinctive** (no overlap, no subset/superset relationships)
 - Attributes must remain **strictly within the included facet**
-- Prioritize **minimality**: fewer attributes are better if they provide full coverage
-- **When in doubt, merge** rather than keep separate
+- Group thin same-dimension values, but never merge across dimensions or opposite poles
+- **When in doubt, check the dimension** before grouping
 - All output must be in {language}
 
 Begin by writing your step-by-step analysis in the scratchpad field, then provide your final consolidated attributes in valid JSON format."""
@@ -1056,8 +1039,8 @@ class AttributeChunkConsolidatedResponse(BaseModel):
             "Step-by-step reasoning before consolidating attributes: "
             "(1) scan chunk-level attributes for recurring themes and duplicates, "
             "(2) group overlapping attributes across chunks, "
-            "(3) apply orthogonality test -- merge if observation could fall under both, "
-            "(4) apply disambiguation test -- merge if no clear assignment rule, "
+            "(3) apply the dimension test -- keep different dimensions or opposite poles separate, "
+            "(4) group thin same-dimension attributes by prevalence into meaningful, plainly-named attributes, "
             "(5) verify facet boundaries -- exclude attributes belonging to other facets, "
             "(6) prepare final minimal set of consolidated attributes"
         )
@@ -1245,97 +1228,57 @@ Conceptualization:
 # Attribute Consolidation Rules
 
 <strict_consolidation_rule>
-1. PREVALENCE WEIGHTING
-Attributes MUST be primarily driven by the **number of ideas linked to attributes**.
+Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping by these rules, in order.
 
-- Attributes with HIGH idea counts MUST form the **core structure of the codebook**.
-- Attributes with LOW idea counts MUST NOT become standalone attributes unless absolutely necessary.
-- LOW-prevalence attributes SHOULD be:
-  - merged into the closest HIGH-prevalence phenomenon, OR
-  - grouped into a broader combined phenomenon.
+1. DIMENSION FIRST (orthogonality — the guardrail).
+   For each concept, determine WHICH underlying dimension it answers.
+   - Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one attribute (e.g. socio-economic class vs political orientation vs age are different dimensions).
+   - Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
+   - Do NOT create separate attributes based only on the object discussed (e.g. "humans" vs "animals") when the same underlying value applies — an object is not a dimension.
 
-If forced to choose between:
-- conceptual nuance
-- prevalence dominance
+2. PREVALENCE SETS GRANULARITY (within a dimension only).
+   - A high-count value keeps its own attribute — never dissolve a well-supported concept.
+   - Several thin, same-dimension values are GROUPED into one attribute that still names the shared value/contrast in plain language.
+   - Variants that differ only in evaluative direction ("positive X" and "negative X") collapse to ONE attribute "X"; the direction is recorded separately as valence, not as separate attributes.
+   Prevalence decides how finely to split WITHIN a dimension; it NEVER licenses merging ACROSS dimensions.
 
---> ALWAYS prioritize prevalence dominance.
+3. LIFT, DON'T FLATTEN.
+   When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
+   FORBIDDEN: empty containers that only name the dimension ("target-group positioning", "institutional trust", "size").
+   REQUIRED: a stateable value a reader can picture ("a bank for ordinary people", "a trustworthy bank", "a small bank").
 
-2. MERGE BIAS
-When in doubt:
-- MERGE rather than split
-- Especially when an attribute has relatively few ideas
+4. PLAIN, MEANINGFUL LABELS.
+   Name every surviving attribute in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
 
-Attributes with low prevalence (e.g., <10-15 ideas) should almost never result in standalone attributes.
+5. FACET ASSIGNMENT.
+   Assign each surviving attribute to the ONE facet where it fits best.
+   Do NOT restructure or rename facets -- only deduplicate attributes.
 
-3. MERGE OVERLAP (MANDATORY)
-All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different facets. This includes variants that differ only in evaluative direction (e.g. "positive X" and "negative X" -> one attribute "X"); positive/negative is recorded separately as valence, not as separate attributes.
-
-4. ORTHOGONALITY (MAIN RULE)
-For each pair of attributes:
-"Can a single observation plausibly fall under both?"
-
-- Yes -> merge
-- Doubt -> merge
-- Only if clearly no -> keep separate
-
-5. NO HIERARCHY
-Attributes must not be:
-- general vs. specific
-- principle vs. application
-If this occurs -> merge
-
-6. NO OBJECT SPLITTING
-Do not split based on object (e.g., humans vs. animals)
-If the same underlying principle applies -> merge
-
-7. MINIMALITY (MANDATORY)
-Use the smallest number of attributes that provides full coverage.
-If an attribute is not strictly necessary -> remove it
-
-8. FACET ASSIGNMENT
-Assign each surviving attribute to the ONE facet where it fits best.
-Do NOT restructure or rename facets -- only deduplicate attributes.
+Precedence when rules conflict: 1 (orthogonality) > 2 (prevalence grouping) > 4 (label clarity).
 </strict_consolidation_rule>
-
-<disambiguation_test>
-For any pair of attributes:
-"Can a clear rule assign every observation to exactly one attribute?"
-- No -> merge
-</disambiguation_test>
-
-<precedence_rule>
-When rules conflict, prioritize:
-1. Non-overlap (orthogonality)
-2. Minimality (merge unless clearly distinct)
-3. Clarity for annotation
-
-When in doubt -> merge attributes
-</precedence_rule>
 
 # Required Process
 
 Before writing your final output, think through your analysis in the scratchpad field:
 
-**Step 1 -- Identify High-Prevalence Anchors**
-- Identify attributes with the highest number of ideas.
-- Treat these as the PRIMARY building blocks of the consolidated inventory.
+**Step 1 -- Identify the dimensions present**
+- Group the attributes by the underlying dimension each one answers.
+- Different dimensions stay separate inventories; never collapse across them.
 
-**Step 2 -- Map Lower-Prevalence Attributes**
-- Map lower-prevalence attributes onto these high-prevalence anchors wherever possible.
-- Only keep an attribute separate if it:
-  - is conceptually distinct AND
-  - cannot reasonably be merged.
+**Step 2 -- Within each dimension, set granularity by prevalence**
+- Keep high-count values as their own attribute.
+- Group several thin, same-dimension values under one meaningful, plainly-named attribute.
+- Never merge opposite poles of a dimension or values from different dimensions.
 
-**Step 3 -- Apply orthogonality and disambiguation tests**
-For each pair of candidate attributes, apply the orthogonality test and disambiguation test. Merge if either test fails.
+**Step 3 -- Apply the dimension test to any candidate merge**
+For each pair you consider merging, ask: "Do these answer the SAME dimension and mean the same thing?" Only then merge; different dimensions or opposite poles stay separate.
 
 **Step 4 -- Verify domain boundaries**
 Ensure each retained attribute belongs to this domain and not to any excluded domain:
 {excluded_block_light}
 
-**Step 5 -- Justify Low-Prevalence Attributes (MANDATORY)**
-- If any attribute is primarily based on low idea counts:
-- Explicitly justify why it was NOT merged into a higher-prevalence phenomenon.
+**Step 5 -- Check every label is a plain, stateable value**
+- No dimension-name containers; each label names a value a layperson can picture.
 
 **Step 6 -- Prepare final output**
 Return only the minimal set of consolidated attributes that pass all checks.
@@ -1392,11 +1335,11 @@ class AttributeConsolidatedResponse(BaseModel):
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before consolidating attributes: "
-            "(1) identify high-prevalence anchors from idea counts, "
-            "(2) map lower-prevalence attributes onto anchors, "
-            "(3) apply orthogonality and disambiguation tests, "
+            "(1) identify the dimensions present and group attributes by dimension, "
+            "(2) within each dimension, set granularity by prevalence (group thin values, keep high-count ones), "
+            "(3) apply the dimension test -- merge only same-dimension, same-meaning values; keep different dimensions and opposite poles separate, "
             "(4) verify domain boundaries -- exclude attributes belonging to other domains, "
-            "(5) justify any low-prevalence attributes kept separate, "
+            "(5) check every label is a plain, stateable value (no dimension-name containers), "
             "(6) prepare final minimal set of consolidated attributes"
         )
     )
@@ -1486,96 +1429,54 @@ Conceptualization:
 # Attribute Consolidation Rules
 
 <strict_consolidation_rule>
-1. PREVALENCE WEIGHTING
-Attributes MUST be primarily driven by the **number of ideas linked to attributes**.
+Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping by these rules, in order.
 
-- Attributes with HIGH idea counts MUST form the **core structure of the codebook**.
-- Attributes with LOW idea counts MUST NOT become standalone attributes unless absolutely necessary.
-- LOW-prevalence attributes SHOULD be:
-  - merged into the closest HIGH-prevalence phenomenon, OR
-  - grouped into a broader combined phenomenon.
+1. DIMENSION FIRST (orthogonality — the guardrail).
+   For each concept, determine WHICH underlying dimension it answers.
+   - Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one attribute (e.g. socio-economic class vs political orientation vs age are different dimensions).
+   - Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
+   - Do NOT create separate attributes based only on the object discussed (e.g. "humans" vs "animals") when the same underlying value applies — an object is not a dimension.
+   - RESPECT DOMAIN BOUNDARIES: each domain above may list what it "Excludes (belong to other domains)". Do NOT merge an attribute into a domain that excludes its concept, and never set a consolidated attribute's parent_domain to a domain whose Excludes covers it.
 
-If forced to choose between:
-- conceptual nuance
-- prevalence dominance
+2. PREVALENCE SETS GRANULARITY (within a dimension only).
+   - A high-count value keeps its own attribute — never dissolve a well-supported concept.
+   - Several thin, same-dimension values are GROUPED into one attribute that still names the shared value/contrast in plain language.
+   Prevalence decides how finely to split WITHIN a dimension; it NEVER licenses merging ACROSS dimensions.
 
---> ALWAYS prioritize prevalence dominance.
+3. LIFT, DON'T FLATTEN.
+   When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
+   FORBIDDEN: empty containers that only name the dimension ("target-group positioning", "institutional trust", "size").
+   REQUIRED: a stateable value a reader can picture ("a bank for ordinary people", "a trustworthy bank", "a small bank").
 
-2. MERGE BIAS
-When in doubt:
-- MERGE rather than split
-- Especially when an attribute has relatively few ideas
+4. PLAIN, MEANINGFUL LABELS.
+   Name every surviving attribute in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
 
-Attributes with low prevalence (e.g., <10-15 ideas) should almost never result in standalone attributes.
+5. DOMAIN & FACET ASSIGNMENT.
+   Assign each surviving attribute to the ONE domain and ONE facet where it fits best.
+   If two domains fit equally well, assign to the domain with MORE ideas for that attribute.
+   Do NOT restructure or rename domains or facets -- only deduplicate attributes.
 
-3. MERGE OVERLAP (MANDATORY)
-All attributes that conceptually overlap or are variants of the same idea must be merged, even if they were discovered under different domains.
-
-RESPECT DOMAIN BOUNDARIES: each domain above may list what it "Excludes (belong to other domains)". Do NOT merge an attribute into a domain that excludes its concept, and never set a consolidated attribute's parent_domain to a domain whose Excludes covers it.
-
-4. ORTHOGONALITY (MAIN RULE)
-For each pair of attributes:
-"Can a single observation plausibly fall under both?"
-
-- Yes -> merge
-- Doubt -> merge
-- Only if clearly no -> keep separate
-
-5. NO HIERARCHY
-Attributes must not be:
-- general vs. specific
-- principle vs. application
-If this occurs -> merge
-
-6. NO OBJECT SPLITTING
-Do not split based on object (e.g., humans vs. animals)
-If the same underlying principle applies -> merge
-
-7. MINIMALITY (MANDATORY)
-Use the smallest number of attributes that provides full coverage.
-If an attribute is not strictly necessary -> remove it
-
-8. DOMAIN & FACET ASSIGNMENT
-Assign each surviving attribute to the ONE domain and ONE facet where it fits best.
-If two domains fit equally well, assign to the domain with MORE ideas for that attribute.
-Do NOT restructure or rename domains or facets -- only deduplicate attributes.
+Precedence when rules conflict: 1 (orthogonality) > 2 (prevalence grouping) > 4 (label clarity).
 </strict_consolidation_rule>
-
-<disambiguation_test>
-For any pair of attributes:
-"Can a clear rule assign every observation to exactly one attribute?"
-- No -> merge
-</disambiguation_test>
-
-<precedence_rule>
-When rules conflict, prioritize:
-1. Non-overlap (orthogonality)
-2. Minimality (merge unless clearly distinct)
-3. Clarity for annotation
-
-When in doubt -> merge attributes
-</precedence_rule>
 
 # Required Process
 
 Before writing your final output, think through your analysis in the scratchpad field:
 
-**Step 1 -- Identify High-Prevalence Anchors**
-- Identify attributes with the highest number of ideas.
-- Treat these as the PRIMARY building blocks of the consolidated inventory.
+**Step 1 -- Identify the dimensions present**
+- Group the attributes by the underlying dimension each one answers.
+- Different dimensions stay separate inventories; never collapse across them.
 
-**Step 2 -- Map Lower-Prevalence Attributes**
-- Map lower-prevalence attributes onto these high-prevalence anchors wherever possible.
-- Only keep an attribute separate if it:
-  - is conceptually distinct AND
-  - cannot reasonably be merged.
+**Step 2 -- Within each dimension, set granularity by prevalence**
+- Keep high-count values as their own attribute.
+- Group several thin, same-dimension values under one meaningful, plainly-named attribute.
+- Never merge opposite poles of a dimension or values from different dimensions.
 
-**Step 3 -- Apply orthogonality and disambiguation tests**
-For each pair of candidate attributes, apply the orthogonality test and disambiguation test. Merge if either test fails.
+**Step 3 -- Apply the dimension test to any candidate merge**
+For each pair you consider merging, ask: "Do these answer the SAME dimension and mean the same thing?" Only then merge; respect domain-exclusion boundaries.
 
-**Step 4 -- Justify Low-Prevalence Attributes (MANDATORY)**
-- If any attribute is primarily based on low idea counts:
-- Explicitly justify why it was NOT merged into a higher-prevalence phenomenon.
+**Step 4 -- Check every label is a plain, stateable value**
+- No dimension-name containers; each label names a value a layperson can picture.
 
 **Step 5 -- Assign domain and facet**
 For each surviving attribute, assign it to the best-fitting domain and facet.
@@ -1635,10 +1536,10 @@ class CrossDomainConsolidatedResponse(BaseModel):
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before consolidating attributes: "
-            "(1) identify high-prevalence anchors from idea counts, "
-            "(2) map lower-prevalence attributes onto anchors, "
-            "(3) apply orthogonality and disambiguation tests across domains, "
-            "(4) justify any low-prevalence attributes kept separate, "
+            "(1) identify the dimensions present and group attributes by dimension, "
+            "(2) within each dimension, set granularity by prevalence (group thin values, keep high-count ones), "
+            "(3) apply the dimension test across domains -- merge only same-dimension, same-meaning values; respect domain-exclusion boundaries, "
+            "(4) check every label is a plain, stateable value (no dimension-name containers), "
             "(5) assign each surviving attribute to the best domain and facet, "
             "(6) prepare final minimal set of consolidated attributes"
         )
