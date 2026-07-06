@@ -43,6 +43,11 @@ _VAL_COLOR = {"+": "2E7D32", "-": "C62828", "~": "777777"}
 # its last value. This is the knob we tune.
 HIER_WIDTHS = [12, 18]   # domein, facet
 
+# Readability tweak #2 — per-level bullet prefix on the hierarchy labels, so
+# facets and attributes are visually marked and distinct from each other. Keyed
+# by depth (0 = domein stays unmarked). Any Unicode glyph works; tune here.
+BULLETS = {1: "• ", 2: "– "}   # facet = gevuld rondje, attribuut = streepje
+
 
 def write_sheet_v2(ws, header_label, rows, base_n, n_responses, n_unassigned):
     """Write one readout to a worksheet — v2 styling. Same contract as
@@ -61,7 +66,7 @@ def write_sheet_v2(ws, header_label, rows, base_n, n_responses, n_unassigned):
     for r in rows:
         hcells = [""] * nh
         if r["depth"] < nh:
-            hcells[r["depth"]] = r["label"]
+            hcells[r["depth"]] = BULLETS.get(r["depth"], "") + r["label"]
         pos = round(r["pct_pos"], 1) / 100 if r["n"] else None
         neg = round(r["pct_neg"], 1) / 100 if r["n"] else None
         ws.append(hcells + [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100,
