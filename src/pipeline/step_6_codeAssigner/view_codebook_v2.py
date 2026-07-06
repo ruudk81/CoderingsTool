@@ -49,13 +49,40 @@ HIER_WIDTHS = [12, 18]   # domein, facet
 BULLETS = {1: "• ", 2: "– "}   # facet = gevuld rondje, attribuut = streepje
 
 
+def _within_parent_shares(rows):
+    """Bruto share of each row within its parent: n(row) / n(parent). The parent
+    is the nearest preceding row one level up (rows are a pre-order traversal:
+    domain → its facets → each facet's attributes). Returns two aligned lists:
+    `share` (fraction, or None for depth-0 / no parent) and `sole` (True when the
+    parent has exactly one child — used to suppress a trivial inline '(100%)')."""
+    n = len(rows)
+    share = [None] * n
+    parent_of = [None] * n
+    last_at_depth = {}
+    child_count = {}
+    for i, r in enumerate(rows):
+        d = r["depth"]
+        p = last_at_depth.get(d - 1)
+        if d > 0 and p is not None:
+            parent_of[i] = p
+            child_count[p] = child_count.get(p, 0) + 1
+            pn = rows[p]["n"]
+            share[i] = (rows[i]["n"] / pn) if pn else None
+        last_at_depth[d] = i
+    sole = [parent_of[i] is not None and child_count[parent_of[i]] == 1 for i in range(n)]
+    return share, sole
+
+
 def write_sheet_v2(ws, header_label, rows, base_n, n_responses, n_unassigned):
     """Write one readout to a worksheet — v2 styling. Same contract as
     `view_codebook.write_xlsx_sheet`, so it generalizes to any sheet (nh columns)."""
     hier = header_label.split(" / ")                 # ["domain","facet","attribute"] | ["code"]
     nh = len(hier)
-    cols = hier + ["val", "n bruto", "% bruto", "n netto", "% netto", "% (+)", "% (-)"]
+    cols = hier + ["val", "n bruto", "% bruto", "% ouder", "n netto", "% netto", "% (+)", "% (-)"]
     ncol = len(cols)
+    col = {name: i for i, name in enumerate(cols, start=1)}   # 1-based index by header name
+
+    shares, sole = _within_parent_shares(rows)
 
     ws.append(cols)
     for c in range(1, ncol + 1):
@@ -63,38 +90,45 @@ def write_sheet_v2(ws, header_label, rows, base_n, n_responses, n_unassigned):
         cell.fill, cell.font = _HDR_FILL, _HDR_FONT
         cell.alignment = Alignment(horizontal="center")
 
-    for r in rows:
+    for i, r in enumerate(rows):
+        d = r["depth"]
+        share = shares[i]
+        ouder = round(share * 100, 1) / 100 if share is not None else None
+        # inline '(NN%)' on facet/attribute labels — derived from the same rounded
+        # value as the % ouder column so the two never disagree; sole child suppressed
+        suffix = f" ({round(ouder * 100)}%)" if (ouder is not None and not sole[i]) else ""
         hcells = [""] * nh
-        if r["depth"] < nh:
-            hcells[r["depth"]] = BULLETS.get(r["depth"], "") + r["label"]
+        if d < nh:
+            hcells[d] = BULLETS.get(d, "") + r["label"] + suffix
         pos = round(r["pct_pos"], 1) / 100 if r["n"] else None
         neg = round(r["pct_neg"], 1) / 100 if r["n"] else None
-        ws.append(hcells + [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100,
+        ws.append(hcells + [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100, ouder,
                             r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neg])
         ri = ws.max_row
-        bold = (r["depth"] == 0)
+        bold = (d == 0)
         for c in range(1, ncol + 1):
             cell = ws.cell(ri, c)
-            if c == nh + 1 and r["valence"] in _VAL_COLOR:      # val column
+            if c == col["val"] and r["valence"] in _VAL_COLOR:
                 cell.font = Font(bold=True, color=_VAL_COLOR[r["valence"]])
                 cell.alignment = Alignment(horizontal="center")
             elif bold:
                 cell.font = Font(bold=True)
-        ws.cell(ri, nh + 2).number_format = "0"                 # n bruto
-        ws.cell(ri, nh + 4).number_format = "0"                 # n netto
-        for c in (nh + 3, nh + 5, nh + 6, nh + 7):              # % columns
-            ws.cell(ri, c).number_format = "0.0%"
-        ws.row_dimensions[ri].outline_level = min(r["depth"], 7)
+        ws.cell(ri, col["n bruto"]).number_format = "0"
+        ws.cell(ri, col["n netto"]).number_format = "0"
+        for name in ("% bruto", "% ouder", "% netto", "% (+)", "% (-)"):
+            ws.cell(ri, col[name]).number_format = "0.0%"
+        ws.row_dimensions[ri].outline_level = min(d, 7)
 
     last_data = ws.max_row
     netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
-    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 1.0, netto_base, 1.0, None, None])
+    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 1.0, None, netto_base, 1.0, None, None])
+    tr = ws.max_row
     for c in range(1, ncol + 1):
-        ws.cell(ws.max_row, c).font = Font(bold=True)
-    ws.cell(ws.max_row, nh + 2).number_format = "0"             # n bruto
-    ws.cell(ws.max_row, nh + 3).number_format = "0.0%"          # % bruto
-    ws.cell(ws.max_row, nh + 4).number_format = "0"             # n netto
-    ws.cell(ws.max_row, nh + 5).number_format = "0.0%"          # % netto
+        ws.cell(tr, c).font = Font(bold=True)
+    ws.cell(tr, col["n bruto"]).number_format = "0"
+    ws.cell(tr, col["% bruto"]).number_format = "0.0%"
+    ws.cell(tr, col["n netto"]).number_format = "0"
+    ws.cell(tr, col["% netto"]).number_format = "0.0%"
     ws.append([])
     ws.append([f"responses: {n_responses}"])
     if n_unassigned:
