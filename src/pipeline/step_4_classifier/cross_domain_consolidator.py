@@ -178,7 +178,7 @@ class CrossDomainConsolidator:
             # Step 5: Build merge map and remap
             merge_map = self._build_merge_map(results, windows, attr_embeddings)
             new_taxonomy = self._apply_remapping_to_cache(taxonomy_cache, merge_map)
-            new_classified = self._apply_remapping_to_growing_model(classified, merge_map)
+            new_classified = self._apply_remapping_to_growing_model(classified, new_taxonomy)
         else:
             if verbose:
                 print(f"    P8 skipped: {len(attr_embeddings)} attribute(s) — "
@@ -719,26 +719,56 @@ class CrossDomainConsolidator:
 
         return new_cache
 
+    @staticmethod
+    def attr_structure_home(
+        taxonomy_cache: TaxonomyResultsCache,
+    ) -> Dict[str, Tuple[str, str]]:
+        """Map attribute_name -> (domain, facet) from the taxonomy STRUCTURE
+        (partition_results[*].attributes).
+
+        Only UNAMBIGUOUS names (present under exactly one (domain, facet)) are
+        returned; ambiguous names are omitted so callers fall back to the existing
+        per-idea assignment. This lets per-idea (domain, facet) be a derived
+        projection of the structure — one source of truth — instead of an
+        independently-maintained copy that can drift from it.
+        """
+        places: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
+        for dom, res in taxonomy_cache.partition_results.items():
+            for fac, lst in (getattr(res, "attributes", {}) or {}).items():
+                for a in lst:
+                    name = a.get("attribute_name") if isinstance(a, dict) else getattr(a, "attribute_name", None)
+                    if name:
+                        places[name].add((dom, fac))
+        return {n: next(iter(p)) for n, p in places.items() if len(p) == 1}
+
     def _apply_remapping_to_growing_model(
         self,
         classified: List[TaxonomyClassifiedModel],
-        merge_map: Dict[Tuple[str, str], MergeTarget],
+        new_cache: TaxonomyResultsCache,
     ) -> List[TaxonomyClassifiedModel]:
-        """Apply merge map to growing model, returning a new copy."""
+        """Project the growing model from the CORRECTED cache: each idea's
+        attribute comes from the cache (by idea_id) and its (domain, facet) is
+        DERIVED from where that attribute lives in the structure. Placement can no
+        longer drift from the structure — this fixes both the stale-facet and the
+        cross-domain orphan cases in one mechanism.
+        """
+        attr_lookup: Dict[str, str] = {}
+        for res in new_cache.partition_results.values():
+            attr_lookup.update(res.attribute_assignments)
+        home = self.attr_structure_home(new_cache)
+
         new_classified = []
         for resp in classified:
-            resp_dict = copy.deepcopy(resp.model_dump())
-            new_resp = TaxonomyClassifiedModel.model_validate(resp_dict)
-            if new_resp.response_ideas:
-                for idea in new_resp.response_ideas:
-                    if not idea.attribute:
-                        continue
-                    target = merge_map.get((idea.partition_name, idea.attribute))
-                    if target:
-                        idea.attribute = target.new_attribute_name
-                        idea.facet = target.new_facet
-                        idea.partition_name = target.new_domain
-                        idea.domain = target.new_domain  # keep both domain fields consistent
+            new_resp = TaxonomyClassifiedModel.model_validate(copy.deepcopy(resp.model_dump()))
+            for idea in (new_resp.response_ideas or []):
+                aname = attr_lookup.get(idea.idea_id)
+                if not aname:
+                    continue
+                idea.attribute = aname
+                dom_fac = home.get(aname)
+                if dom_fac:
+                    idea.domain = idea.partition_name = dom_fac[0]
+                    idea.facet = dom_fac[1]
             new_classified.append(new_resp)
         return new_classified
 

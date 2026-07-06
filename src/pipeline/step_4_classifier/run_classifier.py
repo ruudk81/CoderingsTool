@@ -294,15 +294,25 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
         for idea_id in domain_result.facet_assignments:
             partition_lookup[idea_id] = domain_result.partition_name
 
+    # Per-idea (domain, facet) is a DERIVED projection of the structure — the
+    # single source of truth — so it can't drift from partition_results.attributes.
+    from pipeline.step_4_classifier.cross_domain_consolidator import CrossDomainConsolidator
+    struct_home = CrossDomainConsolidator.attr_structure_home(taxonomy_cache)
+
     output = []
     for resp in encoded_text:
         new_ideas = []
         if resp.response_ideas:
             for idea in resp.response_ideas:
                 idea_data = idea.model_dump()
-                idea_data["facet"] = facet_lookup.get(idea.idea_id, idea.facet or "")
-                idea_data["attribute"] = attr_lookup.get(idea.idea_id, idea.attribute or "")
-                idea_data["partition_name"] = partition_lookup.get(idea.idea_id, idea.domain or "")
+                attr_name = attr_lookup.get(idea.idea_id, idea.attribute or "")
+                idea_data["attribute"] = attr_name
+                dom_fac = struct_home.get(attr_name)
+                if dom_fac:
+                    idea_data["partition_name"], idea_data["facet"] = dom_fac
+                else:
+                    idea_data["facet"] = facet_lookup.get(idea.idea_id, idea.facet or "")
+                    idea_data["partition_name"] = partition_lookup.get(idea.idea_id, idea.domain or "")
                 idea_data["domain"] = idea_data["partition_name"]   # canonical: domain == partition_name (no casing drift)
                 idea_data["facet_confidence"] = facet_conf_lookup.get(idea.idea_id)
                 idea_data["attribute_confidence"] = attr_conf_lookup.get(idea.idea_id)
