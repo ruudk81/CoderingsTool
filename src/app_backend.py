@@ -25,6 +25,7 @@ import os
 import sys
 import sqlite3
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
@@ -192,6 +193,28 @@ def max_completed_step(spec: DatasetSpec, cm: CacheManager) -> int:
     """Highest step with a valid cached result (-1 if nothing cached)."""
     done = [s for s, ok in step_status(spec, cm).items() if ok]
     return max(done) if done else -1
+
+
+# =============================================================================
+# SCREEN MODEL (app_v2) — the one explicit decision each step page makes
+# =============================================================================
+
+class Screen(str, Enum):
+    """What a step page shows. app_old had these as emergent per-block gating;
+    here it is one explicit decision (see utils/dev/app_development_plan.md §3.2).
+    REVIEW is the HITL screen type: designed now, rendered in a later phase."""
+    LOCKED = "locked"    # previous step not done — cannot run yet
+    RUN = "run"          # ready: explain the step, offer the run button
+    OUTPUT = "output"    # done: show evidence (stats, samples, log) + continue
+    REVIEW = "review"    # done + editable artifact awaiting human review (Phase D)
+
+
+def screen_for(step: int, status: Dict[int, bool]) -> Screen:
+    """Resolve the screen for a step from the live cache status ({step: done})."""
+    if status.get(step, False):
+        return Screen.OUTPUT
+    prev_done = (step == 0) or status.get(step - 1, False)
+    return Screen.RUN if prev_done else Screen.LOCKED
 
 
 # =============================================================================
