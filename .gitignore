@@ -5,6 +5,7 @@ exports/
 data/exports/
 backup/
 env/
+.venv/
 hunspell/
 src/utils/old/
 src/old steps/
@@ -37,6 +38,12 @@ Technical description.docx
 
 # === PYTEST ===
 .pytest_cache/
+
+# === EDITOR / IDE ===
+.vscode/
+
+# === OS ===
+.DS_Store
 
 # === MISC ===
 .Python
