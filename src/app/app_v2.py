@@ -10,7 +10,7 @@ Architecture (utils/dev/app_development_plan.md, Phase A):
     show evidence and offer the next step; errors stay visible until
     dismissed or superseded.
 
-Run:  streamlit run src/app_v2.py
+Run:  streamlit run src/app/app_v2.py
 (app.py remains the production entry until v2 is promoted.)
 """
 
@@ -22,10 +22,12 @@ from pathlib import Path
 import nest_asyncio
 import streamlit as st
 
-# src/ on path + cooperative event loop for the async runners
-_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
+# src/ + src/app/ on path + cooperative event loop for the async runners
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(_APP_DIR)
+for _p in (_APP_DIR, _SRC_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 nest_asyncio.apply()
 warnings.filterwarnings("ignore", message="To exit: use 'exit', 'quit', or Ctrl-D.")
 

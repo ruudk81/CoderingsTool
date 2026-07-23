@@ -29,10 +29,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
-# Ensure src/ is importable (so `streamlit run app.py` resolves utils/, pipeline/, ...)
-_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
+# Ensure src/ (utils/, pipeline/, config, models) AND src/app/ (ui_text,
+# app_views, …) are importable, wherever this module is run from.
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(_APP_DIR)
+for _p in (_APP_DIR, _SRC_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from test_data import TEST_DATA
 from config import CacheConfig

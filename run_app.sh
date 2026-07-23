@@ -21,4 +21,4 @@ if [[ ! -x "$STREAMLIT" ]]; then
 fi
 
 echo "🚀 Starting CoderingsTool — open the forwarded http://localhost:8501 (VS Code Ports tab)"
-exec "$STREAMLIT" run src/app.py --server.headless true "$@"
+exec "$STREAMLIT" run src/app/app.py --server.headless true "$@"

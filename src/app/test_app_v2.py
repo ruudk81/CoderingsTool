@@ -14,14 +14,16 @@ NOTE: tests never click a 🚀 run button — that would start a real LLM run.
 import os
 import sys
 
-_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(_APP_DIR)
+for _p in (_APP_DIR, _SRC_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import app_backend as be
 from app_backend import Screen, screen_for, LAST_STEP
 
-APP = os.path.join(_SRC_DIR, "app_v2.py")
+APP = os.path.join(_APP_DIR, "app_v2.py")
 
 
 # =============================================================================
