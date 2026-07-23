@@ -15,7 +15,7 @@ attributes (Concrete natuurbeelden, which has no opposite sibling).
 
 Read-only, deterministic, no LLM. Detection only — it does NOT merge. The
 deterministic merge (with LLM renaming) lives in valence_consolidator.py and
-runs in the pipeline after P7. See dev/WORK_VALENCE_NEUTRALITY.md.
+runs in the pipeline after P7. See dev/DESIGN_VALENCE_NEUTRALITY.md.
 
 Usage:
     cd src && python -m pipeline.step_4_classifier.view_valence_split

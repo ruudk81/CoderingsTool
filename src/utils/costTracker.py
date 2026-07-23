@@ -18,6 +18,58 @@ Usage:
     tracker.record_phase("step_3_idea_extraction", "bulk_extraction",
                          snap_before, snap_after, model="gpt-5.4-nano")
     tracker.finalize_step("step_3_idea_extraction")
+
+Wiring a step
+-------------
+The runner creates the tracker and finalizes; the worker class records phases.
+
+    # run_<step>.py
+    tracker = CostTracker(filename=config.filename, variable_key=variable_key)
+    worker = Worker(..., cost_tracker=tracker)
+    ...
+    tracker.finalize_step("step_2_quality_filter")
+
+    # <step>.py — accept cost_tracker=None, register models, snapshot per phase
+    self.cost_tracker.set_step_models("step_2_quality_filter", {"grading": self.model})
+
+Conventions
+-----------
+- Snapshot placement: take `snap_before` immediately before the LLM calls, not at
+  the top of the method — otherwise setup and pre-filtering token usage is counted
+  as part of the phase.
+- Guard every call with `if self.cost_tracker`. The parameter is optional, so the
+  worker stays usable in tests and standalone runs that do not persist cost.
+- One phase per logical LLM batch. A step with several passes (step 3: context,
+  taxonomy, bulk extraction) records each separately; `finalize_step()` sums them.
+- Naming: step name matches the pipeline step identity (`step_2_quality_filter`),
+  phase name says what the LLM is doing (`grading`). Both become JSON keys, so keep
+  them stable across runs or the history fragments.
+- CostTracker owns the file lifecycle: creates the file and the step/phase entries,
+  overwrites phase data on re-run (idempotent), and writes atomically via `.tmp`
+  rename. Several steps accumulate in one file, keyed by step name.
+- Do NOT thread one tracker through `run_pipeline.py`. Each step runner constructs
+  its own with the same filename + variable_key; the constructor loads the existing
+  JSON, so steps accumulate without a shared instance.
+
+Output format
+-------------
+    {
+      "dataset": "data.sav",
+      "variable_key": "Q20_500",
+      "deployment": {"provider": "azure", "model_family": "gpt-5.4"},
+      "steps": {
+        "step_2_quality_filter": {
+          "model_config": {"grading": "gpt-5.4-nano"},
+          "phases": {
+            "grading": {"model": "gpt-5.4-nano", "input_tokens": 12345,
+                        "output_tokens": 678, "cost_usd": 0.0042, "calls": 500}
+          },
+          "total": {"input_tokens": 12345, "output_tokens": 678,
+                    "cost_usd": 0.0042, "calls": 500},
+          "date": "2026-04-05"
+        }
+      }
+    }
 """
 
 import json

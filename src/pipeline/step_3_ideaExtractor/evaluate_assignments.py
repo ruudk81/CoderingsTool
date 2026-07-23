@@ -17,7 +17,7 @@ ASSIGNMENT CONSISTENCY (assignment-level)
 (A cross-dimension-leak check — domain definition vs dimension descriptors — was
 considered and dropped: the dimension is the single chosen lens, so a domain whose
 SUBJECT resembles another dimension is universal and expected, not an error. See
-dev/WORK_TO_BE_DONE.md.)
+dev/WORK.md.)
 
 Read-only. Cost = embeddings only.
 

@@ -11,7 +11,7 @@ Algorithm:
   4. SmoothRequester dispatch for LLM consolidation per group
   5. Remap assignments in TaxonomyResultsCache + growing model
 
-See dev/CONSOLIDATION_LOGIC.md for full algorithm documentation.
+See dev/DESIGN_CROSS_DOMAIN_CONSOLIDATION.md for full algorithm documentation.
 """
 
 import copy

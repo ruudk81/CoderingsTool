@@ -13,7 +13,7 @@ Split into a deterministic part and a small LLM part:
                                           deterministic single-token fallback
   - idea reassignment + cache update   -> deterministic; valence/confidence preserved
 
-See dev/WORK_VALENCE_NEUTRALITY.md.
+See dev/DESIGN_VALENCE_NEUTRALITY.md.
 """
 
 import copy

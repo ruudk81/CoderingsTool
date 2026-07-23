@@ -7,7 +7,7 @@ Excel legend sheet:
   - Output 2 "taxonomie"    — per respondent, dichotomous domain/facet/attribute matrix
   - Output 3 "gecombineerd" — per expressed idea, long (the source for 1 & 2)
 
-Design + decisions: see dev/WORK_TO_BE_DONE.md.
+Design + decisions: see dev/WORK.md.
 """
 
 import math
