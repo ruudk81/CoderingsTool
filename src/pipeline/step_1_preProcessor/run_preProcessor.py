@@ -7,7 +7,7 @@ Runs the preprocessing step in isolation.
 Loads Step 0 (data) results from cache and runs preprocessing.
 
 Usage:
-    cd src && python -m steps.step_1_preProcessor.run_preProcessor
+    cd src && python -m pipeline.step_1_preProcessor.run_preProcessor
 """
 
 import sys

@@ -5,7 +5,7 @@ View Step 3 results organized by domain.
 Displays all ideas grouped by domain, showing: idea, facet, valence.
 
 Usage:
-    cd src && python -m steps.step_3_ideaExtractor.view_by_cluster
+    cd src && python -m pipeline.step_3_ideaExtractor.view_by_cluster
 """
 
 import sys

@@ -5,7 +5,7 @@ Step 3: Idea Extraction Step Runner
 Loads Step 2 (filtered) results from cache and runs idea extraction.
 
 Usage:
-    cd src && python -m steps.step_3_ideaExtractor.run_ideaExtractor
+    cd src && python -m pipeline.step_3_ideaExtractor.run_ideaExtractor
 """
 
 PRINT_PROMPTS = False  # Toggle prompt printing

@@ -5,7 +5,7 @@ Debug script for Step 3: Idea Extractor
 Loads cached results and prints sample responses with extracted ideas.
 
 Usage:
-    cd src && python -m steps.step_3_ideaExtractor.debug_samples
+    cd src && python -m pipeline.step_3_ideaExtractor.debug_samples
 """
 
 import sys

@@ -9,7 +9,7 @@ Shows:
 - Sample meaningful responses: random sample of passed responses
 
 Usage:
-    cd src && python -m steps.step_2_qualityFilter.view_quality_results
+    cd src && python -m pipeline.step_2_qualityFilter.view_quality_results
 """
 
 import sys

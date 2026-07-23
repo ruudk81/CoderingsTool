@@ -10,7 +10,7 @@ without requiring pipeline.py to run first.
 Always uses the production dataLoader -- there is no step-specific variant.
 
 Usage:
-    cd src && python -m steps.step_0_dataLoader.run_dataLoader
+    cd src && python -m pipeline.step_0_dataLoader.run_dataLoader
 """
 
 import sys

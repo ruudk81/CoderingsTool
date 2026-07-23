@@ -6,7 +6,7 @@ Runs the quality filtering step in isolation.
 Loads Step 1 (preprocessed) results from cache and runs quality filtering.
 
 Usage:
-    cd src && python -m steps.step_2_qualityFilter.run_qualityFilter
+    cd src && python -m pipeline.step_2_qualityFilter.run_qualityFilter
 """
 
 import sys

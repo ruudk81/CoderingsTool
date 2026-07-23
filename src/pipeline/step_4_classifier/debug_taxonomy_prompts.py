@@ -5,7 +5,7 @@ Debug script for Taxonomy Classifier prompts (P1-P7): Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
 Usage:
-    cd src && python -m steps.step_4_classifier.debug_taxonomy_prompts
+    cd src && python -m pipeline.step_4_classifier.debug_taxonomy_prompts
 """
 
 import sys
@@ -208,7 +208,7 @@ def main():
     if not prompts_files:
         print("\nNo prompts files found.")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m steps.step_4_classifier.run_classifier")
+        print("  cd src && python -m pipeline.step_4_classifier.run_classifier")
         return
 
     # Merge prompts from all files

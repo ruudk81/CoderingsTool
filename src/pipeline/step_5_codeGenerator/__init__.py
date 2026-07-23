@@ -5,5 +5,5 @@ Generates codebook from taxonomy attributes (P8) and consolidates
 into a parsimonious MECE codebook (P9).
 
 Usage:
-    cd src && python -m steps.step_5_codeGenerator.run_codeGenerator
+    cd src && python -m pipeline.step_5_codeGenerator.run_codeGenerator
 """

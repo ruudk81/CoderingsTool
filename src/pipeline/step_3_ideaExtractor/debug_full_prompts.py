@@ -9,7 +9,7 @@ For each captured prompt, displays:
   2. The Pydantic response model's JSON schema (what instructor injects as tool definition)
 
 Usage:
-    cd src && python -m steps.step_3_ideaExtractor.debug_full_prompts
+    cd src && python -m pipeline.step_3_ideaExtractor.debug_full_prompts
 """
 
 import sys
@@ -203,7 +203,7 @@ def main():
     if not prompts_file.exists():
         print(f"\nNo prompts file found at: {prompts_file}")
         print("\nTo generate prompts, run:")
-        print("  cd src && python -m steps.step_3_ideaExtractor.run_ideaExtractor")
+        print("  cd src && python -m pipeline.step_3_ideaExtractor.run_ideaExtractor")
         print("\nMake sure PRINT_PROMPTS = True in run file")
         return
 

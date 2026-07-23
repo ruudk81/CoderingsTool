@@ -7,7 +7,7 @@ Loads captured assignment prompts from the JSON file saved during
 the assignment run, and displays them with response model schema.
 
 Usage:
-    cd src && python -m steps.step_6_codeAssigner.debug_assignment_prompt
+    cd src && python -m pipeline.step_6_codeAssigner.debug_assignment_prompt
 """
 
 import sys
@@ -125,7 +125,7 @@ def main():
         print(f"\nERROR: No captured assignment prompts found at:")
         print(f"  {prompts_file}")
         print("\nRun assignment first:")
-        print("  cd src && python -m steps.step_6_codeAssigner.run_codeAssigner")
+        print("  cd src && python -m pipeline.step_6_codeAssigner.run_codeAssigner")
         return
 
     print(f"Session ID:    {data.get('session_id', 'unknown')}")

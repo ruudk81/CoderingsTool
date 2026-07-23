@@ -7,7 +7,7 @@ Runs the export step in isolation.
 Loads Step 6 (taxonomy_codes) results from cache and exports to Excel.
 
 Usage:
-    cd src && python -m steps.step_7_export.run_export
+    cd src && python -m pipeline.step_7_export.run_export
 """
 
 import sys

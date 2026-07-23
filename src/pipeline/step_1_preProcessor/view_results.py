@@ -5,7 +5,7 @@ Debug script for Step 1: Preprocess
 Loads cached results and prints sample comparisons (raw vs preprocessed).
 
 Usage:
-    cd src && python -m steps.step_1_preProcessor.debug_samples
+    cd src && python -m pipeline.step_1_preProcessor.debug_samples
 """
 
 import sys

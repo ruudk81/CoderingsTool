@@ -5,7 +5,7 @@ View taxonomy results (P1-P7): domains, facets, attributes, assignments.
 Loads from cached taxonomy results (step "taxonomy").
 
 Usage:
-    cd src && python -m steps.step_4_classifier.view_taxonomy
+    cd src && python -m pipeline.step_4_classifier.view_taxonomy
 """
 
 import sys
