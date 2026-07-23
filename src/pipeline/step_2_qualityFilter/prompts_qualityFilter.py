@@ -48,7 +48,7 @@ Item nonresponse, such as:
 - Single characters like "-" or "?"
 - Equivalent phrases in any language
 
-**Category 5: Invalid test / Nonsense**
+**Category 5: Invalid text / Nonsense**
 Random or meaningless text, such as:
 - Keyboard mashing: "asdf", "qwerty", "jjjjj"
 - Random punctuation: "!!!", "????"
@@ -85,7 +85,7 @@ _DECISION_RULE = """First, work through your evaluation following these three st
 2 → Not applicable  / Not having the answer
 3 → Deferral / Referring elsewhere
 4 → No text / Empty
-5 → Invalid test / Nonsense
+5 → Invalid text / Nonsense
 null → Keep the response"""
 
 
