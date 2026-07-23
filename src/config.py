@@ -4,15 +4,38 @@ from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass, field
 
 
+# Load .env before anything reads os.getenv() below (simple loader, no dependencies).
+def _load_dotenv():
+    """Load environment variables from .env file in project root."""
+    env_paths = [
+        Path(__file__).parent.parent / '.env',  # src/../.env
+        Path.cwd() / '.env',
+    ]
+    for env_path in env_paths:
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, _, value = line.partition('=')
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        if key and not os.environ.get(key):
+                            os.environ[key] = value
+            break
+
+_load_dotenv()
+
+
 # =============================================================================
 # DEPLOYMENT - provider + family
 # =============================================================================
 
-API_PROVIDER = "openai"  # Options: "openai" or "azure"
-MODEL_FAMILY = "gpt-5.4"
+API_PROVIDER = "azure"     # "openai" (own account) or "azure" (deployments below)
+MODEL_FAMILY = "gpt-5.4"   # "gpt-5.4" (reasoning) or "gpt-4.1" (chat)
 
-#API_PROVIDER = "azure"  # Options: "openai" or "azure"
-#MODEL_FAMILY = "gpt-4.1"
+# The two are independent: azure+gpt-5.4, azure+gpt-4.1 and openai+gpt-5.4 all work.
+# On Azure the family is capped by what AZURE_DEPLOYMENTS maps to a real deployment.
 
 # Examples:
 #   MODEL_FAMILY = "gpt-4.1"  →  gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
@@ -23,13 +46,14 @@ MODEL_FAMILY = "gpt-5.4"
 def get_model(tier: str = "default") -> str:
     """Resolve a model name from the current MODEL_FAMILY and tier.
 
-    Applies FAMILY_TIER_OVERRIDES when the current MODEL_FAMILY has a mapping
-    (e.g. gpt-4.1 "nano" → "mini" because gpt-4.1-nano is too weak).
+    Applies FAMILY_TIER_OVERRIDES, preferring a provider-specific entry
+    (API_PROVIDER, MODEL_FAMILY) over a family-wide one.
 
     Args:
         tier: "default", "mini", or "nano"
     """
-    overrides = FAMILY_TIER_OVERRIDES.get(MODEL_FAMILY, {})
+    overrides = (FAMILY_TIER_OVERRIDES.get((API_PROVIDER, MODEL_FAMILY))
+                 or FAMILY_TIER_OVERRIDES.get(MODEL_FAMILY, {}))
     tier = overrides.get(tier, tier)
     if tier == "default":
         return MODEL_FAMILY
@@ -64,13 +88,21 @@ STEP_MODEL_TIERS = {
     "code_assignment":  "mini",
 }
 
-# Override tiers per model family (when target family needs different tier).
-# E.g. gpt-4.1 has no nano-quality equivalent to gpt-5.4-nano → use mini instead.
+# Override tiers per model family, or per (provider, family) when the reason is
+# provider-specific. A (provider, family) key wins over a family-wide one.
 FAMILY_TIER_OVERRIDES = {
     "gpt-4.1": {
         "nano": "mini",       # gpt-4.1-nano < gpt-5.4-nano → bump to mini
         "mini": "default",    # gpt-4.1-mini < gpt-5.4-mini → bump to default
-    }
+    },
+    # Azure has no gpt-5.4-mini/-nano deployment yet, and the gpt-5 deployment
+    # (serving gpt-5-mini) is capped at 250K TPM / 250 RPM — ~34 min of throughput
+    # floor on a full run. Fold both tiers into default until those deployments
+    # exist, then delete this entry. OpenAI keeps the real mini/nano tiers.
+    ("azure", "gpt-5.4"): {
+        "nano": "default",
+        "mini": "default",
+    },
 }
 
 
@@ -113,13 +145,18 @@ def get_reasoning_params(model: str = None, phase: str = None) -> dict:
     """
     if model is None:
         model = get_model()
-    if ModelConfig.MODEL_TYPES.get(model) == "reasoning":
-        verbosity = get_step_verbosity(phase) if phase else TEXT_VERBOSITY
-        return {
-            "reasoning": {"effort": REASONING_EFFORT},
-            "text": {"verbosity": verbosity},
-        }
-    return {}
+    if ModelConfig.MODEL_TYPES.get(model) != "reasoning":
+        return {}
+
+    verbosity = get_step_verbosity(phase) if phase else TEXT_VERBOSITY
+    if API_PROVIDER == "azure":
+        # Chat Completions takes these flat; the nested Responses shape is rejected
+        # client-side by the OpenAI SDK.
+        return {"reasoning_effort": REASONING_EFFORT, "verbosity": verbosity}
+    return {
+        "reasoning": {"effort": REASONING_EFFORT},
+        "text": {"verbosity": verbosity},
+    }
 
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
@@ -141,6 +178,20 @@ AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.
 AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING", "text-embedding-3-large")
 # Deployment for codeGenerator (uses chat completion without reasoning)
 AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER", "gpt-4.1-mini")
+
+# Model name -> Azure deployment name. Deployment names in this resource do not
+# match the models they serve, so the code keeps reasoning in model names and this
+# map translates. Unmapped models fall back to AZURE_OPENAI_DEPLOYMENT_NAME.
+# Add a line here when a new deployment appears; nothing else needs to change.
+AZURE_DEPLOYMENTS = {
+    "gpt-5.4":      "gpt-5.4",
+    "gpt-5.4-mini": "gpt-5.4",              # until a real gpt-5.4-mini is deployed
+    "gpt-5.4-nano": "gpt-5.4",              # until a real gpt-5.4-nano is deployed
+    "gpt-5-mini":   "gpt-5",                # deployment 'gpt-5' serves gpt-5-mini
+    "gpt-4.1":      "gpt-4.1",
+    "gpt-4.1-mini": "Test_data_analytics",  # serves gpt-4.1-mini
+    "gpt-4.1-nano": "Test_data_analytics",
+}
 
 # Azure ARM access (for dynamic limit fetching - optional)
 AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
@@ -277,9 +328,7 @@ def get_model_for_api(model: str) -> str:
     For OpenAI, returns the model name as-is.
     """
     if API_PROVIDER == "azure":
-        # Azure uses deployment names - map common models
-        # For now, use the configured deployment name
-        return AZURE_OPENAI_DEPLOYMENT_NAME
+        return AZURE_DEPLOYMENTS.get(model, AZURE_OPENAI_DEPLOYMENT_NAME)
     return model
 
 
@@ -495,28 +544,6 @@ DEFAULT_EXPORT_CLEANUP_CONFIG = ExportCleanupConfig()
 # =============================================================================
 # MISC
 # =============================================================================
-
-# Load .env file if it exists (simple loader, no dependencies)
-def _load_dotenv():
-    """Load environment variables from .env file in project root."""
-    env_paths = [
-        Path(__file__).parent.parent / '.env',  # src/../.env
-        Path.cwd() / '.env',
-    ]
-    for env_path in env_paths:
-        if env_path.exists():
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        key, _, value = line.partition('=')
-                        key = key.strip()
-                        value = value.strip().strip('"').strip("'")
-                        if key and not os.environ.get(key):
-                            os.environ[key] = value
-            break
-
-_load_dotenv()
 
 # File handling (only keep what's used)
 ALLOWED_EXTENSIONS = ['.sav']

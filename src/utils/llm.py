@@ -43,6 +43,7 @@ from config import (
     AZURE_OPENAI_DEPLOYMENT_NAME,
     AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING,
     AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER,
+    get_model_for_api,
     ModelConfig,
     MODEL_PRICING,
     DEFAULT_PRICING,
@@ -291,13 +292,15 @@ async def fetch_rate_limits(model: str) -> tuple:
         (RateLimits, has_server_headers: bool)
     """
     if API_PROVIDER == "azure":
+        # Quota is per deployment, so probe the deployment this model resolves to
+        deployment = get_model_for_api(model)
         client = AsyncOpenAI(
             api_key=AZURE_OPENAI_API_KEY,
-            base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+            base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/",
             default_query={"api-version": "2024-10-21"},
         )
         response = await client.chat.completions.with_raw_response.create(
-            model=AZURE_OPENAI_DEPLOYMENT_NAME,
+            model=deployment,
             messages=[{"role": "user", "content": "Hi"}],
             max_completion_tokens=5,
         )
@@ -426,7 +429,7 @@ def create_client(
     if API_PROVIDER == "azure":
         # Azure: use TOOLS mode with chat.completions.create
         # (West Europe doesn't support Responses API yet)
-        deployment = azure_deployment or AZURE_OPENAI_DEPLOYMENT_NAME
+        deployment = azure_deployment or get_model_for_api(model)
         azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/"
 
         client_kwargs = {
@@ -542,11 +545,13 @@ async def llm_create_async(
         params = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
             **kwargs
         }
-        # Only add temperature for non-reasoning models
-        if not is_reasoning:
+        # Reasoning models reject max_tokens and temperature
+        if is_reasoning:
+            params["max_completion_tokens"] = max_tokens
+        else:
+            params["max_tokens"] = max_tokens
             params["temperature"] = temperature
         if response_model:
             params["response_model"] = response_model
