@@ -39,6 +39,7 @@ from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
 from pipeline.step_4_classifier.classifier import TaxonomyClassifier, TaxonomyResult
 from pipeline.step_4_classifier.cross_domain_consolidator import CrossDomainConsolidator
+from pipeline.step_4_classifier.taxonomy_health import prune_empty_nodes, print_health
 from pipeline.step_4_classifier.models_classifier import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
     TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel,
@@ -422,6 +423,12 @@ def cache_taxonomy_results(
         },
         label_source=CONFIG.label_source,
     )
+
+    # Deterministic hygiene before anything downstream sees the taxonomy: drop
+    # structure nodes left behind with no ideas, then report the label-health metrics.
+    prune_report = prune_empty_nodes(taxonomy_cache)
+    if CONFIG.verbose:
+        print_health(taxonomy_cache, prune_report)
 
     cache_manager = CacheManager()
     cache_manager.save_metadata_to_cache(
