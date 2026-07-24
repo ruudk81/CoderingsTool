@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 if TYPE_CHECKING:
     from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
@@ -338,6 +339,11 @@ class ConsolidatedCode(BaseModel):
         default_factory=list,
         description="Attribute names this code is derived from (from all merged codes)"
     )
+    # Stable ids (identity.py) — never part of the LLM response schema: minted at
+    # cache-save (K#), or lazily at load for pre-id codebooks. source_attribute_ids
+    # mirrors source_attributes as attribute ids (A#).
+    code_id: SkipJsonSchema[str] = ""
+    source_attribute_ids: SkipJsonSchema[List[str]] = Field(default_factory=list)
 
 
 class CodebookConsolidationResult(BaseModel):

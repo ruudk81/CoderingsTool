@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 # === CONFIG ========================================================================================================
 from config import CacheConfig
+from identity import ensure_ids
 
 logger = logging.getLogger(__name__)
 T = TypeVar('T', bound=BaseModel)
@@ -624,6 +625,12 @@ class CacheManager:
 
             # Reconstruct single Pydantic model
             result = model_cls.model_validate(serializable_data)
+
+            # Lazy id migration: pre-id taxonomy/codebook artifacts get their
+            # stable D#/F#/A#/K# ids minted in memory (deterministic from the
+            # artifact's stored order); id-bearing artifacts pass through
+            # unchanged. Disk is never mutated here. See identity.py.
+            result = ensure_ids(result)
 
             logger.info(f"Loaded metadata from cache for {filename} at step {metadata_step} with variable {variable_key}")
             return result
