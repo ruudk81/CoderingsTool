@@ -342,11 +342,18 @@ def render_results(step: int, spec: DatasetSpec):
         if models:
             import collections
             import random
+            # Count via assigned_code_id (K#) so the codebook's CURRENT name wins
+            # after a rename; ideas without an id fall back to their stored name.
+            codebook = be.load_codebook(spec)
+            id_to_name = {c["code_id"]: c["code_name"]
+                          for c in (codebook.raw_codes if codebook else [])
+                          if c.get("code_id")}
             counter = collections.Counter()
             for m in models:
                 for idea in (m.response_ideas or []):
-                    if idea.assigned_code:
-                        counter[idea.assigned_code] += 1
+                    label = id_to_name.get(idea.assigned_code_id) or idea.assigned_code
+                    if label:
+                        counter[label] += 1
             st.subheader(T("Codefrequenties", "Code frequencies"))
             st.dataframe([{"code": c, "n": n} for c, n in counter.most_common()],
                          width="stretch", hide_index=True)

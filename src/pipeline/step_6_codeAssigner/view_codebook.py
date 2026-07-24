@@ -230,12 +230,23 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
     resp_with_ideas: set = set()
     n_unassigned = 0
 
+    # Join ideas to the codebook via assigned_code_id (K#) — the codebook's
+    # CURRENT name wins, so a renamed code keeps its counts. Ideas without an
+    # id (pre-id caches) fall back to their stored name.
+    id_to_name: Dict[str, str] = {}
+    if is_code:
+        for c in codebook.raw_codes:
+            d = c if isinstance(c, dict) else c.__dict__
+            if d.get("code_id"):
+                id_to_name[d["code_id"]] = d["code_name"]
+
     for resp in responses:
         rid = str(resp.respondent_id)
         for idea in (resp.response_ideas or []):
             resp_with_ideas.add(rid)
             if is_code:
-                key = (idea.assigned_code or "").strip()
+                key = (id_to_name.get(getattr(idea, "assigned_code_id", None))
+                       or idea.assigned_code or "").strip()
                 if not key or key == _UNASSIGNED:
                     n_unassigned += 1
                     continue
