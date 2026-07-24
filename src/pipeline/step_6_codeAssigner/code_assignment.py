@@ -31,7 +31,7 @@ Usage:
 import asyncio
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import nest_asyncio
 
@@ -113,7 +113,9 @@ class CodeAssigner:
 
         # Embedding pre-filter results (populated in Phase 2 if enabled)
         self._idea_code_candidates: Optional[Dict[str, List[int]]] = None
-        self._per_task_resolutions: Dict[str, str] = {}
+        # idea_id -> (code_id, code_name). All resolution maps carry K#+name
+        # TUPLES so a site still expecting a bare label fails loudly.
+        self._per_task_resolutions: Dict[str, Tuple[str, str]] = {}
 
         # Prompt capture (optional — pass PromptPrinter to enable)
         self._prompt_printer = prompt_printer
@@ -123,15 +125,19 @@ class CodeAssigner:
         configure_validation_mode(config.assignment_model)
 
         # ID-based resolution maps — populated in _assign_all_async()
-        self._id_to_label: Dict[str, str] = {}
+        self._id_to_code: Dict[str, Tuple[str, str]] = {}
         self._no_fit_id: Optional[str] = None
         self._no_fit_label: Optional[str] = None
 
-        # Provenance maps (attribute → home code idx, Overig code idx)
+        # Provenance maps (attribute_id → home code idx, Overig code idx), plus
+        # the name→A# resolver built from the mece structure — SAME artifact as
+        # the codes' source_attribute_ids, so the id spaces always match.
         self._attr_to_code_idx: Dict[str, int] = {}
+        self._attr_id_scoped: Dict[Tuple[str, str], str] = {}
+        self._attr_id_by_name: Dict[str, List[str]] = {}
         self._overig_code_idx: Optional[int] = None
-        # The no-fit option resolves to the Overig code when one exists, else __UNASSIGNED__
-        self._no_fit_resolves_to: str = "__UNASSIGNED__"
+        # The no-fit option resolves to the Overig code when one exists, else the sentinel
+        self._no_fit_resolves_to: Tuple[str, str] = ("__UNASSIGNED__", "__UNASSIGNED__")
 
         # Pre-assigned attributes from pipeline step 4a (idea_id -> attribute name)
         self._attribute_assignments: Dict[str, str] = attribute_assignments or {}
@@ -272,7 +278,7 @@ class CodeAssigner:
                     # (Overig is reachable via the no-fit option, so it is not seeded.)
                     if self._config.seed_provenance_candidates:
                         attr = (self._attribute_assignments.get(idea.idea_id) or "").strip()
-                        home = self._attr_to_code_idx.get(attr)
+                        home = self._home_code_idx(partition_name, attr)
                         if home is not None and home not in candidate_indices:
                             candidate_indices.append(home)
                             seeded_count += 1
@@ -280,13 +286,13 @@ class CodeAssigner:
                 else:
                     candidate_codes = self._codes
 
-                # Build per-task ID map (scoped C1..CN → code_name). The no-fit
-                # option is the final ID and resolves to the __UNASSIGNED__ sentinel.
-                task_id_to_label = {}
+                # Build per-task ID map (scoped C1..CN → (code_id, code_name)).
+                # The no-fit option is the final ID and resolves to Overig/sentinel.
+                task_id_to_code = {}
                 for ci, code in enumerate(candidate_codes, 1):
-                    task_id_to_label[f"C{ci}"] = code.code_name
+                    task_id_to_code[f"C{ci}"] = (code.code_id, code.code_name)
                 if self._config.allow_no_fit and self._no_fit_label:
-                    task_id_to_label[f"C{len(candidate_codes) + 1}"] = self._no_fit_resolves_to
+                    task_id_to_code[f"C{len(candidate_codes) + 1}"] = self._no_fit_resolves_to
 
                 task_list.append({
                     'idea': idea,
@@ -294,7 +300,7 @@ class CodeAssigner:
                     'batch_idx': idea_idx,
                     'n_batches': len(ideas),
                     'candidate_codes': candidate_codes,
-                    'task_id_to_label': task_id_to_label,
+                    'task_id_to_code': task_id_to_code,
                 })
 
         total_tasks = len(task_list)
@@ -303,7 +309,8 @@ class CodeAssigner:
             print(f"  Provenance seeding: added the home code to {seeded_count}/{total_tasks} "
                   f"task candidate sets")
         if verbose:
-            print(f"  No-fit option resolves to: {self._no_fit_resolves_to!r}")
+            print(f"  No-fit option resolves to: {self._no_fit_resolves_to[1]!r} "
+                  f"({self._no_fit_resolves_to[0]})")
 
         # ── Phase 4: SmoothRequester dispatch ────────────────────────────────
 
@@ -333,9 +340,9 @@ class CodeAssigner:
 
         assigned_count = len(assignment_lookup)
 
-        # Resolve category IDs to labels
+        # Resolve option IDs (C#) to (code_id, code_name) pairs
         # Per-task resolutions (from parse_fn) take priority over global ID map
-        id_resolution: Dict[str, str] = {}
+        id_resolution: Dict[str, Tuple[str, str]] = {}
         resolve_stats = {"resolved": 0, "fallback": 0, "unresolved": 0}
         has_prefilter = bool(self._idea_code_candidates)
 
@@ -355,16 +362,16 @@ class CodeAssigner:
                 continue
 
             # Global ID map (only when no pre-filter)
-            raw_id = getattr(assignment, 'assigned_code_id', '') or ''
+            raw_id = getattr(assignment, 'option_id', '') or ''
             cat_id = self._normalize_id(raw_id)
-            label = self._id_to_label.get(cat_id)
-            if label:
-                id_resolution[idea_id] = label
+            pair = self._id_to_code.get(cat_id)
+            if pair:
+                id_resolution[idea_id] = pair
                 resolve_stats["resolved"] += 1
             elif raw_id:
-                print(f"    WARNING: Code ID '{cat_id}' not in global map for "
+                print(f"    WARNING: Option ID '{cat_id}' not in global map for "
                       f"idea '{idea_id}' — marking __UNASSIGNED__")
-                id_resolution[idea_id] = "__UNASSIGNED__"
+                id_resolution[idea_id] = ("__UNASSIGNED__", "__UNASSIGNED__")
                 resolve_stats["fallback"] += 1
             else:
                 resolve_stats["unresolved"] += 1
@@ -441,7 +448,7 @@ class CodeAssigner:
     def _parse_fn(self, task: Dict, response) -> Optional[CodeAssignmentBatch]:
         """Parse LLM response into CodeAssignmentBatch + resolve per-task IDs."""
         idea = task['idea']
-        task_id_to_label = task.get('task_id_to_label', self._id_to_label)
+        task_id_to_code = task.get('task_id_to_code', self._id_to_code)
 
         # Validate response
         if response is None or not hasattr(response, 'assigned_code_id'):
@@ -453,7 +460,7 @@ class CodeAssigner:
         wrapped = CodeAssignmentBatch(
             assignments=[CodeAssignment(
                 idea_id=idea.idea_id,
-                assigned_code_id=response.assigned_code_id,
+                option_id=response.assigned_code_id,
                 confidence=response.confidence,
                 rationale=response.rationale,
             )]
@@ -462,11 +469,11 @@ class CodeAssigner:
         # Per-task ID resolution (scoped C1-C5 from embedding pre-filter)
         raw_id = response.assigned_code_id or ''
         cat_id = self._normalize_id(raw_id)
-        label = task_id_to_label.get(cat_id)
-        if label:
-            self._per_task_resolutions[idea.idea_id] = label
+        pair = task_id_to_code.get(cat_id)
+        if pair:
+            self._per_task_resolutions[idea.idea_id] = pair
         else:
-            print(f"    WARNING: Code ID '{cat_id}' not in scoped "
+            print(f"    WARNING: Option ID '{cat_id}' not in scoped "
                   f"candidates for idea '{idea.idea_id}'")
 
         return wrapped
@@ -492,44 +499,63 @@ class CodeAssigner:
         return cat_id
 
     def _build_id_maps(self) -> None:
-        """Build ID-to-label maps from self._codes (ConsolidatedCode list).
+        """Build option-ID → (code_id, code_name) maps from self._codes.
 
-        Populates self._id_to_label, self._no_fit_id, self._no_fit_label.
-        The no-fit option is the final ID and resolves to __UNASSIGNED__ (its
+        Populates self._id_to_code, self._no_fit_id, self._no_fit_label.
+        The no-fit option is the final ID and resolves to Overig/sentinel (its
         display phrase, self._no_fit_label, is shown in the prompt only).
         """
-        id_to_label: Dict[str, str] = {}
+        id_to_code: Dict[str, Tuple[str, str]] = {}
 
         for i, code in enumerate(self._codes, 1):
-            id_to_label[f"C{i}"] = code.code_name
+            id_to_code[f"C{i}"] = (code.code_id, code.code_name)
 
-        # Add the no-fit option as final entry (resolves to __UNASSIGNED__)
+        # Add the no-fit option as final entry (resolves to Overig/sentinel)
         if self._config.allow_no_fit:
             language = "Dutch"
             if self._extraction_metadata:
                 language = getattr(self._extraction_metadata, 'lang', 'Dutch') or 'Dutch'
             self._no_fit_id = f"C{len(self._codes) + 1}"
             self._no_fit_label = get_no_fit_label(language)
-            id_to_label[self._no_fit_id] = self._no_fit_resolves_to
+            id_to_code[self._no_fit_id] = self._no_fit_resolves_to
         else:
             self._no_fit_id = None
             self._no_fit_label = None
 
-        self._id_to_label = id_to_label
+        self._id_to_code = id_to_code
 
     def _build_provenance_maps(self) -> None:
-        """Map each step-5 attribute to its home code, and find the Overig code.
+        """Map each step-5 attribute id to its home code, and find the Overig code.
 
         Used to guarantee that an idea's coverage-guaranteed code (the code whose
-        source_attributes includes the idea's step-4 attribute) is always in the
-        candidate set, even when the embedding pre-filter would not surface it.
+        source_attribute_ids includes the idea's step-4 attribute) is always in
+        the candidate set, even when the embedding pre-filter would not surface
+        it. Keyed by attribute_id: same-named attributes in different domains no
+        longer collide. Both the A#s and the name→A# resolver come from the mece
+        cache (structure ↔ source_attribute_ids), so the id space is consistent
+        even for legacy per-artifact minting.
         """
         self._attr_to_code_idx = {}
         for i, code in enumerate(self._codes):
-            for attr in (getattr(code, 'source_attributes', None) or []):
-                key = (attr or "").strip()
-                if key and key not in self._attr_to_code_idx:
-                    self._attr_to_code_idx[key] = i
+            for attr_id in (getattr(code, 'source_attribute_ids', None) or []):
+                if attr_id and attr_id not in self._attr_to_code_idx:
+                    self._attr_to_code_idx[attr_id] = i
+
+        # name→A# resolver from the mece structure (normalized domain keys)
+        self._attr_id_scoped = {}
+        self._attr_id_by_name = {}
+        for domain, res in self._mece_results.items():
+            dkey = self._normalize_key(domain)
+            for attrs in res.attributes.values():
+                for a in attrs:
+                    name = (a.get("attribute_name") or "").strip()
+                    attr_id = a.get("attribute_id")
+                    if not name or not attr_id:
+                        continue
+                    self._attr_id_scoped.setdefault((dkey, name), attr_id)
+                    ids = self._attr_id_by_name.setdefault(name, [])
+                    if attr_id not in ids:
+                        ids.append(attr_id)
 
         overig_names = {v.strip().lower() for v in MISCELLANEOUS_CODE_LABELS.values()} | {"overig"}
         self._overig_code_idx = None
@@ -541,9 +567,24 @@ class CodeAssigner:
         # "No specific code fits" routes to the existing Overig code; only when
         # the codebook has no Overig does it fall back to the __UNASSIGNED__ sentinel.
         self._no_fit_resolves_to = (
-            self._codes[self._overig_code_idx].code_name
-            if self._overig_code_idx is not None else "__UNASSIGNED__"
+            (self._codes[self._overig_code_idx].code_id,
+             self._codes[self._overig_code_idx].code_name)
+            if self._overig_code_idx is not None
+            else ("__UNASSIGNED__", "__UNASSIGNED__")
         )
+
+    def _home_code_idx(self, domain: str, attr_name: str) -> Optional[int]:
+        """Idea's home-code index via its attribute NAME: resolve to A# against
+        the mece structure ((domain, name) first, then structure-wide unique
+        name), then A# → code idx. None when unresolvable — no seeding then,
+        same as the pre-id behavior for unknown names."""
+        if not attr_name:
+            return None
+        attr_id = self._attr_id_scoped.get((self._normalize_key(domain), attr_name))
+        if not attr_id:
+            unique = self._attr_id_by_name.get(attr_name)
+            attr_id = unique[0] if unique and len(unique) == 1 else None
+        return self._attr_to_code_idx.get(attr_id) if attr_id else None
 
     # =========================================================================
     # PROMPT BUILDING
@@ -762,7 +803,7 @@ class CodeAssigner:
     def _build_output_models(
         self,
         assignment_lookup: dict,
-        id_resolution: Dict[str, str],
+        id_resolution: Dict[str, Tuple[str, str]],
     ) -> List[CodeAssignedModel]:
         """Build CodeAssignedModel list preserving response structure.
 
@@ -783,18 +824,19 @@ class CodeAssigner:
                     assignment = assignment_lookup.get(idea.idea_id)
                     ct = self._normalize_key(idea.domain)
 
-                    resolved_label = id_resolution.get(idea.idea_id)
+                    resolved = id_resolution.get(idea.idea_id)
 
                     # BP2: Ideas with no resolvable assignment (failed call or an
                     # out-of-scope/invalid ID) fall back to the catch-all (Overig)
                     # when one exists, else the __UNASSIGNED__ sentinel.
-                    if not resolved_label:
+                    if not resolved:
                         unassigned_ideas += 1
-                        resolved_label = self._no_fit_resolves_to
+                        resolved = self._no_fit_resolves_to
+                    resolved_code_id, resolved_label = resolved
 
                     idea_data = idea.model_dump()
                     explicit_fields = {
-                        'assigned_code', 'confidence',
+                        'assigned_code', 'assigned_code_id', 'confidence',
                         'rationale', 'assigned_attribute',
                         'partition_name', 'facet',
                     }
@@ -803,6 +845,7 @@ class CodeAssigner:
                            if k in CodeAssignedSubmodel.model_fields
                            and k not in explicit_fields},
                         assigned_code=resolved_label,
+                        assigned_code_id=resolved_code_id,
                         confidence=(
                             assignment.confidence
                             if assignment else 0.0
@@ -831,7 +874,7 @@ class CodeAssigner:
         # BP4: Count reconciliation
         if unassigned_ideas > 0:
             print(f"    {unassigned_ideas}/{total_ideas} ideas had no resolvable assignment "
-                  f"(failed call / out-of-scope ID) → routed to {self._no_fit_resolves_to!r} "
+                  f"(failed call / out-of-scope ID) → routed to {self._no_fit_resolves_to[1]!r} "
                   f"({unassigned_ideas/max(total_ideas,1)*100:.1f}%)")
 
         return output

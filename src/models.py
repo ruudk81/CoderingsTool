@@ -149,8 +149,9 @@ class TaxonomyClassifiedModel(IdeasExtractedModel):
 class CodeAssignment(BaseModel):
     """Single idea-to-code assignment (internal wrapper)."""
     idea_id: str = Field(..., description="The idea_id from the input")
-    assigned_code_id: str = Field(
-        ..., description="The code ID from [C#] prefix (e.g. 'C1', 'C7'). ONLY the ID."
+    option_id: str = Field(
+        ..., description="The chosen option from the [C#] prompt list (e.g. 'C1', "
+                         "'C7') — an ephemeral per-prompt index, never a persisted K# id."
     )
     confidence: float = Field(..., description="Confidence (0.0 to 1.0)")
     rationale: str = Field(..., description="Brief rationale")
