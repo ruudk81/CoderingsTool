@@ -31,11 +31,11 @@ from utils.costTracker import CostTracker
 
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.cross_domain_consolidator import CrossDomainConsolidator
-from pipeline.step_4_classifier.models_classifier import (
+from models import (
     TaxonomyResultsCache,
     TaxonomyClassifiedModel,
 )
-from pipeline.step_3_ideaExtractor.models import ExtractionMetadata
+from models import ExtractionMetadata
 
 
 # =============================================================================

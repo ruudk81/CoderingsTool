@@ -33,7 +33,7 @@ from pipeline.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
 )
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
-from pipeline.step_4_classifier.models_classifier import (
+from models import (
     TaxonomyResultsCache,
     TaxonomyClassifiedModel,
     TaxonomyClassifiedSubmodel,

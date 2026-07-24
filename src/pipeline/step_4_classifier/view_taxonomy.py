@@ -19,7 +19,7 @@ from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
 from test_data import TEST_DATA
 
-from pipeline.step_4_classifier.models_classifier import TaxonomyResultsCache
+from models import TaxonomyResultsCache
 
 FILENAME = TEST_DATA.filename
 VAR_NAME = TEST_DATA.var_name

@@ -12,7 +12,9 @@ Metadata & cache models (dataset-level):
     DomainResultModel / TaxonomyResultsCache (step 4 taxonomy cache)
     CodingResultsCache (step 5 codebook cache)
 
-Source of truth: development step model files (step_3, step_4, step_5, step_6).
+This file is the single source of truth for all cross-step models. Step-local
+model files hold only models that never cross a step boundary (LLM response
+models, internal wrappers).
 """
 
 from typing import List, Any, Optional, Union, Dict
@@ -123,6 +125,10 @@ class TaxonomyClassifiedSubmodel(IdeasExtractedSubmodel):
     facet (L3) and attribute (L4) are inherited and populated by step 4 P3/P6.
     """
     partition_name: Optional[str] = None  # Domain partition this idea belongs to
+    facet_confidence: Optional[float] = None      # P3 assignment confidence (0.0-1.0)
+    attribute_confidence: Optional[float] = None   # P6 assignment confidence (0.0-1.0)
+    corrected_attribute: Optional[str] = None  # post-hoc over-merge correction (None = unchanged)
+    corrected_facet: Optional[str] = None
 
 
 class TaxonomyClassifiedModel(IdeasExtractedModel):
@@ -198,6 +204,10 @@ class DomainDescription(BaseModel):
         ...,
         description="3-5 concrete words or phrases that indicate this partition"
     )
+    exclusions: List[str] = Field(
+        default_factory=list,
+        description="Concepts that belong to OTHER domains — what this partition excludes"
+    )
 
 
 class DomainSet(BaseModel):
@@ -217,6 +227,20 @@ class DomainResultModel(BaseModel):
     facet_assignments: Dict[str, str] = Field(default_factory=dict)
     attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     attribute_assignments: Dict[str, str] = Field(default_factory=dict)
+    # Pre-P7 snapshots (before cross-facet consolidation remaps)
+    raw_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
+    raw_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
+    # Post-hoc over-merge correction (consolidation_corrector, step 5). Empty =
+    # uncorrected; populated copy of attributes/attribute_assignments with separable
+    # over-merged buckets split back along provenance seams. Consumed by step 5.
+    corrected_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
+    corrected_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
+    # Assignment confidence scores (0.0-1.0)
+    facet_confidence: Dict[str, float] = Field(default_factory=dict)
+    attribute_confidence: Dict[str, float] = Field(default_factory=dict)
+    # Assignment valence (+, -, 0)
+    facet_valence: Dict[str, str] = Field(default_factory=dict)
+    attribute_valence: Dict[str, str] = Field(default_factory=dict)
 
 
 class TaxonomyResultsCache(BaseModel):
@@ -242,3 +266,7 @@ class CodingResultsCache(BaseModel):
     label_source: str = ""
     total_categories: int = 0
     raw_codes: List[Dict] = Field(default_factory=list)  # ConsolidatedCode dicts
+    # Cached embeddings for downstream reuse (step 6)
+    idea_embeddings: Optional[Dict[str, List[float]]] = None  # idea_id -> embedding vector
+    embedding_code_source: str = ""  # Text format used for embedding
+    embedding_model: str = ""  # Embedding model name

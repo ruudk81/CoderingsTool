@@ -34,7 +34,7 @@ from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.embedder import SharedEmbedder, find_representative_samples
 from utils.llm import create_client, llm_create_async
 from config import get_step_model, get_reasoning_params
-from pipeline.step_3_ideaExtractor import models
+import models
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     DomainItem, build_orthogonalize_domains_prompt, ReformulatedDomains,
 )

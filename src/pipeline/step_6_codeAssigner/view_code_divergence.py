@@ -26,8 +26,8 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
-from pipeline.step_4_classifier.models_classifier import TaxonomyClassifiedModel
+from models import CodeAssignedModel
+from models import TaxonomyClassifiedModel
 
 from test_data import TEST_DATA
 

@@ -35,7 +35,7 @@ from pipeline.step_3_ideaExtractor.dimension_data import (
     get_dimension, DimensionDefinition,
 )
 
-from pipeline.step_4_classifier.models_classifier import DomainSet
+from models import DomainSet
 
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from .prompts_codeGenerator import (

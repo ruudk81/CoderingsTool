@@ -18,7 +18,7 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from pipeline.step_3_ideaExtractor import models
+import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
@@ -27,13 +27,13 @@ from utils.costTracker import CostTracker
 # Import step_6_codeAssigner components
 from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig
 from pipeline.step_6_codeAssigner.code_assignment import CodeAssigner
-from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
+from models import CodeAssignedModel
 
 # Import step_5_codeGenerator (upstream output types)
-from pipeline.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
+from models import CodingResultsCache
 
 # Import step_4_classifier (upstream output types)
-from pipeline.step_4_classifier.models_classifier import (
+from models import (
     DomainSet, DomainResultModel, TaxonomyClassifiedModel,
 )
 

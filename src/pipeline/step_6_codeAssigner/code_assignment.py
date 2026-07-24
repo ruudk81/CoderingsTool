@@ -39,18 +39,18 @@ from utils.llm import token_tracker
 from utils.smoothRequester import SmoothRequester
 from config import get_reasoning_params, MISCELLANEOUS_CODE_LABELS
 
-from pipeline.step_3_ideaExtractor import models
+import models
 
 from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig, get_no_fit_label
-from .models_codeAssigner import CodeAssignedSubmodel, CodeAssignedModel
-from pipeline.step_4_classifier.models_classifier import DomainSet, DomainResultModel
+from models import CodeAssignedSubmodel, CodeAssignedModel
+from models import DomainSet, DomainResultModel
 from .prompts_codeAssigner import (
     build_code_assignment_prompt,
     CodeAssignmentResponse,
     configure_validation_mode,
 )
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
-from .models_codeAssigner import CodeAssignment, CodeAssignmentBatch
+from models import CodeAssignment, CodeAssignmentBatch
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
 nest_asyncio.apply()

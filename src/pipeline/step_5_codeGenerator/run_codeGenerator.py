@@ -16,7 +16,7 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from pipeline.step_3_ideaExtractor import models
+import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
@@ -25,7 +25,7 @@ from utils.costTracker import CostTracker
 # Import step_5_codeGenerator components
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.codebook_generator import CodebookGenerator, CodebookResult
-from pipeline.step_5_codeGenerator.models_codeGenerator import CodingResultsCache
+from models import CodingResultsCache
 from pipeline.step_5_codeGenerator.codebook_verifier import (
     build_scorecard, format_scorecard, collect_taxonomy_attributes, collect_idea_assignments,
 )
@@ -33,7 +33,7 @@ from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from config import MISCELLANEOUS_CODE_LABELS
 
 # Import step_4_classifier (upstream output types)
-from pipeline.step_4_classifier.models_classifier import (
+from models import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
     TaxonomyClassifiedModel,
 )

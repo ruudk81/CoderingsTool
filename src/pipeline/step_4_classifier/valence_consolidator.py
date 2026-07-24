@@ -28,7 +28,7 @@ from config import get_reasoning_params
 from utils.llm import create_client, llm_create_async, token_tracker
 
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
-from pipeline.step_4_classifier.models_classifier import (
+from models import (
     TaxonomyResultsCache,
     TaxonomyClassifiedModel,
 )

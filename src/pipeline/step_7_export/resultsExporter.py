@@ -26,9 +26,9 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule
 
-from pipeline.step_6_codeAssigner.models_codeAssigner import CodeAssignedModel
+from models import CodeAssignedModel
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
-from pipeline.step_4_classifier.models_classifier import DomainSet, DomainResultModel
+from models import DomainSet, DomainResultModel
 from utils.verboseReporter import VerboseReporter
 
 
@@ -222,11 +222,11 @@ def build_catalog(
     raw_desc: Dict[str, str] = {}
     if tax is not None:
         for dr in tax.partition_results.values():
-            for attr_list in (getattr(dr, "raw_attributes", {}) or {}).values():
+            for attr_list in dr.raw_attributes.values():
                 for a in (attr_list or []):
                     if isinstance(a, dict) and a.get("attribute_name"):
                         raw_desc.setdefault(a["attribute_name"], a.get("attribute_description", ""))
-            cat.raw_map.update(getattr(dr, "raw_attribute_assignments", {}) or {})
+            cat.raw_map.update(dr.raw_attribute_assignments)
     # number raw attributes grouped by domain order, sourced from idea (domain, raw attr)
     raw_by_domain: Dict[str, set] = defaultdict(set)
     for resp in responses:

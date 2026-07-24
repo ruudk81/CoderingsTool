@@ -50,7 +50,7 @@ from utils.smoothRequester import SmoothRequester
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
-from .models_classifier import DomainSet, DomainDescription
+from models import DomainSet, DomainDescription
 from .prompts_classifier import (
     # P1: Facet Discovery
     build_facet_discovery_prompt,

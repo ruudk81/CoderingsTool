@@ -15,13 +15,7 @@ sys.path.insert(0, str(src_dir))
 
 import random
 import re
-try:
-    from pipeline.step_3_ideaExtractor import models
-except ImportError:
-    models_dir = Path(__file__).parent
-    if str(models_dir) not in sys.path:
-        sys.path.insert(0, str(models_dir))
-    import models
+import models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 

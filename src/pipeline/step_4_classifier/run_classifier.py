@@ -28,7 +28,7 @@ PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 EXPERIMENT_N = None     # Limit number of responses for a test run (None = use all)
 STOP_AFTER_PHASE = None   # None = full pipeline, 1–8 = stop after that phase
 
-from pipeline.step_3_ideaExtractor import models
+import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
@@ -40,7 +40,7 @@ from pipeline.step_4_classifier.domain_discoverer import DomainDiscoverer, Parti
 from pipeline.step_4_classifier.classifier import TaxonomyClassifier, TaxonomyResult
 from pipeline.step_4_classifier.cross_domain_consolidator import CrossDomainConsolidator
 from pipeline.step_4_classifier.taxonomy_health import prune_empty_nodes, print_health
-from pipeline.step_4_classifier.models_classifier import (
+from models import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
     TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel,
 )

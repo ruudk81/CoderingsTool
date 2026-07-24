@@ -38,7 +38,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.embedder import SharedEmbedder
-from pipeline.step_3_ideaExtractor import models
+import models
 
 from test_data import TEST_DATA
 

@@ -22,7 +22,7 @@ import time
 from collections import defaultdict
 
 from utils.llm import token_tracker
-from pipeline.step_4_classifier.models_classifier import (
+from models import (
     TaxonomyResultsCache,
     TaxonomyClassifiedModel,
 )

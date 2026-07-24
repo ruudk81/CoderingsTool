@@ -35,7 +35,7 @@ from aiolimiter import AsyncLimiter
 logger = logging.getLogger(__name__)
 
 # === MODELS ========================================================================================================
-from pipeline.step_3_ideaExtractor import models
+import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
