@@ -83,6 +83,43 @@ def test_models_line_resolves_for_all_steps():
 
 
 # =============================================================================
+# Unit: verbose-log → report parser (Phase B0)
+# =============================================================================
+
+def test_parser_handles_all_existing_logs():
+    """Plan §3.6a: lenient — every log in exports/verbose_logs/ must parse."""
+    import glob
+    files = glob.glob(os.path.join(be.PROJECT_ROOT, "exports", "verbose_logs", "*.txt"))
+    assert files, "no logs found to verify against"
+    for f in files:
+        text = open(f, encoding="utf-8", errors="replace").read()
+        rep = be.parse_verbose_log(text)   # must never raise
+        # nothing invented: every kept line exists verbatim in the source
+        for sec in rep.sections:
+            for ln in sec.body[:3] + sec.summary[:3] + sec.noise[:3]:
+                assert ln.strip() == "" or ln.strip() in text, f"{f}: fabricated line {ln!r}"
+        # logs with an explicit section marker yield a titled section
+        if "[SECTION]" in text:
+            assert any(s.title for s in rep.sections), f"{f}: [SECTION] present but no titled section"
+
+
+def test_parser_step2_example():
+    """Known log from the 2026-07-23 run: meta, summary and noise land correctly."""
+    path = os.path.join(be.PROJECT_ROOT, "exports", "verbose_logs",
+                        "M000000_Associatiemonitor_Merk_X_tabellenbestand_"
+                        "Qd1_100_100_step2_20260723_042437.txt")
+    if not os.path.exists(path):
+        print("  (skipped: example log not present)")
+        return
+    rep = be.parse_verbose_log(open(path, encoding="utf-8").read())
+    assert rep.meta.get("Sample size") == "100"
+    sec = next(s for s in rep.sections if s.title == "QUALITY FILTERING")
+    assert any("Total meaningful" in ln for ln in sec.summary), "summary block not captured"
+    assert any("RATE LIMITING SETUP" in ln for ln in sec.noise), "telemetry not collapsed"
+    assert not any("inflight" in ln for ln in sec.body), "telemetry leaked into body"
+
+
+# =============================================================================
 # AppTest: page layer
 # =============================================================================
 

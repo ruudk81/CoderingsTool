@@ -79,6 +79,37 @@ def _assignments(filename: str, var_name: str, sample_size: Optional[int], epoch
 
 
 # =============================================================================
+# VERBOSE REPORT (Phase B0) — render a parsed execution log as a report:
+# sections as headers, summaries highlighted, telemetry behind a toggle.
+# =============================================================================
+
+def render_log_report(log_text: str, lang: str, key: str):
+    rep = be.parse_verbose_log(log_text)
+
+    if rep.meta:
+        bits = [rep.meta[k] for k in ("Variable", "Sample size") if k in rep.meta]
+        times = " → ".join(rep.meta[k] for k in ("Start time", "End time") if k in rep.meta)
+        st.caption(" · ".join(bits + ([times] if times else [])))
+
+    for sec in rep.sections:
+        if sec.title:
+            st.markdown(f"**{sec.title}**")
+        if sec.body:
+            st.text("\n".join(sec.body))
+        if sec.summary:
+            st.code("\n".join(sec.summary), language=None)
+
+    if rep.noise_count and st.toggle(
+            "⚙️ " + _t(lang, f"Technische details ({rep.noise_count} regels)",
+                       f"Technical details ({rep.noise_count} lines)"),
+            key=f"{key}_noise"):
+        st.code("\n".join(ln for s in rep.sections for ln in s.noise), language=None)
+
+    if st.toggle("📄 " + _t(lang, "Ruwe log", "Raw log"), key=f"{key}_raw"):
+        st.code(log_text, language=None)
+
+
+# =============================================================================
 # STEP 2 — quality-filter breakdown
 # =============================================================================
 

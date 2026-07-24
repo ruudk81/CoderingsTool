@@ -357,11 +357,11 @@ def render_output(step: int, spec: DatasetSpec):
     if view.samples:
         view.samples(spec, lang, epoch)
 
-    # Execution log
+    # Execution report (parsed from the captured console log — B0)
     log = be.find_verbose_log(spec, step)
     if log:
-        with st.expander("📋 " + T("Uitvoeringslog", "Execution log")):
-            st.code(log, language=None)
+        with st.expander("📋 " + T("Uitvoeringsrapport", "Execution report")):
+            av.render_log_report(log, lang, key=f"log_{step}")
 
 
 def page_step(step: int, status: dict):

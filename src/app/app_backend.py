@@ -22,6 +22,7 @@ the way each runner probes it before deciding to skip. There is no parallel
 from __future__ import annotations
 
 import os
+import re
 import sys
 import sqlite3
 from dataclasses import dataclass, field
@@ -427,6 +428,121 @@ def find_verbose_log(spec: DatasetSpec, step: int) -> Optional[str]:
     """Latest captured console log for a step, or None."""
     path = VerboseCapture.find_latest_log(spec.filename, spec.variable_key, step)
     return VerboseCapture.load_log_content(path) if path else None
+
+
+# =============================================================================
+# VERBOSE LOG → REPORT (Phase B0) — turn the raw console capture into a
+# structured report. Contract: app_development_plan.md §3.6a. The parser is
+# LENIENT by design: unknown lines fall through to the body, dividers are
+# dropped, and nothing ever raises — every log in exports/verbose_logs/ must
+# parse (test_app_v2.py verifies line accounting on all of them).
+# =============================================================================
+
+@dataclass
+class VerboseSection:
+    """One report section: readable body, highlighted summary, collapsed noise."""
+    title: str
+    body: List[str] = field(default_factory=list)
+    summary: List[str] = field(default_factory=list)
+    noise: List[str] = field(default_factory=list)
+
+
+@dataclass
+class VerboseReport:
+    meta: Dict[str, str]                 # Dataset, Variable, Sample size, times
+    sections: List[VerboseSection]
+
+    @property
+    def noise_count(self) -> int:
+        return sum(len(s.noise) for s in self.sections)
+
+
+# Telemetry the report collapses under "technical details". This table is the
+# contract with utils/verboseReporter.py & utils/smoothRequester.py output —
+# when new streaming/rate-limit line types appear there, extend it HERE.
+_NOISE_LINE = re.compile(r"""
+      \|\ inflight:                       # [step…] 9/82 | inflight:50 | tok:…
+    | ^⏱                                  # ⏱ T+0.0s: …
+    | ^\[WARM-UP\]
+    | ^Workers:\ \d
+    | ^RATE\ LIMITING\ SETUP
+    | ^Processing\ individual\ tasks\.\.\.
+    | ^-\ (RPM|TPM)\ limit:
+    | ^-\ Initial\ avg_tokens
+    | ^-\ Target\ concurrency:
+    | ^-\ Concurrent\ (subroutines|ceiling)
+    | ^-\ Rate\ limit\ concurrency:
+    | ^-\ Optimal\ by\ Little
+    | ^-\ Start:\ (cold|warm)
+    | ^-\ System:\ [AB]\b
+    | ^-\ Final\ concurrency:
+    | ^\ *Final\ concurrency:
+""", re.X)
+
+_DIVIDER = re.compile(r"^[=─-]{6,}$")
+_META_KEYS = ("Dataset", "Variable", "Sample size", "Run until step",
+              "Start time", "End time")
+_SUMMARY_HEAD = re.compile(r"^(SUMMARY\b|\[STATS\]|\[SUMMARY\])")
+
+
+def parse_verbose_log(text: str) -> VerboseReport:
+    """Split a captured console log into meta + sections(body/summary/noise)."""
+    meta: Dict[str, str] = {}
+    sections: List[VerboseSection] = []
+    cur = VerboseSection(title="")
+    sections.append(cur)
+    in_summary = False
+    summary_content_seen = False
+
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip()
+        s = line.strip()
+
+        if not s:                                   # blank ends a summary block
+            if in_summary and summary_content_seen:
+                in_summary = False
+            continue
+        if _DIVIDER.match(s):                       # pure formatting — drop
+            continue
+
+        # File header metadata (Dataset: …) — regardless of position
+        head_key = s.split(":", 1)[0]
+        if head_key in _META_KEYS and ":" in s and head_key not in meta:
+            meta[head_key] = s.split(":", 1)[1].strip()
+            continue
+        if s == "PIPELINE VERBOSE OUTPUT LOG":
+            continue
+
+        # New section
+        if s.startswith("[SECTION]"):
+            in_summary = False
+            cur = VerboseSection(title=s[len("[SECTION]"):].strip())
+            sections.append(cur)
+            continue
+
+        # Summary block: head starts collection; content until blank line
+        if _SUMMARY_HEAD.match(s):
+            in_summary = True
+            summary_content_seen = False
+            cur.summary.append(s)
+            continue
+        if in_summary:
+            summary_content_seen = True
+            cur.summary.append(line)                # keep indentation (alignment)
+            continue
+
+        # Telemetry noise → collapsed
+        if _NOISE_LINE.search(s):
+            cur.noise.append(line)
+            continue
+
+        # Everything else is body — lenient default
+        cur.body.append(line)
+
+    # Drop a completely empty preamble section
+    sections = [sec for sec in sections
+                if sec.title or sec.body or sec.summary or sec.noise]
+    return VerboseReport(meta=meta, sections=sections)
 
 
 # Quick self-test: `python app_backend.py`
