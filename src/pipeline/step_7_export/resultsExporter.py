@@ -1,11 +1,12 @@
 """
 Step 7 — Export.
 
-Three analytical outputs, each as an Excel worksheet AND a .sav file, plus an
-Excel legend sheet:
-  - Output 1 "codeboek"     — per respondent, dichotomous code matrix
-  - Output 2 "taxonomie"    — per respondent, dichotomous domain/facet/attribute matrix
-  - Output 3 "gecombineerd" — per expressed idea, long (the source for 1 & 2)
+Four analytical outputs, each as an Excel worksheet AND a .sav file, plus an
+Excel legend sheet (5 sheets, 4 .sav files total):
+  - Output 1 "codeboek"        — per respondent, dichotomous code matrix
+  - Output 2 "taxonomie grof"  — per respondent, dichotomous domain/facet/consolidated-attribute matrix
+  - Output 3 "taxonomie fijn"  — same, but raw (pre-consolidation) attributes
+  - Output 4 "gecombineerd"    — per expressed idea, long (the source for 1-3)
 
 Design + decisions: see dev/WORK.md.
 """
@@ -268,7 +269,7 @@ class ResultsExporter:
                var_name: str = "VAR",
                var_lab: str = "",
                export_dir: Optional[str] = None) -> Dict[str, str]:
-        """Build the catalog + 3 outputs, write one Excel workbook (4 sheets) and 3 .sav files."""
+        """Build the catalog + 4 outputs, write one Excel workbook (5 sheets) and 4 .sav files."""
         self.reporter.section_header("EXPORT — codeboek / taxonomie / gecombineerd")
         var_lab = _clean_var_lab(var_lab)
 
