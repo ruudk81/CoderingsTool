@@ -23,6 +23,10 @@ Two things, both dataset-independent and both cheap enough to run on every build
                         None of these are errors on their own — a solo facet can be
                         a deliberate placeholder for later waves. A high SHARE of
                         them is the signal.
+
+Scope: this module operates PRE-finalization, where name still is identity —
+stable ids (D#/F#/A#, src/identity.py) are minted at cache-save, after these
+checks ran. It therefore deliberately stays name-based.
 """
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
