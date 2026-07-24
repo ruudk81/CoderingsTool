@@ -56,7 +56,13 @@ def _valence_tag(
     if attribute_valence_counts:
         p = n = g = 0
         for attr in (source_attributes or []):
-            counts = attribute_valence_counts.get(attr, {})
+            # Counts are keyed by bare attribute name; P9 candidates carry
+            # domain-qualified "name (domain)" — try bare first (an attribute
+            # name may itself end in ')'), then strip the qualification.
+            counts = attribute_valence_counts.get(attr)
+            if counts is None and attr.endswith(")") and " (" in attr:
+                counts = attribute_valence_counts.get(attr.rsplit(" (", 1)[0])
+            counts = counts or {}
             p += counts.get("positive", 0)
             n += counts.get("neutral", 0)
             g += counts.get("negative", 0)
@@ -341,7 +347,8 @@ class ConsolidatedCode(BaseModel):
     )
     # Stable ids (identity.py) — never part of the LLM response schema: minted at
     # cache-save (K#), or lazily at load for pre-id codebooks. source_attribute_ids
-    # mirrors source_attributes as attribute ids (A#).
+    # mirrors source_attributes as attribute ids (A#), resolved at P9 parse time
+    # from the domain-qualified enum values (else at cache-save/load).
     code_id: SkipJsonSchema[str] = ""
     source_attribute_ids: SkipJsonSchema[List[str]] = Field(default_factory=list)
 

@@ -154,7 +154,7 @@ Each code must include:
 - **diagnostic_test**: Must complete: "{{code_diagnostic}}" — must NOT overlap with any other code
 - **valence**: positive / negative / neutral (use neutral for a dimensional code that spans the range)
 - **typical_indicators**: concrete phrases (not abstract labels)
-- **source_attributes**: all merged origins
+- **source_attributes**: all merged origins — copy the exact `name (domain)` values as shown under "Source attributes"
 </code_template>
 
 All output MUST be in {{language}}.

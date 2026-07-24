@@ -14,7 +14,7 @@ import asyncio
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Set
+from typing import Dict, List, Literal, Optional, Set, Tuple
 
 
 from pydantic import BaseModel, Field, create_model
@@ -132,6 +132,10 @@ class CodebookGenerator:
         # Embeddings for cache (populated during processing)
         self._idea_embeddings: Dict[str, any] = {}
 
+        # (domain, attribute_name) -> A# id, for resolving P9 provenance to
+        # stable ids at parse time (set per run via generate()).
+        self._attribute_ids: Dict[Tuple[str, str], str] = {}
+
     # =========================================================================
     # PUBLIC API
     # =========================================================================
@@ -149,6 +153,7 @@ class CodebookGenerator:
         prompt_printer=None,
         classified_ideas: Optional[List] = None,
         template_prefix: str = "",
+        attribute_ids: Optional[Dict[Tuple[str, str], str]] = None,
     ) -> CodebookResult:
         """Run codebook stages (P8-P9) from a TaxonomyResult.
 
@@ -164,9 +169,13 @@ class CodebookGenerator:
             prompt_printer: Optional prompt printer (overrides __init__ printer)
             classified_ideas: Taxonomy-classified ideas from step 4 (for embedding + representative samples)
             template_prefix: Template prefix from extraction metadata
+            attribute_ids: (domain, attribute_name) -> A# id, for resolving P9
+                provenance to stable ids at parse time (absent ids are filled
+                legacy-style by ensure_codebook_ids at cache-save)
         """
         if prompt_printer is not None:
             self._prompt_printer = prompt_printer
+        self._attribute_ids = attribute_ids or {}
 
         print(f"\n{'='*70}")
         print(f"CODEBOOK GENERATION (P8-P9)")
@@ -370,13 +379,16 @@ class CodebookGenerator:
             self._p8_fallback_fn(),
         )
 
-        # Collect P8 results
+        # Collect P8 results (code_domains parallel to all_codes — P9 qualifies
+        # each code's source attributes with its origin domain)
         all_codes = []
+        code_domains = []
         codebook_narratives = []
         for task, result in zip(p8_tasks, p8_results):
             domain_name = task['domain_name']
             if result and result.codes:
                 all_codes.extend(result.codes)
+                code_domains.extend([domain_name] * len(result.codes))
                 codebook_narratives.append(f"[{domain_name}] {result.scratchpad}")
                 if verbose:
                     print(f"    {domain_name}: {len(result.codes)} codes")
@@ -416,16 +428,28 @@ class CodebookGenerator:
         t_phase9 = time.time()
 
         if len(all_codes) > 0:
-            # Cross-domain attribute names — constrains P9 source_attributes to valid names
+            # Cross-domain attribute names, domain-qualified as "name (domain)" —
+            # constrains P9 source_attributes to valid names AND eliminates the
+            # collision when the same attribute name exists in several domains.
+            # Parsed back to (domain, name) -> A# in _to_consolidated_code.
             all_attr_names_global = sorted({
-                attr.attribute_name
-                for facet_map in domain_facet_attributes.values()
+                f"{attr.attribute_name} ({domain_name})"
+                for domain_name, facet_map in domain_facet_attributes.items()
                 for facet_attrs in facet_map.values()
                 for attr in facet_attrs
             })
 
+            # Qualified copies for the P9 prompt/enum; all_codes itself keeps bare
+            # names (it is the fallback result when P9 fails).
+            p9_raw_codes = [
+                code.model_copy(update={"source_attributes": [
+                    f"{a} ({domain})" for a in (code.source_attributes or [])
+                ]})
+                for code, domain in zip(all_codes, code_domains)
+            ]
+
             p9_tasks = [{
-                'raw_codes': all_codes,
+                'raw_codes': p9_raw_codes,
                 'code_frequencies': code_frequencies,
                 'all_attr_names': all_attr_names_global,
                 'attribute_valence_counts': attribute_valence_counts,
@@ -452,7 +476,7 @@ class CodebookGenerator:
             if consolidation_result and consolidation_result.codes:
                 # Convert constrained dynamic codes back to ConsolidatedCode for downstream
                 all_codes = [
-                    ConsolidatedCode(**c.model_dump()) for c in consolidation_result.codes
+                    self._to_consolidated_code(c) for c in consolidation_result.codes
                 ]
                 codebook_narratives.append(
                     f"[consolidation] {consolidation_result.scratchpad}"
@@ -735,6 +759,31 @@ class CodebookGenerator:
     # P9 SMOOTHREQUESTER CALLBACKS
     # =========================================================================
 
+    def _to_consolidated_code(self, code) -> ConsolidatedCode:
+        """Convert a constrained P9 code back to ConsolidatedCode, splitting the
+        domain-qualified enum values ("name (domain)") into bare display names
+        and resolving them to A# ids via the (domain, name) map.
+
+        rpartition takes the LAST " (" — correct even when the attribute name
+        itself contains parentheses. If resolution is incomplete (no map, or an
+        unresolvable pair), source_attribute_ids is left empty so the mirror
+        invariant holds and ensure_codebook_ids fills it at cache-save."""
+        data = code.model_dump()
+        names, ids = [], []
+        for qualified in data.get("source_attributes", []):
+            name, sep, domain = qualified.rpartition(" (")
+            if sep and domain.endswith(")"):
+                domain = domain[:-1]
+            else:
+                name, domain = qualified, ""
+            names.append(name)
+            attr_id = self._attribute_ids.get((domain, name))
+            if attr_id:
+                ids.append(attr_id)
+        data["source_attributes"] = names
+        data["source_attribute_ids"] = ids if len(ids) == len(names) else []
+        return ConsolidatedCode(**data)
+
     @staticmethod
     def _build_constrained_consolidation_model(attribute_names: List[str]):
         """Build a CodebookConsolidationResult with source_attributes constrained
@@ -756,7 +805,7 @@ class CodebookGenerator:
             typical_indicators=(List[str], ConsolidatedCode.model_fields["typical_indicators"]),
             source_attributes=(List[AttrLiteral], Field(
                 default_factory=list,
-                description="Attribute names this code is derived from (must be exact names from the taxonomy)",
+                description="Attribute names this code is derived from (must be the exact 'name (domain)' values from the candidate code list)",
             )),
         )
 

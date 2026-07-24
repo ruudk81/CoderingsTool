@@ -18,6 +18,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from identity import ensure_codebook_ids
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 from utils.costTracker import CostTracker
@@ -292,6 +293,11 @@ def cache_mece_results(
         embedding_model=embedding_model,
     )
 
+    # Mint K# (list order: P9 codes, then Overig) and fill any source_attribute_ids
+    # still missing (e.g. the P9-failure fallback path) — new codebooks are
+    # id-bearing on disk, not just normalized at load.
+    ensure_codebook_ids(mece_cache)
+
     cache_manager = CacheManager()
     cache_manager.save_metadata_to_cache(
         metadata=mece_cache,
@@ -363,6 +369,17 @@ def apply_overig_sweep(
     if not orphans:
         return None
 
+    # Union of ids per orphan name across ALL domains — the catch-all covers the
+    # attribute wherever it lives. Dangling idea-assigned names have no id.
+    name_to_ids: Dict[str, List[str]] = {}
+    for r in pydantic_results.values():
+        for attrs in r.attributes.values():
+            for a in attrs:
+                if a.get("attribute_name") and a.get("attribute_id"):
+                    ids = name_to_ids.setdefault(a["attribute_name"], [])
+                    if a["attribute_id"] not in ids:
+                        ids.append(a["attribute_id"])
+
     label = MISCELLANEOUS_CODE_LABELS.get(language, "Overig")
     codebook_result.codes.append(ConsolidatedCode(
         code_name=label,
@@ -372,6 +389,7 @@ def apply_overig_sweep(
         valence="neutral",
         typical_indicators=[],
         source_attributes=orphans,
+        source_attribute_ids=[i for name in orphans for i in name_to_ids.get(name, [])],
     ))
     return label
 
@@ -541,6 +559,16 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
     if extraction_metadata and getattr(extraction_metadata, "template_prefix", None):
         template_prefix = extraction_metadata.template_prefix
 
+    # (domain, attribute_name) -> A# from the id-bearing loaded taxonomy, so the
+    # generator can resolve P9's domain-qualified provenance at parse time.
+    attribute_ids = {
+        (domain, a["attribute_name"]): a["attribute_id"]
+        for domain, r in pydantic_results.items()
+        for attrs in r.attributes.values()
+        for a in attrs
+        if a.get("attribute_name") and a.get("attribute_id")
+    }
+
     dataset_key = f"{FILENAME}:{variable_key}"
     generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker, dataset_key=dataset_key)
     codebook_result = generator.generate(
@@ -554,6 +582,7 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
         verbose=CONFIG.verbose if hasattr(CONFIG, 'verbose') else True,
         classified_ideas=classified_ideas,
         template_prefix=template_prefix,
+        attribute_ids=attribute_ids,
     )
 
     cost_tracker.finalize_step("step_5_code_generator")

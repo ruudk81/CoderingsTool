@@ -196,6 +196,25 @@ def ensure_assignment_ids(responses, structure,
     return responses
 
 
+def restamp_assignment_ids(responses, structure,
+                           codes: Optional[List[dict]] = None):
+    """Writer-side stamping: clear per-idea placement ids (and assigned_code_id
+    when `codes` is given) and re-derive them from the current structure.
+
+    Writers must re-derive rather than fill: a re-consolidated artifact (P7.5/P8/
+    corrector rerun) starts from cache-loaded ideas that may carry ids minted
+    against the PREVIOUS structure — `ensure_assignment_ids` alone would keep
+    those stale ids because it only fills None."""
+    for resp in responses:
+        for idea in (resp.response_ideas or []):
+            idea.domain_id = None
+            idea.facet_id = None
+            idea.attribute_id = None
+            if codes is not None and hasattr(idea, "assigned_code_id"):
+                idea.assigned_code_id = None
+    return ensure_assignment_ids(responses, structure, codes)
+
+
 def ensure_ids(obj):
     """Type-dispatching normalizer, hooked into CacheManager metadata loads.
     Structure artifacts get ids minted; anything else passes through untouched."""

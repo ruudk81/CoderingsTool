@@ -25,6 +25,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 from test_data import TEST_DATA
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from identity import ensure_taxonomy_ids, restamp_assignment_ids
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker, fetch_rate_limits
 from utils.costTracker import CostTracker
@@ -219,6 +220,8 @@ def main():
     print_consolidated_taxonomy(new_taxonomy)
 
     # Save to cache (overwrite P7 output)
+    ensure_taxonomy_ids(new_taxonomy)
+    restamp_assignment_ids(new_classified, new_taxonomy)
     cache_manager = CacheManager()
     cache_manager.save_metadata_to_cache(
         metadata=new_taxonomy, filename=FILENAME,

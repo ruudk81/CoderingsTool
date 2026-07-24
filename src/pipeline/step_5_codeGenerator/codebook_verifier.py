@@ -11,7 +11,8 @@ Definition of done (PASS):
   - every code has ≥1 attribute
   - Overig ≤ 10% of ideas       (the catch-all stays small)
   - no source names invalid     (provenance is real)
-  - no taxonomy-level overlap    (no two same-valence codes with an identical source set)
+  - no taxonomy-level overlap    (no two same-valence codes with an identical
+    source set — compared by attribute id (A#) when present, else by name)
 
 Also reported (warnings, do NOT block PASS):
   - under-split codes: a neutral code whose ideas have BOTH a well-represented
@@ -250,9 +251,15 @@ def build_scorecard(
         ))
 
     # --- Code-pair overlap (taxonomy-level vs P9-review) ---
-    code_sources = []  # (code_name, valence, set(source_attrs ∩ taxonomy))
+    # Compare by attribute id when the code carries them (ids only cover taxonomy
+    # attributes, so this matches the name path's ∩-taxonomy filter); fall back
+    # to name-sets for pre-id codes. Ids keep same-named attributes in different
+    # domains distinct — name-sets would falsely collide them.
+    code_sources = []  # (code_name, valence, set(source ids or names ∩ taxonomy))
     for code in codes:
-        srcs = {s for s in (_attr(code, "source_attributes") or []) if s in all_attrs_set}
+        ids = _attr(code, "source_attribute_ids") or []
+        srcs = set(ids) if ids else {
+            s for s in (_attr(code, "source_attributes") or []) if s in all_attrs_set}
         code_sources.append((_attr(code, "code_name") or "", _attr(code, "valence") or "", srcs))
 
     taxonomy_pairs: List[CodePair] = []

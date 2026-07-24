@@ -30,6 +30,7 @@ STOP_AFTER_PHASE = None   # None = full pipeline, 1–8 = stop after that phase
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from identity import ensure_taxonomy_ids, restamp_assignment_ids
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 from utils.costTracker import CostTracker
@@ -430,6 +431,7 @@ def cache_taxonomy_results(
     if CONFIG.verbose:
         print_health(taxonomy_cache, prune_report)
 
+    ensure_taxonomy_ids(taxonomy_cache)
     cache_manager = CacheManager()
     cache_manager.save_metadata_to_cache(
         metadata=taxonomy_cache,
@@ -441,6 +443,7 @@ def cache_taxonomy_results(
     # Build and cache growing model (enriched facet/attribute per idea)
     if ideas_models is not None:
         enriched = _build_taxonomy_enriched_models(ideas_models, taxonomy_cache)
+        restamp_assignment_ids(enriched, taxonomy_cache)
         cache_manager.save_to_cache(enriched, filename, "taxonomy_classified", variable_key)
         print(f"Growing model cached: {len(enriched)} enriched responses")
 
@@ -626,6 +629,8 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                 )
             )
             if v_stats["merges"] > 0:
+                ensure_taxonomy_ids(new_taxonomy)
+                restamp_assignment_ids(new_classified, new_taxonomy)
                 cache_manager.save_metadata_to_cache(
                     metadata=new_taxonomy, filename=FILENAME,
                     step="taxonomy", variable_key=variable_key,
@@ -667,6 +672,8 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
             )
 
             # Save consolidated results (overwrite P7 output)
+            ensure_taxonomy_ids(new_taxonomy)
+            restamp_assignment_ids(new_classified, new_taxonomy)
             cache_manager.save_metadata_to_cache(
                 metadata=new_taxonomy, filename=FILENAME,
                 step="taxonomy", variable_key=variable_key,
@@ -704,6 +711,8 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                 ConsolidationCorrector(CONFIG, prompt_printer=prompt_printer,
                                        dataset_key=variable_key, cost_tracker=cost_tracker).consolidate(
                     c_taxonomy, c_classified, extraction_metadata, verbose=CONFIG.verbose))
+            ensure_taxonomy_ids(corrected_taxonomy)
+            restamp_assignment_ids(corrected_classified, corrected_taxonomy)
             cache_manager.save_metadata_to_cache(
                 metadata=corrected_taxonomy, filename=FILENAME,
                 step="taxonomy_corrected", variable_key=variable_key)
