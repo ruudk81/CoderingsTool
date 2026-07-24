@@ -138,13 +138,27 @@ class Entry:
 
 @dataclass
 class Catalog:
-    codes: Dict[str, Entry] = field(default_factory=dict)            # code_name -> Entry
+    codes: Dict[str, Entry] = field(default_factory=dict)            # code_id (K#) -> Entry
     domains: Dict[str, Entry] = field(default_factory=dict)          # domain_name -> Entry
-    facets: Dict[Tuple[str, str], Entry] = field(default_factory=dict)      # (domain, facet) -> Entry
-    attributes: Dict[Tuple[str, str], Entry] = field(default_factory=dict)      # (domain, consolidated attr) -> Entry  [grof]
-    attributes_raw: Dict[Tuple[str, str], Entry] = field(default_factory=dict)  # (domain, raw attr) -> Entry          [fijn]
+    # Facets/attributes key by stable id (F#/A#) so a HITL rename touches no join.
+    # Union entries added from ideas whose (domain, name) is absent from the
+    # structure have no id — they keep the (domain, name) tuple as key; idea
+    # lookups try the idea's id first and fall back to the same tuple.
+    facets: Dict[Any, Entry] = field(default_factory=dict)           # facet_id | (domain, facet) -> Entry
+    attributes: Dict[Any, Entry] = field(default_factory=dict)       # attribute_id | (domain, attr) -> Entry  [grof]
+    attributes_raw: Dict[Tuple[str, str], Entry] = field(default_factory=dict)  # (domain, raw attr) -> Entry  [fijn, no ids]
     raw_map: Dict[str, str] = field(default_factory=dict)            # idea_id -> raw attribute name
     dimension: Tuple[str, str] = ("", "")                            # (name, definition)
+
+
+def placement_key(catalog: Dict[Any, Entry], ent_id: Optional[str], dn: str, name: str):
+    """Catalog key for an idea's facet/attribute: its id when that entry lives in
+    the idea's own domain, else the (domain, name) tuple (see build_catalog)."""
+    if ent_id:
+        e = catalog.get(ent_id)
+        if e is not None and e.domain_name == dn:
+            return ent_id
+    return (dn, name)
 
 
 def build_catalog(
@@ -167,9 +181,9 @@ def build_catalog(
     """
     cat = Catalog()
 
-    # --- Codes (step 5 codebook order) ---
+    # --- Codes (step 5 codebook order, keyed by K#) ---
     for i, c in enumerate(codes, 1):
-        cat.codes[c.code_name] = Entry(number=i, name=c.code_name, definition=c.definition or "")
+        cat.codes[c.code_id] = Entry(number=i, name=c.code_name, definition=c.definition or "")
 
     # --- Domains (partition_set order; definitions from inclusion_definition) ---
     domain_def = {p.partition_name: (p.inclusion_definition or "") for p in partition_set.partitions}
@@ -187,23 +201,36 @@ def build_catalog(
         dr = partition_results.get(dn)
         if not dr:
             continue
+        seen_facets = set()
         for f in (dr.facets or []):
             if not isinstance(f, dict):
                 continue
             fname = f.get("facet_name")
-            if fname and (dn, fname) not in cat.facets:
+            if fname and (dn, fname) not in seen_facets:
+                seen_facets.add((dn, fname))
                 fnum += 1
-                cat.facets[(dn, fname)] = Entry(fnum, fname, f.get("facet_description", ""), dn, dnum)
+                cat.facets[f.get("facet_id") or (dn, fname)] = Entry(
+                    fnum, fname, f.get("facet_description", ""), dn, dnum)
+        seen_attrs = set()
         for attr_list in (dr.attributes or {}).values():
             for a in (attr_list or []):
                 if not isinstance(a, dict):
                     continue
                 aname = a.get("attribute_name")
-                if aname and (dn, aname) not in cat.attributes:
+                if aname and (dn, aname) not in seen_attrs:
+                    seen_attrs.add((dn, aname))
                     anum += 1
-                    cat.attributes[(dn, aname)] = Entry(anum, aname, a.get("attribute_description", ""), dn, dnum)
+                    cat.attributes[a.get("attribute_id") or (dn, aname)] = Entry(
+                        anum, aname, a.get("attribute_description", ""), dn, dnum)
 
     # --- Union: add (domain, facet/attribute) seen on ideas but missing from taxonomy ---
+    # Placement identity in the export is (domain, name-in-that-domain): an
+    # idea's id is used only when its entry lives in the idea's OWN domain
+    # (`placement_key`). A cross-domain id (the unique-name fallback of
+    # ensure_assignment_ids on legacy-inconsistent ideas) is not trusted for
+    # display — such ideas keep their tuple-keyed union entry, exactly as the
+    # name-keyed catalog behaved. A HITL rename stays within the domain, so
+    # renamed entries still resolve by id.
     for resp in responses:
         for idea in (resp.response_ideas or []):
             dn = idea.partition_name or idea.domain or ""
@@ -211,12 +238,16 @@ def build_catalog(
                 num = len(cat.domains) + 1
                 cat.domains[dn] = Entry(num, dn, "")
             dnum = cat.domains.get(dn).number if dn in cat.domains else None
-            if idea.facet and dn and (dn, idea.facet) not in cat.facets:
-                fnum += 1
-                cat.facets[(dn, idea.facet)] = Entry(fnum, idea.facet, "", dn, dnum)
-            if idea.attribute and dn and (dn, idea.attribute) not in cat.attributes:
-                anum += 1
-                cat.attributes[(dn, idea.attribute)] = Entry(anum, idea.attribute, "", dn, dnum)
+            if idea.facet and dn:
+                fkey = placement_key(cat.facets, idea.facet_id, dn, idea.facet)
+                if fkey not in cat.facets:
+                    fnum += 1
+                    cat.facets[fkey] = Entry(fnum, idea.facet, "", dn, dnum)
+            if idea.attribute and dn:
+                akey = placement_key(cat.attributes, idea.attribute_id, dn, idea.attribute)
+                if akey not in cat.attributes:
+                    anum += 1
+                    cat.attributes[akey] = Entry(anum, idea.attribute, "", dn, dnum)
 
     # --- Raw (fijn) attributes: from step-4 tax (raw_attributes desc + raw_attribute_assignments) ---
     raw_desc: Dict[str, str] = {}
@@ -285,10 +316,13 @@ class ResultsExporter:
         codes_df, codes_vlabels, codes_collabels = self._build_codes_matrix(responses, filtered, cat, var_name, var_lab, resp_text)
         grof_df, grof_vlabels, grof_collabels = self._build_taxonomy_matrix(
             responses, filtered, cat, var_name, var_lab, resp_text,
-            cat.attributes, lambda idea: idea.attribute)
+            cat.attributes,
+            lambda idea, dn: (placement_key(cat.attributes, idea.attribute_id, dn, idea.attribute)
+                              if idea.attribute else None))
         fijn_df, fijn_vlabels, fijn_collabels = self._build_taxonomy_matrix(
             responses, filtered, cat, var_name, var_lab, resp_text,
-            cat.attributes_raw, lambda idea: cat.raw_map.get(idea.idea_id))
+            cat.attributes_raw,
+            lambda idea, dn: (dn, cat.raw_map[idea.idea_id]) if cat.raw_map.get(idea.idea_id) else None)
 
         # output paths — final deliverables go in their own subfolder
         export_dir = results_export_dir(export_dir)
@@ -323,10 +357,14 @@ class ResultsExporter:
         for resp in responses:
             for idea in (resp.response_ideas or []):
                 dn = idea.partition_name or idea.domain or ""
-                code_entry = cat.codes.get(idea.assigned_code) if idea.assigned_code and idea.assigned_code != UNASSIGNED_SENTINEL else None
+                code_entry = (cat.codes.get(idea.assigned_code_id)
+                              if idea.assigned_code_id and idea.assigned_code_id != UNASSIGNED_SENTINEL
+                              else None)
                 dom = cat.domains.get(dn)
-                fac = cat.facets.get((dn, idea.facet)) if idea.facet else None
-                att = cat.attributes.get((dn, idea.attribute)) if idea.attribute else None
+                fac = (cat.facets.get(placement_key(cat.facets, idea.facet_id, dn, idea.facet))
+                       if idea.facet else None)
+                att = (cat.attributes.get(placement_key(cat.attributes, idea.attribute_id, dn, idea.attribute))
+                       if idea.attribute else None)
                 rows.append({
                     "DLNMID": resp.respondent_id,
                     var_name: _clean_response(resp.response),
@@ -386,7 +424,8 @@ class ResultsExporter:
                 for col, _, fc in filter_cols:
                     row[col] = 1 if fc == fcode else 0
             else:
-                assigned = {i.assigned_code for i in ideas_by_resp.get(rid, []) if i.assigned_code and i.assigned_code != UNASSIGNED_SENTINEL}
+                assigned = {i.assigned_code_id for i in ideas_by_resp.get(rid, [])
+                            if i.assigned_code_id and i.assigned_code_id != UNASSIGNED_SENTINEL}
                 assigned_nums = {cat.codes[c].number for c in assigned if c in cat.codes}
                 for col, _, num in code_cols:
                     row[col] = 1 if num in assigned_nums else 0
@@ -404,9 +443,10 @@ class ResultsExporter:
 
     # ---- output 2: taxonomy per respondent (dichotomous) — grof or fijn ----
     def _build_taxonomy_matrix(self, responses, filtered, cat: Catalog, var_name, var_lab, resp_text,
-                               attr_catalog: Dict[Tuple[str, str], Entry], attr_getter):
-        """Domain + facet (consolidated) + attribute. `attr_catalog`/`attr_getter`
-        select consolidated (grof) or raw (fijn) attributes; domain/facet are shared."""
+                               attr_catalog: Dict[Any, Entry], attr_key_fn):
+        """Domain + facet (consolidated) + attribute. `attr_catalog`/`attr_key_fn`
+        select consolidated (grof, id-keyed) or raw (fijn, (domain, name)-keyed)
+        attributes; the key fn returns the idea's catalog key. Domain/facet shared."""
         ideas_by_resp = {r.respondent_id: (r.response_ideas or []) for r in responses}
         resp_response = {r.respondent_id: _clean_response(r.response) for r in responses}
 
@@ -430,11 +470,13 @@ class ResultsExporter:
                     dn = idea.partition_name or idea.domain or ""
                     if dn in cat.domains:
                         hit["domain"].add(cat.domains[dn].number)
-                    if idea.facet and (dn, idea.facet) in cat.facets:
-                        hit["facet"].add(cat.facets[(dn, idea.facet)].number)
-                    aname = attr_getter(idea)
-                    if aname and (dn, aname) in attr_catalog:
-                        hit["attribute"].add(attr_catalog[(dn, aname)].number)
+                    if idea.facet:
+                        fac = cat.facets.get(placement_key(cat.facets, idea.facet_id, dn, idea.facet))
+                        if fac:
+                            hit["facet"].add(fac.number)
+                    akey = attr_key_fn(idea, dn)
+                    if akey is not None and akey in attr_catalog:
+                        hit["attribute"].add(attr_catalog[akey].number)
                 for col, _, (kind, num) in all_cols:
                     row[col] = 1 if num in hit[kind] else 0
             rows.append(row)

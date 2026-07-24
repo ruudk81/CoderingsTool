@@ -37,6 +37,7 @@ from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from models import TaxonomyResultsCache
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from identity import ensure_assignment_ids
 from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
 from utils import dataLoader
@@ -109,6 +110,11 @@ def load_step6_cache(config: StepConfig):
             f"Cache not found: mece_codes/{variable_key}\n"
             f"Run step 5 (codeGenerator) first."
         )
+
+    # Stamp per-idea placement + code ids against the MECE artifact — the same
+    # structure the catalog is keyed on, so the id spaces always match. New
+    # caches (phase 3/4 writers) already carry ids; legacy ones get them here.
+    ensure_assignment_ids(code_assigned_results, mece_cache, mece_cache.raw_codes)
 
     # Reconstruct ConsolidatedCode objects from cached dicts
     codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else []
