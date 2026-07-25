@@ -10,9 +10,17 @@ Definition of done (PASS):
   - attribute coverage = 100%   (every attribute is used by ≥1 code)
   - every code has ≥1 attribute
   - Overig ≤ 10% of ideas       (the catch-all stays small)
-  - no source names invalid     (provenance is real)
-  - no taxonomy-level overlap    (no two same-valence codes with an identical
-    source set — compared by attribute id (A#) when present, else by name)
+  - no invalid sources          (provenance is real)
+  - no taxonomy-level overlap   (no two same-valence codes with an identical
+    source set)
+
+All code↔taxonomy joins run on the attribute's stable id (A#) when the artifact
+carries one, else on the name (naam-als-identiteit: renaming an attribute flips
+no check). Pre-id codebooks translate source names to keys; a duplicated name
+maps to all its ids — the same legacy tolerance as identity.ensure_codebook_ids.
+One name link remains BY DESIGN: `attribute_assignments` (idea → attribute name)
+shares its artifact with the attribute dicts, so a rename must update both in
+the same edit — the HITL editor's contract, not a join this verifier can bridge.
 
 Also reported (warnings, do NOT block PASS):
   - under-split codes: a neutral code whose ideas have BOTH a well-represented
@@ -189,16 +197,51 @@ def build_scorecard(
         partition_results: step-4 partition_results (DomainResultModel objects or dicts)
         overig_code_name: name of the catch-all code, if one was added by the Overig sweep
     """
-    all_attrs = collect_taxonomy_attributes(partition_results)
-    all_attrs_set = set(all_attrs)
     idea_assignments = collect_idea_assignments(partition_results)
     attr_valence = collect_attribute_valence(partition_results)
 
-    # Legitimate source names: taxonomy attributes OR attributes ideas were assigned to.
-    # (the latter lets Overig absorb step-4 dangling assignments without tripping "unknown")
-    legitimate = all_attrs_set | set(idea_assignments.values())
+    # --- Key space -----------------------------------------------------------
+    # Every join below runs on an attribute KEY: its stable id (A#) when the
+    # artifact carries one, else its name. Codes with source_attribute_ids join
+    # positionally by id, so a renamed attribute keeps its coverage and
+    # provenance; pre-id codes translate names to keys (a duplicated name maps
+    # to ALL its ids — the ensure_codebook_ids legacy tolerance, under which
+    # id/name list lengths can differ and the code falls back to name keys).
+    attr_keys: List[str] = []                 # universe, taxonomy order
+    key_to_name: Dict[str, str] = {}          # key -> current display name
+    name_to_keys: Dict[str, List[str]] = {}
+    for result in partition_results.values():
+        for attr_list in (_attr(result, "attributes") or {}).values():
+            for attr in attr_list:
+                name = _attr(attr, "attribute_name")
+                if not name:
+                    continue
+                akey = _attr(attr, "attribute_id") or name
+                if akey not in key_to_name:
+                    attr_keys.append(akey)
+                    key_to_name[akey] = name
+                keys = name_to_keys.setdefault(name, [])
+                if akey not in keys:
+                    keys.append(akey)
+    key_set = set(attr_keys)
 
-    # attr_name -> [(code_name, valence), ...]
+    def source_keys(code) -> List[tuple]:
+        """[(key, source_name)] per code source."""
+        sources = _attr(code, "source_attributes") or []
+        ids = _attr(code, "source_attribute_ids") or []
+        if ids and len(ids) == len(sources):
+            return list(zip(ids, sources))
+        return [(k, s) for s in sources for k in (name_to_keys.get(s) or [s])]
+
+    def idea_keys(attr_name: str) -> List[str]:
+        return name_to_keys.get(attr_name) or [attr_name]
+
+    # Legitimate source keys: taxonomy attributes OR attributes ideas were
+    # assigned to (the latter lets Overig absorb step-4 dangling assignments
+    # without tripping "unknown"; dangling names key as themselves).
+    legitimate = key_set | set(idea_assignments.values())
+
+    # key -> [(code_name, valence), ...]
     attr_to_codes: Dict[str, List[tuple]] = {}
     unknown: List[str] = []
     unknown_seen = set()
@@ -206,60 +249,57 @@ def build_scorecard(
     for code in codes:
         code_name = _attr(code, "code_name") or ""
         valence = _attr(code, "valence") or ""
-        sources = _attr(code, "source_attributes") or []
-        if not sources:
+        pairs = source_keys(code)
+        if not pairs:
             codes_without_attributes.append(code_name)
-        for src in sources:
-            attr_to_codes.setdefault(src, []).append((code_name, valence))
-            if src not in legitimate and src not in unknown_seen:
-                unknown_seen.add(src)
-                unknown.append(src)
+        for skey, sname in pairs:
+            attr_to_codes.setdefault(skey, []).append((code_name, valence))
+            if skey not in legitimate and sname not in legitimate and sname not in unknown_seen:
+                unknown_seen.add(sname)
+                unknown.append(sname)
 
     covered_any = set(attr_to_codes)                          # any code source (incl. Overig)
-    covered_attrs = {a for a in covered_any if a in all_attrs_set}
 
     # --- Coverage ---
-    orphans = [a for a in all_attrs if a not in covered_attrs]
-    attr_coverage = (len(covered_attrs) / len(all_attrs)) if all_attrs else 1.0
+    orphans = [key_to_name[k] for k in attr_keys if k not in covered_any]
+    attr_coverage = (sum(1 for k in attr_keys if k in covered_any) / len(attr_keys)) if attr_keys else 1.0
 
     assigned = len(idea_assignments)
-    covered_ideas = sum(1 for attr in idea_assignments.values() if attr in covered_any)
+    covered_ideas = sum(1 for attr in idea_assignments.values()
+                        if any(k in covered_any for k in idea_keys(attr)))
     idea_coverage = (covered_ideas / assigned) if assigned else 1.0
 
     # --- Overig share ---
     overig_share = 0.0
     if overig_code_name:
-        overig_sources = set()
+        overig_keys: set = set()
         for code in codes:
             if (_attr(code, "code_name") or "") == overig_code_name:
-                overig_sources = {s for s in (_attr(code, "source_attributes") or [])}
+                overig_keys = {k for k, _ in source_keys(code)}
                 break
-        overig_ideas = sum(1 for attr in idea_assignments.values() if attr in overig_sources)
+        overig_ideas = sum(1 for attr in idea_assignments.values()
+                           if any(k in overig_keys for k in idea_keys(attr)))
         overig_share = (overig_ideas / assigned * 100) if assigned else 0.0
 
     # --- Attribute-level overlap ---
     overlaps: List[AttributeOverlap] = []
-    for attr, pairs in attr_to_codes.items():
-        if len(pairs) < 2 or attr not in all_attrs_set:
+    for skey, pairs in attr_to_codes.items():
+        if len(pairs) < 2 or skey not in key_set:
             continue
         valences = [p[1] for p in pairs]
         overlaps.append(AttributeOverlap(
-            attribute=attr,
+            attribute=key_to_name.get(skey, skey),
             code_names=[p[0] for p in pairs],
             valences=valences,
             benign_valence_split=len(set(valences)) > 1,
         ))
 
     # --- Code-pair overlap (taxonomy-level vs P9-review) ---
-    # Compare by attribute id when the code carries them (ids only cover taxonomy
-    # attributes, so this matches the name path's ∩-taxonomy filter); fall back
-    # to name-sets for pre-id codes. Ids keep same-named attributes in different
-    # domains distinct — name-sets would falsely collide them.
-    code_sources = []  # (code_name, valence, set(source ids or names ∩ taxonomy))
+    # Same key space: ids keep same-named attributes in different domains
+    # distinct — name-sets would falsely collide them.
+    code_sources = []  # (code_name, valence, set(source keys ∩ taxonomy))
     for code in codes:
-        ids = _attr(code, "source_attribute_ids") or []
-        srcs = set(ids) if ids else {
-            s for s in (_attr(code, "source_attributes") or []) if s in all_attrs_set}
+        srcs = {k for k, _ in source_keys(code) if k in key_set}
         code_sources.append((_attr(code, "code_name") or "", _attr(code, "valence") or "", srcs))
 
     taxonomy_pairs: List[CodePair] = []
@@ -293,7 +333,7 @@ def build_scorecard(
 
     return CodebookScorecard(
         n_codes=len(codes),
-        n_attributes_total=len(all_attrs),
+        n_attributes_total=len(attr_keys),
         attribute_coverage_pct=round(attr_coverage * 100, 1),
         idea_coverage_pct=round(idea_coverage * 100, 1),
         orphan_attributes=orphans,
