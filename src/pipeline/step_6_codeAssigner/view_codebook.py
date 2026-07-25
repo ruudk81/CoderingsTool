@@ -13,12 +13,13 @@ from the taxonomy cache's `raw_attribute_assignments`.
 Per row, two counts:
   - BRUTO = n ideas (mentions) + % of the readout's idea base — a respondent who
     repeats the same code/attribute counts each time.
-  - NETTO = unique respondents (deduped per category) + % normalized per depth so
-    each level sums to 100%. Netto does not nest through the hierarchy (a respondent
-    in a domain via two facets counts once for the domain but once per facet).
-Plus a valence balance x% (+) / y% (-) where (+) = positive+neutral, (-) = negative
-(idea-level / bruto). The smallest children per parent (together ≤ OVERIG_TAIL_PCT)
-fold into one "overig (k …)" row.
+  - NETTO = unique respondents (deduped per category) + % of the coded-respondent
+    base (multiple response: categories overlap, so a level sums to >100%). Netto
+    does not nest through the hierarchy (a respondent in a domain via two facets
+    counts once for the domain but once per facet).
+Plus the idea-level richting split % + / % 0 / % − (evaluative direction relative
+to the facet — not sentiment; 0 = descriptive, no evaluation). The smallest children
+per parent (together ≤ OVERIG_TAIL_PCT) fold into one "overig (k …)" row.
 
 The codebook lens excludes the __UNASSIGNED__ sentinel from the % base (reported
 separately); the taxonomy lens covers every idea (each idea has a domain/facet).
@@ -43,7 +44,7 @@ sys.path.insert(0, str(project_root / "src"))
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from models import CodeAssignedModel
 from models import TaxonomyResultsCache
-from models import CodingResultsCache, ExtractionMetadata
+from models import CodingResultsCache, ExtractionMetadata, QualityFilteredModel
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from pipeline.step_7_export.resultsExporter import build_catalog, ResultsExporter
 
@@ -67,6 +68,7 @@ _NO_ATTR = "(geen attribuut)"
 _NO_FACET = "(geen facet)"
 _NO_GROUP = "(geen)"
 _NEG_VALENCES = {"-", "-1", "neg", "negative"}
+_POS_VALENCES = {"+", "+1", "pos", "positive"}
 
 
 # =============================================================================
@@ -95,6 +97,24 @@ def load_data():
     return results, codebook, raw_map, metadata, tax
 
 
+def _base_note(n_responses: int) -> str:
+    """Dataset base line for the sheet footers: total sample / filtered / coded.
+    Falls back to the coded count alone if the step-2 cache is unavailable."""
+    try:
+        variable_key = generate_enhanced_variable_key(
+            selected_variables=[VARIABLE], is_merged=False, sample_size=SAMPLE_SIZE,
+        )
+        qf = CacheManager().load_from_cache(
+            FILENAME, "quality_filter", variable_key, QualityFilteredModel) or []
+    except Exception:
+        qf = []
+    n_filtered = sum(1 for m in qf if getattr(m, "quality_filter", False))
+    if qf:
+        return (f"Basis: {len(qf)} respondenten, waarvan {n_filtered} gefilterd "
+                f"(weet niet / leeg / betekenisloos) en {n_responses} gecodeerd.")
+    return f"Basis: {n_responses} gecodeerde respondenten."
+
+
 # =============================================================================
 # SHARED HELPERS
 # =============================================================================
@@ -108,16 +128,17 @@ def _vsign(valence: str) -> str:
     return "~"
 
 
-def _derived_sign(pct_neg: float) -> str:
-    if pct_neg >= 55:
+def _derived_sign(cell) -> str:
+    """Sign from the evaluative ideas only (+ vs −; neutral doesn't vote)."""
+    ev = cell.pos + cell.neg
+    if not ev:
+        return "~"
+    neg_share = 100.0 * cell.neg / ev
+    if neg_share >= 55:
         return "-"
-    if pct_neg <= 45:
+    if neg_share <= 45:
         return "+"
     return "~"
-
-
-def _is_neg(valence: str) -> bool:
-    return (valence or "").strip().lower() in _NEG_VALENCES
 
 
 _CATCHALL = {"other", "overig", "rest", _NO_GROUP, _NO_FACET, _NO_ATTR}
@@ -129,24 +150,31 @@ def _is_catchall(label: str) -> bool:
 
 
 class _Cell:
-    """Accumulator for one (n, negatives, respondent set) bucket."""
-    __slots__ = ("n", "neg", "resp")
+    """Accumulator for one (n, pos/neg, respondent set) bucket."""
+    __slots__ = ("n", "pos", "neg", "resp")
 
     def __init__(self):
         self.n = 0
+        self.pos = 0
         self.neg = 0
         self.resp = set()
 
-    def add(self, rid, neg):
+    def add(self, rid, valence):
         self.n += 1
-        self.neg += neg
+        v = (valence or "").strip().lower()
+        if v in _POS_VALENCES:
+            self.pos += 1
+        elif v in _NEG_VALENCES:
+            self.neg += 1
         self.resp.add(rid)
 
 
 def _balance(cell: _Cell):
+    """(% positive, % neutral, % negative) of the cell's ideas."""
     if not cell.n:
-        return 0.0, 0.0
-    return 100.0 * (cell.n - cell.neg) / cell.n, 100.0 * cell.neg / cell.n
+        return 0.0, 0.0, 0.0
+    neu = cell.n - cell.pos - cell.neg
+    return (100.0 * cell.pos / cell.n, 100.0 * neu / cell.n, 100.0 * cell.neg / cell.n)
 
 
 def _fold_tail(items, parent_total, fold):
@@ -171,30 +199,25 @@ def _merge_cells(cells):
     m = _Cell()
     for c in cells:
         m.n += c.n
+        m.pos += c.pos
         m.neg += c.neg
         m.resp |= c.resp
     return m
 
 
 def _row(depth, label, valence, cell, pct_i):
-    pos, neg = _balance(cell)
+    pos, neu, neg = _balance(cell)
     return {"depth": depth, "label": label, "valence": valence,
             "n": cell.n, "n_resp": len(cell.resp),        # bruto (ideas) / netto (unique respondents)
             "pct_bruto": pct_i(cell.n), "pct_netto": 0.0,  # pct_netto filled by _normalize_netto
-            "pct_pos": pos, "pct_neg": neg}
+            "pct_pos": pos, "pct_neu": neu, "pct_neg": neg}
 
 
-def _normalize_netto(rows):
-    """Netto % = a row's unique-respondent count as a share of all rows at the same
-    depth, so each depth sums to 100% (the deduped counterpart of bruto %). Netto
-    does not nest through the hierarchy — a respondent in a domain via two facets
-    counts once for the domain but once per facet — so it is normalized per depth."""
-    totals = defaultdict(int)
+def _normalize_netto(rows, n_responses):
+    """Netto % = a row's unique-respondent count as a share of the coded-respondent
+    base (multiple response — categories overlap, so a level sums to >100%)."""
     for r in rows:
-        totals[r["depth"]] += r["n_resp"]
-    for r in rows:
-        t = totals[r["depth"]]
-        r["pct_netto"] = (100.0 * r["n_resp"] / t) if t else 0.0
+        r["pct_netto"] = (100.0 * r["n_resp"] / n_responses) if n_responses else 0.0
     return rows
 
 
@@ -233,9 +256,8 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
             else:
                 key = (getattr(idea, "partition_name", "") or idea.domain or "").strip() or _NO_GROUP
             attr = (idea.assigned_attribute or "").strip() or _NO_ATTR
-            neg = _is_neg(idea.valence)
-            grp[key].add(rid, neg)
-            cell[key][attr].add(rid, neg)
+            grp[key].add(rid, idea.valence)
+            cell[key][attr].add(rid, idea.valence)
 
     base_n = sum(c.n for c in grp.values())
     n_responses = len(resp_with_ideas)
@@ -255,7 +277,7 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
     rows = []
     for key in sorted(grp, key=lambda k: (_is_catchall(k), -grp[k].n, k.lower())):
         gc = grp[key]
-        valence = cv.get(key, "~") if is_code else _derived_sign(_balance(gc)[1])
+        valence = cv.get(key, "~") if is_code else _derived_sign(gc)
         rows.append(_row(0, key, valence, gc, pct_i))
         if not show_attrs:
             continue
@@ -271,7 +293,7 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
             a, c = tail[0]
             rows.append(_row(1, a, "", c, pct_i))
 
-    return _normalize_netto(rows), base_n, n_responses, n_unassigned
+    return _normalize_netto(rows, n_responses), base_n, n_responses, n_unassigned
 
 
 def build_domain_facet_attr(responses, fold_tail, attr_of):
@@ -293,10 +315,9 @@ def build_domain_facet_attr(responses, fold_tail, attr_of):
             d = (getattr(idea, "partition_name", "") or idea.domain or "").strip() or _NO_GROUP
             f = (idea.facet or "").strip() or _NO_FACET
             a = (attr_of(idea) or "").strip() or _NO_ATTR
-            neg = _is_neg(idea.valence)
-            dom[d].add(rid, neg)
-            df[d][f].add(rid, neg)
-            dfa[d][f][a].add(rid, neg)
+            dom[d].add(rid, idea.valence)
+            df[d][f].add(rid, idea.valence)
+            dfa[d][f][a].add(rid, idea.valence)
 
     base_n = sum(c.n for c in dom.values())
     n_responses = len(resp_with_ideas)
@@ -304,9 +325,9 @@ def build_domain_facet_attr(responses, fold_tail, attr_of):
 
     rows = []
     for d in sorted(dom, key=lambda k: (_is_catchall(k), -dom[k].n, k.lower())):
-        rows.append(_row(0, d, _derived_sign(_balance(dom[d])[1]), dom[d], pct_i))
+        rows.append(_row(0, d, _derived_sign(dom[d]), dom[d], pct_i))
         for f in sorted(df[d], key=lambda k: (_is_catchall(k), -df[d][k].n)):
-            rows.append(_row(1, f, _derived_sign(_balance(df[d][f])[1]), df[d][f], pct_i))
+            rows.append(_row(1, f, _derived_sign(df[d][f]), df[d][f], pct_i))
             # A facet with a single attribute carries no extra info → show the facet only
             if len(dfa[d][f]) == 1:
                 continue
@@ -321,7 +342,7 @@ def build_domain_facet_attr(responses, fold_tail, attr_of):
                 a, cell = tail[0]
                 rows.append(_row(2, a, "", cell, pct_i))
 
-    return _normalize_netto(rows), base_n, n_responses, 0
+    return _normalize_netto(rows, n_responses), base_n, n_responses, 0
 
 
 # =============================================================================
@@ -329,19 +350,18 @@ def build_domain_facet_attr(responses, fold_tail, attr_of):
 # =============================================================================
 
 def _bal(r) -> str:
-    return f"{r['pct_pos']:.0f}% (+) / {r['pct_neg']:.0f}% (-)" if r["n"] else ""
+    return f"{r['pct_pos']:.0f}%+ / {r['pct_neu']:.0f}%0 / {r['pct_neg']:.0f}%-" if r["n"] else ""
 
 
 def print_readout(title, header_label, rows, base_n, n_responses, n_unassigned, compact=False):
-    netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
     print(f"\n\n{'=' * 104}")
     print(f"[{title}]  {FILENAME}")
     print(f"{VARIABLE}  |  {base_n} ideas (base)"
           + (f"; {n_unassigned} unassigned" if n_unassigned else "")
           + f"  |  {n_responses} responses")
-    print("bruto = ideeën (mentions)  ·  netto = unieke respondenten (ontdubbeld per categorie, % per niveau)")
+    print("bruto = ideeën (mentions)  ·  netto = unieke respondenten (% van gecodeerde respondenten; telt op tot >100%)")
     print(f"{'=' * 104}")
-    print(f"{header_label:50}{'n bruto':>8}{'% bruto':>8}{'n netto':>8}{'% netto':>8}   balans (+/-)")
+    print(f"{header_label:50}{'n bruto':>8}{'% bruto':>8}{'n netto':>8}{'% netto':>8}   richting (+/0/-)")
     print(f"{'-' * 104}")
     for r in rows:
         indent = "    " * r["depth"]
@@ -350,7 +370,7 @@ def print_readout(title, header_label, rows, base_n, n_responses, n_unassigned, 
         tag = "" if r["n"] else "  (unused)"
         print(f"{sep}{label:50}{r['n']:>8}{r['pct_bruto']:>7.1f}%{r['n_resp']:>8}{r['pct_netto']:>7.1f}%   {_bal(r)}{tag}")
     print(f"\n{'-' * 104}")
-    print(f"{'TOTAAL':50}{base_n:>8}{100.0:>7.1f}%{netto_base:>8}{100.0:>7.1f}%")
+    print(f"{'TOTAAL':50}{base_n:>8}{100.0:>7.1f}%{n_responses:>8}{100.0:>7.1f}%")
     if n_unassigned:
         print(f"{'__UNASSIGNED__ (excl. van %-basis)':50}{n_unassigned:>8}")
 
@@ -375,19 +395,19 @@ def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
     exports_dir = codebook_export_dir()
     exports_dir.mkdir(parents=True, exist_ok=True)
     csv_path = exports_dir / f"{_codebook_stem(FILENAME, VARIABLE, SAMPLE_SIZE)}_{suffix}.csv"
-    netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(["depth", "label", "valence", "n_bruto", "pct_bruto",
-                    "n_netto", "pct_netto", "pct_pos_neutral", "pct_neg"])
+        w.writerow(["depth", "label", "richting", "n_bruto", "pct_bruto",
+                    "n_netto", "pct_netto", "pct_pos", "pct_neutral", "pct_neg"])
         for r in rows:
             w.writerow([r["depth"], r["label"], r["valence"], r["n"],
                         f"{r['pct_bruto']:.1f}", r["n_resp"], f"{r['pct_netto']:.1f}",
                         f"{r['pct_pos']:.1f}" if r["n"] else "",
+                        f"{r['pct_neu']:.1f}" if r["n"] else "",
                         f"{r['pct_neg']:.1f}" if r["n"] else ""])
-        w.writerow(["", "TOTAAL", "", base_n, "100.0", netto_base, "100.0", "", ""])
-        w.writerow(["", _UNASSIGNED, "", n_unassigned, "", "", "", "", ""])
-        w.writerow(["", "responses", "", n_responses, "", "", "", "", ""])
+        w.writerow(["", "TOTAAL", "", base_n, "100.0", n_responses, "100.0", "", "", ""])
+        w.writerow(["", _UNASSIGNED, "", n_unassigned, "", "", "", "", "", ""])
+        w.writerow(["", "responses", "", n_responses, "", "", "", "", "", ""])
     print(f"  CSV → {csv_path.name}")
 
 
@@ -436,19 +456,20 @@ def _within_parent_shares(rows):
     return share, sole
 
 
-def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
+def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned,
+                     base_note=None):
     """Write one readout to a worksheet: narrow hierarchy columns with overflow,
-    numeric metrics, collapsible row groups, coloured valence. The within-parent
+    numeric metrics, collapsible row groups, coloured richting. The within-parent
     `% ouder` column (and inline shares) appear only where the sheet nests
     (nh > 1); a flat sheet like Codeboek (nh == 1) omits them."""
     hier = header_label.split(" / ")                 # ["domain","facet","attribute"] | ["code"]
     nh = len(hier)
     nested = nh > 1
-    cols = hier + ["val", "n bruto", "% bruto"] + (["% ouder"] if nested else []) \
-        + ["n netto", "% netto", "% (+)", "% (-)"]
+    cols = hier + ["richting", "n bruto", "% bruto"] + (["% ouder"] if nested else []) \
+        + ["n netto", "% netto", "% +", "% 0", "% -"]
     ncol = len(cols)
     col = {name: i for i, name in enumerate(cols, start=1)}   # 1-based index by header name
-    pct_cols = [n for n in ("% bruto", "% ouder", "% netto", "% (+)", "% (-)") if n in col]
+    pct_cols = [n for n in ("% bruto", "% ouder", "% netto", "% +", "% 0", "% -") if n in col]
 
     shares, sole = _within_parent_shares(rows)
 
@@ -469,17 +490,18 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
         if d < nh:
             hcells[d] = BULLETS.get(d, "") + r["label"] + suffix
         pos = round(r["pct_pos"], 1) / 100 if r["n"] else None
+        neu = round(r["pct_neu"], 1) / 100 if r["n"] else None
         neg = round(r["pct_neg"], 1) / 100 if r["n"] else None
         metrics = [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100]
         if nested:
             metrics.append(ouder)
-        metrics += [r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neg]
+        metrics += [r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neu, neg]
         ws.append(hcells + metrics)
         ri = ws.max_row
         bold = (d == 0)
         for c in range(1, ncol + 1):
             cell = ws.cell(ri, c)
-            if c == col["val"] and r["valence"] in _VAL_COLOR:
+            if c == col["richting"] and r["valence"] in _VAL_COLOR:
                 cell.font = Font(bold=True, color=_VAL_COLOR[r["valence"]])
                 cell.alignment = Alignment(horizontal="center")
             elif bold:
@@ -491,8 +513,8 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
         ws.row_dimensions[ri].outline_level = min(d, 7)
 
     last_data = ws.max_row
-    netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
-    total_metrics = ["", base_n, 1.0] + ([None] if nested else []) + [netto_base, 1.0, None, None]
+    total_metrics = ["", base_n, 1.0] + ([None] if nested else []) \
+        + [n_responses, 1.0, None, None, None]
     ws.append(["TOTAAL"] + [""] * (nh - 1) + total_metrics)
     tr = ws.max_row
     for c in range(1, ncol + 1):
@@ -502,7 +524,7 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
     ws.cell(tr, col["n netto"]).number_format = "0"
     ws.cell(tr, col["% netto"]).number_format = "0.0%"
     ws.append([])
-    ws.append([f"responses: {n_responses}"])
+    ws.append([base_note or f"responses: {n_responses}"])
     if n_unassigned:
         ws.append([f"__UNASSIGNED__ (excl. van %-basis): {n_unassigned}"])
 
@@ -541,9 +563,16 @@ def _append_leeswijzer(ws):
     ws.cell(ws.max_row, 1).font = Font(bold=True)
     for line in (
         "•  = facet     –  = attribuut",
+        "bruto = ideeën (mentions; een respondent kan meerdere ideeën per categorie hebben) — "
+        "netto = unieke respondenten per categorie.",
+        "% netto = % van de gecodeerde respondenten; categorieën overlappen (multiple response), "
+        "dus een niveau telt op tot >100%.",
         "(NN%) achter een facet/attribuut = aandeel binnen de ouder "
         "(facet binnen domein, attribuut binnen facet), o.b.v. bruto — telt op tot 100% per ouder.",
         "Kolom '% ouder' toont ditzelfde aandeel, sorteerbaar.",
+        "richting (+/0/-) = evaluatie t.o.v. het facet (waarmaken vs. tekortschieten), "
+        "geen sentimentanalyse; 0 = beschrijvend, zonder oordeel. Het teken bij een "
+        "domein/facet volgt uit + vs - (0 telt niet mee).",
     ):
         ws.append([line])
 
@@ -610,7 +639,7 @@ def export_codebook(filename: str = None, var_name: str = None,
             save_csv(suffix, header, rows, base_n, n_resp, n_una)
         if wb is not None:
             write_xlsx_sheet(wb.create_sheet(title=sheet_name), header,
-                             rows, base_n, n_resp, n_una)
+                             rows, base_n, n_resp, n_una, base_note=_base_note(n_resp))
     return save_xlsx(wb) if wb is not None else None
 
 

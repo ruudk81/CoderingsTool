@@ -51,7 +51,7 @@ _BLOCK_FONT = Font(bold=True, color="FFFFFF", size=12)
 _SUB_FILL = PatternFill("solid", fgColor="8EAADB")     # lighter blue
 _SUB_FONT = Font(bold=True, color="1F3864")
 _COLH_FILL = PatternFill("solid", fgColor="D9E1F2")    # very light blue
-_COLH_FONT = Font(bold=True, color="FFFFFF")
+_COLH_FONT = Font(bold=True)                           # black — white is unreadable on the light fill
 _HDR_FILL = PatternFill("solid", fgColor="366092")
 _HDR_FONT = Font(bold=True, color="FFFFFF")
 _WRAP = Alignment(wrap_text=True, vertical="top")
