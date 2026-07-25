@@ -120,6 +120,20 @@ def test_parser_step2_example():
 
 
 # =============================================================================
+# Unit: formatting vs real correction (step-1 view)
+# =============================================================================
+
+def test_formatting_key_separates_layout_from_correction():
+    import app_views as av
+    # Capitals + closing period = formatting, not a correction
+    assert av._formatting_key("ik vind het mooi") == av._formatting_key("Ik vind het mooi.")
+    # Extra whitespace and commas are formatting too
+    assert av._formatting_key("goed,  betrouwbaar") == av._formatting_key("Goed betrouwbaar.")
+    # A changed word is a real correction
+    assert av._formatting_key("betrouwbar") != av._formatting_key("betrouwbaar")
+
+
+# =============================================================================
 # Unit: costs (Phase B6)
 # =============================================================================
 

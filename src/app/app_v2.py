@@ -100,7 +100,7 @@ def render_sidebar(status: dict, max_done: int):
     with st.sidebar:
         # Language
         names = {"Nederlands": "nl", "English": "en"}
-        pick = st.selectbox("🌐 Taal / Language", list(names.keys()),
+        pick = st.selectbox("Taal / Language", list(names.keys()),
                             index=list(names.values()).index(lang))
         if names[pick] != lang:
             st.session_state.language = names[pick]
@@ -113,7 +113,7 @@ def render_sidebar(status: dict, max_done: int):
         st.divider()
         st.caption(f"**{Path(spec.filename).stem}**\n\n{spec.var_name} · "
                    f"{spec.sample_size if spec.sample_size is not None else T('volledig', 'full')}")
-        if st.button("🏠 " + T("Andere dataset", "Change dataset"), width="stretch"):
+        if st.button(T("Andere dataset", "Change dataset"), width="stretch"):
             st.session_state.spec = None
             st.session_state.step = 0
             st.session_state.last_success = None
@@ -136,11 +136,11 @@ def render_sidebar(status: dict, max_done: int):
 
         # Cache management: cascade re-run
         st.divider()
-        with st.expander("🔧 " + T("Cache / herverwerken", "Cache / reprocess")):
+        with st.expander(T("Cache / herverwerken", "Cache / reprocess")):
             cur = st.session_state.step
             st.caption(T(f"Herverwerken vanaf stap {cur} maakt stap {cur} t/m {LAST_STEP} ongeldig.",
                          f"Reprocessing from step {cur} invalidates steps {cur}–{LAST_STEP}."))
-            if st.button("🔄 " + T(f"Herverwerk vanaf stap {cur}", f"Reprocess from step {cur}"),
+            if st.button(T(f"Herverwerk vanaf stap {cur}", f"Reprocess from step {cur}"),
                          width="stretch"):
                 be.invalidate_from(cur, spec, get_cache_manager())
                 st.session_state.last_success = None
@@ -150,13 +150,13 @@ def render_sidebar(status: dict, max_done: int):
                 st.rerun()
 
         # Run all steps 1-7 (2-step confirm: a full run costs minutes + LLM credits)
-        with st.expander("⏩ " + T("Alles draaien (1-7)", "Run all (1-7)")):
+        with st.expander(T("Alles draaien (1-7)", "Run all (1-7)")):
             st.caption(T("Herberekent stap 1 t/m 7 volledig opnieuw. Dit kost meerdere "
                          "minuten en LLM-credits (€).",
                          "Fully recomputes steps 1-7. This takes several minutes and "
                          "LLM credits (€)."))
             if not st.session_state.run_all_confirm:
-                if st.button("⏩ " + T("Alles opnieuw draaien", "Re-run all steps"),
+                if st.button(T("Alles opnieuw draaien", "Re-run all steps"),
                              width="stretch", key="run_all_arm"):
                     st.session_state.run_all_confirm = True
                     st.rerun()
@@ -165,7 +165,7 @@ def render_sidebar(status: dict, max_done: int):
                              "Are you sure? Steps 1-7 will be recomputed."))
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("✅ " + T("Bevestig", "Confirm"), type="primary",
+                    if st.button(T("Bevestig", "Confirm"), type="primary",
                                  width="stretch", key="run_all_go"):
                         st.session_state.run_all = True
                         st.session_state.run_all_confirm = False
@@ -173,7 +173,7 @@ def render_sidebar(status: dict, max_done: int):
                         st.session_state.last_error = None
                         st.rerun()
                 with c2:
-                    if st.button("✖️ " + T("Annuleer", "Cancel"),
+                    if st.button(T("Annuleer", "Cancel"),
                                  width="stretch", key="run_all_cancel"):
                         st.session_state.run_all_confirm = False
                         st.rerun()
@@ -183,11 +183,11 @@ def render_sidebar(status: dict, max_done: int):
 # =============================================================================
 
 def page_select_dataset():
-    st.header("📊 CoderingsTool")
+    st.header("CoderingsTool")
     st.caption(ui.get_text("STEP_INFO", lang).get(0, ""))
 
     # --- Resume from cache ---
-    st.subheader("📂 " + T("Hervat uit cache", "Resume from cache"))
+    st.subheader(T("Hervat uit cache", "Resume from cache"))
     specs = be.list_cached_datasets()
     if specs:
         labels = [s.display_name for s in specs]
@@ -198,9 +198,25 @@ def page_select_dataset():
         md = be.max_completed_step(chosen, cm)
         st.caption(T(f"Voltooid t/m stap {md} ({step_name(md)})",
                      f"Completed through step {md} ({step_name(md)})"))
-        if st.button("📂 " + T("Laden", "Load"), type="primary"):
+        # The question is editable HERE only; after loading it is fixed context.
+        edited_lab = st.text_area(
+            T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
+            value=chosen.var_lab or "", height=80,
+            key=f"resume_varlab_{chosen.filename}_{chosen.variable_key}",
+            help=T("Aanpassen herverwerkt vanaf stap 1 — de cache klopt dan niet meer "
+                   "bij de nieuwe vraag.",
+                   "Changing it reprocesses from step 1 — the cache no longer matches "
+                   "the new question."))
+        lab_changed = edited_lab.strip() != (chosen.var_lab or "").strip()
+        if lab_changed:
+            st.warning(T("Gewijzigde vraag: bij laden wordt de cache vanaf stap 1 gewist.",
+                         "Changed question: loading will clear the cache from step 1."))
+        if st.button(T("Laden", "Load"), type="primary"):
+            if lab_changed:
+                chosen.var_lab = edited_lab.strip() or chosen.var_name
+                be.invalidate_from(1, chosen, cm)
             st.session_state.spec = chosen
-            st.session_state.step = max(1, md)
+            st.session_state.step = 1 if lab_changed else max(1, md)
             st.session_state.last_success = None
             st.session_state.last_error = None
             _bump_epoch()
@@ -210,7 +226,7 @@ def page_select_dataset():
 
     # --- Upload new ---
     st.divider()
-    st.subheader("📤 " + T("Nieuw bestand", "New file"))
+    st.subheader(T("Nieuw bestand", "New file"))
     up = st.file_uploader(T("Kies een SPSS-bestand (.sav)", "Choose an SPSS file (.sav)"),
                           type=["sav"])
     if up is not None:
@@ -229,9 +245,9 @@ def page_select_dataset():
 
         col1, col2 = st.columns(2)
         with col1:
-            id_col = st.selectbox("🆔 " + T("ID-kolom", "ID column"), all_vars)
+            id_col = st.selectbox(T("ID-kolom", "ID column"), all_vars)
         with col2:
-            text_var = st.selectbox("📄 " + T("Tekstvariabele", "Text variable"), string_vars)
+            text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars)
 
         limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False)
         sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
@@ -244,7 +260,7 @@ def page_select_dataset():
         except Exception:
             spss_lab = text_var
         var_lab = st.text_area(
-            "📝 " + T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
+            T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
             value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
             help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van Merk X').",
                    "Fix formatting/spelling or add context (e.g. 'the squirrel is Merk X's logo')."))
@@ -269,7 +285,7 @@ def render_banners(step: int):
     if err and err[0] == step:
         c1, c2 = st.columns([6, 1])
         with c1:
-            st.error(f"❌ {err[1]}")
+            st.error(err[1])
             st.caption(T("Zie het uitvoeringslog hieronder voor details.",
                          "See the execution log below for details."))
         with c2:
@@ -284,36 +300,11 @@ def render_banners(step: int):
         if "⚠️ WAARSCHUWING" in summary:
             st.warning(summary)
         else:
-            st.success(f"✅ {summary}")
-
-
-def render_varlab_editor(spec: DatasetSpec):
-    # The survey question is LLM context (spell-check + extraction + classification).
-    # It's editable; applying a change re-runs from step 1 (where the context first matters).
-    _vk = f"varlab_{spec.variable_key}"
-    st.session_state.setdefault(_vk, spec.var_lab or "")
-    with st.expander("📝 " + T("Enquêtevraag / context", "Survey question / context")):
-        edited = st.text_area(
-            T("Vraag (LLM-context — corrigeer opmaak/spelling of voeg context toe)",
-              "Question (LLM context — fix formatting/spelling or add context)"),
-            key=_vk, height=80,
-            help=T("Bv. 'de eekhoorn is het logo van Merk X'. Toepassen herverwerkt vanaf stap 1.",
-                   "E.g. 'the squirrel is Merk X's logo'. Applying reprocesses from step 1."))
-        if edited.strip() != (spec.var_lab or "").strip():
-            if st.button("💾 " + T("Toepassen (herverwerk vanaf stap 1)",
-                                   "Apply (reprocess from step 1)"), key="apply_varlab"):
-                spec.var_lab = edited.strip()
-                be.invalidate_from(1, spec, get_cache_manager())
-                st.session_state.last_success = None
-                st.session_state.last_error = None
-                _bump_epoch()
-                st.toast(T("Vraag bijgewerkt — draai opnieuw vanaf stap 1.",
-                           "Question updated — re-run from step 1."))
-                st.rerun()
+            st.success(summary)
 
 
 def render_locked(step: int):
-    st.warning("🔒 " + T(f"Voltooi eerst stap {step - 1} ({step_name(step - 1)}).",
+    st.warning(T(f"Voltooi eerst stap {step - 1} ({step_name(step - 1)}).",
                          f"Complete step {step - 1} ({step_name(step - 1)}) first."))
 
 
@@ -324,20 +315,18 @@ def render_run(step: int):
         st.info(info)
     model = av.models_line(step)
     if model:
-        st.caption("🤖 " + T("Model", "Model") + f": {model}")
+        st.caption(T("Model", "Model") + f": {model}")
     if st.button("🚀 " + T(f"Draai stap {step}", f"Run step {step}"),
                  type="primary", key=f"run_{step}"):
         run_step(step, force_recalc=False)
 
 
 def render_output(step: int, spec: DatasetSpec):
-    """OUTPUT screen: evidence (stats, samples), log, and the way forward."""
-    if not st.session_state.last_success or st.session_state.last_success[0] != step:
-        st.success("✅ " + T("Voltooid (uit cache).", "Completed (from cache)."))
-
+    """OUTPUT screen: the way forward on top, evidence in tabs (calm: one thing
+    in view at a time — Resultaat | Steekproef | Rapport)."""
     c1, c2, _ = st.columns([1, 2, 3])
     with c1:
-        if st.button("🔄 " + T("Opnieuw", "Re-run"), key=f"rerun_{step}"):
+        if st.button(T("Opnieuw", "Re-run"), key=f"rerun_{step}"):
             be.invalidate_from(step, spec, get_cache_manager())
             run_step(step, force_recalc=True)
     with c2:
@@ -348,20 +337,25 @@ def render_output(step: int, spec: DatasetSpec):
                 st.session_state.step = step + 1
                 st.session_state.last_success = None
                 st.rerun()
-
-    # What this step's last run cost (B6) + evidence panels from the registry
     av.render_cost_line(spec, lang, step)
+
     view = av.STEP_VIEWS[step]
     epoch = st.session_state.epoch
-    if view.stats:
-        view.stats(spec, lang, epoch)
-    if view.samples:
-        view.samples(spec, lang, epoch)
-
-    # Execution report (parsed from the captured console log — B0)
     log = be.find_verbose_log(spec, step)
+    labels = [T("Resultaat", "Result")]
+    if view.samples:
+        labels.append(T("Steekproef", "Sample"))
     if log:
-        with st.expander("📋 " + T("Uitvoeringsrapport", "Execution report")):
+        labels.append(T("Rapport", "Report"))
+    tabs = st.tabs(labels)
+    with tabs[0]:
+        if view.stats:
+            view.stats(spec, lang, epoch)
+    if view.samples:
+        with tabs[labels.index(T("Steekproef", "Sample"))]:
+            view.samples(spec, lang, epoch)
+    if log:
+        with tabs[-1]:
             av.render_log_report(log, lang, key=f"log_{step}")
 
 
@@ -370,8 +364,12 @@ def page_step(step: int, status: dict):
     st.header(f"{step}. {step_name(step)}")
     st.caption(f"**Data:** {spec.var_name} · "
                f"{spec.sample_size if spec.sample_size is not None else T('volledig', 'full')}")
+    # The survey question is fixed context during a run — editable only when
+    # loading a dataset (step 0), read-only here so every screen shows what
+    # the LLM was told the data is about.
+    if spec.var_lab:
+        st.caption(T("Vraag", "Question") + f": _{spec.var_lab}_")
 
-    render_varlab_editor(spec)
     render_banners(step)
 
     screen = be.screen_for(step, status)
@@ -395,7 +393,7 @@ def page_run_all():
     # wiping caches out from under the in-flight run. With the flag already false, any
     # concurrent rerun renders the normal page and the loop runs exactly once.
     st.session_state.run_all = False
-    st.header("⏩ " + T("Alle stappen draaien (1-7)", "Running all steps (1-7)"))
+    st.header(T("Alle stappen draaien (1-7)", "Running all steps (1-7)"))
     st.caption(T("Live voortgang in de terminal; samenvatting per stap hieronder.",
                  "Live progress in the terminal; per-step summary below."))
 

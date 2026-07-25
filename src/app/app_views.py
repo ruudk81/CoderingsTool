@@ -120,6 +120,9 @@ def _assignments(filename: str, var_name: str, sample_size: Optional[int], epoch
 # =============================================================================
 
 def render_log_report(log_text: str, lang: str, key: str):
+    """Default view = the essence: meta line + per-section summary blocks. ALL
+    process/technical output (body + telemetry) sits behind one toggle; the raw
+    log behind a second."""
     rep = be.parse_verbose_log(log_text)
 
     if rep.meta:
@@ -127,21 +130,28 @@ def render_log_report(log_text: str, lang: str, key: str):
         times = " → ".join(rep.meta[k] for k in ("Start time", "End time") if k in rep.meta)
         st.caption(" · ".join(bits + ([times] if times else [])))
 
+    n_detail = sum(len(s.body) + len(s.noise) for s in rep.sections)
+    has_summary = any(s.summary for s in rep.sections)
+    details = n_detail and st.toggle(
+        _t(lang, f"Procesdetails ({n_detail} regels)", f"Process details ({n_detail} lines)"),
+        key=f"{key}_detail")
+    if not (has_summary or details):
+        st.caption(_t(lang, "Dit log bevat alleen procesdetails.",
+                      "This log holds process details only."))
+
     for sec in rep.sections:
+        if not (sec.summary or (details and (sec.body or sec.noise))):
+            continue
         if sec.title:
             st.markdown(f"**{sec.title}**")
-        if sec.body:
+        if details and sec.body:
             st.text("\n".join(sec.body))
         if sec.summary:
             st.code("\n".join(sec.summary), language=None)
+        if details and sec.noise:
+            st.text("\n".join(sec.noise))
 
-    if rep.noise_count and st.toggle(
-            "⚙️ " + _t(lang, f"Technische details ({rep.noise_count} regels)",
-                       f"Technical details ({rep.noise_count} lines)"),
-            key=f"{key}_noise"):
-        st.code("\n".join(ln for s in rep.sections for ln in s.noise), language=None)
-
-    if st.toggle("📄 " + _t(lang, "Ruwe log", "Raw log"), key=f"{key}_raw"):
+    if st.toggle(_t(lang, "Ruwe log", "Raw log"), key=f"{key}_raw"):
         st.code(log_text, language=None)
 
 
@@ -167,7 +177,7 @@ def render_cost_line(spec: DatasetSpec, lang: str, step: int):
         bits.append(models)
     if entry.get("date"):
         bits.append(entry["date"])
-    st.caption("💰 " + " · ".join(bits))
+    st.caption(_t(lang, "Kosten", "Costs") + ": " + " · ".join(bits))
 
 
 def costs_overview(spec: DatasetSpec, lang: str):
@@ -176,7 +186,7 @@ def costs_overview(spec: DatasetSpec, lang: str):
     steps = (data or {}).get("steps", {})
     if not steps:
         return
-    st.subheader("💰 " + _t(lang, "Kosten van deze run", "Run costs"))
+    st.subheader(_t(lang, "Kosten van deze run", "Run costs"))
     rows, total = [], 0.0
     for n, key in be.STEP_COSTS_KEY.items():
         entry = steps.get(key)
@@ -220,46 +230,65 @@ def _rollable_sample(items: list, k: int, key: str, lang: str) -> list:
 # STEP 1 — spell-check before/after (Phase B1)
 # =============================================================================
 
+def _formatting_key(text) -> str:
+    """Casefold + strip punctuation + collapse whitespace: two responses with the
+    same key differ only in formatting (capitals, periods), not in words."""
+    import re
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", str(text or "").casefold())).strip()
+
+
 def _correction_pairs(spec: DatasetSpec, epoch: int):
-    """[(raw, preprocessed)] joined on respondent_id, and the changed subset."""
+    """[(raw, preprocessed)] joined on respondent_id, split into real word-level
+    corrections vs formatting-only changes (capitals/punctuation — step 1 adds
+    those on purpose; they are layout, not corrections)."""
     raw = _raw(spec.filename, spec.var_name, spec.sample_size, epoch)
     pre = _preprocessed(spec.filename, spec.var_name, spec.sample_size, epoch)
     if not (raw and pre):
-        return None, None
+        return None, None, None
     pre_map = {p.respondent_id: p for p in pre}
     pairs = [(r, pre_map[r.respondent_id]) for r in raw if r.respondent_id in pre_map]
     changed = [(r, p) for r, p in pairs
                if str(r.response or "").strip() != str(p.response or "").strip()]
-    return pairs, changed
+    real = [(r, p) for r, p in changed
+            if _formatting_key(r.response) != _formatting_key(p.response)]
+    formatting = [rp for rp in changed if rp not in real]
+    return pairs, real, formatting
 
 
 def stats_preprocessing(spec: DatasetSpec, lang: str, epoch: int):
-    pairs, changed = _correction_pairs(spec, epoch)
+    pairs, real, formatting = _correction_pairs(spec, epoch)
     if pairs is None:
         return
     st.subheader(_t(lang, "Spellingscontrole", "Spell check"))
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric(_t(lang, "Antwoorden", "Responses"), len(pairs))
-    c2.metric(_t(lang, "Gecorrigeerd", "Corrected"), len(changed))
-    c3.metric(_t(lang, "Ongewijzigd", "Unchanged"), len(pairs) - len(changed))
+    c2.metric(_t(lang, "Echt gecorrigeerd", "Really corrected"), len(real))
+    c3.metric(_t(lang, "Alleen opmaak", "Formatting only"), len(formatting))
+    c4.metric(_t(lang, "Ongewijzigd", "Unchanged"),
+              len(pairs) - len(real) - len(formatting))
 
 
 @st.fragment
 def samples_preprocessing(spec: DatasetSpec, lang: str, epoch: int):
-    _, changed = _correction_pairs(spec, epoch)
-    if changed is None:
+    _, real, formatting = _correction_pairs(spec, epoch)
+    if real is None:
         return
-    st.divider()
-    st.subheader("🔍 " + _t(lang, "Correcties — voor en na", "Corrections — before and after"))
-    if not changed:
-        st.caption(_t(lang, "Geen antwoorden gewijzigd door de spellingscontrole.",
-                      "No responses were changed by the spell check."))
-        return
-    for raw, pre in _rollable_sample(changed, 5, f"s1_{spec.variable_key}", lang):
+    st.subheader(_t(lang, "Correcties — voor en na", "Corrections — before and after"))
+    if not real:
+        st.caption(_t(lang, "Geen inhoudelijke correcties — alleen opmaak "
+                            "(hoofdletters/interpunctie).",
+                      "No real corrections — formatting only (capitals/punctuation)."))
+    for raw, pre in _rollable_sample(real, 5, f"s1_{spec.variable_key}", lang):
         with st.container(border=True):
             st.caption(f"`{raw.respondent_id}`")
             st.markdown(f"~~{raw.response}~~")
             st.markdown(f"**{pre.response}**")
+    if formatting and st.toggle(
+            _t(lang, f"Opmaakvoorbeelden ({len(formatting)})",
+               f"Formatting examples ({len(formatting)})"),
+            key=f"s1_fmt_{spec.variable_key}"):
+        for raw, pre in formatting[:5]:
+            st.markdown(f"- `{raw.respondent_id}` — {raw.response} → **{pre.response}**")
 
 
 # =============================================================================
@@ -300,9 +329,8 @@ def samples_quality_filter(spec: DatasetSpec, lang: str, epoch: int):
                 for code in labels}
     if not any(excluded.values()):
         return
-    st.divider()
-    st.subheader("🔍 " + _t(lang, "Uitgesloten antwoorden — steekproef",
-                            "Excluded responses — sample"))
+    st.subheader(_t(lang, "Uitgesloten antwoorden — steekproef",
+                    "Excluded responses — sample"))
     for code, group in excluded.items():
         if not group:
             continue
@@ -357,8 +385,7 @@ def samples_extraction(spec: DatasetSpec, lang: str, epoch: int):
     with_ideas = [m for m in data if getattr(m, "response_ideas", None)]
     if not with_ideas:
         return
-    st.divider()
-    st.subheader("🔍 " + _t(lang, "Van antwoord naar ideeën", "From response to ideas"))
+    st.subheader(_t(lang, "Van antwoord naar ideeën", "From response to ideas"))
     m = _rollable_sample(with_ideas, 1, f"s3_{spec.variable_key}", lang)[0]
     st.markdown(f"**{_t(lang, 'Respondent', 'Respondent')}:** `{m.respondent_id}`")
     st.markdown(f"> {m.response}")
@@ -404,7 +431,7 @@ def stats_taxonomy(spec: DatasetSpec, lang: str, epoch: int):
     tax = _taxonomy(spec.filename, spec.var_name, spec.sample_size, epoch)
     if tax:
         from pipeline.step_4_classifier.taxonomy_health import measure
-        with st.expander("🩺 " + _t(lang, "Structuurmeting", "Structure health")):
+        with st.expander(_t(lang, "Structuurmeting", "Structure health")):
             st.code("\n".join(measure(tax).lines()), language=None)
 
 
@@ -481,8 +508,7 @@ def samples_assignments_qa(spec: DatasetSpec, lang: str, epoch: int):
     coded = [m for m in models if any(i.assigned_code for i in (m.response_ideas or []))]
     if not coded:
         return
-    st.divider()
-    st.subheader("🔍 " + _t(lang, "Inspecteer een respondent", "Inspect a respondent"))
+    st.subheader(_t(lang, "Inspecteer een respondent", "Inspect a respondent"))
     id_to_name = _code_id_to_name(spec, epoch)
     m = _rollable_sample(coded, 1, f"qa6_{spec.variable_key}", lang)[0]
     st.markdown(f"**{_t(lang, 'Respondent', 'Respondent')}:** `{m.respondent_id}`")
@@ -509,12 +535,12 @@ def stats_export(spec: DatasetSpec, lang: str, epoch: int):
     c1, c2 = st.columns(2)
     with c1:
         if path.exists():
-            st.download_button("⬇️ " + _t(lang, "Resultaten (Excel)", "Results (Excel)"),
+            st.download_button(_t(lang, "Resultaten (Excel)", "Results (Excel)"),
                                data=path.read_bytes(), file_name=path.name,
                                mime=_xlsx_mime, width="stretch")
     with c2:
         if cb.exists():
-            st.download_button("⬇️ " + _t(lang, "Codeboek (Excel)", "Codebook (Excel)"),
+            st.download_button(_t(lang, "Codeboek (Excel)", "Codebook (Excel)"),
                                data=cb.read_bytes(), file_name=cb.name,
                                mime=_xlsx_mime, width="stretch")
     if path.exists():
