@@ -84,8 +84,7 @@ def _bump_epoch():
 
 def run_step(step: int, force_recalc: bool):
     spec = st.session_state.spec
-    with st.spinner(T(f"Stap {step} draait… (live voortgang in de terminal)",
-                      f"Running step {step}… (live progress in the terminal)")):
+    with st.spinner(T(f"Stap {step} draait…", f"Running step {step}…")):
         try:
             summary = be.run_step(step, spec, force_recalc=force_recalc)
             st.session_state.last_success = (step, summary)
@@ -557,8 +556,8 @@ def page_run_all():
     # concurrent rerun renders the normal page and the loop runs exactly once.
     st.session_state.run_all = False
     st.header(T("Alle stappen draaien (1-7)", "Running all steps (1-7)"))
-    st.caption(T("Live voortgang in de terminal; samenvatting per stap hieronder.",
-                 "Live progress in the terminal; per-step summary below."))
+    st.caption(T("Samenvatting per stap hieronder.",
+                 "Per-step summary below."))
 
     failed_step = None
     with st.status(T("Bezig met stap 1-7…", "Running steps 1-7…"),
