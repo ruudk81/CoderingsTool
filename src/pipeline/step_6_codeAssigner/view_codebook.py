@@ -457,16 +457,19 @@ def _within_parent_shares(rows):
 
 
 def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned,
-                     base_note=None):
+                     base_note=None, valence_split=True):
     """Write one readout to a worksheet: narrow hierarchy columns with overflow,
     numeric metrics, collapsible row groups, coloured richting. The within-parent
     `% ouder` column (and inline shares) appear only where the sheet nests
-    (nh > 1); a flat sheet like Codeboek (nh == 1) omits them."""
+    (nh > 1); a flat sheet like Codeboek (nh == 1) omits them. With
+    `valence_split=False` the % +/% 0/% − columns are omitted — used for the
+    client-facing Codeboek sheet, where direction lives in the code labels and
+    the idea-level +/0 boundary is too noisy to present as a percentage."""
     hier = header_label.split(" / ")                 # ["domain","facet","attribute"] | ["code"]
     nh = len(hier)
     nested = nh > 1
     cols = hier + ["richting", "n bruto", "% bruto"] + (["% ouder"] if nested else []) \
-        + ["n netto", "% netto", "% +", "% 0", "% -"]
+        + ["n netto", "% netto"] + (["% +", "% 0", "% -"] if valence_split else [])
     ncol = len(cols)
     col = {name: i for i, name in enumerate(cols, start=1)}   # 1-based index by header name
     pct_cols = [n for n in ("% bruto", "% ouder", "% netto", "% +", "% 0", "% -") if n in col]
@@ -489,13 +492,14 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned,
         hcells = [""] * nh
         if d < nh:
             hcells[d] = BULLETS.get(d, "") + r["label"] + suffix
-        pos = round(r["pct_pos"], 1) / 100 if r["n"] else None
-        neu = round(r["pct_neu"], 1) / 100 if r["n"] else None
-        neg = round(r["pct_neg"], 1) / 100 if r["n"] else None
         metrics = [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100]
         if nested:
             metrics.append(ouder)
-        metrics += [r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neu, neg]
+        metrics += [r["n_resp"], round(r["pct_netto"], 1) / 100]
+        if valence_split:
+            metrics += [round(r["pct_pos"], 1) / 100 if r["n"] else None,
+                        round(r["pct_neu"], 1) / 100 if r["n"] else None,
+                        round(r["pct_neg"], 1) / 100 if r["n"] else None]
         ws.append(hcells + metrics)
         ri = ws.max_row
         bold = (d == 0)
@@ -514,7 +518,7 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned,
 
     last_data = ws.max_row
     total_metrics = ["", base_n, 1.0] + ([None] if nested else []) \
-        + [n_responses, 1.0, None, None, None]
+        + [n_responses, 1.0] + ([None, None, None] if valence_split else [])
     ws.append(["TOTAAL"] + [""] * (nh - 1) + total_metrics)
     tr = ws.max_row
     for c in range(1, ncol + 1):
@@ -573,6 +577,8 @@ def _append_leeswijzer(ws):
         "richting (+/0/-) = evaluatie t.o.v. het facet (waarmaken vs. tekortschieten), "
         "geen sentimentanalyse; 0 = beschrijvend, zonder oordeel. Het teken bij een "
         "domein/facet volgt uit + vs - (0 telt niet mee).",
+        "De %-uitsplitsing (% +/% 0/% -) staat alleen op de taxonomie-bladen "
+        "(analyse-laag); in het codeboekblad draagt het codelabel zelf de richting.",
     ):
         ws.append([line])
 
@@ -639,7 +645,8 @@ def export_codebook(filename: str = None, var_name: str = None,
             save_csv(suffix, header, rows, base_n, n_resp, n_una)
         if wb is not None:
             write_xlsx_sheet(wb.create_sheet(title=sheet_name), header,
-                             rows, base_n, n_resp, n_una, base_note=_base_note(n_resp))
+                             rows, base_n, n_resp, n_una, base_note=_base_note(n_resp),
+                             valence_split=(header != "code"))
     return save_xlsx(wb) if wb is not None else None
 
 
