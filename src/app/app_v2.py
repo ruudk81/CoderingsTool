@@ -281,9 +281,13 @@ def page_select_dataset():
             text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars,
                                     key=f"text_var_{fname}")
 
-    limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False)
+    # Keyed per file: un-keyed widgets can silently lose their state when a
+    # rerun skips them — exactly how a chosen sample once vanished at commit.
+    limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False,
+                        key=f"limit_{fname}")
     sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
-                                  value=500, step=50) if limit else None
+                                  value=500, step=50,
+                                  key=f"sample_{fname}") if limit else None
 
     # Survey question — editable LLM context. Prefill: the merge-inherited
     # question, else the picked variable's cleaned label. Metadata only.
@@ -385,6 +389,11 @@ def commit_selection(fname: str, intent, text_var: str, sample_size, id_col: str
     co = _concat_module()
     with st.status(T("Dataset vastleggen…", "Committing dataset…"),
                    expanded=True) as box:
+        # Echo the exact identity being committed — a silently lost sample
+        # choice must be visible HERE, before credits are spent downstream.
+        size_txt = str(sample_size) if sample_size is not None else T("volledig", "full")
+        st.write(T(f"Dataset: {text_var} · steekproef: {size_txt}",
+                   f"Dataset: {text_var} · sample: {size_txt}"))
         if intent:
             src = be.PROJECT_ROOT / "data" / fname
             out = Path(co.default_outfile(str(src), intent["newvar"]))

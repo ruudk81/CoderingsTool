@@ -177,10 +177,12 @@ def test_concat_variables_roundtrip(tmp_dir=None):
 
 def test_formatting_key_separates_layout_from_correction():
     import app_views as av
-    # Capitals + closing period = formatting, not a correction
+    # Maintainer definition: capitals, punctuation AND whitespace are layout
     assert av._formatting_key("ik vind het mooi") == av._formatting_key("Ik vind het mooi.")
-    # Extra whitespace and commas are formatting too
     assert av._formatting_key("goed,  betrouwbaar") == av._formatting_key("Goed betrouwbaar.")
+    assert av._formatting_key("Nvt") == av._formatting_key("N. v. t.")
+    # (consequence, accepted: word joins like 'spaar bank'→'spaarbank' count as layout)
+    assert av._formatting_key("spaar bank") == av._formatting_key("spaarbank")
     # A changed word is a real correction
     assert av._formatting_key("betrouwbar") != av._formatting_key("betrouwbaar")
 

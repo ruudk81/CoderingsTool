@@ -231,32 +231,43 @@ def _rollable_sample(items: list, k: int, key: str, lang: str) -> list:
 # =============================================================================
 
 def _formatting_key(text) -> str:
-    """Casefold + strip punctuation + collapse whitespace: two responses with the
-    same key differ only in formatting (capitals, periods), not in words."""
+    """Casefold + strip punctuation AND whitespace: per the maintainer's
+    definition capitals, punctuation and whitespace are layout, not correction
+    ('Nvt' == 'N. v. t.')."""
     import re
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", str(text or "").casefold())).strip()
+    return re.sub(r"[\W_]+", "", str(text or "").casefold())
 
 
 def _correction_pairs(spec: DatasetSpec, epoch: int):
-    """[(raw, preprocessed)] joined on respondent_id, split into real word-level
-    corrections vs formatting-only changes (capitals/punctuation — step 1 adds
-    those on purpose; they are layout, not corrections)."""
+    """[(raw, preprocessed)] joined on respondent_id, split into: blank (no
+    answer → step 1's <NA> placeholder — missing-data handling, no correction),
+    real word-level corrections, and formatting-only changes."""
     raw = _raw(spec.filename, spec.var_name, spec.sample_size, epoch)
     pre = _preprocessed(spec.filename, spec.var_name, spec.sample_size, epoch)
     if not (raw and pre):
-        return None, None, None
+        return None, None, None, None
     pre_map = {p.respondent_id: p for p in pre}
-    pairs = [(r, pre_map[r.respondent_id]) for r in raw if r.respondent_id in pre_map]
-    changed = [(r, p) for r, p in pairs
-               if str(r.response or "").strip() != str(p.response or "").strip()]
-    real = [(r, p) for r, p in changed
-            if _formatting_key(r.response) != _formatting_key(p.response)]
-    formatting = [rp for rp in changed if rp not in real]
-    return pairs, real, formatting
+    pairs, real, formatting, blank = [], [], [], []
+    for r in raw:
+        p = pre_map.get(r.respondent_id)
+        if p is None:
+            continue
+        pairs.append((r, p))
+        r_txt = str(r.response or "").strip()
+        # Content-free raw ('' but also '?' or '.') or the NA placeholder as
+        # outcome = missing-data handling, never a correction.
+        if not _formatting_key(r_txt) or str(p.response or "").strip() == "<NA>":
+            blank.append((r, p))
+        elif r_txt != str(p.response or "").strip():
+            if _formatting_key(r_txt) == _formatting_key(p.response):
+                formatting.append((r, p))
+            else:
+                real.append((r, p))
+    return pairs, real, formatting, blank
 
 
 def stats_preprocessing(spec: DatasetSpec, lang: str, epoch: int):
-    pairs, real, formatting = _correction_pairs(spec, epoch)
+    pairs, real, formatting, blank = _correction_pairs(spec, epoch)
     if pairs is None:
         return
     st.subheader(_t(lang, "Spellingscontrole", "Spell check"))
@@ -265,12 +276,15 @@ def stats_preprocessing(spec: DatasetSpec, lang: str, epoch: int):
     c2.metric(_t(lang, "Echt gecorrigeerd", "Really corrected"), len(real))
     c3.metric(_t(lang, "Alleen opmaak", "Formatting only"), len(formatting))
     c4.metric(_t(lang, "Ongewijzigd", "Unchanged"),
-              len(pairs) - len(real) - len(formatting))
+              len(pairs) - len(real) - len(formatting) - len(blank))
+    if blank:
+        st.caption(_t(lang, f"{len(blank)} leeg (→ NA-markering; stap 2 filtert ze)",
+                      f"{len(blank)} blank (→ NA marker; step 2 filters them)"))
 
 
 @st.fragment
 def samples_preprocessing(spec: DatasetSpec, lang: str, epoch: int):
-    _, real, formatting = _correction_pairs(spec, epoch)
+    _, real, formatting, _blank = _correction_pairs(spec, epoch)
     if real is None:
         return
     st.subheader(_t(lang, "Correcties — voor en na", "Corrections — before and after"))
