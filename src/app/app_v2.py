@@ -202,26 +202,14 @@ def page_select_dataset():
         md = be.max_completed_step(chosen, cm)
         st.caption(T(f"Voltooid t/m stap {md} ({step_name(md)})",
                      f"Completed through step {md} ({step_name(md)})"))
-        # The question is editable HERE only; after loading it is fixed context.
-        edited_lab = st.text_area(
-            T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
-            value=chosen.var_lab or "", height=80,
-            key=f"resume_varlab_{chosen.filename}_{chosen.variable_key}",
-            help=T("Aanpassen herverwerkt vanaf stap 1 — de cache klopt dan niet meer "
-                   "bij de nieuwe vraag.",
-                   "Changing it reprocesses from step 1 — the cache no longer matches "
-                   "the new question."))
-        lab_changed = edited_lab.strip() != (chosen.var_lab or "").strip()
-        if lab_changed:
-            st.warning(T("Gewijzigde vraag: bij laden wordt de cache vanaf stap 1 gewist.",
-                         "Changed question: loading will clear the cache from step 1."))
+        # The question is fixed once processing has started — the executed
+        # steps already used it as LLM context. Read-only here; it is set at
+        # the commit moment of a new dataset (§3.7).
+        if chosen.var_lab:
+            st.caption(T("Vraag", "Question") + f": _{chosen.var_lab}_")
         if st.button(T("Laden", "Load"), type="primary"):
-            if lab_changed:
-                chosen.var_lab = edited_lab.strip() or chosen.var_name
-                be.invalidate_from(1, chosen, cm)
-                be.set_question(chosen)  # survives an app-restart before step 1 reruns
             st.session_state.spec = chosen
-            st.session_state.step = 1 if lab_changed else max(1, md)
+            st.session_state.step = max(1, md)
             st.session_state.last_success = None
             st.session_state.last_error = None
             _bump_epoch()
