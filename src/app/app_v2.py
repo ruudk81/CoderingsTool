@@ -230,24 +230,38 @@ def page_select_dataset():
     up = st.file_uploader(T("Kies een SPSS-bestand (.sav)", "Choose an SPSS file (.sav)"),
                           type=["sav"])
     if up is not None:
-        dest = be.PROJECT_ROOT / "data" / up.name
-        dest.parent.mkdir(exist_ok=True)
-        dest.write_bytes(up.getbuffer())
+        # Save once per uploaded file; a merge switches the ACTIVE file to the
+        # merged .sav while the uploaded original stays untouched on disk.
+        if st.session_state.get("upload_src") != up.name:
+            dest = be.PROJECT_ROOT / "data" / up.name
+            dest.parent.mkdir(exist_ok=True)
+            dest.write_bytes(up.getbuffer())
+            st.session_state.upload_src = up.name
+            st.session_state.upload_active = up.name
+            st.session_state.upload_merged_var = None
+        fname = st.session_state.upload_active
+
         loader = get_data_loader()
         try:
-            var_types = loader.list_variables_with_types(up.name)
+            var_types = loader.list_variables_with_types(fname)
         except Exception as exc:
             st.error(T(f"Kon variabelen niet lezen: {exc}", f"Could not read variables: {exc}"))
             return
 
         all_vars = list(var_types.keys())
         string_vars = [v for v, i in var_types.items() if i.get("is_string")] or all_vars
+        if fname != up.name:
+            st.caption(T(f"Actief bestand: {fname}", f"Active file: {fname}"))
+
+        render_merge_variables(fname, string_vars)
 
         col1, col2 = st.columns(2)
         with col1:
             id_col = st.selectbox(T("ID-kolom", "ID column"), all_vars)
         with col2:
-            text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars)
+            merged = st.session_state.get("upload_merged_var")
+            text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars,
+                                    index=string_vars.index(merged) if merged in string_vars else 0)
 
         limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False)
         sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
@@ -255,7 +269,7 @@ def page_select_dataset():
 
         # Survey question — editable LLM context (fix typos/formatting, inject domain context).
         try:
-            spss_lab = loader.get_varlab(up.name, text_var)
+            spss_lab = loader.get_varlab(fname, text_var)
             spss_lab = spss_lab[spss_lab.rfind("]") + 1:].strip()
         except Exception:
             spss_lab = text_var
@@ -266,7 +280,7 @@ def page_select_dataset():
                    "Fix formatting/spelling or add context (e.g. 'the squirrel is Merk X's logo')."))
 
         if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
-            spec = DatasetSpec(filename=up.name, var_name=text_var,
+            spec = DatasetSpec(filename=fname, var_name=text_var,
                                sample_size=sample_size, id_column=id_col,
                                var_lab=(var_lab or "").strip() or text_var)
             st.session_state.spec = spec
@@ -274,6 +288,53 @@ def page_select_dataset():
             st.session_state.step = 1
             _bump_epoch()
             st.rerun()
+
+
+def render_merge_variables(fname: str, string_vars: list):
+    """Merge numbered slot variables (xQd1_1 … xQd1_10) into one text variable.
+
+    Pre-step, not pipeline identity: concat_open_ends writes a verified new
+    .sav next to the original, and the pipeline then runs on that single
+    variable (plan §3.5 Phase C; DatasetSpec stays single-variable)."""
+    concat_dir = str(be.PROJECT_ROOT / "concatenate")
+    if concat_dir not in sys.path:
+        sys.path.insert(0, concat_dir)
+    import concat_open_ends as co
+
+    groups = co.find_slot_groups(string_vars)
+    if not groups:
+        return
+    with st.expander(T("Variabelen samenvoegen (bijv. xQd1_1 … xQd1_10)",
+                       "Merge variables (e.g. xQd1_1 … xQd1_10)")):
+        st.caption(T("Meerkeuze-open-vragen staan vaak verspreid over genummerde "
+                     "slots. Samenvoegen schrijft een nieuw .sav met één "
+                     "tekstvariabele; het origineel blijft onaangetast.",
+                     "Multi-response open questions often sit in numbered slots. "
+                     "Merging writes a new .sav with one text variable; the "
+                     "original file stays untouched."))
+        fmt = {p: f"{cols[0]} … {cols[-1]} ({len(cols)})" for p, cols in groups.items()}
+        pick = st.selectbox(T("Gevonden reeksen", "Detected series"), list(groups),
+                            format_func=lambda p: fmt[p])
+        cols = groups[pick]
+        c1, c2 = st.columns(2)
+        newvar = c1.text_input(T("Naam nieuwe variabele", "New variable name"),
+                               value=pick.rstrip("_").lstrip("x") or pick,
+                               key=f"merge_new_{pick}")
+        sep = c2.text_input(T("Scheidingsteken", "Separator"), value=", ",
+                            key=f"merge_sep_{pick}")
+        if st.button(T("Samenvoegen", "Merge"), key="merge_go",
+                     disabled=not newvar.strip()):
+            try:
+                res = co.concat_variables(str(be.PROJECT_ROOT / "data" / fname),
+                                          newvar.strip(), vars_list=cols, sep=sep)
+            except (ValueError, RuntimeError) as exc:
+                st.error(str(exc))
+            else:
+                st.session_state.upload_active = Path(res["outfile"]).name
+                st.session_state.upload_merged_var = newvar.strip()
+                st.toast(T(f"Samengevoegd — {res['filled']} van {res['rows']} rijen gevuld.",
+                           f"Merged — {res['filled']} of {res['rows']} rows filled."))
+                st.rerun()
 
 # =============================================================================
 # STEPS 1-7 — one explicit screen decision, content from the registry

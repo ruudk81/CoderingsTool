@@ -43,13 +43,13 @@ def select_columns(all_cols, prefix=None, vars_list=None):
     if vars_list:
         missing = [v for v in vars_list if v not in all_cols]
         if missing:
-            sys.exit(f"ERROR: variables not found in file: {missing}")
+            raise ValueError(f"variables not found in file: {missing}")
         return vars_list
 
     pat = re.compile(rf"^{re.escape(prefix)}(\d+)$")
     matched = [(int(m.group(1)), c) for c in all_cols if (m := pat.match(c))]
     if not matched:
-        sys.exit(f"ERROR: no columns match prefix '{prefix}' followed by a number.")
+        raise ValueError(f"no columns match prefix '{prefix}' followed by a number.")
     matched.sort(key=lambda t: t[0])
     return [c for _, c in matched]
 
@@ -62,6 +62,61 @@ def combine_row(values, sep):
 def default_outfile(infile, newvar):
     p = Path(infile)
     return str(p.with_name(f"{p.stem} met {newvar}{p.suffix}"))
+
+
+def concat_variables(infile, newvar, prefix=None, vars_list=None, sep=", ",
+                     outfile=None, label=None):
+    """Write a new .sav with `newvar` = the concatenated source variables.
+
+    Importable core (the Streamlit app uses this; the CLI below wraps it).
+    Raises ValueError on bad input, RuntimeError when the written file does not
+    verify against a fresh recomputation. Returns
+    {"outfile", "columns", "rows", "filled", "label"}.
+    """
+    outfile = outfile or default_outfile(infile, newvar)
+
+    df, meta = pyreadstat.read_sav(infile)
+    if newvar in meta.column_names:
+        raise ValueError(f"variable '{newvar}' already exists in the file.")
+
+    cols = select_columns(meta.column_names, prefix=prefix, vars_list=vars_list)
+    df[newvar] = df[cols].apply(lambda r: combine_row(r, sep), axis=1)
+
+    label = label or f"{newvar} (samengevoegd uit {cols[0]} t/m {cols[-1]})"
+    column_labels = [meta.column_names_to_labels.get(c, "") or "" for c in meta.column_names]
+    column_labels.append(label)
+
+    pyreadstat.write_sav(
+        df, outfile,
+        column_labels=column_labels,
+        variable_value_labels=meta.variable_value_labels,
+        variable_measure=meta.variable_measure,
+    )
+
+    # --- Verify round-trip against a fresh recomputation ---
+    chk, _ = pyreadstat.read_sav(outfile)
+    expected = df[cols].apply(lambda r: combine_row(r, sep), axis=1).fillna("").astype(str)
+    got = chk[newvar].fillna("").astype(str)
+    if not (expected.values == got.values).all():
+        raise RuntimeError("verification failed — written values differ from expected.")
+
+    return {"outfile": outfile, "columns": cols, "rows": len(chk),
+            "filled": int((got != "").sum()), "label": label,
+            "examples": got[got.str.contains(re.escape(sep))].head(2).tolist()}
+
+
+def find_slot_groups(columns, min_size=2):
+    """Detect numbered slot groups among `columns`: {prefix: [cols, numeric order]}.
+
+    'xQd1_1', 'xQd1_2', … 'xQd1_10' → {'xQd1_': ['xQd1_1', …, 'xQd1_10']}.
+    """
+    pat = re.compile(r"^(.*?)(\d+)$")
+    groups = {}
+    for c in columns:
+        if m := pat.match(c):
+            groups.setdefault(m.group(1), []).append((int(m.group(2)), c))
+    return {p: [c for _, c in sorted(members)]
+            for p, members in groups.items() if len(members) >= min_size}
 
 
 def main():
@@ -78,41 +133,20 @@ def main():
     args = ap.parse_args()
 
     vars_list = [v.strip() for v in args.vars.split(",")] if args.vars else None
-    outfile = args.outfile or default_outfile(args.infile, args.newvar)
+    try:
+        res = concat_variables(args.infile, args.newvar, prefix=args.prefix,
+                               vars_list=vars_list, sep=args.sep,
+                               outfile=args.outfile, label=args.label)
+    except (ValueError, RuntimeError) as exc:
+        sys.exit(f"ERROR: {exc}")
 
-    df, meta = pyreadstat.read_sav(args.infile)
-    if args.newvar in meta.column_names:
-        sys.exit(f"ERROR: variable '{args.newvar}' already exists in the file.")
-
-    cols = select_columns(meta.column_names, prefix=args.prefix, vars_list=vars_list)
-    print(f"Source variables ({len(cols)}): {cols}")
-
-    df[args.newvar] = df[cols].apply(lambda r: combine_row(r, args.sep), axis=1)
-
-    label = args.label or f"{args.newvar} (samengevoegd uit {cols[0]} t/m {cols[-1]})"
-    column_labels = [meta.column_names_to_labels.get(c, "") or "" for c in meta.column_names]
-    column_labels.append(label)
-
-    pyreadstat.write_sav(
-        df, outfile,
-        column_labels=column_labels,
-        variable_value_labels=meta.variable_value_labels,
-        variable_measure=meta.variable_measure,
-    )
-
-    # --- Verify round-trip against a fresh recomputation ---
-    chk, cmeta = pyreadstat.read_sav(outfile)
-    expected = df[cols].apply(lambda r: combine_row(r, args.sep), axis=1).fillna("").astype(str)
-    got = chk[args.newvar].fillna("").astype(str)
-    if not (expected.values == got.values).all():
-        sys.exit("ERROR: verification failed — written values differ from expected.")
-
-    n_filled = int((got != "").sum())
-    print(f"OK  Written: {outfile}")
-    print(f"    Rows: {len(chk)} | '{args.newvar}' filled: {n_filled} | blank: {len(chk) - n_filled}")
-    print(f"    Label: {cmeta.column_names_to_labels.get(args.newvar)}")
+    print(f"Source variables ({len(res['columns'])}): {res['columns']}")
+    print(f"OK  Written: {res['outfile']}")
+    print(f"    Rows: {res['rows']} | '{args.newvar}' filled: {res['filled']} "
+          f"| blank: {res['rows'] - res['filled']}")
+    print(f"    Label: {res['label']}")
     print("    Examples:")
-    for v in got[got.str.contains(re.escape(args.sep))].head(2):
+    for v in res["examples"]:
         print(f"      {v!r}")
 
 

@@ -120,6 +120,56 @@ def test_parser_step2_example():
 
 
 # =============================================================================
+# Unit: variable merging (upload pre-step, concat_open_ends)
+# =============================================================================
+
+_CONCAT_DIR = os.path.join(be.PROJECT_ROOT, "concatenate")
+if _CONCAT_DIR not in sys.path:
+    sys.path.insert(0, _CONCAT_DIR)
+
+
+def test_concat_slot_group_detection():
+    import concat_open_ends as co
+    cols = ["resp_id", "xQd1_1", "xQd1_2", "xQd1_10", "Q5", "opm_1"]
+    groups = co.find_slot_groups(cols)
+    # Numeric order (2 before 10), singles like opm_1 excluded
+    assert groups == {"xQd1_": ["xQd1_1", "xQd1_2", "xQd1_10"]}
+
+
+def test_concat_combine_row_skips_empty():
+    import concat_open_ends as co
+    import pandas as pd
+    assert co.combine_row(["goed", "", None, " duur "], ", ") == "goed, duur"
+    assert co.combine_row(["", None], ", ") is pd.NA
+
+
+def test_concat_variables_roundtrip(tmp_dir=None):
+    """End-to-end on a tiny synthetic .sav in a temp dir (never touches data/)."""
+    import tempfile
+    import pandas as pd
+    import pyreadstat
+    import concat_open_ends as co
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "mini.sav")
+        pyreadstat.write_sav(pd.DataFrame({
+            "id": [1.0, 2.0, 3.0],
+            "xQ1_1": ["goed", "", "duur"],
+            "xQ1_2": ["snel", "", ""],
+        }), src)
+        res = co.concat_variables(src, "Q1", prefix="xQ1_", sep=", ")
+        assert res["columns"] == ["xQ1_1", "xQ1_2"]
+        assert res["rows"] == 3 and res["filled"] == 2
+        chk, _ = pyreadstat.read_sav(res["outfile"])
+        assert list(chk["Q1"].fillna("")) == ["goed, snel", "", "duur"]
+        # Existing variable name must refuse, not overwrite
+        try:
+            co.concat_variables(src, "xQ1_1", prefix="xQ1_")
+            assert False, "expected ValueError for existing variable"
+        except ValueError:
+            pass
+
+
+# =============================================================================
 # Unit: formatting vs real correction (step-1 view)
 # =============================================================================
 
