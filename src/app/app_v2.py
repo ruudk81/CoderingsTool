@@ -54,9 +54,10 @@ def get_data_loader() -> DataLoader:
     return DataLoader(data_dir=str(be.PROJECT_ROOT / "data"), verbose=False)
 
 
-# Reading a 70MB .sav to list its variables is expensive, and Streamlit reruns
-# the select page on EVERY widget interaction — so both reads are cached on
-# (filename, mtime): one full read per file, instant reruns after that.
+# Reading a .sav is expensive — worst case SECONDS: load_sav tries up to 7
+# encodings and every failed attempt parses the FULL file. So the select page
+# reads each file exactly once, cached on (filename, mtime); everything it
+# needs afterwards (including each variable's label) comes from that one read.
 
 def _data_mtime(fname: str) -> float:
     try:
@@ -67,10 +68,6 @@ def _data_mtime(fname: str) -> float:
 @st.cache_data(max_entries=8, show_spinner=False)
 def _variables_with_types(fname: str, mtime: float) -> dict:
     return get_data_loader().list_variables_with_types(fname)
-
-@st.cache_data(max_entries=32, show_spinner=False)
-def _varlab(fname: str, var_name: str, mtime: float) -> str:
-    return get_data_loader().get_varlab(fname, var_name)
 
 st.session_state.setdefault("step", 0)
 st.session_state.setdefault("language", ui.DEFAULT_LANGUAGE)
@@ -302,12 +299,11 @@ def page_select_dataset():
     sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
                                   value=500, step=50) if limit else None
 
-    # Survey question — editable LLM context (fix typos/formatting, inject domain context).
-    try:
-        spss_lab = _varlab(fname, text_var, _data_mtime(fname))
-        spss_lab = spss_lab[spss_lab.rfind("]") + 1:].strip()
-    except Exception:
-        spss_lab = text_var
+    # Survey question — editable LLM context (fix typos/formatting, inject domain
+    # context). The label comes from the already-cached variable listing: picking
+    # a different variable must never trigger another full .sav read.
+    spss_lab = var_types.get(text_var, {}).get("label") or text_var
+    spss_lab = spss_lab[spss_lab.rfind("]") + 1:].strip() or text_var
     var_lab = st.text_area(
         T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
         value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
