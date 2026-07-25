@@ -505,7 +505,10 @@ def render_output(step: int, spec: DatasetSpec):
         with tabs[-1]:
             # The raw execution log, as-is. The Resultaat tab owns the distilled
             # view; this tab is the honest, complete record (monospace = correct
-            # for terminal output).
+            # for terminal output). Stamp it so an older run's log is recognizable.
+            ts = be.verbose_log_time(spec, step)
+            if ts:
+                st.caption(T(f"Log van {ts}", f"Log from {ts}"))
             st.code(log, language=None)
 
     # Actions below the evidence: review first, then advance.

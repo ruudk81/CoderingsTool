@@ -260,6 +260,15 @@ def test_question_survives_before_step1():
             be._db_path = old_db_path
 
 
+def test_log_time_from_name():
+    """The Rapport-tab timestamp parses the log filename's trailing date_time."""
+    assert be._log_time_from_name(
+        "M240242_Qd1_test3_200_step1_20260725_162437.txt") == "2026-07-25 16:24"
+    # no trailing timestamp → None (caller falls back to mtime)
+    assert be._log_time_from_name("something_without_a_stamp.txt") is None
+    assert be._log_time_from_name("x_step2_notadate_alsonot.txt") is None
+
+
 def test_run_step_translates_cache_corruption():
     """A cache going valid->invalid during a failed run yields the clean
     'reset, press Opnieuw' message; an unrelated failure re-raises as-is."""

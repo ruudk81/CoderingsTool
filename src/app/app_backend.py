@@ -25,6 +25,7 @@ import os
 import sys
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -655,6 +656,36 @@ def find_verbose_log(spec: DatasetSpec, step: int) -> Optional[str]:
     """Latest captured console log for a step, or None."""
     path = VerboseCapture.find_latest_log(spec.filename, spec.variable_key, step)
     return VerboseCapture.load_log_content(path) if path else None
+
+
+def _log_time_from_name(name: str) -> Optional[str]:
+    """'YYYY-MM-DD HH:MM' from a log filename's trailing `_%Y%m%d_%H%M%S`, or None.
+    The capture names files `..._step{N}_{date}_{time}.txt`, so the last two
+    underscore-tokens of the stem are the run's date and time."""
+    parts = name.rsplit(".", 1)[0].rsplit("_", 2)
+    if len(parts) == 3:
+        try:
+            return datetime.strptime(f"{parts[1]}_{parts[2]}",
+                                     "%Y%m%d_%H%M%S").strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            pass
+    return None
+
+
+def verbose_log_time(spec: DatasetSpec, step: int) -> Optional[str]:
+    """When the latest captured log for a step was produced, or None. Shown next
+    to the log so a report from an earlier run can't pass as current (the tab
+    already appears only when the step is done)."""
+    path = VerboseCapture.find_latest_log(spec.filename, spec.variable_key, step)
+    if not path:
+        return None
+    stamp = _log_time_from_name(path.name)
+    if stamp:
+        return stamp
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        return None
 
 
 # Quick self-test: `python app_backend.py`
