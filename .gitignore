@@ -13,10 +13,11 @@ src/utils/old/
 src/old steps/
 __pycache__/
 
-# === SPECIFIC FILES TO IGNORE === 
+# === SPECIFIC FILES TO IGNORE ===
 Coderingstool
 Features.xlsx
 Technical description.docx
+src/test_data.py
 
 # === MODEL / CACHE FILES ===
 *.pkl

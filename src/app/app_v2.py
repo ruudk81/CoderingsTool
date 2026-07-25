@@ -311,8 +311,8 @@ def page_select_dataset():
     var_lab = st.text_area(
         T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
         value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
-        help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van Merk X').",
-               "Fix formatting/spelling or add context (e.g. 'the squirrel is Merk X's logo')."))
+        help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van merk X').",
+               "Fix formatting/spelling or add context (e.g. 'the squirrel is brand X's logo')."))
 
     if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
         spec = DatasetSpec(filename=fname, var_name=text_var,

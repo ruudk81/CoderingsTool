@@ -863,7 +863,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         ),
         examples=(
             DimensionExample(
-                survey_context="Brand association survey (entity: Merk X)",
+                survey_context="Brand association survey (entity: Novabank)",
                 response="insurance and sustainability",
                 instance="insurance",
                 interpretation="insurance products",

@@ -12,7 +12,7 @@ Examples
 --------
 Select by prefix (grabs xQd1_1 .. xQd1_10, numeric order):
     python concatenate/concat_open_ends.py \
-        --infile "data/M000000 Associatiemonitor Merk X tabellenbestand vergelijkend.sav" \
+        --infile "data/M000000 Merkonderzoek tabellenbestand.sav" \
         --prefix xQd1_ --newvar Qd1
 
 Select an explicit list of variables:

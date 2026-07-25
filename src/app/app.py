@@ -227,8 +227,8 @@ def page_select_dataset():
         var_lab = st.text_area(
             "📝 " + T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
             value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
-            help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van Merk X').",
-                   "Fix formatting/spelling or add context (e.g. 'the squirrel is Merk X's logo')."))
+            help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van merk X').",
+                   "Fix formatting/spelling or add context (e.g. 'the squirrel is brand X's logo')."))
 
         if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
             spec = DatasetSpec(filename=up.name, var_name=text_var,
@@ -258,8 +258,8 @@ def page_step(step: int, status: dict, max_done: int):
             T("Vraag (LLM-context — corrigeer opmaak/spelling of voeg context toe)",
               "Question (LLM context — fix formatting/spelling or add context)"),
             key=_vk, height=80,
-            help=T("Bv. 'de eekhoorn is het logo van Merk X'. Toepassen herverwerkt vanaf stap 1.",
-                   "E.g. 'the squirrel is Merk X's logo'. Applying reprocesses from step 1."))
+            help=T("Bv. 'de eekhoorn is het logo van merk X'. Toepassen herverwerkt vanaf stap 1.",
+                   "E.g. 'the squirrel is brand X's logo'. Applying reprocesses from step 1."))
         if edited.strip() != (spec.var_lab or "").strip():
             if st.button("💾 " + T("Toepassen (herverwerk vanaf stap 1)",
                                    "Apply (reprocess from step 1)"), key="apply_varlab"):

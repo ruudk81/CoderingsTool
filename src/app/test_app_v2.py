@@ -11,6 +11,7 @@ Run:  cd src && python test_app_v2.py     (or: pytest test_app_v2.py)
 NOTE: tests never click a 🚀 run button — that would start a real LLM run.
 """
 
+import glob
 import os
 import sys
 
@@ -105,13 +106,14 @@ def test_parser_handles_all_existing_logs():
 
 def test_parser_step2_example():
     """Known log from the 2026-07-23 run: meta, summary and noise land correctly."""
-    path = os.path.join(be.PROJECT_ROOT, "exports", "verbose_logs",
-                        "M000000_Associatiemonitor_Merk_X_tabellenbestand_"
-                        "Qd1_100_100_step2_20260723_042437.txt")
-    if not os.path.exists(path):
+    # The known run is identified by its timestamp; the dataset part of the
+    # filename is local-only, so the log is looked up by glob.
+    matches = glob.glob(os.path.join(be.PROJECT_ROOT, "exports", "verbose_logs",
+                                     "*_Qd1_100_100_step2_20260723_042437.txt"))
+    if not matches:
         print("  (skipped: example log not present)")
         return
-    rep = be.parse_verbose_log(open(path, encoding="utf-8").read())
+    rep = be.parse_verbose_log(open(matches[0], encoding="utf-8").read())
     assert rep.meta.get("Sample size") == "100"
     sec = next(s for s in rep.sections if s.title == "QUALITY FILTERING")
     assert any("Total meaningful" in ln for ln in sec.summary), "summary block not captured"
