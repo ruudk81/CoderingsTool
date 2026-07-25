@@ -186,6 +186,77 @@ def test_formatting_key_separates_layout_from_correction():
 
 
 # =============================================================================
+# Unit: two-phase selection (plan §3.7) — inspection, question cleaning, gate
+# =============================================================================
+
+def test_clean_question_strips_prefix_and_own_name():
+    assert be.clean_question("[xQd1_1] xQd1_1 Wat vind je?", "xQd1_1") == "Wat vind je?"
+    assert be.clean_question("Qd1: Wat is je eerste gevoel", "Qd1") == "Wat is je eerste gevoel"
+    # never eat 'Qd10…' when the variable is Qd1
+    assert be.clean_question("Qd10 iets anders", "Qd1") == "Qd10 iets anders"
+    assert be.clean_question("", "Q1") == ""
+
+
+def test_series_question_gate():
+    insp = be.SavInspection(variables={
+        "xQ1_1": {"label": "xQ1_1 Wat vind je?", "is_string": True},
+        "xQ1_2": {"label": "xQ1_2 Wat  vind je?", "is_string": True},   # whitespace-insensitive
+        "xQ1_3": {"label": "xQ1_3 Iets heel anders", "is_string": True},
+    }, frame=None)
+    q, mm = be.series_question(insp, ["xQ1_1", "xQ1_2"])
+    assert q == "Wat vind je?" and not mm, "same question must pass the gate"
+    q, mm = be.series_question(insp, ["xQ1_1", "xQ1_3"])
+    assert q == "Wat vind je?" and list(mm) == ["xQ1_3"], "mismatch must be flagged"
+
+
+def test_inspect_sav_bounded_read():
+    """Synthetic .sav in a temp data/: labels, string/datetime typing, bounded frame."""
+    import tempfile
+    from pathlib import Path
+    import pandas as pd
+    import pyreadstat
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "data").mkdir()
+        df = pd.DataFrame({
+            "id": [1.0, 2.0, 3.0],
+            "xQ1_1": ["goed", "", "duur"],
+            "datum": ["2024-01-01", "2024-02-01", "2024-03-01"],
+        })
+        pyreadstat.write_sav(df, str(Path(td) / "data" / "mini.sav"),
+                             column_labels=["Respondent", "xQ1_1 Wat vind je?", "Datum"])
+        old_root = be.PROJECT_ROOT
+        be.PROJECT_ROOT = Path(td)
+        try:
+            insp = be.inspect_sav("mini.sav")
+        finally:
+            be.PROJECT_ROOT = old_root
+        assert insp.variables["xQ1_1"] == {"label": "xQ1_1 Wat vind je?", "is_string": True}
+        assert not insp.variables["id"]["is_string"]
+        assert not insp.variables["datum"]["is_string"], "datetime strings must be filtered"
+        assert insp.string_vars == ["xQ1_1"]
+        assert len(insp.frame) == 3
+
+
+def test_selection_phase_writes_nothing():
+    """§3.7: picking a server file must not create or touch anything in data/."""
+    data_dir = os.path.join(be.PROJECT_ROOT, "data")
+    files = sorted(f for f in os.listdir(data_dir) if f.endswith(".sav"))
+    if not files:
+        print("  (skipped: no .sav files in data/)")
+        return
+    before = {f: os.path.getmtime(os.path.join(data_dir, f)) for f in files}
+    at = _apptest()
+    at.run()
+    sb = next(s for s in at.selectbox if s.key == "server_pick")
+    sb.set_value(files[0])
+    at.run()
+    assert not at.exception
+    after = {f: os.path.getmtime(os.path.join(data_dir, f))
+             for f in sorted(os.listdir(data_dir)) if f.endswith(".sav")}
+    assert after == before, "selection phase wrote to data/"
+
+
+# =============================================================================
 # Unit: costs (Phase B6)
 # =============================================================================
 

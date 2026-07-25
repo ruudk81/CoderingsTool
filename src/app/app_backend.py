@@ -169,6 +169,99 @@ def list_cached_datasets() -> List[DatasetSpec]:
 
 
 # =============================================================================
+# SELECTION-PHASE INSPECTION (plan §3.7) — "kiezen is licht, vastleggen is
+# zwaar". A bounded read (row_limit rows, ~9ms on a 71MB .sav) feeds the whole
+# select page: names, labels, types, datetime filter, slot groups AND preview
+# data. Full reads and disk writes are reserved for the commit moment.
+# =============================================================================
+
+# Encoding fallback order (mirrors utils/dataLoader.load_sav). With a bounded
+# read a failed attempt only parses `rows` rows, so the carousel is harmless.
+_SAV_ENCODINGS = ("utf-8", "windows-1252", "iso-8859-1", "cp1252",
+                  "iso-8859-15", "windows-1250", None)
+
+
+@dataclass
+class SavInspection:
+    """Bounded view of a .sav: variable info + the first `rows` rows of data."""
+    variables: Dict[str, Dict[str, Any]]   # {name: {"label": str, "is_string": bool}}
+    frame: Any                             # pandas DataFrame (first `rows` rows)
+
+    @property
+    def string_vars(self) -> List[str]:
+        return [v for v, i in self.variables.items() if i["is_string"]]
+
+
+def _looks_datetime(series, sample_size: int = 100) -> bool:
+    """Mirror of dataLoader._is_datetime_string_column: >80% of a sample parses."""
+    import warnings
+    import pandas as pd
+    non_null = series.dropna()
+    if len(non_null) == 0:
+        return False
+    sample = non_null.head(min(sample_size, len(non_null)))
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            converted = pd.to_datetime(sample, errors="coerce")
+        return converted.notna().sum() / len(sample) > 0.8
+    except Exception:
+        return False
+
+
+def inspect_sav(fname: str, rows: int = 200) -> SavInspection:
+    """Read names, labels, types and `rows` rows from data/<fname> — bounded."""
+    import pyreadstat
+    path = str(PROJECT_ROOT / "data" / fname)
+    last_error = None
+    for enc in _SAV_ENCODINGS:
+        try:
+            df, meta = pyreadstat.read_sav(path, row_limit=rows,
+                                           apply_value_formats=True, encoding=enc)
+            break
+        except Exception as exc:
+            last_error = exc
+    else:
+        raise RuntimeError(f"Kon {fname} niet lezen: {last_error}")
+
+    variables: Dict[str, Dict[str, Any]] = {}
+    for name in meta.column_names:
+        is_string = meta.readstat_variable_types.get(name) == "string"
+        if is_string and _looks_datetime(df[name]):
+            is_string = False
+        variables[name] = {"label": meta.column_names_to_labels.get(name) or "",
+                           "is_string": is_string}
+    return SavInspection(variables=variables, frame=df)
+
+
+def clean_question(label: str, var_name: str) -> str:
+    """The survey question inside an SPSS label: strip the '[...]' prefix and
+    the variable's own name, collapse whitespace."""
+    q = (label or "")
+    if "]" in q:
+        q = q[q.rfind("]") + 1:]
+    q = q.strip()
+    if var_name and q.lower().startswith(var_name.lower()):
+        rest = q[len(var_name):]
+        # only strip when a separator follows — never eat 'Qd10…' when var is Qd1
+        if rest[:1] in ("", " ", ":", "-", ".", "_"):
+            q = rest.lstrip(" :-._")
+    return " ".join(q.split())
+
+
+def series_question(insp: SavInspection, cols: List[str]) -> tuple[str, Dict[str, str]]:
+    """Same-question gate for a slot series (plan §3.7 merge-integrity rule).
+
+    Returns (question, mismatches): question = the FIRST member's cleaned label
+    (inherited by the merged variable); mismatches = {col: cleaned_label} for
+    members whose cleaned label differs — non-empty means merging is blocked.
+    """
+    cleaned = {c: clean_question(insp.variables[c]["label"], c) for c in cols}
+    first = cleaned[cols[0]]
+    return first, {c: q for c, q in cleaned.items() if q != first}
+
+
+# =============================================================================
 # STEP STATUS — the cache IS the state
 # =============================================================================
 

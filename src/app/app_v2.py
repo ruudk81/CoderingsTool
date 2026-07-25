@@ -37,7 +37,6 @@ import app_views as av
 from app_backend import DatasetSpec, LAST_STEP, Screen
 from config import CacheConfig
 from utils.cacheManager import CacheManager
-from utils.dataLoader import DataLoader
 
 st.set_page_config(page_title="CoderingsTool", page_icon="📊", layout="wide")
 
@@ -49,25 +48,14 @@ st.set_page_config(page_title="CoderingsTool", page_icon="📊", layout="wide")
 def get_cache_manager() -> CacheManager:
     return CacheManager(CacheConfig())
 
-@st.cache_resource
-def get_data_loader() -> DataLoader:
-    return DataLoader(data_dir=str(be.PROJECT_ROOT / "data"), verbose=False)
 
-
-# Reading a .sav is expensive — worst case SECONDS: load_sav tries up to 7
-# encodings and every failed attempt parses the FULL file. So the select page
-# reads each file exactly once, cached on (filename, mtime); everything it
-# needs afterwards (including each variable's label) comes from that one read.
-
-def _data_mtime(fname: str) -> float:
-    try:
-        return (be.PROJECT_ROOT / "data" / fname).stat().st_mtime
-    except OSError:
-        return 0.0
-
-@st.cache_data(max_entries=8, show_spinner=False)
-def _variables_with_types(fname: str, mtime: float) -> dict:
-    return get_data_loader().list_variables_with_types(fname)
+def _concat_module():
+    """concat_open_ends (concatenate/ is not a package — path-load it)."""
+    concat_dir = str(be.PROJECT_ROOT / "concatenate")
+    if concat_dir not in sys.path:
+        sys.path.insert(0, concat_dir)
+    import concat_open_ends
+    return concat_open_ends
 
 st.session_state.setdefault("step", 0)
 st.session_state.setdefault("language", ui.DEFAULT_LANGUAGE)
@@ -240,132 +228,211 @@ def page_select_dataset():
     else:
         st.info(T("Geen datasets in cache.", "No cached datasets."))
 
-    # --- Upload new ---
+    # --- Nieuw bestand: two-phase selection (plan §3.7) ---
+    # Phase 1 (this page): choosing is LIGHT. One bounded read (inspect_sav,
+    # ~9ms even on 71MB) feeds everything; nothing is written, so data/ stays
+    # stable and no widget can be reset by the page's own side effects. A merge
+    # is DECLARED here, not executed. Phase 2 (commit_selection): merge
+    # write+verify, step 0 and the cache — all behind one status box.
     st.divider()
     st.subheader(T("Nieuw bestand", "New file"))
-    # Two sources: a .sav already in data/ on the server (no upload — the bytes
-    # never cross the SSH tunnel) or a browser upload for genuinely new files.
-    # A server pick takes precedence over a lingering upload.
     server_files = sorted(p.name for p in (be.PROJECT_ROOT / "data").glob("*.sav"))
     src_pick = st.selectbox(T("Bestand op de server (data/)", "File on the server (data/)"),
-                            server_files, index=None,
+                            server_files, index=None, key="server_pick",
                             placeholder=T("Kies een bestand…", "Pick a file…"))
     up = st.file_uploader(T("… of upload een nieuw SPSS-bestand (.sav)",
                             "… or upload a new SPSS file (.sav)"), type=["sav"])
 
     if src_pick:
-        chosen = src_pick
+        fname = src_pick
     elif up is not None:
-        # Save once per uploaded file; widget interactions must not re-write 70MB.
+        # Saving the upload is source acquisition, not derived work; once.
         if st.session_state.get("upload_saved") != up.name:
             dest = be.PROJECT_ROOT / "data" / up.name
             dest.parent.mkdir(exist_ok=True)
             dest.write_bytes(up.getbuffer())
             st.session_state.upload_saved = up.name
-        chosen = up.name
+        fname = up.name
     else:
         return
 
-    # A merge switches the ACTIVE file to the merged .sav (the source stays
-    # untouched); picking a different source resets that.
-    if st.session_state.get("work_src") != chosen:
-        st.session_state.work_src = chosen
-        st.session_state.work_active = chosen
-        st.session_state.work_merged_var = None
-    fname = st.session_state.work_active
-
     try:
-        var_types = _variables_with_types(fname, _data_mtime(fname))
-    except Exception as exc:
-        st.error(T(f"Kon variabelen niet lezen: {exc}", f"Could not read variables: {exc}"))
+        insp = be.inspect_sav(fname)
+    except RuntimeError as exc:
+        st.error(str(exc))
         return
 
-    all_vars = list(var_types.keys())
-    string_vars = [v for v, i in var_types.items() if i.get("is_string")] or all_vars
-    if fname != chosen:
-        st.caption(T(f"Actief bestand: {fname}", f"Active file: {fname}"))
+    all_vars = list(insp.variables)
+    string_vars = insp.string_vars or all_vars
 
-    render_merge_variables(fname, string_vars)
+    intent = render_merge_intent(fname, insp, string_vars)
 
     col1, col2 = st.columns(2)
     with col1:
-        id_col = st.selectbox(T("ID-kolom", "ID column"), all_vars)
+        id_col = st.selectbox(T("ID-kolom", "ID column"), all_vars, key=f"id_col_{fname}")
     with col2:
-        merged = st.session_state.get("work_merged_var")
-        text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars,
-                                index=string_vars.index(merged) if merged in string_vars else 0)
+        if intent:
+            # Declaring a merge means analyzing the merged variable.
+            st.text_input(T("Tekstvariabele", "Text variable"),
+                          value=intent["newvar"] + T(" (samengevoegd)", " (merged)"),
+                          disabled=True, key=f"text_var_merged_{fname}")
+            text_var = intent["newvar"]
+        else:
+            text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars,
+                                    key=f"text_var_{fname}")
 
     limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False)
     sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
                                   value=500, step=50) if limit else None
 
-    # Survey question — editable LLM context (fix typos/formatting, inject domain
-    # context). The label comes from the already-cached variable listing: picking
-    # a different variable must never trigger another full .sav read.
-    spss_lab = var_types.get(text_var, {}).get("label") or text_var
-    spss_lab = spss_lab[spss_lab.rfind("]") + 1:].strip() or text_var
+    # Survey question — editable LLM context. Prefill: the merge-inherited
+    # question, else the picked variable's cleaned label. Metadata only.
+    default_q = intent["question"] if intent else \
+        be.clean_question(insp.variables[text_var]["label"], text_var)
     var_lab = st.text_area(
         T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
-        value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
+        value=default_q or text_var, key=f"upload_varlab_{fname}_{text_var}", height=80,
         help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van merk X').",
-               "Fix formatting/spelling or add context (e.g. 'the squirrel is brand X's logo')."))
+               "Fix formatting/spelling or add context (e.g. 'the squirrel is brand X's logo)."))
+
+    # Preview on demand, from the bounded frame (§3.7 decision 1)
+    if st.toggle(T("Voorbeeld (eerste 200 rijen)", "Preview (first 200 rows)"),
+                 key=f"preview_{fname}"):
+        render_selection_preview(insp, intent, text_var)
 
     if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
-        spec = DatasetSpec(filename=fname, var_name=text_var,
-                           sample_size=sample_size, id_column=id_col,
-                           var_lab=(var_lab or "").strip() or text_var)
-        st.session_state.spec = spec
-        be.run_step(0, spec, force_recalc=False)  # load + cache
-        st.session_state.step = 1
-        _bump_epoch()
-        st.rerun()
+        commit_selection(fname, intent, text_var, sample_size, id_col, var_lab)
 
 
-def render_merge_variables(fname: str, string_vars: list):
-    """Merge numbered slot variables (xQd1_1 … xQd1_10) into one text variable.
+def render_merge_intent(fname: str, insp, string_vars: list):
+    """§3.7: DECLARE a slot-series merge — nothing is written here.
 
-    Pre-step, not pipeline identity: concat_open_ends writes a verified new
-    .sav next to the original, and the pipeline then runs on that single
-    variable (plan §3.5 Phase C; DatasetSpec stays single-variable)."""
-    concat_dir = str(be.PROJECT_ROOT / "concatenate")
-    if concat_dir not in sys.path:
-        sys.path.insert(0, concat_dir)
-    import concat_open_ends as co
-
-    groups = co.find_slot_groups(string_vars)
+    Returns {"newvar", "cols", "sep", "question"} for a valid intent, else None.
+    Merge-integrity rule: every member must carry the same question (cleaned
+    label); a mismatching series stays visible but is blocked, labels shown.
+    The merged variable inherits the FIRST member's cleaned question."""
+    groups = _concat_module().find_slot_groups(string_vars)
     if not groups:
-        return
+        return None
     with st.expander(T("Variabelen samenvoegen (bijv. xQd1_1 … xQd1_10)",
                        "Merge variables (e.g. xQd1_1 … xQd1_10)")):
         st.caption(T("Meerkeuze-open-vragen staan vaak verspreid over genummerde "
-                     "slots. Samenvoegen schrijft een nieuw .sav met één "
-                     "tekstvariabele; het origineel blijft onaangetast.",
+                     "slots. Het samenvoegen zelf gebeurt pas bij 'Data laden'; "
+                     "het bronbestand blijft onaangetast.",
                      "Multi-response open questions often sit in numbered slots. "
-                     "Merging writes a new .sav with one text variable; the "
-                     "original file stays untouched."))
+                     "The merge itself runs at 'Load data'; the source file "
+                     "stays untouched."))
         fmt = {p: f"{cols[0]} … {cols[-1]} ({len(cols)})" for p, cols in groups.items()}
-        pick = st.selectbox(T("Gevonden reeksen", "Detected series"), list(groups),
-                            format_func=lambda p: fmt[p])
+        none_label = T("— niet samenvoegen —", "— do not merge —")
+        pick = st.selectbox(T("Reeks", "Series"), [None] + list(groups),
+                            format_func=lambda p: none_label if p is None else fmt[p],
+                            key=f"merge_pick_{fname}")
+        if pick is None:
+            return None
         cols = groups[pick]
+
+        question, mismatches = be.series_question(insp, cols)
+        if mismatches:
+            st.error(T("Deze reeks draagt niet overal dezelfde vraag — "
+                       "samenvoegen is geblokkeerd.",
+                       "This series does not carry the same question throughout — "
+                       "merging is blocked."))
+            st.markdown(f"- `{cols[0]}` — _{question or '(leeg)'}_")
+            for c, q in mismatches.items():
+                st.markdown(f"- `{c}` — _{q or '(leeg)'}_")
+            return None
+
         c1, c2 = st.columns(2)
         newvar = c1.text_input(T("Naam nieuwe variabele", "New variable name"),
                                value=pick.rstrip("_").lstrip("x") or pick,
-                               key=f"merge_new_{pick}")
+                               key=f"merge_new_{fname}_{pick}").strip()
         sep = c2.text_input(T("Scheidingsteken", "Separator"), value=", ",
-                            key=f"merge_sep_{pick}")
-        if st.button(T("Samenvoegen", "Merge"), key="merge_go",
-                     disabled=not newvar.strip()):
-            try:
-                res = co.concat_variables(str(be.PROJECT_ROOT / "data" / fname),
-                                          newvar.strip(), vars_list=cols, sep=sep)
-            except (ValueError, RuntimeError) as exc:
-                st.error(str(exc))
+                            key=f"merge_sep_{fname}_{pick}")
+        if not newvar:
+            return None
+        if newvar in insp.variables:
+            st.error(T(f"'{newvar}' bestaat al in het bestand.",
+                       f"'{newvar}' already exists in the file."))
+            return None
+        if question:
+            st.caption(T(f"Vraag (geërfd van {cols[0]}): ",
+                         f"Question (inherited from {cols[0]}): ") + f"_{question}_")
+        return {"newvar": newvar, "cols": cols, "sep": sep, "question": question}
+
+
+def render_selection_preview(insp, intent, text_var: str):
+    """Sample of the (to-be-)analyzed variable from the bounded 200-row frame —
+    a merge intent is previewed by combining the slots in memory."""
+    if intent:
+        co = _concat_module()
+        values = insp.frame[intent["cols"]].apply(
+            lambda r: co.combine_row(r, intent["sep"]), axis=1)
+    else:
+        values = insp.frame[text_var]
+    s = values.fillna("").astype(str).str.strip()
+    filled = s[s != ""]
+    st.caption(f"{T('Eerste', 'First')} {len(s)} {T('rijen', 'rows')}: "
+               f"{len(filled)} {T('gevuld', 'filled')} · "
+               f"{filled.nunique()} {T('uniek', 'unique')}")
+    for v in filled.head(8):
+        st.markdown(f"- {v}")
+
+
+def commit_selection(fname: str, intent, text_var: str, sample_size, id_col: str,
+                     var_lab: str):
+    """§3.7 phase 2: ALL heavy work at one moment, behind one status box —
+    merge (reuse-when-fresh) → step 0 (load + cache) → navigate to step 1."""
+    co = _concat_module()
+    with st.status(T("Dataset vastleggen…", "Committing dataset…"),
+                   expanded=True) as box:
+        if intent:
+            src = be.PROJECT_ROOT / "data" / fname
+            out = Path(co.default_outfile(str(src), intent["newvar"]))
+            # Reuse-when-fresh (§3.7 decision 2): re-creating would touch the
+            # mtime and needlessly invalidate that file's pipeline cache.
+            reuse = out.exists() and out.stat().st_mtime > src.stat().st_mtime
+            if reuse:
+                try:
+                    reuse = intent["newvar"] in be.inspect_sav(out.name).variables
+                except RuntimeError:
+                    reuse = False
+            if reuse:
+                st.write(T(f"Samengevoegd bestand hergebruikt: {out.name}",
+                           f"Reusing merged file: {out.name}"))
             else:
-                st.session_state.work_active = Path(res["outfile"]).name
-                st.session_state.work_merged_var = newvar.strip()
-                st.toast(T(f"Samengevoegd — {res['filled']} van {res['rows']} rijen gevuld.",
-                           f"Merged — {res['filled']} of {res['rows']} rows filled."))
-                st.rerun()
+                st.write(T("Variabelen samenvoegen…", "Merging variables…"))
+                try:
+                    res = co.concat_variables(str(src), intent["newvar"],
+                                              vars_list=intent["cols"],
+                                              sep=intent["sep"],
+                                              label=intent["question"] or None)
+                except (ValueError, RuntimeError) as exc:
+                    box.update(label=T("Samenvoegen mislukt", "Merge failed"),
+                               state="error")
+                    st.error(str(exc))
+                    return
+                st.write(T(f"Geschreven en geverifieerd: {Path(res['outfile']).name} "
+                           f"({res['filled']}/{res['rows']} rijen gevuld)",
+                           f"Written and verified: {Path(res['outfile']).name} "
+                           f"({res['filled']}/{res['rows']} rows filled)"))
+            fname = out.name
+
+        st.write(T("Data laden (stap 0)…", "Loading data (step 0)…"))
+        spec = DatasetSpec(filename=fname, var_name=text_var,
+                           sample_size=sample_size, id_column=id_col,
+                           var_lab=(var_lab or "").strip() or text_var)
+        try:
+            be.run_step(0, spec, force_recalc=False)
+        except Exception as exc:
+            box.update(label=T("Laden mislukt", "Load failed"), state="error")
+            st.error(str(exc))
+            return
+        box.update(label=T("Dataset geladen", "Dataset loaded"), state="complete")
+
+    st.session_state.spec = spec
+    st.session_state.step = 1
+    _bump_epoch()
+    st.rerun()
 
 # =============================================================================
 # STEPS 1-7 — one explicit screen decision, content from the registry
