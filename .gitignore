@@ -8,7 +8,6 @@ data/exports/
 backup/
 env/
 .venv/
-hunspell/
 src/utils/old/
 src/old steps/
 __pycache__/
