@@ -516,7 +516,10 @@ def render_output(step: int, spec: DatasetSpec):
             view.samples(spec, lang, epoch)
     if log:
         with tabs[-1]:
-            av.render_log_report(log, lang, key=f"log_{step}")
+            # The raw execution log, as-is. The Resultaat tab owns the distilled
+            # view; this tab is the honest, complete record (monospace = correct
+            # for terminal output).
+            st.code(log, language=None)
 
 
 def page_step(step: int, status: dict):

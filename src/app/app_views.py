@@ -115,47 +115,6 @@ def _assignments(filename: str, var_name: str, sample_size: Optional[int], epoch
 
 
 # =============================================================================
-# VERBOSE REPORT (Phase B0) — render a parsed execution log as a report:
-# sections as headers, summaries highlighted, telemetry behind a toggle.
-# =============================================================================
-
-def render_log_report(log_text: str, lang: str, key: str):
-    """Default view = the essence: meta line + per-section summary blocks. ALL
-    process/technical output (body + telemetry) sits behind one toggle; the raw
-    log behind a second."""
-    rep = be.parse_verbose_log(log_text)
-
-    if rep.meta:
-        bits = [rep.meta[k] for k in ("Variable", "Sample size") if k in rep.meta]
-        times = " → ".join(rep.meta[k] for k in ("Start time", "End time") if k in rep.meta)
-        st.caption(" · ".join(bits + ([times] if times else [])))
-
-    n_detail = sum(len(s.body) + len(s.noise) for s in rep.sections)
-    has_summary = any(s.summary for s in rep.sections)
-    details = n_detail and st.toggle(
-        _t(lang, f"Procesdetails ({n_detail} regels)", f"Process details ({n_detail} lines)"),
-        key=f"{key}_detail")
-    if not (has_summary or details):
-        st.caption(_t(lang, "Dit log bevat alleen procesdetails.",
-                      "This log holds process details only."))
-
-    for sec in rep.sections:
-        if not (sec.summary or (details and (sec.body or sec.noise))):
-            continue
-        if sec.title:
-            st.markdown(f"**{sec.title}**")
-        if details and sec.body:
-            st.text("\n".join(sec.body))
-        if sec.summary:
-            st.code("\n".join(sec.summary), language=None)
-        if details and sec.noise:
-            st.text("\n".join(sec.noise))
-
-    if st.toggle(_t(lang, "Ruwe log", "Raw log"), key=f"{key}_raw"):
-        st.code(log_text, language=None)
-
-
-# =============================================================================
 # COSTS (Phase B6) — read-only view on the costs JSON (contract: plan §3.6c).
 # The per-step date is always shown so a stale entry is recognizable.
 # =============================================================================
