@@ -76,15 +76,16 @@ Themes must cover all attributes.
 Every theme must describe a specific phenomenon. Avoid generic sentiment labels like "positive impression" or "negative feeling." If an attribute captures only diffuse sentiment without a specific subject, absorb it into the most relevant specific theme.
 
 6. Valence Splitting Rule (prevalence-gated)
-Valence COLOURS the codebook: when a phenomenon has both a well-represented positive AND a well-represented negative side, it becomes TWO codes — one per pole. This is the DEFAULT. Do NOT collapse such a phenomenon into a single neutral code. The inventory shows per-pole idea counts (↑ positive / ↓ negative).
+Valence COLOURS the codebook: when a phenomenon has both a well-represented positive AND a well-represented negative side, it becomes TWO codes — one per pole. This is the DEFAULT. Do NOT collapse such a phenomenon into a single neutral code. The inventory shows per-pole idea counts (↑ positive / ○ neutral / ↓ negative).
 
-A pole counts as well-represented when it is at least ~10% of the phenomenon's ideas AND more than a stray few ideas (not one or two).
+A pole counts as well-represented when its idea count is at least floor(log(n)), where n is the phenomenon's total idea count across all valences (positive + neutral + negative combined) — a floor that scales with the phenomenon's size, not a fixed percentage.
 
 Decide per phenomenon:
 - BOTH poles well-represented → produce TWO codes (one positive, one negative). Never merge opposite evaluations into one neutral code.
-  Example: reliability with +88 / −17 ideas → the negative pole is 16% → produce "Reliable & solid" (positive) AND "Shaky & unreliable" (negative). Do NOT make a single neutral "reliability" code.
+  Example: reliability with +88 / −17 ideas (n=105, floor(log(105))=4) → −17 clears the floor comfortably → produce "Reliable & solid" (positive) AND "Shaky & unreliable" (negative). Do NOT make a single neutral "reliability" code.
+  Where do this phenomenon's NEUTRAL (○) ideas go? By default, fold them into the code for the DOMINANT pole — they do not need a code of their own. Only give them a separate third code when they are a genuinely large, distinct pattern: the neutral share of the phenomenon's total is ≥30%. Below that, treat the ○ count as noise around the two poles, not a phenomenon in itself.
 - Only ONE pole well-represented (the other is a stray few) → produce ONE code spanning the whole range, named for the underlying DIMENSION (valence neutral), never for the dominant pole.
-  Example: recognition with +67 / −4 ideas → the negative pole is 2% → produce ONE neutral code "Brand recognition" covering well-known↔barely-known. (If "big" is frequent and "small" rare, the code is "size", not "big".)
+  Example: recognition with +67 / −2 ideas (n=69, floor(log(69))=4) → −2 stays below the floor → produce ONE neutral code "Brand recognition" covering well-known↔barely-known. (If "big" is frequent and "small" rare, the code is "size", not "big".)
 - EXCEPTION: a sparse pole that is a genuinely DISTINCT phenomenon — a different mechanism, not merely the opposite evaluation (e.g. "hypocritical / greenwashing" is not simply "not sustainable") — may stand as its own code despite low volume.
 </required_process>
 

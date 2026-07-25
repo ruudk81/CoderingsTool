@@ -285,7 +285,7 @@ class CodebookGenerator:
                     for attrs in facet_map.values()
                 )
                 print(f"  Enriched {n_enriched} attributes with representative samples")
-                print(f"  Valence threshold: floor(log(attribute_total)) AND {self._config.min_valence_share:.0%} share")
+                print(f"  Valence example threshold: floor(log(attribute_total)) — counts always shown")
                 print(f"  Cached {len(self._idea_embeddings)} idea embeddings")
         elif verbose:
             print(f"\n  No classified ideas available — skipping representative samples")
@@ -611,14 +611,13 @@ class CodebookGenerator:
     ) -> Dict[str, Dict[str, List[EnrichedAttribute]]]:
         """Enrich attributes with representative samples per valence.
 
-        Applies prevalence threshold: valence groups below min_ideas AND min_share
-        are suppressed (negative samples set to empty).
+        Valence counts are always carried through unsuppressed; only the negative
+        EXAMPLES are gated on floor(log(attribute_total)) — too few ideas means no
+        representative verbatims, but the count itself always reaches P8.
 
         Returns:
             enriched: {domain -> {facet -> [EnrichedAttribute, ...]}}
         """
-        min_share = self._config.min_valence_share
-
         enriched = {}
 
         for domain_name, facet_attrs in domain_facet_attributes.items():
@@ -631,20 +630,18 @@ class CodebookGenerator:
                     neg_count = group_counts.get((attr.attribute_name, "negative"), 0)
                     total = pos_count + neu_count + neg_count
 
-                    # Attribute-level absolute minimum: floor(log(attribute_total))
+                    # Attribute-level absolute minimum: floor(log(attribute_total)).
+                    # No % share requirement — count visibility (must always reach
+                    # P8) and example visibility (gated on having enough examples
+                    # to be representative) are separate concerns.
                     min_ideas = max(2, int(math.log(max(total, 2))))
-
-                    # Check if negative group meets threshold
-                    neg_meets_threshold = (
-                        neg_count >= min_ideas
-                        and (neg_count / total if total > 0 else 0) >= min_share
-                    )
+                    neg_has_examples = neg_count >= min_ideas
 
                     pos_samples = representatives.get((attr.attribute_name, "positive"), [])
                     neu_samples = representatives.get((attr.attribute_name, "neutral"), [])
-                    neg_samples = representatives.get((attr.attribute_name, "negative"), []) if neg_meets_threshold else []
+                    neg_samples = representatives.get((attr.attribute_name, "negative"), []) if neg_has_examples else []
 
-                    displayed_neg_count = neg_count if neg_meets_threshold else 0
+                    displayed_neg_count = neg_count  # true count, never suppressed to 0
 
                     enriched_list.append(EnrichedAttribute(
                         attribute=attr,

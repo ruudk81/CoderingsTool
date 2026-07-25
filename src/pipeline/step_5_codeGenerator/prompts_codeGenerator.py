@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 from pydantic.json_schema import SkipJsonSchema
 
@@ -177,16 +177,23 @@ def build_code_from_attributes_prompt(
             if examples:
                 line += f" (e.g., {examples})"
 
-            # Mixed valence: show ↑/↓ blocks with samples. Mono valence: no samples.
+            # Valence breakdown is keyed on the TRUE counts (never suppressed to 0,
+            # see codebook_generator.py's neg_has_examples/displayed_neg_count),
+            # not on whether concrete examples exist — a real minority must always
+            # surface, even without representative verbatims. Positive and neutral
+            # are shown as SEPARATE counts (not pooled) so the 0-pool share needed
+            # for the Valence Splitting Rule's neutral-pool decision is computable.
             ea = enriched_lookup.get(attr.attribute_name)
-            if ea and ea.negative_samples:
-                pos_neu_count = ea.positive_count + ea.neutral_count
-                pos_neu_samples = list(ea.positive_samples) + list(ea.neutral_samples)
-                if pos_neu_samples:
-                    line += f"\n  ↑ [{pos_neu_count} ideas] Positive valence:"
-                    for sample in pos_neu_samples:
+            if ea and (ea.negative_count > 0 or ea.neutral_count > 0):
+                if ea.positive_count > 0:
+                    line += f"\n  ↑ [{ea.positive_count} ideas] Positive valence:"
+                    for sample in ea.positive_samples:
                         line += _format_sample(sample)
-                if ea.negative_samples:
+                if ea.neutral_count > 0:
+                    line += f"\n  ○ [{ea.neutral_count} ideas] Neutral valence:"
+                    for sample in ea.neutral_samples:
+                        line += _format_sample(sample)
+                if ea.negative_count > 0:
                     line += f"\n  ↓ [{ea.negative_count} ideas] Negative valence:"
                     for sample in ea.negative_samples:
                         line += _format_sample(sample)
@@ -247,11 +254,15 @@ class CodeGenerationFromAttributesResult(BaseModel):
         ..., description=(
             "Step-by-step reasoning before deriving themes: "
             "(1) Phenomenon Rule — identify underlying phenomena and merge attributes, "
-            "(2) Prevalence Weighting Rule — anchor in high-prevalence phenomena, absorb low-prevalence, "
+            "(2) Prevalence Weighting Rule — anchor THEMES in high-prevalence phenomena; "
+            "absorb only low-prevalence themes that have no well-represented valence pole (see rule 6), "
             "(3) Mutual Exclusivity — if a coder would hesitate between two themes, merge them, "
             "(4) Collective Exhaustivity — ensure all attributes are covered, "
             "(5) No Generic Sentiment — absorb diffuse sentiment into specific themes, "
-            "(6) Valence Sensitivity — separate positive and negative phenomena"
+            "(6) Valence Splitting Rule (prevalence-gated, TAKES PRECEDENCE OVER RULE 2) — "
+            "when an attribute's minority valence pole clears the prevalence gate shown in "
+            "the inventory (a ↓ block is present), it becomes ITS OWN code; rule 2's "
+            "'absorb low-prevalence' never overrides a pole that clears this gate"
         )
     )
     codes: List[CodeFromAttributes] = Field(
@@ -335,8 +346,18 @@ class ConsolidatedCode(BaseModel):
             "must be unique per code and must not overlap with other codes."
         )
     )
-    valence: str = Field(
-        ..., description="One of: 'positive', 'negative', 'neutral'"
+    valence: Literal["positive", "negative", "neutral"] = Field(
+        ...,
+        description=(
+            "The code's evaluative direction — the outcome of the Step 1 Valence "
+            "Policy decision during consolidation, not a restatement of which pole "
+            "happens to hold the most ideas. A code whose ideas span a well-represented "
+            "positive AND a well-represented negative pole should not carry a single "
+            "'positive' or 'negative' label here — the policy is to split such a "
+            "phenomenon into two codes, each correctly labeled for its own pole. "
+            "'neutral' is reserved for a genuinely dimensional code (no pole cleared "
+            "the gate) or the Overig catch-all."
+        )
     )
     typical_indicators: List[str] = Field(
         ..., description="Words or phrases that signal this code"

@@ -30,7 +30,6 @@ class CodebookConfig:
     embedding_batch_size: int = 100
     embedding_max_concurrent: int = 5
     max_representative_samples: int = 3  # Max samples per attribute per valence group
-    min_valence_share: float = 0.10     # Min share of attribute total for a valence group to be shown separately
 
     # SmoothRequester
     default_timeout: float = 180.0

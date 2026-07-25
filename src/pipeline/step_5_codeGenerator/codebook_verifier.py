@@ -36,16 +36,16 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-# Prevalence gate (must match config_codeGenerator: min_valence_share + floor(log))
-MIN_VALENCE_SHARE = 0.10
+# Prevalence gate (must match codebook_generator's floor(log) example gate).
+# No % share requirement — population-scaled absolute floor only.
 
 
 def _pole_clears(count: int, total: int) -> bool:
-    """A valence pole is well-represented: ≥10% share AND more than a stray few."""
+    """A valence pole is well-represented: population-scaled floor(log(n)) only."""
     if total <= 0:
         return False
     min_count = max(2, int(math.log(total)))
-    return count >= min_count and (count / total) >= MIN_VALENCE_SHARE
+    return count >= min_count
 
 
 # =============================================================================
@@ -314,10 +314,10 @@ def build_scorecard(
             review_pairs.append(CodePair(code_a=name_a, code_b=name_b, shared_attributes=sorted(shared)))
 
     # --- Under-split detection (over-collapse) ---
+    # Advisory only — reported in the scorecard, does not block PASS.
     under_split: List[UnderSplitCode] = []
     for code in codes:
-        if (_attr(code, "valence") or "") != "neutral":
-            continue
+        code_valence = _attr(code, "valence") or ""
         if (_attr(code, "code_name") or "") == overig_code_name:
             continue
         p = n = g = 0
@@ -327,7 +327,16 @@ def build_scorecard(
             n += c.get("neutral", 0)
             g += c.get("negative", 0)
         total = p + n + g
-        if _pole_clears(p, total) and _pole_clears(g, total):
+        # Flag whenever an OPPOSING pole is well-represented despite the label.
+        if code_valence == "neutral":
+            flagged = _pole_clears(p, total) and _pole_clears(g, total)
+        elif code_valence == "positive":
+            flagged = _pole_clears(g, total)
+        elif code_valence == "negative":
+            flagged = _pole_clears(p, total)
+        else:
+            flagged = False
+        if flagged:
             under_split.append(UnderSplitCode(
                 code_name=_attr(code, "code_name") or "", positive=p, neutral=n, negative=g))
 

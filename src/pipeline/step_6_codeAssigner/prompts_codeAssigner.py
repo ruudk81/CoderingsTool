@@ -35,6 +35,7 @@ def _build_codes_block(
     lines = []
     for i, code in enumerate(codes, 1):
         diagnostic = getattr(code, 'diagnostic_test', '') or ''
+        valence = getattr(code, 'valence', '') or ''
         indicators = ", ".join(code.typical_indicators[:5]) if code.typical_indicators else "(none)"
         block = (
             f"[C{i}] {code.code_name}\n"
@@ -42,6 +43,8 @@ def _build_codes_block(
         )
         if diagnostic:
             block += f"    Diagnostic: {diagnostic}\n"
+        if valence:
+            block += f"    Valence: {valence}\n"
         block += f"    Indicators: {indicators}"
         lines.append(block)
 
@@ -105,10 +108,11 @@ Language: {language}
 <instructions>
 1. Read the verbatim response together with its interpretation, abstraction, domain, facet, and valence. The verbatim response may be a bare word; use the interpretation and abstraction to disambiguate its intended meaning.
 2. Find the code whose definition best matches what the respondent is expressing.
-3. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
-4. Choose "{no_fit_display}" only if NO code above fits the idea at all.
-5. Rate confidence: 0.90+ = clear, 0.70-0.89 = good, 0.50-0.69 = approximate, <0.50 = weak.
-6. Provide a brief rationale for your code choice.
+3. If the idea's valence is '+' or '-', prefer a code whose Valence matches it. Do NOT assign a '+' idea to a code with Valence: negative, or a '-' idea to a code with Valence: positive, UNLESS no other code fits the topic at all — in that case topical fit overrides valence. A '0' (neutral) idea, or a code with no Valence line, is unaffected by this rule.
+4. Return the code ID from [C#] brackets (e.g. "C1"). Do NOT return the code name.
+5. Choose "{no_fit_display}" only if NO code above fits the idea at all.
+6. Rate confidence: 0.90+ = clear, 0.70-0.89 = good, 0.50-0.69 = approximate, <0.50 = weak.
+7. Provide a brief rationale for your code choice.
 
 All output MUST be in {language}.
 Provide output as valid JSON following the response schema provided.

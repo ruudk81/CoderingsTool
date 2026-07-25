@@ -49,17 +49,10 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 
-# Valence prevalence thresholds (for suppressing low-prevalence valence groups)
-MIN_VALENCE_SHARE = 0.10    # Min share of attribute total (e.g., 0.10 = 10%)
-# MIN_VALENCE_IDEAS: computed as floor(log(sample_size)) at runtime
-
-
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-CONFIG = CodebookConfig(
-    min_valence_share=MIN_VALENCE_SHARE,
-)
+CONFIG = CodebookConfig()
 
 
 # =============================================================================
@@ -366,8 +359,9 @@ def apply_overig_sweep(
     for code in codebook_result.codes:
         covered.update(code.source_attributes or [])
     orphans = [a for a in referenced if a not in covered]
-    if not orphans:
-        return None
+    # Always emit Overig — even with zero orphans at generation time, step 6
+    # assignment can still produce an idea with no confident code match; Overig
+    # must exist as a routing target instead of falling through to __UNASSIGNED__.
 
     # Union of ids per orphan name across ALL domains — the catch-all covers the
     # attribute wherever it lives. Dangling idea-assigned names have no id.
@@ -388,7 +382,7 @@ def apply_overig_sweep(
         diagnostic_test="valt buiten alle specifieke codes",
         valence="neutral",
         typical_indicators=[],
-        source_attributes=orphans,
+        source_attributes=orphans,  # may be empty list
         source_attribute_ids=[i for name in orphans for i in name_to_ids.get(name, [])],
     ))
     return label

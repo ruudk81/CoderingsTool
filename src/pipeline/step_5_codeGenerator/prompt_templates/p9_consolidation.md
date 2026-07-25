@@ -24,13 +24,14 @@ Before generating your final codes, you MUST work through your analysis step-by-
 <workflow>
 ## STEP 1 — VALENCE POLICY (prevalence-gated, MANDATORY FIRST PASS)
 
-Valence COLOURS the codebook. Use the per-valence counts `(+positive / ○neutral / −negative)` shown on each candidate code. A pole counts as well-represented when it is at least ~10% of the phenomenon's ideas AND more than a stray few ideas (not one or two).
+Valence COLOURS the codebook. Use the per-valence counts `(+positive / ○neutral / −negative)` shown on each candidate code. A pole counts as well-represented when its count is at least floor(log(n)), where n is the phenomenon's total idea count (+ ○ − combined) — a floor that scales with the phenomenon's size, not a fixed percentage.
 
 Decide per phenomenon:
 - BOTH poles well-represented → keep TWO codes (one positive, one negative). This is the DEFAULT — opposite evaluations of the same phenomenon MUST NOT be merged into one neutral code.
-  Example: reliability with +88 / −17 → the negative pole is 16% → keep "Reliable & solid" (positive) AND "Shaky & unreliable" (negative). Do NOT collapse to a single neutral "reliability" code.
+  Example: reliability with +88 / ○6 / −17 (n=111, floor(log(111))=4) → −17 clears the floor comfortably → keep "Reliable & solid" (positive) AND "Shaky & unreliable" (negative). Do NOT collapse to a single neutral "reliability" code.
+  Where do the ○ (neutral) ideas go? By default, fold them into whichever of the two codes covers the DOMINANT pole — they do not need a code of their own. Only split them into their own third code when they are a genuinely large, distinct pattern: the neutral share of the phenomenon's total is ≥30%. Below that, treat the ○ count as noise around the two poles.
 - Only ONE pole well-represented (the other a stray few) → ONE code spanning the whole range, named for the underlying DIMENSION (valence neutral), never for the dominant pole (e.g. "size", not "big").
-  Example: recognition with +67 / −4 → the negative pole is 2% → ONE neutral code "Brand recognition" covering well-known↔barely-known.
+  Example: recognition with +67 / ○0 / −2 (n=69, floor(log(69))=4) → −2 stays below the floor → ONE neutral code "Brand recognition" covering well-known↔barely-known.
 - EXCEPTION: a sparse pole that is a genuinely DISTINCT phenomenon — a different mechanism, not merely the opposite evaluation (e.g. "hypocritical / greenwashing" is not simply "not sustainable") — may remain its own code despite low volume.
 
 ## STEP 2 — AGGRESSIVE MERGING WITHIN CLUSTERS
