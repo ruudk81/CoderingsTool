@@ -210,14 +210,18 @@ def _looks_datetime(series, sample_size: int = 100) -> bool:
 
 
 def inspect_sav(fname: str, rows: int = 200) -> SavInspection:
-    """Read names, labels, types and `rows` rows from data/<fname> — bounded."""
+    """Read names, labels, types and `rows` rows from data/<fname> — bounded.
+
+    apply_value_formats stays OFF: applying value labels cost 14s (measured) on
+    an 862-variable file, and the selection phase never needs them — open
+    answers are raw strings; value labels belong to closed questions."""
     import pyreadstat
     path = str(PROJECT_ROOT / "data" / fname)
     last_error = None
     for enc in _SAV_ENCODINGS:
         try:
             df, meta = pyreadstat.read_sav(path, row_limit=rows,
-                                           apply_value_formats=True, encoding=enc)
+                                           apply_value_formats=False, encoding=enc)
             break
         except Exception as exc:
             last_error = exc
