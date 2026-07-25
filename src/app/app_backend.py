@@ -380,18 +380,47 @@ def _verbose(spec: DatasetSpec, step: int) -> VerboseCapture:
     )
 
 
+def _valid_data_caches(step: int, spec: DatasetSpec, cm: CacheManager) -> set:
+    """Data-layer cache step-names that are valid right now for steps 0..step.
+
+    Used to recognize a corruption recovery: `load_from_cache` resets an entry
+    it can't read (returns None instead of raising), so a cache that was valid
+    before a failed run and invalid after was the one that turned out corrupt.
+    """
+    valid = set()
+    for s in range(step + 1):
+        for base, is_meta in STEP_CACHE.get(s, ()):
+            if not is_meta and cm.is_cache_valid(spec.filename, base, spec.variable_key):
+                valid.add(base)
+    return valid
+
+
 def run_step(step: int, spec: DatasetSpec, force_recalc: bool = False) -> str:
     """Run one pipeline step and return a short human-readable summary.
 
     Steps 0-3,7 take a StepConfig; steps 4-6 take explicit dataset params.
     All console output is tee'd to exports/verbose_logs/ via VerboseCapture.
     """
-    with _verbose(spec, step):
-        summary = _dispatch(step, spec, force_recalc)
+    cm = CacheManager()
+    before = _valid_data_caches(step, spec, cm)
+    try:
+        with _verbose(spec, step):
+            summary = _dispatch(step, spec, force_recalc)
+    except Exception as exc:
+        # A cache that was valid before the run is gone now → `load_from_cache`
+        # hit a corrupt file, reset it, and the runner then failed on the None.
+        # The reset already happened, so a re-run recomputes cleanly; translate
+        # the opaque error (e.g. `len(None)`) into an actionable message.
+        if _valid_data_caches(step, spec, cm) < before:
+            raise RuntimeError(
+                "Cache voor deze stap was beschadigd en is automatisch gereset. "
+                "Druk op 'Opnieuw' om de stap opnieuw te berekenen."
+            ) from exc
+        raise
     # Safety net: a successful run MUST leave a probeable result under THIS
     # dataset's keys. If not, the runner wrote somewhere else (e.g. the old
     # default-arg capture bug) — surface it loudly instead of silently passing.
-    if not is_step_done(step, spec, CacheManager()):
+    if not is_step_done(step, spec, cm):
         summary += (" ⚠️ WAARSCHUWING: geen cache-resultaat gevonden onder "
                     f"{spec.filename}:{spec.variable_key} — runner schreef mogelijk "
                     "naar de verkeerde dataset-key.")

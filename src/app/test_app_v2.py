@@ -260,6 +260,43 @@ def test_question_survives_before_step1():
             be._db_path = old_db_path
 
 
+def test_run_step_translates_cache_corruption():
+    """A cache going valid->invalid during a failed run yields the clean
+    'reset, press Opnieuw' message; an unrelated failure re-raises as-is."""
+    import contextlib
+    spec = be.DatasetSpec(filename="x.sav", var_name="Q1", sample_size=100)
+    orig_dispatch, orig_valid, orig_verbose = (
+        be._dispatch, be._valid_data_caches, be._verbose)
+    be._verbose = lambda spec, step: contextlib.nullcontext()
+
+    def boom(*a, **k):
+        raise TypeError("object of type 'NoneType' has no len()")
+    be._dispatch = boom
+    try:
+        # Corruption signature: a valid cache disappears across the failed run
+        seen = {"n": 0}
+        def losing(step, s, cm):
+            seen["n"] += 1
+            return {"preprocessed"} if seen["n"] == 1 else set()
+        be._valid_data_caches = losing
+        try:
+            be.run_step(1, spec)
+            assert False, "expected RuntimeError"
+        except RuntimeError as e:
+            assert "beschadigd" in str(e) and "Opnieuw" in str(e)
+
+        # No cache lost: the original error must propagate unchanged
+        be._valid_data_caches = lambda step, s, cm: {"preprocessed"}
+        try:
+            be.run_step(1, spec)
+            assert False, "expected TypeError"
+        except TypeError as e:
+            assert "NoneType" in str(e)
+    finally:
+        be._dispatch, be._valid_data_caches, be._verbose = (
+            orig_dispatch, orig_valid, orig_verbose)
+
+
 # =============================================================================
 # Unit: costs (Phase B6)
 # =============================================================================
