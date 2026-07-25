@@ -481,21 +481,9 @@ def render_run(step: int):
 
 
 def render_output(step: int, spec: DatasetSpec):
-    """OUTPUT screen: the way forward on top, evidence in tabs (calm: one thing
-    in view at a time — Resultaat | Steekproef | Rapport)."""
-    c1, c2, _ = st.columns([1, 2, 3])
-    with c1:
-        if st.button(T("Opnieuw", "Re-run"), key=f"rerun_{step}"):
-            be.invalidate_from(step, spec, get_cache_manager())
-            run_step(step, force_recalc=True)
-    with c2:
-        if step < LAST_STEP:
-            if st.button(T(f"Volgende: {step_name(step + 1)} ▶",
-                           f"Next: {step_name(step + 1)} ▶"),
-                         type="primary", key=f"continue_{step}"):
-                st.session_state.step = step + 1
-                st.session_state.last_success = None
-                st.rerun()
+    """OUTPUT screen: evidence in tabs first, the way forward below it (calm:
+    review the result, then advance — one thing in view at a time,
+    Resultaat | Steekproef | Rapport)."""
     av.render_cost_line(spec, lang, step)
 
     view = av.STEP_VIEWS[step]
@@ -519,6 +507,22 @@ def render_output(step: int, spec: DatasetSpec):
             # view; this tab is the honest, complete record (monospace = correct
             # for terminal output).
             st.code(log, language=None)
+
+    # Actions below the evidence: review first, then advance.
+    st.divider()
+    c1, c2, _ = st.columns([1, 2, 3])
+    with c1:
+        if st.button(T("Opnieuw", "Re-run"), key=f"rerun_{step}"):
+            be.invalidate_from(step, spec, get_cache_manager())
+            run_step(step, force_recalc=True)
+    with c2:
+        if step < LAST_STEP:
+            if st.button(T(f"Volgende: {step_name(step + 1)} ▶",
+                           f"Next: {step_name(step + 1)} ▶"),
+                         type="primary", key=f"continue_{step}"):
+                st.session_state.step = step + 1
+                st.session_state.last_success = None
+                st.rerun()
 
 
 def page_step(step: int, status: dict):
