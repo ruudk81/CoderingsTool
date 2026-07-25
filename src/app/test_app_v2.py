@@ -120,6 +120,46 @@ def test_parser_step2_example():
 
 
 # =============================================================================
+# Unit: costs (Phase B6)
+# =============================================================================
+
+def test_costs_key_mapping_matches_real_files():
+    """Plan §3.6c: every step key the pipeline ever wrote must be in our mapping."""
+    import glob
+    import json
+    known = set(be.STEP_COSTS_KEY.values())
+    files = glob.glob(os.path.join(be.PROJECT_ROOT, "exports", "costs", "*_costs.json"))
+    assert files, "no costs files found to verify against"
+    seen = set()
+    for f in files:
+        seen.update(json.load(open(f, encoding="utf-8")).get("steps", {}).keys())
+    assert seen, "costs files carry no step entries"
+    assert seen <= known, f"unmapped cost step keys: {seen - known}"
+
+
+def test_step_costs_reads_existing_file():
+    """For a cached dataset with a costs file, step_costs yields total + date."""
+    specs = [s for s in be.list_cached_datasets() if be.costs_path(s).exists()]
+    if not specs:
+        print("  (skipped: no cached dataset with a costs file)")
+        return
+    spec = specs[0]
+    data = be.load_costs(spec)
+    assert data and data.get("steps"), f"{be.costs_path(spec)}: empty costs JSON"
+    hit = False
+    for step in be.STEP_COSTS_KEY:
+        entry = be.step_costs(spec, step)
+        if entry is None:
+            continue
+        hit = True
+        assert "cost_usd" in (entry.get("total") or {}), f"step {step}: no total.cost_usd"
+        assert entry.get("date"), f"step {step}: no date (staleness must be visible)"
+    assert hit, "costs file present but no step matched STEP_COSTS_KEY"
+    # Steps without LLM costs must yield None, not crash
+    assert be.step_costs(spec, 0) is None and be.step_costs(spec, 7) is None
+
+
+# =============================================================================
 # AppTest: page layer
 # =============================================================================
 

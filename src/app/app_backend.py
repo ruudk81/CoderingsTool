@@ -424,6 +424,89 @@ def load_quality_filtered(spec: DatasetSpec) -> Optional[List[Any]]:
                               QualityFilteredModel)
 
 
+def load_raw(spec: DatasetSpec) -> Optional[List[Any]]:
+    """Step 0 raw responses (before any correction)."""
+    from models import ResponseModel
+    cm = CacheManager()
+    return cm.load_from_cache(spec.filename, "data", spec.variable_key, ResponseModel)
+
+
+def load_preprocessed(spec: DatasetSpec) -> Optional[List[Any]]:
+    """Step 1 spell-checked responses."""
+    from models import PreprocessedModel
+    cm = CacheManager()
+    return cm.load_from_cache(spec.filename, "preprocessed", spec.variable_key,
+                              PreprocessedModel)
+
+
+def load_extracted(spec: DatasetSpec) -> Optional[List[Any]]:
+    """Step 3 per-response models with response_ideas (abstraction ladder)."""
+    from models import IdeasExtractedModel
+    cm = CacheManager()
+    return cm.load_from_cache(spec.filename, "extracted_ideas", spec.variable_key,
+                              IdeasExtractedModel)
+
+
+def load_extraction_metadata(spec: DatasetSpec) -> Optional[Any]:
+    """Step 3 dataset-level ExtractionMetadata (context lens + domains)."""
+    from models import ExtractionMetadata
+    cm = CacheManager()
+    return cm.load_metadata_from_cache(spec.filename, "extracted_ideas",
+                                       spec.variable_key, ExtractionMetadata)
+
+
+def load_taxonomy(spec: DatasetSpec) -> Optional[Any]:
+    """Step 4 taxonomy structure (TaxonomyResultsCache) — feeds taxonomy_health."""
+    from models import TaxonomyResultsCache
+    cm = CacheManager()
+    return cm.load_metadata_from_cache(spec.filename, "taxonomy", spec.variable_key,
+                                       TaxonomyResultsCache)
+
+
+# =============================================================================
+# COSTS (Phase B6) — read-only view on the cumulative costs JSON written by
+# utils/costTracker.py. Contract: app_development_plan.md §3.6c. The file is
+# cumulative per dataset; each step entry carries a `date` so a stale entry
+# (from an older run) stays recognizable.
+# =============================================================================
+
+# App step number → step key used by the pipeline when recording costs.
+# Steps 0/1/7 record no LLM costs and have no key.
+STEP_COSTS_KEY: Dict[int, str] = {
+    2: "step_2_quality_filter",
+    3: "step_3_idea_extraction",
+    4: "step_4_taxonomy_classifier",
+    5: "step_5_code_generator",
+    6: "step_6_code_assigner",
+}
+
+
+def costs_path(spec: DatasetSpec) -> Path:
+    stem = Path(spec.filename).stem
+    return PROJECT_ROOT / "exports" / "costs" / f"{stem}_{spec.variable_key}_costs.json"
+
+
+def load_costs(spec: DatasetSpec) -> Optional[Dict[str, Any]]:
+    """The dataset's full costs JSON, or None when no costs were recorded yet."""
+    import json
+    path = costs_path(spec)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def step_costs(spec: DatasetSpec, step: int) -> Optional[Dict[str, Any]]:
+    """One step's cost entry ({phases, model_config, total, date}), or None."""
+    key = STEP_COSTS_KEY.get(step)
+    if not key:
+        return None
+    data = load_costs(spec)
+    return (data or {}).get("steps", {}).get(key)
+
+
 def find_verbose_log(spec: DatasetSpec, step: int) -> Optional[str]:
     """Latest captured console log for a step, or None."""
     path = VerboseCapture.find_latest_log(spec.filename, spec.variable_key, step)

@@ -349,7 +349,8 @@ def render_output(step: int, spec: DatasetSpec):
                 st.session_state.last_success = None
                 st.rerun()
 
-    # Evidence panels from the registry
+    # What this step's last run cost (B6) + evidence panels from the registry
+    av.render_cost_line(spec, lang, step)
     view = av.STEP_VIEWS[step]
     epoch = st.session_state.epoch
     if view.stats:

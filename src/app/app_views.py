@@ -69,6 +69,42 @@ def _quality_filtered(filename: str, var_name: str, sample_size: Optional[int], 
 
 
 @st.cache_data(max_entries=16, show_spinner=False)
+def _raw(filename: str, var_name: str, sample_size: Optional[int], epoch: int):
+    return be.load_raw(_spec(filename, var_name, sample_size))
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def _preprocessed(filename: str, var_name: str, sample_size: Optional[int], epoch: int):
+    return be.load_preprocessed(_spec(filename, var_name, sample_size))
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def _extracted(filename: str, var_name: str, sample_size: Optional[int], epoch: int):
+    return be.load_extracted(_spec(filename, var_name, sample_size))
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def _extraction_meta(filename: str, var_name: str, sample_size: Optional[int], epoch: int):
+    return be.load_extraction_metadata(_spec(filename, var_name, sample_size))
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def _taxonomy(filename: str, var_name: str, sample_size: Optional[int], epoch: int):
+    return be.load_taxonomy(_spec(filename, var_name, sample_size))
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def _classified_ideas(filename: str, var_name: str, sample_size: Optional[int], epoch: int):
+    # Reuse contract §3.6b: the step-4 console view's derivation layer, with
+    # EXPLICIT dataset args (its defaults are import-time TEST_DATA bindings).
+    from pipeline.step_4_classifier.view_assignments_facets import load_ideas
+    try:
+        return load_ideas(filename=filename, variable=var_name, sample_size=sample_size)
+    except FileNotFoundError:
+        return None
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
 def _codebook(filename: str, var_name: str, sample_size: Optional[int], epoch: int):
     return be.load_codebook(_spec(filename, var_name, sample_size))
 
@@ -110,6 +146,123 @@ def render_log_report(log_text: str, lang: str, key: str):
 
 
 # =============================================================================
+# COSTS (Phase B6) — read-only view on the costs JSON (contract: plan §3.6c).
+# The per-step date is always shown so a stale entry is recognizable.
+# =============================================================================
+
+def _usd(cost: float) -> str:
+    return f"${cost:.2f}" if cost >= 0.01 else f"${cost:.4f}"
+
+
+def render_cost_line(spec: DatasetSpec, lang: str, step: int):
+    """One caption line on the OUTPUT screen: what this step's last run cost."""
+    entry = be.step_costs(spec, step)
+    tot = (entry or {}).get("total") or {}
+    if tot.get("cost_usd") is None:
+        return
+    models = ", ".join(dict.fromkeys((entry.get("model_config") or {}).values()))
+    bits = [_usd(tot["cost_usd"]),
+            f"{tot.get('calls', 0)} {_t(lang, 'calls', 'calls')}"]
+    if models:
+        bits.append(models)
+    if entry.get("date"):
+        bits.append(entry["date"])
+    st.caption("💰 " + " · ".join(bits))
+
+
+def costs_overview(spec: DatasetSpec, lang: str):
+    """Run-total panel at Export: per-step costs + sum, dates always visible."""
+    data = be.load_costs(spec)
+    steps = (data or {}).get("steps", {})
+    if not steps:
+        return
+    st.subheader("💰 " + _t(lang, "Kosten van deze run", "Run costs"))
+    rows, total = [], 0.0
+    for n, key in be.STEP_COSTS_KEY.items():
+        entry = steps.get(key)
+        if not entry:
+            continue
+        tot = entry.get("total") or {}
+        cost = tot.get("cost_usd", 0.0)
+        total += cost
+        rows.append({
+            _t(lang, "stap", "step"): f"{n}. {be.STEP_LABELS[n]}",
+            "model": ", ".join(dict.fromkeys((entry.get("model_config") or {}).values())),
+            "calls": tot.get("calls", 0),
+            "tokens": tot.get("input_tokens", 0) + tot.get("output_tokens", 0),
+            "USD": f"{cost:.4f}",
+            _t(lang, "datum", "date"): entry.get("date", ""),
+        })
+    st.dataframe(rows, width="stretch", hide_index=True)
+    dep = (data or {}).get("deployment") or {}
+    dep_txt = " · ".join(v for v in (dep.get("provider"), dep.get("model_family")) if v)
+    st.caption(f"**{_t(lang, 'Totaal', 'Total')}: {_usd(total)}**"
+               + (f" · {dep_txt}" if dep_txt else ""))
+
+
+# =============================================================================
+# SAMPLING HELPER — k random items with a 🎲 re-roll button. The seed lives in
+# session state, so unrelated reruns keep the same sample; only the button rolls.
+# =============================================================================
+
+def _rollable_sample(items: list, k: int, key: str, lang: str) -> list:
+    import random
+    if len(items) <= k:
+        return list(items)
+    if st.button("🎲 " + _t(lang, "Andere steekproef", "Another sample"),
+                 key=f"{key}_roll"):
+        st.session_state[key] = random.randrange(1 << 30)
+    seed = st.session_state.setdefault(key, 0)
+    return random.Random(seed).sample(list(items), k)
+
+
+# =============================================================================
+# STEP 1 — spell-check before/after (Phase B1)
+# =============================================================================
+
+def _correction_pairs(spec: DatasetSpec, epoch: int):
+    """[(raw, preprocessed)] joined on respondent_id, and the changed subset."""
+    raw = _raw(spec.filename, spec.var_name, spec.sample_size, epoch)
+    pre = _preprocessed(spec.filename, spec.var_name, spec.sample_size, epoch)
+    if not (raw and pre):
+        return None, None
+    pre_map = {p.respondent_id: p for p in pre}
+    pairs = [(r, pre_map[r.respondent_id]) for r in raw if r.respondent_id in pre_map]
+    changed = [(r, p) for r, p in pairs
+               if str(r.response or "").strip() != str(p.response or "").strip()]
+    return pairs, changed
+
+
+def stats_preprocessing(spec: DatasetSpec, lang: str, epoch: int):
+    pairs, changed = _correction_pairs(spec, epoch)
+    if pairs is None:
+        return
+    st.subheader(_t(lang, "Spellingscontrole", "Spell check"))
+    c1, c2, c3 = st.columns(3)
+    c1.metric(_t(lang, "Antwoorden", "Responses"), len(pairs))
+    c2.metric(_t(lang, "Gecorrigeerd", "Corrected"), len(changed))
+    c3.metric(_t(lang, "Ongewijzigd", "Unchanged"), len(pairs) - len(changed))
+
+
+@st.fragment
+def samples_preprocessing(spec: DatasetSpec, lang: str, epoch: int):
+    _, changed = _correction_pairs(spec, epoch)
+    if changed is None:
+        return
+    st.divider()
+    st.subheader("🔍 " + _t(lang, "Correcties — voor en na", "Corrections — before and after"))
+    if not changed:
+        st.caption(_t(lang, "Geen antwoorden gewijzigd door de spellingscontrole.",
+                      "No responses were changed by the spell check."))
+        return
+    for raw, pre in _rollable_sample(changed, 5, f"s1_{spec.variable_key}", lang):
+        with st.container(border=True):
+            st.caption(f"`{raw.respondent_id}`")
+            st.markdown(f"~~{raw.response}~~")
+            st.markdown(f"**{pre.response}**")
+
+
+# =============================================================================
 # STEP 2 — quality-filter breakdown
 # =============================================================================
 
@@ -133,17 +286,143 @@ def stats_quality_filter(spec: DatasetSpec, lang: str, epoch: int):
     st.dataframe(rows, width="stretch", hide_index=True)
 
 
+@st.fragment
+def samples_quality_filter(spec: DatasetSpec, lang: str, epoch: int):
+    """Excluded-response samples per category (Phase B2): the QA question is
+    'did the filter throw away anything meaningful?' — so show what it excluded."""
+    data = _quality_filtered(spec.filename, spec.var_name, spec.sample_size, epoch)
+    if not data:
+        return
+    labels = {99999997: _t(lang, "Weet niet / geen mening", "Don't know"),
+              99999998: _t(lang, "Geen antwoord / leeg", "No answer / empty"),
+              99999999: _t(lang, "Betekenisloos", "Gibberish")}
+    excluded = {code: [d for d in data if getattr(d, "quality_filter_code", None) == code]
+                for code in labels}
+    if not any(excluded.values()):
+        return
+    st.divider()
+    st.subheader("🔍 " + _t(lang, "Uitgesloten antwoorden — steekproef",
+                            "Excluded responses — sample"))
+    for code, group in excluded.items():
+        if not group:
+            continue
+        with st.expander(f"{labels[code]} ({len(group)})"):
+            for d in _rollable_sample(group, 8, f"s2_{code}_{spec.variable_key}", lang):
+                st.markdown(f"- `{d.respondent_id}` — {d.response}")
+
+
+# =============================================================================
+# STEP 3 — extraction lens + response → ideas samples (Phase B3)
+# =============================================================================
+
+def stats_extraction(spec: DatasetSpec, lang: str, epoch: int):
+    meta = _extraction_meta(spec.filename, spec.var_name, spec.sample_size, epoch)
+    data = _extracted(spec.filename, spec.var_name, spec.sample_size, epoch)
+    if data:
+        with_ideas = [m for m in data if getattr(m, "response_ideas", None)]
+        n_ideas = sum(len(m.response_ideas) for m in with_ideas)
+        st.subheader(_t(lang, "Idee-extractie", "Idea extraction"))
+        c1, c2 = st.columns(2)
+        c1.metric(_t(lang, "Ideeën", "Ideas"), n_ideas)
+        c2.metric(_t(lang, "Antwoorden met ideeën", "Responses with ideas"), len(with_ideas))
+    if not meta:
+        return
+    # The context lens: how the LLM was told to read this dataset (step 3, phase 1)
+    st.markdown("**" + _t(lang, "Extractielens", "Extraction lens") + "**")
+    lens = [(_t(lang, "taal", "language"), meta.lang), (_t(lang, "sector", "sector"), meta.sector),
+            (_t(lang, "onderwerp", "topic"), meta.topic),
+            (_t(lang, "perspectief", "perspective"), meta.perspective),
+            (_t(lang, "entiteit", "entity"), meta.entity), (_t(lang, "intentie", "intent"), meta.intent)]
+    st.caption(" · ".join(f"{k}: **{v}**" for k, v in lens if v))
+    if meta.template_prefix:
+        st.caption(_t(lang, "Sjabloon", "Template") + f": “{meta.template_prefix} …”")
+    if meta.primary_dimension:
+        st.markdown(f"**{_t(lang, 'Dimensie', 'Dimension')}:** {meta.primary_dimension}")
+        if meta.primary_dimension_description:
+            st.caption(meta.primary_dimension_description)
+    if meta.domains:
+        st.markdown("**" + _t(lang, "Domeinen", "Domains") + f"** ({len(meta.domains)})")
+        st.dataframe([{_t(lang, "domein", "domain"): d.get("label", ""),
+                       _t(lang, "definitie", "definition"): d.get("definition", "")}
+                      for d in meta.domains],
+                     width="stretch", hide_index=True)
+
+
+@st.fragment
+def samples_extraction(spec: DatasetSpec, lang: str, epoch: int):
+    """One random response with its ideas: abstraction ladder + domain."""
+    data = _extracted(spec.filename, spec.var_name, spec.sample_size, epoch)
+    if not data:
+        return
+    with_ideas = [m for m in data if getattr(m, "response_ideas", None)]
+    if not with_ideas:
+        return
+    st.divider()
+    st.subheader("🔍 " + _t(lang, "Van antwoord naar ideeën", "From response to ideas"))
+    m = _rollable_sample(with_ideas, 1, f"s3_{spec.variable_key}", lang)[0]
+    st.markdown(f"**{_t(lang, 'Respondent', 'Respondent')}:** `{m.respondent_id}`")
+    st.markdown(f"> {m.response}")
+    for i in m.response_ideas:
+        val = f" [{i.valence}]" if i.valence else ""
+        dom = f" — _{i.domain}_" if i.domain else ""
+        st.markdown(f"- **{i.instance}**{val}{dom}")
+        if i.interpretation or i.abstraction:
+            ladder = " → ".join(x for x in (i.interpretation, i.abstraction) if x)
+            st.caption(f"&nbsp;&nbsp;&nbsp;↳ {ladder}")
+
+
+# =============================================================================
+# STEP 4 — taxonomy tree + structure health (Phase B4)
+# =============================================================================
+
+def stats_taxonomy(spec: DatasetSpec, lang: str, epoch: int):
+    from collections import Counter
+    ideas = _classified_ideas(spec.filename, spec.var_name, spec.sample_size, epoch)
+    if not ideas:
+        return
+    # Tree counts from the per-idea placements (same fields the console views use)
+    tree = Counter((i.domain or "(?)", i.facet or "(?)", i.attribute or "(?)")
+                   for i in ideas)
+    domain_totals = Counter()
+    for (dom, _, _), n in tree.items():
+        domain_totals[dom] += n
+    n_facets = len({(d, f) for d, f, _ in tree})
+    st.subheader(_t(lang, "Taxonomie", "Taxonomy"))
+    st.caption(f"{len(ideas)} {_t(lang, 'ideeën', 'ideas')} · "
+               f"{len(domain_totals)} {_t(lang, 'domeinen', 'domains')} · "
+               f"{n_facets} {_t(lang, 'facetten', 'facets')} · "
+               f"{len(tree)} {_t(lang, 'attributen', 'attributes')}")
+    for dom, dom_n in domain_totals.most_common():
+        with st.expander(f"{dom} ({dom_n})"):
+            rows = [{_t(lang, "facet", "facet"): f,
+                     _t(lang, "attribuut", "attribute"): a, "n": n}
+                    for (d, f, a), n in sorted(tree.items(), key=lambda kv: (kv[0][1], -kv[1]))
+                    if d == dom]
+            st.dataframe(rows, width="stretch", hide_index=True)
+
+    # Structure health (read-only measure over the taxonomy cache)
+    tax = _taxonomy(spec.filename, spec.var_name, spec.sample_size, epoch)
+    if tax:
+        from pipeline.step_4_classifier.taxonomy_health import measure
+        with st.expander("🩺 " + _t(lang, "Structuurmeting", "Structure health")):
+            st.code("\n".join(measure(tax).lines()), language=None)
+
+
 # =============================================================================
 # STEP 5 — codebook table
 # =============================================================================
 
 def stats_codebook(spec: DatasetSpec, lang: str, epoch: int):
+    from collections import Counter
     codes = _codebook(spec.filename, spec.var_name, spec.sample_size, epoch)
     if not (codes and codes.raw_codes):
         return
     st.subheader(_t(lang, "Codeboek", "Codebook") + f" ({len(codes.raw_codes)})")
-    rows = [{"code": c.get("code_name", ""), "valence": c.get("valence", ""),
-             "definition": c.get("definition", "")} for c in codes.raw_codes]
+    val = Counter(c.get("valence", "") for c in codes.raw_codes)
+    st.caption(" · ".join(f"{v or '?'}: {n}" for v, n in val.most_common()))
+    rows = [{"id": c.get("code_id", ""), "code": c.get("code_name", ""),
+             "valence": c.get("valence", ""), "definition": c.get("definition", ""),
+             "test": c.get("diagnostic_test", "")} for c in codes.raw_codes]
     st.dataframe(rows, width="stretch", hide_index=True)
 
 
@@ -151,31 +430,51 @@ def stats_codebook(spec: DatasetSpec, lang: str, epoch: int):
 # STEP 6 — code frequencies + respondent QA drill-down
 # =============================================================================
 
+def _code_id_to_name(spec: DatasetSpec, epoch: int) -> Dict[str, str]:
+    """K# id → CURRENT codebook name, so a rename wins over the stored name."""
+    codes = _codebook(spec.filename, spec.var_name, spec.sample_size, epoch)
+    return {c["code_id"]: c["code_name"]
+            for c in (codes.raw_codes if codes else []) if c.get("code_id")}
+
+
 def stats_assignments(spec: DatasetSpec, lang: str, epoch: int):
-    import collections
+    from collections import Counter
     models = _assignments(spec.filename, spec.var_name, spec.sample_size, epoch)
     if not models:
         return
-    # Count via assigned_code_id (K#) so the codebook's CURRENT name wins after
-    # a rename; ideas without an id fall back to their stored name.
-    codes = _codebook(spec.filename, spec.var_name, spec.sample_size, epoch)
-    id_to_name = {c["code_id"]: c["code_name"]
-                  for c in (codes.raw_codes if codes else [])
-                  if c.get("code_id")}
-    counter = collections.Counter()
-    for m in models:
-        for idea in (m.response_ideas or []):
-            label = id_to_name.get(idea.assigned_code_id) or idea.assigned_code
-            if label:
-                counter[label] += 1
+    # Reuse contract §3.6b: the console view's partition grouping. Display labels
+    # go through assigned_code_id (K#) so the codebook's CURRENT name wins after
+    # a rename — two stale names that map to one new name merge in the count.
+    from pipeline.step_6_codeAssigner.view_assignments_codes import group_by_partition
+    id_to_name = _code_id_to_name(spec, epoch)
+    grouped = group_by_partition(models)
+    counter = Counter()          # (partition, label) -> n
+    unassigned = 0
+    for part, by_code in grouped.items():
+        for name, ideas in by_code.items():
+            if name == "(unassigned)":
+                unassigned += len(ideas)
+                continue
+            label = id_to_name.get(ideas[0].assigned_code_id) or name
+            counter[(part, label)] += len(ideas)
+    total = sum(counter.values()) or 1
+    part_totals = Counter()
+    for (part, _), n in counter.items():
+        part_totals[part] += n
     st.subheader(_t(lang, "Codefrequenties", "Code frequencies"))
-    st.dataframe([{"code": c, "n": n} for c, n in counter.most_common()],
-                 width="stretch", hide_index=True)
+    st.caption(f"{total} {_t(lang, 'toegewezen ideeën', 'assigned ideas')}"
+               + (f" · {unassigned} {_t(lang, 'niet toegewezen', 'unassigned')}"
+                  if unassigned else ""))
+    rows = [{_t(lang, "partitie", "partition"): part, "code": label,
+             "n": n, "%": f"{100 * n / total:.1f}"}
+            for (part, label), n in sorted(
+                counter.items(), key=lambda kv: (-part_totals[kv[0][0]], kv[0][0], -kv[1]))]
+    st.dataframe(rows, width="stretch", hide_index=True)
 
 
+@st.fragment
 def samples_assignments_qa(spec: DatasetSpec, lang: str, epoch: int):
     """QA drill-down: one respondent's assignments + rationale ("is this right?")."""
-    import random
     models = _assignments(spec.filename, spec.var_name, spec.sample_size, epoch)
     if not models:
         return
@@ -184,19 +483,16 @@ def samples_assignments_qa(spec: DatasetSpec, lang: str, epoch: int):
         return
     st.divider()
     st.subheader("🔍 " + _t(lang, "Inspecteer een respondent", "Inspect a respondent"))
-    rk = f"qa6_{spec.variable_key}"
-    if rk not in st.session_state:
-        st.session_state[rk] = random.randrange(len(coded))
-    if st.button("🎲 " + _t(lang, "Andere respondent", "Another respondent"), key="qa6_roll"):
-        st.session_state[rk] = random.randrange(len(coded))
-    m = coded[st.session_state[rk] % len(coded)]
+    id_to_name = _code_id_to_name(spec, epoch)
+    m = _rollable_sample(coded, 1, f"qa6_{spec.variable_key}", lang)[0]
     st.markdown(f"**{_t(lang, 'Respondent', 'Respondent')}:** `{m.respondent_id}`")
     st.markdown(f"> {m.response}")
     for i in (m.response_ideas or []):
         if not i.assigned_code:
             continue
+        label = id_to_name.get(i.assigned_code_id) or i.assigned_code
         conf = f" · {i.confidence:.2f}" if i.confidence is not None else ""
-        st.markdown(f"- **{i.assigned_code}**{conf} — _{i.idea or i.instance}_")
+        st.markdown(f"- **{label}**{conf} — _{i.idea or i.instance}_")
         if i.rationale:
             st.caption(f"&nbsp;&nbsp;&nbsp;↳ {i.rationale}")
 
@@ -232,6 +528,8 @@ def stats_export(spec: DatasetSpec, lang: str, epoch: int):
         except Exception as exc:
             st.caption(_t(lang, f"Voorbeeld niet beschikbaar: {exc}",
                           f"Preview unavailable: {exc}"))
+    st.divider()
+    costs_overview(spec, lang)
 
 
 # =============================================================================
@@ -240,12 +538,18 @@ def stats_export(spec: DatasetSpec, lang: str, epoch: int):
 
 STEP_VIEWS: Dict[int, StepView] = {
     0: StepView(),
-    1: StepView(phases=("spell_check",)),
+    1: StepView(phases=("spell_check",),
+                stats=stats_preprocessing,
+                samples=samples_preprocessing),
     2: StepView(phases=("quality_filter",),
-                stats=stats_quality_filter),
+                stats=stats_quality_filter,
+                samples=samples_quality_filter),
     3: StepView(phases=("idea_extraction_context", "idea_extraction_taxonomy",
-                        "idea_extraction_abstraction_ladder")),
-    4: StepView(phases=tuple(f"classifier_p{i}" for i in range(1, 9))),
+                        "idea_extraction_abstraction_ladder"),
+                stats=stats_extraction,
+                samples=samples_extraction),
+    4: StepView(phases=tuple(f"classifier_p{i}" for i in range(1, 9)),
+                stats=stats_taxonomy),
     5: StepView(phases=("codegen_p8", "codegen_p9"),
                 stats=stats_codebook),
     6: StepView(phases=("code_assignment",),
