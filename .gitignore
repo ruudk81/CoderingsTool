@@ -3,6 +3,7 @@ BERTopic - CLONE/
 data/
 docs/
 dev/
+.superpowers/
 exports/
 data/exports/
 backup/
