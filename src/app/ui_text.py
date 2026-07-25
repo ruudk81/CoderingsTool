@@ -142,13 +142,12 @@ UI_TEXTS = {
             3: "Bepaalt eerst de context (sector, onderwerp, perspectief en "
                "dominante dimensie) en extraheert daarna per antwoord discrete "
                "ideeën met een abstractieladder (uiting → interpretatie → "
-               "abstractie). Dit is de zwaarste stap: enkele minuten en "
-               "LLM-credits.",
+               "abstractie).",
             4: "Classificeert alle ideeën in een taxonomie: facetten en "
                "attributen per domein, met consolidatie binnen en tussen "
-               "domeinen (fasen P1–P8). Duurt enkele minuten.",
+               "domeinen.",
             5: "Genereert uit de taxonomie een codeboek: codes met definitie "
-               "en valentie (fasen P8–P9).",
+               "en valentie.",
             6: "Wijst aan elk idee een code uit het codeboek toe, met "
                "confidence en onderbouwing.",
             7: "Exporteert de resultaten: workbook met coderingen (+ .sav) en "
@@ -292,13 +291,11 @@ UI_TEXTS = {
             3: "First establishes the context (sector, topic, perspective and "
                "dominant dimension), then extracts discrete ideas per response "
                "with an abstraction ladder (instance → interpretation → "
-               "abstraction). The heaviest step: several minutes and LLM "
-               "credits.",
+               "abstraction).",
             4: "Classifies all ideas into a taxonomy: facets and attributes "
-               "per domain, with consolidation within and across domains "
-               "(phases P1–P8). Takes several minutes.",
+               "per domain, with consolidation within and across domains.",
             5: "Generates a codebook from the taxonomy: codes with definition "
-               "and valence (phases P8–P9).",
+               "and valence.",
             6: "Assigns a codebook code to every idea, with confidence and "
                "rationale.",
             7: "Exports the results: codings workbook (+ .sav) and the "
