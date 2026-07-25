@@ -20,5 +20,8 @@ if [[ ! -x "$STREAMLIT" ]]; then
   exit 1
 fi
 
-echo "🚀 Starting CoderingsTool — open the forwarded http://localhost:8501 (VS Code Ports tab)"
+# View directly over LAN — the VS Code Remote-SSH port-forward is slow
+# (multi-MB Streamlit frontend + websocket through the tunnel).
+HOST="$(scutil --get LocalHostName 2>/dev/null || hostname -s)"
+echo "🚀 Starting CoderingsTool — open http://${HOST}.local:8501 (direct over LAN)"
 exec "$STREAMLIT" run src/app/app.py --server.headless true "$@"
