@@ -17,6 +17,7 @@ Coderingstool
 Features.xlsx
 Technical description.docx
 src/test_data.py
+/CLAUDE.md
 
 # === MODEL / CACHE FILES ===
 *.pkl
