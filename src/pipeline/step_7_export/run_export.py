@@ -4,7 +4,8 @@
 Step 7: Export Step Runner
 
 Runs the export step in isolation.
-Loads Step 6 (taxonomy_codes) results from cache and exports to Excel.
+Loads Step 6 (taxonomy_codes) results from cache and exports the coderingen
+(Excel + .sav, exports/coderingen/) plus the codebook workbook (exports/codebook/).
 
 Usage:
     cd src && python -m pipeline.step_7_export.run_export
@@ -189,6 +190,13 @@ def run_step(config: StepConfig = None):
         var_lab=var_lab,
         export_dir=None,
     )
+
+    # Codebook workbook (exports/codebook/) — generated from the same cache state
+    # as the matrices, so one step-7 run yields the complete deliverable.
+    # ("codeboek" is taken: that's the dichotomous-matrix .sav.)
+    from pipeline.step_6_codeAssigner.view_codebook import export_codebook
+    paths["codeboek_workbook"] = export_codebook(
+        filename=config.filename, var_name=config.var_name, sample_size=config.sample_size)
 
     elapsed_time = time.time() - start_time
 

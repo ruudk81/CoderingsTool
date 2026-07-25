@@ -44,6 +44,8 @@ from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from models import CodeAssignedModel
 from models import TaxonomyResultsCache
 from models import CodingResultsCache, ExtractionMetadata
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from pipeline.step_7_export.resultsExporter import build_catalog, ResultsExporter
 
 from test_data import TEST_DATA
 
@@ -91,28 +93,6 @@ def load_data():
             raw_map.update(getattr(dr, "raw_attribute_assignments", {}) or {})
     metadata = cm.load_metadata_from_cache(FILENAME, "extracted_ideas", variable_key, ExtractionMetadata)
     return results, codebook, raw_map, metadata, tax
-
-
-def build_legend(codebook, metadata, tax):
-    """Collect (label, definition) reference lists for codes + taxonomy levels."""
-    codes = [(c.get("code_name", ""), c.get("definition", "")) for c in codebook.raw_codes]
-    dimension, domains = [], []
-    if metadata:
-        if metadata.primary_dimension:
-            dimension = [(metadata.primary_dimension, metadata.primary_dimension_description or "")]
-        domains = [(d.get("label", ""), d.get("definition", "")) for d in (metadata.domains or [])]
-    facets, attrs = {}, {}
-    if tax:
-        for dr in tax.partition_results.values():
-            for f in (dr.facets or []):
-                if isinstance(f, dict) and f.get("facet_name"):
-                    facets.setdefault(f["facet_name"], f.get("facet_description", ""))
-            for flist in (dr.attributes or {}).values():
-                for a in (flist or []):
-                    if isinstance(a, dict) and a.get("attribute_name"):
-                        attrs.setdefault(a["attribute_name"], a.get("attribute_description", ""))
-    return {"codes": codes, "dimension": dimension, "domains": domains,
-            "facets": list(facets.items()), "attributes": list(attrs.items())}
 
 
 # =============================================================================
@@ -419,14 +399,58 @@ _HDR_FILL = PatternFill("solid", fgColor="366092")
 _HDR_FONT = Font(bold=True, color="FFFFFF")
 _VAL_COLOR = {"+": "2E7D32", "-": "C62828", "~": "777777"}
 
+# Non-terminal hierarchy levels get a fixed narrow width: only one hierarchy
+# column is filled per row, so a non-terminal label (domein, facet, …) overflows
+# into the blank cells to its right and stays fully readable, while the tree
+# reads as one compact block. The terminal level (attribuut) borders the filled
+# metric columns, so it keeps an auto width. Widths are per non-terminal level;
+# the list extends by repeating its last value.
+HIER_WIDTHS = [12, 18]   # domein, facet
+
+# Per-level bullet prefix on the hierarchy labels, so facets and attributes are
+# visually marked and distinct. Keyed by depth (0 = domein stays unmarked).
+BULLETS = {1: "• ", 2: "– "}   # facet = gevuld rondje, attribuut = streepje
+
+
+def _within_parent_shares(rows):
+    """Bruto share of each row within its parent: n(row) / n(parent). The parent
+    is the nearest preceding row one level up (rows are a pre-order traversal:
+    domain → its facets → each facet's attributes). Returns two aligned lists:
+    `share` (fraction, or None for depth-0 / no parent) and `sole` (True when the
+    parent has exactly one child — used to suppress a trivial inline '(100%)')."""
+    n = len(rows)
+    share = [None] * n
+    parent_of = [None] * n
+    last_at_depth = {}
+    child_count = {}
+    for i, r in enumerate(rows):
+        d = r["depth"]
+        p = last_at_depth.get(d - 1)
+        if d > 0 and p is not None:
+            parent_of[i] = p
+            child_count[p] = child_count.get(p, 0) + 1
+            pn = rows[p]["n"]
+            share[i] = (rows[i]["n"] / pn) if pn else None
+        last_at_depth[d] = i
+    sole = [parent_of[i] is not None and child_count[parent_of[i]] == 1 for i in range(n)]
+    return share, sole
+
 
 def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
-    """Write one readout to a worksheet: hierarchy split into columns, numeric
-    metrics, collapsible row groups, coloured valence."""
+    """Write one readout to a worksheet: narrow hierarchy columns with overflow,
+    numeric metrics, collapsible row groups, coloured valence. The within-parent
+    `% ouder` column (and inline shares) appear only where the sheet nests
+    (nh > 1); a flat sheet like Codeboek (nh == 1) omits them."""
     hier = header_label.split(" / ")                 # ["domain","facet","attribute"] | ["code"]
     nh = len(hier)
-    cols = hier + ["val", "n bruto", "% bruto", "n netto", "% netto", "% (+)", "% (-)"]
+    nested = nh > 1
+    cols = hier + ["val", "n bruto", "% bruto"] + (["% ouder"] if nested else []) \
+        + ["n netto", "% netto", "% (+)", "% (-)"]
     ncol = len(cols)
+    col = {name: i for i, name in enumerate(cols, start=1)}   # 1-based index by header name
+    pct_cols = [n for n in ("% bruto", "% ouder", "% netto", "% (+)", "% (-)") if n in col]
+
+    shares, sole = _within_parent_shares(rows)
 
     ws.append(cols)
     for c in range(1, ncol + 1):
@@ -434,39 +458,49 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
         cell.fill, cell.font = _HDR_FILL, _HDR_FONT
         cell.alignment = Alignment(horizontal="center")
 
-    for r in rows:
+    for i, r in enumerate(rows):
+        d = r["depth"]
+        share = shares[i]
+        ouder = round(share * 100, 1) / 100 if share is not None else None
+        # inline '(NN%)' on facet/attribute labels — derived from the same rounded
+        # value as the % ouder column so the two never disagree; sole child suppressed
+        suffix = f" ({round(ouder * 100)}%)" if (ouder is not None and not sole[i]) else ""
         hcells = [""] * nh
-        if r["depth"] < nh:
-            hcells[r["depth"]] = r["label"]
-        # store percentages as fractions so the cells are true Excel percentages
+        if d < nh:
+            hcells[d] = BULLETS.get(d, "") + r["label"] + suffix
         pos = round(r["pct_pos"], 1) / 100 if r["n"] else None
         neg = round(r["pct_neg"], 1) / 100 if r["n"] else None
-        ws.append(hcells + [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100,
-                            r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neg])
+        metrics = [r["valence"], r["n"], round(r["pct_bruto"], 1) / 100]
+        if nested:
+            metrics.append(ouder)
+        metrics += [r["n_resp"], round(r["pct_netto"], 1) / 100, pos, neg]
+        ws.append(hcells + metrics)
         ri = ws.max_row
-        bold = (r["depth"] == 0)
+        bold = (d == 0)
         for c in range(1, ncol + 1):
             cell = ws.cell(ri, c)
-            if c == nh + 1 and r["valence"] in _VAL_COLOR:      # val column
+            if c == col["val"] and r["valence"] in _VAL_COLOR:
                 cell.font = Font(bold=True, color=_VAL_COLOR[r["valence"]])
                 cell.alignment = Alignment(horizontal="center")
             elif bold:
                 cell.font = Font(bold=True)
-        ws.cell(ri, nh + 2).number_format = "0"                 # n bruto
-        ws.cell(ri, nh + 4).number_format = "0"                 # n netto
-        for c in (nh + 3, nh + 5, nh + 6, nh + 7):              # % columns (native percent)
-            ws.cell(ri, c).number_format = "0.0%"
-        ws.row_dimensions[ri].outline_level = min(r["depth"], 7)
+        ws.cell(ri, col["n bruto"]).number_format = "0"
+        ws.cell(ri, col["n netto"]).number_format = "0"
+        for name in pct_cols:
+            ws.cell(ri, col[name]).number_format = "0.0%"
+        ws.row_dimensions[ri].outline_level = min(d, 7)
 
     last_data = ws.max_row
     netto_base = sum(r["n_resp"] for r in rows if r["depth"] == 0)
-    ws.append(["TOTAAL"] + [""] * (nh - 1) + ["", base_n, 1.0, netto_base, 1.0, None, None])
+    total_metrics = ["", base_n, 1.0] + ([None] if nested else []) + [netto_base, 1.0, None, None]
+    ws.append(["TOTAAL"] + [""] * (nh - 1) + total_metrics)
+    tr = ws.max_row
     for c in range(1, ncol + 1):
-        ws.cell(ws.max_row, c).font = Font(bold=True)
-    ws.cell(ws.max_row, nh + 2).number_format = "0"             # n bruto
-    ws.cell(ws.max_row, nh + 3).number_format = "0.0%"          # % bruto
-    ws.cell(ws.max_row, nh + 4).number_format = "0"             # n netto
-    ws.cell(ws.max_row, nh + 5).number_format = "0.0%"          # % netto
+        ws.cell(tr, c).font = Font(bold=True)
+    ws.cell(tr, col["n bruto"]).number_format = "0"
+    ws.cell(tr, col["% bruto"]).number_format = "0.0%"
+    ws.cell(tr, col["n netto"]).number_format = "0"
+    ws.cell(tr, col["% netto"]).number_format = "0.0%"
     ws.append([])
     ws.append([f"responses: {n_responses}"])
     if n_unassigned:
@@ -475,10 +509,20 @@ def write_xlsx_sheet(ws, header_label, rows, base_n, n_responses, n_unassigned):
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(ncol)}{last_data}"
     ws.sheet_properties.outlinePr.summaryBelow = False
+    _apply_widths(ws, nh, ncol, last_data)
+
+
+def _apply_widths(ws, nh, ncol, last_data):
+    """Column widths: non-terminal hierarchy levels fixed-narrow; everything
+    else (terminal hierarchy level + metric columns) auto-fit, clamped 8–55."""
     for c in range(1, ncol + 1):
-        width = max((len(str(ws.cell(r, c).value)) for r in range(1, last_data + 1)
-                     if ws.cell(r, c).value is not None), default=8)
-        ws.column_dimensions[get_column_letter(c)].width = min(max(width + 2, 8), 55)
+        letter = get_column_letter(c)
+        if c <= nh - 1:                                          # non-terminal hierarchy level
+            ws.column_dimensions[letter].width = HIER_WIDTHS[min(c - 1, len(HIER_WIDTHS) - 1)]
+        else:                                                   # terminal hierarchy + metrics
+            width = max((len(str(ws.cell(r, c).value)) for r in range(1, last_data + 1)
+                         if ws.cell(r, c).value is not None), default=8)
+            ws.column_dimensions[letter].width = min(max(width + 2, 8), 55)
 
 
 def save_xlsx(wb):
@@ -490,50 +534,18 @@ def save_xlsx(wb):
     return path
 
 
-_BLOCK_FILL = PatternFill("solid", fgColor="366092")   # dark blue (matches sheet headers)
-_BLOCK_FONT = Font(bold=True, color="FFFFFF", size=12)
-_SUB_FILL = PatternFill("solid", fgColor="8EAADB")     # lighter blue
-_SUB_FONT = Font(bold=True, color="1F3864")
-_COLH_FILL = PatternFill("solid", fgColor="D9E1F2")    # very light blue
-_COLH_FONT = Font(bold=True)
-_WRAP = Alignment(wrap_text=True, vertical="top")
-
-
-def write_legend_sheet(ws, legend):
-    """Reference sheet: codebook + taxonomy elements with number/label/definition."""
-    NCOL = 3
-
-    def banner(text, fill, font):
-        ws.append([text])
-        r = ws.max_row
-        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=NCOL)
-        ws.cell(r, 1).fill, ws.cell(r, 1).font = fill, font
-
-    def section(sub_title, label_name, items):
-        if sub_title:
-            banner(sub_title, _SUB_FILL, _SUB_FONT)
-        ws.append(["nr", label_name, "definitie"])
-        hr = ws.max_row
-        for c in range(1, NCOL + 1):
-            ws.cell(hr, c).fill, ws.cell(hr, c).font = _COLH_FILL, _COLH_FONT
-        for i, (label, definition) in enumerate(items, 1):
-            ws.append([i, label, definition])
-            ws.cell(ws.max_row, 3).alignment = _WRAP
-        ws.append([])  # white line after the section
-
-    banner("CODEBOEK", _BLOCK_FILL, _BLOCK_FONT)
-    section("", "code", legend["codes"])
-    banner("TAXONOMIE", _BLOCK_FILL, _BLOCK_FONT)
-    section("A — Dimensie", "dimensie", legend["dimension"])
-    section("B — Domeinen", "domein", legend["domains"])
-    section("C — Facetten", "facet", legend["facets"])
-    section("D — Attributen", "attribuut", legend["attributes"])
-
-    ws.column_dimensions["A"].width = 5
-    for col in (2, 3):  # label + definitie → fit to the longest text (Excel caps at 255)
-        width = max((len(str(ws.cell(r, col).value)) for r in range(1, ws.max_row + 1)
-                     if ws.cell(r, col).value is not None), default=8)
-        ws.column_dimensions[get_column_letter(col)].width = min(width + 2, 255)
+def _append_leeswijzer(ws):
+    """Append a small reading guide below the legend."""
+    ws.append([])
+    ws.append(["Leeswijzer"])
+    ws.cell(ws.max_row, 1).font = Font(bold=True)
+    for line in (
+        "•  = facet     –  = attribuut",
+        "(NN%) achter een facet/attribuut = aandeel binnen de ouder "
+        "(facet binnen domein, attribuut binnen facet), o.b.v. bruto — telt op tot 100% per ouder.",
+        "Kolom '% ouder' toont ditzelfde aandeel, sorteerbaar.",
+    ):
+        ws.append([line])
 
 
 # =============================================================================
@@ -573,8 +585,15 @@ def export_codebook(filename: str = None, var_name: str = None,
     wb = Workbook() if write_xlsx else None
     if wb is not None:
         wb.remove(wb.active)
-        write_legend_sheet(wb.create_sheet(title="Legenda"),
-                           build_legend(codebook, metadata, tax))
+        # Legenda: step 7's canonical catalog legend (Codeboek + taxonomy A-E, with
+        # definitions) — build_catalog is the single source of truth, so the legend
+        # always matches the tabs. A reading guide is appended below it.
+        codes = [ConsolidatedCode(**c) if isinstance(c, dict) else c for c in (codebook.raw_codes or [])]
+        cat = build_catalog(codes, codebook.partition_set, codebook.partition_results,
+                            metadata, responses, tax)
+        legend_ws = wb.create_sheet(title="Legenda")
+        ResultsExporter(verbose=False)._write_legend_sheet(legend_ws, cat)
+        _append_leeswijzer(legend_ws)
     for title, sheet_name, header, spec, suffix in VERSIONS:
         if spec[0] == "groups":
             _, group_by, show_attrs, fold = spec
