@@ -133,8 +133,9 @@ def list_cached_datasets() -> List[DatasetSpec]:
     """Every resumable dataset = a valid 'data' row in cache_metadata.
 
     Read-only SQL (no CacheManager construction) so listing has zero side effects.
-    var_lab is pulled from the 'preprocessed' row when present (it carries the
-    survey question).
+    var_lab preference: 'preprocessed' first (the question the LLM actually used),
+    then 'data' (the question committed at selection, before step 1 has run),
+    then any other row carrying one.
     """
     db = _db_path()
     if not db.exists():
@@ -154,7 +155,9 @@ def list_cached_datasets() -> List[DatasetSpec]:
             lab_row = conn.execute(
                 "SELECT var_lab FROM cache_metadata "
                 "WHERE filename = ? AND variable_key = ? AND var_lab IS NOT NULL "
-                "AND status = 'valid' LIMIT 1",
+                "AND status = 'valid' "
+                "ORDER BY CASE step_name WHEN 'preprocessed' THEN 0 "
+                "WHEN 'data' THEN 1 ELSE 2 END LIMIT 1",
                 (filename, variable_key),
             ).fetchone()
             specs.append(DatasetSpec(
@@ -166,6 +169,25 @@ def list_cached_datasets() -> List[DatasetSpec]:
     finally:
         conn.close()
     return specs
+
+
+def set_question(spec: DatasetSpec) -> None:
+    """Persist spec.var_lab on the dataset's 'data' row.
+
+    The 'data' row is the dataset's identity record and survives
+    invalidate_from(1), so an edited question outlives an app restart even
+    when step 1 hasn't re-run yet (step 1 rewrites 'preprocessed' later).
+    """
+    conn = sqlite3.connect(str(_db_path()))
+    try:
+        conn.execute(
+            "UPDATE cache_metadata SET var_lab = ? "
+            "WHERE filename = ? AND variable_key = ? AND step_name = 'data'",
+            (spec.var_lab, spec.filename, spec.variable_key),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # =============================================================================
@@ -421,7 +443,7 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
 
     if step == 0:
         from pipeline.step_0_dataLoader.run_dataLoader import run_step as r, StepConfig as C
-        data = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, force_recalc=force_recalc))
+        data = r(C(filename=f, id_column=idc, var_name=vn, sample_size=ss, var_lab=vl, force_recalc=force_recalc))
         return f"{len(data)} responses loaded"
 
     if step == 1:

@@ -258,6 +258,46 @@ def test_selection_phase_writes_nothing():
     assert after == before, "selection phase wrote to data/"
 
 
+def test_question_survives_before_step1():
+    """The committed question must be readable from the 'data' row alone, and a
+    resume-edit (set_question) must stick; 'preprocessed' wins when present."""
+    import sqlite3
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "cache.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE cache_metadata "
+                     "(filename TEXT, step_name TEXT, variable_key TEXT, "
+                     "status TEXT, var_lab TEXT)")
+        fresh = be.DatasetSpec(filename="a.sav", var_name="Q1", sample_size=200)
+        ran = be.DatasetSpec(filename="b.sav", var_name="Q2", sample_size=None)
+        rows = [
+            # freshly committed: only step 0 done, question on the data row
+            ("a.sav", "data", fresh.variable_key, "valid", "Vraag bij commit?"),
+            # step 1 ran: preprocessed question wins over the data row's
+            ("b.sav", "data", ran.variable_key, "valid", "Oude vraag?"),
+            ("b.sav", "preprocessed", ran.variable_key, "valid", "Gebruikte vraag?"),
+        ]
+        conn.executemany("INSERT INTO cache_metadata VALUES (?,?,?,?,?)", rows)
+        conn.commit()
+        conn.close()
+        old_db_path = be._db_path
+        be._db_path = lambda: db
+        try:
+            labs = {(s.filename, s.variable_key): s.var_lab
+                    for s in be.list_cached_datasets()}
+            assert labs[("a.sav", fresh.variable_key)] == "Vraag bij commit?"
+            assert labs[("b.sav", ran.variable_key)] == "Gebruikte vraag?"
+            fresh.var_lab = "Aangepaste vraag?"
+            be.set_question(fresh)
+            labs = {(s.filename, s.variable_key): s.var_lab
+                    for s in be.list_cached_datasets()}
+            assert labs[("a.sav", fresh.variable_key)] == "Aangepaste vraag?"
+        finally:
+            be._db_path = old_db_path
+
+
 # =============================================================================
 # Unit: costs (Phase B6)
 # =============================================================================

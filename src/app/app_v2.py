@@ -219,6 +219,7 @@ def page_select_dataset():
             if lab_changed:
                 chosen.var_lab = edited_lab.strip() or chosen.var_name
                 be.invalidate_from(1, chosen, cm)
+                be.set_question(chosen)  # survives an app-restart before step 1 reruns
             st.session_state.spec = chosen
             st.session_state.step = 1 if lab_changed else max(1, md)
             st.session_state.last_success = None
@@ -436,6 +437,9 @@ def commit_selection(fname: str, intent, text_var: str, sample_size, id_col: str
             box.update(label=T("Laden mislukt", "Load failed"), state="error")
             st.error(str(exc))
             return
+        # Commit fixes the question — also on a step-0 cache hit, which would
+        # otherwise leave an older (or absent) question on the data row.
+        be.set_question(spec)
         box.update(label=T("Dataset geladen", "Dataset loaded"), state="complete")
 
     st.session_state.spec = spec

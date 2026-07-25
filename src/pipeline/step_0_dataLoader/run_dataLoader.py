@@ -52,6 +52,8 @@ class StepConfig:
     id_column: str = TEST_DATA.id_column
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
+    var_lab: Optional[str] = None   # survey question; persisted on the 'data' row so a
+                                    # freshly committed dataset keeps it before step 1 runs
     # Runner settings
     verbose: bool = True
     force_recalc: bool = True
@@ -138,7 +140,7 @@ def run_step(config: StepConfig = None):
 
     elapsed_time = time.time() - start_time
 
-    cache_manager.save_to_cache(raw_text_list, config.filename, step_name, variable_key, elapsed_time, var_lab=None)
+    cache_manager.save_to_cache(raw_text_list, config.filename, step_name, variable_key, elapsed_time, var_lab=config.var_lab)
 
     # Data type summary
     type_counts = {'nan': 0, 'numeric': 0, 'string': 0, 'unknown': 0}
