@@ -18,6 +18,8 @@ Features.xlsx
 Technical description.docx
 src/test_data.py
 /CLAUDE.md
+src/pipeline/DEV_DOC_STANDARD.md
+src/pipeline/TAXONOMY_LOGIC.md
 
 # === MODEL / CACHE FILES ===
 *.pkl
