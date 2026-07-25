@@ -53,6 +53,25 @@ def get_cache_manager() -> CacheManager:
 def get_data_loader() -> DataLoader:
     return DataLoader(data_dir=str(be.PROJECT_ROOT / "data"), verbose=False)
 
+
+# Reading a 70MB .sav to list its variables is expensive, and Streamlit reruns
+# the select page on EVERY widget interaction — so both reads are cached on
+# (filename, mtime): one full read per file, instant reruns after that.
+
+def _data_mtime(fname: str) -> float:
+    try:
+        return (be.PROJECT_ROOT / "data" / fname).stat().st_mtime
+    except OSError:
+        return 0.0
+
+@st.cache_data(max_entries=8, show_spinner=False)
+def _variables_with_types(fname: str, mtime: float) -> dict:
+    return get_data_loader().list_variables_with_types(fname)
+
+@st.cache_data(max_entries=32, show_spinner=False)
+def _varlab(fname: str, var_name: str, mtime: float) -> str:
+    return get_data_loader().get_varlab(fname, var_name)
+
 st.session_state.setdefault("step", 0)
 st.session_state.setdefault("language", ui.DEFAULT_LANGUAGE)
 st.session_state.setdefault("spec", None)           # DatasetSpec | None
@@ -227,67 +246,83 @@ def page_select_dataset():
     # --- Upload new ---
     st.divider()
     st.subheader(T("Nieuw bestand", "New file"))
-    up = st.file_uploader(T("Kies een SPSS-bestand (.sav)", "Choose an SPSS file (.sav)"),
-                          type=["sav"])
-    if up is not None:
-        # Save once per uploaded file; a merge switches the ACTIVE file to the
-        # merged .sav while the uploaded original stays untouched on disk.
-        if st.session_state.get("upload_src") != up.name:
+    # Two sources: a .sav already in data/ on the server (no upload — the bytes
+    # never cross the SSH tunnel) or a browser upload for genuinely new files.
+    # A server pick takes precedence over a lingering upload.
+    server_files = sorted(p.name for p in (be.PROJECT_ROOT / "data").glob("*.sav"))
+    src_pick = st.selectbox(T("Bestand op de server (data/)", "File on the server (data/)"),
+                            server_files, index=None,
+                            placeholder=T("Kies een bestand…", "Pick a file…"))
+    up = st.file_uploader(T("… of upload een nieuw SPSS-bestand (.sav)",
+                            "… or upload a new SPSS file (.sav)"), type=["sav"])
+
+    if src_pick:
+        chosen = src_pick
+    elif up is not None:
+        # Save once per uploaded file; widget interactions must not re-write 70MB.
+        if st.session_state.get("upload_saved") != up.name:
             dest = be.PROJECT_ROOT / "data" / up.name
             dest.parent.mkdir(exist_ok=True)
             dest.write_bytes(up.getbuffer())
-            st.session_state.upload_src = up.name
-            st.session_state.upload_active = up.name
-            st.session_state.upload_merged_var = None
-        fname = st.session_state.upload_active
+            st.session_state.upload_saved = up.name
+        chosen = up.name
+    else:
+        return
 
-        loader = get_data_loader()
-        try:
-            var_types = loader.list_variables_with_types(fname)
-        except Exception as exc:
-            st.error(T(f"Kon variabelen niet lezen: {exc}", f"Could not read variables: {exc}"))
-            return
+    # A merge switches the ACTIVE file to the merged .sav (the source stays
+    # untouched); picking a different source resets that.
+    if st.session_state.get("work_src") != chosen:
+        st.session_state.work_src = chosen
+        st.session_state.work_active = chosen
+        st.session_state.work_merged_var = None
+    fname = st.session_state.work_active
 
-        all_vars = list(var_types.keys())
-        string_vars = [v for v, i in var_types.items() if i.get("is_string")] or all_vars
-        if fname != up.name:
-            st.caption(T(f"Actief bestand: {fname}", f"Active file: {fname}"))
+    try:
+        var_types = _variables_with_types(fname, _data_mtime(fname))
+    except Exception as exc:
+        st.error(T(f"Kon variabelen niet lezen: {exc}", f"Could not read variables: {exc}"))
+        return
 
-        render_merge_variables(fname, string_vars)
+    all_vars = list(var_types.keys())
+    string_vars = [v for v, i in var_types.items() if i.get("is_string")] or all_vars
+    if fname != chosen:
+        st.caption(T(f"Actief bestand: {fname}", f"Active file: {fname}"))
 
-        col1, col2 = st.columns(2)
-        with col1:
-            id_col = st.selectbox(T("ID-kolom", "ID column"), all_vars)
-        with col2:
-            merged = st.session_state.get("upload_merged_var")
-            text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars,
-                                    index=string_vars.index(merged) if merged in string_vars else 0)
+    render_merge_variables(fname, string_vars)
 
-        limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False)
-        sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
-                                      value=500, step=50) if limit else None
+    col1, col2 = st.columns(2)
+    with col1:
+        id_col = st.selectbox(T("ID-kolom", "ID column"), all_vars)
+    with col2:
+        merged = st.session_state.get("work_merged_var")
+        text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars,
+                                index=string_vars.index(merged) if merged in string_vars else 0)
 
-        # Survey question — editable LLM context (fix typos/formatting, inject domain context).
-        try:
-            spss_lab = loader.get_varlab(fname, text_var)
-            spss_lab = spss_lab[spss_lab.rfind("]") + 1:].strip()
-        except Exception:
-            spss_lab = text_var
-        var_lab = st.text_area(
-            T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
-            value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
-            help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van Merk X').",
-                   "Fix formatting/spelling or add context (e.g. 'the squirrel is Merk X's logo')."))
+    limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False)
+    sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
+                                  value=500, step=50) if limit else None
 
-        if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
-            spec = DatasetSpec(filename=fname, var_name=text_var,
-                               sample_size=sample_size, id_column=id_col,
-                               var_lab=(var_lab or "").strip() or text_var)
-            st.session_state.spec = spec
-            be.run_step(0, spec, force_recalc=False)  # load + cache
-            st.session_state.step = 1
-            _bump_epoch()
-            st.rerun()
+    # Survey question — editable LLM context (fix typos/formatting, inject domain context).
+    try:
+        spss_lab = _varlab(fname, text_var, _data_mtime(fname))
+        spss_lab = spss_lab[spss_lab.rfind("]") + 1:].strip()
+    except Exception:
+        spss_lab = text_var
+    var_lab = st.text_area(
+        T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
+        value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
+        help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van Merk X').",
+               "Fix formatting/spelling or add context (e.g. 'the squirrel is Merk X's logo')."))
+
+    if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
+        spec = DatasetSpec(filename=fname, var_name=text_var,
+                           sample_size=sample_size, id_column=id_col,
+                           var_lab=(var_lab or "").strip() or text_var)
+        st.session_state.spec = spec
+        be.run_step(0, spec, force_recalc=False)  # load + cache
+        st.session_state.step = 1
+        _bump_epoch()
+        st.rerun()
 
 
 def render_merge_variables(fname: str, string_vars: list):
@@ -330,8 +365,8 @@ def render_merge_variables(fname: str, string_vars: list):
             except (ValueError, RuntimeError) as exc:
                 st.error(str(exc))
             else:
-                st.session_state.upload_active = Path(res["outfile"]).name
-                st.session_state.upload_merged_var = newvar.strip()
+                st.session_state.work_active = Path(res["outfile"]).name
+                st.session_state.work_merged_var = newvar.strip()
                 st.toast(T(f"Samengevoegd — {res['filled']} van {res['rows']} rijen gevuld.",
                            f"Merged — {res['filled']} of {res['rows']} rows filled."))
                 st.rerun()
