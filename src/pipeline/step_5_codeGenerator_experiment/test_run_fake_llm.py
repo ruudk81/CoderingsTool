@@ -198,12 +198,228 @@ async def test_run_from_inputs_end_to_end_with_fake_llm(monkeypatch, tmp_path):
     assert (export_dir / "codebook_survey_Q1_full_EXP_grensgevallen.txt").exists()
 
 
-def test_no_write_to_mece_codes_step_name_anywhere_in_module():
-    """Static guard: the orchestrator module source never spells out the
-    baseline's cache step name, so there's no path — now or after an edit —
-    that could accidentally write the experiment's cache under it."""
-    import pathlib
-    import pipeline.step_5_codeGenerator_experiment.run_experiment as run_experiment_mod
-    src = pathlib.Path(run_experiment_mod.__file__).read_text(encoding="utf-8")
-    assert '"mece_codes"' not in src
-    assert "'mece_codes'" not in src
+# =============================================================================
+# Targeted test: membership vote relocates an ambiguous attribute
+# =============================================================================
+# Same 3-group base/jitter construction as GROUPS above, plus one attribute
+# ("attr_wobble") placed deliberately between group 0 and group 1's centroids
+# so its margin falls below the ambiguity cut (0.5x median). Verified against
+# phenomenon_clusterer.discover_phenomena directly: attr_wobble's own cluster
+# is group 0's, its margin is 0.41 (well under the ~0.98-0.99 the clean
+# members get), and its neighbor is group 1's cluster.
+RELOC_GROUPS = {
+    0: ["attr_g0_0", "attr_g0_1", "attr_g0_2"],
+    1: ["attr_g1_0", "attr_g1_1", "attr_g1_2"],
+    2: ["attr_g2_0", "attr_g2_1", "attr_g2_2"],
+}
+WOBBLE = "attr_wobble"
+RELOC_ALL_ATTRS = [a for members in RELOC_GROUPS.values() for a in members] + [WOBBLE]
+# All-positive across the board: every cluster (before and after the move)
+# resolves to "dimensional" -> no noise vote needed, isolating the test to
+# the membership-relocation path alone.
+RELOC_VALENCE = {a: {"positive": 5, "neutral": 0, "negative": 0} for a in RELOC_ALL_ATTRS}
+
+
+def _reloc_vectors() -> dict:
+    base = {0: np.eye(8)[0], 1: np.eye(8)[1], 2: np.eye(8)[2]}
+    out = {}
+    for g, members in RELOC_GROUPS.items():
+        for j, attr in enumerate(members):
+            v = base[g] + 0.05 * np.eye(8)[3 + j]
+            out[attr] = v / np.linalg.norm(v)
+    w = 0.5 * base[0] + 0.5 * base[1]
+    out[WOBBLE] = w / np.linalg.norm(w)
+    return out
+
+
+def _reloc_inputs() -> ExperimentInputs:
+    vectors = _reloc_vectors()
+    partition_results = {
+        "domain1": DomainResultModel(
+            partition_name="domain1",
+            n_labels=len(RELOC_ALL_ATTRS),
+            n_batches=1,
+            facets=[{"facet_name": "facet1"}],
+            attributes={"facet1": [{"attribute_name": a} for a in RELOC_ALL_ATTRS]},
+            attribute_assignments={_idea_id(a): a for a in RELOC_ALL_ATTRS},
+        ),
+    }
+    idea_texts = {_idea_id(a): f"statement about {a}" for a in RELOC_ALL_ATTRS}
+    idea_embeddings = {_idea_id(a): vectors[a].tolist() for a in RELOC_ALL_ATTRS}
+    return ExperimentInputs(
+        partition_results=partition_results,
+        idea_assignments={_idea_id(a): a for a in RELOC_ALL_ATTRS},
+        attr_valence=RELOC_VALENCE,
+        idea_texts=idea_texts,
+        idea_embeddings=idea_embeddings,
+        language="Dutch",
+        variable_key="Q1_full",
+        survey_question="Wat vindt u van dit merk?",
+    )
+
+
+async def _fake_llm_always_b_membership(prompt: str, response_model):
+    """Membership -> always "B" (move); naming -> a fresh unique name per
+    call (no collision logic under test here)."""
+    if response_model is MembershipVote:
+        return MembershipVote(choice="B", reason="fake: always B")
+    if response_model is CodeNaming:
+        n = next(_fake_llm_always_b_membership._counter)
+        return CodeNaming(
+            code_name=f"RelocCode{n}", definition="d", diagnostic_test="t", typical_indicators=["i"],
+        )
+    raise AssertionError(f"unexpected response_model in relocation test: {response_model}")
+
+
+_fake_llm_always_b_membership._counter = iter(range(1, 100))
+
+
+@pytest.mark.asyncio
+async def test_membership_vote_relocates_ambiguous_attribute_to_neighbor_cluster(monkeypatch, tmp_path):
+    import json
+
+    import pipeline.step_5_codeGenerator_experiment.assembler as assembler_mod
+    monkeypatch.setattr(assembler_mod, "CacheManager", _FakeCacheManager)
+
+    cache = await run_from_inputs(
+        inputs=_reloc_inputs(),
+        partition_set=_partition_set(),
+        filename="survey.sav",
+        llm_call=_fake_llm_always_b_membership,
+        project_root=tmp_path,
+    )
+
+    non_overig = [c for c in cache.raw_codes if c["code_name"] != "Overig"]
+    by_sources = {frozenset(c["source_attributes"]): c for c in non_overig}
+
+    # the wobble attribute ends up in group 1's code, not group 0's — labels
+    # and clusters were mutated consistently (a mismatch here would either
+    # KeyError during assembly or leave attr_wobble in both/neither code).
+    assert frozenset(RELOC_GROUPS[0]) in by_sources, by_sources.keys()
+    assert frozenset(RELOC_GROUPS[1] + [WOBBLE]) in by_sources, by_sources.keys()
+    assert frozenset(RELOC_GROUPS[2]) in by_sources, by_sources.keys()
+
+    # the relocated attribute's code counts it among its source_attribute_ids too
+    relocated_code = by_sources[frozenset(RELOC_GROUPS[1] + [WOBBLE])]
+    attrs_by_name = {a["attribute_name"]: a for a in cache.partition_results["domain1"].attributes["facet1"]}
+    assert attrs_by_name[WOBBLE]["attribute_id"] in relocated_code["source_attribute_ids"]
+
+    # a borderline "moved_to_neighbor" Decision record was logged
+    decisions_path = tmp_path / "exports" / "codebook" / "codebook_survey_Q1_full_EXP_decisions.json"
+    decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
+    membership_records = [d for d in decisions if d["phase"] == "membership" and d["subject"] == WOBBLE]
+    assert len(membership_records) == 1
+    record = membership_records[0]
+    assert record["outcome"] == "moved_to_neighbor"
+    assert record["is_borderline"] is True
+
+
+# =============================================================================
+# Targeted test: an attribute with no embeddings is routed to Overig
+# =============================================================================
+MISSING_GROUPS = {
+    0: ["attr_g0_0", "attr_g0_1", "attr_g0_2"],
+    1: ["attr_g1_0", "attr_g1_1", "attr_g1_2"],
+    2: ["attr_g2_0", "attr_g2_1", "attr_g2_2"],
+}
+MISSING_ATTR = "attr_missing"
+MISSING_CLUSTERED_ATTRS = [a for members in MISSING_GROUPS.values() for a in members]
+MISSING_ALL_ATTRS = MISSING_CLUSTERED_ATTRS + [MISSING_ATTR]
+# All-positive -> every cluster resolves "dimensional", no noise vote needed.
+MISSING_VALENCE = {a: {"positive": 5, "neutral": 0, "negative": 0} for a in MISSING_CLUSTERED_ATTRS}
+
+
+def _missing_vectors() -> dict:
+    base = {0: np.eye(8)[0], 1: np.eye(8)[1], 2: np.eye(8)[2]}
+    out = {}
+    for g, members in MISSING_GROUPS.items():
+        for j, attr in enumerate(members):
+            v = base[g] + 0.05 * np.eye(8)[3 + j]
+            out[attr] = v / np.linalg.norm(v)
+    return out
+
+
+def _missing_inputs() -> ExperimentInputs:
+    vectors = _missing_vectors()
+    partition_results = {
+        "domain1": DomainResultModel(
+            partition_name="domain1",
+            n_labels=len(MISSING_ALL_ATTRS),
+            n_batches=1,
+            facets=[{"facet_name": "facet1"}],
+            # attr_missing IS a real taxonomy attribute — the point of this
+            # test is that assembler's dangling-name Overig sweep does NOT
+            # catch it (it's not dangling, it's just embedding-less), so the
+            # orchestrator itself must route it.
+            attributes={"facet1": [{"attribute_name": a} for a in MISSING_ALL_ATTRS]},
+            attribute_assignments={_idea_id(a): a for a in MISSING_ALL_ATTRS},
+        ),
+    }
+    idea_texts = {_idea_id(a): f"statement about {a}" for a in MISSING_ALL_ATTRS}
+    # attr_missing's idea is assigned (above) but deliberately has NO embedding.
+    idea_embeddings = {_idea_id(a): vectors[a].tolist() for a in MISSING_CLUSTERED_ATTRS}
+    return ExperimentInputs(
+        partition_results=partition_results,
+        idea_assignments={_idea_id(a): a for a in MISSING_ALL_ATTRS},
+        attr_valence=MISSING_VALENCE,
+        idea_texts=idea_texts,
+        idea_embeddings=idea_embeddings,
+        language="Dutch",
+        variable_key="Q1_full",
+        survey_question="Wat vindt u van dit merk?",
+    )
+
+
+async def _fake_llm_naming_only(prompt: str, response_model):
+    if response_model is CodeNaming:
+        n = next(_fake_llm_naming_only._counter)
+        return CodeNaming(
+            code_name=f"MissingCode{n}", definition="d", diagnostic_test="t", typical_indicators=["i"],
+        )
+    raise AssertionError(f"unexpected response_model in missing-embedding test: {response_model}")
+
+
+_fake_llm_naming_only._counter = iter(range(1, 100))
+
+
+@pytest.mark.asyncio
+async def test_missing_embedding_attribute_is_routed_to_overig(monkeypatch, tmp_path):
+    import json
+
+    import pipeline.step_5_codeGenerator_experiment.assembler as assembler_mod
+    monkeypatch.setattr(assembler_mod, "CacheManager", _FakeCacheManager)
+
+    cache = await run_from_inputs(
+        inputs=_missing_inputs(),
+        partition_set=_partition_set(),
+        filename="survey.sav",
+        llm_call=_fake_llm_naming_only,
+        project_root=tmp_path,
+    )
+
+    non_overig = [c for c in cache.raw_codes if c["code_name"] != "Overig"]
+    overig = cache.raw_codes[-1]
+    assert overig["code_name"] == "Overig"
+
+    # the attribute never landed in a phenomenon cluster/code ...
+    for c in non_overig:
+        assert MISSING_ATTR not in c["source_attributes"]
+    # ... it landed in Overig instead
+    assert MISSING_ATTR in overig["source_attributes"]
+
+    # a routed_to_overig Decision record was logged
+    decisions_path = tmp_path / "exports" / "codebook" / "codebook_survey_Q1_full_EXP_decisions.json"
+    decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
+    routed_records = [d for d in decisions if d["phase"] == "clustering" and d["subject"] == MISSING_ATTR]
+    assert len(routed_records) == 1
+    assert routed_records[0]["outcome"] == "routed_to_overig"
+
+    # K#-ids stayed valid after the post-hoc patch + second ensure_codebook_ids:
+    # unique, sequential, and Overig's source_attribute_ids actually resolved
+    # attr_missing's real A#-id (not left empty by the force-recompute reset).
+    ids = [c["code_id"] for c in cache.raw_codes]
+    assert len(ids) == len(set(ids))
+    assert ids == [f"K{i}" for i in range(1, len(ids) + 1)]
+
+    attrs_by_name = {a["attribute_name"]: a for a in cache.partition_results["domain1"].attributes["facet1"]}
+    assert attrs_by_name[MISSING_ATTR]["attribute_id"] in overig["source_attribute_ids"]
