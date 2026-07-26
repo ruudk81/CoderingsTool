@@ -1,7 +1,7 @@
 """
 app_backend.py — Non-UI backend for the CoderingsTool Streamlit app.
 
-Design intent (carried over from the old app, see app_old.py):
+Design intent:
     The app is a thin orchestrator over a cache-backed pipeline; the
     CacheManager is the source of truth. The UI never owns the canonical
     results — it asks the cache. This module owns everything that is NOT
@@ -319,13 +319,13 @@ def max_completed_step(spec: DatasetSpec, cm: CacheManager) -> int:
 
 
 # =============================================================================
-# SCREEN MODEL (app_v2) — the one explicit decision each step page makes
+# SCREEN MODEL — the one explicit decision each step page makes
 # =============================================================================
 
 class Screen(str, Enum):
-    """What a step page shows. app_old had these as emergent per-block gating;
-    here it is one explicit decision (see utils/dev/app_development_plan.md §3.2).
-    REVIEW is the HITL screen type: designed now, rendered in a later phase."""
+    """What a step page shows: one explicit decision per step page
+    (see app/dev/app_development_plan.md §3.2). REVIEW is the HITL screen
+    type: designed now, rendered in a later phase."""
     LOCKED = "locked"    # previous step not done — cannot run yet
     RUN = "run"          # ready: explain the step, offer the run button
     OUTPUT = "output"    # done: show evidence (stats, samples, log) + continue

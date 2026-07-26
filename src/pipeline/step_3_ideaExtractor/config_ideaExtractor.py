@@ -307,10 +307,6 @@ class HeaderAwareConfig:
 # =============================================================================
 
 DEFAULT_IDEA_EXTRACTION_CONFIG = IdeaExtractionConfig()
-
-# Backward compatibility aliases (used by app_old.py)
-SegmentationConfig = IdeaExtractionConfig
-DEFAULT_SEGMENTATION_CONFIG = DEFAULT_IDEA_EXTRACTION_CONFIG
 DEFAULT_TOKEN_HISTORY_CONFIG = TokenHistoryConfig()
 DEFAULT_TIKTOKEN_OFFSET_CONFIG = TiktokenOffsetConfig()
 DEFAULT_TIMEOUT_CONFIG = TimeoutConfig()

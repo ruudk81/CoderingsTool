@@ -1,15 +1,15 @@
 """
-app_views.py — per-step view registry for the Streamlit app (app_v2).
+app_views.py — per-step view registry for the Streamlit app.
 
 Each step contributes a StepView: which LLM phases it runs (for the read-only
 model line on the RUN screen), and how to render its evidence on the OUTPUT
 screen (stats panel, samples panel). Adding or enriching a step's presentation
-is a registry entry here — page logic in app_v2.py never changes for it.
-(Design: utils/dev/app_development_plan.md §3.4; HITL `review` slot is wired
+is a registry entry here — page logic in app.py never changes for it.
+(Design: app/dev/app_development_plan.md §3.4; HITL `review` slot is wired
 for Phase D and unused until then.)
 
 Loader results are cached with @st.cache_data, keyed on the dataset identity
-plus an `epoch` that app_v2 bumps after every run/invalidation — so a re-run
+plus an `epoch` that app.py bumps after every run/invalidation — so a re-run
 busts the cache without TTL guesswork.
 """
 

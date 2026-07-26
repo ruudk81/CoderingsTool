@@ -1,17 +1,15 @@
 """
-CoderingsTool — Streamlit UI v2 (screen-model restructure of app.py).
+CoderingsTool — Streamlit UI (screen-model orchestrator over the cache-backed pipeline).
 
-Architecture (utils/dev/app_development_plan.md, Phase A):
-    The cache stays the only truth for "done" (app_backend probes it live).
-    New here is the page layer: every step page makes ONE explicit screen
-    decision — LOCKED | RUN | OUTPUT (| REVIEW, Phase D) — and pulls its
-    step-specific content from the STEP_VIEWS registry in app_views.py.
-    RUN screens explain the step before credits are spent; OUTPUT screens
-    show evidence and offer the next step; errors stay visible until
-    dismissed or superseded.
+Architecture (app/dev/app_development_plan.md):
+    The cache is the only truth for "done" (app_backend probes it live).
+    The page layer: every step page makes ONE explicit screen decision —
+    LOCKED | RUN | OUTPUT (| REVIEW, Phase D) — and pulls its step-specific
+    content from the STEP_VIEWS registry in app_views.py. RUN screens explain
+    the step before credits are spent; OUTPUT screens show evidence and offer
+    the next step; errors stay visible until dismissed or superseded.
 
-Run:  streamlit run src/app/app_v2.py
-(app.py remains the production entry until v2 is promoted.)
+Run:  streamlit run src/app/app.py   (or ./run_app.sh)
 """
 
 import os

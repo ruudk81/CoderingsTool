@@ -1,13 +1,12 @@
 """
-test_app_v2.py — Phase A verification for the v2 Streamlit app.
+test_app.py — verification for the Streamlit app.
 
-Covers (plan §3.5 Phase A): every step shows the right screen for every cache
-state; sticky errors survive a rerun. Pure logic (screen_for, registry) is
-unit-tested exhaustively; the page layer is smoke-tested with
-streamlit.testing.v1.AppTest against the real cache (dataset-dependent tests
-skip cleanly when the cache is empty).
+Covers: every step shows the right screen for every cache state; sticky errors
+survive a rerun. Pure logic (screen_for, registry) is unit-tested exhaustively;
+the page layer is smoke-tested with streamlit.testing.v1.AppTest against the
+real cache (dataset-dependent tests skip cleanly when the cache is empty).
 
-Run:  cd src && python test_app_v2.py     (or: pytest test_app_v2.py)
+Run:  cd src && python app/test_app.py     (or: pytest app/test_app.py)
 NOTE: tests never click a 🚀 run button — that would start a real LLM run.
 """
 
@@ -24,7 +23,7 @@ for _p in (_APP_DIR, _SRC_DIR):
 import app_backend as be
 from app_backend import Screen, screen_for, LAST_STEP
 
-APP = os.path.join(_APP_DIR, "app_v2.py")
+APP = os.path.join(_APP_DIR, "app.py")
 
 
 # =============================================================================
