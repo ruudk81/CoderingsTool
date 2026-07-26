@@ -4,6 +4,10 @@ Attribuut = eenheidscentroïde van zijn idee-embeddings. Agglomeratief
 (average linkage, cosine) met een drempel-sweep over P5..P95 van de paars-
 gewijze afstanden; de partitie met het langste plateau (identiek over
 opeenvolgende drempels) wint. Alleen schaalvrije parameters.
+
+Ambiguity criterion: attributes with margins below half the median of finite margins
+are marked ambiguous. In perfectly separated data, no attributes are marked. Only
+attributes with margins significantly below typical indicate ambiguity.
 """
 from __future__ import annotations
 import numpy as np
@@ -29,6 +33,18 @@ class ClusterResult:
 
 
 def attribute_centroids(idea_embeddings, assignments) -> Dict[str, np.ndarray]:
+    """Compute unit-norm centroids from idea embeddings grouped by attribute.
+
+    Attributes without embeddings (missing ideas) are silently omitted from
+    output. Use missing_attributes() to log which attributes were dropped.
+
+    Args:
+        idea_embeddings: dict of idea_id → embedding vector
+        assignments: dict of idea_id → attribute name
+
+    Returns:
+        dict of attribute → unit-norm centroid vector
+    """
     sums: Dict[str, np.ndarray] = {}
     for idea_id, attr in assignments.items():
         emb = idea_embeddings.get(idea_id)
@@ -51,9 +67,44 @@ def attribute_centroids(idea_embeddings, assignments) -> Dict[str, np.ndarray]:
     return out
 
 
+def missing_attributes(assignments, centroids) -> List[str]:
+    """Return sorted list of attributes that have no centroid (missing embeddings).
+
+    Args:
+        assignments: dict of idea_id → attribute name
+        centroids: dict of attribute → centroid vector
+
+    Returns:
+        sorted list of attribute names in assignments but not in centroids
+    """
+    attrs_assigned = set(assignments.values())
+    attrs_centered = set(centroids.keys())
+    return sorted(attrs_assigned - attrs_centered)
+
+
 def discover_phenomena(centroids: Dict[str, np.ndarray], n_sweep: int = 40) -> ClusterResult:
     names = sorted(centroids)                      # sortering → determinisme
-    X = np.stack([centroids[n] for n in names])
+
+    # Normalize all centroids defensively (idempotent for already-normalized input)
+    norm_centroids = {}
+    for n in names:
+        v = np.asarray(centroids[n], dtype=np.float64)
+        norm = np.linalg.norm(v)
+        norm_centroids[n] = v / norm if norm > 0 else v
+
+    # Special case: exactly 2 attributes
+    if len(names) == 2:
+        d = _cos(norm_centroids[names[0]], norm_centroids[names[1]])
+        if np.isclose(d, 0):  # identical
+            raise DegenerateClusteringError("all centroids identical")
+        # Two singletons
+        labels = {names[0]: 1, names[1]: 2}
+        clusters = {1: [names[0]], 2: [names[1]]}
+        margins = {names[0]: float("inf"), names[1]: float("inf")}
+        neighbor = {names[0]: 2, names[1]: 1}
+        return ClusterResult(labels, clusters, float(d), 0, margins, [], neighbor)
+
+    X = np.stack([norm_centroids[n] for n in names])
     dists = pdist(X, metric="cosine")
     if np.allclose(dists, 0):
         raise DegenerateClusteringError("all centroids identical")
@@ -81,20 +132,20 @@ def discover_phenomena(centroids: Dict[str, np.ndarray], n_sweep: int = 40) -> C
 
     # Marges: (afstand naar dichtstbijzijnde ándere clustercentroïde − afstand
     # naar eigen clustercentroïde) / afstand-naar-andere. Singletons: marge inf.
-    cluster_cent = {c: _unit_mean([centroids[m] for m in ms]) for c, ms in clusters.items()}
+    cluster_cent = {c: _unit_mean([norm_centroids[m] for m in ms]) for c, ms in clusters.items()}
     margins, neighbor = {}, {}
     for n in names:
         own = labels[n]
-        d_own = _cos(centroids[n], cluster_cent[own])
-        others = [(c, _cos(centroids[n], cc)) for c, cc in cluster_cent.items() if c != own]
+        d_own = _cos(norm_centroids[n], cluster_cent[own])
+        others = [(c, _cos(norm_centroids[n], cc)) for c, cc in cluster_cent.items() if c != own]
         c2, d2 = min(others, key=lambda x: x[1])
         margins[n] = float("inf") if len(clusters[own]) == 1 else (d2 - d_own) / max(d2, 1e-12)
         neighbor[n] = c2
     finite = sorted(m for m in margins.values() if m != float("inf"))
     ambiguous = []
     if finite:
-        cut = float(np.percentile(finite, 10))     # schaalvrij: onderste deciel
-        ambiguous = [n for n in names if margins[n] <= cut]
+        cut = 0.5 * float(np.median(finite))     # schaalvrij: half de mediaan
+        ambiguous = sorted([n for n in names if margins[n] < cut])
     return ClusterResult(labels, clusters, float(thresholds[best_start]),
                          best_len, margins, ambiguous, neighbor)
 
