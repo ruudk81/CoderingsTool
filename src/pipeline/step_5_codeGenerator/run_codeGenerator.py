@@ -281,6 +281,7 @@ def cache_mece_results(
         },
         total_categories=n_codes,
         raw_codes=[c.model_dump() for c in codebook_result.codes],
+        codebook_narrative=codebook_result.codebook_narrative,
         idea_embeddings=serialized_embeddings,
         embedding_code_source=embedding_code_source,
         embedding_model=embedding_model,
@@ -304,6 +305,16 @@ def cache_mece_results(
     print(f"Codebook cached "
           f"({n_codes} codes, {total_facets} facets across "
           f"{len(pydantic_results)} domains)")
+
+    # Readable copy of the P8/P9 scratchpads next to the codebook exports —
+    # the cache field is the source of truth, this file is for eyeballs.
+    if codebook_result.codebook_narrative:
+        scratch_dir = project_root / "exports" / "codebook"
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        base = Path(filename).stem.replace(" ", "_")
+        scratch_path = scratch_dir / f"codebook_{base}_{variable_key}_scratchpad.txt"
+        scratch_path.write_text(codebook_result.codebook_narrative, encoding="utf-8")
+        print(f"P8/P9 scratchpads saved: {scratch_path}")
 
 
 # =============================================================================

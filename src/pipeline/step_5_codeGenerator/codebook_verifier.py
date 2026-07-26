@@ -29,6 +29,10 @@ Also reported (warnings, do NOT block PASS):
     code ALSO sources are not counted: they flow to that partner in step 6, so
     a valence-split pair does not flag itself.
   - overlap classes: benign valence split / P9-review / taxonomy-level.
+  - mini codes: a code whose expected idea volume (the matching pole of its
+    source attributes) stays below the population floor — the parsimony
+    counterweight to under-split, so over-differentiation is as visible as
+    over-collapse.
 """
 
 from __future__ import annotations
@@ -78,6 +82,13 @@ class UnderSplitCode(BaseModel):
     negative: int
 
 
+class MiniCode(BaseModel):
+    """A code whose expected idea volume is below the population floor."""
+    code_name: str
+    valence: str
+    expected_ideas: int
+
+
 class CodebookScorecard(BaseModel):
     """Deterministic quality scorecard for a consolidated codebook."""
     n_codes: int
@@ -105,6 +116,9 @@ class CodebookScorecard(BaseModel):
 
     # Valence quality (warning, does not block PASS)
     under_split_codes: List[UnderSplitCode] = Field(default_factory=list)
+
+    # Parsimony (warning, does not block PASS)
+    mini_codes: List[MiniCode] = Field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -360,6 +374,32 @@ def build_scorecard(
             under_split.append(UnderSplitCode(
                 code_name=_attr(code, "code_name") or "", positive=p, neutral=n, negative=g))
 
+    # --- Mini-code detection (over-differentiation) ---
+    # Advisory counterweight to under-split. Expected volume = the matching
+    # pole of the code's source attributes (positive code → + counts,
+    # negative → − counts, neutral → totals); below the population floor
+    # floor(log(assigned)) the code likely cannot carry itself.
+    mini_floor = max(2, int(math.log(assigned))) if assigned > 0 else 2
+    mini_codes: List[MiniCode] = []
+    for code in codes:
+        code_name = _attr(code, "code_name") or ""
+        if code_name == overig_code_name:
+            continue
+        code_valence = _attr(code, "valence") or ""
+        expected = 0
+        for attr in (_attr(code, "source_attributes") or []):
+            c = attr_valence.get(attr, {})
+            if code_valence == "positive":
+                expected += c.get("positive", 0)
+            elif code_valence == "negative":
+                expected += c.get("negative", 0)
+            else:
+                expected += (c.get("positive", 0) + c.get("neutral", 0)
+                             + c.get("negative", 0))
+        if expected < mini_floor:
+            mini_codes.append(MiniCode(
+                code_name=code_name, valence=code_valence, expected_ideas=expected))
+
     return CodebookScorecard(
         n_codes=len(codes),
         n_attributes_total=len(attr_keys),
@@ -376,6 +416,7 @@ def build_scorecard(
         taxonomy_level_pairs=taxonomy_pairs,
         p9_review_pairs=review_pairs,
         under_split_codes=under_split,
+        mini_codes=mini_codes,
     )
 
 
@@ -428,6 +469,12 @@ def format_scorecard(sc: CodebookScorecard) -> str:
                      f"counter-direction code ({len(sc.under_split_codes)}) — likely should be split:")
         for u in sc.under_split_codes:
             lines.append(f"      - \"{u.code_name}\"  (+{u.positive} / ○{u.neutral} / −{u.negative})")
+
+    if sc.mini_codes:
+        lines.append(f"\n  ◦ MINI-CODES (warning) — expected volume below floor(log(n)) "
+                     f"({len(sc.mini_codes)}) — over-differentiation signal:")
+        for m in sc.mini_codes:
+            lines.append(f"      - \"{m.code_name}\" [{m.valence}]  (~{m.expected_ideas} ideas)")
 
     if sc.p9_review_pairs:
         lines.append(f"\n  ◦ P9-REVIEW OVERLAP — same-valence partial overlap "
