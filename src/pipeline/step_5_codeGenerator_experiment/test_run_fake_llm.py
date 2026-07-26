@@ -523,3 +523,224 @@ async def test_zero_assignment_attribute_is_routed_to_overig(monkeypatch, tmp_pa
     scorecard = build_scorecard(cache.raw_codes, cache.partition_results, overig["code_name"])
     assert scorecard.attribute_coverage_pct == 100.0
     assert ZERO_ATTR not in scorecard.orphan_attributes
+
+
+# =============================================================================
+# Targeted test: a neutral_third split's middle code gets neutral-only
+# naming evidence, not the +/- pole texts
+# =============================================================================
+# g0 gets 3 ideas per attribute (positive/neutral/negative, all sharing the
+# attribute's own embedding vector so adding them doesn't move the centroid)
+# -> pos=4/neu=4/neg=4, total=12: both poles clear the floor (2), min(pos,neg)
+# clears the population floor -> needs_noise_check; neu/total = 0.333 >= 0.30
+# -> neutral_third=True. g1/g2 stay single-idea-per-attribute dimensional
+# clusters (as in the base fixture above) so g0 is the only 3-way split.
+NT_GROUPS = {
+    0: ["nt_g0_0", "nt_g0_1", "nt_g0_2", "nt_g0_3"],
+    1: ["nt_g1_0", "nt_g1_1", "nt_g1_2", "nt_g1_3"],
+    2: ["nt_g2_0", "nt_g2_1", "nt_g2_2", "nt_g2_3"],
+}
+NT_ATTR_VALENCE = {
+    **{a: {"positive": 1, "neutral": 1, "negative": 1} for a in NT_GROUPS[0]},
+    **{a: {"positive": 1, "neutral": 0, "negative": 0} for a in NT_GROUPS[1]},
+    **{a: {"positive": 0, "neutral": 1, "negative": 0} for a in NT_GROUPS[2]},
+}
+
+
+def _nt_vectors() -> dict:
+    base = {0: np.eye(8)[0], 1: np.eye(8)[1], 2: np.eye(8)[2]}
+    out = {}
+    for g, members in NT_GROUPS.items():
+        for j, attr in enumerate(members):
+            v = base[g] + 0.05 * np.eye(8)[3 + j]
+            out[attr] = v / np.linalg.norm(v)
+    return out
+
+
+def _nt_inputs() -> ExperimentInputs:
+    vectors = _nt_vectors()
+    all_attrs = [a for members in NT_GROUPS.values() for a in members]
+
+    idea_assignments: dict = {}
+    idea_texts: dict = {}
+    idea_embeddings: dict = {}
+    attribute_valence: dict = {}
+
+    # g0: 3 ideas per attribute (pos/neu/neg), all at the attribute's own
+    # centroid vector — only their text and valence tag differ.
+    for attr in NT_GROUPS[0]:
+        for pole, tag in (("POS", "+"), ("NEU", None), ("NEG", "-")):
+            idea_id = f"idea_{attr}_{pole.lower()}"
+            idea_assignments[idea_id] = attr
+            idea_texts[idea_id] = f"{pole}_STATEMENT about {attr}"
+            idea_embeddings[idea_id] = vectors[attr].tolist()
+            if tag is not None:
+                attribute_valence[idea_id] = tag
+
+    # g1/g2: one idea per attribute, as in the base fixture above.
+    for g in (1, 2):
+        for attr in NT_GROUPS[g]:
+            idea_id = f"idea_{attr}"
+            idea_assignments[idea_id] = attr
+            idea_texts[idea_id] = f"statement about {attr}"
+            idea_embeddings[idea_id] = vectors[attr].tolist()
+
+    partition_results = {
+        "domain1": DomainResultModel(
+            partition_name="domain1",
+            n_labels=len(all_attrs),
+            n_batches=1,
+            facets=[{"facet_name": "facet1"}],
+            attributes={"facet1": [{"attribute_name": a} for a in all_attrs]},
+            attribute_assignments=idea_assignments,
+            attribute_valence=attribute_valence,
+        ),
+    }
+    return ExperimentInputs(
+        partition_results=partition_results,
+        idea_assignments=idea_assignments,
+        attr_valence=NT_ATTR_VALENCE,
+        idea_texts=idea_texts,
+        idea_embeddings=idea_embeddings,
+        language="Dutch",
+        variable_key="Q1_full",
+        survey_question="Wat vindt u van dit merk?",
+    )
+
+
+async def _nt_fake_llm_call(prompt: str, response_model):
+    """Membership -> "A" (not expected to fire: g0/g1/g2 are well-separated,
+    same jitter scheme as the base fixture); noise -> always genuine (drives
+    g0 to a real split); naming -> a unique name per call, so the naming
+    collision re-ask (a separate mechanism, exercised by its own test below)
+    never fires here and can't confound this test's prompt capture."""
+    if response_model is MembershipVote:
+        return MembershipVote(choice="A", reason="fake: always A")
+    if response_model is NoiseVote:
+        return NoiseVote(genuine_opposition=True, reason="fake: always genuine")
+    if response_model is CodeNaming:
+        n = next(_nt_fake_llm_call._counter)
+        return CodeNaming(
+            code_name=f"NTCode{n}", definition="d", diagnostic_test="t", typical_indicators=["i"],
+        )
+    raise AssertionError(f"unexpected response_model in neutral-third test: {response_model}")
+
+
+_nt_fake_llm_call._counter = iter(range(1, 100))
+
+
+@pytest.mark.asyncio
+async def test_neutral_third_middle_code_naming_excludes_pole_texts(monkeypatch, tmp_path):
+    """The middle code of a 3-way split ("neutral") must only get naming
+    evidence from ideas WITHOUT +/- valence — the positive/negative pole
+    texts belong to the other two codes, not this one. Regression test for
+    the old always-give-everything neutral rule, which was only correct for
+    the no-split dimensional case (a plain neutral code covering the full
+    range), not for a neutral_third split's middle bucket."""
+    import pipeline.step_5_codeGenerator_experiment.assembler as assembler_mod
+    monkeypatch.setattr(assembler_mod, "CacheManager", _FakeCacheManager)
+
+    naming_prompts: list = []
+
+    async def capturing_llm_call(prompt, response_model):
+        if response_model is CodeNaming:
+            naming_prompts.append(prompt)
+        return await _nt_fake_llm_call(prompt, response_model)
+
+    await run_from_inputs(
+        inputs=_nt_inputs(),
+        partition_set=_partition_set(),
+        filename="survey.sav",
+        llm_call=capturing_llm_call,
+        project_root=tmp_path,
+    )
+
+    # g0's cluster gets exactly 3 naming calls (positive/neutral/negative),
+    # identifiable by mentioning one of its own members.
+    g0_prompts = [p for p in naming_prompts if "nt_g0_0" in p]
+    assert len(g0_prompts) == 3
+
+    neutral_prompt = next(p for p in g0_prompts if "Valence: neutral" in p)
+    positive_prompt = next(p for p in g0_prompts if "Valence: positive" in p)
+    negative_prompt = next(p for p in g0_prompts if "Valence: negative" in p)
+
+    # the middle code's evidence is neutral-only — no pole texts leaked in
+    assert "POS_STATEMENT" not in neutral_prompt
+    assert "NEG_STATEMENT" not in neutral_prompt
+    assert "NEU_STATEMENT" in neutral_prompt
+
+    # sanity: the pole codes get their own pole's texts only (a 3-way split
+    # never absorbs the neutrals into a pole, unlike the 2-way split case)
+    assert "POS_STATEMENT" in positive_prompt
+    assert "NEU_STATEMENT" not in positive_prompt
+    assert "NEG_STATEMENT" in negative_prompt
+    assert "NEU_STATEMENT" not in negative_prompt
+
+
+# =============================================================================
+# Targeted test: the reserved "Overig" catch-all label seeds the naming
+# collision check, so an LLM-named code can never silently claim it
+# =============================================================================
+async def _fake_llm_first_naming_is_overig(prompt: str, response_model):
+    """Membership/noise -> stock answers; naming -> the reserved catch-all
+    label on the very first call, a distinct real name on every call after
+    that (including the collision re-ask)."""
+    if response_model is MembershipVote:
+        return MembershipVote(choice="A", reason="fake: always A")
+    if response_model is NoiseVote:
+        return NoiseVote(genuine_opposition=True, reason="fake: always genuine")
+    if response_model is CodeNaming:
+        n = next(_fake_llm_first_naming_is_overig._counter)
+        if n == 1:
+            return CodeNaming(
+                code_name="Overig", definition="d", diagnostic_test="t", typical_indicators=["i"],
+            )
+        return CodeNaming(
+            code_name=f"RealCode{n}", definition="d", diagnostic_test="t", typical_indicators=["i"],
+        )
+    raise AssertionError(f"unexpected response_model in Overig-collision test: {response_model}")
+
+
+_fake_llm_first_naming_is_overig._counter = iter(range(1, 100))
+
+
+@pytest.mark.asyncio
+async def test_llm_naming_overig_collides_with_reserved_catch_all_label(monkeypatch, tmp_path):
+    """A code the LLM names "Overig" must be caught as a collision against
+    the reserved catch-all label (assembler.py's own Overig code) even
+    though no other LLM-named code has claimed that name yet — the
+    collision check must be seeded with the reserved label, not built up
+    only from prior LLM output (which the verifier's Overig exemption would
+    otherwise let slip through silently)."""
+    import pipeline.step_5_codeGenerator_experiment.assembler as assembler_mod
+    monkeypatch.setattr(assembler_mod, "CacheManager", _FakeCacheManager)
+
+    naming_prompts: list = []
+
+    async def capturing_llm_call(prompt, response_model):
+        if response_model is CodeNaming:
+            naming_prompts.append(prompt)
+        return await _fake_llm_first_naming_is_overig(prompt, response_model)
+
+    cache = await run_from_inputs(
+        inputs=_inputs(),
+        partition_set=_partition_set(),
+        filename="survey.sav",
+        llm_call=capturing_llm_call,
+        project_root=tmp_path,
+    )
+
+    # the very first naming prompt is already seeded with the reserved label
+    assert "Overig" in naming_prompts[0]
+
+    # the code the LLM named "Overig" triggered a re-ask, whose prompt
+    # carries the reserved label as evidence to avoid
+    assert len(naming_prompts) >= 2
+    retry_prompt = naming_prompts[1]
+    assert "Avoid these existing code names" in retry_prompt
+    assert "Overig" in retry_prompt
+
+    # the assembled codebook never ends up with two codes literally named
+    # "Overig" — the LLM's colliding attempt was renamed away
+    overig_named = [c for c in cache.raw_codes if c["code_name"] == "Overig"]
+    assert len(overig_named) == 1

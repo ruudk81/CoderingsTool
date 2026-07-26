@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from models import CodingResultsCache, DomainResultModel, DomainSet
+from models import DomainResultModel, DomainSet
 from pipeline.step_5_codeGenerator_experiment.assembler import (
     Decision,
     assemble_codebook,

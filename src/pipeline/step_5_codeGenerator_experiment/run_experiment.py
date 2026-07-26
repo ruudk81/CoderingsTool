@@ -26,6 +26,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from config import MISCELLANEOUS_CODE_LABELS
 from models import CodingResultsCache, DomainSet, TaxonomyResultsCache
 from identity import ensure_codebook_ids
 from utils.cacheManager import CacheManager
@@ -114,10 +115,18 @@ def _pole_texts(
 
 def _samples_per_pole_for_naming(
     inputs: ExperimentInputs, valence_map: Dict[str, str], members: List[str], valence: str,
+    neutral_third: bool = False,
 ) -> Dict[str, List[str]]:
-    """Per-member sample texts restricted to this code's own valence bucket
-    ("neutral" codes get everything — a dimensional code covers the full
-    range)."""
+    """Per-member sample texts restricted to this code's own valence bucket.
+
+    "neutral" has two distinct meanings depending on `neutral_third`:
+    - False (no split, or a two-way split with no middle bucket): this
+      "neutral" code IS the whole dimensional phenomenon — it gets every
+      idea as naming evidence, regardless of valence.
+    - True (a three-way split's middle bucket): this "neutral" code covers
+      only the ideas WITHOUT +/- valence — the +/- ideas are naming
+      evidence for the positive/negative codes, not this one.
+    """
     out: Dict[str, List[str]] = {}
     for m in members:
         texts = []
@@ -126,6 +135,8 @@ def _samples_per_pole_for_naming(
             if text is None:
                 continue
             if valence == "neutral":
+                if neutral_third and valence_map.get(i) in ("+", "-"):
+                    continue
                 texts.append(text)
             else:
                 v = valence_map.get(i)
@@ -242,6 +253,7 @@ async def run_from_inputs(
     total_assigned = len(inputs.idea_assignments)
     code_plans: Dict[int, List[dict]] = {}
     naming_targets: List[Tuple[int, str]] = []
+    neutral_third_by_label: Dict[int, bool] = {}
 
     for label in sorted(cluster_result.clusters):
         members = cluster_result.clusters[label]
@@ -277,17 +289,26 @@ async def run_from_inputs(
 
         plan = codes_for(decision, split)
         code_plans[label] = plan
+        neutral_third_by_label[label] = split and decision.neutral_third
         for entry in plan:
             naming_targets.append((label, entry["valence"]))
 
     # --- Phase 5a: naming (one call per code, collision re-ask) ---
+    # Seed with the reserved catch-all label (same source assembler.py reads
+    # for the Overig code) so an LLM-named code can never silently collide
+    # with it — the verifier exempts Overig from its own checks, so a
+    # collision here would otherwise go undetected.
+    overig_label = MISCELLANEOUS_CODE_LABELS.get(inputs.language, "Overig")
     namings: Dict[Tuple[int, str], CodeNaming] = {}
-    used_names_lower: set = set()
+    used_names_lower: set = {overig_label.strip().lower()}
 
     for label, valence in naming_targets:
         members = cluster_result.clusters[label]
-        samples_per_pole = _samples_per_pole_for_naming(inputs, valence_map, members, valence)
-        avoid_names = sorted({n.code_name for n in namings.values()})
+        samples_per_pole = _samples_per_pole_for_naming(
+            inputs, valence_map, members, valence,
+            neutral_third=neutral_third_by_label.get(label, False),
+        )
+        avoid_names = sorted({n.code_name for n in namings.values()} | {overig_label})
 
         prompt = naming_prompt(
             members=members, samples_per_pole=samples_per_pole, valence=valence,

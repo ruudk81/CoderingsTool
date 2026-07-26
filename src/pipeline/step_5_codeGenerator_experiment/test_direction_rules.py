@@ -4,9 +4,6 @@ Test suite for direction_rules.py (TDD approach).
 Cases a-f from task-3-brief.md, plus edge case: total=0.
 """
 
-import math
-
-import pytest
 from pipeline.step_5_codeGenerator_experiment.direction_rules import (
     resolve_direction,
     codes_for,

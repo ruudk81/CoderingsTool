@@ -33,7 +33,7 @@ from pipeline.step_5_codeGenerator.codebook_verifier import (
 )
 
 # src/pipeline/step_5_codeGenerator_experiment/evaluate_experiment.py -> repo
-# root is 3 parents up (same depth as assembler.py's _PROJECT_ROOT).
+# root is 4 parents up (same depth as assembler.py's _PROJECT_ROOT).
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 _OVERIG_NAMES = set(MISCELLANEOUS_CODE_LABELS.values())

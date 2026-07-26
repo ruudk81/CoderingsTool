@@ -5,7 +5,7 @@ _project_corrected), idea embeddings reused from a valid baseline mece_codes
 cache when present, else computed via SharedEmbedder (same code_source).
 """
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from models import CodingResultsCache, TaxonomyResultsCache, TaxonomyClassifiedModel
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key

@@ -130,7 +130,7 @@ def discover_phenomena(centroids: Dict[str, np.ndarray], n_sweep: int = 40) -> C
 
     if not valid_indices:
         raise DegenerateClusteringError(
-            f"no valid partitions in sweep (all single or all-singletons)")
+            "no valid partitions in sweep (all single or all-singletons)")
 
     # Find longest plateau among valid partitions only
     best_start, best_len, cur_start = valid_indices[0], 1, valid_indices[0]
