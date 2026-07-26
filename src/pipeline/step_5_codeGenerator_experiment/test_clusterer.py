@@ -107,3 +107,41 @@ def test_missing_attributes_sorted():
     assignments = {"i1": "a_missing", "i2": "z_missing", "i3": "z_attr"}
     missing = missing_attributes(assignments, cents)
     assert missing == ["a_missing", "z_missing"]
+
+def test_plateau_avoids_single_cluster_tail():
+    """Regression: real data has long single-cluster tail above highest merge height.
+
+    Plateau detection must filter degenerate partitions before searching for longest
+    plateau, otherwise it selects the 1-cluster tail. This test mimics that pattern:
+    two tight groups with small mutual distance → high merge point → sweep upper bound
+    far above merge point → long 1-cluster tail at top of sweep.
+
+    Without filtering, plateau detection would pick the 1-cluster tail as longest plateau.
+    With filtering, it correctly picks the 2-cluster partition.
+    """
+    # Two tight orthogonal groups: group 0 and group 1
+    # Group 0: close to e_0, Group 1: close to e_1
+    # Small offsets to make them tightly clustered within group
+    cents = {}
+
+    # Group 0: 5 attributes around e_0
+    for i in range(5):
+        v = np.eye(16)[0] + 0.02 * np.eye(16)[5 + i]
+        cents[f"g0_attr{i}"] = v / np.linalg.norm(v)
+
+    # Group 1: 5 attributes around e_1
+    for i in range(5):
+        v = np.eye(16)[1] + 0.02 * np.eye(16)[10 + i]
+        cents[f"g1_attr{i}"] = v / np.linalg.norm(v)
+
+    # Discover with sweep upper bound far above the merge point
+    # This creates a long 1-cluster tail above the highest merge height
+    res = discover_phenomena(cents, n_sweep=50)
+
+    # Should discover 2 clusters (not 1, not 10)
+    assert len(res.clusters) == 2, f"Expected 2 clusters, got {len(res.clusters)}"
+
+    # Each cluster should contain exactly one group
+    for cluster_id, members in res.clusters.items():
+        group_labels = {m.split("_")[0] for m in members}
+        assert len(group_labels) == 1, f"Cluster {cluster_id} has mixed groups: {group_labels}"

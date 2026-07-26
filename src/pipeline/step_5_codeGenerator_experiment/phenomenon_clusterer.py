@@ -8,6 +8,12 @@ opeenvolgende drempels) wint. Alleen schaalvrije parameters.
 Ambiguity criterion: attributes with margins below half the median of finite margins
 are marked ambiguous. In perfectly separated data, no attributes are marked. Only
 attributes with margins significantly below typical indicate ambiguity.
+
+Plateau selection: Real data always has a long single-cluster tail above the highest
+merge height (every threshold above that point yields 1 cluster). Plateau detection
+therefore filters out degenerate partitions (1 cluster or N clusters) BEFORE searching
+for the longest plateau. Only non-degenerate partitions compete. If no valid partition
+exists in the sweep, DegenerateClusteringError is raised.
 """
 from __future__ import annotations
 import numpy as np
@@ -113,17 +119,34 @@ def discover_phenomena(centroids: Dict[str, np.ndarray], n_sweep: int = 40) -> C
     thresholds = np.linspace(lo, hi, n_sweep)
     partitions = [tuple(fcluster(Z, t, criterion="distance")) for t in thresholds]
 
-    best_start, best_len, cur_start = 0, 1, 0
-    for i in range(1, len(partitions)):
-        if partitions[i] != partitions[cur_start]:
+    # Filter to non-degenerate partitions before plateau detection.
+    # Real data has a long single-cluster tail above the highest merge height;
+    # without filtering, plateau detection selects the degenerate tail.
+    valid_indices = []
+    for i, part in enumerate(partitions):
+        n_clusters = len(set(part))
+        if n_clusters > 1 and n_clusters < len(names):
+            valid_indices.append(i)
+
+    if not valid_indices:
+        raise DegenerateClusteringError(
+            f"no valid partitions in sweep (all single or all-singletons)")
+
+    # Find longest plateau among valid partitions only
+    best_start, best_len, cur_start = valid_indices[0], 1, valid_indices[0]
+    for idx in range(1, len(valid_indices)):
+        i = valid_indices[idx]
+        prev_i = valid_indices[idx - 1]
+        if partitions[i] != partitions[prev_i]:
             cur_start = i
         if i - cur_start + 1 > best_len:
             best_start, best_len = cur_start, i - cur_start + 1
+
     labels_arr = partitions[best_start]
     n_clusters = len(set(labels_arr))
-    if n_clusters <= 1 or n_clusters >= len(names):
-        raise DegenerateClusteringError(
-            f"{n_clusters} clusters for {len(names)} attributes")
+    # Safeguard assertion (should always pass given valid_indices filtering)
+    assert n_clusters > 1 and n_clusters < len(names), \
+        f"Degenerate partition passed filtering: {n_clusters} clusters for {len(names)} attributes"
 
     labels = {n: int(c) for n, c in zip(names, labels_arr)}
     clusters: Dict[int, List[str]] = {}
