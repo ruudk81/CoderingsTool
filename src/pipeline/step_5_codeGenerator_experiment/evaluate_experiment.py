@@ -37,7 +37,8 @@ from pipeline.step_5_codeGenerator.codebook_verifier import (
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 _OVERIG_NAMES = set(MISCELLANEOUS_CODE_LABELS.values())
-_VALENCE_BUCKETS = ("positive", "neutral", "negative")
+_ALL_VALENCE_BUCKETS = ("positive", "neutral", "negative")
+_DIRECTIONAL_POLES = ("positive", "negative")
 
 
 def _field(code: Any, name: str) -> Any:
@@ -107,7 +108,7 @@ def _load_run_codes(run_dir: Path) -> List[dict]:
 # richting_dekking
 # =============================================================================
 def richting_dekking(codes: list, partition_results) -> float:
-    """Share of substantial valence poles that have their own code, per phenomenon.
+    """Share of substantial DIRECTIONAL poles that have their own code, per phenomenon.
 
     A "fenomeen" (phenomenon) is the exact `source_attributes` set shared by
     a group of codes — this is precisely how a direction split is modelled
@@ -115,9 +116,16 @@ def richting_dekking(codes: list, partition_results) -> float:
     attributes at different valence. Overig is excluded (it is the
     catch-all, not a phenomenon).
 
-    For each fenomeen, the three valence buckets (positive/neutral/negative)
-    are summed from `collect_attribute_valence(partition_results)` across
-    every attribute in the group. A pole is SUBSTANTIAL when its count is
+    Candidate poles are POSITIVE and NEGATIVE ONLY — "neutral" is NOT a
+    pole. A phenomenon dominated by neutral ideas belongs in a neutral/
+    dimensional code by design; counting neutral as a pole to "cover" would
+    flag nearly every phenomenon as under-covered.
+
+    For each fenomeen, positive/neutral/negative are still all summed from
+    `collect_attribute_valence(partition_results)` across the group's
+    attributes to get `fenomeen_total` — the floor is about the
+    phenomenon's SIZE, not about which buckets count as poles. A pole
+    p ∈ {positive, negative} is SUBSTANTIAL when its count is
     >= max(2, int(log(fenomeen_total))) — the same population-scaled floor
     codebook_verifier's under-split/mini-code gates use, applied here to the
     fenomeen's own total rather than the global idea total.
@@ -126,8 +134,18 @@ def richting_dekking(codes: list, partition_results) -> float:
     that valence in the same fenomeen group) / (total number of substantial
     poles), aggregated (summed, not averaged) across all fenomena. A
     fenomeen with no substantial poles (e.g. too little data) contributes
-    nothing to numerator or denominator. If NO fenomeen anywhere has a
-    substantial pole, dekking is vacuously 1.0.
+    nothing to numerator or denominator.
+
+    ONE exception: a fenomeen with EXACTLY ONE substantial pole whose ONLY
+    code is "neutral" counts that pole as covered. This is the correctly
+    resolved dimensional case — `direction_rules.resolve_direction` folds a
+    lone substantial pole into a single neutral code when the opposing pole
+    never clears the floor, and that is the intended outcome, not a gap.
+    Without this exception every such (legitimately dimensional) phenomenon
+    would score 0.0.
+
+    If NO fenomeen anywhere has a substantial positive/negative pole,
+    dekking is vacuously 1.0.
     """
     attr_valence = collect_attribute_valence(partition_results)
 
@@ -142,22 +160,28 @@ def richting_dekking(codes: list, partition_results) -> float:
     substantial_total = 0
     covered_total = 0
     for sources, group_codes in groups.items():
-        counts = {b: 0 for b in _VALENCE_BUCKETS}
+        counts = {b: 0 for b in _ALL_VALENCE_BUCKETS}
         for attr in sources:
             c = attr_valence.get(attr, {})
-            for b in _VALENCE_BUCKETS:
+            for b in _ALL_VALENCE_BUCKETS:
                 counts[b] += c.get(b, 0)
         total = sum(counts.values())
         if total <= 0:
             continue
         floor = max(2, int(math.log(total)))
-        substantial = [b for b in _VALENCE_BUCKETS if counts[b] >= floor]
+        substantial = [b for b in _DIRECTIONAL_POLES if counts[b] >= floor]
         if not substantial:
             continue
 
         present_valences = {_field(code, "valence") for code in group_codes}
+        if (len(substantial) == 1 and len(group_codes) == 1
+                and present_valences == {"neutral"}):
+            covered = 1  # dimensional exception — correctly resolved, not a gap
+        else:
+            covered = sum(1 for b in substantial if b in present_valences)
+
         substantial_total += len(substantial)
-        covered_total += sum(1 for b in substantial if b in present_valences)
+        covered_total += covered
 
     if substantial_total == 0:
         return 1.0

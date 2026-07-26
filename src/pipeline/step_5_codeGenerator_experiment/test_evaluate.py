@@ -38,8 +38,8 @@ def _domain(attribute_assignments, attribute_valence, attribute_names=None):
 
 def test_richting_dekking_pure_pair_is_fully_covered():
     # AttrPos: 6 ideas "+", AttrNeg: 4 ideas "-". total=10, floor=max(2,int(log(10)))=2.
-    # Both poles substantial; a positive and a negative code share the same
-    # bronnenset -> both covered.
+    # Both directional poles (positive/negative) substantial; a positive and
+    # a negative code share the same bronnenset -> both covered.
     assignments = {}
     valence = {}
     for i in range(6):
@@ -63,7 +63,9 @@ def test_richting_dekking_pure_pair_is_fully_covered():
 
 def test_richting_dekking_dimensional_code_with_both_poles_substantial_is_zero():
     # AttrDim: 8 ideas "+", 8 ideas "-". total=16, floor=max(2,int(log(16)))=2.
-    # Both poles substantial, but the only code is neutral -> neither pole covered.
+    # BOTH directional poles substantial (so the single-substantial-pole
+    # exception does not apply), but the only code is neutral -> neither
+    # pole is covered.
     assignments = {}
     valence = {}
     for i in range(8):
@@ -82,9 +84,10 @@ def test_richting_dekking_dimensional_code_with_both_poles_substantial_is_zero()
     assert richting_dekking(codes, pr) == 0.0
 
 
-def test_richting_dekking_mono_pool_phenomenon_is_fully_covered():
+def test_richting_dekking_mono_pool_directly_matching_code_is_covered():
     # AttrMono: 5 ideas "+", nothing else. total=5, floor=max(2,int(log(5)))=2.
-    # Only "positive" clears the floor -> single substantial pole, covered.
+    # Only "positive" clears the floor -> single substantial pole. A code
+    # with valence=="positive" covers it directly, no exception needed.
     assignments = {}
     valence = {}
     for i in range(5):
@@ -95,6 +98,41 @@ def test_richting_dekking_mono_pool_phenomenon_is_fully_covered():
 
     codes = [
         {"code_name": "Positief mono", "valence": "positive", "source_attributes": ["AttrMono"]},
+    ]
+    assert richting_dekking(codes, pr) == 1.0
+
+
+def test_richting_dekking_mono_pool_dimensional_code_covered_by_exception():
+    # Same substantiality as above (single substantial pole: positive), but
+    # the phenomenon's only code is "neutral" (a correctly resolved
+    # dimensional case per direction_rules: the opposing pole never clears
+    # the floor, so it was rightly folded into one neutral code). The
+    # single-substantial-pole/lone-neutral-code exception must cover this
+    # as 1.0, not penalize it as an uncovered pole.
+    assignments = {}
+    valence = {}
+    for i in range(5):
+        idea = f"m{i}"
+        assignments[idea] = "AttrMono"
+        valence[idea] = "+"
+    pr = _domain(assignments, valence, ["AttrMono"])
+
+    codes = [
+        {"code_name": "Merk mono", "valence": "neutral", "source_attributes": ["AttrMono"]},
+    ]
+    assert richting_dekking(codes, pr) == 1.0
+
+
+def test_richting_dekking_neutral_bucket_is_never_a_pole():
+    # AttrNeutralOnly: entirely neutral ideas (no "+"/"-" valence recorded
+    # at all). Neutral is not a candidate pole, so no pole is ever
+    # substantial here regardless of volume -> vacuously fully covered,
+    # even with a neutral code and no exception needed to explain it.
+    assignments = {f"n{i}": "AttrNeutralOnly" for i in range(20)}
+    pr = _domain(assignments, {}, ["AttrNeutralOnly"])
+
+    codes = [
+        {"code_name": "Puur neutraal", "valence": "neutral", "source_attributes": ["AttrNeutralOnly"]},
     ]
     assert richting_dekking(codes, pr) == 1.0
 
