@@ -1,13 +1,17 @@
 """
-CoderingsTool — Streamlit UI (orchestrator over the cache-backed pipeline).
+CoderingsTool — Streamlit UI v2 (screen-model restructure of app.py).
 
-Architecture (see app_backend.py for the why):
-    The cache is the source of truth. This file is UI only: a step wizard that
-    reads live "done" status from the cache, runs a step's pipeline runner on
-    demand, shows the captured verbose log, and offers cascade re-runs. Results
-    are read back from the cache and the step-7 Excel export.
+Architecture (utils/dev/app_development_plan.md, Phase A):
+    The cache stays the only truth for "done" (app_backend probes it live).
+    New here is the page layer: every step page makes ONE explicit screen
+    decision — LOCKED | RUN | OUTPUT (| REVIEW, Phase D) — and pulls its
+    step-specific content from the STEP_VIEWS registry in app_views.py.
+    RUN screens explain the step before credits are spent; OUTPUT screens
+    show evidence and offer the next step; errors stay visible until
+    dismissed or superseded.
 
-Run:  streamlit run src/app/app.py   (or ./run_app.sh)
+Run:  streamlit run src/app/app_v2.py
+(app.py remains the production entry until v2 is promoted.)
 """
 
 import os
@@ -29,10 +33,10 @@ warnings.filterwarnings("ignore", message="To exit: use 'exit', 'quit', or Ctrl-
 
 import ui_text as ui
 import app_backend as be
-from app_backend import DatasetSpec, LAST_STEP
+import app_views as av
+from app_backend import DatasetSpec, LAST_STEP, Screen
 from config import CacheConfig
 from utils.cacheManager import CacheManager
-from utils.dataLoader import DataLoader
 
 st.set_page_config(page_title="CoderingsTool", page_icon="📊", layout="wide")
 
@@ -44,14 +48,21 @@ st.set_page_config(page_title="CoderingsTool", page_icon="📊", layout="wide")
 def get_cache_manager() -> CacheManager:
     return CacheManager(CacheConfig())
 
-@st.cache_resource
-def get_data_loader() -> DataLoader:
-    return DataLoader(data_dir=str(be.PROJECT_ROOT / "data"), verbose=False)
+
+def _concat_module():
+    """concat_open_ends (concatenate/ is not a package — path-load it)."""
+    concat_dir = str(be.PROJECT_ROOT / "concatenate")
+    if concat_dir not in sys.path:
+        sys.path.insert(0, concat_dir)
+    import concat_open_ends
+    return concat_open_ends
 
 st.session_state.setdefault("step", 0)
 st.session_state.setdefault("language", ui.DEFAULT_LANGUAGE)
-st.session_state.setdefault("spec", None)          # DatasetSpec | None
-st.session_state.setdefault("last_run", None)       # (step, summary) just executed
+st.session_state.setdefault("spec", None)           # DatasetSpec | None
+st.session_state.setdefault("last_success", None)   # (step, summary) just executed
+st.session_state.setdefault("last_error", None)     # (step, message) — STICKY
+st.session_state.setdefault("epoch", 0)             # bumped on run/invalidate → busts view caches
 st.session_state.setdefault("run_all", False)       # full-run view is active
 st.session_state.setdefault("run_all_confirm", False)  # 2-step confirm armed
 
@@ -64,19 +75,24 @@ def T(nl: str, en: str) -> str:
 def step_name(step: int) -> str:
     return ui.get_text("STEP_NAMES", lang).get(step, be.STEP_LABELS[step])
 
+def _bump_epoch():
+    st.session_state.epoch += 1
+
 # =============================================================================
-# Run a step (blocking) with spinner + transient feedback
+# Run a step (blocking) with spinner; outcome lands in sticky session banners
 # =============================================================================
 
 def run_step(step: int, force_recalc: bool):
     spec = st.session_state.spec
-    with st.spinner(T(f"Stap {step} draait… (live voortgang in de terminal)",
-                      f"Running step {step}… (live progress in the terminal)")):
+    with st.spinner(T(f"Stap {step} draait…", f"Running step {step}…")):
         try:
             summary = be.run_step(step, spec, force_recalc=force_recalc)
-            st.session_state.last_run = (step, summary)
+            st.session_state.last_success = (step, summary)
+            st.session_state.last_error = None   # a new successful run supersedes the error
         except Exception as exc:  # surface, don't crash the app
-            st.session_state.last_run = (step, f"__ERROR__ {exc}")
+            st.session_state.last_error = (step, str(exc))
+            st.session_state.last_success = None
+    _bump_epoch()
     st.rerun()
 
 # =============================================================================
@@ -87,7 +103,7 @@ def render_sidebar(status: dict, max_done: int):
     with st.sidebar:
         # Language
         names = {"Nederlands": "nl", "English": "en"}
-        pick = st.selectbox("🌐 Taal / Language", list(names.keys()),
+        pick = st.selectbox("Taal / Language", list(names.keys()),
                             index=list(names.values()).index(lang))
         if names[pick] != lang:
             st.session_state.language = names[pick]
@@ -100,9 +116,11 @@ def render_sidebar(status: dict, max_done: int):
         st.divider()
         st.caption(f"**{Path(spec.filename).stem}**\n\n{spec.var_name} · "
                    f"{spec.sample_size if spec.sample_size is not None else T('volledig', 'full')}")
-        if st.button("🏠 " + T("Andere dataset", "Change dataset"), width="stretch"):
+        if st.button(T("Andere dataset", "Change dataset"), width="stretch"):
             st.session_state.spec = None
             st.session_state.step = 0
+            st.session_state.last_success = None
+            st.session_state.last_error = None
             st.rerun()
 
         # Step navigator
@@ -121,25 +139,27 @@ def render_sidebar(status: dict, max_done: int):
 
         # Cache management: cascade re-run
         st.divider()
-        with st.expander("🔧 " + T("Cache / herverwerken", "Cache / reprocess")):
+        with st.expander(T("Cache / herverwerken", "Cache / reprocess")):
             cur = st.session_state.step
             st.caption(T(f"Herverwerken vanaf stap {cur} maakt stap {cur} t/m {LAST_STEP} ongeldig.",
                          f"Reprocessing from step {cur} invalidates steps {cur}–{LAST_STEP}."))
-            if st.button("🔄 " + T(f"Herverwerk vanaf stap {cur}", f"Reprocess from step {cur}"),
+            if st.button(T(f"Herverwerk vanaf stap {cur}", f"Reprocess from step {cur}"),
                          width="stretch"):
                 be.invalidate_from(cur, spec, get_cache_manager())
-                st.session_state.last_run = None
+                st.session_state.last_success = None
+                st.session_state.last_error = None
+                _bump_epoch()
                 st.toast(T(f"Cache gewist vanaf stap {cur}", f"Cache cleared from step {cur}"))
                 st.rerun()
 
         # Run all steps 1-7 (2-step confirm: a full run costs minutes + LLM credits)
-        with st.expander("⏩ " + T("Alles draaien (1-7)", "Run all (1-7)")):
+        with st.expander(T("Alles draaien (1-7)", "Run all (1-7)")):
             st.caption(T("Herberekent stap 1 t/m 7 volledig opnieuw. Dit kost meerdere "
                          "minuten en LLM-credits (€).",
                          "Fully recomputes steps 1-7. This takes several minutes and "
                          "LLM credits (€)."))
             if not st.session_state.run_all_confirm:
-                if st.button("⏩ " + T("Alles opnieuw draaien", "Re-run all steps"),
+                if st.button(T("Alles opnieuw draaien", "Re-run all steps"),
                              width="stretch", key="run_all_arm"):
                     st.session_state.run_all_confirm = True
                     st.rerun()
@@ -148,14 +168,15 @@ def render_sidebar(status: dict, max_done: int):
                              "Are you sure? Steps 1-7 will be recomputed."))
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("✅ " + T("Bevestig", "Confirm"), type="primary",
+                    if st.button(T("Bevestig", "Confirm"), type="primary",
                                  width="stretch", key="run_all_go"):
                         st.session_state.run_all = True
                         st.session_state.run_all_confirm = False
-                        st.session_state.last_run = None
+                        st.session_state.last_success = None
+                        st.session_state.last_error = None
                         st.rerun()
                 with c2:
-                    if st.button("✖️ " + T("Annuleer", "Cancel"),
+                    if st.button(T("Annuleer", "Cancel"),
                                  width="stretch", key="run_all_cancel"):
                         st.session_state.run_all_confirm = False
                         st.rerun()
@@ -165,12 +186,11 @@ def render_sidebar(status: dict, max_done: int):
 # =============================================================================
 
 def page_select_dataset():
-    st.header("📊 CoderingsTool")
-    st.caption(T("Selecteer een eerder verwerkte dataset of upload een nieuw SPSS-bestand.",
-                 "Pick a previously processed dataset or upload a new SPSS file."))
+    st.header("CoderingsTool")
+    st.caption(ui.get_text("STEP_INFO", lang).get(0, ""))
 
     # --- Resume from cache ---
-    st.subheader("📂 " + T("Hervat uit cache", "Resume from cache"))
+    st.subheader(T("Hervat uit cache", "Resume from cache"))
     specs = be.list_cached_datasets()
     if specs:
         labels = [s.display_name for s in specs]
@@ -181,229 +201,353 @@ def page_select_dataset():
         md = be.max_completed_step(chosen, cm)
         st.caption(T(f"Voltooid t/m stap {md} ({step_name(md)})",
                      f"Completed through step {md} ({step_name(md)})"))
-        if st.button("📂 " + T("Laden", "Load"), type="primary"):
+        # The question is fixed once processing has started — the executed
+        # steps already used it as LLM context. Read-only here; it is set at
+        # the commit moment of a new dataset (§3.7).
+        if chosen.var_lab:
+            st.caption(T("Vraag", "Question") + f": _{chosen.var_lab}_")
+        if st.button(T("Laden", "Load"), type="primary"):
             st.session_state.spec = chosen
             st.session_state.step = max(1, md)
-            st.session_state.last_run = None
+            st.session_state.last_success = None
+            st.session_state.last_error = None
+            _bump_epoch()
             st.rerun()
     else:
         st.info(T("Geen datasets in cache.", "No cached datasets."))
 
-    # --- Upload new ---
+    # --- Nieuw bestand: two-phase selection (plan §3.7) ---
+    # Phase 1 (this page): choosing is LIGHT. One bounded read (inspect_sav,
+    # ~9ms even on 71MB) feeds everything; nothing is written, so data/ stays
+    # stable and no widget can be reset by the page's own side effects. A merge
+    # is DECLARED here, not executed. Phase 2 (commit_selection): merge
+    # write+verify, step 0 and the cache — all behind one status box.
     st.divider()
-    st.subheader("📤 " + T("Nieuw bestand", "New file"))
-    up = st.file_uploader(T("Kies een SPSS-bestand (.sav)", "Choose an SPSS file (.sav)"),
-                          type=["sav"])
-    if up is not None:
-        dest = be.PROJECT_ROOT / "data" / up.name
-        dest.parent.mkdir(exist_ok=True)
-        dest.write_bytes(up.getbuffer())
-        loader = get_data_loader()
+    st.subheader(T("Nieuw bestand", "New file"))
+    server_files = sorted(p.name for p in (be.PROJECT_ROOT / "data").glob("*.sav"))
+    src_pick = st.selectbox(T("Bestand op de server (data/)", "File on the server (data/)"),
+                            server_files, index=None, key="server_pick",
+                            placeholder=T("Kies een bestand…", "Pick a file…"))
+    up = st.file_uploader(T("… of upload een nieuw SPSS-bestand (.sav)",
+                            "… or upload a new SPSS file (.sav)"), type=["sav"])
+
+    if src_pick:
+        fname = src_pick
+    elif up is not None:
+        # Saving the upload is source acquisition, not derived work; once.
+        if st.session_state.get("upload_saved") != up.name:
+            dest = be.PROJECT_ROOT / "data" / up.name
+            dest.parent.mkdir(exist_ok=True)
+            dest.write_bytes(up.getbuffer())
+            st.session_state.upload_saved = up.name
+        fname = up.name
+    else:
+        return
+
+    try:
+        insp = be.inspect_sav(fname)
+    except RuntimeError as exc:
+        st.error(str(exc))
+        return
+
+    all_vars = list(insp.variables)
+    string_vars = insp.string_vars or all_vars
+
+    intent = render_merge_intent(fname, insp, string_vars)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        id_col = st.selectbox(T("ID-kolom", "ID column"), all_vars, key=f"id_col_{fname}")
+    with col2:
+        if intent:
+            # Declaring a merge means analyzing the merged variable.
+            st.text_input(T("Tekstvariabele", "Text variable"),
+                          value=intent["newvar"] + T(" (samengevoegd)", " (merged)"),
+                          disabled=True, key=f"text_var_merged_{fname}")
+            text_var = intent["newvar"]
+        else:
+            text_var = st.selectbox(T("Tekstvariabele", "Text variable"), string_vars,
+                                    key=f"text_var_{fname}")
+
+    # Keyed per file: un-keyed widgets can silently lose their state when a
+    # rerun skips them — exactly how a chosen sample once vanished at commit.
+    limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False,
+                        key=f"limit_{fname}")
+    sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
+                                  value=500, step=50,
+                                  key=f"sample_{fname}") if limit else None
+
+    # Survey question — editable LLM context. Prefill: the merge-inherited
+    # question, else the picked variable's cleaned label. Metadata only.
+    default_q = intent["question"] if intent else \
+        be.clean_question(insp.variables[text_var]["label"], text_var)
+    var_lab = st.text_area(
+        T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
+        value=default_q or text_var, key=f"upload_varlab_{fname}_{text_var}", height=80,
+        help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van merk X').",
+               "Fix formatting/spelling or add context (e.g. 'the squirrel is brand X's logo)."))
+
+    # Preview on demand, from the bounded frame (§3.7 decision 1)
+    if st.toggle(T("Voorbeeld (eerste 200 rijen)", "Preview (first 200 rows)"),
+                 key=f"preview_{fname}"):
+        render_selection_preview(insp, intent, text_var)
+
+    if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
+        commit_selection(fname, intent, text_var, sample_size, id_col, var_lab)
+
+
+def render_merge_intent(fname: str, insp, string_vars: list):
+    """§3.7: DECLARE a slot-series merge — nothing is written here.
+
+    Returns {"newvar", "cols", "sep", "question"} for a valid intent, else None.
+    Merge-integrity rule: every member must carry the same question (cleaned
+    label); a mismatching series stays visible but is blocked, labels shown.
+    The merged variable inherits the FIRST member's cleaned question."""
+    groups = _concat_module().find_slot_groups(string_vars)
+    if not groups:
+        return None
+    with st.expander(T("Variabelen samenvoegen (bijv. xQd1_1 … xQd1_10)",
+                       "Merge variables (e.g. xQd1_1 … xQd1_10)")):
+        st.caption(T("Meerkeuze-open-vragen staan vaak verspreid over genummerde "
+                     "slots. Het samenvoegen zelf gebeurt pas bij 'Data laden'; "
+                     "het bronbestand blijft onaangetast.",
+                     "Multi-response open questions often sit in numbered slots. "
+                     "The merge itself runs at 'Load data'; the source file "
+                     "stays untouched."))
+        fmt = {p: f"{cols[0]} … {cols[-1]} ({len(cols)})" for p, cols in groups.items()}
+        none_label = T("— niet samenvoegen —", "— do not merge —")
+        pick = st.selectbox(T("Reeks", "Series"), [None] + list(groups),
+                            format_func=lambda p: none_label if p is None else fmt[p],
+                            key=f"merge_pick_{fname}")
+        if pick is None:
+            return None
+        cols = groups[pick]
+
+        question, mismatches = be.series_question(insp, cols)
+        if mismatches:
+            st.error(T("Deze reeks draagt niet overal dezelfde vraag — "
+                       "samenvoegen is geblokkeerd.",
+                       "This series does not carry the same question throughout — "
+                       "merging is blocked."))
+            st.markdown(f"- `{cols[0]}` — _{question or '(leeg)'}_")
+            for c, q in mismatches.items():
+                st.markdown(f"- `{c}` — _{q or '(leeg)'}_")
+            return None
+
+        c1, c2 = st.columns(2)
+        newvar = c1.text_input(T("Naam nieuwe variabele", "New variable name"),
+                               value=pick.rstrip("_").lstrip("x") or pick,
+                               key=f"merge_new_{fname}_{pick}").strip()
+        sep = c2.text_input(T("Scheidingsteken", "Separator"), value=", ",
+                            key=f"merge_sep_{fname}_{pick}")
+        if not newvar:
+            return None
+        if newvar in insp.variables:
+            st.error(T(f"'{newvar}' bestaat al in het bestand.",
+                       f"'{newvar}' already exists in the file."))
+            return None
+        if question:
+            st.caption(T(f"Vraag (geërfd van {cols[0]}): ",
+                         f"Question (inherited from {cols[0]}): ") + f"_{question}_")
+        return {"newvar": newvar, "cols": cols, "sep": sep, "question": question}
+
+
+def render_selection_preview(insp, intent, text_var: str):
+    """Sample of the (to-be-)analyzed variable from the bounded 200-row frame —
+    a merge intent is previewed by combining the slots in memory."""
+    if intent:
+        co = _concat_module()
+        values = insp.frame[intent["cols"]].apply(
+            lambda r: co.combine_row(r, intent["sep"]), axis=1)
+    else:
+        values = insp.frame[text_var]
+    s = values.fillna("").astype(str).str.strip()
+    filled = s[s != ""]
+    st.caption(f"{T('Eerste', 'First')} {len(s)} {T('rijen', 'rows')}: "
+               f"{len(filled)} {T('gevuld', 'filled')} · "
+               f"{filled.nunique()} {T('uniek', 'unique')}")
+    for v in filled.head(8):
+        st.markdown(f"- {v}")
+
+
+def commit_selection(fname: str, intent, text_var: str, sample_size, id_col: str,
+                     var_lab: str):
+    """§3.7 phase 2: ALL heavy work at one moment, behind one status box —
+    merge (reuse-when-fresh) → step 0 (load + cache) → navigate to step 1."""
+    co = _concat_module()
+    with st.status(T("Dataset vastleggen…", "Committing dataset…"),
+                   expanded=True) as box:
+        # Echo the exact identity being committed — a silently lost sample
+        # choice must be visible HERE, before credits are spent downstream.
+        size_txt = str(sample_size) if sample_size is not None else T("volledig", "full")
+        st.write(T(f"Dataset: {text_var} · steekproef: {size_txt}",
+                   f"Dataset: {text_var} · sample: {size_txt}"))
+        if intent:
+            src = be.PROJECT_ROOT / "data" / fname
+            out = Path(co.default_outfile(str(src), intent["newvar"]))
+            # Reuse-when-fresh (§3.7 decision 2): re-creating would touch the
+            # mtime and needlessly invalidate that file's pipeline cache.
+            reuse = out.exists() and out.stat().st_mtime > src.stat().st_mtime
+            if reuse:
+                try:
+                    reuse = intent["newvar"] in be.inspect_sav(out.name).variables
+                except RuntimeError:
+                    reuse = False
+            if reuse:
+                st.write(T(f"Samengevoegd bestand hergebruikt: {out.name}",
+                           f"Reusing merged file: {out.name}"))
+            else:
+                st.write(T("Variabelen samenvoegen…", "Merging variables…"))
+                try:
+                    res = co.concat_variables(str(src), intent["newvar"],
+                                              vars_list=intent["cols"],
+                                              sep=intent["sep"],
+                                              label=intent["question"] or None)
+                except (ValueError, RuntimeError) as exc:
+                    box.update(label=T("Samenvoegen mislukt", "Merge failed"),
+                               state="error")
+                    st.error(str(exc))
+                    return
+                st.write(T(f"Geschreven en geverifieerd: {Path(res['outfile']).name} "
+                           f"({res['filled']}/{res['rows']} rijen gevuld)",
+                           f"Written and verified: {Path(res['outfile']).name} "
+                           f"({res['filled']}/{res['rows']} rows filled)"))
+            fname = out.name
+
+        st.write(T("Data laden (stap 0)…", "Loading data (step 0)…"))
+        spec = DatasetSpec(filename=fname, var_name=text_var,
+                           sample_size=sample_size, id_column=id_col,
+                           var_lab=(var_lab or "").strip() or text_var)
         try:
-            var_types = loader.list_variables_with_types(up.name)
+            be.run_step(0, spec, force_recalc=False)
         except Exception as exc:
-            st.error(T(f"Kon variabelen niet lezen: {exc}", f"Could not read variables: {exc}"))
+            box.update(label=T("Laden mislukt", "Load failed"), state="error")
+            st.error(str(exc))
             return
+        # Commit fixes the question — also on a step-0 cache hit, which would
+        # otherwise leave an older (or absent) question on the data row.
+        be.set_question(spec)
+        box.update(label=T("Dataset geladen", "Dataset loaded"), state="complete")
 
-        all_vars = list(var_types.keys())
-        string_vars = [v for v, i in var_types.items() if i.get("is_string")] or all_vars
-
-        col1, col2 = st.columns(2)
-        with col1:
-            id_col = st.selectbox("🆔 " + T("ID-kolom", "ID column"), all_vars)
-        with col2:
-            text_var = st.selectbox("📄 " + T("Tekstvariabele", "Text variable"), string_vars)
-
-        limit = st.checkbox(T("Steekproef beperken", "Limit sample"), value=False)
-        sample_size = st.number_input(T("Aantal", "Count"), min_value=10, max_value=100000,
-                                      value=500, step=50) if limit else None
-
-        # Survey question — editable LLM context (fix typos/formatting, inject domain context).
-        try:
-            spss_lab = loader.get_varlab(up.name, text_var)
-            spss_lab = spss_lab[spss_lab.rfind("]") + 1:].strip()
-        except Exception:
-            spss_lab = text_var
-        var_lab = st.text_area(
-            "📝 " + T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
-            value=spss_lab, key=f"upload_varlab_{text_var}", height=80,
-            help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van merk X').",
-                   "Fix formatting/spelling or add context (e.g. 'the squirrel is brand X's logo')."))
-
-        if st.button("🚀 " + T("Data laden (stap 0)", "Load data (step 0)"), type="primary"):
-            spec = DatasetSpec(filename=up.name, var_name=text_var,
-                               sample_size=sample_size, id_column=id_col,
-                               var_lab=(var_lab or "").strip() or text_var)
-            st.session_state.spec = spec
-            be.run_step(0, spec, force_recalc=False)  # load + cache
-            st.session_state.step = 1
-            st.rerun()
+    st.session_state.spec = spec
+    st.session_state.step = 1
+    _bump_epoch()
+    st.rerun()
 
 # =============================================================================
-# STEPS 1-7 — generic step page
+# STEPS 1-7 — one explicit screen decision, content from the registry
 # =============================================================================
 
-def page_step(step: int, status: dict, max_done: int):
-    spec = st.session_state.spec
-    st.header(f"{step}. {step_name(step)}")
-
-    st.caption(f"**Data:** {spec.var_name} · "
-               f"{spec.sample_size if spec.sample_size is not None else T('volledig', 'full')}")
-    # The survey question is LLM context (spell-check + extraction + classification).
-    # It's editable; applying a change re-runs from step 1 (where the context first matters).
-    _vk = f"varlab_{spec.variable_key}"
-    st.session_state.setdefault(_vk, spec.var_lab or "")
-    with st.expander("📝 " + T("Enquêtevraag / context", "Survey question / context")):
-        edited = st.text_area(
-            T("Vraag (LLM-context — corrigeer opmaak/spelling of voeg context toe)",
-              "Question (LLM context — fix formatting/spelling or add context)"),
-            key=_vk, height=80,
-            help=T("Bv. 'de eekhoorn is het logo van merk X'. Toepassen herverwerkt vanaf stap 1.",
-                   "E.g. 'the squirrel is brand X's logo'. Applying reprocesses from step 1."))
-        if edited.strip() != (spec.var_lab or "").strip():
-            if st.button("💾 " + T("Toepassen (herverwerk vanaf stap 1)",
-                                   "Apply (reprocess from step 1)"), key="apply_varlab"):
-                spec.var_lab = edited.strip()
-                be.invalidate_from(1, spec, get_cache_manager())
-                st.session_state.last_run = None
-                st.toast(T("Vraag bijgewerkt — draai opnieuw vanaf stap 1.",
-                           "Question updated — re-run from step 1."))
+def render_banners(step: int):
+    """Sticky outcome banners. Errors persist until dismissed or superseded."""
+    err = st.session_state.last_error
+    if err and err[0] == step:
+        c1, c2 = st.columns([6, 1])
+        with c1:
+            st.error(err[1])
+            st.caption(T("Zie het uitvoeringslog hieronder voor details.",
+                         "See the execution log below for details."))
+        with c2:
+            if st.button("✖️", key=f"dismiss_err_{step}",
+                         help=T("Melding sluiten", "Dismiss")):
+                st.session_state.last_error = None
                 st.rerun()
 
-    prev_done = (step == 0) or status.get(step - 1, False)
-    done = status[step]
-
-    # Transient feedback from a run that just finished
-    if st.session_state.last_run and st.session_state.last_run[0] == step:
-        summary = st.session_state.last_run[1]
-        if summary.startswith("__ERROR__"):
-            st.error(summary.replace("__ERROR__", "❌"))
+    ok = st.session_state.last_success
+    if ok and ok[0] == step:
+        summary = ok[1]
+        if "⚠️ WAARSCHUWING" in summary:
+            st.warning(summary)
         else:
-            st.success(f"✅ {summary}")
-        st.session_state.last_run = None
+            st.success(summary)
 
-    # Run / re-run controls
-    if not prev_done:
-        st.warning(T(f"Voltooi eerst stap {step - 1} ({step_name(step - 1)}).",
-                     f"Complete step {step - 1} ({step_name(step - 1)}) first."))
-    elif not done:
-        st.markdown(T("Klaar om te draaien.", "Ready to run."))
-        if st.button("🚀 " + T(f"Draai stap {step}", f"Run step {step}"), type="primary"):
-            run_step(step, force_recalc=False)
-    else:
-        st.success("✅ " + T("Voltooid (uit cache).", "Completed (from cache)."))
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            if st.button("🔄 " + T("Opnieuw", "Re-run"), key=f"rerun_{step}"):
-                be.invalidate_from(step, spec, get_cache_manager())
-                run_step(step, force_recalc=True)
 
-    # Verbose execution log
+def render_locked(step: int):
+    st.warning(T(f"Voltooi eerst stap {step - 1} ({step_name(step - 1)}).",
+                         f"Complete step {step - 1} ({step_name(step - 1)}) first."))
+
+
+def render_run(step: int):
+    """RUN screen: explain what will happen, then offer the button."""
+    info = ui.get_text("STEP_INFO", lang).get(step)
+    if info:
+        st.info(info)
+    model = av.models_line(step)
+    if model:
+        st.caption(T("Model", "Model") + f": {model}")
+    if st.button("🚀 " + T(f"Draai stap {step}", f"Run step {step}"),
+                 type="primary", key=f"run_{step}"):
+        run_step(step, force_recalc=False)
+
+
+def render_output(step: int, spec: DatasetSpec):
+    """OUTPUT screen: evidence in tabs first, the way forward below it (calm:
+    review the result, then advance — one thing in view at a time,
+    Resultaat | Steekproef | Rapport)."""
+    av.render_cost_line(spec, lang, step)
+
+    view = av.STEP_VIEWS[step]
+    epoch = st.session_state.epoch
     log = be.find_verbose_log(spec, step)
+    labels = [T("Resultaat", "Result")]
+    if view.samples:
+        labels.append(T("Steekproef", "Sample"))
     if log:
-        with st.expander("📋 " + T("Uitvoeringslog", "Execution log")):
+        labels.append(T("Rapport", "Report"))
+    tabs = st.tabs(labels)
+    with tabs[0]:
+        if view.stats:
+            view.stats(spec, lang, epoch)
+    if view.samples:
+        with tabs[labels.index(T("Steekproef", "Sample"))]:
+            view.samples(spec, lang, epoch)
+    if log:
+        with tabs[-1]:
+            # The raw execution log, as-is. The Resultaat tab owns the distilled
+            # view; this tab is the honest, complete record (monospace = correct
+            # for terminal output). Stamp it so an older run's log is recognizable.
+            ts = be.verbose_log_time(spec, step)
+            if ts:
+                st.caption(T(f"Log van {ts}", f"Log from {ts}"))
             st.code(log, language=None)
 
-    # Results
-    if done:
-        render_results(step, spec)
+    # Actions below the evidence: review first, then advance.
+    st.divider()
+    c1, c2, _ = st.columns([1, 2, 3])
+    with c1:
+        if st.button(T("Opnieuw", "Re-run"), key=f"rerun_{step}"):
+            be.invalidate_from(step, spec, get_cache_manager())
+            run_step(step, force_recalc=True)
+    with c2:
+        if step < LAST_STEP:
+            if st.button(T(f"Volgende: {step_name(step + 1)} ▶",
+                           f"Next: {step_name(step + 1)} ▶"),
+                         type="primary", key=f"continue_{step}"):
+                st.session_state.step = step + 1
+                st.session_state.last_success = None
+                st.rerun()
 
 
-def render_results(step: int, spec: DatasetSpec):
-    """Lazy, light result views. Rich tabular output lives in the step-7 export."""
-    if step == 2:
-        data = be.load_quality_filtered(spec)
-        if data:
-            import collections
-            # Meaningful responses carry no filter code (None); 0 also = meaningful.
-            labels = {None: T("Betekenisvol", "Meaningful"),
-                      0: T("Betekenisvol", "Meaningful"),
-                      99999997: T("Weet niet / geen mening", "Don't know"),
-                      99999998: T("Geen antwoord / leeg", "No answer / empty"),
-                      99999999: T("Betekenisloos", "Gibberish")}
-            counts = collections.Counter(getattr(d, "quality_filter_code", None) for d in data)
-            total = len(data) or 1
-            st.subheader(T("Kwaliteitsfilter — uitsplitsing", "Quality filter — breakdown"))
-            rows = [{T("categorie", "category"): labels.get(code, str(code)),
-                     "n": n, "%": f"{100 * n / total:.1f}"}
-                    for code, n in sorted(counts.items(), key=lambda kv: -kv[1])]
-            st.dataframe(rows, width="stretch", hide_index=True)
+def page_step(step: int, status: dict):
+    spec = st.session_state.spec
+    st.header(f"{step}. {step_name(step)}")
+    st.caption(f"**Data:** {spec.var_name} · "
+               f"{spec.sample_size if spec.sample_size is not None else T('volledig', 'full')}")
+    # The survey question is fixed context during a run — editable only when
+    # loading a dataset (step 0), read-only here so every screen shows what
+    # the LLM was told the data is about.
+    if spec.var_lab:
+        st.caption(T("Vraag", "Question") + f": _{spec.var_lab}_")
 
-    if step == 5:
-        codes = be.load_codebook(spec)
-        if codes and codes.raw_codes:
-            st.subheader(T("Codeboek", "Codebook") + f" ({len(codes.raw_codes)})")
-            rows = [{"code": c.get("code_name", ""), "valence": c.get("valence", ""),
-                     "definition": c.get("definition", "")} for c in codes.raw_codes]
-            st.dataframe(rows, width="stretch", hide_index=True)
+    render_banners(step)
 
-    elif step == 6:
-        models = be.load_assignments(spec)
-        if models:
-            import collections
-            import random
-            # Count via assigned_code_id (K#) so the codebook's CURRENT name wins
-            # after a rename; ideas without an id fall back to their stored name.
-            codebook = be.load_codebook(spec)
-            id_to_name = {c["code_id"]: c["code_name"]
-                          for c in (codebook.raw_codes if codebook else [])
-                          if c.get("code_id")}
-            counter = collections.Counter()
-            for m in models:
-                for idea in (m.response_ideas or []):
-                    label = id_to_name.get(idea.assigned_code_id) or idea.assigned_code
-                    if label:
-                        counter[label] += 1
-            st.subheader(T("Codefrequenties", "Code frequencies"))
-            st.dataframe([{"code": c, "n": n} for c, n in counter.most_common()],
-                         width="stretch", hide_index=True)
-
-            # QA drill-down: inspect one respondent's assignments + rationale ("is this right?")
-            coded = [m for m in models if any(i.assigned_code for i in (m.response_ideas or []))]
-            if coded:
-                st.divider()
-                st.subheader("🔍 " + T("Inspecteer een respondent", "Inspect a respondent"))
-                rk = f"qa6_{spec.variable_key}"
-                if rk not in st.session_state:
-                    st.session_state[rk] = random.randrange(len(coded))
-                if st.button("🎲 " + T("Andere respondent", "Another respondent"), key="qa6_roll"):
-                    st.session_state[rk] = random.randrange(len(coded))
-                m = coded[st.session_state[rk] % len(coded)]
-                st.markdown(f"**{T('Respondent', 'Respondent')}:** `{m.respondent_id}`")
-                st.markdown(f"> {m.response}")
-                for i in (m.response_ideas or []):
-                    if not i.assigned_code:
-                        continue
-                    conf = f" · {i.confidence:.2f}" if i.confidence is not None else ""
-                    st.markdown(f"- **{i.assigned_code}**{conf} — _{i.idea or i.instance}_")
-                    if i.rationale:
-                        st.caption(f"&nbsp;&nbsp;&nbsp;↳ {i.rationale}")
-
-    elif step == 7:
-        st.subheader(T("Export", "Export"))
-        _xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        path = be.export_path(spec)        # results workbook
-        cb = be.codebook_path(spec)        # codebook workbook
-        c1, c2 = st.columns(2)
-        with c1:
-            if path.exists():
-                st.download_button("⬇️ " + T("Resultaten (Excel)", "Results (Excel)"),
-                                   data=path.read_bytes(), file_name=path.name,
-                                   mime=_xlsx_mime, width="stretch")
-        with c2:
-            if cb.exists():
-                st.download_button("⬇️ " + T("Codeboek (Excel)", "Codebook (Excel)"),
-                                   data=cb.read_bytes(), file_name=cb.name,
-                                   mime=_xlsx_mime, width="stretch")
-        if path.exists():
-            try:
-                import pandas as pd
-                # mixed-type columns → str so Arrow can render the preview
-                df = pd.read_excel(path).astype(str)
-                st.caption(f"{len(df)} {T('rijen', 'rows')} · {len(df.columns)} {T('kolommen', 'columns')}")
-                st.dataframe(df.head(50), width="stretch", hide_index=True)
-            except Exception as exc:
-                st.caption(T(f"Voorbeeld niet beschikbaar: {exc}", f"Preview unavailable: {exc}"))
+    screen = be.screen_for(step, status)
+    if screen is Screen.LOCKED:
+        render_locked(step)
+    elif screen is Screen.RUN:
+        render_run(step)
+    else:  # OUTPUT (REVIEW arrives in Phase D)
+        render_output(step, spec)
 
 # =============================================================================
 # RUN ALL — sequential force-recompute of steps 1-7 (full-width, streamed)
@@ -415,13 +559,12 @@ def page_run_all():
     # Clear the flag UP FRONT — this run owns the loop. The loop blocks for minutes;
     # if the SSH tunnel/browser reconnects meanwhile, Streamlit starts a second script
     # run that would see run_all=True, re-enter here, and call invalidate_from(1) AGAIN,
-    # wiping caches out from under the in-flight run (e.g. "No taxonomy_codes cache" at
-    # step 7). With the flag already false, any concurrent rerun renders the normal page
-    # and the loop runs exactly once.
+    # wiping caches out from under the in-flight run. With the flag already false, any
+    # concurrent rerun renders the normal page and the loop runs exactly once.
     st.session_state.run_all = False
-    st.header("⏩ " + T("Alle stappen draaien (1-7)", "Running all steps (1-7)"))
-    st.caption(T("Live voortgang in de terminal; samenvatting per stap hieronder.",
-                 "Live progress in the terminal; per-step summary below."))
+    st.header(T("Alle stappen draaien (1-7)", "Running all steps (1-7)"))
+    st.caption(T("Samenvatting per stap hieronder.",
+                 "Per-step summary below."))
 
     failed_step = None
     with st.status(T("Bezig met stap 1-7…", "Running steps 1-7…"),
@@ -442,6 +585,7 @@ def page_run_all():
             status_box.update(label=T(f"Gestopt bij stap {failed_step} ❌",
                                       f"Stopped at step {failed_step} ❌"), state="error")
 
+    _bump_epoch()
     if failed_step is None:
         st.session_state.step = LAST_STEP
         st.toast(T("Pipeline voltooid — ga naar Export.", "Pipeline complete — see Export."))
@@ -470,4 +614,4 @@ else:
     elif st.session_state.step == 0:
         page_select_dataset()
     else:
-        page_step(st.session_state.step, status, max_done)
+        page_step(st.session_state.step, status)

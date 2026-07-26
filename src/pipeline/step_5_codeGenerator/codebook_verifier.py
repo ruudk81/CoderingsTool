@@ -23,8 +23,11 @@ shares its artifact with the attribute dicts, so a rename must update both in
 the same edit — the HITL editor's contract, not a join this verifier can bridge.
 
 Also reported (warnings, do NOT block PASS):
-  - under-split codes: a neutral code whose ideas have BOTH a well-represented
-    positive and negative pole — it should likely have been two valence codes.
+  - under-split codes: a code with a well-represented opposing pole that no
+    counter-valence code sources — the pole has no home, so the code should
+    likely have been split. Opposing ideas in attributes that a counter-valence
+    code ALSO sources are not counted: they flow to that partner in step 6, so
+    a valence-split pair does not flag itself.
   - overlap classes: benign valence split / P9-review / taxonomy-level.
 """
 
@@ -68,7 +71,7 @@ class AttributeOverlap(BaseModel):
 
 
 class UnderSplitCode(BaseModel):
-    """A neutral code whose ideas have both a well-represented + and − pole."""
+    """A code with a well-represented, homeless opposing pole (true totals shown)."""
     code_name: str
     positive: int
     neutral: int
@@ -315,25 +318,42 @@ def build_scorecard(
 
     # --- Under-split detection (over-collapse) ---
     # Advisory only — reported in the scorecard, does not block PASS.
+    # The gate counts only HOMELESS opposing ideas: opposing ideas in an
+    # attribute that a counter-valence code also sources flow to that partner
+    # in step 6, so a valence-split pair must not flag itself. Reported counts
+    # stay the true attribute totals.
+    attr_code_valences: Dict[str, set] = {}
+    for code in codes:
+        v = _attr(code, "valence") or ""
+        for attr in (_attr(code, "source_attributes") or []):
+            attr_code_valences.setdefault(attr, set()).add(v)
+
     under_split: List[UnderSplitCode] = []
     for code in codes:
         code_valence = _attr(code, "valence") or ""
         if (_attr(code, "code_name") or "") == overig_code_name:
             continue
         p = n = g = 0
+        homeless_p = homeless_g = 0
         for attr in (_attr(code, "source_attributes") or []):
             c = attr_valence.get(attr, {})
-            p += c.get("positive", 0)
+            ap, ag = c.get("positive", 0), c.get("negative", 0)
+            p += ap
             n += c.get("neutral", 0)
-            g += c.get("negative", 0)
+            g += ag
+            covering = attr_code_valences.get(attr, set())
+            if "positive" not in covering:
+                homeless_p += ap
+            if "negative" not in covering:
+                homeless_g += ag
         total = p + n + g
-        # Flag whenever an OPPOSING pole is well-represented despite the label.
+        # Flag whenever an OPPOSING pole is well-represented AND homeless.
         if code_valence == "neutral":
-            flagged = _pole_clears(p, total) and _pole_clears(g, total)
+            flagged = _pole_clears(homeless_p, total) and _pole_clears(homeless_g, total)
         elif code_valence == "positive":
-            flagged = _pole_clears(g, total)
+            flagged = _pole_clears(homeless_g, total)
         elif code_valence == "negative":
-            flagged = _pole_clears(p, total)
+            flagged = _pole_clears(homeless_p, total)
         else:
             flagged = False
         if flagged:
@@ -404,8 +424,8 @@ def format_scorecard(sc: CodebookScorecard) -> str:
             lines.append(f"      - \"{p.code_a}\" / \"{p.code_b}\"  ←  {', '.join(p.shared_attributes)}")
 
     if sc.under_split_codes:
-        lines.append(f"\n  ◦ UNDER-SPLIT (warning) — neutral code with both poles well-represented "
-                     f"({len(sc.under_split_codes)}) — likely should be two valence codes:")
+        lines.append(f"\n  ◦ UNDER-SPLIT (warning) — well-represented opposing pole without a "
+                     f"counter-direction code ({len(sc.under_split_codes)}) — likely should be split:")
         for u in sc.under_split_codes:
             lines.append(f"      - \"{u.code_name}\"  (+{u.positive} / ○{u.neutral} / −{u.negative})")
 
