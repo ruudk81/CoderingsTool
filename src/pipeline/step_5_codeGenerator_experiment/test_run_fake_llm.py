@@ -423,3 +423,103 @@ async def test_missing_embedding_attribute_is_routed_to_overig(monkeypatch, tmp_
 
     attrs_by_name = {a["attribute_name"]: a for a in cache.partition_results["domain1"].attributes["facet1"]}
     assert attrs_by_name[MISSING_ATTR]["attribute_id"] in overig["source_attribute_ids"]
+
+
+# =============================================================================
+# Targeted test: a taxonomy attribute with ZERO idea assignments -> Overig
+# =============================================================================
+# Distinct from the missing-embedding case above: this attribute never
+# appears in `attribute_assignments`/`idea_assignments` at all (e.g. a
+# taxonomy attribute like "Eerlijke, integere bank" that step 4 defined but
+# no idea was ever classified into). `missing_attributes()` cannot see it
+# either — it only inspects attributes that DO appear in
+# `idea_assignments.values()`. Only `collect_taxonomy_attributes(...)`
+# (ground truth from the taxonomy structure itself) exposes the gap.
+ZERO_GROUPS = {
+    0: ["attr_z0_0", "attr_z0_1", "attr_z0_2"],
+    1: ["attr_z1_0", "attr_z1_1", "attr_z1_2"],
+    2: ["attr_z2_0", "attr_z2_1", "attr_z2_2"],
+}
+ZERO_ATTR = "attr_zero_assignments"
+ZERO_CLUSTERED_ATTRS = [a for members in ZERO_GROUPS.values() for a in members]
+# All-positive -> every cluster resolves "dimensional", no noise vote needed.
+ZERO_VALENCE = {a: {"positive": 5, "neutral": 0, "negative": 0} for a in ZERO_CLUSTERED_ATTRS}
+
+
+def _zero_vectors() -> dict:
+    base = {0: np.eye(8)[0], 1: np.eye(8)[1], 2: np.eye(8)[2]}
+    out = {}
+    for g, members in ZERO_GROUPS.items():
+        for j, attr in enumerate(members):
+            v = base[g] + 0.05 * np.eye(8)[3 + j]
+            out[attr] = v / np.linalg.norm(v)
+    return out
+
+
+def _zero_inputs() -> ExperimentInputs:
+    vectors = _zero_vectors()
+    partition_results = {
+        "domain1": DomainResultModel(
+            partition_name="domain1",
+            n_labels=len(ZERO_CLUSTERED_ATTRS) + 1,
+            n_batches=1,
+            facets=[{"facet_name": "facet1"}],
+            # ZERO_ATTR is a real taxonomy attribute (present in the
+            # structure below) but is never referenced in
+            # attribute_assignments — no idea was ever classified into it.
+            attributes={"facet1": [{"attribute_name": a} for a in ZERO_CLUSTERED_ATTRS + [ZERO_ATTR]]},
+            attribute_assignments={_idea_id(a): a for a in ZERO_CLUSTERED_ATTRS},
+        ),
+    }
+    idea_texts = {_idea_id(a): f"statement about {a}" for a in ZERO_CLUSTERED_ATTRS}
+    idea_embeddings = {_idea_id(a): vectors[a].tolist() for a in ZERO_CLUSTERED_ATTRS}
+    return ExperimentInputs(
+        partition_results=partition_results,
+        idea_assignments={_idea_id(a): a for a in ZERO_CLUSTERED_ATTRS},
+        attr_valence=ZERO_VALENCE,
+        idea_texts=idea_texts,
+        idea_embeddings=idea_embeddings,
+        language="Dutch",
+        variable_key="Q1_full",
+        survey_question="Wat vindt u van dit merk?",
+    )
+
+
+@pytest.mark.asyncio
+async def test_zero_assignment_attribute_is_routed_to_overig(monkeypatch, tmp_path):
+    import json
+
+    import pipeline.step_5_codeGenerator_experiment.assembler as assembler_mod
+    from pipeline.step_5_codeGenerator.codebook_verifier import build_scorecard
+    monkeypatch.setattr(assembler_mod, "CacheManager", _FakeCacheManager)
+
+    cache = await run_from_inputs(
+        inputs=_zero_inputs(),
+        partition_set=_partition_set(),
+        filename="survey.sav",
+        llm_call=_fake_llm_naming_only,
+        project_root=tmp_path,
+    )
+
+    non_overig = [c for c in cache.raw_codes if c["code_name"] != "Overig"]
+    overig = cache.raw_codes[-1]
+    assert overig["code_name"] == "Overig"
+
+    # never landed in a phenomenon cluster/code ...
+    for c in non_overig:
+        assert ZERO_ATTR not in c["source_attributes"]
+    # ... it landed in Overig instead
+    assert ZERO_ATTR in overig["source_attributes"]
+
+    # a routed_to_overig Decision record was logged, with the distinct reason
+    decisions_path = tmp_path / "exports" / "codebook" / "codebook_survey_Q1_full_EXP_decisions.json"
+    decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
+    routed_records = [d for d in decisions if d["phase"] == "clustering" and d["subject"] == ZERO_ATTR]
+    assert len(routed_records) == 1
+    assert routed_records[0]["outcome"] == "routed_to_overig"
+    assert routed_records[0]["evidence"].get("reason") == "no assigned ideas"
+
+    # the scorecard now reports 100% attribute coverage — the whole point of the fix
+    scorecard = build_scorecard(cache.raw_codes, cache.partition_results, overig["code_name"])
+    assert scorecard.attribute_coverage_pct == 100.0
+    assert ZERO_ATTR not in scorecard.orphan_attributes

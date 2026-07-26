@@ -8,7 +8,7 @@ it only reports, so a run can be judged against a hard definition of done.
 Definition of done (PASS):
   - idea coverage = 100%        (every answer lands in a code)
   - attribute coverage = 100%   (every attribute is used by ≥1 code)
-  - every code has ≥1 attribute
+  - every code has ≥1 attribute (Overig exempt — always emitted, may be empty)
   - Overig ≤ 10% of ideas       (the catch-all stays small)
   - no invalid sources          (provenance is real)
   - no taxonomy-level overlap   (no two same-valence codes with an identical
@@ -267,7 +267,11 @@ def build_scorecard(
         code_name = _attr(code, "code_name") or ""
         valence = _attr(code, "valence") or ""
         pairs = source_keys(code)
-        if not pairs:
+        if not pairs and code_name != overig_code_name:
+            # Overig is always emitted and may legitimately be empty (no
+            # dangling assignments, no zero-embedding/zero-assignment
+            # attributes to route) — that's a valid, passing state, not a
+            # structural defect. Any other sourceless code still FAILs.
             codes_without_attributes.append(code_name)
         for skey, sname in pairs:
             attr_to_codes.setdefault(skey, []).append((code_name, valence))

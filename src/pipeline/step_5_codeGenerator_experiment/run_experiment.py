@@ -31,6 +31,7 @@ from identity import ensure_codebook_ids
 from utils.cacheManager import CacheManager
 from utils.embedder import SharedEmbedder
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
+from pipeline.step_5_codeGenerator.codebook_verifier import collect_taxonomy_attributes
 
 from pipeline.step_5_codeGenerator_experiment.data_io import ExperimentInputs, load_inputs
 from pipeline.step_5_codeGenerator_experiment.phenomenon_clusterer import (
@@ -183,6 +184,21 @@ async def run_from_inputs(
             evidence={"reason": "no embeddings"},
         ))
 
+    # Taxonomy attributes with ZERO idea assignments never appear in
+    # `idea_assignments.values()` at all, so `missing_attributes()` (which
+    # only looks at assigned-but-uncentered attributes) can't see them
+    # either — they would otherwise never be placed anywhere (not clustered,
+    # not routed), showing up as an orphan attribute in the scorecard. Route
+    # them to Overig the same way, with their own reason.
+    taxonomy_attrs = collect_taxonomy_attributes(inputs.partition_results)
+    unassigned = sorted(set(taxonomy_attrs) - set(centroids) - set(missing))
+    for attr in unassigned:
+        decisions.append(Decision(
+            phase="clustering", subject=attr, outcome="routed_to_overig",
+            evidence={"reason": "no assigned ideas"},
+        ))
+    overig_routed = missing + unassigned
+
     cluster_result: ClusterResult = discover_phenomena(centroids)
     attr_descriptions = _attribute_descriptions(inputs.partition_results)
 
@@ -304,10 +320,10 @@ async def run_from_inputs(
         inputs=inputs, cluster_result=cluster_result, code_plans=code_plans,
         namings=namings, decisions=decisions, partition_set=partition_set,
     )
-    if missing and cache.raw_codes:
+    if overig_routed and cache.raw_codes:
         overig = cache.raw_codes[-1]
         existing = set(overig.get("source_attributes") or [])
-        added = [a for a in missing if a not in existing]
+        added = [a for a in overig_routed if a not in existing]
         if added:
             overig["source_attributes"] = list(overig.get("source_attributes") or []) + added
             overig["source_attribute_ids"] = []  # force ensure_codebook_ids to re-resolve
