@@ -4,6 +4,8 @@ Test suite for direction_rules.py (TDD approach).
 Cases a-f from task-3-brief.md, plus edge case: total=0.
 """
 
+import math
+
 import pytest
 from pipeline.step_5_codeGenerator_experiment.direction_rules import (
     resolve_direction,
@@ -86,33 +88,20 @@ class TestResolveDirection:
         assert decision.floor == 5
 
     def test_case_e_floor_formula(self):
-        """Case (e): verify floor = max(2, int(log(n)))."""
+        """Case (e): verify floor = max(2, int(log(n))) via resolve_direction."""
+        # Test spot cases: floor = max(2, int(log(n)))
         test_cases = [
-            (1, 2),     # log(1)=0, max(2, 0)=2
-            (2, 2),     # log(2)≈0.69, int=0, max(2, 0)=2
-            (3, 2),     # log(3)≈1.09, int=1, max(2, 1)=2
-            (7, 2),     # log(7)≈1.94, int=1, max(2, 1)=2
-            (8, 3),     # log(8)≈2.07, int=2, max(2, 2)=2 → wait, int(log(8))=2, so max(2,2)=2
-            (20, 3),    # log(20)≈2.99, int=2, max(2, 2)=2 → wait, int(log(20))=2
-            (100, 5),   # log(100)=4.60, int=4, max(2, 4)=4
-            (1000, 7),  # log(1000)=6.90, int=6, max(2, 6)=6
+            (7, 2),      # log(7)≈1.94, int=1, max(2, 1)=2
+            (111, 4),    # log(111)≈4.71, int=4, max(2, 4)=4
+            (4833, 8),   # log(4833)≈8.48, int=8, max(2, 8)=8
+            (340, 5),    # log(340)≈5.82, int=5, max(2, 5)=5
         ]
-        # Actually recalculating: int(log(n)) where log is natural log
-        # log(8)=2.079, int=2, so max(2,2)=2
-        # log(20)=2.995, int=2, so max(2,2)=2
-        # log(30)=3.401, int=3, so max(2,3)=3
-        # Let me recalculate more carefully based on the formula
-        for total, expected_floor in test_cases:
-            import math
-            computed_floor = max(2, int(math.log(total)))
-            if computed_floor != expected_floor:
-                # Adjust expectation
-                pass
 
-        # Just verify the formula works by spot-checking known cases
-        import math
-        assert max(2, int(math.log(111))) == 4  # log(111)≈4.71
-        assert max(2, int(math.log(340))) == 5  # log(340)≈5.82
+        for total, expected_floor in test_cases:
+            attrs = ["test"]
+            attr_valence = {"test": {"positive": total // 2, "neutral": 0, "negative": total // 2}}
+            decision = resolve_direction(attrs, attr_valence, total)
+            assert decision.floor == expected_floor, f"n={total}: expected floor={expected_floor}, got {decision.floor}"
 
     def test_case_f_codes_for_split_scenarios(self):
         """Case (f): codes_for distributes expected correctly in all three scenarios."""
@@ -132,6 +121,7 @@ class TestResolveDirection:
         # neutral_third check: outcome='needs_noise_check', total>0, neu/total=10/100=0.10 < 0.30 → False
 
         codes_split_no_third = codes_for(decision_b, split=True)
+        assert decision_b.neutral_third is False
         # dominant_pole='positive', so positive gets 80+10=90, negative gets 10
         assert len(codes_split_no_third) == 2
         # Order: positive first, then negative
@@ -151,19 +141,23 @@ class TestResolveDirection:
         assert codes_split_with_third[2] == {"valence": "negative", "expected": 60}
 
     def test_case_f_codes_for_dominant_negative(self):
-        """Case (f) variant: codes_for with dominant_pole='negative'."""
+        """Case (f) variant: codes_for with dominant_pole='negative'.
+
+        Order is ALWAYS [positive, negative], but dominant negative absorbs neutrals.
+        """
         attrs = ["n"]
-        attr_valence = {"n": {"positive": 20, "neutral": 30, "negative": 50}}
-        decision = resolve_direction(attrs, attr_valence, 100)
+        # Use values where neg > pos and neu/total < 0.30 (e.g., neu=8/100=0.08)
+        attr_valence = {"n": {"positive": 20, "neutral": 8, "negative": 50}}
+        decision = resolve_direction(attrs, attr_valence, 78)
         # dominant_pole should be 'negative' (50 > 20)
 
         codes_split = codes_for(decision, split=True)
-        # Check that split=True without neutral_third puts negative first with 50+30=80
-        if decision.neutral_third is False:
-            assert len(codes_split) == 2
-            # dominant negative gets the neutrals: 50+30=80
-            assert codes_split[0] == {"valence": "negative", "expected": 80}
-            assert codes_split[1] == {"valence": "positive", "expected": 20}
+        # Check that split=True without neutral_third preserves [positive, negative] order
+        assert decision.neutral_third is False
+        assert len(codes_split) == 2
+        # Order: positive first, negative gets neutrals
+        assert codes_split[0] == {"valence": "positive", "expected": 20}
+        assert codes_split[1] == {"valence": "negative", "expected": 50 + 8}
 
     def test_edge_case_total_zero(self):
         """Edge case: total=0 → no crash, outcome='dimensional', expected=0."""

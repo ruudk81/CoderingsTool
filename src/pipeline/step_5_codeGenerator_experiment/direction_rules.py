@@ -99,7 +99,8 @@ def codes_for(decision: DirectionDecision, split: bool) -> List[dict]:
     Returns:
         List of dicts {"valence": str, "expected": int}, ordered as:
         - split=False: [{"valence": "neutral", "expected": total}]
-        - split=True, no neutral_third: [dominant_pole (with neu added), other_pole]
+        - split=True, no neutral_third: [positive, negative] (always this order);
+          dominant pool absorbs the neutrals (expected tuning only)
         - split=True, with neutral_third: [positive, neutral, negative] (always this order)
     """
     if not split:
@@ -115,6 +116,7 @@ def codes_for(decision: DirectionDecision, split: bool) -> List[dict]:
         ]
 
     # split=True, no neutral_third: dominant pole gets the neutrals
+    # Order is always [positive, negative] regardless of dominance
     if decision.dominant_pole == "positive":
         return [
             {"valence": "positive", "expected": decision.pos + decision.neu},
@@ -122,6 +124,6 @@ def codes_for(decision: DirectionDecision, split: bool) -> List[dict]:
         ]
     else:  # dominant_pole == "negative"
         return [
-            {"valence": "negative", "expected": decision.neg + decision.neu},
             {"valence": "positive", "expected": decision.pos},
+            {"valence": "negative", "expected": decision.neg + decision.neu},
         ]
