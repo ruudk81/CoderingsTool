@@ -107,6 +107,66 @@ async def test_all_failures_give_majority_none():
 
 
 # =============================================================================
+# majority_key is required (no unhashable-identity default) and works for
+# each of the three response models with their obvious key.
+# =============================================================================
+@pytest.mark.asyncio
+async def test_majority_key_required_for_membership_vote():
+    async def llm_call(prompt, response_model):
+        return MembershipVote(choice="A", reason="r")
+
+    outcome = await vote(
+        build_prompt=lambda i: f"prompt {i}",
+        response_model=MembershipVote,
+        llm_call=llm_call,
+        majority_key=lambda v: v.choice,
+    )
+    assert outcome.majority == "A"
+    assert outcome.unanimous is True
+
+
+@pytest.mark.asyncio
+async def test_majority_key_required_for_noise_vote():
+    async def llm_call(prompt, response_model):
+        return NoiseVote(genuine_opposition=False, reason="r")
+
+    outcome = await vote(
+        build_prompt=lambda i: f"prompt {i}",
+        response_model=NoiseVote,
+        llm_call=llm_call,
+        majority_key=lambda v: v.genuine_opposition,
+    )
+    assert outcome.majority is False
+    assert outcome.unanimous is True
+
+
+@pytest.mark.asyncio
+async def test_majority_key_required_for_code_naming():
+    async def llm_call(prompt, response_model):
+        return CodeNaming(
+            code_name="friendly service", definition="def", diagnostic_test="test",
+            typical_indicators=["ind1"],
+        )
+
+    outcome = await vote(
+        build_prompt=lambda i: f"prompt {i}",
+        response_model=CodeNaming,
+        llm_call=llm_call,
+        majority_key=lambda v: v.code_name,
+    )
+    assert outcome.majority == "friendly service"
+    assert outcome.unanimous is True
+
+
+def test_vote_requires_majority_key_keyword():
+    """majority_key has no default — omitting it is a TypeError, not a
+    silent unhashable-Pydantic-model crash inside Counter."""
+    import inspect
+    sig = inspect.signature(vote)
+    assert sig.parameters["majority_key"].default is inspect.Parameter.empty
+
+
+# =============================================================================
 # (e) prompts for vote_idx 0/1/2 differ (evidence shuffle) but carry the same lines
 # =============================================================================
 def test_membership_prompt_shuffles_evidence_but_keeps_same_lines():

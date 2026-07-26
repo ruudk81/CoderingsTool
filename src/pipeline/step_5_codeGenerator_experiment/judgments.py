@@ -8,10 +8,11 @@ survivors to a majority via an injectable key function. It takes `llm_call`
 as a plain async callable so tests can inject fakes — no real LLM call, no
 API key, ever touches the test suite.
 
-`make_llm_call()` is the production `llm_call` factory: it mirrors the
-provider-handling pattern used in step_6's code_assignment.py and step_4's
-view_consolidation_ab.py (create_client + llm_create_async + get_reasoning_params),
-with its own bounded retry per vote.
+`make_llm_call()` is the production `llm_call` factory: it follows the
+standard create_client + llm_create_async + get_reasoning_params pattern of
+utils/llm.py, as used by utils/smoothRequester.py (and directly by scripts
+such as step_4's view_consolidation_ab.py), with its own bounded retry per
+vote.
 """
 from __future__ import annotations
 
@@ -63,8 +64,8 @@ async def vote(
     build_prompt: Callable[[int], str],
     response_model: Type[BaseModel],
     llm_call: Callable[[str, Type[BaseModel]], Any],
+    majority_key: Callable[[Any], Any],
     n_votes: int = 3,
-    majority_key: Optional[Callable[[Any], Any]] = None,
 ) -> VoteOutcome:
     """Fire `n_votes` independent votes concurrently and reduce to a majority.
 
@@ -74,10 +75,14 @@ async def vote(
         response_model: Pydantic model each vote must resolve to.
         llm_call: async (prompt, response_model) -> instance. Injectable —
             tests pass fakes; production passes `make_llm_call(...)`.
+        majority_key: maps a successful vote's response to the (hashable)
+            value the majority is computed over (e.g. `lambda v: v.choice`
+            for `MembershipVote`, `lambda v: v.genuine_opposition` for
+            `NoiseVote`). Required — the response models this module defines
+            are Pydantic models, which are unhashable, so there is no safe
+            identity-function default: computing `Counter` over raw instances
+            would raise `TypeError` before a single vote could be tallied.
         n_votes: number of independent votes to fire (default 3).
-        majority_key: maps a successful vote's response to the value the
-            majority is computed over (e.g. `lambda v: v.choice`). Defaults
-            to the identity function.
 
     Returns:
         VoteOutcome with the successful vote instances, the majority value
@@ -97,8 +102,7 @@ async def vote(
     if not votes:
         return VoteOutcome(votes=[], majority=None, unanimous=False, failed=failed)
 
-    key = majority_key or (lambda v: v)
-    counts = Counter(key(v) for v in votes)
+    counts = Counter(majority_key(v) for v in votes)
     majority_value, majority_count = counts.most_common(1)[0]
     unanimous = majority_count == len(votes)
     return VoteOutcome(votes=votes, majority=majority_value, unanimous=unanimous, failed=failed)
@@ -218,10 +222,11 @@ def make_llm_call(
 ) -> Callable[[str, Type[BaseModel]], Any]:
     """Build the production `llm_call(prompt, response_model)` for `vote()`.
 
-    Mirrors the client-creation / llm_create_async / get_reasoning_params
-    pattern used in step_6_codeAssigner/code_assignment.py and
-    step_4_classifier/view_consolidation_ab.py. `model_key` resolves the
-    model via `get_step_model()` (e.g. "code_assignment" for votes,
+    Follows the standard client-creation / llm_create_async / get_reasoning_params
+    pattern of utils/llm.py (the same one utils/smoothRequester.py wraps for
+    its task dispatch, and that step_4_classifier/view_consolidation_ab.py
+    calls directly). `model_key` resolves the model via `get_step_model()`
+    (e.g. "code_assignment" for votes,
     "codegen_p8" for naming); `phase` is forwarded to `get_reasoning_params()`
     for per-step verbosity. A vote that keeps failing after `retries`
     attempts re-raises its last exception — `vote()` counts it as failed.
@@ -247,6 +252,8 @@ def make_llm_call(
                 )
             except Exception as exc:  # noqa: BLE001 - retried and re-raised below
                 last_exc = exc
+        if last_exc is None:
+            raise RuntimeError(f"make_llm_call: no attempts made (retries={retries})")
         raise last_exc
 
     return _call
