@@ -93,14 +93,22 @@ class CategoriesConfig:
     qr_model_p8: str = get_step_model("classifier_p8")    # P8: Cross-domain Attribute Consolidation
     qr_temperature: float = 0.3
 
-    # P1: Facet Discovery (per-domain, chunked)
-    qr_max_tokens_facet_discovery: int = 4000
+    # Output ceilings. A high ceiling is free — billing is per generated token,
+    # and smoothRequester throttles on measured throughput (it estimates from the
+    # prompt and corrects from actuals), not on this value. Too low is the only
+    # real failure: at 4000 a 22-attribute domain truncated at P7 and lost its
+    # consolidation. Upper bound is the model's own max_output — 128000 for
+    # gpt-5.4, 32000 for gpt-4.1 (see OPENAI_MODEL_LIMITS in config.py).
+    #
+    # Discovery (P1, P4) and consolidation (P2, P5, P7) enumerate an open-ended
+    # list, so their response grows with the data.
+    qr_max_tokens_facet_discovery: int = 32000
+    qr_max_tokens_attribute_discovery: int = 32000
+    qr_max_tokens_consolidation: int = 32000
 
-    # P3: Facet Assignment (single idea per call)
+    # Assignment (P3, P6) takes one idea and returns one label: bounded by
+    # construction, so it needs no headroom.
     qr_max_tokens_facet_assignment: int = 4000
-
-    # P4: Attribute Discovery (per facet within domain)
-    qr_max_tokens_attribute_discovery: int = 4000
 
     # Adaptive batching for P1 (facet discovery chunks)
     batch_size_min: int = 100      # no splitting below this (single batch)

@@ -85,8 +85,8 @@ Decide per phenomenon:
   Example: reliability with +88 / −17 ideas (n=105, floor(log(105))=4) → −17 clears the floor comfortably → produce "Reliable & solid" (positive) AND "Shaky & unreliable" (negative). Do NOT make a single neutral "reliability" code.
   Where do this phenomenon's NEUTRAL (○) ideas go? By default, fold them into the code for the DOMINANT pole — they do not need a code of their own. Only give them a separate third code when they are a genuinely large, distinct pattern: the neutral share of the phenomenon's total is ≥30%. Below that, treat the ○ count as noise around the two poles, not a phenomenon in itself.
 - Only ONE pole well-represented (the other is a stray few) → produce ONE code spanning the whole range, named for the underlying DIMENSION (valence neutral), never for the dominant pole.
-  Example: recognition with +67 / −2 ideas (n=69, floor(log(69))=4) → −2 stays below the floor → produce ONE neutral code "Brand recognition" covering well-known↔barely-known. (If "big" is frequent and "small" rare, the code is "size", not "big".)
-- EXCEPTION: a sparse pole that is a genuinely DISTINCT phenomenon — a different mechanism, not merely the opposite evaluation (e.g. "hypocritical / greenwashing" is not simply "not sustainable") — may stand as its own code despite low volume.
+  Example: recognition with +67 / −2 ideas (n=69, floor(log(69))=4) → −2 stays below the floor → produce ONE neutral code "Recognition" covering well-known↔barely-known. (If "big" is frequent and "small" rare, the code is "size", not "big".)
+- EXCEPTION: a sparse pole that is a genuinely DISTINCT phenomenon — it names its own mechanism rather than the absence or negation of the dominant pole — may stand as its own code despite low volume.
 </required_process>
 
 Output Requirements

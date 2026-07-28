@@ -31,8 +31,8 @@ Decide per phenomenon:
   Example: reliability with +88 / ○6 / −17 (n=111, floor(log(111))=4) → −17 clears the floor comfortably → keep "Reliable & solid" (positive) AND "Shaky & unreliable" (negative). Do NOT collapse to a single neutral "reliability" code.
   Where do the ○ (neutral) ideas go? By default, fold them into whichever of the two codes covers the DOMINANT pole — they do not need a code of their own. Only split them into their own third code when they are a genuinely large, distinct pattern: the neutral share of the phenomenon's total is ≥30%. Below that, treat the ○ count as noise around the two poles.
 - Only ONE pole well-represented (the other a stray few) → ONE code spanning the whole range, named for the underlying DIMENSION (valence neutral), never for the dominant pole (e.g. "size", not "big").
-  Example: recognition with +67 / ○0 / −2 (n=69, floor(log(69))=4) → −2 stays below the floor → ONE neutral code "Brand recognition" covering well-known↔barely-known.
-- EXCEPTION: a sparse pole that is a genuinely DISTINCT phenomenon — a different mechanism, not merely the opposite evaluation (e.g. "hypocritical / greenwashing" is not simply "not sustainable") — may remain its own code despite low volume.
+  Example: recognition with +67 / ○0 / −2 (n=69, floor(log(69))=4) → −2 stays below the floor → ONE neutral code "Recognition" covering well-known↔barely-known.
+- EXCEPTION: a sparse pole that is a genuinely DISTINCT phenomenon — it names its own mechanism rather than the absence or negation of the dominant pole — may remain its own code despite low volume.
 
 ## STEP 2 — AGGRESSIVE MERGING WITHIN CLUSTERS
 
@@ -128,7 +128,7 @@ Codes must not be general vs. specific, or principle vs. application.
 If this occurs → merge
 
 ### NO OBJECT SPLITTING
-Do not split based on object (e.g., humans vs. animals).
+Do not split codes by the object a principle is applied to.
 If the same underlying principle applies → merge
 
 ### PRECEDENCE

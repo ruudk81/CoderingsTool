@@ -193,6 +193,7 @@ class TaxonomyClassifier:
         self._max_tokens_facet_discovery = config.qr_max_tokens_facet_discovery
         self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
         self._max_tokens_attribute_discovery = config.qr_max_tokens_attribute_discovery
+        self._max_tokens_consolidation = config.qr_max_tokens_consolidation
 
         # Batch sizing — P1 (facet discovery)
         self._batch_size_min = config.batch_size_min
@@ -1611,7 +1612,7 @@ class TaxonomyClassifier:
                     metadata={
                         "model": self._model_p2,
                         "temperature": 0.0,
-                        "max_tokens": self._max_tokens_facet_discovery,
+                        "max_tokens": self._max_tokens_consolidation,
                         "language": prompt_context.language,
                         "partition_name": task['domain_name'],
                         "dimension_name": prompt_context.dimension_name,
@@ -1623,7 +1624,7 @@ class TaxonomyClassifier:
                 'prompt': prompt,
                 'response_model': FacetConsolidatedResponse,
                 'temperature': 0.0,
-                'max_tokens': self._max_tokens_facet_discovery,
+                'max_tokens': self._max_tokens_consolidation,
                 'max_retries': 3,
                 'extra_kwargs': get_reasoning_params(self._model_p2, phase="classifier_p2"),
             }
@@ -1766,7 +1767,7 @@ class TaxonomyClassifier:
                     metadata={
                         "model": self._model_p5,
                         "temperature": 0.0,
-                        "max_tokens": self._max_tokens_attribute_discovery,
+                        "max_tokens": self._max_tokens_consolidation,
                         "language": prompt_context.language,
                         "domain_name": task['domain_name'],
                         "facet_name": task['facet_name'],
@@ -1780,7 +1781,7 @@ class TaxonomyClassifier:
                 'prompt': prompt,
                 'response_model': AttributeChunkConsolidatedResponse,
                 'temperature': 0.0,
-                'max_tokens': self._max_tokens_attribute_discovery,
+                'max_tokens': self._max_tokens_consolidation,
                 'max_retries': 3,
                 'extra_kwargs': get_reasoning_params(self._model_p5, phase="classifier_p5"),
             }
@@ -1857,7 +1858,7 @@ class TaxonomyClassifier:
                     metadata={
                         "model": self._model_p7,
                         "temperature": self._temperature,
-                        "max_tokens": self._max_tokens_attribute_discovery,
+                        "max_tokens": self._max_tokens_consolidation,
                         "language": prompt_context.language,
                         "domain_name": task['domain_name'],
                         "n_facets": len(task['facet_attributes']),
@@ -1872,7 +1873,7 @@ class TaxonomyClassifier:
                 'prompt': prompt,
                 'response_model': AttributeConsolidatedResponse,
                 'temperature': self._temperature,
-                'max_tokens': self._max_tokens_attribute_discovery,
+                'max_tokens': self._max_tokens_consolidation,
                 'max_retries': 3,
                 'extra_kwargs': get_reasoning_params(self._model_p7, phase="classifier_p7"),
             }

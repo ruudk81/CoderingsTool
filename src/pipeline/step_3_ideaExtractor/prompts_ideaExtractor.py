@@ -103,7 +103,8 @@ Extract these GROUP 2 specifiers (subject matter):
 3. **entity**: Main entity of interest
    - What entity (group, person or thing) is the primary focus?
    - Use lowercase with underscores for multi-word names
-   - Examples: "ing_bank", "tesla_model_3", "albert_heijn", "ns_trains"
+   - The entity may be a brand, product, organisation, service, place or group —
+     whatever the survey question is about
 
 Provide concise answers (2-5 words each) in {language}.
 
@@ -122,7 +123,6 @@ class GenericSpecifierGroup2Response(BaseModel):
     )
     entity: str = Field(
         description="Main entity of interest, lowercase_with_underscores",
-        examples=["ing_bank", "tesla_model_3", "albert_heijn"]
     )
 
 
@@ -179,7 +179,7 @@ Different chunks produced these GROUP 2 specifiers (subject matter):
 Your task: Consolidate these into ONE canonical set of specifiers.
 
 Guidelines:
-- Resolve semantic variations (e.g., "financial services" vs "banking sector" -> choose most accurate)
+- Resolve semantic variations: where chunks word the same thing differently, choose the most accurate wording
 - For **sector**: Standardize to lowercase, single/hyphenated word
 - For **topic**: Choose the most representative subject matter across all chunks
 - For **entity**: Standardize format (lowercase_with_underscores)
@@ -571,7 +571,6 @@ class DomainItem(BaseModel):
     )
     label: str = Field(
         description="Human-readable label in {language} (1-4 words)",
-        examples=["Toegang en logistiek", "Waardepropositie", "Gastvrijheid en interactie"]
     )
     definition: str = Field(
         description="Short inclusion definition in {language} (1 sentence). One focused subject axis, no examples or enumerations"
@@ -659,7 +658,7 @@ Your task is to consolidate these chunk-level domain lists into the fewest mutua
 
 Important consolidation principles:
 - MERGE domains that have conceptual overlap, near-equivalence, or represent subcategories of a broader concept
-- MERGE domains that are two lenses on the same phenomenon (e.g., "merkidentiteit" and "merkperceptie" both describe brand characteristics)
+- MERGE domains that are two lenses on the same phenomenon — different wording for one underlying subject
 - ENSURE ontological distinctness: no two domains may share conceptual space. A domain must not be a subset of another.
 - ENSURE semantic distance: a coder assigning a response must not plausibly hesitate between two domains. No "could go either way" situations.
 - MAINTAIN full coverage: the consolidated domains must collectively cover all concepts present in the chunk-level analyses

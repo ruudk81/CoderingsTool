@@ -454,7 +454,7 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
 For each concept, determine WHICH underlying dimension it answers.
 - Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one facet (e.g. socio-economic class vs political orientation vs age are different dimensions).
 - Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
-- Do NOT create separate facets based only on the object discussed (e.g. "humans" vs "animals") when the same underlying value applies — an object is not a dimension.
+- Do NOT create separate facets based only on the object discussed, when the same underlying value applies — an object is not a dimension.
 
 **2. PREVALENCE SETS GRANULARITY (within a dimension only).**
 - A high-count value keeps its own facet — never dissolve a well-supported concept.
@@ -463,8 +463,9 @@ Prevalence decides how finely to split WITHIN a dimension; it NEVER licenses mer
 
 **3. LIFT, DON'T FLATTEN.**
 When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
-FORBIDDEN: empty containers that only name the dimension ("target-group positioning", "institutional trust", "size").
-REQUIRED: a stateable value a reader can picture ("a bank for ordinary people", "a trustworthy bank", "a small bank").
+FORBIDDEN: a container that only names the axis it sits on — the reader learns what was being measured, not what was said.
+REQUIRED: a label that states the value itself, so the reader knows what the respondents expressed.
+Test: read the label alone. If it tells you only which question was asked, it is a container; if it tells you what the answer was, it is a value.
 
 **4. PLAIN, MEANINGFUL LABELS.**
 Name every surviving facet in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
@@ -964,7 +965,7 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
 For each concept, determine WHICH underlying dimension it answers.
 - Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one attribute (e.g. socio-economic class vs political orientation vs age are different dimensions).
 - Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
-- Do NOT create separate attributes based only on the object discussed (e.g. "humans" vs "animals") when the same underlying value applies — an object is not a dimension.
+- Do NOT create separate attributes based only on the object discussed, when the same underlying value applies — an object is not a dimension.
 
 **2. PREVALENCE SETS GRANULARITY (within a dimension only).**
 - A high-count value keeps its own attribute — never dissolve a well-supported concept.
@@ -974,8 +975,9 @@ Prevalence decides how finely to split WITHIN a dimension; it NEVER licenses mer
 
 **3. LIFT, DON'T FLATTEN.**
 When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
-FORBIDDEN: empty containers that only name the dimension ("target-group positioning", "institutional trust", "size").
-REQUIRED: a stateable value a reader can picture ("a bank for ordinary people", "a trustworthy bank", "a small bank").
+FORBIDDEN: a container that only names the axis it sits on — the reader learns what was being measured, not what was said.
+REQUIRED: a label that states the value itself, so the reader knows what the respondents expressed.
+Test: read the label alone. If it tells you only which question was asked, it is a container; if it tells you what the answer was, it is a value.
 
 **4. PLAIN, MEANINGFUL LABELS.**
 Name every surviving attribute in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
@@ -1234,7 +1236,7 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
    For each concept, determine WHICH underlying dimension it answers.
    - Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one attribute (e.g. socio-economic class vs political orientation vs age are different dimensions).
    - Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
-   - Do NOT create separate attributes based only on the object discussed (e.g. "humans" vs "animals") when the same underlying value applies — an object is not a dimension.
+   - Do NOT create separate attributes based only on the object discussed, when the same underlying value applies — an object is not a dimension.
 
 2. PREVALENCE SETS GRANULARITY (within a dimension only).
    - A high-count value keeps its own attribute — never dissolve a well-supported concept.
@@ -1244,8 +1246,9 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
 
 3. LIFT, DON'T FLATTEN.
    When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
-   FORBIDDEN: empty containers that only name the dimension ("target-group positioning", "institutional trust", "size").
-   REQUIRED: a stateable value a reader can picture ("a bank for ordinary people", "a trustworthy bank", "a small bank").
+   FORBIDDEN: a container that only names the axis it sits on — the reader learns what was being measured, not what was said.
+   REQUIRED: a label that states the value itself, so the reader knows what the respondents expressed.
+   Test: read the label alone. If it tells you only which question was asked, it is a container; if it tells you what the answer was, it is a value.
 
 4. PLAIN, MEANINGFUL LABELS.
    Name every surviving attribute in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
@@ -1435,7 +1438,7 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
    For each concept, determine WHICH underlying dimension it answers.
    - Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one attribute (e.g. socio-economic class vs political orientation vs age are different dimensions).
    - Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
-   - Do NOT create separate attributes based only on the object discussed (e.g. "humans" vs "animals") when the same underlying value applies — an object is not a dimension.
+   - Do NOT create separate attributes based only on the object discussed, when the same underlying value applies — an object is not a dimension.
    - RESPECT DOMAIN BOUNDARIES: each domain above may list what it "Excludes (belong to other domains)". Do NOT merge an attribute into a domain that excludes its concept, and never set a consolidated attribute's parent_domain to a domain whose Excludes covers it.
 
 2. PREVALENCE SETS GRANULARITY (within a dimension only).
@@ -1445,8 +1448,9 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
 
 3. LIFT, DON'T FLATTEN.
    When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
-   FORBIDDEN: empty containers that only name the dimension ("target-group positioning", "institutional trust", "size").
-   REQUIRED: a stateable value a reader can picture ("a bank for ordinary people", "a trustworthy bank", "a small bank").
+   FORBIDDEN: a container that only names the axis it sits on — the reader learns what was being measured, not what was said.
+   REQUIRED: a label that states the value itself, so the reader knows what the respondents expressed.
+   Test: read the label alone. If it tells you only which question was asked, it is a container; if it tells you what the answer was, it is a value.
 
 4. PLAIN, MEANINGFUL LABELS.
    Name every surviving attribute in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
