@@ -51,9 +51,15 @@ src/pipeline/TAXONOMY_LOGIC.md
 # === OS ===
 .DS_Store
 
+# === SECRETS ===
+# Anything holding endpoints or API keys. deployment.txt carries an Azure key in
+# plain text at the repo root, where a single `git add .` would commit it.
+.env
+deployment.txt
+*deployment*.txt
+
 # === MISC ===
 .Python
 claude-edits.zip
 .claude/
-.env
 src BACKUP*/
