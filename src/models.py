@@ -105,6 +105,11 @@ class IdeasExtractedSubmodel(BaseModel):
     attribute: str = ""                   # Attribute (L4): named observable property (assigned by step 4)
     # --- Classification metadata ---
     valence: str = ""                     # Directional effect: +, -, or 0
+    # --- Deduplication (utils/ideaDedup.py, computed in step 3) ---
+    # idea_id of the idea that speaks for this one in per-idea phases. Equal to this
+    # idea's own id when it speaks for itself. Steps 4 and 6 decide once per
+    # representative and spread the result; empty means dedup never ran.
+    dedup_representative: str = ""
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 

@@ -10,6 +10,26 @@ Usage:
 
 PRINT_PROMPTS = False  # Toggle prompt printing
 EXPERIMENT_N  = None  # n or None
+
+# Idea deduplication (utils/ideaDedup.py) — OFF until the threshold is fixed.
+#
+# It works, and saves 69% of the per-idea calls on ASN. But the 0.99 threshold is
+# calibrated against a specific survey question, and the question is prepended to
+# every text before embedding, so its LENGTH shifts every similarity:
+#
+#     pair                          no question   30 chars   120 chars (ASN var_lab)
+#     eekhoorn / de eekhoorn  same       0.8936     0.9875     0.9934
+#     milieu / voor het milieu same      0.5445     0.9773     0.9882
+#     natuur / milieu          DIFF      0.4941     0.9252     0.9593
+#
+# At 0.99 the same data with a shorter question groups nothing at all. The ORDERING
+# is stable across all three — true pairs always rank above false ones — so a
+# threshold derived from the distribution would hold where a fixed one does not.
+# Not built: that is a measure over the data, and those get agreed first.
+#
+# Off means steps 4 and 6 process every idea, exactly as before. Nothing depends on
+# the field being set.
+DEDUP_ENABLED = False
 DISCOVER_DOMAINS = True  # True = Phase 3 discovers domains upfront; False = on-the-fly
 
 import sys
@@ -208,6 +228,10 @@ def run_step(config: StepConfig = None):
     verbose_reporter.stat_line(f"Output: {len(encoded_text)} responses with {total_ideas} ideas")
     verbose_reporter.stat_line(f"Average ideas per response: {total_ideas / len(encoded_text):.2f}")
 
+    # Idea deduplication — OFF. See DEDUP_ENABLED for why.
+    if DEDUP_ENABLED:
+        _attach_dedup_groups(encoded_text, var_lab, verbose_reporter)
+
     # Save to cache
     cache_manager.save_to_cache(
         encoded_text,
@@ -259,6 +283,29 @@ def run_step(config: StepConfig = None):
         prompt_printer.save_prompts(str(prompts_file))
 
     return encoded_text, extractor, prompt_printer
+
+
+
+def _attach_dedup_groups(encoded_text, var_lab, verbose_reporter) -> None:
+    """Write dedup_representative onto every idea. Never fatal.
+
+    A failure here costs money, not correctness: without the field steps 4 and 6
+    process every idea individually, exactly as they did before.
+    """
+    ideas = [i for r in encoded_text if r.response_ideas for i in r.response_ideas]
+    if not ideas:
+        return
+    try:
+        from utils.ideaDedup import dedup_ideas
+        result = dedup_ideas(ideas, survey_question=(var_lab or "").strip())
+    except Exception as exc:
+        verbose_reporter.stat_line(f"  Dedup skipped ({type(exc).__name__}: {exc}) — "
+                                   f"per-idea phases will process all {len(ideas)} ideas")
+        return
+    for idea in ideas:
+        idea.dedup_representative = result.representative_of.get(idea.idea_id, idea.idea_id)
+    verbose_reporter.stat_line(f"  Dedup: {result.summary()}")
+
 
 
 # =============================================================================
