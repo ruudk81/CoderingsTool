@@ -265,7 +265,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         ),
         examples=(
             DimensionExample(
-                survey_context="Brand identity survey (entity: Patagonia)",
+                survey_context="Brand identity survey (entity: Trailmark Apparel)",
                 response="more of an activist movement than a clothing brand",
                 instance="activist movement",
                 interpretation="activism positioning",
@@ -873,7 +873,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
 
             ),
             DimensionExample(
-                survey_context="Car brand perception (entity: Volvo)",
+                survey_context="Car brand perception (entity: Nordvale Motors)",
                 response="safe but boring design",
                 instance="safe",
                 interpretation="vehicle safety reputation",
