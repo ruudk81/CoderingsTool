@@ -48,6 +48,8 @@ from utils.modelPerfStats import (
 
 # === PROMPTS (builders + response models) =========================================================================
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
+    OTHER_DOMAIN_LABEL,
+    OTHER_DOMAIN_DEFINITION,
     build_context_specifier_group1_prompt,
     build_context_specifier_group2_prompt,
     build_consolidate_specifiers_group1_prompt,
@@ -83,6 +85,7 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
     DEFAULT_THROUGHPUT_CONFIG,
     DEFAULT_WARM_UP_CONFIG,
     DEFAULT_SPECIFIER_CONFIG,
+    DEFAULT_DOMAIN_DISCOVERY_CONFIG,
 )
 
 # === SMOOTH REQUESTER (orchestrator for bulk API processing) ==========================================
@@ -123,11 +126,22 @@ DEFAULT_LATENCY_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_latency_seconds
 DEFAULT_AVG_TOKENS = DEFAULT_BOOTSTRAP_CONFIG.default_avg_tokens
 SAMPLE_SIZE_FOR_TOKEN_ESTIMATION = DEFAULT_BOOTSTRAP_CONFIG.sample_size_for_token_estimation
 
-# Generic specifier settings (context extraction phases 1-3)
+# Sampling seed for the context-specifier sample. Unseeded, two runs on the same
+# data drew different responses, so any comparison between runs measured the draw
+# rather than the change. Seeded, the sample is a property of the dataset.
+SAMPLING_SEED = 20260728
+
+# Generic specifier settings (context extraction phases 1-2)
 GENERIC_SPECIFIER_SAMPLE_MIN = DEFAULT_SPECIFIER_CONFIG.sample_min
 GENERIC_SPECIFIER_SAMPLE_MAX = DEFAULT_SPECIFIER_CONFIG.sample_max
 GENERIC_SPECIFIER_CHUNK_SIZE = DEFAULT_SPECIFIER_CONFIG.chunk_size
 MAX_SPECIFIER_WORKERS = DEFAULT_SPECIFIER_CONFIG.max_workers
+
+# Domain discovery (phase 3) — reads EVERY response, not the specifier sample.
+DOMAIN_CHUNK_SIZE_MIN = DEFAULT_DOMAIN_DISCOVERY_CONFIG.chunk_size_min
+DOMAIN_CHUNK_SIZE_MAX = DEFAULT_DOMAIN_DISCOVERY_CONFIG.chunk_size_max
+DOMAIN_TARGET_CHUNKS = DEFAULT_DOMAIN_DISCOVERY_CONFIG.target_chunks
+DOMAIN_CHUNK_OVERLAP = DEFAULT_DOMAIN_DISCOVERY_CONFIG.chunk_overlap
 
 
 
@@ -179,6 +193,9 @@ class IdeaExtractor:
         self._captured_consolidate2 = False
         self._captured_taxonomy_consolidation = False
         self._captured_domain_chunk = False
+        # Seeded RNG for every sample this step draws. Instance-level so a
+        # second extractor in the same process starts from the same point.
+        self._rng = random.Random(SAMPLING_SEED)
         self._captured_domain_consolidation = False
         self._captured_domain_orthogonalize = False
         # Initialize tokenizer for token estimation (cached)
@@ -501,7 +518,7 @@ class IdeaExtractor:
         # Build response sample for tie-breaking
         chunk_responses_text = ""
         if sample_responses:
-            grounding_sample = random.sample(
+            grounding_sample = self._rng.sample(
                 sample_responses,
                 min(GENERIC_SPECIFIER_CHUNK_SIZE, len(sample_responses))
             )
@@ -552,6 +569,32 @@ class IdeaExtractor:
 
         return response
 
+
+    def _build_domain_chunks(self) -> List[List]:
+        """Chunk EVERY response for domain discovery, with overlap.
+
+        Not the specifier sample: reading a dataset's properties from a fifth of the
+        responses is sound, finding which themes exist is not. A theme that misses
+        the draw gets no domain, and its ideas then fall through to 'Other' for the
+        whole dataset. Same treatment step 4 gives facet discovery one level down.
+        """
+        n = len(self.responses)
+        if n <= DOMAIN_CHUNK_SIZE_MIN:
+            return [list(self.responses)]
+
+        size = max(DOMAIN_CHUNK_SIZE_MIN,
+                   min(max(n // DOMAIN_TARGET_CHUNKS, 1), DOMAIN_CHUNK_SIZE_MAX))
+        step = max(size - int(size * DOMAIN_CHUNK_OVERLAP), 1)
+
+        chunks, i = [], 0
+        while i < n:
+            chunks.append(list(self.responses[i:i + size]))
+            i += step
+            if i < n and i + size > n:
+                chunks.append(list(self.responses[-size:]))
+                break
+        return chunks
+
     async def _consolidate_domains(self, chunk_results: List[Dict], context_specifiers: Dict, sample_responses: Optional[List] = None) -> DomainConsolidatedResponse:
         """Consolidate chunk-level domain discoveries into a single set."""
         dimension = get_dimension(self.primary_dimension)
@@ -559,7 +602,7 @@ class IdeaExtractor:
         # Grounding sample of real responses (RC-6): judge distinctness against data, not labels
         chunk_responses_text = ""
         if sample_responses:
-            grounding_sample = random.sample(
+            grounding_sample = self._rng.sample(
                 sample_responses,
                 min(GENERIC_SPECIFIER_CHUNK_SIZE, len(sample_responses))
             )
@@ -635,7 +678,7 @@ class IdeaExtractor:
             Tuple of (context_specifiers dict, PrimaryDimensionConsolidatedResponse, DomainConsolidatedResponse)
         """
         sample_size = min(GENERIC_SPECIFIER_SAMPLE_MAX, max(int(0.2 * len(self.responses)), GENERIC_SPECIFIER_SAMPLE_MIN))
-        sample = random.sample(self.responses, min(sample_size, len(self.responses)))
+        sample = self._rng.sample(self.responses, min(sample_size, len(self.responses)))
 
         chunk_size = GENERIC_SPECIFIER_CHUNK_SIZE
         chunks = [sample[i:i+chunk_size] for i in range(0, len(sample), chunk_size)]
@@ -769,13 +812,22 @@ class IdeaExtractor:
         if self.discover_domains:
             self.verbose_reporter.stat_line(f"  Phase 3: Discovering domains from response data...")
 
+            domain_chunks = self._build_domain_chunks()
+            domain_chunk_texts = [
+                "\n".join([f"- {r.response}" for r in ch]) for ch in domain_chunks
+            ]
+            self.verbose_reporter.stat_line(
+                f"    Reading ALL {len(self.responses)} responses "
+                f"in {len(domain_chunks)} overlapping chunks"
+            )
+
             category_tasks = []
-            for chunk_idx, chunk in enumerate(chunks):
+            for chunk_idx, chunk in enumerate(domain_chunks):
                 category_tasks.append({
                     'task_id': f"topical_cat_chunk{chunk_idx}",
                     'group': 4,
                     'chunk_idx': chunk_idx,
-                    'chunk_text': chunk_texts[chunk_idx],
+                    'chunk_text': domain_chunk_texts[chunk_idx],
                     'chunk_size': len(chunk),
                     'context_specifiers': context_specifiers
                 })
@@ -990,14 +1042,17 @@ class IdeaExtractor:
         discovered_domains = getattr(self, 'domains', None)
         if discovered_domains:
             domain_table = (
-                "Pick the single best-fitting domain. The ✓ test and ✗ list are to help you CHOOSE BETWEEN "
-                "domains, not to reject a plausibly related idea — assign Other ONLY if the idea fits no domain at all.\n"
+                "Pick the single best-fitting domain. The ✓ test and ✗ list help you CHOOSE BETWEEN "
+                "domains; they are not grounds to reject a plausibly related idea.\n"
+                "There are two ways to get this wrong and they are equally bad:\n"
+                f"  - sending an idea to {OTHER_DOMAIN_LABEL} that one of the domains does name;\n"
+                "  - forcing an idea into a domain whose subject the idea never mentions.\n"
                 "Each domain lists its definition, ✓ a membership test, and ✗ neighbouring domains it should not be confused with:\n"
                 + "\n".join(
                     f"  • {c.label} = \"{c.definition}\"\n      ✓ {c.boundary_test}\n      ✗ {', '.join(c.exclusions)}"
                     for c in discovered_domains
                 )
-                + '\n  Other = "Does not fit any of the above thematic domains"'
+                + f"\n  {OTHER_DOMAIN_LABEL} = \"{OTHER_DOMAIN_DEFINITION}\""
             )
         else:
             # During token estimation (_calculate_avg_tokens), domains haven't been
@@ -1200,15 +1255,42 @@ class IdeaExtractor:
             decision_tree_stop_position=self.decision_tree_stop_position,
             # Domains — persist the full boundary (used by the prototype + step 4's
             # DomainDescription, which otherwise re-derives a weaker boundary_test).
-            domains=[
-                {
-                    "key": c.label, "label": c.label, "definition": c.definition,
-                    "boundary_test": getattr(c, "boundary_test", "") or "",
-                    "exclusions": list(getattr(c, "exclusions", []) or []),
-                }
-                for c in getattr(self, 'domains', []) or []
-            ],
+            domains=self._domains_metadata(),
         )
+
+    def _domains_metadata(self) -> List[Dict]:
+        """Domain metadata for ExtractionMetadata, INCLUDING the 'Other' escape hatch.
+
+        'Other' is an allowed assignment label (see build_extraction_prompt and
+        allowed_labels in prompts_ideaExtractor), so ideas do land in it — but it was
+        never persisted here. Step 4 then found a domain with no definition and
+        substituted the placeholder "Labels related to the domain 'Other'", which
+        travelled downstream as if it were a real definition. On ASN that affected
+        160 ideas whose domain was, from step 4 onward, undefined.
+
+        Persisting it does not make 'Other' a substantive domain; it makes its meaning
+        survive the step boundary. Empty ones are dropped later by prune_empty_nodes().
+        """
+        meta = [
+            {
+                "key": c.label, "label": c.label, "definition": c.definition,
+                "boundary_test": getattr(c, "boundary_test", "") or "",
+                "exclusions": list(getattr(c, "exclusions", []) or []),
+            }
+            for c in getattr(self, 'domains', []) or []
+        ]
+        if meta:
+            meta.append({
+                "key": OTHER_DOMAIN_LABEL,
+                "label": OTHER_DOMAIN_LABEL,
+                "definition": OTHER_DOMAIN_DEFINITION,
+                "boundary_test": (
+                    "Does this idea fit none of the other domains — no subject of its "
+                    "own that any of them names?"
+                ),
+                "exclusions": [c["label"] for c in meta],
+            })
+        return meta
 
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
         """Probe call to discover rate limits. Used by context extraction phases (1-3)."""

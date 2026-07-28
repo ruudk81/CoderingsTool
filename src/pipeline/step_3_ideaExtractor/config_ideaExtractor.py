@@ -259,6 +259,33 @@ class SpecifierConfig:
     max_workers: int = 10                   # Max workers for specifier extraction
 
 
+@dataclass
+class DomainDiscoveryConfig:
+    """Configuration for domain discovery (phase 3).
+
+    Domain discovery does NOT run on the specifier sample. Reading a dataset's
+    properties (language, sector, perspective) from a fifth of the responses is
+    sound — those do not change by reading more. Finding which THEMES exist is a
+    different question: a theme that misses the draw gets no domain, and every idea
+    about it then falls through to 'Other' for the whole dataset.
+
+    Measured on the response counts in use here, for a theme carried by 1% of
+    respondents, chance it appears at least twice in at least one chunk:
+
+        4586 responses, 917 sampled (the old rule)   0.81
+        4586 responses, all                          1.00
+       50000 responses, 1000 sampled                 0.41
+       50000 responses, all                          1.00
+
+    So discovery reads every response, chunked with overlap — the same treatment
+    step 4 gives facet and attribute discovery one level down.
+    """
+    chunk_size_min: int = 100          # no splitting below this (single chunk)
+    chunk_size_max: int = 150          # ceiling per chunk, keeps prompt quality high
+    target_chunks: int = 6             # ideal chunk count before the ceiling bites
+    chunk_overlap: float = 0.2         # overlap between adjacent chunks
+
+
 
 # =============================================================================
 # HEADER-AWARE CONCURRENCY CONTROLLER CONFIGURATION
@@ -319,4 +346,5 @@ DEFAULT_CIRCUIT_BREAKER_CONFIG = CircuitBreakerConfig()
 DEFAULT_PID_CONTROLLER_CONFIG = PIDControllerConfig()
 DEFAULT_TPM_TRACKING_CONFIG = TPMTrackingConfig()
 DEFAULT_SPECIFIER_CONFIG = SpecifierConfig()
+DEFAULT_DOMAIN_DISCOVERY_CONFIG = DomainDiscoveryConfig()
 DEFAULT_HEADER_AWARE_CONFIG = HeaderAwareConfig()

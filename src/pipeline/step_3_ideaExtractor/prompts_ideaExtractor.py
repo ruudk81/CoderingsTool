@@ -2,6 +2,26 @@ from __future__ import annotations
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
+# The escape-hatch domain. It is an allowed assignment label, so ideas land in it and
+# it must be persisted with the other domains — otherwise step 4 finds a domain with
+# no definition and substitutes a placeholder that then travels downstream.
+OTHER_DOMAIN_LABEL = "Other"
+# Positively defined on purpose. A purely negative definition ("fits nothing else")
+# makes this a leftover bin, and the model then force-fits answers that carry no
+# subject at all into a substantive domain — where every later step treats them as
+# if they belonged. Naming the case it actually covers gives those answers a
+# destination they genuinely match.
+OTHER_DOMAIN_DEFINITION = (
+    "The idea names no subject that any domain above covers. That includes an answer "
+    "expressing only an evaluation or a feeling with nothing it is about. This is a "
+    "real answer type, not a leftover bin — choose it when it is the correct answer."
+)
+# Short form for the response-model field description, where the full text does not fit.
+OTHER_DOMAIN_SHORT = (
+    "names no subject any domain above covers — including a bare evaluation or "
+    "feeling with no subject of its own"
+)
+
 try:
     from .dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
 except ImportError:
@@ -886,11 +906,11 @@ def create_extraction_model(
 
     # Build domain field — use label (survey language) not key (English)
     if domains:
-        allowed_labels = tuple(c.label for c in domains) + ("Other",)
+        allowed_labels = tuple(c.label for c in domains) + (OTHER_DOMAIN_LABEL,)
         _domain_description = (
             "Domain — which aspect of the entity does this concept belong to? One of: " +
             ", ".join(f"{c.label} ({c.definition})" for c in domains) +
-            ", Other (does not fit any of the above)"
+            f", {OTHER_DOMAIN_LABEL} ({OTHER_DOMAIN_SHORT})"
         )
         _domain_examples = [c.label for c in domains[:3]]
     else:
