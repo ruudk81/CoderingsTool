@@ -48,8 +48,10 @@ from utils.modelPerfStats import (
 
 # === PROMPTS (builders + response models) =========================================================================
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
-    OTHER_DOMAIN_LABEL,
-    OTHER_DOMAIN_DEFINITION,
+    STANDING_DOMAINS,
+    STANDING_BARE_KEY,
+    STANDING_OTHER_KEY,
+    DomainItem,
     build_context_specifier_group1_prompt,
     build_context_specifier_group2_prompt,
     build_consolidate_specifiers_group1_prompt,
@@ -857,7 +859,16 @@ class IdeaExtractor:
             else:
                 categories_consolidated = await self._consolidate_domains(category_results, context_specifiers, sample_responses=sample)
 
-            self.verbose_reporter.stat_line(f"  Domains: {[c.label for c in categories_consolidated.domains]}")
+            # The two standing domains join the discovered ones here, so every consumer
+            # downstream — the assignment menu, the domain table, the persisted
+            # metadata — sees a single list and needs no special case.
+            standing = self._resolve_standing_domains(categories_consolidated)
+            categories_consolidated.domains = list(categories_consolidated.domains) + standing
+
+            self.verbose_reporter.stat_line(
+                f"  Domains: {[c.label for c in categories_consolidated.domains]}")
+            self.verbose_reporter.stat_line(
+                f"    (standing: {[c.label for c in standing]})")
         else:
             self.verbose_reporter.stat_line(f"  Phase 3: Skipped (on-the-fly domains)")
             categories_consolidated = DomainConsolidatedResponse(domains=[])
@@ -1045,14 +1056,14 @@ class IdeaExtractor:
                 "Pick the single best-fitting domain. The ✓ test and ✗ list help you CHOOSE BETWEEN "
                 "domains; they are not grounds to reject a plausibly related idea.\n"
                 "There are two ways to get this wrong and they are equally bad:\n"
-                f"  - sending an idea to {OTHER_DOMAIN_LABEL} that one of the domains does name;\n"
+                "  - sending an idea to a catch-all domain that one of the others does name;\n"
                 "  - forcing an idea into a domain whose subject the idea never mentions.\n"
                 "Each domain lists its definition, ✓ a membership test, and ✗ neighbouring domains it should not be confused with:\n"
                 + "\n".join(
                     f"  • {c.label} = \"{c.definition}\"\n      ✓ {c.boundary_test}\n      ✗ {', '.join(c.exclusions)}"
                     for c in discovered_domains
                 )
-                + f"\n  {OTHER_DOMAIN_LABEL} = \"{OTHER_DOMAIN_DEFINITION}\""
+
             )
         else:
             # During token estimation (_calculate_avg_tokens), domains haven't been
@@ -1259,38 +1270,53 @@ class IdeaExtractor:
         )
 
     def _domains_metadata(self) -> List[Dict]:
-        """Domain metadata for ExtractionMetadata, INCLUDING the 'Other' escape hatch.
+        """Domain metadata for ExtractionMetadata.
 
-        'Other' is an allowed assignment label (see build_extraction_prompt and
-        allowed_labels in prompts_ideaExtractor), so ideas do land in it — but it was
-        never persisted here. Step 4 then found a domain with no definition and
+        self.domains includes the two standing domains (appended right after
+        consolidation), so they are persisted like any other. Before that they were
+        assignable but absent here: step 4 then found a domain with no definition and
         substituted the placeholder "Labels related to the domain 'Other'", which
-        travelled downstream as if it were a real definition. On ASN that affected
-        160 ideas whose domain was, from step 4 onward, undefined.
-
-        Persisting it does not make 'Other' a substantive domain; it makes its meaning
-        survive the step boundary. Empty ones are dropped later by prune_empty_nodes().
+        travelled downstream as if it were real. Empty ones are dropped later by
+        prune_empty_nodes().
         """
-        meta = [
+        return [
             {
-                "key": c.label, "label": c.label, "definition": c.definition,
+                "key": getattr(c, "key", "") or c.label,
+                "label": c.label,
+                "definition": c.definition,
                 "boundary_test": getattr(c, "boundary_test", "") or "",
                 "exclusions": list(getattr(c, "exclusions", []) or []),
             }
             for c in getattr(self, 'domains', []) or []
         ]
-        if meta:
-            meta.append({
-                "key": OTHER_DOMAIN_LABEL,
-                "label": OTHER_DOMAIN_LABEL,
-                "definition": OTHER_DOMAIN_DEFINITION,
-                "boundary_test": (
-                    "Does this idea fit none of the other domains — no subject of its "
-                    "own that any of them names?"
-                ),
-                "exclusions": [c["label"] for c in meta],
-            })
-        return meta
+
+    @staticmethod
+    def _resolve_standing_domains(consolidated) -> List:
+        """Return the two standing domains as DomainItems, in survey language.
+
+        The consolidation call renders them; if it omits or mangles one, fall back to
+        the English structural wording. Never returns fewer than two — an assignment
+        menu without them is what forced contentless answers into substantive domains.
+        """
+        got = {getattr(d, "key", "") or "": d for d in (getattr(consolidated, "standing_domains", None) or [])}
+        out = []
+        for key in (STANDING_BARE_KEY, STANDING_OTHER_KEY):
+            spec = STANDING_DOMAINS[key]
+            d = got.get(key)
+            if d is not None and (d.label or "").strip():
+                d.key = key
+                if not (d.definition or "").strip():
+                    d.definition = spec["definition"]
+                out.append(d)
+            else:
+                out.append(DomainItem(
+                    key=key,
+                    label=spec["fallback_label"],
+                    definition=spec["definition"],
+                    boundary_test=f"Does this idea match: {spec['short']}?",
+                    exclusions=[],
+                ))
+        return out
 
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
         """Probe call to discover rate limits. Used by context extraction phases (1-3)."""

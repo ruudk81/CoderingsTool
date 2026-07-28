@@ -2,25 +2,56 @@ from __future__ import annotations
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
-# The escape-hatch domain. It is an allowed assignment label, so ideas land in it and
-# it must be persisted with the other domains — otherwise step 4 finds a domain with
-# no definition and substitutes a placeholder that then travels downstream.
-OTHER_DOMAIN_LABEL = "Other"
-# Positively defined on purpose. A purely negative definition ("fits nothing else")
-# makes this a leftover bin, and the model then force-fits answers that carry no
-# subject at all into a substantive domain — where every later step treats them as
-# if they belonged. Naming the case it actually covers gives those answers a
-# destination they genuinely match.
-OTHER_DOMAIN_DEFINITION = (
-    "The idea names no subject that any domain above covers. That includes an answer "
-    "expressing only an evaluation or a feeling with nothing it is about. This is a "
-    "real answer type, not a leftover bin — choose it when it is the correct answer."
-)
-# Short form for the response-model field description, where the full text does not fit.
-OTHER_DOMAIN_SHORT = (
-    "names no subject any domain above covers — including a bare evaluation or "
-    "feeling with no subject of its own"
-)
+# ═══════════════════════════════════════════════════════════════════════
+# STANDING DOMAINS — always offered, never discovered
+# ═══════════════════════════════════════════════════════════════════════
+# Two answer types that every open-ended survey produces and that theme discovery
+# reliably fails to name, because neither is a theme:
+#
+#   bare_evaluation  the respondent HAS an impression but names no subject
+#                    ("goed", "prima") — a real, codeable answer type; the
+#                    approved ASN codebook carries it as Positieve/Negatieve
+#                    totaalindruk
+#   other            has content, but fits no discovered domain
+#
+# They are kept apart on purpose. Merged, the bare evaluations lose their identity
+# (8% of ideas on the 500-run) and the genuine residue can no longer be reported as
+# unclassifiable. A third case — no association at all — is normally discovered on
+# its own, because absence IS a theme respondents state explicitly.
+#
+# Offered as standing labels rather than left to discovery: the whole point is that
+# they are always available. A model that has to invent them sometimes will not, and
+# then answers get force-fitted into a substantive domain — where every later step
+# treats them as if they belonged there.
+#
+# Keys are stable and internal; labels are generated in the survey language by the
+# domain-consolidation call, so a Dutch taxonomy does not carry English labels.
+
+STANDING_BARE_KEY = "bare_evaluation"
+STANDING_OTHER_KEY = "other"
+
+STANDING_DOMAINS = {
+    STANDING_BARE_KEY: {
+        "fallback_label": "General impression",
+        "definition": (
+            "The idea expresses only an evaluation, a feeling or a general impression, "
+            "with no subject it is about. The respondent does have an impression — it "
+            "simply names nothing the other domains could cover."
+        ),
+        "short": "only an evaluation or impression, with no subject of its own",
+    },
+    STANDING_OTHER_KEY: {
+        "fallback_label": "Other",
+        "definition": (
+            "The idea names a subject, but one that no domain above covers. Use this "
+            "for genuinely off-topic or idiosyncratic content — not for answers that "
+            "merely express an impression, which belong to the general-impression domain."
+        ),
+        "short": "names a subject no domain above covers",
+    },
+}
+
+
 
 try:
     from .dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
@@ -627,6 +658,8 @@ def build_domain_consolidation_prompt(
     chunk_responses: str = "",
 ) -> str:
     """Build the domain consolidation prompt."""
+    bare_def = STANDING_DOMAINS[STANDING_BARE_KEY]["definition"]
+    other_def = STANDING_DOMAINS[STANDING_OTHER_KEY]["definition"]
     sample_block = ""
     if chunk_responses:
         sample_block = f"""
@@ -703,14 +736,31 @@ In your scratchpad:
 
 For EACH consolidated domain provide: a label, a one-sentence inclusion definition, a boundary_test (one yes/no question that decides membership), and exclusions (what does NOT belong, naming the neighbouring domain it is most easily confused with).
 
+# Standing domains
+
+Two further domains always exist alongside the ones you consolidated. Do NOT discover them from the data, do not merge them into your domains, do not drop them. Render each in the survey language with the same fields as any other domain, and set `key` exactly as given. Return both under `standing_domains`:
+
+  - key "bare_evaluation" — {bare_def}
+  - key "other" — {other_def}
+
+Keep these two apart: the first is an impression without a subject, the second is a subject nothing covers. Their definitions must stay this broad — do not narrow them to something you saw in the data.
+
 After completing your analysis in the scratchpad, provide your consolidated taxonomy as valid JSON inside <output> tags.
 
 Begin processing now and provide your output as valid JSON following the response schema provided."""
 
 class DomainConsolidatedResponse(BaseModel):
-    """Consolidated domains after merging all chunks."""
+    """Consolidated domains after merging all chunks, plus the standing-domain labels."""
     domains: List[DomainItem] = Field(
         description="Fewest mutually exclusive domains needed for full coverage, consolidated from all chunks"
+    )
+    standing_domains: List[DomainItem] = Field(
+        default_factory=list,
+        description=(
+            "Exactly two entries with key set to 'bare_evaluation' and 'other'. These "
+            "are not discovered from the data — you only render them in the survey "
+            "language, with the same fields as any other domain."
+        )
     )
 
 
@@ -906,11 +956,12 @@ def create_extraction_model(
 
     # Build domain field — use label (survey language) not key (English)
     if domains:
-        allowed_labels = tuple(c.label for c in domains) + (OTHER_DOMAIN_LABEL,)
+        # `domains` already includes the two standing domains — they are appended to
+        # self.domains right after consolidation, so every consumer sees one list.
+        allowed_labels = tuple(c.label for c in domains)
         _domain_description = (
             "Domain — which aspect of the entity does this concept belong to? One of: " +
-            ", ".join(f"{c.label} ({c.definition})" for c in domains) +
-            f", {OTHER_DOMAIN_LABEL} ({OTHER_DOMAIN_SHORT})"
+            ", ".join(f"{c.label} ({c.definition})" for c in domains)
         )
         _domain_examples = [c.label for c in domains[:3]]
     else:
