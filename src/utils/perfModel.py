@@ -26,6 +26,7 @@ MIN_BUCKET_N = 3         # a bucket needs this many observations to count
 MAX_TIMEOUT_RATE = 0.05  # bucket health threshold
 PRUNE_DAYS = 60
 DEFAULT_TIKTOKEN_OFFSET = 300
+TIMEOUT_FACTOR = 6.0
 
 # Observation layout: [in, out, latency_s, concurrency, timed_out, est_in, "YYYY-MM-DD"]
 IN, OUT, LAT, CONC, TIMED_OUT, EST_IN, DAY = range(7)
@@ -33,6 +34,35 @@ IN, OUT, LAT, CONC, TIMED_OUT, EST_IN, DAY = range(7)
 
 def _model_key(model: str) -> str:
     return f"{API_PROVIDER}:{model}"
+
+
+@dataclass
+class Prediction:
+    expected_input_tokens: Optional[int] = None
+    expected_output_tokens: Optional[int] = None
+    avg_tokens: Optional[int] = None
+    p50_latency_s: Optional[float] = None
+    concurrency: Optional[int] = None
+    timeout_s: Optional[float] = None
+    tiktoken_offset: int = DEFAULT_TIKTOKEN_OFFSET
+    origins: Dict[str, str] = field(default_factory=dict)
+
+    def origin_line(self) -> str:
+        if set(self.origins.values()) <= {"default"}:
+            return "all cold (default)"
+        parts = []
+        if self.avg_tokens is not None:
+            parts.append(f"avg_tokens: {self.avg_tokens:,} (warm: {self.origins['avg_tokens']})")
+        if self.concurrency is not None:
+            parts.append(f"concurrency: {self.concurrency} (warm: {self.origins['concurrency']})")
+        if self.timeout_s is not None:
+            parts.append(f"timeout: {self.timeout_s:.0f}s (warm: {self.origins['p50_latency_s']})")
+        return " | ".join(parts) or "all cold (default)"
+
+
+def _cold() -> Prediction:
+    return Prediction(origins={k: "default" for k in
+                               ("avg_tokens", "p50_latency_s", "concurrency", "tiktoken_offset")})
 
 
 class PerfModel:
@@ -87,6 +117,49 @@ class PerfModel:
             tmp.replace(self._path)
         except Exception as exc:
             print(f"[perfModel] WARNING: could not save stats: {exc}")
+
+    def predict(self, model: str, phase: str) -> Prediction:
+        try:
+            with self._lock:
+                phases = {p: list(b) for p, b in self._buffers.get(_model_key(model), {}).items()}
+                deployment = get_model_for_api(model)
+                dep_buffers = [list(b)
+                               for mk, phs in self._buffers.items()
+                               if get_model_for_api(mk.split(":", 1)[1]) == deployment
+                               for b in phs.values()]
+            pred = _cold()
+            buf = phases.get(phase, [])
+
+            exp = phase_expectation(buf)
+            if exp:
+                pred.origins["avg_tokens"] = "phase"
+            else:
+                exp = pool_expectation(phases)
+                if exp:
+                    pred.origins["avg_tokens"] = "pool"
+            if exp:
+                pred.expected_input_tokens, pred.expected_output_tokens = exp
+                pred.avg_tokens = exp[0] + exp[1]
+
+            coeffs = fit_curve(phases)
+            if coeffs and exp:
+                pred.p50_latency_s = curve_p50(coeffs, *exp)
+                pred.timeout_s = pred.p50_latency_s * TIMEOUT_FACTOR
+                pred.origins["p50_latency_s"] = "curve"
+
+            knee = capacity_knee(dep_buffers)
+            if knee:
+                pred.concurrency = knee
+                pred.origins["concurrency"] = "deployment"
+
+            off = phase_offset(buf)
+            if off is not None:
+                pred.tiktoken_offset = off
+                pred.origins["tiktoken_offset"] = "phase"
+            return pred
+        except Exception as exc:
+            print(f"[perfModel] WARNING: predict failed ({exc}) — running cold")
+            return _cold()
 
 
 def _live_rows(buf: List[list]) -> List[list]:

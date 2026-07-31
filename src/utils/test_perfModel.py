@@ -5,7 +5,7 @@ import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
-from utils.perfModel import PerfModel, RING_SIZE, PRUNE_DAYS, _model_key, phase_expectation, pool_expectation, phase_offset, fit_curve, curve_p50, capacity_knee
+from utils.perfModel import PerfModel, RING_SIZE, PRUNE_DAYS, _model_key, phase_expectation, pool_expectation, phase_offset, fit_curve, curve_p50, capacity_knee, Prediction  # noqa: F401
 
 
 def _tmp_store():
@@ -125,6 +125,43 @@ def test_capacity_knee_never_extrapolates():
     assert capacity_knee(bufs) == 73                      # observed max, not a rounded-up bucket edge
 
 
+def test_predict_warm_phase():
+    pm = PerfModel(_tmp_store())
+    for i in range(20):
+        # inputs 1000..2900: spread 2.9× so the curve-fit guard (≥1.5×) is satisfied
+        # outputs scale with inputs to provide varying data for curve fit
+        pm.observe("gpt-5.4", "p_warm", 1000 + i * 100, 100 + i * 5, 2.0 + i * 0.05, 40 + i,
+                   False, 1000 + i * 100 - 30)
+    p = pm.predict("gpt-5.4", "p_warm")
+    assert p.origins["avg_tokens"] == "phase"
+    assert p.avg_tokens == p.expected_input_tokens + p.expected_output_tokens
+    assert p.p50_latency_s and p.origins["p50_latency_s"] == "curve"
+    assert p.timeout_s and abs(p.timeout_s - p.p50_latency_s * 6.0) < 1e-6
+    assert p.tiktoken_offset == 30                      # median(in − est_in)
+    assert p.concurrency == 59                          # max observed healthy
+    assert "warm" in p.origin_line()
+
+
+def test_predict_new_phase_uses_pool():
+    pm = PerfModel(_tmp_store())
+    for i in range(20):
+        pm.observe("gpt-5.4", "p_other", 1000 + i * 100, 200, 2.0 + i * 0.05, 50, False)
+    p = pm.predict("gpt-5.4", "p_never_seen")
+    assert p.origins["avg_tokens"] == "pool"
+    assert p.avg_tokens is not None
+
+
+def test_predict_cold_and_fault_injected():
+    pm = PerfModel(_tmp_store())
+    p = pm.predict("gpt-5.4", "p_new")
+    assert p.avg_tokens is None and p.concurrency is None and p.timeout_s is None
+    assert set(p.origins.values()) == {"default"}
+    assert p.origin_line() == "all cold (default)"
+    pm._buffers = None                       # sabotage internals
+    p2 = pm.predict("gpt-5.4", "p_new")      # must not raise
+    assert set(p2.origins.values()) == {"default"}
+
+
 if __name__ == "__main__":
     test_observe_ring_and_roundtrip()
     test_corrupt_file_starts_fresh()
@@ -138,4 +175,7 @@ if __name__ == "__main__":
     test_capacity_knee_finds_planted_knee()
     test_capacity_knee_no_pressure_no_claim()
     test_capacity_knee_never_extrapolates()
+    test_predict_warm_phase()
+    test_predict_new_phase_uses_pool()
+    test_predict_cold_and_fault_injected()
     print("test_perfModel: OK")
