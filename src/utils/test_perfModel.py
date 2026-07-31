@@ -125,6 +125,18 @@ def test_capacity_knee_never_extrapolates():
     assert capacity_knee(bufs) == 73                      # observed max, not a rounded-up bucket edge
 
 
+def test_capacity_knee_low_bucket_timeouts_do_not_poison():
+    # Drain tails and single slow calls produce timeouts at LOW inflight;
+    # those say nothing about capacity and must not block healthy evidence above.
+    bufs = [[]]
+    for _ in range(4):                                    # sick bottom bucket (0-9)
+        bufs[0].append(_obs(800, 100, lat=90.0, conc=5, to=True))
+    for conc in (75, 76, 110, 111, 112):
+        for _ in range(3):                                # healthy high buckets
+            bufs[0].append(_obs(800, 100, lat=2.0, conc=conc))
+    assert capacity_knee(bufs) == 112
+
+
 def test_predict_warm_phase():
     pm = PerfModel(_tmp_store())
     for i in range(20):
@@ -190,6 +202,7 @@ if __name__ == "__main__":
     test_capacity_knee_finds_planted_knee()
     test_capacity_knee_no_pressure_no_claim()
     test_capacity_knee_never_extrapolates()
+    test_capacity_knee_low_bucket_timeouts_do_not_poison()
     test_predict_warm_phase()
     test_predict_ignores_foreign_provider_capacity()
     test_predict_new_phase_uses_pool()

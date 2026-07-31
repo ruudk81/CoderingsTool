@@ -226,22 +226,23 @@ def capacity_knee(buffers: List[List[list]]) -> Optional[int]:
 
     Takes a list of buffers (all phases, all models resolving to one deployment),
     buckets concurrency by BUCKET_WIDTH, and returns the highest observed concurrency
-    in the highest healthy bucket, provided every lower bucket with data is also
-    healthy (no claims across a sick gap). Never extrapolates above observed values.
+    in the highest healthy bucket. Saturation runs upward: a sick bucket disqualifies
+    itself and anything the walk has not yet reached below it stays claimable, but
+    timeouts at LOW inflight (drain tails, single slow calls) say nothing about
+    capacity and must not poison healthy evidence above them. Never extrapolates
+    above observed values.
     """
     rows = [r for b in buffers for r in b if r[CONC] > 0]
     buckets: Dict[int, list] = {}
     for r in rows:
         buckets.setdefault(r[CONC] // BUCKET_WIDTH, []).append(r)
-    best = None
-    for key in sorted(buckets):
+    for key in sorted(buckets, reverse=True):
         grp = buckets[key]
         if len(grp) < MIN_BUCKET_N:
             continue
-        if sum(1 for r in grp if r[TIMED_OUT]) / len(grp) > MAX_TIMEOUT_RATE:
-            break                       # sick bucket: nothing above it counts
-        best = max(r[CONC] for r in grp)
-    return best
+        if sum(1 for r in grp if r[TIMED_OUT]) / len(grp) <= MAX_TIMEOUT_RATE:
+            return max(r[CONC] for r in grp)
+    return None
 
 
 # Shared instance: one store per process, like token_tracker in llm.py.
