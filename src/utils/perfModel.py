@@ -89,5 +89,34 @@ class PerfModel:
             print(f"[perfModel] WARNING: could not save stats: {exc}")
 
 
+def _live_rows(buf: List[list]) -> List[list]:
+    return [r for r in buf if not r[TIMED_OUT]]
+
+
+def phase_expectation(buf: List[list]) -> Optional[tuple]:
+    rows = _live_rows(buf)
+    if len(rows) < MIN_PHASE_N:
+        return None
+    return (round(statistics.mean(r[IN] for r in rows)),
+            round(statistics.mean(r[OUT] for r in rows)))
+
+
+def pool_expectation(phases: Dict[str, List[list]]) -> Optional[tuple]:
+    per_phase = [e for e in (phase_expectation(b) for b in phases.values()) if e]
+    per_phase = [(i, o) for i, o in per_phase if i > 0]
+    if not per_phase:
+        return None
+    in_med = statistics.median(i for i, _ in per_phase)
+    ratio_med = statistics.median(o / i for i, o in per_phase)
+    return (round(in_med), round(in_med * ratio_med))
+
+
+def phase_offset(buf: List[list]) -> Optional[int]:
+    deltas = [r[IN] - r[EST_IN] for r in _live_rows(buf) if r[EST_IN]]
+    if len(deltas) < MIN_PHASE_N:
+        return None
+    return round(statistics.median(deltas))
+
+
 # Shared instance: one store per process, like token_tracker in llm.py.
 perf_model = PerfModel()

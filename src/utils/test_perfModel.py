@@ -4,7 +4,7 @@ import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
-from utils.perfModel import PerfModel, RING_SIZE, PRUNE_DAYS, _model_key
+from utils.perfModel import PerfModel, RING_SIZE, PRUNE_DAYS, _model_key, phase_expectation, pool_expectation, phase_offset
 
 
 def _tmp_store():
@@ -50,9 +50,42 @@ def test_zero_token_observation_skipped():
     assert pm._buffers == {}
 
 
+def _obs(i, o, lat=1.0, conc=50, to=False, est=None):
+    return [i, o, lat, conc, to, est, date.today().isoformat()]
+
+
+def test_phase_expectation():
+    buf = [_obs(800, 100) for _ in range(5)]
+    assert phase_expectation(buf) == (800, 100)
+    assert phase_expectation(buf[:4]) is None                       # below threshold
+    buf_to = buf + [_obs(800, 0, lat=90.0, to=True)] * 10
+    assert phase_expectation(buf_to) == (800, 100)                  # timeouts excluded
+
+
+def test_pool_expectation():
+    phases = {
+        "a": [_obs(1000, 100) for _ in range(5)],   # ratio 0.10
+        "b": [_obs(2000, 400) for _ in range(5)],   # ratio 0.20
+        "c": [_obs(3000, 900) for _ in range(5)],   # ratio 0.30
+    }
+    in_e, out_e = pool_expectation(phases)
+    assert in_e == 2000                              # median input
+    assert out_e == 400                              # median ratio 0.20 × 2000
+    assert pool_expectation({}) is None
+
+
+def test_phase_offset():
+    buf = [_obs(820, 100, est=800) for _ in range(5)]
+    assert phase_offset(buf) == 20
+    assert phase_offset([_obs(820, 100, est=None)] * 5) is None
+
+
 if __name__ == "__main__":
     test_observe_ring_and_roundtrip()
     test_corrupt_file_starts_fresh()
     test_prune_old_buffers_on_save()
     test_zero_token_observation_skipped()
-    print("test_perfModel: task 1 OK")
+    test_phase_expectation()
+    test_pool_expectation()
+    test_phase_offset()
+    print("test_perfModel: OK")
