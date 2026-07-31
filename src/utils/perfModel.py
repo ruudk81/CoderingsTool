@@ -50,14 +50,12 @@ class Prediction:
     def origin_line(self) -> str:
         if set(self.origins.values()) <= {"default"}:
             return "all cold (default)"
-        parts = []
-        if self.avg_tokens is not None:
-            parts.append(f"avg_tokens: {self.avg_tokens:,} (warm: {self.origins['avg_tokens']})")
-        if self.concurrency is not None:
-            parts.append(f"concurrency: {self.concurrency} (warm: {self.origins['concurrency']})")
-        if self.timeout_s is not None:
-            parts.append(f"timeout: {self.timeout_s:.0f}s (warm: {self.origins['p50_latency_s']})")
-        return " | ".join(parts) or "all cold (default)"
+        avg = f"{self.avg_tokens:,}" if self.avg_tokens is not None else "—"
+        timeout = f"{self.timeout_s:.0f}s" if self.timeout_s is not None else "—"
+        conc = f"{self.concurrency}" if self.concurrency is not None else "—"
+        return (f"avg_tokens: {avg} ({self.origins['avg_tokens']}) | "
+                f"timeout: {timeout} ({self.origins['p50_latency_s']}) | "
+                f"concurrency: {conc} ({self.origins['concurrency']})")
 
 
 def _cold() -> Prediction:
@@ -125,7 +123,7 @@ class PerfModel:
                 deployment = get_model_for_api(model)
                 dep_buffers = [list(b)
                                for mk, phs in self._buffers.items()
-                               if get_model_for_api(mk.split(":", 1)[1]) == deployment
+                               if mk.startswith(f"{API_PROVIDER}:") and get_model_for_api(mk.split(":", 1)[1]) == deployment
                                for b in phs.values()]
             pred = _cold()
             buf = phases.get(phase, [])

@@ -139,7 +139,22 @@ def test_predict_warm_phase():
     assert p.timeout_s and abs(p.timeout_s - p.p50_latency_s * 6.0) < 1e-6
     assert p.tiktoken_offset == 30                      # median(in − est_in)
     assert p.concurrency == 59                          # max observed healthy
-    assert "warm" in p.origin_line()
+    assert p.origin_line() == (
+        f"avg_tokens: {p.avg_tokens:,} (phase) | "
+        f"timeout: {p.timeout_s:.0f}s (curve) | "
+        f"concurrency: {p.concurrency} (deployment)"
+    )
+
+
+def test_predict_ignores_foreign_provider_capacity():
+    pm = PerfModel(_tmp_store())
+    # Foreign-provider key with the same model name — same deployment, wrong provider.
+    # Enough concurrency data to produce a knee if the provider prefix were ignored.
+    pm._buffers["otherprov:gpt-5.4"] = {
+        "p_foreign": [_obs(800, 100, conc=50) for _ in range(5)],
+    }
+    p = pm.predict("gpt-5.4", "p_new")
+    assert p.concurrency is None
 
 
 def test_predict_new_phase_uses_pool():
@@ -176,6 +191,7 @@ if __name__ == "__main__":
     test_capacity_knee_no_pressure_no_claim()
     test_capacity_knee_never_extrapolates()
     test_predict_warm_phase()
+    test_predict_ignores_foreign_provider_capacity()
     test_predict_new_phase_uses_pool()
     test_predict_cold_and_fault_injected()
     print("test_perfModel: OK")

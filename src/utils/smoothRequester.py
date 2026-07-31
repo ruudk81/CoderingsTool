@@ -909,13 +909,13 @@ class SmoothRequester:
         # concurrency ceiling. Without one, the phase is unconstrained (no rate or
         # throughput pressure) so we use 180s and let the server finish. With a
         # calibrated ceiling, we use the adaptive multiplier to cut outliers.
-        _timeout = self._pred.timeout_s or TIMEOUT_FLOOR_SECONDS
-        if self._pred.concurrency is None:
-            # Unconstrained: no calibrated ceiling → fixed 180s timeout
+        if self._pred.timeout_s is None or self._pred.concurrency is None:
+            # Unconstrained: no calibrated latency curve or no capacity ceiling → fixed 180s timeout
             _timeout = 180.0
             _multiplier = 1.0
         else:
             # Calibrated: adaptive multiplier scales with task count
+            _timeout = self._pred.timeout_s
             _multiplier = min(6, round(math.log(max(num_tasks, 1)) + 1))
         self.latency_tracker = LatencyTracker(
             ema_alpha=self.processing_config.latency_tracker_ema_alpha,
@@ -1081,6 +1081,7 @@ class SmoothRequester:
     def estimate_tokens(self, prompt: str) -> int:
         """Adaptive token estimation with learned offset and safety margins."""
         tiktoken_count = len(self.encoding.encode(prompt))
+        self._last_tiktoken_count = tiktoken_count
         offset = self.tiktoken_offset_learner.get_offset()
         actual_input = tiktoken_count + offset
 
@@ -1126,12 +1127,13 @@ class SmoothRequester:
         call_params = prepare_fn(task)
         prompt = call_params['prompt']
         est_tokens = self.estimate_tokens(prompt)
-        est_in = len(self.encoding.encode(prompt))
+        est_in = self._last_tiktoken_count
 
         async with self.semaphore:
             timeout = self.latency_tracker.get_timeout()
             await self.tpm_bucket.wait_and_acquire(est_tokens)
 
+            conc_at_dispatch = 0
             try:
                 # Step 2: LLM call (owned by smoothRequester for header access)
                 # api_start is AFTER all gates so latency measures only API time
@@ -1538,7 +1540,6 @@ class SmoothRequester:
             print(f"- Model: {self.model}")
             print(f"- RPM limit: {self.rate_limits.requests_per_minute:,} ({self.rate_limits.requests_per_minute * headroom:,.0f} with headroom)")
             print(f"- TPM limit: {self.rate_limits.tokens_per_minute:,} ({self.rate_limits.tokens_per_minute * headroom:,.0f} with headroom)")
-            print(f"- Warm start: {self._pred.origin_line()}")
             token_src = self._pred.origins.get("avg_tokens", "default")
             print(f"- Initial avg_tokens ({token_src}): {self.avg_tokens}")
             print(f"- Target concurrency: {self.optimal_concurrency}")
@@ -1549,6 +1550,9 @@ class SmoothRequester:
                 p50_src = self._pred.origins.get("p50_latency_s", "default")
                 print(f"- Dispatch delay ({p50_src}): {self._dispatch_delay:.2f}s/task → {spread:.1f}s spread over {num_tasks} tasks")
             print(f"- Processing {num_tasks:,} tasks")
+
+        if not self._quiet:
+            print(f"Warm start: {self._pred.origin_line()}")
 
         # Queue + workers
         queue = asyncio.Queue()
