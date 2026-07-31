@@ -293,7 +293,7 @@ def cache_mece_results(
     ensure_codebook_ids(mece_cache)
 
     cache_manager = CacheManager()
-    cache_manager.save_metadata_to_cache(
+    saved = cache_manager.save_metadata_to_cache(
         metadata=mece_cache,
         filename=filename,
         step="mece_codes",
@@ -302,9 +302,13 @@ def cache_mece_results(
     total_facets = sum(
         len(r.facets) for r in pydantic_results.values()
     )
-    print(f"Codebook cached "
-          f"({n_codes} codes, {total_facets} facets across "
-          f"{len(pydantic_results)} domains)")
+    if saved:
+        print(f"Codebook cached "
+              f"({n_codes} codes, {total_facets} facets across "
+              f"{len(pydantic_results)} domains)")
+    else:
+        print(f"ERROR: codebook NOT cached ({n_codes} codes) — downstream steps "
+              f"will regenerate. See CACHE SAVE FAILED above for the cause.")
 
     # Readable copy of the P8/P9 scratchpads next to the codebook exports —
     # the cache field is the source of truth, this file is for eyeballs.

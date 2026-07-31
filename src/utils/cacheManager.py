@@ -132,7 +132,10 @@ class CacheDatabase:
     @contextmanager
     def _get_connection(self):
         """Context manager for database connections"""
-        conn = sqlite3.connect(self.db_path)
+        # timeout=30: the Streamlit app polls cache status and takes write locks
+        # (get_cache_info updates last_accessed); the 5s default made pipeline
+        # saves fail on lock contention.
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
@@ -357,6 +360,8 @@ class CacheManager:
             return True
 
         except Exception as e:
+            print(f"CACHE SAVE FAILED for {filename} at step {step} "
+                  f"with variable {variable_key}: {e!r}")
             logger.error(f"Error saving cache for {filename} at step {step} with variable {variable_key}: {e}")
             # Clean up partial file if it exists
             if cache_path.exists():
@@ -576,6 +581,8 @@ class CacheManager:
             return True
 
         except Exception as e:
+            print(f"CACHE SAVE FAILED for {filename} at step {metadata_step} "
+                  f"with variable {variable_key}: {e!r}")
             logger.error(f"Error saving metadata cache for {filename} at step {step} with variable {variable_key}: {e}")
             # Clean up partial file if it exists
             if cache_path.exists():
