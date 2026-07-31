@@ -55,6 +55,10 @@ def get_model(tier: str = "default") -> str:
     overrides = (FAMILY_TIER_OVERRIDES.get((API_PROVIDER, MODEL_FAMILY))
                  or FAMILY_TIER_OVERRIDES.get(MODEL_FAMILY, {}))
     tier = overrides.get(tier, tier)
+    if tier.startswith("gpt-"):
+        # An override may name a full model (e.g. "mini": "gpt-5.6-luna") to serve
+        # a tier with a model outside the family.
+        return tier
     if tier == "default":
         return MODEL_FAMILY
     return f"{MODEL_FAMILY}-{tier}"
@@ -94,14 +98,6 @@ FAMILY_TIER_OVERRIDES = {
     "gpt-4.1": {
         "nano": "mini",       # gpt-4.1-nano < gpt-5.4-nano → bump to mini
         "mini": "default",    # gpt-4.1-mini < gpt-5.4-mini → bump to default
-    },
-    # Azure has no gpt-5.4-mini/-nano deployment yet, and the gpt-5 deployment
-    # (serving gpt-5-mini) is capped at 250K TPM / 250 RPM — ~34 min of throughput
-    # floor on a full run. Fold both tiers into default until those deployments
-    # exist, then delete this entry. OpenAI keeps the real mini/nano tiers.
-    ("azure", "gpt-5.4"): {
-        "nano": "default",
-        "mini": "default",
     },
 }
 
@@ -152,6 +148,12 @@ def get_reasoning_params(model: str = None, phase: str = None) -> dict:
     if API_PROVIDER == "azure":
         # Chat Completions takes these flat; the nested Responses shape is rejected
         # client-side by the OpenAI SDK.
+        if model.startswith("gpt-5.6"):
+            # gpt-5.6 rejects reasoning_effort next to function tools on Chat
+            # Completions ("use /v1/responses instead"); verbosity is accepted and
+            # the model reasons adaptively. Effort control for 5.6 requires moving
+            # the Azure route to the Responses API (both resources support it now).
+            return {"verbosity": verbosity}
         return {"reasoning_effort": REASONING_EFFORT, "verbosity": verbosity}
     return {
         "reasoning": {"effort": REASONING_EFFORT},
@@ -170,28 +172,53 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Azure OpenAI settings
+# Azure OpenAI settings — deployments are spread over two resources in the
+# Motivaction tenant: "prod" (mot-azure-open-ai) and "dev"
+# (mot-azure-openai-dev-resource, carrying gpt-5.4-mini/-nano and gpt-5.6-luna).
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
 AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING", "text-embedding-3-large")
-# Deployment for codeGenerator (uses chat completion without reasoning)
-AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER", "gpt-4.1-mini")
 
-# Model name -> Azure deployment name. Deployment names in this resource do not
-# match the models they serve, so the code keeps reasoning in model names and this
-# map translates. Unmapped models fall back to AZURE_OPENAI_DEPLOYMENT_NAME.
+AZURE_RESOURCES = {
+    "prod": {"endpoint": AZURE_OPENAI_ENDPOINT, "api_key": AZURE_OPENAI_API_KEY},
+    "dev":  {"endpoint": os.getenv("AZURE_OPENAI_DEV_ENDPOINT"),
+             "api_key":  os.getenv("AZURE_OPENAI_DEV_API_KEY")},
+}
+
+# Model name -> (resource, deployment name). Deployment names do not always match
+# the models they serve, so the code keeps reasoning in model names and this map
+# translates. Unmapped models fall back to ("prod", AZURE_OPENAI_DEPLOYMENT_NAME).
 # Add a line here when a new deployment appears; nothing else needs to change.
 AZURE_DEPLOYMENTS = {
-    "gpt-5.4":      "gpt-5.4",
-    "gpt-5.4-mini": "gpt-5.4",              # until a real gpt-5.4-mini is deployed
-    "gpt-5.4-nano": "gpt-5.4",              # until a real gpt-5.4-nano is deployed
-    "gpt-5-mini":   "gpt-5",                # deployment 'gpt-5' serves gpt-5-mini
-    "gpt-4.1":      "gpt-4.1",
-    "gpt-4.1-mini": "Test_data_analytics",  # serves gpt-4.1-mini
-    "gpt-4.1-nano": "Test_data_analytics",
+    "gpt-5.4":      ("prod", "gpt-5.4"),
+    "gpt-5.4-mini": ("dev",  "gpt-5.4-mini"),
+    "gpt-5.4-nano": ("dev",  "gpt-5.4-nano"),
+    "gpt-5.6-luna": ("dev",  "gpt-5.6-luna"),
+    "gpt-5-mini":   ("prod", "gpt-5"),                # deployment 'gpt-5' serves gpt-5-mini
+    "gpt-4.1":      ("prod", "gpt-4.1"),
+    "gpt-4.1-mini": ("prod", "Test_data_analytics"),  # serves gpt-4.1-mini
+    "gpt-4.1-nano": ("prod", "Test_data_analytics"),
+    "text-embedding-3-large": ("prod", "text-embedding-3-large"),
+    "text-embedding-ada-002": ("prod", "text-embedding-ada-002"),
 }
+
+
+def get_azure_route(model: str) -> Tuple[str, str, str]:
+    """Resolve (endpoint, api_key, deployment) for an Azure call with this model.
+
+    Raises when the target resource's credentials are missing from .env, so a
+    dev-routed model fails loudly instead of silently hitting the wrong resource.
+    """
+    resource, deployment = AZURE_DEPLOYMENTS.get(model, ("prod", AZURE_OPENAI_DEPLOYMENT_NAME))
+    creds = AZURE_RESOURCES[resource]
+    if not creds["endpoint"] or not creds["api_key"]:
+        raise RuntimeError(
+            f"Model '{model}' routes to Azure resource '{resource}', "
+            f"but its endpoint/key are missing from .env"
+        )
+    return creds["endpoint"], creds["api_key"], deployment
 
 # Azure ARM access (for dynamic limit fetching - optional)
 AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
@@ -209,6 +236,8 @@ OPENAI_MODEL_LIMITS = {
     "gpt-5.4": {"context_window": 1_000_000, "max_output": 128_000},
     "gpt-5.4-mini": {"context_window": 400_000, "max_output": 128_000},
     "gpt-5.4-nano": {"context_window": 400_000, "max_output": 128_000},
+    # GPT-5.6 family (Sol > Terra > Luna)
+    "gpt-5.6-luna": {"context_window": 1_050_000, "max_output": 128_000},
     "gpt-5": {"context_window": 272_000, "max_output": 128_000},
     "gpt-5.1": {"context_window": 272_000, "max_output": 128_000},
     "gpt-5.2": {"context_window": 272_000, "max_output": 128_000},
@@ -236,6 +265,8 @@ MODEL_PRICING = {
     "gpt-5.4": {"input": 2.50, "output": 15.00},
     "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
     "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
+    # GPT-5.6 family
+    "gpt-5.6-luna": {"input": 0.20, "output": 1.20},  # per 2026-07-30 price cut (-80%)
     "gpt-5": {"input": 1.25, "output": 10.00},
     "gpt-5.1": {"input": 1.25, "output": 10.00},
     "gpt-5.2": {"input": 1.25, "output": 10.00},
@@ -254,72 +285,6 @@ MODEL_PRICING = {
 DEFAULT_PRICING = {"input": 1.00, "output": 4.00}
 
 
-# =============================================================================
-# CLIENT FACTORY FUNCTIONS
-# =============================================================================
-# These create the appropriate client based on API_PROVIDER setting
-
-def create_instructor_client(model: str, async_mode: bool = True) -> Any:
-    """
-    Create instructor client based on API_PROVIDER setting.
-
-    Args:
-        model: Model name (e.g., 'gpt-4.1-mini')
-        async_mode: Whether to create async client (default True)
-
-    Returns:
-        Instructor-wrapped client for structured outputs
-    """
-    import instructor
-    from openai import OpenAI, AsyncOpenAI
-
-    if API_PROVIDER == "azure":
-        # Azure v1 API: use standard OpenAI client with custom base_url
-        # This gives access to the Responses API (responses.create)
-        azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/v1/"
-        base_client = AsyncOpenAI(
-            api_key=AZURE_OPENAI_API_KEY,
-            base_url=azure_base_url
-        ) if async_mode else OpenAI(
-            api_key=AZURE_OPENAI_API_KEY,
-            base_url=azure_base_url
-        )
-        # Use RESPONSES_TOOLS mode since v1 API supports Responses API
-        return instructor.from_openai(base_client, mode=instructor.Mode.RESPONSES_TOOLS)
-    else:
-        # OpenAI uses the Responses API
-        return instructor.from_provider(
-            f"openai/{model}",
-            mode=instructor.Mode.RESPONSES_TOOLS,
-            async_client=async_mode,
-            api_key=OPENAI_API_KEY
-        )
-
-
-def create_embedding_client(async_mode: bool = True) -> Any:
-    """
-    Create embedding client based on API_PROVIDER setting.
-
-    Args:
-        async_mode: Whether to create async client (default True)
-
-    Returns:
-        OpenAI client for embeddings (with custom base_url for Azure)
-    """
-    from openai import OpenAI, AsyncOpenAI
-
-    if API_PROVIDER == "azure":
-        # Azure v1 API: use standard OpenAI client with custom base_url
-        azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/v1/"
-        if async_mode:
-            return AsyncOpenAI(api_key=AZURE_OPENAI_API_KEY, base_url=azure_base_url)
-        return OpenAI(api_key=AZURE_OPENAI_API_KEY, base_url=azure_base_url)
-    else:
-        if async_mode:
-            return AsyncOpenAI(api_key=OPENAI_API_KEY)
-        return OpenAI(api_key=OPENAI_API_KEY)
-
-
 def get_model_for_api(model: str) -> str:
     """
     Get the appropriate model/deployment name for the current API provider.
@@ -328,15 +293,8 @@ def get_model_for_api(model: str) -> str:
     For OpenAI, returns the model name as-is.
     """
     if API_PROVIDER == "azure":
-        return AZURE_DEPLOYMENTS.get(model, AZURE_OPENAI_DEPLOYMENT_NAME)
+        return AZURE_DEPLOYMENTS.get(model, ("prod", AZURE_OPENAI_DEPLOYMENT_NAME))[1]
     return model
-
-
-def get_embedding_model_for_api() -> str:
-    """Get the appropriate embedding model/deployment for the current API provider."""
-    if API_PROVIDER == "azure":
-        return AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING
-    return DEFAULT_EMBEDDING_MODEL
 
 
 # =============================================================================
@@ -387,6 +345,7 @@ class ModelConfig:
         "gpt-5.4": "reasoning",
         "gpt-5.4-mini": "reasoning",
         "gpt-5.4-nano": "reasoning",
+        "gpt-5.6-luna": "reasoning",
     }
 
     # =============================================================================

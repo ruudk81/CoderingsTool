@@ -38,9 +38,8 @@ from collections import OrderedDict
 from config import (
     API_PROVIDER,
     OPENAI_API_KEY,
-    AZURE_OPENAI_ENDPOINT,
-    AZURE_OPENAI_API_KEY,
     AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING,
+    get_azure_route,
     get_model_for_api,
     ModelConfig,
     MODEL_PRICING,
@@ -291,10 +290,10 @@ async def fetch_rate_limits(model: str) -> tuple:
     """
     if API_PROVIDER == "azure":
         # Quota is per deployment, so probe the deployment this model resolves to
-        deployment = get_model_for_api(model)
+        endpoint, api_key, deployment = get_azure_route(model)
         client = AsyncOpenAI(
-            api_key=AZURE_OPENAI_API_KEY,
-            base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/",
+            api_key=api_key,
+            base_url=f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/",
             default_query={"api-version": "2024-10-21"},
         )
         response = await client.chat.completions.with_raw_response.create(
@@ -417,17 +416,16 @@ def create_client(
     model: str,
     async_mode: bool = True,
     max_retries: int = DEFAULT_MAX_RETRIES,
-    azure_deployment: Optional[str] = None,
     capture_headers: bool = False,
 ) -> Any:
     """
     Create an instructor-wrapped client for the configured provider.
 
     Args:
-        model: Model name (used for OpenAI, ignored for Azure which uses deployment)
+        model: Model name; on Azure it resolves to (resource, deployment) via
+            get_azure_route()
         async_mode: Whether to create async client
         max_retries: Number of retries for failed requests (default: 3)
-        azure_deployment: Optional Azure deployment name override (e.g., for codeGenerator)
         capture_headers: If True, inject HeaderCaptureTransport to capture response headers.
             The transport is accessible on the returned client as `_header_transport`.
             Default False — no overhead for steps that don't need headers.
@@ -440,11 +438,11 @@ def create_client(
     if API_PROVIDER == "azure":
         # Azure: use TOOLS mode with chat.completions.create
         # (West Europe doesn't support Responses API yet)
-        deployment = azure_deployment or get_model_for_api(model)
-        azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/"
+        endpoint, api_key, deployment = get_azure_route(model)
+        azure_base_url = f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/"
 
         client_kwargs = {
-            'api_key': AZURE_OPENAI_API_KEY,
+            'api_key': api_key,
             'base_url': azure_base_url,
             'default_query': {"api-version": "2024-10-21"},
             'max_retries': max_retries,
@@ -655,15 +653,16 @@ def create_embedding_client(async_mode: bool = True) -> Any:
         OpenAI or AsyncOpenAI client
     """
     if API_PROVIDER == "azure":
-        azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING}/"
+        endpoint, api_key, deployment = get_azure_route(AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING)
+        azure_base_url = f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/"
         if async_mode:
             return AsyncOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
+                api_key=api_key,
                 base_url=azure_base_url,
                 default_query={"api-version": "2024-10-21"}
             )
         return OpenAI(
-            api_key=AZURE_OPENAI_API_KEY,
+            api_key=api_key,
             base_url=azure_base_url,
             default_query={"api-version": "2024-10-21"}
         )
