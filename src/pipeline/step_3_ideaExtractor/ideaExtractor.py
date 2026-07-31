@@ -38,9 +38,9 @@ logger = logging.getLogger(__name__)
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
+from config import DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import IdeaExtractionConfig, DEFAULT_IDEA_EXTRACTION_CONFIG
-from utils.llm import create_client, llm_create_async, RateLimits, extract_rate_limits_from_response, token_tracker
+from utils.llm import create_client, llm_create_async, RateLimits, fetch_rate_limits, token_tracker
 from utils.modelPerfStats import (
     load_stats, save_stats, update_phase_stats, get_phase_stats,
     get_dataset_phase_stats_or_prior, update_dataset_phase_stats, STATS_FILE,
@@ -1318,30 +1318,6 @@ class IdeaExtractor:
                 ))
         return out
 
-    async def _fetch_rate_limits_from_api(self) -> RateLimits:
-        """Probe call to discover rate limits. Used by context extraction phases (1-3)."""
-        from openai import AsyncOpenAI
-        from config import API_PROVIDER, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
-
-        if API_PROVIDER == "azure":
-            deployment = AZURE_OPENAI_DEPLOYMENT_NAME
-            client = AsyncOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/",
-                default_query={"api-version": "2024-10-21"},
-            )
-            response = await client.chat.completions.with_raw_response.create(
-                model=deployment,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_completion_tokens=5,
-            )
-        else:
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            response = await client.responses.with_raw_response.create(
-                model=self.model, input="Hi",
-            )
-        return extract_rate_limits_from_response(response)
-
     def _initialize_conservative_rate_limiters(self, limits: 'RateLimits', num_tasks: int = 20) -> None:
         """Initialize conservative rate limiters for context extraction phase.
 
@@ -1374,7 +1350,7 @@ class IdeaExtractor:
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line("Fetching rate limits from API...")
 
-        limits = await self._fetch_rate_limits_from_api()
+        limits, _ = await fetch_rate_limits(self.model)
 
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             if self.verbose_reporter.enabled:

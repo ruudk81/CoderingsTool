@@ -40,9 +40,7 @@ from config import (
     OPENAI_API_KEY,
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_API_KEY,
-    AZURE_OPENAI_DEPLOYMENT_NAME,
     AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING,
-    AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER,
     get_model_for_api,
     ModelConfig,
     MODEL_PRICING,
@@ -349,25 +347,38 @@ class TokenTracker:
             self.costs_by_model[model]["tokens"] += input_tokens + output_tokens
 
     def get_summary(self) -> str:
-        """Get formatted summary of token usage and costs."""
-        # Get provider info for display
-        provider_label = API_PROVIDER.upper()
-        if API_PROVIDER == "azure":
-            deployment = AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER or AZURE_OPENAI_DEPLOYMENT_NAME
-            provider_label = f"Azure OpenAI (deployment: {deployment})"
-        else:
-            provider_label = "OpenAI"
+        """Get formatted summary of token usage and costs, broken down by model."""
+        with self._lock:
+            by_model = sorted(self.costs_by_model.items(), key=lambda kv: -kv[1]["cost"])
+            input_tokens = self.total_input_tokens
+            output_tokens = self.total_output_tokens
+            total_cost = self.total_cost_usd
+            call_count = self.call_count
 
         lines = [
             "=" * 50,
             "LLM USAGE SUMMARY",
             "=" * 50,
-            f"Provider: {provider_label}",
-            f"Total API calls: {self.call_count}",
-            f"Total tokens: {self.total_input_tokens + self.total_output_tokens:,}",
-            f"  - Input: {self.total_input_tokens:,}",
-            f"  - Output: {self.total_output_tokens:,}",
-            f"Total cost: ${self.total_cost_usd:.4f}",
+            f"Provider: {'Azure OpenAI' if API_PROVIDER == 'azure' else 'OpenAI'}",
+        ]
+
+        # Name the models this run actually called. On Azure quota and billing
+        # attach to the deployment, which does not match the model name.
+        for model, stats in by_model:
+            label = model
+            if API_PROVIDER == "azure":
+                label = f"{model} (deployment: {get_model_for_api(model)})"
+            lines.append(
+                f"  {label}: {stats['calls']} calls, "
+                f"{stats['tokens']:,} tokens, ${stats['cost']:.4f}"
+            )
+
+        lines += [
+            f"Total API calls: {call_count}",
+            f"Total tokens: {input_tokens + output_tokens:,}",
+            f"  - Input: {input_tokens:,}",
+            f"  - Output: {output_tokens:,}",
+            f"Total cost: ${total_cost:.4f}",
             "=" * 50,
         ]
         return "\n".join(lines)

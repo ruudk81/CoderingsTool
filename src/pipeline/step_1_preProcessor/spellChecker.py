@@ -20,7 +20,7 @@ from aiolimiter import AsyncLimiter
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
 from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
-from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
+from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, fetch_rate_limits
 from config import get_reasoning_params
 
 # === CONFIG — generic/universal ========================================================================================================
@@ -28,7 +28,6 @@ from config import (
     OPENAI_API_KEY, DEFAULT_LANGUAGE,
     ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
     API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
-    AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
 )
 
 # === CONFIG — step-specific ========================================================================================================
@@ -1054,42 +1053,11 @@ Suggested corrections: {task_dict['suggestions']}
                 output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
                 return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
 
-            async def fetch_rate_limits_from_api() -> RateLimits:
-                """Make a minimal API call to fetch rate limits from response headers."""
-                from openai import AsyncOpenAI
-                from config import API_PROVIDER, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
-
-                if API_PROVIDER == "azure":
-                    client = AsyncOpenAI(
-                        api_key=AZURE_OPENAI_API_KEY,
-                        base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
-                        default_query={"api-version": "2024-10-21"},
-                    )
-                    model = AZURE_OPENAI_DEPLOYMENT_NAME
-                else:
-                    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-                    model = self.model
-
-                # Make minimal API call with raw response to get headers
-                if API_PROVIDER == "azure":
-                    response = await client.chat.completions.with_raw_response.create(
-                        model=model,
-                        messages=[{"role": "user", "content": "Hi"}],
-                        max_completion_tokens=5,
-                    )
-                else:
-                    response = await client.responses.with_raw_response.create(
-                        model=model,
-                        input="Hi",
-                    )
-
-                return extract_rate_limits_from_response(response)
-
             # Fetch rate limits dynamically from API response headers
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line("Fetching rate limits from API...")
 
-            limits = await fetch_rate_limits_from_api()
+            limits, _ = await fetch_rate_limits(self.model)
 
             # Fallback if headers not available
             if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
