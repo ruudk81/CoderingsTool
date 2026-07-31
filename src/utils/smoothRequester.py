@@ -12,11 +12,9 @@ Everything else is internal: workers, dispatch, gates, monitoring, retry, cache.
 Usage:
     requester = SmoothRequester(
         model="gpt-5.4-nano",
-        dataset_key="M000000:Qd1_combined_full",
         phase_key="step3_idea_extraction",
     )
     results = await requester.process_all(tasks, process_fn, fallback_fn)
-    stats = requester.get_stats_for_cache()
 """
 
 import asyncio
@@ -43,9 +41,7 @@ from utils.llm import (
     fetch_rate_limits as llm_fetch_rate_limits,
     HeaderCaptureTransport,
 )
-from utils.modelPerfStats import (
-    load_stats, save_stats, get_dataset_phase_stats_or_prior, update_dataset_phase_stats,
-)
+from utils.perfModel import perf_model
 from utils.cached_resources import get_tiktoken_encoding
 
 logger = logging.getLogger(__name__)
@@ -870,23 +866,19 @@ class SmoothRequester:
     def __init__(
         self,
         model: str,
-        dataset_key: str = "",
         phase_key: str = "default",
         num_tasks: int = 0,
         verbose: bool = True,
         processing_config: Optional[ProcessingConfig] = None,
         known_limits: Optional[RateLimits] = None,
         show_setup: bool = True,
-        default_timeout: Optional[float] = None,
         quiet: bool = False,
     ):
         self.model = model
-        self.dataset_key = dataset_key
         self.phase_key = phase_key
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self._known_limits = known_limits
         self._show_setup = show_setup
-        self._caller_default_timeout = default_timeout
         self._quiet = quiet
         self._headroom = self.processing_config.rate_limit_headroom
 
@@ -901,45 +893,22 @@ class SmoothRequester:
         self.actual_total_tokens = deque(maxlen=50)
         self.estimation_errors = deque(maxlen=50)
 
-        # Load empirical data from cache — exact case (hot), else model+phase prior (warm)
-        self._perf_stats = load_stats()
-        self._stored_entry, self._stats_origin = (
-            get_dataset_phase_stats_or_prior(self._perf_stats, model, phase_key, dataset_key)
-            if dataset_key else (None, "cold")
-        )
-        _stored = self._stored_entry
-
-        self._stored_p50 = None
-        self._stored_empirical_capacity = None
-        self._stored_avg_tokens = None
-        _stored_timeout = None
-        _tiktoken_default = 300
-
-        if _stored and _stored.get("sample_count", 0) >= 10:
-            if "p50_latency_s" in _stored:
-                self._stored_p50 = _stored["p50_latency_s"]
-                _stored_timeout = self._stored_p50 * 6.0
-            if "empirical_capacity" in _stored:
-                self._stored_empirical_capacity = _stored["empirical_capacity"]
-            if "avg_tokens" in _stored:
-                self._stored_avg_tokens = int(_stored["avg_tokens"])
-                self.avg_tokens = self._stored_avg_tokens
-            if "tiktoken_offset" in _stored:
-                _tiktoken_default = int(_stored["tiktoken_offset"])
-
-        # Tiktoken offset learner
-        self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
+        # Warm start from the parametric performance model.
+        self._pred = perf_model.predict(model, phase_key)
+        if self._pred.avg_tokens:
+            self.avg_tokens = self._pred.avg_tokens
+        self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=self._pred.tiktoken_offset)
 
         # Dispatch delay: stagger heavy tasks to avoid server batch congestion
-        p50_estimate = self._stored_p50 or (self._caller_default_timeout or DEFAULT_TIMEOUT_SECONDS) / 5
+        p50_estimate = self._pred.p50_latency_s or DEFAULT_TIMEOUT_SECONDS / 5
         self._dispatch_delay = max(0.0, (p50_estimate - DISPATCH_DELAY_P50_THRESHOLD) / DISPATCH_DELAY_SPREAD_FACTOR)
 
         # Latency tracker — timeout strategy depends on whether we have a calibrated
         # concurrency ceiling. Without one, the phase is unconstrained (no rate or
         # throughput pressure) so we use 180s and let the server finish. With a
         # calibrated ceiling, we use the adaptive multiplier to cut outliers.
-        _timeout = _stored_timeout or self._caller_default_timeout or TIMEOUT_FLOOR_SECONDS
-        if self._stored_empirical_capacity is None:
+        _timeout = self._pred.timeout_s or TIMEOUT_FLOOR_SECONDS
+        if self._pred.concurrency is None:
             # Unconstrained: no calibrated ceiling → fixed 180s timeout
             _timeout = 180.0
             _multiplier = 1.0
@@ -1001,10 +970,9 @@ class SmoothRequester:
         self._header_transport = getattr(self.client, '_header_transport', None)
 
         if self._known_limits is not None:
-            # Skip probe — use caller-provided limits
+            # Skip probe — use caller-provided limits; assume header support
             limits = self._known_limits
-            # Determine header support from perf stats cache (hot/warm) or default to True
-            has_server_headers = (self._stored_entry or {}).get("has_server_headers", True)
+            has_server_headers = True
         else:
             # Probe call
             limits, has_server_headers = await self._fetch_rate_limits()
@@ -1049,7 +1017,7 @@ class SmoothRequester:
         is determined continuously by min(rate_limit_concurrency, server_concurrency).
         """
         headroom = self._headroom
-        avg_latency = self._stored_p50 or DEFAULT_LATENCY_SECONDS
+        avg_latency = self._pred.p50_latency_s or DEFAULT_LATENCY_SECONDS
 
         # Rate-limit concurrency: what rate limits allow (Little's Law)
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
@@ -1057,9 +1025,9 @@ class SmoothRequester:
             api_limits, avg_latency, self.avg_tokens, headroom
         )
 
-        # Server concurrency: from stored empirical capacity or cold start
-        if self._stored_empirical_capacity is not None:
-            self._server_concurrency = int(self._stored_empirical_capacity)
+        # Server concurrency: from predicted capacity or cold start
+        if self._pred.concurrency is not None:
+            self._server_concurrency = int(self._pred.concurrency)
         else:
             self._server_concurrency = COLD_START_CAP
 
@@ -1069,9 +1037,6 @@ class SmoothRequester:
 
         self.semaphore = ConcurrencyGate(effective)
         self.optimal_concurrency = effective
-        self._initial_concurrency = effective
-        self._num_tasks = num_tasks
-
 
         # Which rate limit is tighter (for display)
         rpm_thr = limits.requests_per_minute * headroom / 60
@@ -1157,6 +1122,7 @@ class SmoothRequester:
         call_params = prepare_fn(task)
         prompt = call_params['prompt']
         est_tokens = self.estimate_tokens(prompt)
+        est_in = len(self.encoding.encode(prompt))
 
         async with self.semaphore:
             timeout = self.latency_tracker.get_timeout()
@@ -1168,6 +1134,7 @@ class SmoothRequester:
                 async with self.rate_limiter:
                     api_start = time.perf_counter()
                     self._inflight_starts[task_id] = api_start
+                    conc_at_dispatch = len(self._inflight_starts)
                     response = await asyncio.wait_for(
                         llm_create_async(
                             client=self.client,
@@ -1219,8 +1186,9 @@ class SmoothRequester:
                     delta = actual_total - est_tokens
                     await self.tpm_bucket.reconcile(delta)
 
-                    tiktoken_in = len(self.encoding.encode(prompt))
-                    self.tiktoken_offset_learner.record(tiktoken_in, actual_in)
+                    self.tiktoken_offset_learner.record(est_in, actual_in)
+                    perf_model.observe(self.model, self.phase_key, actual_in, actual_out,
+                                        latency, conc_at_dispatch, False, est_in)
 
                     if self.tpm_tracker:
                         await self.tpm_tracker.record(actual_total)
@@ -1244,6 +1212,7 @@ class SmoothRequester:
                 self.stats['timeouts'] += 1
                 if self.circuit_breaker:
                     self.circuit_breaker.record_timeout()
+                perf_model.observe(self.model, self.phase_key, est_in, 0, timeout, conc_at_dispatch, True)
                 return None  # collected for retry
 
             except (RateLimitError, APIConnectionError, InternalServerError):
@@ -1565,15 +1534,15 @@ class SmoothRequester:
             print(f"- Model: {self.model}")
             print(f"- RPM limit: {self.rate_limits.requests_per_minute:,} ({self.rate_limits.requests_per_minute * headroom:,.0f} with headroom)")
             print(f"- TPM limit: {self.rate_limits.tokens_per_minute:,} ({self.rate_limits.tokens_per_minute * headroom:,.0f} with headroom)")
-            token_src = "stored" if self._stored_avg_tokens else "tiktoken"
+            print(f"- Warm start: {self._pred.origin_line()}")
+            token_src = self._pred.origins.get("avg_tokens", "default")
             print(f"- Initial avg_tokens ({token_src}): {self.avg_tokens}")
             print(f"- Target concurrency: {self.optimal_concurrency}")
-            print(f"- Start: {self._stats_origin}")
             print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side)'}")
             print(f"- Rate limit concurrency: {self._rate_limit_concurrency} | Server concurrency: {self._server_concurrency}")
             if self._dispatch_delay > 0:
                 spread = self._dispatch_delay * (num_tasks - 1)
-                p50_src = "stored" if self._stored_p50 else "proxy"
+                p50_src = self._pred.origins.get("p50_latency_s", "default")
                 print(f"- Dispatch delay ({p50_src}): {self._dispatch_delay:.2f}s/task → {spread:.1f}s spread over {num_tasks} tasks")
             print(f"- Processing {num_tasks:,} tasks")
 
@@ -1777,76 +1746,6 @@ class SmoothRequester:
                 print(f"- Final concurrency: {self.optimal_concurrency}")
 
         # Save stats
-        self._save_stats()
+        perf_model.save()
 
         return results
-
-    # === STATS FOR CACHE ======================================================
-
-    def _save_stats(self):
-        """Save empirical data to cache for next run."""
-        if not self.dataset_key or len(self.latency_tracker.values) < 5:
-            return
-        tokens = list(self.actual_total_tokens)
-        if not tokens:
-            return
-
-        measurements = {
-            "p50_latency_s": self.latency_tracker.get_p50(),
-            "avg_tokens": sum(tokens) / len(tokens),
-            "has_server_headers": self._has_server_headers,
-        }
-
-        # Save empirical_capacity when we have reliable signal about server
-        # concurrency. Condition 1 must be true, plus one of 2a or 2b:
-        #
-        # 1. Not rate-capped: when rate-limited, the state machine ramped
-        #    internally but never actually tested those concurrency levels.
-        #
-        # 2a. Controller found a ceiling: exited RAMP_UP (→ STEADY/BACKOFF/
-        #     RECOVER). Save last_healthy_concurrency * 0.95 (conservative).
-        #
-        # 2b. Controller stayed in RAMP_UP but ramped above the initial
-        #     concurrency, AND initial concurrency < num_tasks (so tasks
-        #     were queued behind the semaphore, not all dispatched at once).
-        #     The server handled this concurrency without pressure — save
-        #     the final concurrency as a validated lower bound.
-        rate_capped = self._rate_limit_concurrency <= self._server_concurrency
-        sm = self._concurrency_controller
-        controller_found_ceiling = (
-            sm is not None
-            and hasattr(sm, 'state')
-            and sm.state != ConcurrencyState.RAMP_UP
-        )
-        ramped_above_start = (
-            self.optimal_concurrency > self._initial_concurrency
-            and self._initial_concurrency < self._num_tasks
-        )
-        if not rate_capped and controller_found_ceiling:
-            # 2a: Found ceiling — save conservative estimate
-            if hasattr(sm, 'last_healthy_concurrency'):
-                measurements["empirical_capacity"] = float(int(sm.last_healthy_concurrency * 0.95))
-            else:
-                measurements["empirical_capacity"] = float(self.optimal_concurrency)
-        elif not rate_capped and ramped_above_start:
-            # 2b: No pressure but ramped above start — save final as lower bound
-            measurements["empirical_capacity"] = float(self.optimal_concurrency)
-        if self.tiktoken_offset_learner.is_learned():
-            measurements["tiktoken_offset"] = float(self.tiktoken_offset_learner.get_offset())
-
-        update_dataset_phase_stats(
-            self._perf_stats, self.model, self.phase_key,
-            self.dataset_key, measurements, len(tokens),
-            overwrite_fields=["empirical_capacity", "has_server_headers"]
-        )
-        save_stats(self._perf_stats)
-
-    def get_stats_for_cache(self) -> dict:
-        """Return stats dict for caller if they want to do additional caching."""
-        return {
-            "p50_latency_s": self.latency_tracker.get_p50() if self.latency_tracker.values else 0,
-            "avg_tokens": self.avg_tokens,
-            "empirical_capacity": self.optimal_concurrency,
-            "tiktoken_offset": self.tiktoken_offset_learner.get_offset(),
-            "has_server_headers": self._has_server_headers,
-        }
