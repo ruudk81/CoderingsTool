@@ -99,6 +99,14 @@ FAMILY_TIER_OVERRIDES = {
         "nano": "mini",       # gpt-4.1-nano < gpt-5.4-nano → bump to mini
         "mini": "default",    # gpt-4.1-mini < gpt-5.4-mini → bump to default
     },
+    # Benchmark 2026-07-31 (exports/diagnostics/2026-07-31-luna-vs-mini-benchmark):
+    # luna ≥ 5.4-mini on steps 2/3/4 — better filter verdicts, cleaner taxonomy
+    # (solo-facet 12.5% vs 23-24%, placement errors 7.5% vs 11-12.5%) — at 2-4×
+    # lower cost. Default tier stays gpt-5.4.
+    ("azure", "gpt-5.4"): {
+        "mini": "gpt-5.6-luna",
+        "nano": "gpt-5.6-luna",
+    },
 }
 
 
