@@ -41,10 +41,7 @@ import models
 from config import DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import IdeaExtractionConfig, DEFAULT_IDEA_EXTRACTION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, fetch_rate_limits, token_tracker
-from utils.modelPerfStats import (
-    load_stats, save_stats, update_phase_stats, get_phase_stats,
-    get_dataset_phase_stats_or_prior, update_dataset_phase_stats, STATS_FILE,
-)
+from utils.perfModel import perf_model
 
 # === PROMPTS (builders + response models) =========================================================================
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
@@ -93,7 +90,7 @@ from pipeline.step_3_ideaExtractor.config_ideaExtractor import (
 # === SMOOTH REQUESTER (orchestrator for bulk API processing) ==========================================
 from utils.smoothRequester import (
     SmoothRequester,
-    # Building blocks used for conservative context extraction phases (1-3)
+    # Building blocks used for the context extraction phases (1-3)
     TokenBucket, ConcurrencyGate, LatencyTracker, TiktokenOffsetLearner,
 )
 
@@ -119,7 +116,7 @@ ERROR_WINDOW_SIZE = DEFAULT_TOKEN_HISTORY_CONFIG.error_window_size
 # Tiktoken offset (for context extraction token estimation)
 TIKTOKEN_API_OFFSET_DEFAULT = DEFAULT_TIKTOKEN_OFFSET_CONFIG.api_offset_default
 
-# Timeouts (for conservative context extraction rate limiting)
+# Timeouts (for context extraction rate limiting)
 TIMEOUT_FLOOR_SECONDS = DEFAULT_TIMEOUT_CONFIG.timeout_floor_seconds
 DEFAULT_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_timeout_seconds
 DEFAULT_LATENCY_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_latency_seconds
@@ -166,8 +163,7 @@ class IdeaExtractor:
         prompt_printer=None,
         verbose_reporter: Optional['VerboseReporter'] = None,
         discover_domains: bool = False,
-        cost_tracker=None,
-        dataset_key: str = ""):
+        cost_tracker=None):
 
         self.responses = responses
         self.var_lab = var_lab
@@ -237,47 +233,15 @@ class IdeaExtractor:
         # Rolling average of actual total tokens
         self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
 
-        # Load persistent performance stats for cold-start calibration
-        # Dataset-scoped: keyed by filename:variable_key (e.g., "M000000:Qd1_combined_full")
-        self._dataset_key = dataset_key
-        self._perf_stats = load_stats()
-        _stored, self._stats_origin = (
-            get_dataset_phase_stats_or_prior(
-                self._perf_stats, self.model, "step3_idea_extraction", self._dataset_key)
-            if self._dataset_key else (None, "cold")
-        )
-        if (_stored and _stored.get("sample_count", 0) >= 10
-                and "p50_latency_s" in _stored):
-            _stored_timeout = _stored["p50_latency_s"] * 6.0
-        else:
-            _stored_timeout = None
-        _stored_tiktoken_offset = (
-            int(_stored["tiktoken_offset"])
-            if _stored and _stored.get("sample_count", 0) >= 10 and "tiktoken_offset" in _stored
-            else None
-        )
-        self._stored_empirical_capacity = (
-            _stored["empirical_capacity"]
-            if _stored and _stored.get("sample_count", 0) >= 10 and "empirical_capacity" in _stored
-            else None
-        )
-        self._stored_avg_tokens = (
-            int(_stored["avg_tokens"])
-            if _stored and _stored.get("sample_count", 0) >= 10 and "avg_tokens" in _stored
-            else None
-        )
-        self._stored_p50 = (
-            _stored["p50_latency_s"]
-            if _stored and _stored.get("sample_count", 0) >= 10 and "p50_latency_s" in _stored
-            else None
-        )
+        # Warm-start prediction from historical performance stats
+        self._pred = perf_model.predict(self.model, "step3_idea_extraction")
 
-        # Latency tracking (use stored P50 × 6 as empirical floor if available)
+        # Latency tracking (use predicted timeout as floor/default if available)
         self.latency_tracker = LatencyTracker(
             ema_alpha=self.processing_config.latency_tracker_ema_alpha,
             samples_window=self.processing_config.latency_tracker_samples_window,
-            timeout_floor=_stored_timeout if _stored_timeout else TIMEOUT_FLOOR_SECONDS,
-            default_timeout=_stored_timeout if _stored_timeout else DEFAULT_TIMEOUT_SECONDS,
+            timeout_floor=self._pred.timeout_s or TIMEOUT_FLOOR_SECONDS,
+            default_timeout=self._pred.timeout_s or DEFAULT_TIMEOUT_SECONDS,
         )
 
         # Generic specifiers (must be initialized before _calculate_avg_tokens)
@@ -295,19 +259,18 @@ class IdeaExtractor:
         self.discover_domains = discover_domains
 
         # Calculate initial average tokens estimate
-        # Prefer stored empirical avg_tokens (warm-up will recalibrate for this dataset)
-        if getattr(self, '_stored_avg_tokens', None) is not None:
-            self.avg_tokens = self._stored_avg_tokens
+        # Prefer predicted avg_tokens (warm-up will recalibrate for this dataset)
+        if self._pred.avg_tokens is not None:
+            self.avg_tokens = self._pred.avg_tokens
         else:
             self.avg_tokens = self._calculate_avg_tokens()
 
-        # Conservative rate limiting for context extraction phases (1-3)
+        # Rate limiting for context extraction phases (1-3)
         # These are simple components — the full rate/concurrency control is in SmoothRequester
         self.rate_limiter = None
         self.semaphore = None
         self.tpm_bucket = None
-        _tiktoken_default = _stored_tiktoken_offset if _stored_tiktoken_offset is not None else TIKTOKEN_API_OFFSET_DEFAULT
-        self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=_tiktoken_default)
+        self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=self._pred.tiktoken_offset)
 
         # Stats (populated by SmoothRequester during bulk processing)
         self.stats = {
@@ -1318,27 +1281,22 @@ class IdeaExtractor:
                 ))
         return out
 
-    def _initialize_conservative_rate_limiters(self, limits: 'RateLimits', num_tasks: int = 20) -> None:
-        """Initialize conservative rate limiters for context extraction phase.
-
-        Uses very conservative settings since we don't have accurate token estimates yet.
-        """
-        # Conservative arrival rate (50% of normal headroom)
-        conservative_tokens = DEFAULT_AVG_TOKENS * 1.5  # 2250 tokens
+    def _initialize_context_rate_limiters(self, limits: 'RateLimits', num_tasks: int = 20) -> None:
+        """Rate limiters for the context extraction phases (few, large calls)."""
+        avg_tokens = self._pred.avg_tokens or DEFAULT_AVG_TOKENS
+        headroom = self.processing_config.rate_limit_headroom
         arrival_rate = min(
-            limits.requests_per_minute * 0.5 / 60,
-            limits.tokens_per_minute * 0.5 / conservative_tokens / 60
+            limits.requests_per_minute * headroom / 60,
+            limits.tokens_per_minute * headroom / avg_tokens / 60
         )
-
         self.rate_limiter = AsyncLimiter(1, time_period=1.0 / max(arrival_rate, 0.1))
-        self.semaphore = ConcurrencyGate(min(num_tasks, 10))
-        self.optimal_concurrency = min(num_tasks, 10)
-
-        # Token bucket at full rate
-        self.tpm_bucket = TokenBucket(int(limits.tokens_per_minute * self.processing_config.rate_limit_headroom))
-
+        concurrency = min(num_tasks, self._pred.concurrency or num_tasks)
+        self.semaphore = ConcurrencyGate(concurrency)
+        self.optimal_concurrency = concurrency
+        self.tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"  Conservative setup: concurrency={self.optimal_concurrency}, tokens={conservative_tokens}")
+            self.verbose_reporter.stat_line(
+                f"  Context setup: concurrency={concurrency}, avg_tokens={avg_tokens} ({self._pred.origin_line()})")
 
     async def process_all_tasks_async(self, tasks: List[Dict]) -> List[models.IdeasExtractedModel]:
         """Process all tasks using queue + workers pattern with bootstrap measurement"""
@@ -1366,10 +1324,10 @@ class IdeaExtractor:
 
         self.rate_limits = limits
 
-        # === PHASE 2: Initialize CONSERVATIVE rate limiters for context extraction ===
+        # === PHASE 2: Initialize rate limiters for context extraction ===
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Initializing conservative rate limiters for context extraction...")
-        self._initialize_conservative_rate_limiters(limits, num_tasks=30)
+            self.verbose_reporter.stat_line("Initializing rate limiters for context extraction...")
+        self._initialize_context_rate_limiters(limits, num_tasks=30)
 
         # === PHASE 3: Extract context specifiers, primary dimension, AND domains ===
         _snap_before_context = token_tracker.snapshot() if self.cost_tracker else None
@@ -1405,8 +1363,8 @@ class IdeaExtractor:
                 _snap_before_context, token_tracker.snapshot(), self.model_context)
 
         # === PHASE 4: Recalculate avg_tokens with REAL context ===
-        # Stored empirical avg_tokens is more accurate than tiktoken — only recalculate if no stored data
-        if getattr(self, '_stored_avg_tokens', None) is None:
+        # Predicted avg_tokens is more accurate than tiktoken — only recalculate if no prediction
+        if self._pred.avg_tokens is None:
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line("\nRecalculating token estimates with real context...")
             old_avg = self.avg_tokens
@@ -1422,7 +1380,6 @@ class IdeaExtractor:
         # monitoring, warm-up, retry pass, cache stats — everything.
         self._smooth_requester = SmoothRequester(
             model=self.model_abstraction_ladder,
-            dataset_key=self._dataset_key,
             phase_key="step3_idea_extraction",
             num_tasks=len(tasks),
             verbose=self.verbose_reporter.enabled,
