@@ -118,5 +118,37 @@ def phase_offset(buf: List[list]) -> Optional[int]:
     return round(statistics.median(deltas))
 
 
+def fit_curve(phases: Dict[str, List[list]]) -> Optional[tuple]:
+    pts = [(r[IN], r[OUT], r[LAT]) for b in phases.values() for r in _live_rows(b)
+           if r[IN] > 0 and r[OUT] > 0 and r[LAT] > 0]
+    if len(pts) < MIN_FIT_N:
+        return None
+    ins = [p[0] for p in pts]
+    if max(ins) / min(ins) < MIN_FIT_SPREAD:
+        return None
+    # OLS on ln(lat) = a + b_in·ln(in) + b_out·ln(out), via 3×3 normal equations.
+    rows = [(1.0, math.log(i), math.log(o)) for i, o, _ in pts]
+    ys = [math.log(l) for _, _, l in pts]
+    xtx = [[sum(r[i] * r[j] for r in rows) for j in range(3)] for i in range(3)]
+    xty = [sum(r[i] * y for r, y in zip(rows, ys)) for i in range(3)]
+    # Gaussian elimination with partial pivoting.
+    m = [xtx[i] + [xty[i]] for i in range(3)]
+    for col in range(3):
+        piv = max(range(col, 3), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-12:
+            return None
+        m[col], m[piv] = m[piv], m[col]
+        for r in range(3):
+            if r != col:
+                f = m[r][col] / m[col][col]
+                m[r] = [v - f * w for v, w in zip(m[r], m[col])]
+    return tuple(m[i][3] / m[i][i] for i in range(3))
+
+
+def curve_p50(coeffs: tuple, in_e: int, out_e: int) -> float:
+    a, b_in, b_out = coeffs
+    return math.exp(a + b_in * math.log(max(in_e, 1)) + b_out * math.log(max(out_e, 1)))
+
+
 # Shared instance: one store per process, like token_tracker in llm.py.
 perf_model = PerfModel()

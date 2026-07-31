@@ -1,10 +1,11 @@
 """Tests for perfModel. Run: python -m utils.test_perfModel (from src/)."""
 import json
+import math
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
-from utils.perfModel import PerfModel, RING_SIZE, PRUNE_DAYS, _model_key, phase_expectation, pool_expectation, phase_offset
+from utils.perfModel import PerfModel, RING_SIZE, PRUNE_DAYS, _model_key, phase_expectation, pool_expectation, phase_offset, fit_curve, curve_p50
 
 
 def _tmp_store():
@@ -80,6 +81,30 @@ def test_phase_offset():
     assert phase_offset([_obs(820, 100, est=None)] * 5) is None
 
 
+def test_fit_curve_recovers_planted_coeffs():
+    a, b_in, b_out = 0.5, 0.3, 0.9
+    phases = {"p": []}
+    for i, (tin, tout) in enumerate([(500, 50), (1000, 100), (2000, 400),
+                                     (4000, 200), (800, 300), (1500, 700),
+                                     (3000, 900), (600, 60), (2500, 150), (1200, 500)]):
+        lat = math.exp(a + b_in * math.log(tin) + b_out * math.log(tout))
+        phases["p"].append(_obs(tin, tout, lat=lat))
+    coeffs = fit_curve(phases)
+    assert coeffs is not None
+    fa, fb_in, fb_out = coeffs
+    assert abs(fa - a) < 0.01 and abs(fb_in - b_in) < 0.01 and abs(fb_out - b_out) < 0.01
+    assert abs(curve_p50(coeffs, 1000, 100) -
+               math.exp(a + b_in * math.log(1000) + b_out * math.log(100))) < 0.01
+
+
+def test_fit_curve_guards():
+    assert fit_curve({"p": [_obs(1000, 100, lat=2.0)] * 5}) is None      # no spread
+    assert fit_curve({"p": [_obs(1000, 100, lat=2.0),
+                            _obs(2000, 200, lat=3.0)]}) is None          # too few
+    to = {"p": [_obs(500 * (i + 1), 100, lat=90.0, to=True) for i in range(12)]}
+    assert fit_curve(to) is None                                          # timeouts excluded
+
+
 if __name__ == "__main__":
     test_observe_ring_and_roundtrip()
     test_corrupt_file_starts_fresh()
@@ -88,4 +113,6 @@ if __name__ == "__main__":
     test_phase_expectation()
     test_pool_expectation()
     test_phase_offset()
+    test_fit_curve_recovers_planted_coeffs()
+    test_fit_curve_guards()
     print("test_perfModel: OK")
