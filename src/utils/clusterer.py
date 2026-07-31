@@ -42,6 +42,12 @@ def run_umap(
     warnings.filterwarnings(
         "ignore", message="n_jobs value.*overridden to 1 by setting random_state"
     )
+    # UMAP's spectral init needs n_components + 1 eigenvectors of an N×N graph,
+    # which scipy hard-rejects when that exceeds N. Cap both parameters to what
+    # N allows so small inputs reduce to fewer dimensions instead of crashing.
+    n = len(embeddings)
+    n_components = min(n_components, max(2, n - 2))
+    n_neighbors = min(n_neighbors, max(2, n - 1))
     reducer = umap.UMAP(
         n_neighbors=n_neighbors,
         n_components=n_components,
