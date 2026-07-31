@@ -574,8 +574,7 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
         if a.get("attribute_name") and a.get("attribute_id")
     }
 
-    dataset_key = f"{FILENAME}:{variable_key}"
-    generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker, dataset_key=dataset_key)
+    generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker)
     codebook_result = generator.generate(
         taxonomy_result=taxonomy_result,
         partition_set=partition_set,

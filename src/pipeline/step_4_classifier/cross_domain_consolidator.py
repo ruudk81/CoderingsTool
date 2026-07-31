@@ -96,9 +96,9 @@ class CrossDomainConsolidator:
         self,
         config: CategoriesConfig,
         prompt_printer=None,
-        dataset_key: str = "",
         cost_tracker=None,
         fetched_limits=None,
+        fetched_has_headers=None,
     ):
         self._model = config.qr_model_p8
         self._temperature = config.qr_temperature
@@ -112,11 +112,11 @@ class CrossDomainConsolidator:
         self._similarity_threshold = config.p8_similarity_threshold
 
         # Shared resources
-        self._dataset_key = dataset_key
         self._prompt_printer = prompt_printer
         self._captured_gates: Set[str] = set()
         self._cost_tracker = cost_tracker
         self._fetched_limits = fetched_limits
+        self._fetched_has_headers = fetched_has_headers
 
     # =========================================================================
     # PUBLIC API
@@ -441,14 +441,13 @@ class CrossDomainConsolidator:
         # SmoothRequester dispatch
         requester = SmoothRequester(
             model=self._model,
-            dataset_key=self._dataset_key,
             phase_key="step4_p8_cross_domain_consolidation",
             num_tasks=len(tasks),
             verbose=verbose,
             known_limits=self._fetched_limits,
+            has_server_headers=self._fetched_has_headers,
             show_setup=False,
             quiet=True,
-            default_timeout=60.0,
         )
 
         results = await requester.process_all(

@@ -34,14 +34,13 @@ _RESTORE_SUFFIX = " (hersteld)"
 class ConsolidationCorrector:
     """Splits over-merged catch-all buckets back apart along provenance seams."""
 
-    def __init__(self, config, prompt_printer=None, dataset_key="", cost_tracker=None):
+    def __init__(self, config, prompt_printer=None, cost_tracker=None):
         self._code_source = config.correction_code_source
         self._embedding_model = config.correction_embedding_model
         self._k_min = config.correction_k_min
         self._k_band = config.correction_k_band
         self._min_split = config.correction_min_split_sources
         self._residual_dominance = config.correction_residual_dominance
-        self._dataset_key = dataset_key
         self._cost_tracker = cost_tracker
 
     async def consolidate(self, taxonomy_cache, classified, extraction_meta, verbose=True):

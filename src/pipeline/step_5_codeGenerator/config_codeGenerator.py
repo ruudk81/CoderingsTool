@@ -31,8 +31,5 @@ class CodebookConfig:
     embedding_max_concurrent: int = 5
     max_representative_samples: int = 3  # Max samples per attribute per valence group
 
-    # SmoothRequester
-    default_timeout: float = 180.0
-
     # Output
     verbose: bool = True

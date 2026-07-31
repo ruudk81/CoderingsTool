@@ -871,6 +871,7 @@ class SmoothRequester:
         verbose: bool = True,
         processing_config: Optional[ProcessingConfig] = None,
         known_limits: Optional[RateLimits] = None,
+        has_server_headers: Optional[bool] = None,
         show_setup: bool = True,
         quiet: bool = False,
     ):
@@ -878,6 +879,7 @@ class SmoothRequester:
         self.phase_key = phase_key
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self._known_limits = known_limits
+        self._known_has_server_headers = has_server_headers
         self._show_setup = show_setup
         self._quiet = quiet
         self._headroom = self.processing_config.rate_limit_headroom
@@ -970,9 +972,11 @@ class SmoothRequester:
         self._header_transport = getattr(self.client, '_header_transport', None)
 
         if self._known_limits is not None:
-            # Skip probe — use caller-provided limits; assume header support
+            # Skip probe — use caller-provided limits and header signal (if given)
             limits = self._known_limits
-            has_server_headers = True
+            has_server_headers = (
+                self._known_has_server_headers if self._known_has_server_headers is not None else True
+            )
         else:
             # Probe call
             limits, has_server_headers = await self._fetch_rate_limits()

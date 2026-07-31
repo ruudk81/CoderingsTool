@@ -77,7 +77,6 @@ class Grader:
         config: Optional[QualityFilterConfig] = None,
         verbose: bool = False,
         prompt_printer: Optional[PromptPrinter] = None,
-        dataset_key: str = "",
         cost_tracker=None,
     ):
         self.responses = responses
@@ -85,7 +84,6 @@ class Grader:
         self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
         self.model = self.config.model
         self._is_nano = "nano" in self.model.lower()
-        self._dataset_key = dataset_key
         self.cost_tracker = cost_tracker
 
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
@@ -259,7 +257,6 @@ class Grader:
 
             requester = SmoothRequester(
                 model=self.model,
-                dataset_key=self._dataset_key,
                 phase_key="step2_quality_filter",
                 num_tasks=len(tasks),
                 verbose=self.verbose_reporter.enabled,

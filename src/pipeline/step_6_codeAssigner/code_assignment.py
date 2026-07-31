@@ -95,7 +95,6 @@ class CodeAssigner:
         codes: List[CodeFromAttributes] = None,
         attribute_assignments: Optional[Dict[str, str]] = None,
         cost_tracker=None,
-        dataset_key: str = "",
     ):
         self.cost_tracker = cost_tracker
         self._config = config
@@ -104,7 +103,6 @@ class CodeAssigner:
         self._partition_set = partition_set
         self._extraction_metadata = extraction_metadata
         self._codes = codes or []
-        self._dataset_key = dataset_key
 
         if self.cost_tracker:
             self.cost_tracker.set_step_models("step_6_code_assigner", {
@@ -316,7 +314,6 @@ class CodeAssigner:
 
         sr = SmoothRequester(
             model=self._config.assignment_model,
-            dataset_key=self._dataset_key,
             phase_key="step6_code_assignment",
             num_tasks=total_tasks,
             verbose=verbose,

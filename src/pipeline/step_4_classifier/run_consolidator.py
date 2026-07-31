@@ -185,15 +185,15 @@ def main():
 
     # Fetch rate limits for SmoothRequester
     print("Fetching rate limits...")
-    fetched_limits, _ = asyncio.run(fetch_rate_limits(CONFIG.qr_model_p8))
+    fetched_limits, fetched_has_headers = asyncio.run(fetch_rate_limits(CONFIG.qr_model_p8))
 
     # Run P8
     consolidator = CrossDomainConsolidator(
         config=CONFIG,
         prompt_printer=prompt_printer,
-        dataset_key=variable_key,
         cost_tracker=cost_tracker,
         fetched_limits=fetched_limits,
+        fetched_has_headers=fetched_has_headers,
     )
 
     new_taxonomy, new_classified, merge_map, stats = asyncio.run(

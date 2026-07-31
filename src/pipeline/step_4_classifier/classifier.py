@@ -164,7 +164,7 @@ class TaxonomyClassifier:
     P8.  CROSS-DOMAIN ATTR CONSOLIDATION:   Global, dedup across domains
     """
 
-    def __init__(self, config: CategoriesConfig, prompt_printer=None, dataset_key: str = "", cost_tracker=None):
+    def __init__(self, config: CategoriesConfig, prompt_printer=None, cost_tracker=None):
         self.cost_tracker = cost_tracker
         self._config = config
         self._model_p1 = config.qr_model_p1
@@ -214,9 +214,6 @@ class TaxonomyClassifier:
         self._label_source = config.label_source
         self._label_prefix = config.label_prefix
 
-        # Dataset key for empirical stats cache (SmoothRequester)
-        self._dataset_key = dataset_key
-
         # Prompt capture (optional)
         self._prompt_printer = prompt_printer
         self._captured_gates: Set[str] = set()
@@ -231,6 +228,7 @@ class TaxonomyClassifier:
 
         # Rate limits — fetched once in _initialize_async_resources()
         self._fetched_limits = None
+        self._fetched_has_headers = None
 
     # =========================================================================
     # PUBLIC API
@@ -335,7 +333,7 @@ class TaxonomyClassifier:
         # --- Fetch real rate limits from API headers ---
         if verbose:
             print("  Fetching rate limits from API...")
-        limits, _ = await llm_fetch_rate_limits(self._model_p1)
+        limits, has_headers = await llm_fetch_rate_limits(self._model_p1)
 
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             if verbose:
@@ -350,6 +348,7 @@ class TaxonomyClassifier:
                   f"RPM={limits.requests_per_minute:,}")
 
         self._fetched_limits = limits
+        self._fetched_has_headers = has_headers
         headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
 
         if verbose:
@@ -423,13 +422,12 @@ class TaxonomyClassifier:
         # P1 discovery via SmoothRequester
         p1_requester = SmoothRequester(
             model=self._model_p1,
-            dataset_key=self._dataset_key,
             phase_key="step4_p1_facet_discovery",
             num_tasks=len(p1_tasks),
             verbose=verbose,
             known_limits=self._fetched_limits,
+            has_server_headers=self._fetched_has_headers,
             show_setup=False,
-            default_timeout=60.0,
             quiet=True,
         )
         p1_results = await p1_requester.process_all(
@@ -525,13 +523,12 @@ class TaxonomyClassifier:
         if p2_tasks:
             p2_requester = SmoothRequester(
                 model=self._model_p2,
-                dataset_key=self._dataset_key,
                 phase_key="step4_p2_facet_consolidation",
                 num_tasks=len(p2_tasks),
                 verbose=verbose,
                 known_limits=self._fetched_limits,
+                has_server_headers=self._fetched_has_headers,
                 show_setup=False,
-                default_timeout=60.0,
                 quiet=True,
             )
             p2_results = await p2_requester.process_all(
@@ -580,13 +577,12 @@ class TaxonomyClassifier:
                     })
                 r2_requester = SmoothRequester(
                     model=self._model_p2,
-                    dataset_key=self._dataset_key,
                     phase_key="step4_p2_facet_consolidation",
                     num_tasks=len(r2_tasks),
                     verbose=verbose,
                     known_limits=self._fetched_limits,
+                    has_server_headers=self._fetched_has_headers,
                     show_setup=False,
-                    default_timeout=60.0,
                     quiet=True,
                 )
                 r2_results = await r2_requester.process_all(
@@ -679,11 +675,11 @@ class TaxonomyClassifier:
         if p3_tasks:
             p3_requester = SmoothRequester(
                 model=self._model_p3,
-                dataset_key=self._dataset_key,
                 phase_key="step4_p3_facet_assignment",
                 num_tasks=len(p3_tasks),
                 verbose=verbose,
                 known_limits=self._fetched_limits,
+                has_server_headers=self._fetched_has_headers,
                 show_setup=False,
                 quiet=False,
             )
@@ -831,13 +827,12 @@ class TaxonomyClassifier:
         if p4_tasks:
             p4_requester = SmoothRequester(
                 model=self._model_p4,
-                dataset_key=self._dataset_key,
                 phase_key="step4_p4_attribute_discovery",
                 num_tasks=len(p4_tasks),
                 verbose=verbose,
                 known_limits=self._fetched_limits,
+                has_server_headers=self._fetched_has_headers,
                 show_setup=False,
-                default_timeout=60.0,
                 quiet=True,
             )
             p4_results = await p4_requester.process_all(
@@ -938,13 +933,12 @@ class TaxonomyClassifier:
         if p5_tasks:
             p5_requester = SmoothRequester(
                 model=self._model_p5,
-                dataset_key=self._dataset_key,
                 phase_key="step4_p5_attribute_consolidation",
                 num_tasks=len(p5_tasks),
                 verbose=verbose,
                 known_limits=self._fetched_limits,
+                has_server_headers=self._fetched_has_headers,
                 show_setup=False,
-                default_timeout=60.0,
                 quiet=True,
             )
             p5_results = await p5_requester.process_all(
@@ -1001,13 +995,12 @@ class TaxonomyClassifier:
                     })
                 r2_requester = SmoothRequester(
                     model=self._model_p5,
-                    dataset_key=self._dataset_key,
                     phase_key="step4_p5_attribute_consolidation",
                     num_tasks=len(r2_tasks),
                     verbose=verbose,
                     known_limits=self._fetched_limits,
+                    has_server_headers=self._fetched_has_headers,
                     show_setup=False,
-                    default_timeout=60.0,
                     quiet=True,
                 )
                 r2_results = await r2_requester.process_all(
@@ -1128,11 +1121,11 @@ class TaxonomyClassifier:
         if p6_tasks:
             p6_requester = SmoothRequester(
                 model=self._model_p6,
-                dataset_key=self._dataset_key,
                 phase_key="step4_p6_attribute_assignment",
                 num_tasks=len(p6_tasks),
                 verbose=verbose,
                 known_limits=self._fetched_limits,
+                has_server_headers=self._fetched_has_headers,
                 show_setup=False,
                 quiet=False,
             )
@@ -1252,13 +1245,12 @@ class TaxonomyClassifier:
         if p7_tasks:
             p7_requester = SmoothRequester(
                 model=self._model_p7,
-                dataset_key=self._dataset_key,
                 phase_key="step4_p7_attribute_consolidation",
                 num_tasks=len(p7_tasks),
                 verbose=verbose,
                 known_limits=self._fetched_limits,
+                has_server_headers=self._fetched_has_headers,
                 show_setup=False,
-                default_timeout=60.0,
                 quiet=True,
             )
             p7_results = await p7_requester.process_all(

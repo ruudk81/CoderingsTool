@@ -107,9 +107,8 @@ class CodebookGenerator:
     All LLM calls dispatched via SmoothRequester.
     """
 
-    def __init__(self, config: CodebookConfig, prompt_printer=None, cost_tracker=None, dataset_key: str = ""):
+    def __init__(self, config: CodebookConfig, prompt_printer=None, cost_tracker=None):
         self._config = config
-        self._dataset_key = dataset_key
         self.cost_tracker = cost_tracker
         self._model_p8 = config.model_p8
         self._model_p9 = config.model_p9
@@ -241,7 +240,7 @@ class CodebookGenerator:
         # Fetch rate limits once for all phases
         if verbose:
             print("  Fetching rate limits from API...")
-        limits, _ = await fetch_rate_limits(self._model_p8)
+        limits, has_headers = await fetch_rate_limits(self._model_p8)
         if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
             if verbose:
                 print(f"  WARNING: Using fallback rate limits "
@@ -364,12 +363,11 @@ class CodebookGenerator:
         # Dispatch via SmoothRequester
         p8_requester = SmoothRequester(
             model=self._model_p8,
-            dataset_key=self._dataset_key,
             phase_key="step5_p8_codebook_generation",
             num_tasks=len(p8_tasks),
             verbose=verbose,
             known_limits=limits,
-            default_timeout=self._config.default_timeout,
+            has_server_headers=has_headers,
             quiet=True,
         )
         p8_results = await p8_requester.process_all(
@@ -457,12 +455,11 @@ class CodebookGenerator:
 
             p9_requester = SmoothRequester(
                 model=self._model_p9,
-                dataset_key=self._dataset_key,
                 phase_key="step5_p9_consolidation",
                 num_tasks=1,
                 verbose=verbose,
                 known_limits=limits,
-                default_timeout=self._config.default_timeout,
+                has_server_headers=has_headers,
                 quiet=True,
             )
             p9_results = await p9_requester.process_all(

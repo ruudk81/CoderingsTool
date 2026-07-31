@@ -593,7 +593,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
     )
     cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
 
-    processor = TaxonomyClassifier(CONFIG, prompt_printer=prompt_printer, dataset_key=variable_key, cost_tracker=cost_tracker)
+    processor = TaxonomyClassifier(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker)
     taxonomy_result = processor.process(
         label_mappings=label_mappings,
         partition_set=partition_set,
@@ -658,9 +658,9 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
             consolidator = CrossDomainConsolidator(
                 config=CONFIG,
                 prompt_printer=prompt_printer,
-                dataset_key=variable_key,
                 cost_tracker=cost_tracker,
                 fetched_limits=processor._fetched_limits,
+                fetched_has_headers=processor._fetched_has_headers,
             )
             new_taxonomy, new_classified, merge_map, p8_stats = asyncio.run(
                 consolidator.consolidate(
@@ -709,7 +709,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
             from pipeline.step_4_classifier.consolidation_corrector import ConsolidationCorrector
             corrected_taxonomy, corrected_classified, _c_map, _c_stats, _c_dec = asyncio.run(
                 ConsolidationCorrector(CONFIG, prompt_printer=prompt_printer,
-                                       dataset_key=variable_key, cost_tracker=cost_tracker).consolidate(
+                                       cost_tracker=cost_tracker).consolidate(
                     c_taxonomy, c_classified, extraction_metadata, verbose=CONFIG.verbose))
             ensure_taxonomy_ids(corrected_taxonomy)
             restamp_assignment_ids(corrected_classified, corrected_taxonomy)
