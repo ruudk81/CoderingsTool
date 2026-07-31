@@ -42,7 +42,6 @@ class ClassifierRampConfig:
 
     # Adaptive timeout (P95 × margin, computed after gate acquisition)
     timeout_floor_seconds: float = 60.0        # Cold-start floor (chunk processing = 60s for large discovery prompts)
-    default_timeout_seconds: float = 60.0      # Cold-start timeout (matches floor; P95×3 adaptive after warm-up)
 
 
 @dataclass
