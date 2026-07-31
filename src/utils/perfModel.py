@@ -150,5 +150,28 @@ def curve_p50(coeffs: tuple, in_e: int, out_e: int) -> float:
     return math.exp(a + b_in * math.log(max(in_e, 1)) + b_out * math.log(max(out_e, 1)))
 
 
+def capacity_knee(buffers: List[List[list]]) -> Optional[int]:
+    """Deployment capacity knee from concurrency buckets.
+
+    Takes a list of buffers (all phases, all models resolving to one deployment),
+    buckets concurrency by BUCKET_WIDTH, and returns the highest observed concurrency
+    in the highest healthy bucket, provided every lower bucket with data is also
+    healthy (no claims across a sick gap). Never extrapolates above observed values.
+    """
+    rows = [r for b in buffers for r in b if r[CONC] > 0]
+    buckets: Dict[int, list] = {}
+    for r in rows:
+        buckets.setdefault(r[CONC] // BUCKET_WIDTH, []).append(r)
+    best = None
+    for key in sorted(buckets):
+        grp = buckets[key]
+        if len(grp) < MIN_BUCKET_N:
+            continue
+        if sum(1 for r in grp if r[TIMED_OUT]) / len(grp) > MAX_TIMEOUT_RATE:
+            break                       # sick bucket: nothing above it counts
+        best = max(r[CONC] for r in grp)
+    return best
+
+
 # Shared instance: one store per process, like token_tracker in llm.py.
 perf_model = PerfModel()

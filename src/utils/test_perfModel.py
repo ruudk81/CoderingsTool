@@ -5,7 +5,7 @@ import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
-from utils.perfModel import PerfModel, RING_SIZE, PRUNE_DAYS, _model_key, phase_expectation, pool_expectation, phase_offset, fit_curve, curve_p50
+from utils.perfModel import PerfModel, RING_SIZE, PRUNE_DAYS, _model_key, phase_expectation, pool_expectation, phase_offset, fit_curve, curve_p50, capacity_knee
 
 
 def _tmp_store():
@@ -105,6 +105,26 @@ def test_fit_curve_guards():
     assert fit_curve(to) is None                                          # timeouts excluded
 
 
+def test_capacity_knee_finds_planted_knee():
+    bufs = [[]]
+    for conc in (20, 40, 60, 80, 100):
+        for _ in range(5):
+            bufs[0].append(_obs(800, 100, lat=1.0 + conc / 100, conc=conc))
+    for _ in range(5):                                   # concurrency 120: sick
+        bufs[0].append(_obs(800, 100, lat=60.0, conc=120, to=True))
+    assert capacity_knee(bufs) == 100
+
+
+def test_capacity_knee_no_pressure_no_claim():
+    assert capacity_knee([[_obs(800, 100, conc=50)] * 2]) is None    # n < MIN_BUCKET_N
+    assert capacity_knee([]) is None
+
+
+def test_capacity_knee_never_extrapolates():
+    bufs = [[_obs(800, 100, conc=73) for _ in range(10)]]
+    assert capacity_knee(bufs) == 73                      # observed max, not a rounded-up bucket edge
+
+
 if __name__ == "__main__":
     test_observe_ring_and_roundtrip()
     test_corrupt_file_starts_fresh()
@@ -115,4 +135,7 @@ if __name__ == "__main__":
     test_phase_offset()
     test_fit_curve_recovers_planted_coeffs()
     test_fit_curve_guards()
+    test_capacity_knee_finds_planted_knee()
+    test_capacity_knee_no_pressure_no_claim()
+    test_capacity_knee_never_extrapolates()
     print("test_perfModel: OK")
