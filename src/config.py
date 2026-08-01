@@ -83,8 +83,7 @@ STEP_MODEL_TIERS = {
     "classifier_p4":    "mini",      # Attribute Discovery
     "classifier_p5":    "default",   # Attribute Consolidation
     "classifier_p6":    "mini",      # Attribute Assignment
-    "classifier_p7":    "default",   # Cross-facet Attribute Consolidation
-    "classifier_p8":    "default",   # Cross-domain Attribute Consolidation
+    "classifier_p7":    "default",   # In-facet Attribute Consolidation (post-assignment)
     # Step 5: Code Generator (P8-P9)
     "codegen_p8":       "default",
     "codegen_p9":       "default",
@@ -129,7 +128,6 @@ STEP_VERBOSITY = {
     "classifier_p4": "low",
     "classifier_p5": "low",
     "classifier_p7": "low",
-    "classifier_p8": "low",
     # All other steps: fall back to TEXT_VERBOSITY
 }
 

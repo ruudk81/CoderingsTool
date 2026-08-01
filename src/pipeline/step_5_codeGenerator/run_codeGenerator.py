@@ -450,9 +450,10 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
 
     partition_set = taxonomy_cache.partition_set
 
-    # Prefer the CORRECTED taxonomy (produced by step 4's post-hoc over-merge
-    # correction) when present; else the consolidated taxonomy. Step 5 only READS —
-    # the correction itself runs in step 4 (run_classifier).
+    # LEGACY READ PATH: chains built before the P7 promotion (2026-08-01) may
+    # carry a corrected taxonomy from the old P9 over-merge correction. Prefer
+    # it for those chains so delivered work keeps its shipped shape. New step-4
+    # runs never write these keys and invalidate stale ones after saving.
     cache_manager = CacheManager()
     pydantic_results = taxonomy_cache.partition_results
     if cache_manager.is_metadata_cache_valid(FILENAME, "taxonomy_corrected", variable_key):
