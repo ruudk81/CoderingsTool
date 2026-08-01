@@ -19,14 +19,36 @@ def _repo(tmp_path, datasets=("data.sav",)):
     (tmp_path / "data").mkdir()
     for d in datasets:
         (tmp_path / "data" / d).write_bytes(b"")
-    (tmp_path / "data" / "cache").mkdir()
-    con = sqlite3.connect(tmp_path / "data" / "cache" / "cache.db")
-    con.execute("CREATE TABLE cache_metadata (filename TEXT, variable_key TEXT, status TEXT)")
+    cache = tmp_path / "data" / "cache"
+    cache.mkdir()
+    con = sqlite3.connect(cache / "cache.db")
+    con.execute("CREATE TABLE cache_metadata "
+                "(filename TEXT, variable_key TEXT, status TEXT, cache_path TEXT)")
     for d in datasets:
-        con.execute("INSERT INTO cache_metadata VALUES (?, ?, 'valid')", (d, "Q1_100"))
+        # cache_path wijst bewust naar een bestand dat niet bestaat: deze rij is
+        # er alleen om de dataset bekend te maken, niet om een pickle te claimen.
+        con.execute("INSERT INTO cache_metadata VALUES (?, ?, 'valid', ?)",
+                    (d, "Q1_100", str(cache / f"000_seed_{d}.pkl")))
     con.commit()
     con.close()
     return tmp_path
+
+
+def _cache_bestand(root, dataset, variable_key, naam, mtime=None,
+                   status="valid", in_db=True, grootte=10):
+    """Eén pickle in data/cache/, met of zonder geldige db-rij."""
+    cache = root / "data" / "cache"
+    p = cache / f"{naam}.pkl"
+    p.write_bytes(b"x" * grootte)
+    if mtime is not None:
+        os.utime(p, (mtime, mtime))
+    if in_db:
+        con = sqlite3.connect(cache / "cache.db")
+        con.execute("INSERT INTO cache_metadata VALUES (?, ?, ?, ?)",
+                    (dataset, variable_key, status, str(p)))
+        con.commit()
+        con.close()
+    return p
 
 
 def _bestand(root, mapnaam, dataset, var, sample, doctype, ext="txt", mtime=None, grootte=10):
@@ -53,6 +75,7 @@ def _standaard_instellingen(monkeypatch):
     """Elke test begint met de opgeleverde stand: alle plafonds uit."""
     monkeypatch.setattr(retention, "RETENTION_ENABLED", True)
     monkeypatch.setattr(retention, "MAX_ANALYSES", None)
+    monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", None)
     monkeypatch.setattr(retention, "TRASH_MAX_MB", None)
     monkeypatch.setattr(retention, "PROTECT_DAYS", 7)
 
@@ -317,3 +340,128 @@ def test_pad_buiten_exports_stopt_de_run(tmp_path):
 
     with pytest.raises(retention.RetentionError, match="buiten exports"):
         retention.collect(root)
+
+
+# =============================================================================
+# data/cache — hetzelfde analyse-begrip, een eigen plafond
+# =============================================================================
+
+def test_cache_en_exports_vormen_samen_een_analyse(tmp_path):
+    """Een cachebestand hoort bij dezelfde analyse als de exports ervan."""
+    root = _repo(tmp_path)
+    nu = time.time()
+    _analyse(root, "data.sav", "Q1", 100, nu - 30 * 86400)
+    _cache_bestand(root, "data.sav", "Q1_100", "004_extracted_ideas_data_Q1_100",
+                   mtime=nu - 30 * 86400)
+
+    analyses, restanten = retention.collect(root)
+
+    assert len(analyses) == 1
+    assert len(analyses[0].entries) == 3
+    assert len(analyses[0].cache_entries) == 1
+    assert restanten == []
+
+
+def test_cache_zonder_exports_is_een_eigen_analyse(tmp_path):
+    """Zijn de exports al opgeruimd, dan blijft de cache een analyse op zichzelf."""
+    root = _repo(tmp_path)
+    nu = time.time()
+    _cache_bestand(root, "data.sav", "Q1_500", "004_extracted_ideas_data_Q1_500",
+                   mtime=nu - 30 * 86400)
+
+    analyses, restanten = retention.collect(root)
+
+    assert [str(a.key) for a in analyses] == ["data · Q1 · 500"]
+    assert analyses[0].entries == []
+    assert restanten == []
+
+
+def test_onbereikbare_pickle_is_een_restant(tmp_path):
+    """Een 'invalid'-rij betekent dat geen codepad het bestand nog kan lezen."""
+    root = _repo(tmp_path)
+    nu = time.time()
+    dood = _cache_bestand(root, "data.sav", "Q1_100", "006_mece_codes_metadata_oud",
+                          mtime=nu - 30 * 86400, status="invalid")
+
+    analyses, restanten = retention.collect(root)
+
+    assert [e.path for e in restanten] == [dood]
+    assert analyses == []
+
+
+def test_pickle_zonder_db_rij_is_een_restant(tmp_path):
+    root = _repo(tmp_path)
+    nu = time.time()
+    vreemd = _cache_bestand(root, "data.sav", "Q1_100", "007_taxonomy_codes_onbekend",
+                            mtime=nu - 30 * 86400, in_db=False)
+
+    _, restanten = retention.collect(root)
+
+    assert [e.path for e in restanten] == [vreemd]
+
+
+def test_cache_heeft_een_eigen_ruimer_plafond(tmp_path, monkeypatch):
+    """Exports voorbij hun plafond gaan weg; de cache van dezelfde analyse blijft."""
+    monkeypatch.setattr(retention, "MAX_ANALYSES", 1)
+    monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", 2)
+    root = _repo(tmp_path)
+    nu = time.time()
+    for sample, dagen in ((100, 30), (500, 60)):
+        _analyse(root, "data.sav", "Q1", sample, nu - dagen * 86400)
+        _cache_bestand(root, "data.sav", f"Q1_{sample}", f"004_ideas_{sample}",
+                       mtime=nu - dagen * 86400)
+
+    retention.run(root, apply=True, now=nu)
+
+    oud = root / "data" / "cache" / "004_ideas_500.pkl"
+    assert oud.exists(), "cache van de oudste analyse moet binnen haar eigen plafond blijven"
+    assert not list((root / "exports" / "coderingen").glob("*_500_*")), \
+        "exports van de oudste analyse moesten wél weg"
+
+
+def test_cache_voorbij_zijn_plafond_verhuist_en_wordt_ongeldig(tmp_path, monkeypatch):
+    """Het bestand gaat naar data_cache/ in de bak, de db-rij gaat op invalid."""
+    monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", 1)
+    root = _repo(tmp_path)
+    nu = time.time()
+    _cache_bestand(root, "data.sav", "Q1_100", "004_ideas_100", mtime=nu - 30 * 86400)
+    oud = _cache_bestand(root, "data.sav", "Q1_500", "004_ideas_500", mtime=nu - 60 * 86400)
+
+    retention.run(root, apply=True, now=nu)
+
+    assert not oud.exists()
+    assert (root / "exports" / "_prullenbak" / "data_cache" / "004_ideas_500.pkl").exists()
+
+    con = sqlite3.connect(root / "data" / "cache" / "cache.db")
+    status = con.execute("SELECT status FROM cache_metadata WHERE cache_path = ?",
+                         (str(oud),)).fetchone()[0]
+    con.close()
+    assert status == "invalid"
+
+
+def test_verse_cache_blijft_ook_voorbij_het_plafond(tmp_path, monkeypatch):
+    monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", 1)
+    root = _repo(tmp_path)
+    nu = time.time()
+    _cache_bestand(root, "data.sav", "Q1_100", "004_ideas_100", mtime=nu - 1 * 86400)
+    vers = _cache_bestand(root, "data.sav", "Q1_500", "004_ideas_500", mtime=nu - 2 * 86400)
+
+    retention.run(root, apply=True, now=nu)
+
+    assert vers.exists()
+
+
+def test_analyse_zonder_exports_kost_geen_exportplek(tmp_path, monkeypatch):
+    """Een cache-only analyse mag geen plek van MAX_ANALYSES opsouperen."""
+    monkeypatch.setattr(retention, "MAX_ANALYSES", 2)
+    root = _repo(tmp_path)
+    nu = time.time()
+    # nieuwste: alleen cache. Daarna twee analyses mét exports.
+    _cache_bestand(root, "data.sav", "Q1_900", "004_ideas_900", mtime=nu - 10 * 86400)
+    for sample, dagen in ((100, 30), (500, 60)):
+        _analyse(root, "data.sav", "Q1", sample, nu - dagen * 86400)
+
+    analyses, _ = retention.collect(root)
+    weg = retention.select_analyses_for_removal(analyses, now=nu)
+
+    assert weg == [], "beide export-analyses passen binnen het plafond van 2"
