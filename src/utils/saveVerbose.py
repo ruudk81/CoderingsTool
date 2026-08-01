@@ -171,10 +171,10 @@ class VerboseCapture:
         step: int,
         output_dir: Optional[Path] = None,
     ) -> Optional[Path]:
-        """Het logbestand van deze stap, of None.
+        """The log file for this step, or None.
 
-        Er is er hoogstens één: de naam is deterministisch en een herhaalde run
-        overschrijft. Geen glob, geen mtime-sortering.
+        There is at most one: the name is deterministic and a rerun overwrites
+        it. No glob, no mtime sorting.
         """
         if output_dir is None:
             project_root = Path(__file__).parent.parent.parent
