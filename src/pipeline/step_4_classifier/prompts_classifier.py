@@ -4,6 +4,7 @@ Prompt builders for Taxonomy Classifier (P1-P10).
 Organized in pipeline processing order:
   §0   Dimension Context Block (shared helper)
   §1a  Axis Discovery (P1a: per-domain axis system discovery)
+  §1b  Tagged Facet Discovery (P1b: per-domain, chunked, axis-tagged)
   §1   Facet Discovery (P1: per-domain, chunked)
   §2   Facet Consolidation (P2: merge chunk-level facets)
   §3   Facet Review (P3: per-domain quality gate)
@@ -209,6 +210,107 @@ class AxisSystemResponse(BaseModel):
 
 
 # =============================================================================
+# §1b TAGGED FACET DISCOVERY (P1b) — per-domain chunked discovery inside a
+# pre-established, fixed axis system. Used only for domains that got a
+# validated axis system from P1a (axis_first_enabled); domains without one
+# keep the untagged §1 path below untouched.
+# =============================================================================
+
+def _build_axis_system_block(axis_system: AxisSystemResponse) -> str:
+    """Render a validated axis system as prompt text: one 'Axis: name —
+    description' line per axis, followed by its segments (residual segment
+    last, name suffixed ' (residual)')."""
+    axis_blocks = []
+    for axis in axis_system.axes:
+        lines = [f"Axis: {axis.axis_name} — {axis.axis_description}"]
+        non_residual = [seg for seg in axis.segments if not seg.is_residual]
+        residual = [seg for seg in axis.segments if seg.is_residual]
+        for seg in non_residual + residual:
+            suffix = " (residual)" if seg.is_residual else ""
+            lines.append(f"  - {seg.segment_name}{suffix}: {seg.segment_description}")
+            lines.append(f"    Boundary: {seg.boundary}")
+        axis_blocks.append("\n".join(lines))
+    return "\n\n".join(axis_blocks)
+
+
+def build_tagged_facet_discovery_prompt(
+    *,
+    survey_question: str,
+    domain_label: str,
+    domain_definition: str,
+    axis_system: AxisSystemResponse,
+    chunk_observations: List[str],
+) -> str:
+    """Discover facets (L3) from a chunk of observations, each proposal tagged
+    to exactly one (axis, segment) of the domain's fixed axis system (P1b)."""
+    axis_system_block = _build_axis_system_block(axis_system)
+    observations_block = "\n".join(f"{i}. {obs}" for i, obs in enumerate(chunk_observations, 1))
+
+    return f"""You are a qualitative research analyst for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Domain: {domain_label} — {domain_definition}
+
+This domain's axis system was established beforehand and is FIXED — you work
+inside it, you do not change it:
+
+<axis_system>
+{axis_system_block}
+</axis_system>
+
+Below are the observations of your chunk:
+
+<observations>
+{observations_block}
+</observations>
+
+Your task: propose facets for this chunk, where every facet is a coherent
+recurring theme that occupies EXACTLY ONE segment of ONE axis above. Tag every
+proposal with that (axis_name, segment_name) — proposals with tags outside the
+system are rejected unseen.
+
+Rules:
+- One segment can receive multiple proposals (consolidation merges later);
+  a proposal can never span two segments — split it.
+- An observation pattern that names no recognisable value on an axis belongs
+  to that axis's residual segment; never invent a general catch-all facet.
+- Ground every facet in this chunk's observations (quote 2-5 as examples).
+- Descriptive wording only.
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class TaggedFacetProposal(BaseModel):
+    """A facet proposal from a chunk, tagged to a segment of the domain's
+    fixed axis system (P1b output)."""
+    facet_name: str = Field(
+        ..., description="Short descriptive name for the facet (2-5 words)"
+    )
+    facet_description: str = Field(
+        ..., description="What this facet captures — the specific viewpoint or aspect (1-2 sentences)"
+    )
+    axis_name: str = Field(
+        ..., description="Name of the axis this facet's segment belongs to — must exist in the axis system above"
+    )
+    segment_name: str = Field(
+        ..., description="Name of the segment on that axis this facet occupies — must exist on that axis above"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-5 example observations grounding this facet, verbatim from the chunk"
+    )
+
+
+class TaggedFacetDiscoveryResponse(BaseModel):
+    """P1b output: tagged facet proposals discovered in a single chunk."""
+    proposals: List[TaggedFacetProposal] = Field(
+        ..., description="Facet proposals discovered in this chunk, each tagged to one (axis, segment)"
+    )
+
+
+# =============================================================================
 # §1 FACET DISCOVERY (P1) — per-domain chunked pattern extraction
 # =============================================================================
 
@@ -378,6 +480,12 @@ class DiscoveredFacet(BaseModel):
     )
     boundary_test: SkipJsonSchema[str] = Field(
         default="", description="One routing sentence for the doubtful case, phrased against a named sibling facet"
+    )
+    axis: SkipJsonSchema[str] = Field(
+        default="", description="P1b provenance only: the axis this facet was tagged to (empty on the untagged path)"
+    )
+    segment: SkipJsonSchema[str] = Field(
+        default="", description="P1b provenance only: the segment this facet was tagged to (empty on the untagged path)"
     )
 
 

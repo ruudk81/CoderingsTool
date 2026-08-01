@@ -73,6 +73,9 @@ from .prompts_classifier import (
     build_axis_discovery_prompt,
     AxisSystemResponse,
     AxisSegment,
+    # P1b: Tagged Facet Discovery
+    build_tagged_facet_discovery_prompt,
+    TaggedFacetDiscoveryResponse,
     # P1: Facet Discovery
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
@@ -665,7 +668,7 @@ class TaxonomyClassifier:
         p1_results = await p1_requester.process_all(
             p1_tasks,
             self._p1_prepare_fn(prompt_context),
-            self._p1_parse_fn(),
+            self._p1_parse_fn(consolidation_log),
             self._p1_fallback_fn(),
         )
 
@@ -2009,25 +2012,44 @@ class TaxonomyClassifier:
     # =========================================================================
 
     def _p1_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P1 facet discovery."""
+        """Return prepare_fn closure for P1 facet discovery. A domain with a
+        validated axis system (axis_first_enabled) gets the tagged P1b prompt
+        and response model; a domain without one (flag off / axis failed /
+        drain) gets the untouched untagged P1 path — byte-identical to before."""
         def prepare_fn(task: Dict) -> Dict:
-            prompt = build_facet_discovery_prompt(
-                survey_question=prompt_context.survey_question,
-                language=prompt_context.language,
-                dataset_context_section=prompt_context.dataset_context_section,
-                dimension_def=prompt_context.dimension_def,
-                dimension_name=prompt_context.dimension_name,
-                dimension_description=prompt_context.dimension_description,
-                partition_name=task['domain_name'],
-                partition_definition=task['part_context'].partition_definition,
-                boundary_test=task['part_context'].boundary_test,
-                exclusions=task['part_context'].exclusions,
-                observations=task['observations'],
-                excluded_domains=task['excluded_domains'],
-            )
+            domain_name = task['domain_name']
+            axis_system = self.axis_systems.get(domain_name)
+
+            if axis_system is not None:
+                prompt = build_tagged_facet_discovery_prompt(
+                    survey_question=prompt_context.survey_question,
+                    domain_label=domain_name,
+                    domain_definition=task['part_context'].partition_definition,
+                    axis_system=axis_system,
+                    chunk_observations=task['observations'],
+                )
+                response_model = TaggedFacetDiscoveryResponse
+                prompt_type = "tagged_facet_discovery"
+            else:
+                prompt = build_facet_discovery_prompt(
+                    survey_question=prompt_context.survey_question,
+                    language=prompt_context.language,
+                    dataset_context_section=prompt_context.dataset_context_section,
+                    dimension_def=prompt_context.dimension_def,
+                    dimension_name=prompt_context.dimension_name,
+                    dimension_description=prompt_context.dimension_description,
+                    partition_name=domain_name,
+                    partition_definition=task['part_context'].partition_definition,
+                    boundary_test=task['part_context'].boundary_test,
+                    exclusions=task['part_context'].exclusions,
+                    observations=task['observations'],
+                    excluded_domains=task['excluded_domains'],
+                )
+                response_model = FacetDiscoveryResult
+                prompt_type = "facet_discovery"
 
             # Prompt capture (first chunk per domain)
-            gate_key = f"qr_facets_{task['domain_name']}"
+            gate_key = f"qr_facets_{domain_name}"
             if (self._prompt_printer is not None
                     and task['chunk_idx'] == 0
                     and gate_key not in self._captured_gates):
@@ -2035,13 +2057,13 @@ class TaxonomyClassifier:
                     step_name="qualitative_researcher",
                     utility_name="QualitativeResearcher",
                     prompt_content=prompt,
-                    prompt_type="facet_discovery",
+                    prompt_type=prompt_type,
                     metadata={
                         "model": self._model_p1,
                         "temperature": self._temperature,
                         "max_tokens": self._max_tokens_facet_discovery,
                         "language": prompt_context.language,
-                        "partition_name": task['domain_name'],
+                        "partition_name": domain_name,
                         "batch_number": task['chunk_idx'] + 1,
                         "total_batches": task['total_chunks'],
                         "dimension_name": prompt_context.dimension_name,
@@ -2051,7 +2073,7 @@ class TaxonomyClassifier:
 
             return {
                 'prompt': prompt,
-                'response_model': FacetDiscoveryResult,
+                'response_model': response_model,
                 'temperature': self._temperature,
                 'max_tokens': self._max_tokens_facet_discovery,
                 'max_retries': 3,
@@ -2059,10 +2081,47 @@ class TaxonomyClassifier:
             }
         return prepare_fn
 
-    def _p1_parse_fn(self):
-        """Return parse_fn closure for P1 facet discovery."""
+    def _p1_parse_fn(self, consolidation_log: List[Dict]):
+        """Return parse_fn closure for P1 facet discovery. Tagged responses
+        (domain has a validated axis system) are validated proposal-by-proposal
+        against that system: a valid (axis, segment) tag becomes a
+        DiscoveredFacet carrying axis/segment; an invalid tag drops the
+        proposal and logs `invalid_axis_tag`. Untagged responses (domain
+        without a system) pass through unchanged, as before."""
         def parse_fn(task: Dict, response) -> Optional[List[DiscoveredFacet]]:
-            return response.facets if response else []
+            if response is None:
+                return []
+
+            domain_name = task['domain_name']
+            axis_system = self.axis_systems.get(domain_name)
+            if axis_system is None:
+                return response.facets
+
+            valid_tags = {
+                (self._norm_text(axis.axis_name), self._norm_text(seg.segment_name))
+                for axis in axis_system.axes
+                for seg in axis.segments
+            }
+
+            facets: List[DiscoveredFacet] = []
+            for proposal in response.proposals:
+                tag = (self._norm_text(proposal.axis_name), self._norm_text(proposal.segment_name))
+                if tag not in valid_tags:
+                    consolidation_log.append({
+                        "action": "invalid_axis_tag",
+                        "domain": domain_name,
+                        "facet": proposal.facet_name,
+                        "tag": f"{proposal.axis_name} / {proposal.segment_name}",
+                    })
+                    continue
+                facets.append(DiscoveredFacet(
+                    facet_name=proposal.facet_name,
+                    facet_description=proposal.facet_description,
+                    example_observations=proposal.example_observations,
+                    axis=proposal.axis_name,
+                    segment=proposal.segment_name,
+                ))
+            return facets
         return parse_fn
 
     @staticmethod
