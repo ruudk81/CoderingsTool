@@ -84,7 +84,14 @@ class CategoriesConfig:
     # TAXONOMY CLASSIFIER PIPELINE (P1-P10)
     # ==========================================================================
 
+    # Axis-first discovery (P1a): off by default — flips only after the owner's
+    # measurement verdict (see .superpowers/specs/2026-08-01-assen-eerst-design.md).
+    # Off is byte-identical to the pre-existing chain: no axis call, no domain
+    # skipped, no log entries.
+    axis_first_enabled: bool = False
+
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
+    qr_model_p1a: str = get_step_model("classifier_p2")   # P1a: Axis Discovery
     qr_model_p1: str = get_step_model("classifier_p1")    # P1: Facet Discovery
     qr_model_p2: str = get_step_model("classifier_p2")    # P2: Facet Consolidation
     qr_model_p3: str = get_step_model("classifier_p3")    # P3: Facet Review (rewrite + flag)

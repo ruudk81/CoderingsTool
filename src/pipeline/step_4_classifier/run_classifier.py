@@ -232,6 +232,37 @@ def _write_consolidation_log(
             print(f"    {totals}")
 
 
+def _write_axes_log(
+    taxonomy_result: TaxonomyResult,
+    filename: str,
+    variable_key: str,
+) -> None:
+    """Dump the P1a discovered axis systems to exports/experiment_logs/ as JSON
+    (eye-checkable, per the spec's persistence section), and print one line per
+    domain. A file, not a cache field — same reasoning as the P9 log: this is a
+    diagnostic side-artifact, not part of the shared TaxonomyResultsCache.
+    """
+    systems = getattr(taxonomy_result, "axis_systems", None)
+    if not systems:
+        return
+
+    out_dir = Path(__file__).resolve().parents[3] / "exports" / "experiment_logs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(filename).stem
+    path = out_dir / f"{stem}_{variable_key}_axes.json"
+    path.write_text(
+        json.dumps({"dataset": filename, "variable_key": variable_key, "axis_systems": systems},
+                   indent=1, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    if CONFIG.verbose:
+        print(f"  P1a axes log written: {path.name} ({len(systems)} domains)")
+        for name in sorted(systems):
+            axes = systems[name].get("axes", [])
+            n_segments = sum(len(a.get("segments", [])) for a in axes)
+            print(f"    {name}: {len(axes)} axes / {n_segments} segments")
+
+
 def cache_taxonomy_results(
     partition_set: DomainSet,
     label_mappings: Dict[str, PartitionLabelMapping],
@@ -347,6 +378,9 @@ def cache_taxonomy_results(
     # move with the exact texts it touched — this is what makes a bad decision
     # findable afterwards instead of invisible.
     _write_consolidation_log(taxonomy_result, filename, variable_key)
+
+    # P1a discovered axis systems, per domain, to disk (see _write_axes_log).
+    _write_axes_log(taxonomy_result, filename, variable_key)
 
     # Build and cache growing model (enriched facet/attribute per idea)
     if ideas_models is not None:

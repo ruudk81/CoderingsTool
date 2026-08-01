@@ -69,6 +69,10 @@ from .partition_labels import format_label
 from .taxonomy_health import drain_domains
 from models import DomainSet, DomainDescription
 from .prompts_classifier import (
+    # P1a: Axis Discovery
+    build_axis_discovery_prompt,
+    AxisSystemResponse,
+    AxisSegment,
     # P1: Facet Discovery
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
@@ -108,6 +112,80 @@ nest_asyncio.apply()
 # =============================================================================
 # HELPERS
 # =============================================================================
+
+def sample_axis_observations(
+    labels: List[str], *, target: int = 120, cap: int = 150,
+) -> List[str]:
+    """Deterministic spread sample across a domain's ordered unique labels
+    (P1a input). Every k-th label, arithmetic stride — no randomness, so the
+    same input always yields the same sample, and the stride covers the full
+    range instead of just the labels that happen to land in the first chunk.
+
+    n <= cap: return every label (already small enough). n > cap: take
+    `target` evenly-spaced indices from 0 to n-1, then clip to `cap`.
+    """
+    n = len(labels)
+    if n <= cap:
+        return list(labels)
+
+    stride = n / target
+    seen: Set[int] = set()
+    idxs: List[int] = []
+    for i in range(target):
+        idx = min(int(i * stride), n - 1)
+        if idx not in seen:
+            seen.add(idx)
+            idxs.append(idx)
+    return [labels[i] for i in idxs[:cap]]
+
+
+def validate_and_repair_axis_system(
+    response: Optional[AxisSystemResponse],
+) -> Optional[AxisSystemResponse]:
+    """Validate a P1a response and repair what the spec allows to be repaired
+    deterministically; anything else fails open (returns None) so the caller
+    falls back to the pre-existing untagged path for that domain.
+
+    Repaired in place:
+      - an axis with no residual segment gets one injected (name
+        "unspecified", spec's residual wording, no invented examples).
+
+    Rejected (returns None — the whole response is invalid, not just one axis):
+      - not 1-4 axes;
+      - duplicate segment names within an axis (case-insensitive);
+      - more than one segment marked residual on an axis (ambiguous — not
+        safe to pick one without guessing).
+    """
+    if response is None or not response.axes:
+        return None
+    if not (1 <= len(response.axes) <= 4):
+        return None
+
+    for axis in response.axes:
+        seen_names: Set[str] = set()
+        for seg in axis.segments:
+            norm = seg.segment_name.strip().lower()
+            if norm in seen_names:
+                return None
+            seen_names.add(norm)
+
+        residual_count = sum(1 for seg in axis.segments if seg.is_residual)
+        if residual_count > 1:
+            return None
+        if residual_count == 0:
+            axis.segments.append(AxisSegment(
+                segment_name="unspecified",
+                segment_description=(
+                    "Observations that belong to this domain but do not "
+                    "specify a value on this axis."
+                ),
+                boundary="names no recognisable value on this axis",
+                example_observations=[],
+                is_residual=True,
+            ))
+
+    return response
+
 
 # =============================================================================
 # SHARED DATACLASSES
@@ -154,6 +232,10 @@ class TaxonomyResult:
     partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
     partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]]  # domain -> {facet -> [attrs]}
     attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
+    # P1a: discovered axis system per domain (model_dump, verbatim). Empty
+    # unless axis_first_enabled. Written to a JSON log by the runner —
+    # deliberately NOT part of the shared TaxonomyResultsCache model.
+    axis_systems: Dict[str, dict] = field(default_factory=dict)
     # Pre-P9 snapshots (before the post-assignment consolidation round remaps)
     raw_partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = field(default_factory=dict)
     raw_attribute_assignments: Dict[str, str] = field(default_factory=dict)
@@ -208,6 +290,8 @@ class TaxonomyClassifier:
     def __init__(self, config: CategoriesConfig, prompt_printer=None, cost_tracker=None):
         self.cost_tracker = cost_tracker
         self._config = config
+        self._axis_first_enabled = config.axis_first_enabled
+        self._model_p1a = config.qr_model_p1a
         self._model_p1 = config.qr_model_p1
         self._model_p2 = config.qr_model_p2
         self._model_p3 = config.qr_model_p3
@@ -221,6 +305,7 @@ class TaxonomyClassifier:
 
         if self.cost_tracker:
             self.cost_tracker.set_step_models("step_4_taxonomy_classifier", {
+                "p1a_axis_discovery": self._model_p1a,
                 "p1_facet_discovery": self._model_p1,
                 "p2_facet_consolidation": self._model_p2,
                 "p3_facet_review": self._model_p3,
@@ -272,6 +357,11 @@ class TaxonomyClassifier:
         self._attribute_confidence: Dict[str, float] = {}
         self._facet_valence: Dict[str, str] = {}
         self._attribute_valence: Dict[str, str] = {}
+
+        # P1a: validated axis system per domain (populated by _process_taxonomy_async
+        # when axis_first_enabled; empty otherwise). Carried on the instance because
+        # TaxonomyResult only needs the model_dump for the final return.
+        self.axis_systems: Dict[str, AxisSystemResponse] = {}
 
         # Rate limits — fetched once in _initialize_async_resources()
         self._fetched_limits = None
@@ -430,6 +520,92 @@ class TaxonomyClassifier:
         self._attribute_confidence.clear()
         self._facet_valence.clear()
         self._attribute_valence.clear()
+        self.axis_systems.clear()
+
+        # P9 action log — declared here (not at its historical P3 site) because
+        # P1a, which runs first, needs it too.
+        consolidation_log: List[Dict] = []
+
+        # =================================================================
+        # PHASE 1a (P1a): Per-domain Axis Discovery (optional, SmoothRequester,
+        # light mode — mirrors the P2/P3 dispatch). Establishes 1-4 axes per
+        # domain from a deterministic sample of its observations, before P1
+        # facet discovery runs. Behind axis_first_enabled; off is
+        # byte-identical to the pre-existing chain — this whole block is
+        # skipped, axis_systems stays empty, no domain is touched.
+        # Skips the standing drain domains and domains too small to be worth
+        # an axis call (< 2 chunks AND < 20 labels).
+        # =================================================================
+        if self._axis_first_enabled:
+            _snap_p1a = token_tracker.snapshot() if self.cost_tracker else None
+            t_p1a = time.time()
+
+            drain_p1a = drain_domains(extraction_metadata)
+
+            p1a_tasks = []
+            for name, mapping in sorted(label_mappings.items()):
+                if name in drain_p1a:
+                    continue
+                n_labels = len(mapping.labels)
+                # Recomputed here (domain_chunk_info builds it too, just below,
+                # for P1) — cheap list slicing, and P1a must gate before P1 exists.
+                n_chunks = len(self._create_batches(mapping.labels))
+                if n_chunks < 2 and n_labels < 20:
+                    continue
+                p1a_tasks.append({
+                    'domain_name': name,
+                    'part_context': partition_contexts[name],
+                    'sample_observations': sample_axis_observations(mapping.labels),
+                })
+
+            if p1a_tasks:
+                if verbose:
+                    print(f"\n  Phase 1a: Axis Discovery")
+
+                p1a_requester = SmoothRequester(
+                    model=self._model_p1a,
+                    phase_key="step4_p1a_axis_discovery",
+                    num_tasks=len(p1a_tasks),
+                    verbose=verbose,
+                    known_limits=self._fetched_limits,
+                    has_server_headers=self._fetched_has_headers,
+                    show_setup=False,
+                    quiet=True,
+                )
+                p1a_results = await p1a_requester.process_all(
+                    p1a_tasks,
+                    self._p1a_prepare_fn(prompt_context),
+                    self._p1a_parse_fn(),
+                    self._p1a_fallback_fn(),
+                )
+
+                for task, response in zip(p1a_tasks, p1a_results):
+                    name = task['domain_name']
+                    validated = validate_and_repair_axis_system(response)
+                    if validated is None:
+                        consolidation_log.append({
+                            "action": "axis_system_failed", "domain": name,
+                            "reason": "no response" if response is None else "invalid axis system",
+                        })
+                        continue
+                    self.axis_systems[name] = validated
+                    n_segments = sum(len(axis.segments) for axis in validated.axes)
+                    consolidation_log.append({
+                        "action": "axis_system_discovered", "domain": name,
+                        "n_axes": len(validated.axes), "n_segments": n_segments,
+                    })
+
+                if verbose:
+                    s = p1a_requester.stats
+                    print(f"    P1a discovery: {len(p1a_tasks)} tasks, "
+                          f"{time.time() - t_p1a:.1f}s ({s.get('tasks_successful', 0)} ok, "
+                          f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries)")
+                    print(f"    {len(self.axis_systems)}/{len(p1a_tasks)} domains got an axis system")
+
+            if self.cost_tracker and _snap_p1a is not None:
+                self.cost_tracker.record_phase(
+                    "step_4_taxonomy_classifier", "p1a_axis_discovery",
+                    _snap_p1a, token_tracker.snapshot(), self._model_p1a)
 
         # =================================================================
         # PHASE 1 (P1): Per-domain Facet Discovery (SmoothRequester)
@@ -529,6 +705,8 @@ class TaxonomyClassifier:
                 partition_assignments={},
                 partition_attributes={},
                 attribute_assignments={},
+                consolidation_log=consolidation_log,
+                axis_systems=self._dump_axis_systems(),
             )
 
         # P2 consolidation per domain (SmoothRequester, concurrent)
@@ -688,6 +866,7 @@ class TaxonomyClassifier:
                 partition_assignments={},
                 partition_attributes={},
                 attribute_assignments={},
+                axis_systems=self._dump_axis_systems(),
             )
 
         # =================================================================
@@ -697,7 +876,7 @@ class TaxonomyClassifier:
         # the standing drain domains and domains with fewer than 2 facets
         # (nothing to review against).
         # =================================================================
-        consolidation_log: List[Dict] = []
+        # consolidation_log was declared before P1a (it needs it too).
         attribute_review_flags: List[Dict] = []
         # Same flags as attribute_review_flags, keyed by the domain that raised
         # them. Facet names are NOT unique across domains, so P8/P9 dispatch
@@ -782,6 +961,7 @@ class TaxonomyClassifier:
                 partition_attributes={},
                 attribute_assignments={},
                 consolidation_log=consolidation_log,
+                axis_systems=self._dump_axis_systems(),
             )
 
         # =================================================================
@@ -906,6 +1086,7 @@ class TaxonomyClassifier:
                 facet_confidence=self._facet_confidence,
                 facet_valence=self._facet_valence,
                 consolidation_log=consolidation_log,
+                axis_systems=self._dump_axis_systems(),
             )
 
         # =================================================================
@@ -1047,6 +1228,7 @@ class TaxonomyClassifier:
                 facet_confidence=self._facet_confidence,
                 facet_valence=self._facet_valence,
                 consolidation_log=consolidation_log,
+                axis_systems=self._dump_axis_systems(),
             )
 
         # P6 consolidation per facet (SmoothRequester, concurrent)
@@ -1229,6 +1411,7 @@ class TaxonomyClassifier:
                 facet_confidence=self._facet_confidence,
                 facet_valence=self._facet_valence,
                 consolidation_log=consolidation_log,
+                axis_systems=self._dump_axis_systems(),
             )
 
         # =================================================================
@@ -1320,6 +1503,7 @@ class TaxonomyClassifier:
                 facet_valence=self._facet_valence,
                 consolidation_log=consolidation_log,
                 attribute_review_flags=attribute_review_flags,
+                axis_systems=self._dump_axis_systems(),
             )
 
         # =================================================================
@@ -1479,6 +1663,7 @@ class TaxonomyClassifier:
                 attribute_valence=self._attribute_valence,
                 consolidation_log=consolidation_log,
                 attribute_review_flags=attribute_review_flags,
+                axis_systems=self._dump_axis_systems(),
             )
 
         # =================================================================
@@ -1622,6 +1807,7 @@ class TaxonomyClassifier:
             attribute_valence=self._attribute_valence,
             consolidation_log=consolidation_log,
             attribute_review_flags=attribute_review_flags,
+            axis_systems=self._dump_axis_systems(),
         )
 
     # =========================================================================
@@ -1756,6 +1942,66 @@ class TaxonomyClassifier:
         """Return fallback_fn closure for P8 attribute assignment."""
         def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
             return {}
+        return fallback_fn
+
+    # =========================================================================
+    # PHASE 1a (P1a): PER-DOMAIN AXIS DISCOVERY (SmoothRequester, light mode)
+    # =========================================================================
+
+    def _p1a_prepare_fn(self, prompt_context: PromptContext):
+        """Return prepare_fn closure for P1a axis discovery."""
+        def prepare_fn(task: Dict) -> Dict:
+            prompt = build_axis_discovery_prompt(
+                survey_question=prompt_context.survey_question,
+                primary_dimension=prompt_context.dimension_name,
+                domain_label=task['domain_name'],
+                domain_definition=task['part_context'].partition_definition,
+                domain_boundary_test=task['part_context'].boundary_test,
+                sample_observations=task['sample_observations'],
+            )
+
+            gate_key = f"qr_axis_discovery_{task['domain_name']}"
+            if (self._prompt_printer is not None
+                    and gate_key not in self._captured_gates):
+                self._prompt_printer.capture_prompt(
+                    step_name="qualitative_researcher",
+                    utility_name="QualitativeResearcher",
+                    prompt_content=prompt,
+                    prompt_type="axis_discovery",
+                    metadata={
+                        "model": self._model_p1a,
+                        "temperature": 0.0,
+                        "max_tokens": self._max_tokens_consolidation,
+                        "language": prompt_context.language,
+                        "partition_name": task['domain_name'],
+                        "n_sample_observations": len(task['sample_observations']),
+                        "dimension_name": prompt_context.dimension_name,
+                    }
+                )
+                self._captured_gates.add(gate_key)
+
+            return {
+                'prompt': prompt,
+                'response_model': AxisSystemResponse,
+                'temperature': 0.0,
+                'max_tokens': self._max_tokens_consolidation,
+                'max_retries': 3,
+                'extra_kwargs': get_reasoning_params(self._model_p1a, phase="classifier_p2"),
+            }
+        return prepare_fn
+
+    def _p1a_parse_fn(self):
+        """Return parse_fn closure for P1a axis discovery."""
+        def parse_fn(task: Dict, response) -> Optional[AxisSystemResponse]:
+            return response if response else None
+        return parse_fn
+
+    @staticmethod
+    def _p1a_fallback_fn():
+        """Return fallback_fn closure for P1a. On failure the domain simply gets
+        no axis system — it runs the old untagged path for the whole run."""
+        def fallback_fn(task: Dict, reason: str) -> None:
+            return None
         return fallback_fn
 
     # =========================================================================
@@ -2408,6 +2654,11 @@ class TaxonomyClassifier:
         only — no stemming, no stopwords, nothing language-specific, so this stays
         use-case agnostic and every match is checkable by eye."""
         return (text or "").strip().lower()
+
+    def _dump_axis_systems(self) -> Dict[str, dict]:
+        """Model-dump the discovered axis systems, verbatim, for TaxonomyResult
+        and the runner's axes log. Empty unless axis_first_enabled produced any."""
+        return {name: system.model_dump() for name, system in self.axis_systems.items()}
 
     def _build_facet_contents_block(
         self,
