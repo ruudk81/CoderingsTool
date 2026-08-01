@@ -34,6 +34,24 @@ from pathlib import Path
 from typing import Optional
 
 
+def build_log_filename(
+    filename: str,
+    var_name: str,
+    sample_size: Optional[int],
+    step: int,
+) -> str:
+    """The canonical name of a verbose log.
+
+    No timestamp: a repeated run of the same step on the same dataset
+    overwrites the previous log. No truncation of the dataset name: that
+    would let two datasets with a matching prefix overwrite each other's log.
+    """
+    base = Path(filename).stem.replace(" ", "_")
+    var = var_name.replace(" ", "_")
+    sample = str(sample_size) if sample_size else "full"
+    return f"{base}_{var}_{sample}_step{step}.txt"
+
+
 class TeeOutput:
     """Capture stdout while still printing to console."""
 
