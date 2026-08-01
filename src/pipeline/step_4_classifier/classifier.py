@@ -8,18 +8,14 @@ Pipeline (7 stages):
   P4.  Attribute Discovery (per facet within domain) — concrete observables
   P5.  Attribute Consolidation, round 1 (per facet) — dedup the chunk discoveries
   P6.  Attribute Assignment (per facet) — assign ideas to attributes
-  P7. Attribute Consolidation, round 2 (per facet, AFTER assignment) — judged on
+  P7.  Attribute Consolidation, round 2 (per facet, AFTER assignment) — judged on
        real counts and real contents, with four actions: merge / split / widen /
-       move. Scope is one facet, so no merge can relocate an idea's facet.
-
-How this differs from production, and why: production ran P7 (cross-facet) and P8
-(cross-domain) consolidation after P6. Both could reassign an attribute to another
-facet or domain, and because per-idea (domain, facet) is DERIVED from where the
-attribute lives, one such merge relocated every idea in the bucket. Measured on two
-datasets: 178 and 865 ideas changed facet that way. P7 removes the possibility
-rather than discouraging it — the facet is fixed by the task scope and absent from
-the response schema. When a group of ideas belongs elsewhere the IDEAS move and the
-structure stays put.
+       move. Scope is one facet: no cross-facet or cross-domain structural
+       consolidation exists, so a structure merge can never relocate an idea's
+       facet or domain — because per-idea (domain, facet) is DERIVED from where
+       the attribute lives, that relocation would otherwise move every idea in
+       the bucket at once. When a group of ideas belongs elsewhere the IDEAS
+       move and the structure stays put.
 
 Per-domain steps run CONCURRENTLY; P7 runs per facet after P6.
 
@@ -171,10 +167,12 @@ class TaxonomyClassifier:
     P4.  ATTRIBUTE DISCOVERY:          Per (domain, facet), discover attributes (concurrent)
     P5.  ATTRIBUTE CONSOLIDATION r1:   Per facet, dedup the chunk discoveries
     P6.  ATTRIBUTE ASSIGNMENT:         Per facet, assign ideas to attributes (concurrent)
-    P7. ATTRIBUTE CONSOLIDATION r2:   Per facet, AFTER assignment — real counts and
+    P7.  ATTRIBUTE CONSOLIDATION r2:   Per facet, AFTER assignment — real counts and
                                        real contents; merge / split / widen / move.
-                                       The facet is fixed and is not in the schema.
-    No P7 (cross-facet) and no P8 (cross-domain): those are what relocated ideas.
+                                       The facet is fixed and is not in the schema:
+                                       no cross-facet or cross-domain structural
+                                       consolidation exists, so a merge can never
+                                       relocate an idea across facets or domains.
     """
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None, cost_tracker=None):

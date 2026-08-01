@@ -9,8 +9,7 @@ Organized in pipeline processing order:
   §4   Attribute Discovery (P4: per facet within domain)
   §5   Attribute Chunk Consolidation (P5: merge chunk-level attributes)
   §6   Attribute Assignment (P6: per facet)
-  §7   Attribute Consolidation (P7: cross-facet dedup within domain)
-  §8   Cross-Domain Attribute Consolidation (P8: cross-domain dedup)
+  §7   In-Facet Attribute Consolidation (P7: post-assignment, one facet at a time)
 """
 
 from __future__ import annotations

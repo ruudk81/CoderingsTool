@@ -76,7 +76,7 @@ STEP_MODEL_TIERS = {
     "idea_extraction_context": "default",           # specifiers + dimension discovery
     "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": "mini",   # main extraction + retry
-    # Step 4: Taxonomy Classifier (P1-P8)
+    # Step 4: Taxonomy Classifier (P1-P7)
     "classifier_p1":    "mini",      # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation
     "classifier_p3":    "mini",      # Facet Assignment
@@ -433,7 +433,7 @@ class CacheConfig:
         "taxonomy_classified": "005",  # growing model with enriched facet/attribute
         "taxonomy_xdomain": "005",             # cross-domain consolidated metadata
         "taxonomy_classified_xdomain": "005",  # cross-domain consolidated growing model
-        "taxonomy_corrected": "005",             # post-hoc over-merge corrected metadata (step 5)
+        "taxonomy_corrected": "005",             # legacy P9-era over-merge corrected metadata; old chains only, nothing writes these anymore
         "taxonomy_classified_corrected": "005",  # post-hoc over-merge corrected growing model
         # Step 5: code generator (dev, P8-P9)
         "mece_codes": "006",

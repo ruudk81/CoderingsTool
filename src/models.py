@@ -246,12 +246,12 @@ class DomainResultModel(BaseModel):
     facet_assignments: Dict[str, str] = Field(default_factory=dict)
     attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     attribute_assignments: Dict[str, str] = Field(default_factory=dict)
-    # Pre-P7 snapshots (before cross-facet consolidation remaps)
+    # P6 output snapshots (before in-facet consolidation remaps in P7)
     raw_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     raw_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
-    # Post-hoc over-merge correction (consolidation_corrector, step 5). Empty =
-    # uncorrected; populated copy of attributes/attribute_assignments with separable
-    # over-merged buckets split back along provenance seams. Consumed by step 5.
+    # Legacy P9-era over-merge correction; old chains only, nothing writes these
+    # anymore. Empty = uncorrected; populated copy of attributes/attribute_assignments
+    # with separable over-merged buckets split back along provenance seams.
     corrected_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     corrected_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
     # Assignment confidence scores (0.0-1.0)
