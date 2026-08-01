@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 if TYPE_CHECKING:
     from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
@@ -264,7 +265,7 @@ class DiscoveredFacet(BaseModel):
     example_observations: List[str] = Field(
         ..., description="3-5 representative observations from the input"
     )
-    boundary_test: str = Field(
+    boundary_test: SkipJsonSchema[str] = Field(
         default="", description="One routing sentence for the doubtful case, phrased against a named sibling facet"
     )
 

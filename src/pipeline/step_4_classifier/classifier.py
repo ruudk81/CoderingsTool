@@ -409,7 +409,8 @@ class TaxonomyClassifier:
             print(f"\n  [RATE LIMITING SETUP]")
             print(f"  Models: P1={self._model_p1}, P2={self._model_p2}, "
                   f"P3={self._model_p3}, P4={self._model_p4}, P5={self._model_p5}, "
-                  f"P6={self._model_p6}, P8={self._model_p8}, P9={self._model_p9}")
+                  f"P6={self._model_p6}, P7={self._model_p7}, P8={self._model_p8}, "
+                  f"P9={self._model_p9}, P10={self._model_p10}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
             print(f"  TPM: {limits.tokens_per_minute:,} "
@@ -437,7 +438,7 @@ class TaxonomyClassifier:
         _snap_p1 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 1: Facet Discovery + Consolidation")
+            print(f"\n  Phase 1-2: Facet Discovery + Consolidation")
 
         t_phase1 = time.time()
 
@@ -764,13 +765,26 @@ class TaxonomyClassifier:
                     "step_4_taxonomy_classifier", "p3_facet_review",
                     _snap_p3r, token_tracker.snapshot(), self._model_p3)
 
+        if self._debug_stop_after_phase == 3:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P3 — skipping P4–P9")
+            return TaxonomyResult(
+                partition_n_labels=partition_n_labels,
+                partition_n_batches=partition_n_batches,
+                partition_facets=partition_facets,
+                partition_assignments={},
+                partition_attributes={},
+                attribute_assignments={},
+                consolidation_log=consolidation_log,
+            )
+
         # =================================================================
         # PHASE 4 (P4): Per-domain Facet Assignment (SmoothRequester)
         # =================================================================
         _snap_p3 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 2: Facet Assignment")
+            print(f"\n  Phase 4: Facet Assignment")
 
         t_phase3 = time.time()
 
@@ -870,10 +884,10 @@ class TaxonomyClassifier:
 
         if self.cost_tracker and _snap_p3 is not None:
             self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p3_facet_assignment",
+                "step_4_taxonomy_classifier", "p4_facet_assignment",
                 _snap_p3, token_tracker.snapshot(), self._model_p4)
 
-        if self._debug_stop_after_phase == 3:
+        if self._debug_stop_after_phase == 4:
             if verbose:
                 print(f"\n  [DEBUG] Early stop after P4 — skipping P5–P9")
             return TaxonomyResult(
@@ -895,7 +909,7 @@ class TaxonomyClassifier:
         _snap_p4 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 3: Attribute Discovery + Consolidation")
+            print(f"\n  Phase 5-6: Attribute Discovery + Consolidation")
 
         t_phase4 = time.time()
 
@@ -998,10 +1012,10 @@ class TaxonomyClassifier:
 
         if self.cost_tracker and _snap_p4 is not None:
             self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p4_attribute_discovery",
+                "step_4_taxonomy_classifier", "p5_attribute_discovery",
                 _snap_p4, token_tracker.snapshot(), self._model_p5)
 
-        if self._debug_stop_after_phase == 4:
+        if self._debug_stop_after_phase == 5:
             if verbose:
                 print(f"\n  [DEBUG] Early stop after P5 — skipping P6–P9")
             return TaxonomyResult(
@@ -1180,10 +1194,10 @@ class TaxonomyClassifier:
 
         if self.cost_tracker and _snap_p5 is not None:
             self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p5_attribute_consolidation",
+                "step_4_taxonomy_classifier", "p6_attribute_consolidation",
                 _snap_p5, token_tracker.snapshot(), self._model_p6)
 
-        if self._debug_stop_after_phase == 5:
+        if self._debug_stop_after_phase == 6:
             if verbose:
                 print(f"\n  [DEBUG] Early stop after P6 — skipping P7–P9")
             return TaxonomyResult(
@@ -1273,13 +1287,29 @@ class TaxonomyClassifier:
                     "step_4_taxonomy_classifier", "p7_attribute_review",
                     _snap_p7r, token_tracker.snapshot(), self._model_p7)
 
+        if self._debug_stop_after_phase == 7:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P7 — skipping P8–P9")
+            return TaxonomyResult(
+                partition_n_labels=partition_n_labels,
+                partition_n_batches=partition_n_batches,
+                partition_facets=partition_facets,
+                partition_assignments=partition_assignments,
+                partition_attributes=partition_attributes,
+                attribute_assignments={},
+                facet_confidence=self._facet_confidence,
+                facet_valence=self._facet_valence,
+                consolidation_log=consolidation_log,
+                attribute_review_flags=attribute_review_flags,
+            )
+
         # =================================================================
         # PHASE 8 (P8): Per-facet Attribute Assignment (SmoothRequester)
         # =================================================================
         _snap_p6 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 4: Attribute Assignment")
+            print(f"\n  Phase 8: Attribute Assignment")
 
         t_phase6 = time.time()
 
@@ -1401,7 +1431,7 @@ class TaxonomyClassifier:
 
         if self.cost_tracker and _snap_p6 is not None:
             self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p6_attribute_assignment",
+                "step_4_taxonomy_classifier", "p8_attribute_assignment",
                 _snap_p6, token_tracker.snapshot(), self._model_p8)
 
         # Snapshot P8 state before the post-assignment consolidation round remaps.
@@ -1412,7 +1442,7 @@ class TaxonomyClassifier:
             for d, facets in partition_attributes.items()
         }
 
-        if self._debug_stop_after_phase == 6:
+        if self._debug_stop_after_phase == 8:
             if verbose:
                 print(f"\n  [DEBUG] Early stop after P8 — skipping P9")
             return TaxonomyResult(
@@ -1551,7 +1581,7 @@ class TaxonomyClassifier:
 
         if self.cost_tracker and _snap_p7 is not None:
             self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p7_in_facet_consolidation",
+                "step_4_taxonomy_classifier", "p9_in_facet_consolidation",
                 _snap_p7, token_tracker.snapshot(), self._model_p9)
 
         taxonomy_elapsed = time.time() - start_time

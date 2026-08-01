@@ -57,7 +57,7 @@ from models import (
 CONFIG = CategoriesConfig(
     label_source="ladder",                         # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
     label_prefix="",                              # "" or any static prefix string
-    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–6 = stop after that phase
+    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–10 = stop after that phase
 )
 
 
@@ -479,7 +479,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         cache_manager = CacheManager()
         if (cache_manager.is_metadata_cache_valid(FILENAME, "taxonomy", variable_key)
                 and cache_manager.is_cache_valid(FILENAME, "taxonomy_classified", variable_key)):
-            print("Taxonomy cache valid — skipping P1-P8 (use force_recalc=True to rerun).\n")
+            print("Taxonomy cache valid — skipping P1-P10 (use force_recalc=True to rerun).\n")
             return None
 
     ideas_models, extraction_metadata, partition_set, label_mappings = _load_and_discover()
