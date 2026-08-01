@@ -3,8 +3,9 @@ Configuration for Taxonomy Classifier (P1-P10).
 
 Pipeline: facet discovery → facet consolidation → facet review (P3, optional
 rewrite + flag gate) → facet assignment → attribute discovery → attribute
-consolidation r1 → attribute assignment → attribute consolidation r2 (P9,
-in-facet, post-assignment) → valence-neutral merge (P10).
+consolidation r1 → attribute review (P7, optional rewrite + flag gate) →
+attribute assignment → attribute consolidation r2 (P9, in-facet,
+post-assignment) → valence-neutral merge (P10).
 """
 
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ class ClassifierRampConfig:
     advances toward target_fraction proportional to completions.
 
     Full stack (P1/P4/P5/P8): ConcurrencyGate + TokenBucket + AsyncLimiter + CircuitBreaker
-    Light mode (P2/P3/P6/P9): default semaphore + rate limiter only
+    Light mode (P2/P3/P6/P7/P9): default semaphore + rate limiter only
     """
     # Concurrency ramp
     estimated_latency_seconds: float = 10.0    # Conservative latency estimate
@@ -90,6 +91,7 @@ class CategoriesConfig:
     qr_model_p4: str = get_step_model("classifier_p4")    # P4: Facet Assignment
     qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Discovery
     qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Consolidation
+    qr_model_p7: str = get_step_model("classifier_p7")    # P7: Attribute Review (rewrite + flag)
     qr_model_p8: str = get_step_model("classifier_p8")    # P8: Attribute Assignment
     qr_model_p9: str = get_step_model("classifier_p9")    # P9: In-facet Consolidation (post-assignment)
     qr_model_p10: str = get_step_model("classifier_p10")  # P10: Valence-neutral merge
@@ -100,6 +102,7 @@ class CategoriesConfig:
     # byte-identical current behaviour (no boundary tests, no flags, no log
     # entries for that phase).
     facet_review_enabled: bool = True
+    attribute_review_enabled: bool = True
 
     # Output ceilings. A high ceiling is free — billing is per generated token,
     # and smoothRequester throttles on measured throughput (it estimates from the
