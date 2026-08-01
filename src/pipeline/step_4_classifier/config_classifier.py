@@ -1,9 +1,9 @@
 """
-Configuration for Taxonomy Classifier (P1-P6 + P5b).
+Configuration for Taxonomy Classifier (P1-P7).
 
 Pipeline: facet discovery → facet consolidation → facet assignment →
 attribute discovery → attribute consolidation r1 → attribute assignment →
-attribute consolidation r2 (P5b, in-facet, post-assignment).
+attribute consolidation r2 (P7, in-facet, post-assignment).
 """
 
 from dataclasses import dataclass, field
@@ -20,7 +20,7 @@ class ClassifierRampConfig:
     advances toward target_fraction proportional to completions.
 
     Full stack (P1/P3/P4/P6): ConcurrencyGate + TokenBucket + AsyncLimiter + CircuitBreaker
-    Light mode (P2/P5/P5b): default semaphore + rate limiter only
+    Light mode (P2/P5/P7): default semaphore + rate limiter only
     """
     # Concurrency ramp
     estimated_latency_seconds: float = 10.0    # Conservative latency estimate
@@ -46,7 +46,7 @@ class ClassifierRampConfig:
 
 @dataclass
 class CategoriesConfig:
-    """Configuration for Taxonomy Classifier (P1-P6 + P5b)."""
+    """Configuration for Taxonomy Classifier (P1-P7)."""
 
     # ==========================================================================
     # PARTITION SOURCE
@@ -79,7 +79,7 @@ class CategoriesConfig:
     label_prefix: str = ""
 
     # ==========================================================================
-    # TAXONOMY CLASSIFIER PIPELINE (P1-P6 + P5b)
+    # TAXONOMY CLASSIFIER PIPELINE (P1-P7)
     # ==========================================================================
 
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
@@ -89,9 +89,7 @@ class CategoriesConfig:
     qr_model_p4: str = get_step_model("classifier_p4")    # P4: Attribute Discovery
     qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Consolidation
     qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Assignment
-    # P5b is attribute consolidation, so it rides P5's tier — no new key in the
-    # shared config.py, which production also reads.
-    qr_model_p5b: str = get_step_model("classifier_p5")   # P5b: In-facet Consolidation
+    qr_model_p7: str = get_step_model("classifier_p7")   # P7: In-facet Consolidation (post-assignment)
     qr_model_p7_5: str = get_step_model("classifier_p7")  # P7.5: Valence-neutral merge
     qr_temperature: float = 0.3
 
@@ -102,7 +100,7 @@ class CategoriesConfig:
     # and lost it entirely. Upper bound is the model's own max_output — 128000 for
     # gpt-5.4, 32000 for gpt-4.1 (see OPENAI_MODEL_LIMITS in config.py).
     #
-    # Discovery (P1, P4) and consolidation (P2, P5, P5b) enumerate an open-ended
+    # Discovery (P1, P4) and consolidation (P2, P5, P7) enumerate an open-ended
     # list, so their response grows with the data.
     qr_max_tokens_facet_discovery: int = 32000
     qr_max_tokens_attribute_discovery: int = 32000
@@ -124,10 +122,10 @@ class CategoriesConfig:
     p4_target_batches: int = 5     # ideal number of chunks
     p4_chunk_overlap: float = 0.2  # overlap fraction between adjacent chunks
 
-    # P5b: how many distinct response texts to show per attribute. This is the
+    # P7: how many distinct response texts to show per attribute. This is the
     # phase's whole point — it judges real contents, not the label — so the window
     # has to be wide enough to expose a foreign concept hiding inside a bucket.
-    p5b_contents_top_n: int = 12
+    p7_contents_top_n: int = 12
 
     # Hierarchical consolidation (shared by P2 and P5)
     # When chunk count or total item count exceeds these limits,

@@ -3,10 +3,9 @@
 Three things, all dataset-independent and all cheap enough to run on every build:
 
   attr_structure_home() Maps attribute_name -> (domain, facet) from the structure, so
-                        per-idea (domain, facet) can be a DERIVED projection of the
+                        per-idea (domain, facet) stays a DERIVED projection of the
                         taxonomy instead of an independently-maintained copy that
-                        drifts from it. Lived in the P8 module before P8 was dropped;
-                        the derivation itself is not P8-specific.
+                        drifts from it.
 
   prune_empty_nodes()   Consolidation moves ideas out of an attribute but leaves the
                         structure node behind. The structure-projection fix cannot

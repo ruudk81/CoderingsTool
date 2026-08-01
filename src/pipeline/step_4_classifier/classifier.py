@@ -1,5 +1,5 @@
 """
-EXPERIMENT — Taxonomy Classifier: inductive taxonomy discovery (P1-P6 + P5b).
+Taxonomy Classifier: inductive taxonomy discovery (P1-P6 + P7).
 
 Pipeline (7 stages):
   P1.  Facet Discovery (chunked, per domain) — dimension-specific semantics
@@ -8,7 +8,7 @@ Pipeline (7 stages):
   P4.  Attribute Discovery (per facet within domain) — concrete observables
   P5.  Attribute Consolidation, round 1 (per facet) — dedup the chunk discoveries
   P6.  Attribute Assignment (per facet) — assign ideas to attributes
-  P5b. Attribute Consolidation, round 2 (per facet, AFTER assignment) — judged on
+  P7. Attribute Consolidation, round 2 (per facet, AFTER assignment) — judged on
        real counts and real contents, with four actions: merge / split / widen /
        move. Scope is one facet, so no merge can relocate an idea's facet.
 
@@ -16,12 +16,12 @@ How this differs from production, and why: production ran P7 (cross-facet) and P
 (cross-domain) consolidation after P6. Both could reassign an attribute to another
 facet or domain, and because per-idea (domain, facet) is DERIVED from where the
 attribute lives, one such merge relocated every idea in the bucket. Measured on two
-datasets: 178 and 865 ideas changed facet that way. P5b removes the possibility
+datasets: 178 and 865 ideas changed facet that way. P7 removes the possibility
 rather than discouraging it — the facet is fixed by the task scope and absent from
 the response schema. When a group of ideas belongs elsewhere the IDEAS move and the
 structure stays put.
 
-Per-domain steps run CONCURRENTLY; P5b runs per facet after P6.
+Per-domain steps run CONCURRENTLY; P7 runs per facet after P6.
 
 Usage:
     from .classifier import TaxonomyClassifier
@@ -83,7 +83,7 @@ from .prompts_classifier import (
     # P6: Attribute Assignment
     build_attribute_assignment_prompt_single,
     AttributeAssignmentResult,
-    # P5b: In-facet Attribute Consolidation (post-assignment)
+    # P7: In-facet Attribute Consolidation (post-assignment)
     build_in_facet_consolidation_prompt,
     build_neighbour_block,
     InFacetConsolidatedResponse,
@@ -135,14 +135,14 @@ class DomainResult:
 
 @dataclass
 class TaxonomyResult:
-    """Output of taxonomy stages P1-P6 + P5b."""
+    """Output of taxonomy stages P1-P6 + P7."""
     partition_n_labels: Dict[str, int]
     partition_n_batches: Dict[str, int]
     partition_facets: Dict[str, List[DiscoveredFacet]]
     partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
     partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]]  # domain -> {facet -> [attrs]}
     attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
-    # Pre-P5b snapshots (before the post-assignment consolidation round remaps)
+    # Pre-P7 snapshots (before the post-assignment consolidation round remaps)
     raw_partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = field(default_factory=dict)
     raw_attribute_assignments: Dict[str, str] = field(default_factory=dict)
     # Assignment confidence scores (0.0-1.0)
@@ -151,7 +151,7 @@ class TaxonomyResult:
     # Assignment valence (+, -, 0)
     facet_valence: Dict[str, str] = field(default_factory=dict)
     attribute_valence: Dict[str, str] = field(default_factory=dict)
-    # P5b provenance: one entry per action taken, so every merge/split/move is
+    # P7 provenance: one entry per action taken, so every merge/split/move is
     # auditable after the fact. Written to a JSON file by the runner; deliberately
     # NOT put in the shared cache model, which production also uses.
     consolidation_log: List[Dict] = field(default_factory=list)
@@ -162,7 +162,7 @@ class TaxonomyResult:
 
 class TaxonomyClassifier:
     """
-    EXPERIMENT — Taxonomy Classifier: inductive taxonomy discovery (P1-P6 + P5b).
+    Taxonomy Classifier: inductive taxonomy discovery (P1-P6 + P7).
 
     Pipeline (7 stages):
     P1.  FACET DISCOVERY:              Per domain, chunked with overlap (concurrent)
@@ -171,7 +171,7 @@ class TaxonomyClassifier:
     P4.  ATTRIBUTE DISCOVERY:          Per (domain, facet), discover attributes (concurrent)
     P5.  ATTRIBUTE CONSOLIDATION r1:   Per facet, dedup the chunk discoveries
     P6.  ATTRIBUTE ASSIGNMENT:         Per facet, assign ideas to attributes (concurrent)
-    P5b. ATTRIBUTE CONSOLIDATION r2:   Per facet, AFTER assignment — real counts and
+    P7. ATTRIBUTE CONSOLIDATION r2:   Per facet, AFTER assignment — real counts and
                                        real contents; merge / split / widen / move.
                                        The facet is fixed and is not in the schema.
     No P7 (cross-facet) and no P8 (cross-domain): those are what relocated ideas.
@@ -186,7 +186,7 @@ class TaxonomyClassifier:
         self._model_p4 = config.qr_model_p4
         self._model_p5 = config.qr_model_p5
         self._model_p6 = config.qr_model_p6
-        self._model_p5b = config.qr_model_p5b
+        self._model_p7 = config.qr_model_p7
         self._model_p7_5 = config.qr_model_p7_5
 
         if self.cost_tracker:
@@ -197,7 +197,7 @@ class TaxonomyClassifier:
                 "p4_attribute_discovery": self._model_p4,
                 "p5_attribute_consolidation": self._model_p5,
                 "p6_attribute_assignment": self._model_p6,
-                "p5b_in_facet_consolidation": self._model_p5b,
+                "p7_in_facet_consolidation": self._model_p7,
                 "p7_5_valence_merge": self._model_p7_5,
             })
 
@@ -206,7 +206,7 @@ class TaxonomyClassifier:
         self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
         self._max_tokens_attribute_discovery = config.qr_max_tokens_attribute_discovery
         self._max_tokens_consolidation = config.qr_max_tokens_consolidation
-        self._p5b_contents_top_n = config.p5b_contents_top_n
+        self._p7_contents_top_n = config.p7_contents_top_n
 
         # Batch sizing — P1 (facet discovery)
         self._batch_size_min = config.batch_size_min
@@ -302,7 +302,7 @@ class TaxonomyClassifier:
         dimension_description: str = "",
         verbose: bool = False,
     ) -> TaxonomyResult:
-        """Run taxonomy stages (P1-P6 + P5b): facets, attributes, assignments."""
+        """Run taxonomy stages (P1-P6 + P7): facets, attributes, assignments."""
         print(f"\n{'='*70}")
         print(f"TAXONOMY DISCOVERY (5 phases)")
         print(f"{'='*70}")
@@ -368,7 +368,7 @@ class TaxonomyClassifier:
             print(f"\n  [RATE LIMITING SETUP]")
             print(f"  Models: P1={self._model_p1}, P2={self._model_p2}, "
                   f"P3={self._model_p3}, P4={self._model_p4}, P5={self._model_p5}, "
-                  f"P6={self._model_p6}, P5b={self._model_p5b}")
+                  f"P6={self._model_p6}, P7={self._model_p7}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
             print(f"  TPM: {limits.tokens_per_minute:,} "
@@ -381,7 +381,7 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool,
     ) -> TaxonomyResult:
-        """Taxonomy stages P1-P6 + P5b: facets, attributes, assignments."""
+        """Taxonomy stages P1-P6 + P7: facets, attributes, assignments."""
         start_time = time.time()
         self._facet_confidence.clear()
         self._attribute_confidence.clear()
@@ -1203,7 +1203,7 @@ class TaxonomyClassifier:
 
         if self._debug_stop_after_phase == 6:
             if verbose:
-                print(f"\n  [DEBUG] Early stop after P6 — skipping P5b")
+                print(f"\n  [DEBUG] Early stop after P6 — skipping P7")
             return TaxonomyResult(
                 partition_n_labels=partition_n_labels,
                 partition_n_batches=partition_n_batches,
@@ -1220,20 +1220,21 @@ class TaxonomyClassifier:
             )
 
         # =================================================================
-        # PHASE 5b: In-facet Attribute Consolidation (post-assignment)
-        # Replaces the old P7 (cross-facet) and P8 (cross-domain) rounds.
+        # PHASE 7: In-facet Attribute Consolidation (post-assignment)
+        # Replaces the earlier cross-facet and cross-domain consolidation rounds
+        # that used to follow attribute assignment.
         # Scope is ONE facet, so no merge can relocate an idea's facet; when a
         # group of ideas belongs elsewhere the IDEAS move and the structure stays.
         # =================================================================
-        _snap_p5b = token_tracker.snapshot() if self.cost_tracker else None
+        _snap_p7 = token_tracker.snapshot() if self.cost_tracker else None
 
         if verbose:
-            print(f"\n  Phase 5: In-facet Attribute Consolidation")
+            print(f"\n  Phase 7: In-facet Attribute Consolidation")
 
-        t_phase5b = time.time()
+        t_phase7 = time.time()
         consolidation_log: List[Dict] = []
 
-        p5b_tasks = []
+        p7_tasks = []
         for domain_name, facet_attrs in domain_facet_attributes.items():
             for facet_name, attributes in facet_attrs.items():
                 facet_ideas = domain_facet_ideas.get((domain_name, facet_name), [])
@@ -1262,7 +1263,7 @@ class TaxonomyClassifier:
                          for a in other_attrs],
                     ))
 
-                p5b_tasks.append({
+                p7_tasks.append({
                     'domain_name': domain_name,
                     'facet_name': facet_name,
                     'facet_description': facet_obj.facet_description,
@@ -1276,35 +1277,35 @@ class TaxonomyClassifier:
                     'neighbour_block': build_neighbour_block(neighbours),
                 })
 
-        p5b_results = []
-        if p5b_tasks:
-            p5b_requester = SmoothRequester(
-                model=self._model_p5b,
-                phase_key="step4_p5b_in_facet_consolidation",
-                num_tasks=len(p5b_tasks),
+        p7_results = []
+        if p7_tasks:
+            p7_requester = SmoothRequester(
+                model=self._model_p7,
+                phase_key="step4_p7_in_facet_consolidation",
+                num_tasks=len(p7_tasks),
                 verbose=verbose,
                 known_limits=self._fetched_limits,
                 has_server_headers=self._fetched_has_headers,
                 show_setup=False,
                 quiet=True,
             )
-            p5b_results = await p5b_requester.process_all(
-                p5b_tasks,
-                self._p5b_prepare_fn(prompt_context),
-                self._p5b_parse_fn(),
-                self._p5b_fallback_fn(),
+            p7_results = await p7_requester.process_all(
+                p7_tasks,
+                self._p7_prepare_fn(prompt_context),
+                self._p7_parse_fn(),
+                self._p7_fallback_fn(),
             )
 
             if verbose:
-                s = p5b_requester.stats
-                print(f"    P5b consolidation: {len(p5b_tasks)} tasks, "
+                s = p7_requester.stats
+                print(f"    P7 consolidation: {len(p7_tasks)} tasks, "
                       f"{s.get('wall_time', 0):.1f}s ({s['tasks_successful']} ok, "
                       f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries)")
 
             attribute_assignments, partition_assignments, consolidation_log = (
-                self._apply_p5b_results(
-                    tasks=p5b_tasks,
-                    results=p5b_results,
+                self._apply_p7_results(
+                    tasks=p7_tasks,
+                    results=p7_results,
                     domain_facet_attributes=domain_facet_attributes,
                     partition_attributes=partition_attributes,
                     attribute_assignments=attribute_assignments,
@@ -1313,7 +1314,7 @@ class TaxonomyClassifier:
                 )
             )
 
-        t_phase5b = time.time() - t_phase5b
+        t_phase7 = time.time() - t_phase7
         if verbose:
             n_after = sum(
                 len(attrs)
@@ -1321,13 +1322,13 @@ class TaxonomyClassifier:
                 for attrs in facet_attrs.values()
             )
             acts = Counter(e["action"] for e in consolidation_log)
-            print(f"    Results ({t_phase5b:.1f}s → {n_after} attributes): "
+            print(f"    Results ({t_phase7:.1f}s → {n_after} attributes): "
                   + (", ".join(f"{k}={v}" for k, v in sorted(acts.items())) or "no changes"))
 
-        if self.cost_tracker and _snap_p5b is not None:
+        if self.cost_tracker and _snap_p7 is not None:
             self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p5b_in_facet_consolidation",
-                _snap_p5b, token_tracker.snapshot(), self._model_p5b)
+                "step_4_taxonomy_classifier", "p7_in_facet_consolidation",
+                _snap_p7, token_tracker.snapshot(), self._model_p7)
 
         taxonomy_elapsed = time.time() - start_time
         if verbose:
@@ -1791,7 +1792,7 @@ class TaxonomyClassifier:
         return fallback_fn
 
     # =========================================================================
-    # PHASE 5b: IN-FACET ATTRIBUTE CONSOLIDATION (SmoothRequester)
+    # PHASE 7: IN-FACET ATTRIBUTE CONSOLIDATION (SmoothRequester)
     # =========================================================================
 
     @staticmethod
@@ -1816,7 +1817,7 @@ class TaxonomyClassifier:
         about what the label promised. Here it sees what the bucket contains.
         """
         if top_n is None:
-            top_n = self._p5b_contents_top_n
+            top_n = self._p7_contents_top_n
         assigned = [i for i in facet_ideas if attribute_assignments.get(i.idea_id)]
         total = len(assigned)
 
@@ -1839,8 +1840,8 @@ class TaxonomyClassifier:
                          else '    actually contains: (no ideas assigned)')
         return "\n".join(lines)
 
-    def _p5b_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P5b in-facet attribute consolidation."""
+    def _p7_prepare_fn(self, prompt_context: PromptContext):
+        """Return prepare_fn closure for P7 in-facet attribute consolidation."""
         def prepare_fn(task: Dict) -> Dict:
             prompt = build_in_facet_consolidation_prompt(
                 survey_question=prompt_context.survey_question,
@@ -1866,7 +1867,7 @@ class TaxonomyClassifier:
                     prompt_content=prompt,
                     prompt_type="in_facet_consolidation",
                     metadata={
-                        "model": self._model_p5b,
+                        "model": self._model_p7,
                         "temperature": 0.0,
                         "max_tokens": self._max_tokens_consolidation,
                         "language": prompt_context.language,
@@ -1884,25 +1885,25 @@ class TaxonomyClassifier:
                 'temperature': 0.0,
                 'max_tokens': self._max_tokens_consolidation,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p5b, phase="classifier_p5"),
+                'extra_kwargs': get_reasoning_params(self._model_p7, phase="classifier_p7"),
             }
         return prepare_fn
 
-    def _p5b_parse_fn(self):
-        """Return parse_fn closure for P5b in-facet attribute consolidation."""
+    def _p7_parse_fn(self):
+        """Return parse_fn closure for P7 in-facet attribute consolidation."""
         def parse_fn(task: Dict, response) -> Optional[InFacetConsolidatedResponse]:
             return response if response else None
         return parse_fn
 
     @staticmethod
-    def _p5b_fallback_fn():
-        """Return fallback_fn closure for P5b. On failure the facet is left exactly
+    def _p7_fallback_fn():
+        """Return fallback_fn closure for P7. On failure the facet is left exactly
         as P6 produced it — never silently emptied."""
         def fallback_fn(task: Dict, reason: str) -> None:
             return None
         return fallback_fn
 
-    def _apply_p5b_results(
+    def _apply_p7_results(
         self,
         *,
         tasks: List[Dict],
@@ -1913,7 +1914,7 @@ class TaxonomyClassifier:
         partition_assignments: Dict[str, Dict[str, str]],
         verbose: bool,
     ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], List[Dict]]:
-        """Apply every P5b result, then remap ideas — structure first, ideas second.
+        """Apply every P7 result, then remap ideas — structure first, ideas second.
 
         Order matters and is deliberate:
           1. rebuild the structure for every facet (so move targets can be resolved
@@ -1926,9 +1927,9 @@ class TaxonomyClassifier:
         """
         log: List[Dict] = []
 
-        # keep the pre-P5b attribute objects reachable, so the self-check below can
-        # put back a node P5b dropped without ever naming it
-        pre_p5b_attrs: Dict[Tuple[str, str], List[DiscoveredAttribute]] = {
+        # keep the pre-P7 attribute objects reachable, so the self-check below can
+        # put back a node P7 dropped without ever naming it
+        pre_p7_attrs: Dict[Tuple[str, str], List[DiscoveredAttribute]] = {
             (t['domain_name'], t['facet_name']): list(t['attributes']) for t in tasks
         }
 
@@ -1953,7 +1954,7 @@ class TaxonomyClassifier:
             # Match the model's source names against the real ones case- and
             # padding-insensitively. A strict equality check silently dropped
             # sources that differed only in capitalisation, leaving their ideas on
-            # a pre-P5b name that no longer exists in the structure.
+            # a pre-P7 name that no longer exists in the structure.
             by_norm = {self._norm_text(b): b for b in before}
 
             def _resolve(src: str) -> Optional[str]:
@@ -2082,7 +2083,7 @@ class TaxonomyClassifier:
                 if target is None:
                     n_out += 1                      # flagged contentless; left in place
                     continue
-                # The neighbour block showed pre-P5b names, and facets consolidate
+                # The neighbour block showed pre-P7 names, and facets consolidate
                 # concurrently, so a valid target may already have been renamed by
                 # its own facet. Follow the rename before giving up.
                 if target not in home:
@@ -2114,7 +2115,7 @@ class TaxonomyClassifier:
                 n_remap += 1
 
         # ---- 5. self-check: no idea may point at a node that does not exist -----
-        # P5b can drop an attribute it never mentions as a source. Its ideas would
+        # P7 can drop an attribute it never mentions as a source. Its ideas would
         # then carry a name absent from the structure, and everything downstream
         # (codebook, export) silently loses them. Restore the node instead.
         orphans: Counter = Counter()
@@ -2125,7 +2126,7 @@ class TaxonomyClassifier:
         restored = 0
         for (place, name), count in orphans.items():
             dom, fac = place
-            src = next((a for a in (pre_p5b_attrs.get((dom, fac)) or [])
+            src = next((a for a in (pre_p7_attrs.get((dom, fac)) or [])
                         if a.attribute_name == name), None)
             if src is not None and dom in domain_facet_attributes:
                 # Both structures usually hold the SAME list object for this facet
@@ -2141,7 +2142,7 @@ class TaxonomyClassifier:
             log.append({"action": "orphaned_assignment", "restored_nodes": restored,
                         "ideas_affected": sum(orphans.values()),
                         "attributes": sorted({n for (_, n) in orphans}),
-                        "note": ("P5b returned no attribute claiming these, so their "
+                        "note": ("P7 returned no attribute claiming these, so their "
                                  "ideas kept a name absent from the structure; the "
                                  "node was put back to keep the two consistent")})
             if verbose:

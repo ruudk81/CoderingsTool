@@ -1,10 +1,10 @@
 """
 Consolidation balance — shared stateless core.
 
-Pure measurement + the THRESHOLD-FREE over-merge decision, shared by both the
-read-only diagnostic (`view_consolidation_balance.py`) and the post-hoc corrector
-(`consolidation_corrector.py`). No I/O, no printing, no cache, no TEST_DATA — safe
-to import from step 5.
+Pure measurement + the THRESHOLD-FREE over-merge decision: a counter-metric that
+tracks catch-all over-merge independently of the consolidation phases, used by the
+read-only diagnostic (`view_consolidation_balance.py`). No I/O, no printing, no
+cache, no TEST_DATA — safe to import from step 5.
 
 Over-merge decision (per catch-all bucket B, per provenance source S, within B):
     own     = mean fraction of S-members' k neighbours that are S

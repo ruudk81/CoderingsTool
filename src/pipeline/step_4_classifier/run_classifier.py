@@ -1,12 +1,12 @@
 #%%
 
 """
-Step 4 EXPERIMENT: Taxonomy Classifier runner (P1-P6 + P5b)
+Step 4: Taxonomy Classifier runner (P1-P7)
 
 Pipeline: domain discovery → facet discovery → facet assignment →
-attribute discovery → attribute assignment → in-facet consolidation (P5b).
+attribute discovery → attribute assignment → in-facet consolidation (P7).
 
-Always runs the full taxonomy pipeline (P1-P6 + P5b).
+Always runs the full taxonomy pipeline (P1-P7).
 """
 import sys
 import io
@@ -26,7 +26,7 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-EXPERIMENT_N = None     # Limit number of responses for a test run (None = use all)
+LIMIT_N = None     # Limit number of responses for a test run (None = use all)
 STOP_AFTER_PHASE = None   # None = full pipeline, 1–8 = stop after that phase
 
 import models
@@ -142,7 +142,7 @@ def print_taxonomy_results(
     label_mappings: Dict[str, PartitionLabelMapping],
     taxonomy_result: TaxonomyResult,
 ):
-    """Print taxonomy results (P1-P6 + P5b): domains, facets, attributes."""
+    """Print taxonomy results (P1-P7): domains, facets, attributes."""
     print(f"\n{'='*80}")
     print(f"TAXONOMY RESULTS "
           f"({len(partition_set.partitions)} domains)")
@@ -343,10 +343,10 @@ def _write_consolidation_log(
     filename: str,
     variable_key: str,
 ) -> None:
-    """Dump the P5b action log to exports/experiment_logs/ as JSON.
+    """Dump the P7 action log to exports/experiment_logs/ as JSON.
 
-    Deliberately a file and not a cache field: TaxonomyResultsCache is shared with
-    production, and an experiment must not widen a shared model.
+    Deliberately a file and not a cache field: TaxonomyResultsCache is shared
+    broadly, and this log is a diagnostic side-artifact that should not widen it.
     """
     log = getattr(taxonomy_result, "consolidation_log", None)
     if not log:
@@ -355,7 +355,7 @@ def _write_consolidation_log(
     out_dir = Path(__file__).resolve().parents[3] / "exports" / "experiment_logs"
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(filename).stem
-    path = out_dir / f"{stem}_{variable_key}_p5b_log.json"
+    path = out_dir / f"{stem}_{variable_key}_p7_log.json"
     path.write_text(
         json.dumps({"dataset": filename, "variable_key": variable_key, "actions": log},
                    indent=1, ensure_ascii=False),
@@ -363,7 +363,7 @@ def _write_consolidation_log(
     )
     if CONFIG.verbose:
         totals = next((e for e in log if e.get("action") == "_totals"), {})
-        print(f"  P5b log written: {path.name} ({len(log) - 1} actions)")
+        print(f"  P7 log written: {path.name} ({len(log) - 1} actions)")
         if totals:
             print(f"    {totals}")
 
@@ -378,7 +378,7 @@ def cache_taxonomy_results(
     sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Dict[str, DomainResultModel]:
-    """Cache taxonomy results (P1-P6 + P5b) for later use by codebook generation."""
+    """Cache taxonomy results (P1-P7) for later use by codebook generation."""
     filename = FILENAME if filename is None else filename
     variable = VARIABLE if variable is None else variable
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size
@@ -479,7 +479,7 @@ def cache_taxonomy_results(
                   "mece_codes", "mece_codes_metadata", "taxonomy_codes"):
         cache_manager.invalidate_cache(filename, stale, variable_key)
 
-    # P5b provenance to disk, not into the shared cache model. Every merge, split and
+    # P7 provenance to disk, not into the shared cache model. Every merge, split and
     # move with the exact texts it touched — this is what makes a bad decision
     # findable afterwards instead of invisible.
     _write_consolidation_log(taxonomy_result, filename, variable_key)
@@ -573,10 +573,10 @@ def _extract_metadata_context(extraction_metadata):
 def _load_and_discover(extraction_metadata=None):
     """Shared data loading: step 3 ideas + partition discovery."""
     ideas_models = load_step3_ideas()
-    if EXPERIMENT_N is not None and EXPERIMENT_N < len(ideas_models):
+    if LIMIT_N is not None and LIMIT_N < len(ideas_models):
         total = len(ideas_models)
-        ideas_models = ideas_models[:EXPERIMENT_N]
-        print(f"Subset: {EXPERIMENT_N} responses (of {total} total)")
+        ideas_models = ideas_models[:LIMIT_N]
+        print(f"Subset: {LIMIT_N} responses (of {total} total)")
 
     if extraction_metadata is None:
         extraction_metadata = load_extraction_metadata()
@@ -593,7 +593,7 @@ def _load_and_discover(extraction_metadata=None):
 
 def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                  sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
-    """Run taxonomy stages (P1-P6 + P5b): facets, attributes, assignments, in-facet consolidation.
+    """Run taxonomy stages (P1-P7): facets, attributes, assignments, in-facet consolidation.
 
     Dataset params default to the module-level TEST_DATA constants (so existing
     callers like run_pipeline.py are unchanged); the UI passes them explicitly.
@@ -602,7 +602,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
     global FILENAME, VARIABLE, SAMPLE_SIZE
     FILENAME, VARIABLE, SAMPLE_SIZE = filename, var_name, sample_size
     print("=" * 70)
-    print("TAXONOMY PIPELINE — EXPERIMENT (P1-P6 + P5b)")
+    print("TAXONOMY PIPELINE (P1-P7)")
     print("=" * 70)
     print(f"\nDataset: {FILENAME}")
     print(f"Variable: {VARIABLE}")
@@ -650,7 +650,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
     )
 
     # Cache taxonomy results (metadata + growing model). The taxonomy is displayed
-    # once at the very end (post P5b/P7.5), so the readout reflects the final state.
+    # once at the very end (post P7/P7.5), so the readout reflects the final state.
     cache_taxonomy_results(partition_set, label_mappings, taxonomy_result, ideas_models=ideas_models)
 
     # P7.5: Valence-neutral attribute merge (collapse valence-split attribute pairs)

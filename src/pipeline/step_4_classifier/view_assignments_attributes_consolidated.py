@@ -63,7 +63,7 @@ def load_ideas(
     if not data:
         raise FileNotFoundError(
             f"No cached results found for variable_key '{variable_key}'.\n"
-            f"Run at least taxonomy (P1-P6 + P5b) first."
+            f"Run at least taxonomy (P1-P6 + P7) first."
         )
 
     ideas = []

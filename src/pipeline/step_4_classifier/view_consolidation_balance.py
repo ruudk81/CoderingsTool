@@ -10,13 +10,15 @@ over-merge decision, and prints two sections:
                     quartiles; SEPARABILITY via kNN own_purity), joined to the
                     post-P8 final bucket its ideas ended up in. Diagnostic only.
   OVER-MERGE      — per catch-all bucket (>= 2 source attributes), the threshold-
-  DECISION          free verdict the corrector uses: a source is "own cluster" iff
-                    its within-bucket neighbours are more itself than its co-merged
-                    siblings; SPLIT iff >= MIN_SPLIT_SOURCES non-residual,
-                    within-domain own-clusters. No magic threshold.
+  DECISION          free verdict: a source is "own cluster" iff its within-bucket
+                    neighbours are more itself than its co-merged siblings; SPLIT
+                    iff >= MIN_SPLIT_SOURCES non-residual, within-domain
+                    own-clusters. No magic threshold.
 
-Read-only: no merges, no cache writes, no prompt changes. The actual correction is
-`consolidation_corrector.py`, wired into step 5.
+Read-only: no merges, no cache writes, no prompt changes. This is a counter-metric
+— it measures over-merge balance in the taxonomy independently of the
+consolidation phases, so drift can be spotted without tying the diagnostic to any
+one correction mechanism.
 
 Usage:
     cd src && python -m pipeline.step_4_classifier.view_consolidation_balance

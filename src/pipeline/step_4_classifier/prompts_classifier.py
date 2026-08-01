@@ -1,5 +1,5 @@
 """
-Prompt builders for Taxonomy Classifier (P1-P6 + P5b).
+Prompt builders for Taxonomy Classifier (P1-P6 + P7).
 
 Organized in pipeline processing order:
   §0   Dimension Context Block (shared helper)
@@ -1080,7 +1080,7 @@ class AttributeAssignmentResult(BaseModel):
 
 
 # =============================================================================
-# §5b IN-FACET ATTRIBUTE CONSOLIDATION — post-assignment, one facet at a time
+# §7 IN-FACET ATTRIBUTE CONSOLIDATION — post-assignment, one facet at a time
 # =============================================================================
 
 def build_in_facet_consolidation_prompt(
