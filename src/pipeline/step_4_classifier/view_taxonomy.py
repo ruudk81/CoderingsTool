@@ -1,6 +1,6 @@
 #%%
 """
-View taxonomy results (P1-P6 + P7): domains, facets, attributes, assignments.
+View taxonomy results (P1-P7): domains, facets, attributes, assignments.
 
 Loads from cached taxonomy results (step "taxonomy").
 
