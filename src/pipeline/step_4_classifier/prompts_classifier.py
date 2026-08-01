@@ -9,6 +9,7 @@ Organized in pipeline processing order:
   §4   Facet Assignment (P4: per-domain, batched)
   §5   Attribute Discovery (P5: per facet within domain)
   §6   Attribute Chunk Consolidation (P6: merge chunk-level attributes)
+  §7   Attribute Review (P7: per-domain quality gate on the consolidated attribute set)
   §8   Attribute Assignment (P8: per facet)
   §9   In-Facet Attribute Consolidation (P9: post-assignment, one facet at a time)
 """
@@ -1108,6 +1109,122 @@ class AttributeChunkConsolidatedResponse(BaseModel):
     attributes: List[DiscoveredAttribute] = Field(
         ..., description="Fewest mutually exclusive attributes needed for full coverage, consolidated from all chunks"
     )
+
+
+# =============================================================================
+# §7 ATTRIBUTE REVIEW (P7) — per-domain quality gate on the consolidated attribute set
+# =============================================================================
+
+
+def build_attribute_review_prompt(
+    *,
+    survey_question: str,
+    domain_label: str,
+    domain_definition: str,
+    facets: List[DiscoveredFacet],
+    facet_attributes: Dict[str, List[DiscoveredAttribute]],
+) -> str:
+    """Review a domain's consolidated attribute set for definitional MECE-ness.
+
+    One call per domain. Structure change is impossible by construction: the
+    response schema echoes the input attributes 1-on-1 (matched by
+    original_name within their facet) and only carries rewritten
+    names/descriptions plus overlap flags. Facets are read-only context.
+    """
+    tree_lines: List[str] = []
+    for facet in facets:
+        tree_lines.append(f"Facet: {facet.facet_name} — {facet.facet_description}")
+        if facet.boundary_test:
+            tree_lines.append(f"    Boundary: {facet.boundary_test}")
+        for attribute in facet_attributes.get(facet.facet_name, []):
+            tree_lines.append(f"    - {attribute.attribute_name}: {attribute.attribute_description}")
+    tree_block = "\n".join(tree_lines)
+
+    return f"""You are a taxonomy quality reviewer for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Domain under review: {domain_label} — {domain_definition}
+
+Below is this domain's full tree after attribute consolidation: every facet (with
+its boundary test) and its attributes. Assignment has not happened yet: rewrites
+are free, but the attribute SET is fixed and facets are read-only context.
+
+<tree>
+{tree_block}
+</tree>
+
+Your task:
+1. For every attribute, judge name and description from the viewpoint of the
+   survey question: does it capture one atomic concept, distinguishable from
+   every other attribute in this domain — inside its facet and across sibling
+   facets — by the text alone?
+2. Rewrite names/descriptions where needed so each attribute reads as exactly one
+   concept. Descriptive wording only — no evaluative language.
+3. Flag every pair of attributes (same facet or different facets of this domain)
+   that appear to capture the same concept even after rewriting. For each flagged
+   pair, write one decision_rule: a single routing sentence
+   ("names X -> a; is about Y -> b").
+
+Rules:
+- Return exactly the attributes you were given, one for one, matched by
+  original_name within their facet. Do not add, merge, split, move or drop
+  attributes.
+- Sharpen, do not re-scope.
+- Flagging is desired behaviour, not failure: flagged pairs are resolved later
+  with assignment data.
+
+Provide your output as valid JSON following the response schema provided."""
+
+
+class ReviewedAttribute(BaseModel):
+    """A single attribute after P7 review — rewrites are free, the set is fixed."""
+    original_name: str = Field(
+        ..., description="Exact name of the existing attribute — the match key within its facet"
+    )
+    facet_name: str = Field(
+        ..., description="Read-only reference to the facet this attribute belongs to — not a move field"
+    )
+    attribute_name: str = Field(
+        ..., description="Attribute name, sharpened where needed"
+    )
+    attribute_description: str = Field(
+        ..., description="Attribute description, reformulated for orthogonality"
+    )
+
+
+class AttributeOverlapFlag(BaseModel):
+    """A pair of attributes that still appear to capture the same concept after rewriting."""
+    attr_a: str = Field(
+        ..., description="Name of the first attribute in the overlapping pair"
+    )
+    facet_a: str = Field(
+        ..., description="Facet of the first attribute in the overlapping pair"
+    )
+    attr_b: str = Field(
+        ..., description="Name of the second attribute in the overlapping pair"
+    )
+    facet_b: str = Field(
+        ..., description="Facet of the second attribute in the overlapping pair — may differ from facet_a: cross-facet within the domain"
+    )
+    reason: str = Field(
+        ..., description="One sentence explaining why the two attributes overlap"
+    )
+    decision_rule: str = Field(
+        ..., description='Single routing sentence for the doubtful case, e.g. "names X -> a; is about Y -> b"'
+    )
+
+
+class AttributeReviewResponse(BaseModel):
+    """P7 output: reviewed attributes and any overlap flags for a single domain."""
+    attributes: List[ReviewedAttribute] = Field(
+        ..., description="Reviewed attributes, exactly 1-on-1 with the input set"
+    )
+    overlap_flags: List[AttributeOverlapFlag] = Field(
+        ..., description="Pairs of attributes that still appear to capture the same concept after rewriting"
+    )
+
 
 # =============================================================================
 # §8 ATTRIBUTE ASSIGNMENT (P8) — per facet
