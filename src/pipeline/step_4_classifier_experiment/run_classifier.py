@@ -673,6 +673,9 @@ if __name__ == "__main__":
         var_name=VARIABLE,
         sample_size=SAMPLE_SIZE,
         step=4,
+        # Own directory: same dataset + step as the production runner would
+        # otherwise build the identical canonical log name and overwrite it.
+        output_dir=project_root / "exports" / "experiment_logs",
     ):
         token_tracker.reset()
 

@@ -23,10 +23,8 @@ nest_asyncio.apply()
 warnings.filterwarnings("ignore", message="To exit: use 'exit', 'quit', or Ctrl-D.")
 
 from test_data import TEST_DATA
-from utils.cacheManager import CacheManager
 from utils.saveVerbose import VerboseCapture
 from utils.llm import token_tracker
-from config import CacheConfig
 
 # =============================================================================
 # PIPELINE CONFIGURATION

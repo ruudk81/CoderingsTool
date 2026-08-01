@@ -169,3 +169,37 @@ def test_rule_validated_even_when_glob_matches_nothing(tmp_path):
     regel = RetentionRule("data/cache/*", max_entries=1)
     with pytest.raises(RetentionError, match="buiten exports"):
         run(tmp_path, [regel], apply=False)
+
+
+def test_trash_gets_a_grace_period(tmp_path):
+    """Een bestand dat in deze run naar de bak gaat, mag in dezelfde run niet
+    ook al definitief gewist worden — anders is de bak geen vangnet."""
+    import time
+    oud = time.time() - 60 * 86400
+    for i in range(3):
+        _maak(tmp_path, f"exports/logs/l{i}.txt", mtime=oud + i)
+    regels = [
+        RetentionRule("exports/logs/*", max_entries=1),
+        RetentionRule("exports/_prullenbak/**/*", max_entries=1),
+    ]
+
+    run(tmp_path, regels, apply=True)
+
+    assert (tmp_path / "exports/logs/l2.txt").exists()
+    assert (tmp_path / "exports/_prullenbak/logs/l0.txt").exists()
+    assert (tmp_path / "exports/_prullenbak/logs/l1.txt").exists()
+
+
+def test_broken_symlink_pointing_outside_exports_is_skipped(tmp_path):
+    """Een kapotte symlink die buiten exports/ resolvet mag de run niet
+    fataal breken. Hij is geen bestand (is_file() is False zonder geldig
+    doel) en wordt daarom overgeslagen vóórdat de invariant-toets aan bod
+    komt, in plaats van de hele run met een RetentionError af te breken."""
+    logs = tmp_path / "exports/logs"
+    logs.mkdir(parents=True)
+    (logs / "kapot.txt").symlink_to(tmp_path / "elders" / "bestaat-niet.txt")
+    _maak(tmp_path, "exports/logs/goed.txt", mtime=1000)
+
+    entries = resolve_entries(RetentionRule("exports/logs/*"), tmp_path)
+
+    assert [e.path.name for e in entries] == ["goed.txt"]

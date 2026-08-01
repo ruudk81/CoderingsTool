@@ -126,7 +126,7 @@ class VerboseCapture:
             "=" * 70,
             f"Dataset: {self.filename}",
             f"Variable: {self.var_name}",
-            f"Sample size: {self.sample_size if self.sample_size else 'full'}",
+            f"Sample size: {self.sample_size if self.sample_size is not None else 'full'}",
             f"Step: {self.step}",
             f"Start time: {self._start_time.strftime('%Y-%m-%d %H:%M:%S') if self._start_time else 'unknown'}",
             f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",

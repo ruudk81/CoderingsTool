@@ -121,21 +121,27 @@ def _valideer_regel(rule: RetentionRule) -> None:
 def resolve_entries(rule: RetentionRule, root: Path) -> list[Entry]:
     """De entries van een regel, nieuwste eerst.
 
-    Toetst elke gevonden entry aan de invariant (elk pad ligt onder exports/).
-    Ligt er één buiten, dan stopt het script — een genegeerde regel is een
-    regel die je niet opmerkt. Mappen worden overgeslagen: alleen bestanden
-    worden een Entry. Dat voorkomt dat de gespiegelde submappen die
-    move_to_trash zelf binnen _prullenbak/ aanmaakt (waarvan de mtime bij elke
-    verplaatsing ververst) als permanent-beschermde entries meetellen.
+    Mappen worden overgeslagen: alleen bestanden worden een Entry. Dat
+    voorkomt dat de gespiegelde submappen die move_to_trash zelf binnen
+    _prullenbak/ aanmaakt (waarvan de mtime bij elke verplaatsing ververst)
+    als permanent-beschermde entries meetellen. Dit filter staat bewust vóór
+    de invariant-toets: een kapotte symlink is geen bestand (is_file() is
+    False voor een symlink zonder geldig doel) en wordt zo overgeslagen in
+    plaats van dat .resolve() erop stukloopt en de hele run met een
+    RetentionError afbreekt.
+
+    Wat wél een bestand is, wordt getoetst aan de invariant (elk pad ligt
+    onder exports/) — ook als het een symlink is. Ligt er één buiten, dan
+    stopt het script — een genegeerde regel is een regel die je niet opmerkt.
     """
     exports = (root / EXPORTS_DIRNAME).resolve()
     entries: list[Entry] = []
     for pad in root.glob(rule.glob):
+        if not pad.is_file():
+            continue
         if not pad.resolve().is_relative_to(exports):
             raise RetentionError(
                 f"regel {rule.glob!r} wijst buiten exports/: {pad}")
-        if not pad.is_file():
-            continue
         stat = pad.stat()
         entries.append(Entry(path=pad, mtime=stat.st_mtime, size=stat.st_size))
     entries.sort(key=lambda e: e.mtime, reverse=True)
@@ -215,16 +221,35 @@ def move_to_trash(entry: Path, root: Path) -> None:
 
 
 def run(root: Path, rules: list[RetentionRule], apply: bool) -> list[dict]:
-    """Voer de regels uit (of toon alleen wat er zou gebeuren)."""
+    """Voer de regels uit (of toon alleen wat er zou gebeuren).
+
+    De schakelaar geldt hier, niet alleen in main(): wie deze functie
+    rechtstreeks importeert mag RETENTION_ENABLED niet kunnen omzeilen.
+
+    Twee lussen, bewust gescheiden: eerst wordt van élke regel geïnventariseerd
+    wat er zou weggaan, en pas dáárna wordt er verplaatst. Zou dat in één lus
+    gebeuren, dan ziet de bak-regel (exports/_prullenbak/**/*, laatste in
+    RULES) entries die in déze run net uit een andere map de bak in zijn
+    verplaatst — en shutil.move behoudt de mtime, dus PROTECT_DAYS beschermt
+    ze daar niet. Eén --apply zou zo een bestand kunnen verplaatsen én
+    definitief wissen, zonder dat de bak ooit respijt bood. Met de
+    inventarisatie vooraf ziet de bak-regel alleen wat er vóór deze run al in
+    de bak lag.
+    """
+    if not RETENTION_ENABLED:
+        return []
+
     for rule in rules:
         _valideer_regel(rule)
 
-    verslag: list[dict] = []
-
+    inventaris: list[tuple[RetentionRule, list[Entry], list[Entry]]] = []
     for rule in rules:
         entries = resolve_entries(rule, root)
-        weg = select_for_removal(entries, rule)
+        inventaris.append((rule, entries, select_for_removal(entries, rule)))
 
+    verslag: list[dict] = []
+
+    for rule, entries, weg in inventaris:
         totaal_bytes = sum(e.size for e in entries)
         bytes_weg = sum(e.size for e in weg)
 
@@ -261,12 +286,25 @@ def _log_regel(root: Path, tekst: str) -> None:
         f.write(f"{stempel}  {tekst}\n")
 
 
+STEMPEL_LEN = len("2026-08-01 00:00:00")
+
+
 def _laatste_run(root: Path) -> str:
+    """Tijdstip van de laatste dáádwerkelijke uitvoering.
+
+    retention.log bevat ook regels van move_to_trash ("overschreven in
+    prullenbak: ...") en van een mislukte run ("FOUT: ..."). Alleen de
+    uitvoeringsregel die main() na afloop van --apply schrijft draagt het
+    "RUN  "-voorvoegsel; dat is de enige regel die hier telt.
+    """
     log = root / LOG_PATH
     if not log.exists():
         return "nooit"
-    regels = [r for r in log.read_text(encoding="utf-8").splitlines() if r.strip()]
-    return regels[-1][:19] if regels else "nooit"
+    runs = [
+        r for r in log.read_text(encoding="utf-8").splitlines()
+        if r[STEMPEL_LEN + 2:].startswith("RUN  ")
+    ]
+    return runs[-1][:STEMPEL_LEN] if runs else "nooit"
 
 
 def _print_verslag(verslag: list[dict], apply: bool) -> None:
@@ -310,7 +348,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.apply:
         totaal = sum(r["te_verwijderen"] for r in verslag)
         mb = sum(r["vrijgemaakt_mb"] for r in verslag)
-        _log_regel(PROJECT_ROOT, f"{totaal} entries verplaatst ({mb:.1f} MB)")
+        _log_regel(PROJECT_ROOT, f"RUN  {totaal} entries verplaatst ({mb:.1f} MB)")
 
     return 0
 
