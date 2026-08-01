@@ -2058,11 +2058,14 @@ def _build_domain_attribute_structure_block(
     facet_attributes: Dict[str, List[DiscoveredAttribute]],
 ) -> str:
     """Render a domain's full facet+attribute structure for P7-review (V2):
-    per facet its segment/axis, its refinement axis and positions, and per
-    position the attributes tagged to it (residual position last, mirroring
-    `_build_refinement_axis_block`). Built from the facets' own
-    axis/segment/refinement fields (as `_build_domain_structure_block` does
-    for P3-review) plus each attribute's `position` field set by P6."""
+    per facet its segment/axis, its refinement axis, and per position (non-
+    residual first, residual last — the same ordering convention as
+    `_build_refinement_axis_block`, though the line format differs: one line
+    carrying both the position's own description and its boundary, to keep
+    each position and its attributes visually together) the attributes
+    tagged to it. Built from the facets' own axis/segment/refinement fields
+    (as `_build_domain_structure_block` does for P3-review) plus each
+    attribute's `position` field set by P6."""
     blocks = []
     for f in facets:
         lines = [f"Facet: {f.facet_name} — {f.facet_description} (segment: {f.segment} of {f.axis})"]
@@ -2076,7 +2079,10 @@ def _build_domain_attribute_structure_block(
         attrs = facet_attributes.get(f.facet_name, [])
         for p in non_residual + residual:
             suffix = " (residual)" if p.get("is_residual") else ""
-            lines.append(f"    [{p.get('position_name', '')}]{suffix}: {p.get('boundary', '')}")
+            lines.append(
+                f"    [{p.get('position_name', '')}]{suffix}: "
+                f"{p.get('position_description', '')} — Boundary: {p.get('boundary', '')}"
+            )
             for attr in attrs:
                 if attr.position == p.get("position_name", ""):
                     lines.append(f"      - {attr.attribute_name}: {attr.attribute_description}")

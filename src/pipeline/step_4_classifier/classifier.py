@@ -1700,7 +1700,9 @@ class TaxonomyClassifier:
                     'refinement_axis_description': facet_obj.refinement.get('description', ''),
                     'position_name': position['position_name'],
                     'position_boundary': position.get('boundary', ''),
-                    'is_residual': position.get('is_residual', False),
+                    'is_residual': self._position_is_residual(
+                        facet_obj.refinement.get('positions', []), position['position_name'],
+                    ),
                     'proposals': proposals,
                 })
 
@@ -3987,8 +3989,14 @@ class TaxonomyClassifier:
         guard 3 (merge: >1 source; split: 1 source also claimed by another
         output; rename/redescribe: 1 source, claimed nowhere else) and
         logged as `attribute_review_v2_rewrite` / `_merge` / `_split`.
-        `is_residual_attr` carries over from the (first) source on merge and
-        rename (guard 5 already rules out a residual source being split).
+        `is_residual_attr` is DERIVED from each output's own position_name
+        via `_position_is_residual` — never carried from a source object.
+        Provenance carry would silently break on either edge the P3-review
+        lesson missed: a rewrite that moves the residual attribute onto a
+        specific position would otherwise keep the flag past its position,
+        and a merge that lists the residual source anywhere but first would
+        otherwise drop it. Deriving from the output's own position makes the
+        invariant structural instead of an artifact of list order.
         """
         domain = task['domain_name']
         facets: List[DiscoveredFacet] = task['facets']
@@ -4056,12 +4064,22 @@ class TaxonomyClassifier:
         # once), keyed by the OUTPUT'S OWN facet_name — a source claimed
         # under the wrong facet never resolves to the real (facet, name)
         # pair, so it shows up as both a missing real instance and an
-        # unresolvable extra claim.
+        # unresolvable extra claim. `usage_display` keeps the first raw
+        # "facet_name > source_name" string seen for each normalized key, so
+        # a coverage failure can report human-readable names on BOTH sides —
+        # `missing` from the real attribute, `extra` from the response's own
+        # (unresolvable) wording, not the normalized matching key.
         usage: Counter = Counter()
+        usage_display: Dict[Tuple[str, str], str] = {}
         for out in response.attributes:
             out_facet_norm = self._norm_text(out.facet_name)
-            for name in {self._norm_text(s) for s in out.source_attributes}:
-                usage[(out_facet_norm, name)] += 1
+            raw_by_norm: Dict[str, str] = {}
+            for raw_source in out.source_attributes:
+                raw_by_norm.setdefault(self._norm_text(raw_source), raw_source)
+            for name, raw_source in raw_by_norm.items():
+                key = (out_facet_norm, name)
+                usage[key] += 1
+                usage_display.setdefault(key, f"{out.facet_name} > {raw_source}")
 
         missing = sorted(
             f"{facet_name} > {attr.attribute_name}"
@@ -4069,9 +4087,9 @@ class TaxonomyClassifier:
             if usage.get(key, 0) == 0
         )
         extra = sorted(
-            f"{facet_norm} > {name}"
-            for (facet_norm, name) in usage
-            if (facet_norm, name) not in by_key
+            usage_display[key]
+            for key in usage
+            if key not in by_key
         )
         if missing or extra:
             consolidation_log.append({
@@ -4124,6 +4142,7 @@ class TaxonomyClassifier:
             source_pairs = [by_key[(out_facet_norm, n)] for n in dedup_sources]
             source_objs = [attr for _, attr in source_pairs]
             facet_name = source_pairs[0][0]  # actual (unnormalized) facet name
+            facet_obj = facet_by_norm[out_facet_norm]
 
             new_attr = DiscoveredAttribute(
                 attribute_name=out.attribute_name,
@@ -4131,7 +4150,9 @@ class TaxonomyClassifier:
                 parent_facet=facet_name,
                 example_observations=self._round_robin_examples(source_objs, limit=5),
                 position=out.position_name,
-                is_residual_attr=source_objs[0].is_residual_attr,
+                is_residual_attr=self._position_is_residual(
+                    (facet_obj.refinement or {}).get('positions', []), out.position_name,
+                ),
             )
             new_by_facet.setdefault(facet_name, []).append(new_attr)
 
@@ -4205,6 +4226,24 @@ class TaxonomyClassifier:
         only — no stemming, no stopwords, nothing language-specific, so this stays
         use-case agnostic and every match is checkable by eye."""
         return (text or "").strip().lower()
+
+    @classmethod
+    def _position_is_residual(cls, positions: List[Dict], position_name: str) -> bool:
+        """Single source of truth for deriving an attribute's residual status
+        from its OWN position tag (`_norm_text`-matched against a facet's
+        refinement `positions` list) — never from provenance carried off a
+        source object. Used by both the P6 per-position consolidation path
+        and the P7-review V2 apply path, so `is_residual_attr` is always a
+        structural fact about where an attribute currently sits, not a
+        memory of where some ancestor once sat: a rewrite that moves an
+        attribute off the residual position loses the flag, and a merge or
+        split is judged purely by its own output position, regardless of
+        which source in the list happened to carry the flag."""
+        norm_target = cls._norm_text(position_name)
+        return any(
+            cls._norm_text(p.get('position_name', '')) == norm_target and p.get('is_residual', False)
+            for p in positions
+        )
 
     def _dump_axis_systems(self) -> Dict[str, dict]:
         """Model-dump the discovered axis systems, verbatim, for TaxonomyResult
