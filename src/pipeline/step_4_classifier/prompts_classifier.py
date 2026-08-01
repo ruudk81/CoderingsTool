@@ -7,6 +7,8 @@ Organized in pipeline processing order:
   §1b  Tagged Facet Discovery (P1b: per-domain, chunked, axis-tagged)
   §1   Facet Discovery (P1: per-domain, chunked)
   §2   Facet Consolidation (P2: merge chunk-level facets)
+  §2a  Segment Facet Consolidation (P2, axis-first: per (axis, segment),
+       plus each facet's refinement axis)
   §3   Facet Review (P3: per-domain quality gate)
   §4   Facet Assignment (P4: per-domain, batched)
   §5   Attribute Discovery (P5: per facet within domain)
@@ -487,6 +489,12 @@ class DiscoveredFacet(BaseModel):
     segment: SkipJsonSchema[str] = Field(
         default="", description="P1b provenance only: the segment this facet was tagged to (empty on the untagged path)"
     )
+    refinement: SkipJsonSchema[dict] = Field(
+        default_factory=dict, description=(
+            "P2 axis-first provenance only: this facet's refinement axis as "
+            "{name, description, positions} (empty on the untagged path)"
+        )
+    )
 
 
 class FacetDiscoveryResult(BaseModel):
@@ -702,6 +710,123 @@ class FacetConsolidatedResponse(BaseModel):
     )
     facets: List[DiscoveredFacet] = Field(
         ..., description="Fewest mutually exclusive facets needed for full coverage, consolidated from all chunks"
+    )
+
+
+# =============================================================================
+# §2a SEGMENT FACET CONSOLIDATION (P2, axis-first path) — one consolidation
+# task per (axis, segment), grouped from the domain's tagged P1b proposals in
+# CODE (not by the model). Produces one facet per segment plus that facet's
+# refinement axis. Used only for domains that got a validated axis system
+# from P1a; domains without one keep the §2 path above untouched.
+# =============================================================================
+
+def _build_segment_proposals_block(proposals: List[DiscoveredFacet]) -> str:
+    """Render the facet proposals tagged to one segment as prompt text: one
+    '- name: description' line per proposal, followed by its examples."""
+    lines = []
+    for p in proposals:
+        lines.append(f"- {p.facet_name}: {p.facet_description}")
+        lines.append(f"  Examples: {'; '.join(p.example_observations[:5])}")
+    return "\n".join(lines)
+
+
+def build_segment_consolidation_prompt(
+    *,
+    survey_question: str,
+    domain_label: str,
+    domain_definition: str,
+    axis_name: str,
+    axis_description: str,
+    segment_name: str,
+    segment_boundary: str,
+    proposals: List[DiscoveredFacet],
+) -> str:
+    """Consolidate all chunk-level facet proposals tagged to one (axis,
+    segment) into a single facet, plus that facet's refinement axis (P2,
+    axis-first path)."""
+    segment_proposals_block = _build_segment_proposals_block(proposals)
+
+    return f"""You are a taxonomy consolidation specialist for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Domain: {domain_label} — {domain_definition}
+Axis: {axis_name} — {axis_description}
+Segment under consolidation: {segment_name}
+Segment boundary: {segment_boundary}
+
+Below are all chunk-level facet proposals tagged to this segment, with their
+examples:
+
+<proposals>
+{segment_proposals_block}
+</proposals>
+
+Your task:
+1. Consolidate these proposals into ONE facet for this segment: one name, one
+   description faithful to what the proposals jointly cover. List every
+   proposal you consumed under source_proposals (one-for-one bookkeeping).
+2. Define this facet's REFINEMENT AXIS: the sub-question along which the
+   observations INSIDE this facet differ from each other. Name it, describe
+   it, and divide it into 2-6 positions with one-sentence boundaries and 2-5
+   verbatim examples each, plus exactly one residual position for
+   observations that do not specify a value on it.
+
+Rules:
+- Work strictly inside this segment; other segments are consolidated
+  separately and are none of your concern.
+- Positions are conceptual values, not specificity levels; the residual
+  position is where unspecific observations live.
+- Descriptive wording only.
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class RefinementPosition(BaseModel):
+    """A position (conceptual value) on a facet's refinement axis (P2 output)."""
+    position_name: str = Field(
+        ..., description="Short descriptive name for the position — a value on the refinement axis"
+    )
+    position_description: str = Field(
+        ..., description="What this position captures on the refinement axis (1-2 sentences)"
+    )
+    boundary: str = Field(
+        ..., description="One-sentence boundary distinguishing this position from its neighbours"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-5 example observations for this position, verbatim from the proposals"
+    )
+    is_residual: bool = Field(
+        default=False, description=(
+            "True for exactly one position per refinement axis: the residual position for "
+            "observations that do not specify a value on it"
+        )
+    )
+
+
+class ConsolidatedFacet(BaseModel):
+    """P2 output (axis-first path): one consolidated facet for a single
+    (axis, segment), plus its refinement axis."""
+    facet_name: str = Field(
+        ..., description="Short descriptive name for the consolidated facet (2-5 words)"
+    )
+    facet_description: str = Field(
+        ..., description="One description faithful to what the consumed proposals jointly cover"
+    )
+    source_proposals: List[str] = Field(
+        ..., description="facet_name of every proposal consumed into this facet, one-for-one"
+    )
+    refinement_axis_name: str = Field(
+        ..., description="Name of this facet's refinement axis — the sub-question the observations inside it differ along"
+    )
+    refinement_axis_description: str = Field(
+        ..., description="One or two sentences describing the difference in the data the refinement axis captures"
+    )
+    positions: List[RefinementPosition] = Field(
+        ..., description="2-6 substantive positions plus exactly one residual position"
     )
 
 

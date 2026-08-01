@@ -72,6 +72,7 @@ from .prompts_classifier import (
     # P1a: Axis Discovery
     build_axis_discovery_prompt,
     AxisSystemResponse,
+    DiscoveredAxis,
     AxisSegment,
     # P1b: Tagged Facet Discovery
     build_tagged_facet_discovery_prompt,
@@ -83,6 +84,10 @@ from .prompts_classifier import (
     # P2: Facet Consolidation
     build_facet_consolidation_prompt,
     FacetConsolidatedResponse,
+    # P2a: Segment Facet Consolidation (axis-first path)
+    build_segment_consolidation_prompt,
+    RefinementPosition,
+    ConsolidatedFacet,
     # P3: Facet Review
     build_facet_review_prompt,
     FacetReviewResponse,
@@ -188,6 +193,52 @@ def validate_and_repair_axis_system(
             ))
 
     return response
+
+
+def validate_and_repair_refinement_positions(
+    positions: List[RefinementPosition],
+) -> Optional[List[RefinementPosition]]:
+    """Validate a P2 (axis-first) facet's refinement-axis positions and
+    repair what's safely repairable, mirroring
+    `validate_and_repair_axis_system`'s pattern one level down. Anything
+    unrepairable fails closed (returns None) so the caller keeps that
+    segment's raw proposals unconsolidated.
+
+    Repaired in place:
+      - no residual position gets one injected (name "unspecified", the same
+        residual wording as the axis-level injection, no invented examples).
+
+    Rejected (returns None):
+      - no positions at all;
+      - duplicate position names (case-insensitive);
+      - more than one position marked residual (ambiguous).
+    """
+    if not positions:
+        return None
+
+    seen_names: Set[str] = set()
+    for pos in positions:
+        norm = pos.position_name.strip().lower()
+        if norm in seen_names:
+            return None
+        seen_names.add(norm)
+
+    residual_count = sum(1 for pos in positions if pos.is_residual)
+    if residual_count > 1:
+        return None
+    if residual_count == 0:
+        positions = positions + [RefinementPosition(
+            position_name="unspecified",
+            position_description=(
+                "Observations within this facet that do not specify a value "
+                "on the refinement axis."
+            ),
+            boundary="names no recognisable value on this refinement axis",
+            example_observations=[],
+            is_residual=True,
+        )]
+
+    return positions
 
 
 # =============================================================================
@@ -723,8 +774,12 @@ class TaxonomyClassifier:
         max_i = self._consolidation_max_items_per_call
 
         # Build P2 task list — one task per domain (single-round) or per group (multi-round)
+        # Axis-first domains (validated axis system from P1a) skip this path
+        # entirely: they consolidate per (axis, segment) below, untouched here.
         p2_tasks = []
         for name in sorted(domain_chunk_facets.keys()):
+            if name in self.axis_systems:
+                continue
             chunk_facets = domain_chunk_facets[name]
             non_empty = [cf for cf in chunk_facets if cf]
             if not non_empty:
@@ -837,12 +892,78 @@ class TaxonomyClassifier:
                 for task, result in zip(r2_tasks, r2_results):
                     partition_facets[task['domain_name']] = result or []
 
+        # -----------------------------------------------------------------
+        # P2 (axis-first path): group each axis-first domain's tagged P1b
+        # facets by (axis, segment) IN CODE, one consolidation task per
+        # populated segment. Non-axis domains never reach this block — they
+        # were skipped above and are already in partition_facets.
+        # -----------------------------------------------------------------
+        seg_tasks = []
+        for name in sorted(n for n in domain_chunk_facets if n in self.axis_systems):
+            all_facets = [f for chunk in domain_chunk_facets[name] for f in chunk]
+            if not all_facets:
+                partition_facets[name] = []
+                continue
+
+            partition_n_labels[name] = domain_chunk_info[name]['n_labels']
+            partition_n_batches[name] = domain_chunk_info[name]['n_batches']
+            partition_facets[name] = []
+
+            axis_system = self.axis_systems[name]
+            segment_lookup: Dict[Tuple[str, str], Tuple[DiscoveredAxis, AxisSegment]] = {
+                (self._norm_text(axis.axis_name), self._norm_text(seg.segment_name)): (axis, seg)
+                for axis in axis_system.axes
+                for seg in axis.segments
+            }
+            segment_proposals: Dict[Tuple[str, str], List[DiscoveredFacet]] = defaultdict(list)
+            for f in all_facets:
+                key = (self._norm_text(f.axis), self._norm_text(f.segment))
+                if key in segment_lookup:
+                    segment_proposals[key].append(f)
+
+            for key, proposals in segment_proposals.items():
+                axis, seg = segment_lookup[key]
+                seg_tasks.append({
+                    'domain_name': name,
+                    'domain_definition': partition_contexts[name].partition_definition,
+                    'axis_name': axis.axis_name,
+                    'axis_description': axis.axis_description,
+                    'segment_name': seg.segment_name,
+                    'segment_boundary': seg.boundary,
+                    'proposals': proposals,
+                })
+
+        if seg_tasks:
+            seg_requester = SmoothRequester(
+                model=self._model_p2,
+                phase_key="step4_p2_segment_consolidation",
+                num_tasks=len(seg_tasks),
+                verbose=verbose,
+                known_limits=self._fetched_limits,
+                has_server_headers=self._fetched_has_headers,
+                show_setup=False,
+                quiet=True,
+            )
+            seg_results = await seg_requester.process_all(
+                seg_tasks,
+                self._p2_segment_prepare_fn(prompt_context),
+                self._p2_segment_parse_fn(consolidation_log),
+                self._p2_segment_fallback_fn(),
+            )
+            for task, result in zip(seg_tasks, seg_results):
+                partition_facets[task['domain_name']].extend(result or [])
+
         t_consolidation = time.time() - t_consolidation
         if verbose:
             s = p2_requester.stats if p2_tasks else {}
             print(f"    P2 consolidation: {len(p2_tasks)} tasks, {t_consolidation:.1f}s "
                   f"({s.get('tasks_successful', 0)} ok, {s.get('timeouts', 0)} timeouts, "
                   f"{s.get('recovered', 0)} retries)")
+            if seg_tasks:
+                s2 = seg_requester.stats
+                print(f"    P2 segment consolidation: {len(seg_tasks)} tasks "
+                      f"({s2.get('tasks_successful', 0)} ok, {s2.get('timeouts', 0)} timeouts, "
+                      f"{s2.get('recovered', 0)} retries)")
 
         phase1_elapsed = time.time() - t_phase1
         if verbose:
@@ -2210,6 +2331,155 @@ class TaxonomyClassifier:
     @staticmethod
     def _p2_fallback_fn():
         """Return fallback_fn closure for P2 facet consolidation."""
+        def fallback_fn(task: Dict, reason: str) -> List[DiscoveredFacet]:
+            return []
+        return fallback_fn
+
+    # =========================================================================
+    # PHASE 2a (P2, axis-first path): PER-SEGMENT FACET CONSOLIDATION
+    # (SmoothRequester). One task per populated (axis, segment); the grouping
+    # itself happens in code, above, not here.
+    # =========================================================================
+
+    @staticmethod
+    def _round_robin_examples(proposals: List[DiscoveredFacet], *, limit: int = 5) -> List[str]:
+        """Pool example observations from a segment's consumed proposals,
+        one per proposal per pass (round-robin), preserving each proposal's
+        own example order, stopping at `limit`. Unlike a flat concatenation,
+        this can't exhaust the pool on one proposal — every proposal that
+        has an example contributes before any proposal contributes a second
+        one, echoing the old path's model-curated "representative across
+        the merged [sources]" spread."""
+        examples: List[str] = []
+        round_idx = 0
+        while len(examples) < limit:
+            added = False
+            for p in proposals:
+                if round_idx < len(p.example_observations):
+                    examples.append(p.example_observations[round_idx])
+                    added = True
+                    if len(examples) == limit:
+                        break
+            if not added:
+                break
+            round_idx += 1
+        return examples
+
+    def _p2_segment_prepare_fn(self, prompt_context: PromptContext):
+        """Return prepare_fn closure for the axis-first per-segment P2 path."""
+        def prepare_fn(task: Dict) -> Dict:
+            prompt = build_segment_consolidation_prompt(
+                survey_question=prompt_context.survey_question,
+                domain_label=task['domain_name'],
+                domain_definition=task['domain_definition'],
+                axis_name=task['axis_name'],
+                axis_description=task['axis_description'],
+                segment_name=task['segment_name'],
+                segment_boundary=task['segment_boundary'],
+                proposals=task['proposals'],
+            )
+
+            gate_key = f"qr_segment_consolidation_{task['domain_name']}_{task['axis_name']}_{task['segment_name']}"
+            if (self._prompt_printer is not None
+                    and gate_key not in self._captured_gates):
+                self._prompt_printer.capture_prompt(
+                    step_name="qualitative_researcher",
+                    utility_name="QualitativeResearcher",
+                    prompt_content=prompt,
+                    prompt_type="segment_consolidation",
+                    metadata={
+                        "model": self._model_p2,
+                        "temperature": 0.0,
+                        "max_tokens": self._max_tokens_consolidation,
+                        "partition_name": task['domain_name'],
+                        "axis_name": task['axis_name'],
+                        "segment_name": task['segment_name'],
+                        "dimension_name": prompt_context.dimension_name,
+                    }
+                )
+                self._captured_gates.add(gate_key)
+
+            return {
+                'prompt': prompt,
+                'response_model': ConsolidatedFacet,
+                'temperature': 0.0,
+                'max_tokens': self._max_tokens_consolidation,
+                'max_retries': 3,
+                'extra_kwargs': get_reasoning_params(self._model_p2, phase="classifier_p2"),
+            }
+        return prepare_fn
+
+    def _p2_segment_parse_fn(self, consolidation_log: List[Dict]):
+        """Return parse_fn closure for the axis-first per-segment P2 path.
+
+        Applies the source_proposals multiset guard and the refinement-axis
+        validator (`validate_and_repair_refinement_positions`, Task 2's
+        validator pattern one level down). Either failure keeps the
+        segment's raw proposals as separate, untouched facets and logs
+        `segment_consolidation_failed`; success returns exactly one
+        DiscoveredFacet carrying axis/segment/boundary_test and the
+        refinement axis, and logs `segment_consolidated`."""
+        def parse_fn(task: Dict, response: Optional[ConsolidatedFacet]) -> List[DiscoveredFacet]:
+            proposals: List[DiscoveredFacet] = task['proposals']
+            if response is None:
+                return list(proposals)
+
+            domain_name = task['domain_name']
+            axis_name = task['axis_name']
+            segment_name = task['segment_name']
+
+            expected = Counter(p.facet_name for p in proposals)
+            actual = Counter(response.source_proposals)
+            if expected != actual:
+                consolidation_log.append({
+                    "action": "segment_consolidation_failed",
+                    "domain": domain_name,
+                    "axis": axis_name,
+                    "segment": segment_name,
+                    "diff": {
+                        "missing": list((expected - actual).elements()),
+                        "extra": list((actual - expected).elements()),
+                    },
+                })
+                return list(proposals)
+
+            positions = validate_and_repair_refinement_positions(response.positions)
+            if positions is None:
+                consolidation_log.append({
+                    "action": "segment_consolidation_failed",
+                    "domain": domain_name,
+                    "axis": axis_name,
+                    "segment": segment_name,
+                    "diff": "invalid refinement positions (missing or duplicate)",
+                })
+                return list(proposals)
+
+            facet = DiscoveredFacet(
+                facet_name=response.facet_name,
+                facet_description=response.facet_description,
+                example_observations=self._round_robin_examples(proposals, limit=5),
+                boundary_test=task['segment_boundary'],
+                axis=axis_name,
+                segment=segment_name,
+                refinement={
+                    "name": response.refinement_axis_name,
+                    "description": response.refinement_axis_description,
+                    "positions": [pos.model_dump() for pos in positions],
+                },
+            )
+            consolidation_log.append({
+                "action": "segment_consolidated",
+                "domain": domain_name,
+                "axis": axis_name,
+                "segment": segment_name,
+                "n_proposals": len(proposals),
+            })
+            return [facet]
+        return parse_fn
+
+    @staticmethod
+    def _p2_segment_fallback_fn():
+        """Return fallback_fn closure for the axis-first per-segment P2 path."""
         def fallback_fn(task: Dict, reason: str) -> List[DiscoveredFacet]:
             return []
         return fallback_fn
