@@ -41,6 +41,14 @@ if TYPE_CHECKING:
 # §0 DIMENSION CONTEXT BLOCK — shared helper for all prompts
 # =============================================================================
 
+def _norm_text(text: Optional[str]) -> str:
+    """Normalise a tag value for matching. Case- and padding-insensitive
+    only, mirroring `TaxonomyClassifier._norm_text` (classifier.py) — kept
+    as a standalone copy here rather than an import to avoid coupling this
+    prompt-builder module to the classifier."""
+    return (text or "").strip().lower()
+
+
 def _extract_definition(instruction: str) -> str:
     """Extract the 'Definition: ...' sentence (up to first newline) from an instruction string."""
     marker = "Definition: "
@@ -2238,8 +2246,13 @@ def _build_attribute_codebook_block(
     it is what `attr_id_to_name` keys the response parse on. A facet with
     no refinement dict (untagged path) renders exactly as before."""
     refinement = refinement or {}
+    # Keyed case-/padding-insensitively (mirrors `TaxonomyClassifier._norm_text`,
+    # classifier.py): P7-review validates an echoed position_name loosely
+    # (_norm_text) but stores it verbatim, so a case- or whitespace-variant
+    # echo must still find its boundary here instead of silently losing the
+    # `Boundary:` line.
     positions_by_name = {
-        p.get("position_name", ""): p for p in refinement.get("positions", [])
+        _norm_text(p.get("position_name", "")): p for p in refinement.get("positions", [])
     }
 
     lines = []
@@ -2250,7 +2263,7 @@ def _build_attribute_codebook_block(
             item += f"    Position: {attr.position}\n"
         item += f"    Description: {attr.attribute_description}\n"
         if refinement and attr.position:
-            boundary = positions_by_name.get(attr.position, {}).get("boundary", "")
+            boundary = positions_by_name.get(_norm_text(attr.position), {}).get("boundary", "")
             if boundary:
                 item += f"    Boundary: {boundary}\n"
         item += f"    Examples: {examples}"

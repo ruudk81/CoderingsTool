@@ -210,21 +210,34 @@ class HealthReport:
         return out
 
 
+def _norm_text(text) -> str:
+    """Normalise a tag value for distinctness comparison. Case- and
+    padding-insensitive only, mirroring `TaxonomyClassifier._norm_text`
+    (classifier.py) so this metric is exactly as lax as the enforcement it
+    audits — a case- or whitespace-variant echo from a review pass (e.g. P7
+    re-emitting a position name) must not count as a distinct value here."""
+    return (text or "").strip().lower()
+
+
 def _classify_siblings(
     items: List[dict], tag_key: str, name_key: str
 ) -> Tuple[str, List[str]]:
     """Classify one sibling set (all items must share ONE tag value each,
-    pairwise distinct) for axis-purity. Returns (status, offending names):
+    pairwise distinct after normalisation) for axis-purity. Returns
+    (status, offending names):
 
       "untagged"  — no member carries `tag_key` (legacy / non-axis-first)
       "violation" — some but not all members tagged, or two members share
-                    the same tag value; offenders are the names at fault
+                    the same (normalised) tag value; offenders are the
+                    names at fault
       "pure"      — every member tagged, every tag value distinct
 
-    Used for both sibling-set kinds: facets of a domain (tag_key="axis",
-    paired with a same-axis check by the caller) and attributes of a facet
-    (tag_key="position"). An empty `items` list is the caller's concern —
-    this function assumes at least one item.
+    Used for attribute sibling sets (tag_key="position"). Facet sibling sets
+    are classified by `_classify_facet_siblings` instead — a domain's facets
+    do not share a single tag_key/value pair the way one facet's attributes
+    do, since P1a puts 1-4 independent axes on one domain (see there). An
+    empty `items` list is the caller's concern — this function assumes at
+    least one item.
     """
     tagged = [it for it in items if it.get(tag_key)]
     if not tagged:
@@ -232,33 +245,77 @@ def _classify_siblings(
     if len(tagged) != len(items):
         offenders = [it.get(name_key, "?") for it in items if not it.get(tag_key)]
         return "violation", offenders
-    values = [it.get(tag_key) for it in items]
+    values = [_norm_text(it.get(tag_key)) for it in items]
     dupes = {v for v, c in Counter(values).items() if c > 1}
     if dupes:
-        offenders = [it.get(name_key, "?") for it in items if it.get(tag_key) in dupes]
+        offenders = [it.get(name_key, "?") for it in items if _norm_text(it.get(tag_key)) in dupes]
         return "violation", offenders
     return "pure", []
 
 
-def _classify_facet_siblings(facets: List[dict]) -> Tuple[str, List[str]]:
-    """Classify a domain's facet sibling set: PURE requires every facet
-    tagged to the SAME axis with pairwise-distinct segments; the segment
-    distinctness check is delegated to `_classify_siblings`, the shared-axis
-    check is this function's own (a facet-level violation the shared helper
-    cannot see, since it only looks at one tag key at a time)."""
+def _classify_axis_group(axis_facets: List[dict]) -> Tuple[str, List[str]]:
+    """Classify one (domain, axis) facet group — every member already
+    carries THIS axis tag (that is the grouping precondition in
+    `_classify_facet_siblings`). PURE requires every member to also carry a
+    non-empty segment, pairwise distinct after normalisation. A member with
+    the axis set but no segment is a violation, not "untagged" — the axis
+    tag alone is not enforceable without a segment, so reporting it as a
+    clean/untagged set would hide a broken proposal."""
+    segmentless = [f for f in axis_facets if not f.get("segment")]
+    if segmentless:
+        offenders = [f.get("facet_name", "?") for f in segmentless]
+        return "violation", offenders
+    segments = [_norm_text(f.get("segment")) for f in axis_facets]
+    dupes = {s for s, c in Counter(segments).items() if c > 1}
+    if dupes:
+        offenders = [f.get("facet_name", "?") for f in axis_facets if _norm_text(f.get("segment")) in dupes]
+        return "violation", offenders
+    return "pure", []
+
+
+def _classify_facet_siblings(facets: List[dict]) -> List[Tuple[str, str, List[str]]]:
+    """Classify a domain's facet sibling set(s) for axis-purity.
+
+    P1a discovers 1-4 axes PER DOMAIN (spec §Fasering), and P2 consolidates
+    one facet per populated (axis, segment) across ALL of them — a domain's
+    facets do not share a single axis by design. Treating "the domain's
+    facets" as one sibling set (an earlier version of this function did)
+    flags every legitimate multi-axis domain as a violation, and checks
+    segment distinctness across axes that may legitimately reuse a segment
+    name (e.g. the injected residual segment, named identically on every
+    axis that lacked one).
+
+    Facets are grouped BY AXIS first; each (domain, axis) group is its own
+    sibling set requiring pairwise-distinct segments (`_classify_axis_group`).
+    Returns one (label_suffix, status, offenders) tuple per sibling set:
+    a single ("", "untagged" | "violation", …) for a wholly-untagged or
+    mixed-tagged domain (some facets carry an axis, some do not — still one
+    violation, not decomposable into axis groups), or one
+    (" · as={axis}", …) per axis group once every facet in the domain
+    carries an axis tag.
+    """
     tagged = [f for f in facets if f.get("axis")]
-    if tagged and len(tagged) == len(facets):
-        axes = {f.get("axis") for f in facets}
-        if len(axes) > 1:
-            offenders = [f"{f.get('facet_name', '?')} ({f.get('axis')})" for f in facets]
-            return "violation", offenders
-    return _classify_siblings(facets, "segment", "facet_name")
+    if not tagged:
+        return [("", "untagged", [])]
+    if len(tagged) != len(facets):
+        offenders = [f.get("facet_name", "?") for f in facets if not f.get("axis")]
+        return [("", "violation", offenders)]
+
+    by_axis: Dict[str, List[dict]] = {}
+    for f in facets:
+        by_axis.setdefault(f.get("axis"), []).append(f)
+
+    return [
+        (f" · as={axis_name}", *_classify_axis_group(axis_facets))
+        for axis_name, axis_facets in by_axis.items()
+    ]
 
 
 def _classify_attribute_siblings(attrs: List[dict]) -> Tuple[str, List[str]]:
     """Classify a facet's attribute sibling set: PURE requires every
-    attribute tagged with a distinct position on the facet's refinement
-    axis (at most one of which is the residual position)."""
+    attribute tagged with a distinct (normalised) position on the facet's
+    refinement axis — a single axis per facet, so (unlike facets) no
+    per-axis grouping is needed here."""
     return _classify_siblings(attrs, "position", "attribute_name")
 
 
@@ -286,8 +343,8 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
 
         facets = dr.facets or []
         if facets:
-            status, offenders = _classify_facet_siblings(facets)
-            _record_purity(rep.axis_purity, f"domein {dname} (facetten)", status, offenders)
+            for suffix, status, offenders in _classify_facet_siblings(facets):
+                _record_purity(rep.axis_purity, f"domein {dname}{suffix} (facetten)", status, offenders)
 
         for fname, attrs in (dr.attributes or {}).items():
             rep.n_facets += 1
