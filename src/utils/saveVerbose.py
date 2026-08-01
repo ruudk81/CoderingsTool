@@ -48,7 +48,7 @@ def build_log_filename(
     """
     base = Path(filename).stem.replace(" ", "_")
     var = var_name.replace(" ", "_")
-    sample = str(sample_size) if sample_size else "full"
+    sample = str(sample_size) if sample_size is not None else "full"
     return f"{base}_{var}_{sample}_step{step}.txt"
 
 

@@ -40,3 +40,13 @@ def test_spaces_become_underscores():
     name = build_log_filename("met spaties erin.sav", "Q1", 100, 0)
     assert " " not in name
     assert name == "met_spaties_erin_Q1_100_step0.txt"
+
+
+def test_sample_size_as_string_full():
+    """test_data.py gebruikt letterlijk de string "full" als samplesize."""
+    assert build_log_filename("dataset.sav", "Qd1", "full", 3) == "dataset_Qd1_full_step3.txt"
+
+
+def test_sample_size_zero_is_not_full():
+    """0 is een getal, geen ontbrekende waarde."""
+    assert build_log_filename("dataset.sav", "Qd1", 0, 3) == "dataset_Qd1_0_step3.txt"
