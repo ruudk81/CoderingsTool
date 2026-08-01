@@ -1498,7 +1498,10 @@ class IdeaExtractor:
         # by-order remap: old label → new label (deterministic rename, NOT reassignment)
         rename = {}
         for old, nd in zip(domains, new):
-            nd.key = nd.label  # key mirrors label
+            # Standing domains (other, bare_evaluation) carry a fixed key set at
+            # _resolve_standing_domains time — preserve it. Discovered domains have
+            # no fixed identity, so their key still mirrors the (possibly renamed) label.
+            nd.key = old.key if old.key in (STANDING_BARE_KEY, STANDING_OTHER_KEY) else nd.label
             rename[old.label] = nd.label
         self.domains = new
         for resp in results:
