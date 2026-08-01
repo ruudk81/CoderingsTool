@@ -2,8 +2,7 @@
 Centralized LLM client that abstracts provider differences.
 
 Features:
-- OpenAI: Uses responses.create() with input= parameter
-- Azure: Uses chat.completions.create() with messages= parameter
+- Both providers use responses.create() with input= parameter
 - Automatic retries (3x) via instructor
 - Token counting and cost tracking
 
@@ -104,22 +103,8 @@ def _debug_print_request(params: dict, provider: str, model: str):
     print(f"[DEBUG] LLM REQUEST #{_debug_request_count} - Provider: {provider}, Model: {model}")
     print("=" * 80)
 
-    # Print messages/input
-    if "messages" in params:
-        print("\n[MESSAGES]")
-        for i, msg in enumerate(params["messages"]):
-            role = msg.get('role', 'unknown')
-            content = msg.get('content', '')
-            print(f"  Message {i} ({role}):")
-            if len(content) > 2000:
-                # Show first 1000 chars and last 500 chars to see both start and end
-                print(f"    {content[:1000]}")
-                print(f"    [...middle truncated...]")
-                print(f"    {content[-500:]}")
-                print(f"    [total {len(content)} chars]")
-            else:
-                print(f"    {content}")
-    elif "input" in params:
+    # Print input
+    if "input" in params:
         print("\n[INPUT]")
         content = params["input"]
         if len(content) > 1000:
@@ -289,17 +274,17 @@ async def fetch_rate_limits(model: str) -> tuple:
         (RateLimits, has_server_headers: bool)
     """
     if API_PROVIDER == "azure":
-        # Quota is per deployment, so probe the deployment this model resolves to
+        # Quota is per deployment, so probe the deployment this model resolves to.
+        # Same route as the real calls, or the headers would describe an endpoint
+        # the pipeline no longer uses.
         endpoint, api_key, deployment = get_azure_route(model)
         client = AsyncOpenAI(
             api_key=api_key,
-            base_url=f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/",
-            default_query={"api-version": "2024-10-21"},
+            base_url=f"{endpoint.rstrip('/')}/openai/v1/",
         )
-        response = await client.chat.completions.with_raw_response.create(
+        response = await client.responses.with_raw_response.create(
             model=deployment,
-            messages=[{"role": "user", "content": "Hi"}],
-            max_completion_tokens=5,
+            input="Hi",
         )
     else:
         client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -436,15 +421,15 @@ def create_client(
     transport = None
 
     if API_PROVIDER == "azure":
-        # Azure: use TOOLS mode with chat.completions.create
-        # (West Europe doesn't support Responses API yet)
-        endpoint, api_key, deployment = get_azure_route(model)
-        azure_base_url = f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/"
+        # Azure: the /openai/v1/ route serves the Responses API, so both providers
+        # run the same instructor mode and the same call shape. Note the deployment
+        # is NOT in the path here — callers must pass it as `model=` (see
+        # llm_create_async, which resolves it via get_model_for_api).
+        endpoint, api_key, _deployment = get_azure_route(model)
 
         client_kwargs = {
             'api_key': api_key,
-            'base_url': azure_base_url,
-            'default_query': {"api-version": "2024-10-21"},
+            'base_url': f"{endpoint.rstrip('/')}/openai/v1/",
             'max_retries': max_retries,
         }
 
@@ -458,7 +443,7 @@ def create_client(
         else:
             base_client = OpenAI(**client_kwargs)
 
-        wrapped = instructor.from_openai(base_client, mode=instructor.Mode.TOOLS)
+        wrapped = instructor.from_openai(base_client, mode=instructor.Mode.RESPONSES_TOOLS)
     else:
         # OpenAI: use RESPONSES_TOOLS mode with responses.create
         if capture_headers and async_mode:
@@ -497,14 +482,11 @@ def _extract_and_track_usage(completion: Any, model: str):
     usage = getattr(completion, "usage", None)
 
     if usage:
-        if API_PROVIDER == "azure":
-            # Chat completions API uses prompt_tokens/completion_tokens
-            input_tokens = getattr(usage, "prompt_tokens", 0)
-            output_tokens = getattr(usage, "completion_tokens", 0)
-        else:
-            # Responses API uses input_tokens/output_tokens
-            input_tokens = getattr(usage, "input_tokens", 0)
-            output_tokens = getattr(usage, "output_tokens", 0)
+        # Responses API (both providers): input_tokens/output_tokens. Reasoning
+        # tokens are already included in output_tokens, so they are billed and
+        # tracked without a separate lookup.
+        input_tokens = getattr(usage, "input_tokens", 0)
+        output_tokens = getattr(usage, "output_tokens", 0)
 
         token_tracker.record(model, input_tokens, output_tokens)
 
@@ -546,68 +528,38 @@ async def llm_create_async(
                         hasattr(response_model, '__origin__') and
                         response_model.__origin__ is list)
 
-    # Reasoning models (gpt-5-mini, gpt-5, etc.) don't support temperature parameter
+    # Reasoning models (the gpt-5 family) don't support the temperature parameter
     is_reasoning = _is_reasoning_model(model)
 
-    if API_PROVIDER == "azure":
-        # Azure: chat.completions.create with messages
-        params = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            **kwargs
-        }
-        # Reasoning models reject max_tokens and temperature
-        if is_reasoning:
-            params["max_completion_tokens"] = max_tokens
-        else:
-            params["max_tokens"] = max_tokens
-            params["temperature"] = temperature
-        if response_model:
-            params["response_model"] = response_model
+    # One call shape for both providers. The only provider difference left is the
+    # name the API answers to: OpenAI takes the model, Azure takes the deployment
+    # (which the /openai/v1/ route no longer carries in its path).
+    params = {
+        "model": get_model_for_api(model),
+        "input": prompt,
+        "max_output_tokens": max_tokens,
+        **kwargs
+    }
+    # Only add temperature for non-reasoning models
+    if not is_reasoning:
+        params["temperature"] = temperature
+    if response_model:
+        params["response_model"] = response_model
 
-        # DEBUG: Print full request before API call
-        _debug_print_request(params, API_PROVIDER, model)
+    # DEBUG: Print full request before API call
+    _debug_print_request(params, API_PROVIDER, model)
 
-        if response_model:
-            if is_list_response:
-                # For List types, use regular create() as create_with_completion has a bug
-                response = await client.chat.completions.create(**params)
-                # Try to get _raw_response if instructor attached it
-                completion = getattr(response, "_raw_response", None)
-            else:
-                # Use create_with_completion to get raw response with usage data
-                response, completion = await client.chat.completions.create_with_completion(**params)
-        else:
-            response = await client.chat.completions.create(**params)
-            completion = response  # Raw response when no response_model
-    else:
-        # OpenAI: responses.create with input
-        params = {
-            "model": model,
-            "input": prompt,
-            "max_output_tokens": max_tokens,
-            **kwargs
-        }
-        # Only add temperature for non-reasoning models
-        if not is_reasoning:
-            params["temperature"] = temperature
-        if response_model:
-            params["response_model"] = response_model
-
-        # DEBUG: Print full request before API call
-        _debug_print_request(params, API_PROVIDER, model)
-
-        if response_model:
-            if is_list_response:
-                # For List types, use regular create() as create_with_completion has a bug
-                response = await client.responses.create(**params)
-                completion = getattr(response, "_raw_response", None)
-            else:
-                # Use create_with_completion to get raw response with usage data
-                response, completion = await client.responses.create_with_completion(**params)
-        else:
+    if response_model:
+        if is_list_response:
+            # For List types, use regular create() as create_with_completion has a bug
             response = await client.responses.create(**params)
-            completion = response  # Raw response when no response_model
+            completion = getattr(response, "_raw_response", None)
+        else:
+            # Use create_with_completion to get raw response with usage data
+            response, completion = await client.responses.create_with_completion(**params)
+    else:
+        response = await client.responses.create(**params)
+        completion = response  # Raw response when no response_model
 
     if track_usage and completion:
         _extract_and_track_usage(completion, model)

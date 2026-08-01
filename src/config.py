@@ -39,8 +39,8 @@ MODEL_FAMILY = "gpt-5.4"   # "gpt-5.4" (reasoning) or "gpt-4.1" (chat)
 
 # Examples:
 #   MODEL_FAMILY = "gpt-4.1"  →  gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
-#   MODEL_FAMILY = "gpt-5"    →  gpt-5, gpt-5-mini, gpt-5-nano
-#   MODEL_FAMILY = "gpt-5.4"   
+#   MODEL_FAMILY = "gpt-5.4"  →  gpt-5.4, and the mini/nano tiers via
+#                                FAMILY_TIER_OVERRIDES (gpt-5.6-luna on Azure)
 
 
 def get_model(tier: str = "default") -> str:
@@ -245,7 +245,6 @@ AZURE_DEPLOYMENTS = {
     "gpt-5.4-mini": ("dev",  "gpt-5.4-mini"),
     "gpt-5.4-nano": ("dev",  "gpt-5.4-nano"),
     "gpt-5.6-luna": ("dev",  "gpt-5.6-luna"),
-    "gpt-5-mini":   ("prod", "gpt-5"),                # deployment 'gpt-5' serves gpt-5-mini
     "gpt-4.1":      ("prod", "gpt-4.1"),
     "gpt-4.1-mini": ("prod", "Test_data_analytics"),  # serves gpt-4.1-mini
     "gpt-4.1-nano": ("prod", "Test_data_analytics"),
@@ -287,11 +286,8 @@ OPENAI_MODEL_LIMITS = {
     "gpt-5.4-nano": {"context_window": 400_000, "max_output": 128_000},
     # GPT-5.6 family (Sol > Terra > Luna)
     "gpt-5.6-luna": {"context_window": 1_050_000, "max_output": 128_000},
-    "gpt-5": {"context_window": 272_000, "max_output": 128_000},
     "gpt-5.1": {"context_window": 272_000, "max_output": 128_000},
     "gpt-5.2": {"context_window": 272_000, "max_output": 128_000},
-    "gpt-5-mini": {"context_window": 272_000, "max_output": 128_000},
-    "gpt-5-nano": {"context_window": 128_000, "max_output": 32_000},
     "gpt-5-chat-latest": {"context_window": 272_000, "max_output": 128_000},
     # GPT-4o family  
     "gpt-4o": {"context_window": 128_000, "max_output": 16_000},
@@ -316,11 +312,8 @@ MODEL_PRICING = {
     "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
     # GPT-5.6 family
     "gpt-5.6-luna": {"input": 0.20, "output": 1.20},  # per 2026-07-30 price cut (-80%)
-    "gpt-5": {"input": 1.25, "output": 10.00},
     "gpt-5.1": {"input": 1.25, "output": 10.00},
     "gpt-5.2": {"input": 1.25, "output": 10.00},
-    "gpt-5-mini": {"input": 0.25, "output": 2.00},
-    "gpt-5-nano": {"input": 0.05, "output": 0.40},
     "gpt-5-chat-latest": {"input": 1.25, "output": 10.00},
     # GPT-4o family (legacy)
     "gpt-4o": {"input": 2.50, "output": 10.00},
@@ -388,9 +381,6 @@ class ModelConfig:
         "gpt-5-chat-latest": "chat",
 
         # GPT-5 family (reasoning models)
-        "gpt-5": "reasoning",
-        "gpt-5-mini": "reasoning",
-        "gpt-5-nano": "reasoning",
         "gpt-5.4": "reasoning",
         "gpt-5.4-mini": "reasoning",
         "gpt-5.4-nano": "reasoning",
