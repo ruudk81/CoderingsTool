@@ -91,6 +91,9 @@ from .prompts_classifier import (
     # P3: Facet Review
     build_facet_review_prompt,
     FacetReviewResponse,
+    # P3a: Facet Review V2 (axis-first path)
+    build_facet_review_v2_prompt,
+    FacetReviewV2Response,
     # P4: Facet Assignment
     build_facet_assignment_prompt_single,
     FacetAssignmentResult,
@@ -1020,6 +1023,8 @@ class TaxonomyClassifier:
 
             p3r_tasks = []
             for name in sorted(partition_facets.keys()):
+                if name in self.axis_systems:
+                    continue
                 facets = partition_facets.get(name, [])
                 if name in drain or len(facets) < 2:
                     continue
@@ -1068,6 +1073,63 @@ class TaxonomyClassifier:
                         else:
                             print(f"      {name}: {c['reviewed']} facets reviewed, "
                                   f"{c['rewritten']} rewritten, {c['flagged']} flagged")
+
+            # Axis-first path (V2): widened mandate — rewrite AND restructure
+            # (merge/split) inside the domain's fixed axis system. Separate
+            # dispatch (different response model) sharing the same P3 model/
+            # cost-tracker window (_snap_p3r spans both paths).
+            p3r_v2_tasks = []
+            for name in sorted(self.axis_systems.keys()):
+                facets = partition_facets.get(name, [])
+                if len(facets) < 2:
+                    continue
+                p3r_v2_tasks.append({
+                    'domain_name': name,
+                    'facets': facets,
+                    'part_context': partition_contexts[name],
+                    'axis_system': self.axis_systems[name],
+                })
+
+            if p3r_v2_tasks:
+                if verbose:
+                    print(f"\n  Phase 3: Facet Review (axis-first)")
+
+                p3r_v2_requester = SmoothRequester(
+                    model=self._model_p3,
+                    phase_key="step4_p3_facet_review",
+                    num_tasks=len(p3r_v2_tasks),
+                    verbose=verbose,
+                    known_limits=self._fetched_limits,
+                    has_server_headers=self._fetched_has_headers,
+                    show_setup=False,
+                    quiet=True,
+                )
+                p3r_v2_results = await p3r_v2_requester.process_all(
+                    p3r_v2_tasks,
+                    self._p3_review_v2_prepare_fn(prompt_context),
+                    self._p3_review_v2_parse_fn(),
+                    self._p3_review_v2_fallback_fn(),
+                )
+
+                p3r_v2_domain_counts: Dict[str, Dict[str, int]] = {}
+                for task, response in zip(p3r_v2_tasks, p3r_v2_results):
+                    p3r_v2_domain_counts[task['domain_name']] = self._apply_p3_review_v2(
+                        task, response, consolidation_log,
+                    )
+
+                if verbose:
+                    s = p3r_v2_requester.stats
+                    print(f"    P3 review (axis-first): {len(p3r_v2_tasks)} tasks, "
+                          f"{time.time() - t_p3r:.1f}s ({s.get('tasks_successful', 0)} ok, "
+                          f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries)")
+                    for name in sorted(p3r_v2_domain_counts.keys()):
+                        c = p3r_v2_domain_counts[name]
+                        if c['failed']:
+                            print(f"      {name}: review failed (coverage/segment mismatch) — domain unchanged")
+                        else:
+                            print(f"      {name}: {c['reviewed']} facets reviewed, "
+                                  f"{c['rewritten']} rewritten, {c['merged']} merged, "
+                                  f"{c['split']} split")
 
             if self.cost_tracker and _snap_p3r is not None:
                 self.cost_tracker.record_phase(
@@ -2603,6 +2665,227 @@ class TaxonomyClassifier:
                 "facet_a": flag.facet_a, "facet_b": flag.facet_b, "reason": flag.reason,
             })
 
+        return counts
+
+    # =========================================================================
+    # PHASE 3a: PER-DOMAIN FACET REVIEW V2 (axis-first path, SmoothRequester)
+    # Widened mandate: rewrite AND restructure (merge/split) inside the
+    # domain's fixed axis system. Used only for domains with a validated P1a
+    # axis system; the §3 path above stays untouched for every other domain.
+    # =========================================================================
+
+    def _p3_review_v2_prepare_fn(self, prompt_context: PromptContext):
+        """Return prepare_fn closure for P3-review V2 (axis-first path)."""
+        def prepare_fn(task: Dict) -> Dict:
+            prompt = build_facet_review_v2_prompt(
+                survey_question=prompt_context.survey_question,
+                domain_label=task['domain_name'],
+                domain_definition=task['part_context'].partition_definition,
+                facets=task['facets'],
+            )
+
+            gate_key = f"qr_facet_review_v2_{task['domain_name']}"
+            if (self._prompt_printer is not None
+                    and gate_key not in self._captured_gates):
+                self._prompt_printer.capture_prompt(
+                    step_name="qualitative_researcher",
+                    utility_name="QualitativeResearcher",
+                    prompt_content=prompt,
+                    prompt_type="facet_review_v2",
+                    metadata={
+                        "model": self._model_p3,
+                        "temperature": 0.0,
+                        "max_tokens": self._max_tokens_consolidation,
+                        "language": prompt_context.language,
+                        "partition_name": task['domain_name'],
+                        "dimension_name": prompt_context.dimension_name,
+                    }
+                )
+                self._captured_gates.add(gate_key)
+
+            return {
+                'prompt': prompt,
+                'response_model': FacetReviewV2Response,
+                'temperature': 0.0,
+                'max_tokens': self._max_tokens_consolidation,
+                'max_retries': 3,
+                'extra_kwargs': get_reasoning_params(self._model_p3, phase="classifier_p3"),
+            }
+        return prepare_fn
+
+    def _p3_review_v2_parse_fn(self):
+        """Return parse_fn closure for P3-review V2 (axis-first path)."""
+        def parse_fn(task: Dict, response) -> Optional[FacetReviewV2Response]:
+            return response if response else None
+        return parse_fn
+
+    @staticmethod
+    def _p3_review_v2_fallback_fn():
+        """Return fallback_fn closure for P3-review V2. On failure the
+        domain's facets are left exactly as P2 produced them — never
+        silently emptied."""
+        def fallback_fn(task: Dict, reason: str) -> None:
+            return None
+        return fallback_fn
+
+    def _apply_p3_review_v2(
+        self,
+        task: Dict,
+        response: Optional[FacetReviewV2Response],
+        consolidation_log: List[Dict],
+    ) -> Dict[str, int]:
+        """Apply one domain's P3-review V2 in place (axis-first path).
+        Mandate is widened: rewrite, merge and split are all free, as long
+        as every output stays inside the domain's fixed axis system.
+
+        Two fail-closed guards, either of which leaves the domain's facets
+        untouched and logs `facet_review_failed` with the diff:
+        1. Multiset coverage of `source_facets` vs. the domain's input facet
+           names (`_norm_text`): every input facet must be claimed by at
+           least one output, and no output may claim a name outside the
+           domain's facet set. Coverage, not strict equality — a split
+           legitimately claims one source across several outputs, which a
+           plain Counter `!=` check would misreport as an "extra" mismatch.
+        2. Segment validity: every output's (axis_name, segment_name) must
+           resolve against the domain's validated axis system.
+
+        On success, the domain's facet list is rebuilt in place (pre-
+        assignment: nothing references facet names yet, same argument as
+        V1). Each output's action is classified by its own source_facets
+        (merge: >1 source; split: 1 source also claimed by another output;
+        rename/redescribe: 1 source, claimed nowhere else) and logged as
+        `facet_review_v2_rewrite` / `_merge` / `_split`. A merged facet
+        reuses the FIRST source's refinement axis (refinement is fixed at
+        P2, positions are re-validated in P5/P6 anyway); each split leg
+        carries its single source's refinement unchanged. Both cases log
+        `facet_review_v2_refinement_carried` so the choice is visible in the
+        trail; a plain rename does not, since nothing was decided.
+        """
+        domain = task['domain_name']
+        facets: List[DiscoveredFacet] = task['facets']  # same list object as partition_facets[domain]
+        axis_system: AxisSystemResponse = task['axis_system']
+        counts = {'reviewed': len(facets), 'rewritten': 0, 'merged': 0, 'split': 0, 'failed': 0}
+
+        if response is None or not response.facets:
+            consolidation_log.append({
+                "action": "facet_review_failed", "domain": domain,
+                "note": "no response",
+            })
+            counts['failed'] = 1
+            return counts
+
+        by_norm: Dict[str, DiscoveredFacet] = {self._norm_text(f.facet_name): f for f in facets}
+
+        # Guard 1: multiset coverage. Every input facet claimed by >=1
+        # output; no output may claim a name outside the domain's facet set.
+        # Per-output dedup before flattening: a name repeated within a
+        # single output's own source_facets counts once toward coverage.
+        usage: Counter = Counter()
+        for out in response.facets:
+            for name in {self._norm_text(s) for s in out.source_facets}:
+                usage[name] += 1
+
+        missing = sorted(name for name in by_norm if usage.get(name, 0) == 0)
+        extra = sorted(name for name in usage if name not in by_norm)
+        if missing or extra:
+            consolidation_log.append({
+                "action": "facet_review_failed", "domain": domain,
+                "missing": missing, "extra": extra,
+            })
+            counts['failed'] = 1
+            return counts
+
+        # Guard 2: segment validity. Every output's (axis, segment) must
+        # exist in the domain's fixed axis system.
+        valid_segments = {
+            (self._norm_text(axis.axis_name), self._norm_text(seg.segment_name))
+            for axis in axis_system.axes
+            for seg in axis.segments
+        }
+        invalid = [
+            f"{out.facet_name}: ({out.axis_name}, {out.segment_name})"
+            for out in response.facets
+            if (self._norm_text(out.axis_name), self._norm_text(out.segment_name)) not in valid_segments
+        ]
+        if invalid:
+            consolidation_log.append({
+                "action": "facet_review_failed", "domain": domain,
+                "note": "invalid (axis, segment) tag", "invalid": invalid,
+            })
+            counts['failed'] = 1
+            return counts
+
+        # Build the rebuilt facet list, classifying each output by its own
+        # source_facets against `usage` (computed above).
+        new_facets: List[DiscoveredFacet] = []
+        split_legs: Dict[str, List[Dict]] = {}  # norm(source name) -> resulting legs, for one log entry per split
+
+        for out in response.facets:
+            norm_sources = [self._norm_text(s) for s in out.source_facets]
+            source_objs = [by_norm[n] for n in dict.fromkeys(norm_sources)]  # dedup, preserve order
+
+            new_facet = DiscoveredFacet(
+                facet_name=out.facet_name,
+                facet_description=out.facet_description,
+                example_observations=self._round_robin_examples(source_objs, limit=5),
+                boundary_test=out.boundary,
+                axis=out.axis_name,
+                segment=out.segment_name,
+                refinement=dict(source_objs[0].refinement),
+            )
+            new_facets.append(new_facet)
+
+            if len(source_objs) > 1:
+                counts['merged'] += 1
+                consolidation_log.append({
+                    "action": "facet_review_v2_merge", "domain": domain,
+                    "sources": [s.facet_name for s in source_objs],
+                    "result": out.facet_name,
+                })
+                consolidation_log.append({
+                    "action": "facet_review_v2_refinement_carried", "domain": domain,
+                    "facet": out.facet_name, "from_source": source_objs[0].facet_name,
+                    "note": "merged facet reuses first source's refinement axis",
+                })
+            elif usage[norm_sources[0]] > 1:
+                counts['split'] += 1
+                split_legs.setdefault(norm_sources[0], []).append({
+                    "facet_name": out.facet_name, "axis": out.axis_name, "segment": out.segment_name,
+                })
+                consolidation_log.append({
+                    "action": "facet_review_v2_refinement_carried", "domain": domain,
+                    "facet": out.facet_name, "from_source": source_objs[0].facet_name,
+                    "note": "split facet carries source's refinement axis",
+                })
+            else:
+                source = source_objs[0]
+                before = {
+                    "facet_name": source.facet_name, "facet_description": source.facet_description,
+                    "axis": source.axis, "segment": source.segment,
+                }
+                changed = (out.facet_name != source.facet_name
+                           or out.facet_description != source.facet_description
+                           or out.axis_name != source.axis
+                           or out.segment_name != source.segment
+                           or out.boundary != source.boundary_test)
+                if changed:
+                    counts['rewritten'] += 1
+                    consolidation_log.append({
+                        "action": "facet_review_v2_rewrite", "domain": domain,
+                        "before": before,
+                        "after": {
+                            "facet_name": new_facet.facet_name, "facet_description": new_facet.facet_description,
+                            "axis": new_facet.axis, "segment": new_facet.segment,
+                        },
+                    })
+
+        for norm_name, legs in split_legs.items():
+            consolidation_log.append({
+                "action": "facet_review_v2_split", "domain": domain,
+                "source": by_norm[norm_name].facet_name, "results": legs,
+            })
+
+        facets[:] = new_facets
         return counts
 
     # =========================================================================

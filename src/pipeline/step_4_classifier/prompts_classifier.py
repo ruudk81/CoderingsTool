@@ -10,6 +10,8 @@ Organized in pipeline processing order:
   §2a  Segment Facet Consolidation (P2, axis-first: per (axis, segment),
        plus each facet's refinement axis)
   §3   Facet Review (P3: per-domain quality gate)
+  §3a  Facet Review V2 (P3-review, axis-first: widened mandate — rewrite,
+       merge and split inside the fixed axis system)
   §4   Facet Assignment (P4: per-domain, batched)
   §5   Attribute Discovery (P5: per facet within domain)
   §6   Attribute Chunk Consolidation (P6: merge chunk-level attributes)
@@ -935,6 +937,142 @@ class FacetReviewResponse(BaseModel):
     )
     overlap_flags: List[FacetOverlapFlag] = Field(
         ..., description="Pairs of facets that still appear to capture the same concept after rewriting"
+    )
+
+
+# =============================================================================
+# §3a FACET REVIEW V2 (P3-review, axis-first path) — widened mandate: rewrite
+# AND restructure (merge/split) a domain's facets, but only inside its fixed
+# axis system. Used only for domains that got a validated axis system from
+# P1a (axis_first_enabled); domains without one keep the §3 path above
+# untouched.
+# =============================================================================
+
+def _build_domain_structure_block(facets: List[DiscoveredFacet]) -> str:
+    """Render a domain's full consolidated structure for P3-review (V2): one
+    'Axis: name' group per axis, each holding its segments, and per segment
+    the facet that occupies it (name, description, boundary) plus that
+    facet's refinement axis and positions. Built entirely from the facets'
+    own axis/segment/boundary_test/refinement fields — P2 already
+    denormalized the segment boundary onto boundary_test, so no separate
+    axis-system object is needed here. Axes and segments are grouped in
+    first-seen (facet list) order, not sorted."""
+    by_axis: Dict[str, List[DiscoveredFacet]] = {}
+    for f in facets:
+        by_axis.setdefault(f.axis, []).append(f)
+
+    axis_blocks = []
+    for axis_name, axis_facets in by_axis.items():
+        lines = [f"Axis: {axis_name}"]
+        for f in axis_facets:
+            lines.append(f"  Segment: {f.segment}")
+            lines.append(f"    Boundary: {f.boundary_test}")
+            lines.append(f"    Facet: {f.facet_name} — {f.facet_description}")
+            refinement = f.refinement or {}
+            positions = refinement.get("positions", [])
+            if refinement:
+                lines.append(
+                    f"    Refinement axis: {refinement.get('name', '')} — "
+                    f"{refinement.get('description', '')}"
+                )
+                non_residual = [p for p in positions if not p.get("is_residual")]
+                residual = [p for p in positions if p.get("is_residual")]
+                for p in non_residual + residual:
+                    suffix = " (residual)" if p.get("is_residual") else ""
+                    lines.append(
+                        f"      - {p.get('position_name', '')}{suffix}: "
+                        f"{p.get('position_description', '')}"
+                    )
+                    lines.append(f"        Boundary: {p.get('boundary', '')}")
+        axis_blocks.append("\n".join(lines))
+    return "\n\n".join(axis_blocks)
+
+
+def build_facet_review_v2_prompt(
+    *,
+    survey_question: str,
+    domain_label: str,
+    domain_definition: str,
+    facets: List[DiscoveredFacet],
+) -> str:
+    """Review and, where needed, restructure a domain's consolidated facet
+    set inside its fixed axis system (P3-review, V2 / axis-first path)."""
+    domain_structure_block = _build_domain_structure_block(facets)
+
+    return f"""You are a taxonomy quality reviewer for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Domain under review: {domain_label} — {domain_definition}
+
+Below is the domain's full consolidated structure: the axis system, and per
+segment its facet with refinement axis and positions. Assignment has not
+happened yet: restructuring is free, but everything must stay inside the axis
+system.
+
+<structure>
+{domain_structure_block}
+</structure>
+
+Your task, judging from the survey question:
+1. Verify that every facet occupies exactly one segment and that no two
+   facets capture the same concept. Where they do: merge them (list both
+   under source_facets). Where one facet straddles two segments: split it
+   (same source facet in two outputs, each on its own segment).
+2. Sharpen names, descriptions and segment boundaries so the distinction
+   between every pair of facets is explicit in the text itself.
+3. Return the complete revised facet set. Every input facet must appear in
+   source_facets of exactly the outputs that absorb it — unaccounted or
+   double-counted facets invalidate the review.
+
+Rules:
+- The axis system itself is fixed: you may not add, remove or rename axes or
+  segments (flag structural doubts in prose via the reason fields instead).
+- Descriptive wording only.
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class ReviewedFacetV2(BaseModel):
+    """A single facet in the reviewed, possibly restructured, output set
+    (P3-review V2 / axis-first path). Merge = several sources, one output.
+    Split = the same source facet appearing across several outputs, each on
+    its own valid (axis, segment). Rename/redescribe = one source, one
+    output."""
+    facet_name: str = Field(
+        ..., description="Facet name, sharpened where needed"
+    )
+    facet_description: str = Field(
+        ..., description="Facet description, reformulated for orthogonality"
+    )
+    axis_name: str = Field(
+        ..., description="Name of the axis this facet occupies — must exist in the domain's fixed axis system"
+    )
+    segment_name: str = Field(
+        ..., description="Name of the segment on that axis this facet occupies — must exist on that axis"
+    )
+    boundary: str = Field(
+        ..., description="One routing sentence for the doubtful case, phrased against a named sibling facet"
+    )
+    source_facets: List[str] = Field(
+        ..., description=(
+            "Every input facet that goes into this output, by facet_name "
+            "(merge: several distinct sources; split: the same source facet "
+            "listed under several outputs, each on its own segment). Every "
+            "input facet must appear in source_facets of exactly the "
+            "outputs that absorb it"
+        )
+    )
+
+
+class FacetReviewV2Response(BaseModel):
+    """P3-review output (V2 / axis-first path): the domain's complete
+    revised facet set — rewrites, merges and splits, all inside the fixed
+    axis system."""
+    facets: List[ReviewedFacetV2] = Field(
+        ..., description="The domain's complete revised facet set"
     )
 
 
