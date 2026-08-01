@@ -20,6 +20,8 @@ Organized in pipeline processing order:
   §6a  Per-Position Attribute Consolidation (P6, axis-first: per position,
        plus adjudication of new-position proposals)
   §7   Attribute Review (P7: per-domain quality gate on the consolidated attribute set)
+  §7a  Attribute Review V2 (P7-review, axis-first: widened mandate — rewrite,
+       merge and split inside each facet's fixed refinement axis)
   §8   Attribute Assignment (P8: per facet)
   §9   In-Facet Attribute Consolidation (P9: post-assignment, one facet at a time)
 """
@@ -2040,6 +2042,141 @@ class AttributeReviewResponse(BaseModel):
     )
     overlap_flags: List[AttributeOverlapFlag] = Field(
         ..., description="Pairs of attributes that still appear to capture the same concept after rewriting"
+    )
+
+
+# =============================================================================
+# §7a ATTRIBUTE REVIEW V2 (P7-review, axis-first path) — widened mandate:
+# rewrite AND restructure (merge/split) a domain's attributes, but only
+# within their own facet's fixed refinement axis. Used only for domains with
+# a validated P1a axis system; the §7 path above stays untouched for every
+# other domain.
+# =============================================================================
+
+def _build_domain_attribute_structure_block(
+    facets: List[DiscoveredFacet],
+    facet_attributes: Dict[str, List[DiscoveredAttribute]],
+) -> str:
+    """Render a domain's full facet+attribute structure for P7-review (V2):
+    per facet its segment/axis, its refinement axis and positions, and per
+    position the attributes tagged to it (residual position last, mirroring
+    `_build_refinement_axis_block`). Built from the facets' own
+    axis/segment/refinement fields (as `_build_domain_structure_block` does
+    for P3-review) plus each attribute's `position` field set by P6."""
+    blocks = []
+    for f in facets:
+        lines = [f"Facet: {f.facet_name} — {f.facet_description} (segment: {f.segment} of {f.axis})"]
+        refinement = f.refinement or {}
+        lines.append(
+            f"  Refinement axis: {refinement.get('name', '')} — {refinement.get('description', '')}"
+        )
+        positions = refinement.get("positions", [])
+        non_residual = [p for p in positions if not p.get("is_residual")]
+        residual = [p for p in positions if p.get("is_residual")]
+        attrs = facet_attributes.get(f.facet_name, [])
+        for p in non_residual + residual:
+            suffix = " (residual)" if p.get("is_residual") else ""
+            lines.append(f"    [{p.get('position_name', '')}]{suffix}: {p.get('boundary', '')}")
+            for attr in attrs:
+                if attr.position == p.get("position_name", ""):
+                    lines.append(f"      - {attr.attribute_name}: {attr.attribute_description}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def build_attribute_review_v2_prompt(
+    *,
+    survey_question: str,
+    domain_label: str,
+    domain_definition: str,
+    facets: List[DiscoveredFacet],
+    facet_attributes: Dict[str, List[DiscoveredAttribute]],
+) -> str:
+    """Review and, where needed, restructure a domain's consolidated
+    attribute set inside each facet's fixed refinement axis (P7-review, V2 /
+    axis-first path)."""
+    domain_attribute_structure_block = _build_domain_attribute_structure_block(
+        facets, facet_attributes
+    )
+
+    return f"""You are a taxonomy quality reviewer for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Domain under review: {domain_label} — {domain_definition}
+
+Below is the domain's full consolidated structure: per facet its segment, its
+refinement axis and its attributes on their positions. Assignment has not
+happened yet: restructuring is free, but everything must stay inside the
+refinement axes.
+
+<structure>
+{domain_attribute_structure_block}
+</structure>
+
+Your task, judging from the survey question:
+1. Verify that every attribute occupies exactly one position of its facet's
+   refinement axis and that no two attributes inside a facet capture the same
+   concept. Where they do: merge them (list both under source_attributes).
+   Where one attribute straddles two positions: split it.
+2. Sharpen names, descriptions and position boundaries so every pair of
+   attributes reads as two different concepts.
+3. Where two attributes in DIFFERENT facets of this domain appear to capture
+   the same concept, keep both and flag the pair with a reason and a
+   decision_rule — those are resolved later with assignment data.
+4. Return the complete revised attribute set with full source_attributes
+   bookkeeping; unaccounted or double-counted attributes invalidate the
+   review.
+
+Rules:
+- Facets, segments and refinement axes are fixed context; you restructure
+  attributes only, and only within their own facet.
+- Descriptive wording only.
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class ReviewedAttributeV2(BaseModel):
+    """A single attribute in the reviewed, possibly restructured, output set
+    (P7-review V2 / axis-first path). Merge = several sources, one output,
+    same facet. Split = the same source attribute appearing across several
+    outputs, each on its own valid position, same facet. Rename/redescribe =
+    one source, one output. Restructuring across facets is forbidden — a
+    source may only be claimed by outputs of its own facet."""
+    attribute_name: str = Field(
+        ..., description="Attribute name, sharpened where needed"
+    )
+    attribute_description: str = Field(
+        ..., description="Attribute description, reformulated for orthogonality"
+    )
+    facet_name: str = Field(
+        ..., description="Name of the facet this attribute belongs to — must exist in this domain; sources may only come from this same facet"
+    )
+    position_name: str = Field(
+        ..., description="Name of the position on that facet's refinement axis this attribute occupies — must exist on that facet's refinement axis"
+    )
+    source_attributes: List[str] = Field(
+        ..., description=(
+            "Every input attribute that goes into this output, by attribute_name, "
+            "all from this same facet (merge: several distinct sources; split: "
+            "the same source attribute listed under several outputs, each on its "
+            "own position of this facet). Every input attribute must appear in "
+            "source_attributes of exactly the outputs that absorb it"
+        )
+    )
+
+
+class AttributeReviewV2Response(BaseModel):
+    """P7-review output (V2 / axis-first path): the domain's complete
+    revised attribute set — rewrites, merges and splits, each staying inside
+    its facet's fixed refinement axis — plus any cross-facet overlap flags."""
+    attributes: List[ReviewedAttributeV2] = Field(
+        ..., description="The domain's complete revised attribute set"
+    )
+    overlap_flags: List[AttributeOverlapFlag] = Field(
+        ..., description="Pairs of attributes in different facets of this domain that appear to capture the same concept"
     )
 
 
