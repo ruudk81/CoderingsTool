@@ -9,11 +9,9 @@ attribute discovery → attribute assignment → in-facet consolidation (P5b).
 Always runs the full taxonomy pipeline (P1-P6 + P5b).
 """
 import sys
-import io
 import json
 from pathlib import Path
 from typing import List, Optional, Dict
-from datetime import datetime
 
 # Add parent paths for imports
 project_root = Path(__file__).parent.parent.parent.parent
@@ -35,6 +33,7 @@ from identity import ensure_taxonomy_ids, restamp_assignment_ids
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 from utils.costTracker import CostTracker
+from utils.saveVerbose import VerboseCapture
 
 # Import step_4_classifier components
 from pipeline.step_4_classifier_experiment.config_classifier import CategoriesConfig
@@ -220,54 +219,6 @@ def print_taxonomy_results(
     print(f"  Attributes (P4):         {total_attributes}")
     print(f"  Ideas with attrs (P6):  {total_attr_assigned}")
     print(f"{'='*80}\n")
-
-
-# =============================================================================
-# OUTPUT CAPTURE
-# =============================================================================
-
-class TeeOutput:
-    """Capture stdout while also printing to console."""
-
-    def __init__(self, original_stdout):
-        self.original_stdout = original_stdout
-        self.buffer = io.StringIO()
-
-    def write(self, text):
-        self.original_stdout.write(text)
-        self.buffer.write(text)
-
-    def flush(self):
-        self.original_stdout.flush()
-
-    def get_output(self) -> str:
-        return self.buffer.getvalue()
-
-
-def save_results_to_file(
-    output: str,
-    filename: str,
-    variable: str,
-    sample_size: Optional[int],
-) -> Path:
-    """Save results to a text file."""
-    output_dir = project_root / "exports" / "verbose_logs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    base_name = Path(filename).stem.replace(" ", "_")
-    sample_str = str(sample_size) if sample_size else "full"
-    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    output_filename = (
-        f"{base_name}_{variable}_{sample_str}"
-        f"_step4_{date_str}.txt"
-    )
-    output_path = output_dir / output_filename
-
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(output)
-
-    return output_path
 
 
 # =============================================================================
@@ -717,13 +668,14 @@ def _print_final_taxonomy(tax_cache, use_corrected):
 
 
 if __name__ == "__main__":
-    # Capture all output while also printing to console
-    tee = TeeOutput(sys.stdout)
-    sys.stdout = tee
+    with VerboseCapture(
+        filename=FILENAME,
+        var_name=VARIABLE,
+        sample_size=SAMPLE_SIZE,
+        step=4,
+    ):
+        token_tracker.reset()
 
-    token_tracker.reset()
-
-    try:
         # force_recalc=True: with production cache keys a valid taxonomy is
         # already present, so a bare run would skip P1-P6 entirely.
         partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer = run_taxonomy(force_recalc=True)
@@ -731,18 +683,5 @@ if __name__ == "__main__":
         # Print token usage
         if token_tracker.call_count > 0:
             print(token_tracker.get_summary())
-
-    finally:
-        sys.stdout = tee.original_stdout
-
-    # Save full verbose report
-    output_path = save_results_to_file(
-        output=tee.get_output(),
-        filename=FILENAME,
-        variable=VARIABLE,
-        sample_size=SAMPLE_SIZE
-    )
-    print(f"\n{'='*70}")
-    print(f"Results saved to: {output_path}")
 
 # %%

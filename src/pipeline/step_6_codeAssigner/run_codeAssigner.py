@@ -9,10 +9,8 @@ No RUN_MODE — always runs P10.
 """
 
 import sys
-import io
 from pathlib import Path
 from typing import List, Optional, Dict
-from datetime import datetime
 
 # Add parent paths for imports
 project_root = Path(__file__).parent.parent.parent.parent
@@ -23,6 +21,7 @@ from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 from utils.costTracker import CostTracker
+from utils.saveVerbose import VerboseCapture
 
 # Import step_6_codeAssigner components
 from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig
@@ -212,54 +211,6 @@ def print_assignment_results(assigned_results):
 
 
 # =============================================================================
-# OUTPUT CAPTURE
-# =============================================================================
-
-class TeeOutput:
-    """Capture stdout while also printing to console."""
-
-    def __init__(self, original_stdout):
-        self.original_stdout = original_stdout
-        self.buffer = io.StringIO()
-
-    def write(self, text):
-        self.original_stdout.write(text)
-        self.buffer.write(text)
-
-    def flush(self):
-        self.original_stdout.flush()
-
-    def get_output(self) -> str:
-        return self.buffer.getvalue()
-
-
-def save_results_to_file(
-    output: str,
-    filename: str,
-    variable: str,
-    sample_size: Optional[int],
-) -> Path:
-    """Save results to a text file."""
-    output_dir = project_root / "exports" / "verbose_logs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    base_name = Path(filename).stem.replace(" ", "_")
-    sample_str = str(sample_size) if sample_size else "full"
-    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    output_filename = (
-        f"{base_name}_{variable}_{sample_str}"
-        f"_step6_assignment_{date_str}.txt"
-    )
-    output_path = output_dir / output_filename
-
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(output)
-
-    return output_path
-
-
-# =============================================================================
 # CODE ASSIGNMENT
 # =============================================================================
 
@@ -429,29 +380,18 @@ def run_assignment(filename: str = FILENAME, var_name: str = VARIABLE,
 # =============================================================================
 
 if __name__ == "__main__":
-    tee = TeeOutput(sys.stdout)
-    sys.stdout = tee
+    with VerboseCapture(
+        filename=FILENAME,
+        var_name=VARIABLE,
+        sample_size=SAMPLE_SIZE,
+        step=6,
+    ):
+        token_tracker.reset()
 
-    token_tracker.reset()
-
-    try:
         result = run_assignment()
 
         # Print token usage
         if token_tracker.call_count > 0:
             print(token_tracker.get_summary())
-
-    finally:
-        sys.stdout = tee.original_stdout
-
-    # Save full verbose report
-    output_path = save_results_to_file(
-        output=tee.get_output(),
-        filename=FILENAME,
-        variable=VARIABLE,
-        sample_size=SAMPLE_SIZE
-    )
-    print(f"\n{'='*70}")
-    print(f"Results saved to: {output_path}")
 
 # %%
