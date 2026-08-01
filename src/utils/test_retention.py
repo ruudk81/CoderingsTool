@@ -33,7 +33,7 @@ def test_rule_outside_exports_raises(tmp_path):
 def test_entries_sorted_newest_first(tmp_path):
     _maak(tmp_path, "exports/logs/oud.txt", mtime=1000)
     _maak(tmp_path, "exports/logs/nieuw.txt", mtime=2000)
-    namen = [p.name for p in resolve_entries(RetentionRule("exports/logs/*"), tmp_path)]
+    namen = [e.path.name for e in resolve_entries(RetentionRule("exports/logs/*"), tmp_path)]
     assert namen == ["nieuw.txt", "oud.txt"]
 
 
@@ -50,7 +50,7 @@ def test_max_entries_keeps_newest(tmp_path):
         _maak(tmp_path, f"exports/logs/l{i}.txt", mtime=1000 + i)
     regel = RetentionRule("exports/logs/*", max_entries=2)
     entries = resolve_entries(regel, tmp_path)
-    weg = [p.name for p in select_for_removal(entries, regel)]
+    weg = [e.path.name for e in select_for_removal(entries, regel)]
     assert weg == ["l2.txt", "l1.txt", "l0.txt"]
 
 
@@ -60,7 +60,7 @@ def test_max_mb_counts_cumulative(tmp_path):
         _maak(tmp_path, f"exports/big/b{i}.bin", grootte=mb, mtime=1000 + i)
     regel = RetentionRule("exports/big/*", max_mb=2)
     entries = resolve_entries(regel, tmp_path)
-    weg = [p.name for p in select_for_removal(entries, regel)]
+    weg = [e.path.name for e in select_for_removal(entries, regel)]
     assert weg == ["b1.bin", "b0.bin"]
 
 
@@ -113,7 +113,7 @@ def test_ceiling_may_be_exceeded_by_protected_entries(tmp_path):
 
     regel = RetentionRule("exports/logs/*", max_entries=1)
     entries = resolve_entries(regel, tmp_path)
-    weg = [p.name for p in select_for_removal(entries, regel, now=nu)]
+    weg = [e.path.name for e in select_for_removal(entries, regel, now=nu)]
 
     assert weg == ["oud.txt"]
 
@@ -130,20 +130,42 @@ def test_protected_entries_count_toward_the_ceiling(tmp_path):
 
     regel = RetentionRule("exports/logs/*", max_entries=2)
     entries = resolve_entries(regel, tmp_path)
-    weg = [p.name for p in select_for_removal(entries, regel, now=nu)]
+    weg = [e.path.name for e in select_for_removal(entries, regel, now=nu)]
 
     assert weg == ["oud2.txt", "oud3.txt"]
 
 
 def test_trash_deletes_instead_of_recursing(tmp_path):
     """De prullenbak is de laatste schakel: wat daar buiten het plafond valt
-    gaat echt weg, en belandt niet in een prullenbak binnen de prullenbak."""
+    gaat echt weg, en belandt niet in een prullenbak binnen de prullenbak.
+    Gebruikt de mappenstructuur die move_to_trash zelf aanmaakt."""
+    import time
+    oud = time.time() - 60 * 86400
     for i in range(3):
-        _maak(tmp_path, f"exports/_prullenbak/oud{i}.txt", mtime=1000 + i)
-    regels = [RetentionRule("exports/_prullenbak/*", max_entries=1)]
+        _maak(tmp_path, f"exports/_prullenbak/logs/oud{i}.txt", mtime=oud + i)
+    regels = [RetentionRule("exports/_prullenbak/**/*", max_entries=1)]
 
     run(tmp_path, regels, apply=True)
 
-    assert (tmp_path / "exports/_prullenbak/oud2.txt").exists()
-    assert not (tmp_path / "exports/_prullenbak/oud0.txt").exists()
+    assert (tmp_path / "exports/_prullenbak/logs/oud2.txt").exists()
+    assert not (tmp_path / "exports/_prullenbak/logs/oud0.txt").exists()
     assert not (tmp_path / "exports/_prullenbak/_prullenbak").exists()
+
+
+def test_newest_entry_survives_a_tiny_max_mb(tmp_path):
+    """Een plafond kleiner dan het nieuwste bestand mag niet de hele map wissen."""
+    import time
+    mb, oud = 1024 * 1024, time.time() - 60 * 86400
+    _maak(tmp_path, "exports/big/nieuw.bin", grootte=5 * mb, mtime=oud + 10)
+    _maak(tmp_path, "exports/big/oud.bin", grootte=1 * mb, mtime=oud)
+    regel = RetentionRule("exports/big/*", max_mb=2)
+    weg = [e.path.name for e in select_for_removal(resolve_entries(regel, tmp_path), regel)]
+    assert weg == ["oud.bin"]
+
+
+def test_rule_validated_even_when_glob_matches_nothing(tmp_path):
+    """Een foute regel moet stoppen vóórdat er iets verplaatst wordt, ook als
+    de glob toevallig niets matcht (en de per-entry-controle dus niet afgaat)."""
+    regel = RetentionRule("data/cache/*", max_entries=1)
+    with pytest.raises(RetentionError, match="buiten exports"):
+        run(tmp_path, [regel], apply=False)

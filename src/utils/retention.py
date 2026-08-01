@@ -1,16 +1,21 @@
 """
 retention.py - Plafonds op exports/, met een prullenbak.
 
-Eén primitief: een regel is een glob plus een plafond. De entries worden
-gesorteerd op mtime (nieuwste eerst) en van boven naar beneden opgeteld; zodra
-een plafond wordt overschreden gaat alles vanaf die entry naar
-exports/_prullenbak/. De nieuwste blijven dus altijd staan.
+Eén primitief: een regel is een glob plus een plafond. De entries (bestanden;
+mappen worden overgeslagen) worden één keer opgemeten — pad, mtime, omvang —
+en vervolgens gesorteerd op mtime (nieuwste eerst) en van boven naar beneden
+opgeteld. Zodra een plafond wordt overschreden gaat alles vanaf die entry naar
+exports/_prullenbak/. De nieuwste blijft altijd staan, ook als hij zelf al het
+plafond overschrijdt: het plafond accepteert liever een overschrijding dan dat
+het de hele map leegveegt.
 
 Boven op het plafond ligt één bodem: alles binnen PROTECT_DAYS blijft hoe dan
 ook staan, ook als het plafond daardoor wordt overschreden.
 
-Veiligheidsinvariant: elk pad dat dit script aanraakt ligt onder exports/. Er
-wordt nergens een map geïnventariseerd die niet in RULES staat.
+Veiligheidsinvariant: elk pad dat dit script aanraakt ligt onder exports/. Een
+regel wordt getoetst vóórdat er iets verplaatst wordt (tekstueel, op de glob
+zelf) én per gevonden entry (op het geresolvede pad, dus ook tegen symlinks en
+'..'). Er wordt nergens een map geïnventariseerd die niet in RULES staat.
 
 Aanroep vanuit src/:
     python -m utils.retention              # dry-run
@@ -32,7 +37,11 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPORTS_DIRNAME = "exports"
 TRASH_DIRNAME = "_prullenbak"
-LOG_NAME = "retention.log"
+
+# Ligt bewust direct onder exports/, niet onder exports/_prullenbak/: dat valt
+# onder de bak-regel, en het script mag zijn eigen audit-spoor niet kunnen
+# wissen door zijn eigen retentie op zichzelf toe te passen.
+LOG_PATH = Path(EXPORTS_DIRNAME) / "retention.log"
 
 # =============================================================================
 # REGELS — pas deze aan vlak vóór een run
@@ -62,13 +71,28 @@ class RetentionRule:
     max_mb: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class Entry:
+    """Eén meting van één bestand: pad, mtime en omvang in bytes.
+
+    resolve_entries meet dit één keer per bestand. select_for_removal leest
+    daarna nergens opnieuw van disk — zou dat wel gebeuren, dan zou een
+    bestand dat tussen de twee stappen in wordt aangeraakt (bijvoorbeeld de
+    pipeline die naar verbose_logs/ schrijft terwijl dit gereedschap draait)
+    de beschermingsaanname kunnen omzeilen.
+    """
+    path: Path
+    mtime: float
+    size: int
+
+
 RULES: list[RetentionRule] = [
-    RetentionRule("exports/verbose_logs/*", max_entries=None, max_mb=None),
-    RetentionRule("exports/prompts/*",      max_entries=None, max_mb=None),
-    RetentionRule("exports/codebook/*",     max_entries=None, max_mb=None),
-    RetentionRule("exports/coderingen/*",   max_entries=None, max_mb=None),
-    RetentionRule("exports/costs/*",        max_entries=None, max_mb=None),
-    RetentionRule("exports/_prullenbak/*",  max_entries=None, max_mb=None),
+    RetentionRule("exports/verbose_logs/*",    max_entries=None, max_mb=None),
+    RetentionRule("exports/prompts/*",         max_entries=None, max_mb=None),
+    RetentionRule("exports/codebook/*",        max_entries=None, max_mb=None),
+    RetentionRule("exports/coderingen/*",      max_entries=None, max_mb=None),
+    RetentionRule("exports/costs/*",           max_entries=None, max_mb=None),
+    RetentionRule("exports/_prullenbak/**/*",  max_entries=None, max_mb=None),
 ]
 
 # Bewust niet beheerd: exports/adhoc/, exports/diagnostics/,
@@ -79,40 +103,63 @@ class RetentionError(Exception):
     """Een regel wijst buiten exports/, of een verplaatsing mislukte."""
 
 
-def entry_size(path: Path) -> int:
-    """Omvang in bytes; voor een map de som van alle bestanden erin."""
-    if path.is_dir():
-        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
-    return path.stat().st_size
+def _valideer_regel(rule: RetentionRule) -> None:
+    """Tekstuele voorcontrole, vóór er iets verplaatst wordt.
+
+    Een regel die niets matcht (een lege map, een tikfout) glipt anders door
+    de per-entry-controle in resolve_entries heen — die gaat pas af op een
+    gevonden entry. Deze controle raakt elke regel aan vóórdat regel 1 al iets
+    verplaatst heeft; de per-entry-controle blijft daarnaast bestaan, want die
+    vangt wat een tekstuele check niet ziet: symlinks en '..'.
+    """
+    if not rule.glob.startswith(f"{EXPORTS_DIRNAME}/"):
+        raise RetentionError(
+            f"regel {rule.glob!r} wijst buiten exports/ "
+            f"(moet beginnen met '{EXPORTS_DIRNAME}/')")
 
 
-def resolve_entries(rule: RetentionRule, root: Path) -> list[Path]:
+def resolve_entries(rule: RetentionRule, root: Path) -> list[Entry]:
     """De entries van een regel, nieuwste eerst.
 
-    Toetst elke entry aan de invariant. Ligt er één buiten exports/, dan stopt
-    het script — een genegeerde regel is een regel die je niet opmerkt.
+    Toetst elke gevonden entry aan de invariant (elk pad ligt onder exports/).
+    Ligt er één buiten, dan stopt het script — een genegeerde regel is een
+    regel die je niet opmerkt. Mappen worden overgeslagen: alleen bestanden
+    worden een Entry. Dat voorkomt dat de gespiegelde submappen die
+    move_to_trash zelf binnen _prullenbak/ aanmaakt (waarvan de mtime bij elke
+    verplaatsing ververst) als permanent-beschermde entries meetellen.
     """
     exports = (root / EXPORTS_DIRNAME).resolve()
-    entries = sorted(root.glob(rule.glob), key=lambda p: p.stat().st_mtime,
-                     reverse=True)
-    for entry in entries:
-        if not entry.resolve().is_relative_to(exports):
+    entries: list[Entry] = []
+    for pad in root.glob(rule.glob):
+        if not pad.resolve().is_relative_to(exports):
             raise RetentionError(
-                f"regel {rule.glob!r} wijst buiten exports/: {entry}")
+                f"regel {rule.glob!r} wijst buiten exports/: {pad}")
+        if not pad.is_file():
+            continue
+        stat = pad.stat()
+        entries.append(Entry(path=pad, mtime=stat.st_mtime, size=stat.st_size))
+    entries.sort(key=lambda e: e.mtime, reverse=True)
     return entries
 
 
 def select_for_removal(
-    entries: list[Path],
+    entries: list[Entry],
     rule: RetentionRule,
     now: Optional[float] = None,
-) -> list[Path]:
+) -> list[Entry]:
     """De entries die weg mogen: alles voorbij het strengste plafond.
 
     Entries binnen PROTECT_DAYS worden nooit geselecteerd, ook niet als het
     plafond daardoor wordt overschreden. Ze tellen wel mee voor dat plafond.
-    Omdat de lijst op mtime is gesorteerd vormen ze altijd het begin van de rij,
-    dus een `break` na de eerste onbeschermde entry slaat er nooit één over.
+    Dezelfde bodem geldt voor de allereerste (nieuwste) entry: die blijft
+    altijd staan, ook als hij zelf al het plafond overschrijdt — anders zou
+    een max_mb kleiner dan het nieuwste bestand de hele map leegvegen in
+    plaats van te snoeien.
+
+    Omdat de lijst op mtime is gesorteerd vormen beschermde entries en de
+    eerste entry altijd het begin van de rij, dus een `break` bij de eerste
+    onbeschermde, niet-eerste entry die het plafond zou overschrijden slaat er
+    nooit één over.
 
     `now` bestaat alleen zodat tests een tijdstip kunnen vastzetten.
     """
@@ -121,21 +168,20 @@ def select_for_removal(
 
     grens = (now if now is not None else time.time()) - PROTECT_DAYS * 86400
     limiet_bytes = rule.max_mb * 1024 * 1024 if rule.max_mb is not None else None
-    behouden: list[Path] = []
+    behouden: list[Entry] = []
     cumulatief = 0
 
     for entry in entries:
-        beschermd = entry.stat().st_mtime >= grens
-        grootte = entry_size(entry) if limiet_bytes is not None else 0
+        beschermd = entry.mtime >= grens
 
-        if not beschermd:
+        if not beschermd and behouden:
             if rule.max_entries is not None and len(behouden) >= rule.max_entries:
                 break
-            if limiet_bytes is not None and cumulatief + grootte > limiet_bytes:
+            if limiet_bytes is not None and cumulatief + entry.size > limiet_bytes:
                 break
 
         behouden.append(entry)
-        cumulatief += grootte
+        cumulatief += entry.size
 
     return entries[len(behouden):]
 
@@ -143,42 +189,48 @@ def select_for_removal(
 def move_to_trash(entry: Path, root: Path) -> None:
     """Verplaats naar exports/_prullenbak/ met behoud van het pad.
 
-    Ligt de entry al in de prullenbak, dan wordt hij verwijderd. Dat is de
-    enige plek in dit script waar iets onherroepelijk weggaat — de bak is de
-    laatste schakel, dus daar moet de keten eindigen.
-    """
-    trash = (root / EXPORTS_DIRNAME / TRASH_DIRNAME).resolve()
+    Ligt de entry al in de prullenbak, dan wordt hij verwijderd — dat is de
+    enige plek in dit script waar iets onherroepelijk weggaat, want de bak is
+    de laatste schakel. Een entry is hier altijd een bestand (resolve_entries
+    slaat mappen over), dus unlink() volstaat.
 
-    if entry.resolve().is_relative_to(trash):
-        if entry.is_dir():
-            shutil.rmtree(entry)
-        else:
-            entry.unlink()
+    De trash-membership-test gebruikt het ongeresolvede pad: een symlink in
+    _prullenbak/ die elders binnen exports/ heen wijst mag niet via .resolve()
+    buiten de bak belanden en zo alsnog de verplaats-tak nemen (en zo
+    _prullenbak/_prullenbak/ opleveren).
+    """
+    trash = root / EXPORTS_DIRNAME / TRASH_DIRNAME
+
+    if entry.is_relative_to(trash):
+        entry.unlink()
         return
 
     relatief = entry.relative_to(root / EXPORTS_DIRNAME)
     doel = root / EXPORTS_DIRNAME / TRASH_DIRNAME / relatief
     doel.parent.mkdir(parents=True, exist_ok=True)
     if doel.exists():
-        shutil.rmtree(doel) if doel.is_dir() else doel.unlink()
+        _log_regel(root, f"overschreven in prullenbak: {relatief}")
+        doel.unlink()
     shutil.move(str(entry), str(doel))
 
 
 def run(root: Path, rules: list[RetentionRule], apply: bool) -> list[dict]:
     """Voer de regels uit (of toon alleen wat er zou gebeuren)."""
+    for rule in rules:
+        _valideer_regel(rule)
+
     verslag: list[dict] = []
 
     for rule in rules:
         entries = resolve_entries(rule, root)
         weg = select_for_removal(entries, rule)
 
-        # Omvang meten vóór het verplaatsen: daarna bestaan de paden niet meer.
-        totaal_bytes = sum(entry_size(p) for p in entries)
-        bytes_weg = sum(entry_size(p) for p in weg)
+        totaal_bytes = sum(e.size for e in entries)
+        bytes_weg = sum(e.size for e in weg)
 
         if apply:
             for entry in weg:
-                move_to_trash(entry, root)
+                move_to_trash(entry.path, root)
 
         verslag.append({
             "glob": rule.glob,
@@ -202,7 +254,7 @@ def _plafond_tekst(rule: RetentionRule) -> str:
 
 
 def _log_regel(root: Path, tekst: str) -> None:
-    log = root / EXPORTS_DIRNAME / TRASH_DIRNAME / LOG_NAME
+    log = root / LOG_PATH
     log.parent.mkdir(parents=True, exist_ok=True)
     stempel = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(log, "a", encoding="utf-8") as f:
@@ -210,7 +262,7 @@ def _log_regel(root: Path, tekst: str) -> None:
 
 
 def _laatste_run(root: Path) -> str:
-    log = root / EXPORTS_DIRNAME / TRASH_DIRNAME / LOG_NAME
+    log = root / LOG_PATH
     if not log.exists():
         return "nooit"
     regels = [r for r in log.read_text(encoding="utf-8").splitlines() if r.strip()]
