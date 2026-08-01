@@ -626,8 +626,9 @@ STEP_COSTS_KEY: Dict[int, str] = {
 
 
 def costs_path(spec: DatasetSpec) -> Path:
-    stem = Path(spec.filename).stem
-    return PROJECT_ROOT / "exports" / "costs" / f"{stem}_{spec.variable_key}_costs.json"
+    from utils.exportNaming import export_filename
+    return PROJECT_ROOT / "exports" / "costs" / export_filename(
+        spec.filename, spec.var_name, spec.sample_size, "kosten", "json")
 
 
 def load_costs(spec: DatasetSpec) -> Optional[Dict[str, Any]]:

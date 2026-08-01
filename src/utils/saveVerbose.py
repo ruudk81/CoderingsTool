@@ -2,9 +2,9 @@
 saveVerbose.py - Capture and save all verbose console output during pipeline execution.
 
 Context manager that captures stdout while still printing to the console, then
-writes it to exports/verbose_logs/ under the canonical name from
-build_log_filename(): {base}_{var_name}_{sample}_step{N}.txt. A rerun of the
-same step on the same dataset overwrites the previous log.
+writes it to exports/verbose_logs/ under the canonical export name
+({dataset}_{var}_{sample}_log_step{N}.txt, see utils.exportNaming). A rerun of
+the same step on the same dataset overwrites the previous log.
 
 Usage:
     from utils.saveVerbose import VerboseCapture
@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from utils.exportNaming import export_filename
+
 
 def build_log_filename(
     filename: str,
@@ -31,16 +33,8 @@ def build_log_filename(
     sample_size: Optional[int],
     step: int,
 ) -> str:
-    """The canonical name of a verbose log.
-
-    No timestamp: a repeated run of the same step on the same dataset
-    overwrites the previous log. No truncation of the dataset name: that
-    would let two datasets with a matching prefix overwrite each other's log.
-    """
-    base = Path(filename).stem.replace(" ", "_")
-    var = var_name.replace(" ", "_")
-    sample = str(sample_size) if sample_size is not None else "full"
-    return f"{base}_{var}_{sample}_step{step}.txt"
+    """The canonical name of a verbose log: the step number as a doctype."""
+    return export_filename(filename, var_name, sample_size, f"log_step{step}", "txt")
 
 
 class TeeOutput:

@@ -497,7 +497,8 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
     survey_question, language, dataset_context, dimension_name, dimension_description = \
         _extract_metadata_context(extraction_metadata)
 
-    cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
+    cost_tracker = CostTracker(filename=FILENAME, var_name=VARIABLE,
+                               sample_size=SAMPLE_SIZE)
 
     prompt_printer = PromptPrinter(
         enabled=True,

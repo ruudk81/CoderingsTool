@@ -335,7 +335,8 @@ def run_assignment(filename: str = FILENAME, var_name: str = VARIABLE,
     print(f"  Loaded codebook: {n_themes} themes, {n_partitions} partitions"
           f", {len(codes) if codes else 0} raw codes")
 
-    cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
+    cost_tracker = CostTracker(filename=FILENAME, var_name=VARIABLE,
+                               sample_size=SAMPLE_SIZE)
 
     prompt_printer = PromptPrinter(
         enabled=True,

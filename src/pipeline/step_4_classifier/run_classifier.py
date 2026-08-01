@@ -489,7 +489,8 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         enabled=True,
         print_realtime=PRINT_PROMPTS,
     )
-    cost_tracker = CostTracker(filename=FILENAME, variable_key=variable_key)
+    cost_tracker = CostTracker(filename=FILENAME, var_name=VARIABLE,
+                               sample_size=SAMPLE_SIZE)
 
     processor = TaxonomyClassifier(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker)
     taxonomy_result = processor.process(

@@ -204,7 +204,8 @@ def run_step(config: StepConfig = None):
     start_time = time.time()
 
     # Initialize cost tracker
-    cost_tracker = CostTracker(filename=config.filename, variable_key=variable_key)
+    cost_tracker = CostTracker(filename=config.filename, var_name=config.var_name,
+                               sample_size=config.sample_size)
 
     # Run idea extraction
     extractor = IdeaExtractor(

@@ -2,13 +2,13 @@
 Cost Tracker — persistent per-dataset JSON ledger for LLM costs.
 
 Accumulates per-step, per-phase token usage and cost data in
-exports/costs/{dataset}_{variable_key}_costs.json.
+exports/costs/{dataset}_{var}_{sample}_kosten.json.
 
 Usage:
     from utils.costTracker import CostTracker
     from utils.llm import token_tracker
 
-    tracker = CostTracker(filename="data.sav", variable_key="Q1_500")
+    tracker = CostTracker(filename="data.sav", var_name="Q1", sample_size=500)
 
     # Before a phase
     snap_before = token_tracker.snapshot()
@@ -24,7 +24,8 @@ Wiring a step
 The runner creates the tracker and finalizes; the worker class records phases.
 
     # run_<step>.py
-    tracker = CostTracker(filename=config.filename, variable_key=variable_key)
+    tracker = CostTracker(filename=config.filename, var_name=config.var_name,
+                          sample_size=config.sample_size)
     worker = Worker(..., cost_tracker=tracker)
     ...
     tracker.finalize_step("step_2_quality_filter")
@@ -48,14 +49,15 @@ Conventions
   overwrites phase data on re-run (idempotent), and writes atomically via `.tmp`
   rename. Several steps accumulate in one file, keyed by step name.
 - Do NOT thread one tracker through `run_pipeline.py`. Each step runner constructs
-  its own with the same filename + variable_key; the constructor loads the existing
-  JSON, so steps accumulate without a shared instance.
+  its own with the same filename + var_name + sample_size; the constructor loads
+  the existing JSON, so steps accumulate without a shared instance.
 
 Output format
 -------------
     {
       "dataset": "data.sav",
-      "variable_key": "Q20_500",
+      "var_name": "Q20",
+      "sample_size": 500,
       "deployment": {"provider": "azure", "model_family": "gpt-5.4"},
       "steps": {
         "step_2_quality_filter": {
@@ -84,13 +86,16 @@ class CostTracker:
     def __init__(
         self,
         filename: str,
-        variable_key: str,
+        var_name: str,
+        sample_size,
         exports_dir: Optional[Path] = None,
     ):
         from config import API_PROVIDER, MODEL_FAMILY
+        from utils.exportNaming import export_filename
 
         self._filename = filename
-        self._variable_key = variable_key
+        self._var_name = var_name
+        self._sample_size = sample_size
         self._provider = API_PROVIDER
         self._model_family = MODEL_FAMILY
 
@@ -98,8 +103,8 @@ class CostTracker:
             exports_dir = Path(__file__).parent.parent.parent / "exports" / "costs"
         exports_dir.mkdir(parents=True, exist_ok=True)
 
-        stem = Path(filename).stem
-        self._json_path = exports_dir / f"{stem}_{variable_key}_costs.json"
+        self._json_path = exports_dir / export_filename(
+            filename, var_name, sample_size, "kosten", "json")
         self._data = self._load()
 
     # ------------------------------------------------------------------
@@ -171,7 +176,8 @@ class CostTracker:
 
         return {
             "dataset": self._filename,
-            "variable_key": self._variable_key,
+            "var_name": self._var_name,
+            "sample_size": self._sample_size,
             "deployment": {
                 "provider": self._provider,
                 "model_family": self._model_family,

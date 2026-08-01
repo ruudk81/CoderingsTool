@@ -305,7 +305,7 @@ def test_costs_key_mapping_matches_real_files():
     import glob
     import json
     known = set(be.STEP_COSTS_KEY.values())
-    files = glob.glob(os.path.join(be.PROJECT_ROOT, "exports", "costs", "*_costs.json"))
+    files = glob.glob(os.path.join(be.PROJECT_ROOT, "exports", "costs", "*_kosten.json"))
     assert files, "no costs files found to verify against"
     seen = set()
     for f in files:

@@ -11,19 +11,19 @@ def test_name_has_no_timestamp():
     a = build_log_filename("M241030 Vezet 2024 databestand.sav", "Q20", 1000, 7)
     b = build_log_filename("M241030 Vezet 2024 databestand.sav", "Q20", 1000, 7)
     assert a == b
-    assert a == "M241030_Vezet_2024_databestand_Q20_1000_step7.txt"
+    assert a == "M241030_Vezet_2024_databestand_Q20_1000_log_step7.txt"
 
 
 def test_sample_size_appears_once():
     """De samplesize staat precies één keer in de naam."""
     name = build_log_filename("dataset.sav", "Qd1", 4586, 5)
-    assert name == "dataset_Qd1_4586_step5.txt"
+    assert name == "dataset_Qd1_4586_log_step5.txt"
     assert name.count("4586") == 1
 
 
 def test_no_sample_size_becomes_full():
     name = build_log_filename("dataset.sav", "Qd1", None, 3)
-    assert name == "dataset_Qd1_full_step3.txt"
+    assert name == "dataset_Qd1_full_log_step3.txt"
 
 
 def test_long_names_stay_distinct():
@@ -41,25 +41,25 @@ def test_long_names_stay_distinct():
 def test_spaces_become_underscores():
     name = build_log_filename("met spaties erin.sav", "Q1", 100, 0)
     assert " " not in name
-    assert name == "met_spaties_erin_Q1_100_step0.txt"
+    assert name == "met_spaties_erin_Q1_100_log_step0.txt"
 
 
 def test_sample_size_as_string_full():
     """test_data.py gebruikt letterlijk de string "full" als samplesize."""
-    assert build_log_filename("dataset.sav", "Qd1", "full", 3) == "dataset_Qd1_full_step3.txt"
+    assert build_log_filename("dataset.sav", "Qd1", "full", 3) == "dataset_Qd1_full_log_step3.txt"
 
 
 def test_sample_size_zero_is_not_full():
     """0 is een getal, geen ontbrekende waarde."""
-    assert build_log_filename("dataset.sav", "Qd1", 0, 3) == "dataset_Qd1_0_step3.txt"
+    assert build_log_filename("dataset.sav", "Qd1", 0, 3) == "dataset_Qd1_0_log_step3.txt"
 
 
 def test_find_latest_log_is_exact(tmp_path):
     """Regressie: de oude glob `{base}_{varkey}_*step{N}_*.txt` slokte het
     samplesize-segment op, waardoor een log van sample 500 werd gevonden
     terwijl 4586 was gevraagd."""
-    (tmp_path / "dataset_Qd1_500_step7.txt").write_text("verkeerde sample")
-    doel = tmp_path / "dataset_Qd1_4586_step7.txt"
+    (tmp_path / "dataset_Qd1_500_log_step7.txt").write_text("verkeerde sample")
+    doel = tmp_path / "dataset_Qd1_4586_log_step7.txt"
     doel.write_text("juiste sample")
 
     gevonden = VerboseCapture.find_latest_log(

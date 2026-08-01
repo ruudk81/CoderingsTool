@@ -147,7 +147,8 @@ def run_step(config: StepConfig = None):
 
     verbose_reporter.stat_line(f"Processing: {len(preprocessed_text)} responses")
 
-    cost_tracker = CostTracker(filename=config.filename, variable_key=variable_key)
+    cost_tracker = CostTracker(filename=config.filename, var_name=config.var_name,
+                               sample_size=config.sample_size)
 
     start_time = time.time()
 
