@@ -2778,6 +2778,21 @@ class TaxonomyClassifier:
 
         # Guard 1: multiset coverage. Every input facet claimed by >=1
         # output; no output may claim a name outside the domain's facet set.
+        # An output with an empty source_facets list can't be classified as
+        # rewrite/merge/split (there is no source to carry provenance from)
+        # and would otherwise crash downstream on source_objs[0] — reject it
+        # here, before the multiset diff, as its own coverage failure.
+        empty_source_outputs = sorted(
+            out.facet_name for out in response.facets if not out.source_facets
+        )
+        if empty_source_outputs:
+            consolidation_log.append({
+                "action": "facet_review_failed", "domain": domain,
+                "note": "output(s) with empty source_facets", "outputs": empty_source_outputs,
+            })
+            counts['failed'] = 1
+            return counts
+
         # Per-output dedup before flattening: a name repeated within a
         # single output's own source_facets counts once toward coverage.
         usage: Counter = Counter()
@@ -2841,6 +2856,7 @@ class TaxonomyClassifier:
                     "action": "facet_review_v2_merge", "domain": domain,
                     "sources": [s.facet_name for s in source_objs],
                     "result": out.facet_name,
+                    "facet_description": out.facet_description,
                 })
                 consolidation_log.append({
                     "action": "facet_review_v2_refinement_carried", "domain": domain,
@@ -2851,6 +2867,7 @@ class TaxonomyClassifier:
                 counts['split'] += 1
                 split_legs.setdefault(norm_sources[0], []).append({
                     "facet_name": out.facet_name, "axis": out.axis_name, "segment": out.segment_name,
+                    "facet_description": out.facet_description,
                 })
                 consolidation_log.append({
                     "action": "facet_review_v2_refinement_carried", "domain": domain,
@@ -2861,7 +2878,7 @@ class TaxonomyClassifier:
                 source = source_objs[0]
                 before = {
                     "facet_name": source.facet_name, "facet_description": source.facet_description,
-                    "axis": source.axis, "segment": source.segment,
+                    "axis": source.axis, "segment": source.segment, "boundary": source.boundary_test,
                 }
                 changed = (out.facet_name != source.facet_name
                            or out.facet_description != source.facet_description
@@ -2876,6 +2893,7 @@ class TaxonomyClassifier:
                         "after": {
                             "facet_name": new_facet.facet_name, "facet_description": new_facet.facet_description,
                             "axis": new_facet.axis, "segment": new_facet.segment,
+                            "boundary": new_facet.boundary_test,
                         },
                     })
 
