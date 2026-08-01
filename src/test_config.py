@@ -6,6 +6,8 @@ does not crash: the .get() falls back to the global default, so the phase
 silently loses its setting. These tests make that drift loud instead.
 """
 
+from pathlib import Path
+
 import pytest
 
 from config import (
@@ -77,3 +79,24 @@ def test_reasoning_params_carry_the_per_phase_effort():
 
 def test_chat_models_get_no_reasoning_params():
     assert get_reasoning_params("gpt-4.1", phase="classifier_p2") == {}
+
+
+@pytest.mark.parametrize("phase", sorted(STEP_EFFORT))
+def test_effort_phase_is_actually_passed(phase):
+    """A STEP_EFFORT entry only does something if a call site passes phase=.
+
+    get_reasoning_params(model) without phase silently returns the global default,
+    so a raised phase can sit in config doing nothing. That is what happened to
+    idea_extraction_context/-taxonomy: step 3 passed no phase anywhere, so both
+    entries were inert until 2026-08-01.
+    """
+    pipeline_dir = Path(__file__).parent / "pipeline"
+    needle = f'phase="{phase}"'
+    hits = [
+        py for py in pipeline_dir.rglob("*.py")
+        if "_experiment" not in str(py) and needle in py.read_text(encoding="utf-8")
+    ]
+    assert hits, (
+        f"STEP_EFFORT raises {phase!r} to {STEP_EFFORT[phase]!r}, but no call site in "
+        f"pipeline/ passes phase={phase!r} to get_reasoning_params — the setting is inert"
+    )

@@ -139,7 +139,7 @@ class Grader:
                 'temperature': grader.config.temperature,
                 'max_tokens': grader.config.max_tokens,
                 'max_retries': grader.config.retries,
-                'extra_kwargs': get_reasoning_params(grader.model),
+                'extra_kwargs': get_reasoning_params(grader.model, phase="quality_filter"),
             }
 
         return prepare_fn

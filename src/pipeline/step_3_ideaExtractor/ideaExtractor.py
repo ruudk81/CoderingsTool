@@ -408,7 +408,7 @@ class IdeaExtractor:
                 response_model=response_model,
                 prompt=prompt,
                 temperature=0.0,
-                **get_reasoning_params(model),
+                **get_reasoning_params(model, phase="idea_extraction_context"),
             )
 
         if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
@@ -524,7 +524,7 @@ class IdeaExtractor:
                 response_model=PrimaryDimensionConsolidatedResponse,
                 prompt=prompt,
                 temperature=0.0,
-                **get_reasoning_params(model),
+                **get_reasoning_params(model, phase="idea_extraction_context"),
             )
 
         if self.verbose_reporter.enabled:
@@ -622,7 +622,7 @@ class IdeaExtractor:
                 response_model=DomainConsolidatedResponse,
                 prompt=prompt,
                 temperature=0.0,
-                **get_reasoning_params(model),
+                **get_reasoning_params(model, phase="idea_extraction_taxonomy"),
             )
 
         if self.verbose_reporter.enabled:
@@ -989,7 +989,7 @@ class IdeaExtractor:
                         response_model=response_model,
                         prompt=prompt,
                         temperature=0.0,
-                        **get_reasoning_params(model),
+                        **get_reasoning_params(model, phase="idea_extraction_context"),
                     )
 
                     results.append({
@@ -1112,7 +1112,7 @@ class IdeaExtractor:
                 'temperature': config.temperature,
                 'max_tokens': config.max_tokens,
                 'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(extractor.model),
+                'extra_kwargs': get_reasoning_params(extractor.model, phase="idea_extraction_abstraction_ladder"),
             }
 
         return prepare_fn
@@ -1486,7 +1486,7 @@ class IdeaExtractor:
             await self.rate_limiter.acquire()
             res = await llm_create_async(
                 client=client, model=model, response_model=ReformulatedDomains,
-                prompt=prompt, temperature=0.0, **get_reasoning_params(model),
+                prompt=prompt, temperature=0.0, **get_reasoning_params(model, phase="idea_extraction_taxonomy"),
             )
 
         new = list(res.domains)

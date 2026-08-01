@@ -439,7 +439,7 @@ class CodeAssigner:
             'temperature': self._config.assignment_temperature,
             'max_tokens': self._config.assignment_max_tokens,
             'max_retries': 5,
-            'extra_kwargs': get_reasoning_params(self._config.assignment_model),
+            'extra_kwargs': get_reasoning_params(self._config.assignment_model, phase="code_assignment"),
         }
 
     def _parse_fn(self, task: Dict, response) -> Optional[CodeAssignmentBatch]:
