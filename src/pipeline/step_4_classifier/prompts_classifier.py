@@ -3,6 +3,7 @@ Prompt builders for Taxonomy Classifier (P1-P10).
 
 Organized in pipeline processing order:
   §0   Dimension Context Block (shared helper)
+  §1a  Axis Discovery (P1a: per-domain axis system discovery)
   §1   Facet Discovery (P1: per-domain, chunked)
   §2   Facet Consolidation (P2: merge chunk-level facets)
   §3   Facet Review (P3: per-domain quality gate)
@@ -94,6 +95,116 @@ def _build_exclusion__light_block(
     content = "\n".join(lines)
     return (
         f"{content}"
+    )
+
+
+# =============================================================================
+# §1a AXIS DISCOVERY (P1a) — per-domain axis system discovery
+# =============================================================================
+
+def build_axis_discovery_prompt(
+    *,
+    survey_question: str,
+    primary_dimension: str,
+    domain_label: str,
+    domain_definition: str,
+    domain_boundary_test: str,
+    sample_observations: List[str],
+) -> str:
+    """Discover the axes along which observations in a domain differ (P1a)."""
+    observations_block = "\n".join(f"- {obs}" for obs in sample_observations)
+
+    return f"""You are a taxonomy methodologist for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Primary dimension of the taxonomy: {primary_dimension}
+
+Domain under analysis: {domain_label}
+Domain definition: {domain_definition}
+Domain boundary test: {domain_boundary_test}
+
+Below is a broad sample of observations from this domain (drawn across the
+whole domain, not one slice):
+
+<observations>
+{observations_block}
+</observations>
+
+Your task: identify the AXES along which these observations differ — the
+underlying dimensions that explain why two observations in this domain are
+about different things. Think of the domain as a space; you are naming its
+coordinate axes so that categories can later be built as non-overlapping
+segments on those axes.
+
+For every axis:
+1. Name it and describe, in one or two sentences, the difference in the data
+   it captures.
+2. Divide it into 2-6 segments that are mutually exclusive by their boundary
+   statements: each boundary is one routing sentence phrased against the
+   neighbouring segments ("is about X -> this segment; is about Y -> <other>").
+3. Quote 2-5 example observations per segment, verbatim from the sample.
+4. Add exactly one residual segment (is_residual = true) for observations that
+   belong to this domain but do not specify a value on this axis. Do not
+   invent content for it; its boundary is "names no recognisable value on
+   this axis".
+
+Rules:
+- Axes must come from the data in front of you — never from general knowledge
+  of the topic. If the sample only supports one axis, return one axis.
+- Prefer few axes that carry many observations over many thin axes.
+- Segments are conceptual values on the axis, not levels of specificity:
+  "general/unspecified" is what the residual segment is for.
+- Descriptive wording only; evaluation is captured per idea as valence,
+  elsewhere.
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class AxisSegment(BaseModel):
+    """A single segment (conceptual value) on a discovered axis."""
+    segment_name: str = Field(
+        ..., description="Short descriptive name for the segment — a value on the axis"
+    )
+    segment_description: str = Field(
+        ..., description="What this segment captures on the axis (1-2 sentences)"
+    )
+    boundary: str = Field(
+        ..., description=(
+            "One routing sentence phrased against the neighbouring segments "
+            "(\"is about X -> this segment; is about Y -> <other>\")"
+        )
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-5 example observations for this segment, verbatim from the sample"
+    )
+    is_residual: bool = Field(
+        default=False, description=(
+            "True for exactly one segment per axis: the residual segment for observations "
+            "that belong to this domain but name no recognisable value on this axis"
+        )
+    )
+
+
+class DiscoveredAxis(BaseModel):
+    """An axis along which observations within a domain differ."""
+    axis_name: str = Field(
+        ..., description="Short name for the axis — the underlying dimension the observations differ along"
+    )
+    axis_description: str = Field(
+        ..., description="One or two sentences describing the difference in the data this axis captures"
+    )
+    segments: List[AxisSegment] = Field(
+        ..., description="2-6 substantive segments plus exactly one residual segment"
+    )
+
+
+class AxisSystemResponse(BaseModel):
+    """P1a output: the axis system discovered for a single domain."""
+    axes: List[DiscoveredAxis] = Field(
+        ..., description="1-4 axes discovered for this domain"
     )
 
 
