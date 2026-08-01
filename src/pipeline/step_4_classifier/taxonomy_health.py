@@ -1,6 +1,6 @@
 """Deterministic taxonomy hygiene and health metrics. No LLM.
 
-Three things, all dataset-independent and all cheap enough to run on every build:
+Four things, all dataset-independent and all cheap enough to run on every build:
 
   attr_structure_home() Maps attribute_name -> (domain, facet) from the structure, so
                         per-idea (domain, facet) stays a DERIVED projection of the
@@ -12,6 +12,12 @@ Three things, all dataset-independent and all cheap enough to run on every build
                         clear these — with no ideas to project there is nothing to
                         correct — so they survive into the export as n=0 rows.
                         This drops them.
+
+  drain_domains()       Labels of the standing drain domains (other, bare_evaluation),
+                        identified by their metadata key rather than their (possibly
+                        translated/re-described) label. Used to keep the P3/P7
+                        upstream MECE reviews off the two domains that exist to
+                        catch everything else, not to be internally orthogonal.
 
   measure()             Turns "the taxonomy feels flat" into numbers you can compare
                         across datasets. Every metric below marks a label layer that
@@ -40,6 +46,22 @@ from typing import Dict, List, Set, Tuple
 from models import TaxonomyResultsCache
 
 SENTINELS = {"__UNASSIGNED__", "(no attribute)", "(geen attribuut)"}
+
+DRAIN_KEYS = frozenset({"other", "bare_evaluation"})
+
+
+# =============================================================================
+# DRAIN DOMAINS
+# =============================================================================
+
+def drain_domains(extraction_metadata) -> Set[str]:
+    """Labels of the standing drain domains, identified by their metadata key.
+
+    Legacy caches persisted key == label; then no domain qualifies and callers
+    treat every domain as reviewable (and say so once in the verbose output).
+    """
+    domains = getattr(extraction_metadata, "domains", None) or []
+    return {d.get("label", "") for d in domains if d.get("key") in DRAIN_KEYS}
 
 
 # =============================================================================

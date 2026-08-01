@@ -503,6 +503,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         dimension_name=dimension_name,
         dimension_description=dimension_description,
         verbose=CONFIG.verbose,
+        extraction_metadata=extraction_metadata,
     )
 
     # Cache taxonomy results (metadata + growing model). The taxonomy is displayed

@@ -608,7 +608,8 @@ def _build_facet_codebook_block(
         lines.append(
             f"[F{i}] {facet.facet_name}\n"
             f"    Description: {facet.facet_description}\n"
-            f"    Examples: {examples}"
+            + (f"    Boundary: {facet.boundary_test}\n" if facet.boundary_test else "")
+            + f"    Examples: {examples}"
         )
     if other_label:
         n = len(facets) + 1

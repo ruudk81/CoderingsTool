@@ -1,9 +1,13 @@
 """
 Taxonomy Classifier: inductive taxonomy discovery (P1-P10).
 
-Pipeline (7 stages):
+Pipeline (8 stages, P3 optional):
   P1.  Facet Discovery (chunked, per domain) — dimension-specific semantics
   P2.  Facet Consolidation (per domain) — conceptual merge + orthogonal formulation
+  P3.  Facet Review (per domain, optional) — rewrite name/description for
+       orthogonality, write a boundary test, flag suspected concept overlap.
+       Schema-enforced rewrite-and-flag only: the facet SET cannot change.
+       Skipped for the two standing drain domains and for single-facet domains.
   P4.  Facet Assignment (per domain) — assign ideas to consolidated facets
   P5.  Attribute Discovery (per facet within domain) — concrete observables
   P6.  Attribute Consolidation, round 1 (per facet) — dedup the chunk discoveries
@@ -57,6 +61,7 @@ from utils.smoothRequester import SmoothRequester
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
+from .taxonomy_health import drain_domains
 from models import DomainSet, DomainDescription
 from .prompts_classifier import (
     # P1: Facet Discovery
@@ -66,6 +71,9 @@ from .prompts_classifier import (
     # P2: Facet Consolidation
     build_facet_consolidation_prompt,
     FacetConsolidatedResponse,
+    # P3: Facet Review
+    build_facet_review_prompt,
+    FacetReviewResponse,
     # P4: Facet Assignment
     build_facet_assignment_prompt_single,
     FacetAssignmentResult,
@@ -160,9 +168,13 @@ class TaxonomyClassifier:
     """
     Taxonomy Classifier: inductive taxonomy discovery (P1-P10).
 
-    Pipeline (7 stages):
+    Pipeline (8 stages, P3 optional):
     P1.  FACET DISCOVERY:              Per domain, chunked with overlap (concurrent)
     P2.  FACET CONSOLIDATION:          Per domain, conceptual merge + orthogonal labels
+    P3.  FACET REVIEW (optional):      Per domain, rewrite + flag only — sharpens
+                                       names/descriptions, writes a boundary test,
+                                       flags suspected overlap. Skipped for drain
+                                       domains and single-facet domains.
     P4.  FACET ASSIGNMENT:             Per domain, assign ideas to facets (concurrent)
     P5.  ATTRIBUTE DISCOVERY:          Per (domain, facet), discover attributes (concurrent)
     P6.  ATTRIBUTE CONSOLIDATION r1:   Per facet, dedup the chunk discoveries
@@ -180,6 +192,7 @@ class TaxonomyClassifier:
         self._config = config
         self._model_p1 = config.qr_model_p1
         self._model_p2 = config.qr_model_p2
+        self._model_p3 = config.qr_model_p3
         self._model_p4 = config.qr_model_p4
         self._model_p5 = config.qr_model_p5
         self._model_p6 = config.qr_model_p6
@@ -191,11 +204,12 @@ class TaxonomyClassifier:
             self.cost_tracker.set_step_models("step_4_taxonomy_classifier", {
                 "p1_facet_discovery": self._model_p1,
                 "p2_facet_consolidation": self._model_p2,
-                "p3_facet_assignment": self._model_p4,
-                "p4_attribute_discovery": self._model_p5,
-                "p5_attribute_consolidation": self._model_p6,
-                "p6_attribute_assignment": self._model_p8,
-                "p7_in_facet_consolidation": self._model_p9,
+                "p3_facet_review": self._model_p3,
+                "p4_facet_assignment": self._model_p4,
+                "p5_attribute_discovery": self._model_p5,
+                "p6_attribute_consolidation": self._model_p6,
+                "p8_attribute_assignment": self._model_p8,
+                "p9_in_facet_consolidation": self._model_p9,
                 "p10_valence_merge": self._model_p10,
             })
 
@@ -230,6 +244,7 @@ class TaxonomyClassifier:
         self._captured_gates: Set[str] = set()
 
         self._debug_stop_after_phase = config.debug_stop_after_phase
+        self._facet_review_enabled = config.facet_review_enabled
 
         # Assignment confidence scores and valence (populated by P4/P8 parse_fns)
         self._facet_confidence: Dict[str, float] = {}
@@ -299,8 +314,14 @@ class TaxonomyClassifier:
         dimension_name: str = "",
         dimension_description: str = "",
         verbose: bool = False,
+        extraction_metadata=None,
     ) -> TaxonomyResult:
-        """Run taxonomy stages (P1-P10): facets, attributes, assignments."""
+        """Run taxonomy stages (P1-P10): facets, attributes, assignments.
+
+        `extraction_metadata` (models.ExtractionMetadata, optional) feeds P3/P7's
+        drain-domain skip (taxonomy_health.drain_domains) — without it every domain
+        is treated as reviewable, same as a legacy cache with no standing keys.
+        """
         print(f"\n{'='*70}")
         print(f"TAXONOMY DISCOVERY (5 phases)")
         print(f"{'='*70}")
@@ -324,7 +345,8 @@ class TaxonomyClassifier:
                 active_partitions, partition_contexts, prompt_context, verbose
             )
             return await self._process_taxonomy_async(
-                active_partitions, partition_contexts, prompt_context, verbose
+                active_partitions, partition_contexts, prompt_context, verbose,
+                extraction_metadata=extraction_metadata,
             )
 
         return asyncio.run(_run())
@@ -365,8 +387,8 @@ class TaxonomyClassifier:
         if verbose:
             print(f"\n  [RATE LIMITING SETUP]")
             print(f"  Models: P1={self._model_p1}, P2={self._model_p2}, "
-                  f"P4={self._model_p4}, P5={self._model_p5}, P6={self._model_p6}, "
-                  f"P8={self._model_p8}, P9={self._model_p9}")
+                  f"P3={self._model_p3}, P4={self._model_p4}, P5={self._model_p5}, "
+                  f"P6={self._model_p6}, P8={self._model_p8}, P9={self._model_p9}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
             print(f"  TPM: {limits.tokens_per_minute:,} "
@@ -378,6 +400,7 @@ class TaxonomyClassifier:
         partition_contexts: Dict[str, DomainContext],
         prompt_context: PromptContext,
         verbose: bool,
+        extraction_metadata=None,
     ) -> TaxonomyResult:
         """Taxonomy stages P1-P10: facets, attributes, assignments."""
         start_time = time.time()
@@ -640,6 +663,80 @@ class TaxonomyClassifier:
             )
 
         # =================================================================
+        # PHASE 3 (P3): Per-domain Facet Review (optional, SmoothRequester,
+        # light mode — mirrors the P2 dispatch). Rewrite + flag only: the
+        # facet SET cannot change, enforced by the response schema. Skips
+        # the standing drain domains and domains with fewer than 2 facets
+        # (nothing to review against).
+        # =================================================================
+        consolidation_log: List[Dict] = []
+
+        if self._facet_review_enabled:
+            _snap_p3r = token_tracker.snapshot() if self.cost_tracker else None
+            t_p3r = time.time()
+
+            drain = drain_domains(extraction_metadata)
+            if verbose and not drain:
+                print("    P3 facet review: no standing drain-domain keys in "
+                      "metadata (legacy cache) — every domain is reviewable")
+
+            p3r_tasks = []
+            for name in sorted(partition_facets.keys()):
+                facets = partition_facets.get(name, [])
+                if name in drain or len(facets) < 2:
+                    continue
+                p3r_tasks.append({
+                    'domain_name': name,
+                    'facets': facets,
+                    'part_context': partition_contexts[name],
+                })
+
+            if p3r_tasks:
+                if verbose:
+                    print(f"\n  Phase 3: Facet Review")
+
+                p3r_requester = SmoothRequester(
+                    model=self._model_p3,
+                    phase_key="step4_p3_facet_review",
+                    num_tasks=len(p3r_tasks),
+                    verbose=verbose,
+                    known_limits=self._fetched_limits,
+                    has_server_headers=self._fetched_has_headers,
+                    show_setup=False,
+                    quiet=True,
+                )
+                p3r_results = await p3r_requester.process_all(
+                    p3r_tasks,
+                    self._p3_review_prepare_fn(prompt_context),
+                    self._p3_review_parse_fn(),
+                    self._p3_review_fallback_fn(),
+                )
+
+                p3r_domain_counts: Dict[str, Dict[str, int]] = {}
+                for task, response in zip(p3r_tasks, p3r_results):
+                    p3r_domain_counts[task['domain_name']] = self._apply_p3_review(
+                        task, response, consolidation_log,
+                    )
+
+                if verbose:
+                    s = p3r_requester.stats
+                    print(f"    P3 review: {len(p3r_tasks)} tasks, "
+                          f"{time.time() - t_p3r:.1f}s ({s.get('tasks_successful', 0)} ok, "
+                          f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries)")
+                    for name in sorted(p3r_domain_counts.keys()):
+                        c = p3r_domain_counts[name]
+                        if c['failed']:
+                            print(f"      {name}: review failed (facet set mismatch) — domain unchanged")
+                        else:
+                            print(f"      {name}: {c['reviewed']} facets reviewed, "
+                                  f"{c['rewritten']} rewritten, {c['flagged']} flagged")
+
+            if self.cost_tracker and _snap_p3r is not None:
+                self.cost_tracker.record_phase(
+                    "step_4_taxonomy_classifier", "p3_facet_review",
+                    _snap_p3r, token_tracker.snapshot(), self._model_p3)
+
+        # =================================================================
         # PHASE 4 (P4): Per-domain Facet Assignment (SmoothRequester)
         # =================================================================
         _snap_p3 = token_tracker.snapshot() if self.cost_tracker else None
@@ -760,6 +857,7 @@ class TaxonomyClassifier:
                 attribute_assignments={},
                 facet_confidence=self._facet_confidence,
                 facet_valence=self._facet_valence,
+                consolidation_log=consolidation_log,
             )
 
         # =================================================================
@@ -887,6 +985,7 @@ class TaxonomyClassifier:
                 attribute_assignments={},
                 facet_confidence=self._facet_confidence,
                 facet_valence=self._facet_valence,
+                consolidation_log=consolidation_log,
             )
 
         # P6 consolidation per facet (SmoothRequester, concurrent)
@@ -1068,6 +1167,7 @@ class TaxonomyClassifier:
                 attribute_assignments={},
                 facet_confidence=self._facet_confidence,
                 facet_valence=self._facet_valence,
+                consolidation_log=consolidation_log,
             )
 
         # =================================================================
@@ -1215,6 +1315,7 @@ class TaxonomyClassifier:
                 attribute_confidence=self._attribute_confidence,
                 facet_valence=self._facet_valence,
                 attribute_valence=self._attribute_valence,
+                consolidation_log=consolidation_log,
             )
 
         # =================================================================
@@ -1230,7 +1331,9 @@ class TaxonomyClassifier:
             print(f"\n  Phase 9: In-facet Attribute Consolidation")
 
         t_phase9 = time.time()
-        consolidation_log: List[Dict] = []
+        # `consolidation_log` already exists (initialised before P3, which may
+        # have appended to it); P9's own actions are appended below, not a
+        # replacement, so P3's rewrite/flag entries survive into the final result.
 
         p7_tasks = []
         for domain_name, facet_attrs in domain_facet_attributes.items():
@@ -1300,7 +1403,7 @@ class TaxonomyClassifier:
                       f"{s.get('wall_time', 0):.1f}s ({s['tasks_successful']} ok, "
                       f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries)")
 
-            attribute_assignments, partition_assignments, consolidation_log = (
+            attribute_assignments, partition_assignments, p9_log = (
                 self._apply_p9_results(
                     tasks=p7_tasks,
                     results=p7_results,
@@ -1311,6 +1414,7 @@ class TaxonomyClassifier:
                     verbose=verbose,
                 )
             )
+            consolidation_log.extend(p9_log)
 
         t_phase9 = time.time() - t_phase9
         if verbose:
@@ -1319,7 +1423,7 @@ class TaxonomyClassifier:
                 for facet_attrs in domain_facet_attributes.values()
                 for attrs in facet_attrs.values()
             )
-            acts = Counter(e["action"] for e in consolidation_log)
+            acts = Counter(e["action"] for e in p9_log) if p7_tasks else Counter()
             print(f"    Results ({t_phase9:.1f}s → {n_after} attributes): "
                   + (", ".join(f"{k}={v}" for k, v in sorted(acts.items())) or "no changes"))
 
@@ -1631,6 +1735,127 @@ class TaxonomyClassifier:
         def fallback_fn(task: Dict, reason: str) -> List[DiscoveredFacet]:
             return []
         return fallback_fn
+
+    # =========================================================================
+    # PHASE 3 (P3): PER-DOMAIN FACET REVIEW (SmoothRequester, optional)
+    # =========================================================================
+
+    def _p3_review_prepare_fn(self, prompt_context: PromptContext):
+        """Return prepare_fn closure for P3 facet review."""
+        def prepare_fn(task: Dict) -> Dict:
+            prompt = build_facet_review_prompt(
+                survey_question=prompt_context.survey_question,
+                primary_dimension=prompt_context.dimension_name,
+                domain_label=task['domain_name'],
+                domain_definition=task['part_context'].partition_definition,
+                domain_boundary_test=task['part_context'].boundary_test,
+                facets=task['facets'],
+            )
+
+            gate_key = f"qr_facet_review_{task['domain_name']}"
+            if (self._prompt_printer is not None
+                    and gate_key not in self._captured_gates):
+                self._prompt_printer.capture_prompt(
+                    step_name="qualitative_researcher",
+                    utility_name="QualitativeResearcher",
+                    prompt_content=prompt,
+                    prompt_type="facet_review",
+                    metadata={
+                        "model": self._model_p3,
+                        "temperature": 0.0,
+                        "max_tokens": self._max_tokens_consolidation,
+                        "language": prompt_context.language,
+                        "partition_name": task['domain_name'],
+                        "dimension_name": prompt_context.dimension_name,
+                    }
+                )
+                self._captured_gates.add(gate_key)
+
+            return {
+                'prompt': prompt,
+                'response_model': FacetReviewResponse,
+                'temperature': 0.0,
+                'max_tokens': self._max_tokens_consolidation,
+                'max_retries': 3,
+                'extra_kwargs': get_reasoning_params(self._model_p3, phase="classifier_p3"),
+            }
+        return prepare_fn
+
+    def _p3_review_parse_fn(self):
+        """Return parse_fn closure for P3 facet review."""
+        def parse_fn(task: Dict, response) -> Optional[FacetReviewResponse]:
+            return response if response else None
+        return parse_fn
+
+    @staticmethod
+    def _p3_review_fallback_fn():
+        """Return fallback_fn closure for P3. On failure the domain's facets are
+        left exactly as P2 produced them — never silently emptied."""
+        def fallback_fn(task: Dict, reason: str) -> None:
+            return None
+        return fallback_fn
+
+    def _apply_p3_review(
+        self,
+        task: Dict,
+        response: Optional[FacetReviewResponse],
+        consolidation_log: List[Dict],
+    ) -> Dict[str, int]:
+        """Apply one domain's P3 review in place. Mandate is rewrite-and-flag
+        only — the facet SET is fixed. Match is on `original_name`, case-/
+        whitespace-insensitive (`_norm_text`, same helper P9's `_resolve` uses);
+        a set mismatch (missing or extra names) leaves the domain's facets
+        untouched and is logged as `facet_review_failed` with the diff.
+        """
+        domain = task['domain_name']
+        facets = task['facets']  # same list object as partition_facets[domain]
+        counts = {'reviewed': len(facets), 'rewritten': 0, 'flagged': 0, 'failed': 0}
+
+        if response is None or not response.facets:
+            consolidation_log.append({
+                "action": "facet_review_failed", "domain": domain,
+                "note": "no response",
+            })
+            counts['failed'] = 1
+            return counts
+
+        by_norm = {self._norm_text(f.facet_name): f for f in facets}
+        resp_by_norm = {self._norm_text(r.original_name): r for r in response.facets}
+
+        missing = sorted(f.facet_name for n, f in by_norm.items() if n not in resp_by_norm)
+        extra = sorted(r.original_name for n, r in resp_by_norm.items() if n not in by_norm)
+        if missing or extra:
+            consolidation_log.append({
+                "action": "facet_review_failed", "domain": domain,
+                "missing": missing, "extra": extra,
+            })
+            counts['failed'] = 1
+            return counts
+
+        for norm_name, facet in by_norm.items():
+            reviewed = resp_by_norm[norm_name]
+            before = {"facet_name": facet.facet_name, "facet_description": facet.facet_description}
+            changed = (reviewed.facet_name != facet.facet_name
+                       or reviewed.facet_description != facet.facet_description)
+            facet.facet_name = reviewed.facet_name
+            facet.facet_description = reviewed.facet_description
+            facet.boundary_test = reviewed.boundary_test
+            if changed:
+                counts['rewritten'] += 1
+                consolidation_log.append({
+                    "action": "facet_review_rewrite", "domain": domain,
+                    "before": before,
+                    "after": {"facet_name": facet.facet_name, "facet_description": facet.facet_description},
+                })
+
+        for flag in response.overlap_flags:
+            counts['flagged'] += 1
+            consolidation_log.append({
+                "action": "facet_review_flag", "domain": domain,
+                "facet_a": flag.facet_a, "facet_b": flag.facet_b, "reason": flag.reason,
+            })
+
+        return counts
 
     # =========================================================================
     # PHASE 5 (P5): PER-FACET ATTRIBUTE DISCOVERY (SmoothRequester)
