@@ -1,8 +1,9 @@
 """
-Configuration for Taxonomy Classifier (P1-P8).
+Configuration for Taxonomy Classifier (P1-P6 + P5b).
 
-Pipeline: facet discovery → facet assignment → attribute discovery →
-attribute consolidation → cross-facet dedup → cross-domain dedup.
+Pipeline: facet discovery → facet consolidation → facet assignment →
+attribute discovery → attribute consolidation r1 → attribute assignment →
+attribute consolidation r2 (P5b, in-facet, post-assignment).
 """
 
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ class ClassifierRampConfig:
     advances toward target_fraction proportional to completions.
 
     Full stack (P1/P3/P4/P6): ConcurrencyGate + TokenBucket + AsyncLimiter + CircuitBreaker
-    Light mode (P2/P5/P7): default semaphore + rate limiter only
+    Light mode (P2/P5/P5b): default semaphore + rate limiter only
     """
     # Concurrency ramp
     estimated_latency_seconds: float = 10.0    # Conservative latency estimate
@@ -45,7 +46,7 @@ class ClassifierRampConfig:
 
 @dataclass
 class CategoriesConfig:
-    """Configuration for Taxonomy Classifier (P1-P8)."""
+    """Configuration for Taxonomy Classifier (P1-P6 + P5b)."""
 
     # ==========================================================================
     # PARTITION SOURCE
@@ -78,7 +79,7 @@ class CategoriesConfig:
     label_prefix: str = ""
 
     # ==========================================================================
-    # TAXONOMY CLASSIFIER PIPELINE (P1-P8)
+    # TAXONOMY CLASSIFIER PIPELINE (P1-P6 + P5b)
     # ==========================================================================
 
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
@@ -88,18 +89,20 @@ class CategoriesConfig:
     qr_model_p4: str = get_step_model("classifier_p4")    # P4: Attribute Discovery
     qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Consolidation
     qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Assignment
-    qr_model_p7: str = get_step_model("classifier_p7")    # P7: Cross-facet Attribute Consolidation
-    qr_model_p8: str = get_step_model("classifier_p8")    # P8: Cross-domain Attribute Consolidation
+    # P5b is attribute consolidation, so it rides P5's tier — no new key in the
+    # shared config.py, which production also reads.
+    qr_model_p5b: str = get_step_model("classifier_p5")   # P5b: In-facet Consolidation
+    qr_model_p7_5: str = get_step_model("classifier_p7")  # P7.5: Valence-neutral merge
     qr_temperature: float = 0.3
 
     # Output ceilings. A high ceiling is free — billing is per generated token,
     # and smoothRequester throttles on measured throughput (it estimates from the
     # prompt and corrects from actuals), not on this value. Too low is the only
-    # real failure: at 4000 a 22-attribute domain truncated at P7 and lost its
-    # consolidation. Upper bound is the model's own max_output — 128000 for
+    # real failure: at 4000 a 22-attribute domain truncated during consolidation
+    # and lost it entirely. Upper bound is the model's own max_output — 128000 for
     # gpt-5.4, 32000 for gpt-4.1 (see OPENAI_MODEL_LIMITS in config.py).
     #
-    # Discovery (P1, P4) and consolidation (P2, P5, P7) enumerate an open-ended
+    # Discovery (P1, P4) and consolidation (P2, P5, P5b) enumerate an open-ended
     # list, so their response grows with the data.
     qr_max_tokens_facet_discovery: int = 32000
     qr_max_tokens_attribute_discovery: int = 32000
@@ -121,24 +124,10 @@ class CategoriesConfig:
     p4_target_batches: int = 5     # ideal number of chunks
     p4_chunk_overlap: float = 0.2  # overlap fraction between adjacent chunks
 
-    # P8: Cross-domain Attribute Consolidation
-    qr_max_tokens_cross_domain: int = 16000
-    p8_code_source: str = "instance_interpretation"    # embedding text: instance, instance_interpretation, full_abstraction_ladder
-    p8_embedding_model: str = "text-embedding-3-large"
-    p8_window_size: int = 10                           # max attributes per LLM call
-    p8_window_overlap: int = 2                         # overlap between adjacent windows (~20%)
-    p8_similarity_threshold: float = 0.6               # noise floor for pairwise cosine similarity
-
-    # Post-hoc over-merge correction (consolidation_corrector, runs in step 5).
-    # Splits over-merged catch-all buckets back apart along provenance seams, using
-    # the THRESHOLD-FREE within-bucket own>sibling decision (no magic threshold).
-    correction_enabled: bool = True                    # DEFAULT ON (runs at step 5 start)
-    correction_code_source: str = "instance_interpretation"  # embedding text (mirror p8)
-    correction_embedding_model: str = "text-embedding-3-large"
-    correction_k_min: int = 5                          # min neighbours for a measurable source
-    correction_k_band: int = 2                         # own>sibling verdict checked across k ± band
-    correction_min_split_sources: int = 2              # >= this many own-clusters to split a bucket
-    correction_residual_dominance: float = 0.60        # share above which a source is the bucket's residual
+    # P5b: how many distinct response texts to show per attribute. This is the
+    # phase's whole point — it judges real contents, not the label — so the window
+    # has to be wide enough to expose a foreign concept hiding inside a bucket.
+    p5b_contents_top_n: int = 12
 
     # Hierarchical consolidation (shared by P2 and P5)
     # When chunk count or total item count exceeds these limits,
@@ -159,7 +148,7 @@ class CategoriesConfig:
 
     verbose: bool = True
 
-    # Set to a phase number (1–8) to stop after that phase completes.
+    # Set to a phase number (1–6) to stop after that phase completes.
     # None = run full pipeline. Useful for testing specific phases without
     # waiting for the full pipeline.
     debug_stop_after_phase: Optional[int] = None

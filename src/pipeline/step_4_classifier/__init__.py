@@ -1,5 +1,5 @@
 """
-Step 4: Taxonomy Classifier — Inductive Taxonomy Discovery Pipeline (P1-P7)
+Step 4 EXPERIMENT: Taxonomy Classifier — in-facet consolidation (P1-P6 + P5b)
 
 Discovers facets (L3) and attributes (L4) within domains (L2) from step 3,
 building a complete taxonomy with per-idea assignments.

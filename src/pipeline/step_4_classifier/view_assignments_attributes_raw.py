@@ -90,7 +90,7 @@ def load_ideas_with_raw_attributes(
     if not data:
         raise FileNotFoundError(
             f"No cached results found for variable_key '{variable_key}'.\n"
-            f"Run at least taxonomy (P1-P7) first."
+            f"Run at least taxonomy (P1-P6 + P5b) first."
         )
 
     ideas = []

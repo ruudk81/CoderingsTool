@@ -1,7 +1,7 @@
 #%%
 #
 """
-Debug script for Taxonomy Classifier prompts (P1-P7): Full LLM Request Inspector
+Debug script for Taxonomy Classifier prompts (P1-P6 + P5b): Full LLM Request Inspector
 Shows exactly what the LLM receives: prompt text + instructor-generated Pydantic schemas.
 
 Usage:
@@ -31,7 +31,7 @@ from pipeline.step_4_classifier.prompts_classifier import (
     AttributeAssignmentResult,
     AttributeDiscoveryResult,
     AttributeChunkConsolidatedResponse,
-    AttributeConsolidatedResponse,
+    InFacetConsolidatedResponse,
 )
 
 
@@ -52,7 +52,7 @@ STATIC_PROMPT_MODELS = {
     "attribute_assignment": AttributeAssignmentResult,
     "attribute_discovery": AttributeDiscoveryResult,
     "attribute_chunk_consolidation": AttributeChunkConsolidatedResponse,
-    "attribute_consolidation": AttributeConsolidatedResponse,
+    "in_facet_consolidation": InFacetConsolidatedResponse,
 }
 
 
@@ -197,7 +197,7 @@ def main():
     prompts_files = get_prompts_files()
 
     print("=" * 100)
-    print("DEBUG: Taxonomy Classifier Prompt Inspector (P1-P7)")
+    print("DEBUG: Taxonomy Classifier Prompt Inspector (P1-P6 + P5b)")
     print("Shows prompt text + Pydantic response model schemas (as seen by instructor)")
     print("=" * 100)
     print(f"Variable:     {VAR_NAME}")

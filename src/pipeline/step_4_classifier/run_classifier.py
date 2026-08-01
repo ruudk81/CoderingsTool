@@ -1,16 +1,19 @@
 #%%
 
 """
-Step 4: Taxonomy Classifier runner (P1-P8)
+Step 4 EXPERIMENT: Taxonomy Classifier runner (P1-P6 + P5b)
 
 Pipeline: domain discovery → facet discovery → facet assignment →
-attribute discovery → attribute assignment → cross-domain consolidation.
+attribute discovery → attribute assignment → in-facet consolidation (P5b).
 
-Always runs the full taxonomy pipeline (P1-P8).
+Always runs the full taxonomy pipeline (P1-P6 + P5b).
 """
 import sys
+import io
+import json
 from pathlib import Path
 from typing import List, Optional, Dict
+from datetime import datetime
 
 # Add parent paths for imports
 project_root = Path(__file__).parent.parent.parent.parent
@@ -32,14 +35,14 @@ from identity import ensure_taxonomy_ids, restamp_assignment_ids
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 from utils.costTracker import CostTracker
-from utils.saveVerbose import VerboseCapture
 
 # Import step_4_classifier components
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.domain_discoverer import DomainDiscoverer, PartitionLabelMapping
 from pipeline.step_4_classifier.classifier import TaxonomyClassifier, TaxonomyResult
-from pipeline.step_4_classifier.cross_domain_consolidator import CrossDomainConsolidator
-from pipeline.step_4_classifier.taxonomy_health import prune_empty_nodes, print_health
+from pipeline.step_4_classifier.taxonomy_health import (
+    prune_empty_nodes, print_health, attr_structure_home,
+)
 from models import (
     DomainSet, DomainResultModel, TaxonomyResultsCache,
     TaxonomyClassifiedModel, TaxonomyClassifiedSubmodel,
@@ -53,7 +56,7 @@ from models import (
 CONFIG = CategoriesConfig(
     label_source="ladder",                         # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
     label_prefix="",                              # "" or any static prefix string
-    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–8 = stop after that phase
+    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–6 = stop after that phase
 )
 
 
@@ -139,7 +142,7 @@ def print_taxonomy_results(
     label_mappings: Dict[str, PartitionLabelMapping],
     taxonomy_result: TaxonomyResult,
 ):
-    """Print taxonomy results (P1-P7): domains, facets, attributes."""
+    """Print taxonomy results (P1-P6 + P5b): domains, facets, attributes."""
     print(f"\n{'='*80}")
     print(f"TAXONOMY RESULTS "
           f"({len(partition_set.partitions)} domains)")
@@ -220,6 +223,54 @@ def print_taxonomy_results(
 
 
 # =============================================================================
+# OUTPUT CAPTURE
+# =============================================================================
+
+class TeeOutput:
+    """Capture stdout while also printing to console."""
+
+    def __init__(self, original_stdout):
+        self.original_stdout = original_stdout
+        self.buffer = io.StringIO()
+
+    def write(self, text):
+        self.original_stdout.write(text)
+        self.buffer.write(text)
+
+    def flush(self):
+        self.original_stdout.flush()
+
+    def get_output(self) -> str:
+        return self.buffer.getvalue()
+
+
+def save_results_to_file(
+    output: str,
+    filename: str,
+    variable: str,
+    sample_size: Optional[int],
+) -> Path:
+    """Save results to a text file."""
+    output_dir = project_root / "exports" / "verbose_logs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = Path(filename).stem.replace(" ", "_")
+    sample_str = str(sample_size) if sample_size else "full"
+    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    output_filename = (
+        f"{base_name}_{variable}_{sample_str}"
+        f"_step4_{date_str}.txt"
+    )
+    output_path = output_dir / output_filename
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(output)
+
+    return output_path
+
+
+# =============================================================================
 # GROWING MODEL BUILDER
 # =============================================================================
 
@@ -249,8 +300,7 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
 
     # Per-idea (domain, facet) is a DERIVED projection of the structure — the
     # single source of truth — so it can't drift from partition_results.attributes.
-    from pipeline.step_4_classifier.cross_domain_consolidator import CrossDomainConsolidator
-    struct_home = CrossDomainConsolidator.attr_structure_home(taxonomy_cache)
+    struct_home = attr_structure_home(taxonomy_cache)
 
     output = []
     for resp in encoded_text:
@@ -288,6 +338,36 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
 # TAXONOMY CACHING
 # =============================================================================
 
+def _write_consolidation_log(
+    taxonomy_result: TaxonomyResult,
+    filename: str,
+    variable_key: str,
+) -> None:
+    """Dump the P5b action log to exports/experiment_logs/ as JSON.
+
+    Deliberately a file and not a cache field: TaxonomyResultsCache is shared with
+    production, and an experiment must not widen a shared model.
+    """
+    log = getattr(taxonomy_result, "consolidation_log", None)
+    if not log:
+        return
+
+    out_dir = Path(__file__).resolve().parents[3] / "exports" / "experiment_logs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(filename).stem
+    path = out_dir / f"{stem}_{variable_key}_p5b_log.json"
+    path.write_text(
+        json.dumps({"dataset": filename, "variable_key": variable_key, "actions": log},
+                   indent=1, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    if CONFIG.verbose:
+        totals = next((e for e in log if e.get("action") == "_totals"), {})
+        print(f"  P5b log written: {path.name} ({len(log) - 1} actions)")
+        if totals:
+            print(f"    {totals}")
+
+
 def cache_taxonomy_results(
     partition_set: DomainSet,
     label_mappings: Dict[str, PartitionLabelMapping],
@@ -298,7 +378,7 @@ def cache_taxonomy_results(
     sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Dict[str, DomainResultModel]:
-    """Cache taxonomy results (P1-P7) for later use by codebook generation."""
+    """Cache taxonomy results (P1-P6 + P5b) for later use by codebook generation."""
     filename = FILENAME if filename is None else filename
     variable = VARIABLE if variable is None else variable
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size
@@ -390,6 +470,19 @@ def cache_taxonomy_results(
         step="taxonomy",
         variable_key=variable_key,
     )
+
+    # A fresh taxonomy supersedes everything derived from the one it replaces.
+    # Step 5 prefers the corrected keys while they are valid (silently feeding it
+    # the superseded taxonomy), and steps 5/6 skip entirely on a valid
+    # mece_codes/taxonomy_codes cache when run without force_recalc.
+    for stale in ("taxonomy_corrected_metadata", "taxonomy_classified_corrected",
+                  "mece_codes", "mece_codes_metadata", "taxonomy_codes"):
+        cache_manager.invalidate_cache(filename, stale, variable_key)
+
+    # P5b provenance to disk, not into the shared cache model. Every merge, split and
+    # move with the exact texts it touched — this is what makes a bad decision
+    # findable afterwards instead of invisible.
+    _write_consolidation_log(taxonomy_result, filename, variable_key)
 
     # Build and cache growing model (enriched facet/attribute per idea)
     if ideas_models is not None:
@@ -500,7 +593,7 @@ def _load_and_discover(extraction_metadata=None):
 
 def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                  sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
-    """Run taxonomy stages (P1-P8): facets, attributes, assignments, cross-domain consolidation.
+    """Run taxonomy stages (P1-P6 + P5b): facets, attributes, assignments, in-facet consolidation.
 
     Dataset params default to the module-level TEST_DATA constants (so existing
     callers like run_pipeline.py are unchanged); the UI passes them explicitly.
@@ -509,7 +602,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
     global FILENAME, VARIABLE, SAMPLE_SIZE
     FILENAME, VARIABLE, SAMPLE_SIZE = filename, var_name, sample_size
     print("=" * 70)
-    print("TAXONOMY PIPELINE (P1-P8)")
+    print("TAXONOMY PIPELINE — EXPERIMENT (P1-P6 + P5b)")
     print("=" * 70)
     print(f"\nDataset: {FILENAME}")
     print(f"Variable: {VARIABLE}")
@@ -531,7 +624,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         cache_manager = CacheManager()
         if (cache_manager.is_metadata_cache_valid(FILENAME, "taxonomy", variable_key)
                 and cache_manager.is_cache_valid(FILENAME, "taxonomy_classified", variable_key)):
-            print("Taxonomy cache valid — skipping P1-P8 (use force_recalc=True to rerun).\n")
+            print("Taxonomy cache valid — skipping P1-P6 (use force_recalc=True to rerun).\n")
             return None
 
     ideas_models, extraction_metadata, partition_set, label_mappings = _load_and_discover()
@@ -557,7 +650,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
     )
 
     # Cache taxonomy results (metadata + growing model). The taxonomy is displayed
-    # once at the very end (post P7.5/P8/P9), so the readout reflects the final state.
+    # once at the very end (post P5b/P7.5), so the readout reflects the final state.
     cache_taxonomy_results(partition_set, label_mappings, taxonomy_result, ideas_models=ideas_models)
 
     # P7.5: Valence-neutral attribute merge (collapse valence-split attribute pairs)
@@ -591,92 +684,12 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                     step="taxonomy_classified", variable_key=variable_key,
                 )
 
-    # P8: Cross-domain attribute consolidation
-    if CONFIG.debug_stop_after_phase is None or CONFIG.debug_stop_after_phase >= 8:
-        # Load the just-cached taxonomy and growing model
-        cache_manager = CacheManager()
-        taxonomy_cache = cache_manager.load_metadata_from_cache(
-            filename=FILENAME, step="taxonomy",
-            variable_key=variable_key, model_cls=TaxonomyResultsCache,
-        )
-        classified = cache_manager.load_from_cache(
-            filename=FILENAME, step="taxonomy_classified",
-            variable_key=variable_key, model_cls=TaxonomyClassifiedModel,
-        )
-
-        if taxonomy_cache and classified:
-            import asyncio
-            consolidator = CrossDomainConsolidator(
-                config=CONFIG,
-                prompt_printer=prompt_printer,
-                cost_tracker=cost_tracker,
-                fetched_limits=processor._fetched_limits,
-                fetched_has_headers=processor._fetched_has_headers,
-            )
-            new_taxonomy, new_classified, merge_map, p8_stats = asyncio.run(
-                consolidator.consolidate(
-                    taxonomy_cache=taxonomy_cache,
-                    classified=classified,
-                    extraction_meta=extraction_metadata,
-                    verbose=CONFIG.verbose,
-                )
-            )
-
-            # Save consolidated results (overwrite P7 output)
-            ensure_taxonomy_ids(new_taxonomy)
-            restamp_assignment_ids(new_classified, new_taxonomy)
-            cache_manager.save_metadata_to_cache(
-                metadata=new_taxonomy, filename=FILENAME,
-                step="taxonomy", variable_key=variable_key,
-            )
-            cache_manager.save_to_cache(
-                data=new_classified, filename=FILENAME,
-                step="taxonomy_classified", variable_key=variable_key,
-            )
-
-            if CONFIG.verbose and p8_stats["merges"] > 0:
-                print(f"\n  P8 saved: {p8_stats['attrs_before']} → {p8_stats['attrs_after']} attributes "
-                      f"({p8_stats['merges']} merges, {p8_stats['ideas_after']} ideas)")
-
-            if CONFIG.verbose and merge_map:
-                print(f"\n  P8 merge report ({len(merge_map)} remappings):")
-                for (src_domain, old_name), target in sorted(merge_map.items()):
-                    print(f"    \"{old_name}\" ({src_domain}) → "
-                          f"\"{target.new_attribute_name}\" "
-                          f"({target.new_domain} > {target.new_facet})")
-
-    # P9: Post-hoc over-merge correction (default on). Splits over-merged catch-all
-    # buckets back apart along provenance seams, writing corrected_* to NEW cache keys
-    # (the consolidated taxonomy / taxonomy_classified stay intact). Step 5 reads these.
-    corrected_taxonomy = None
-    if CONFIG.correction_enabled and (CONFIG.debug_stop_after_phase is None or CONFIG.debug_stop_after_phase >= 8):
-        cache_manager = CacheManager()
-        c_taxonomy = cache_manager.load_metadata_from_cache(
-            filename=FILENAME, step="taxonomy", variable_key=variable_key, model_cls=TaxonomyResultsCache)
-        c_classified = cache_manager.load_from_cache(
-            filename=FILENAME, step="taxonomy_classified", variable_key=variable_key, model_cls=TaxonomyClassifiedModel)
-        if c_taxonomy and c_classified:
-            import asyncio
-            from pipeline.step_4_classifier.consolidation_corrector import ConsolidationCorrector
-            corrected_taxonomy, corrected_classified, _c_map, _c_stats, _c_dec = asyncio.run(
-                ConsolidationCorrector(CONFIG, prompt_printer=prompt_printer,
-                                       cost_tracker=cost_tracker).consolidate(
-                    c_taxonomy, c_classified, extraction_metadata, verbose=CONFIG.verbose))
-            ensure_taxonomy_ids(corrected_taxonomy)
-            restamp_assignment_ids(corrected_classified, corrected_taxonomy)
-            cache_manager.save_metadata_to_cache(
-                metadata=corrected_taxonomy, filename=FILENAME,
-                step="taxonomy_corrected", variable_key=variable_key)
-            cache_manager.save_to_cache(
-                data=corrected_classified, filename=FILENAME,
-                step="taxonomy_classified_corrected", variable_key=variable_key)
-
-    # Display the final taxonomy — corrected when correction ran, else post-P8.
+    # Display the final taxonomy
     if CONFIG.verbose:
-        final_tax = corrected_taxonomy or CacheManager().load_metadata_from_cache(
+        final_tax = CacheManager().load_metadata_from_cache(
             filename=FILENAME, step="taxonomy", variable_key=variable_key, model_cls=TaxonomyResultsCache)
         if final_tax is not None:
-            _print_final_taxonomy(final_tax, use_corrected=corrected_taxonomy is not None)
+            _print_final_taxonomy(final_tax, use_corrected=False)
 
     cost_tracker.finalize_step("step_4_taxonomy_classifier")
 
@@ -704,18 +717,32 @@ def _print_final_taxonomy(tax_cache, use_corrected):
 
 
 if __name__ == "__main__":
-    with VerboseCapture(
-        filename=FILENAME,
-        var_name=VARIABLE,
-        sample_size=SAMPLE_SIZE,
-        step=4,
-    ):
-        token_tracker.reset()
+    # Capture all output while also printing to console
+    tee = TeeOutput(sys.stdout)
+    sys.stdout = tee
 
-        partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer = run_taxonomy()
+    token_tracker.reset()
+
+    try:
+        # force_recalc=True: with production cache keys a valid taxonomy is
+        # already present, so a bare run would skip P1-P6 entirely.
+        partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer = run_taxonomy(force_recalc=True)
 
         # Print token usage
         if token_tracker.call_count > 0:
             print(token_tracker.get_summary())
+
+    finally:
+        sys.stdout = tee.original_stdout
+
+    # Save full verbose report
+    output_path = save_results_to_file(
+        output=tee.get_output(),
+        filename=FILENAME,
+        variable=VARIABLE,
+        sample_size=SAMPLE_SIZE
+    )
+    print(f"\n{'='*70}")
+    print(f"Results saved to: {output_path}")
 
 # %%

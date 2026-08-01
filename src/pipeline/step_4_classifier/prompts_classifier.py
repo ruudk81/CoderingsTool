@@ -1,5 +1,5 @@
 """
-Prompt builders for Taxonomy Classifier (P1-P8).
+Prompt builders for Taxonomy Classifier (P1-P6 + P5b).
 
 Organized in pipeline processing order:
   §0   Dimension Context Block (shared helper)
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
@@ -93,60 +93,6 @@ def _build_exclusion__light_block(
     return (
         f"{content}"
     )
-
-
-def build_dimension_context_block(
-    *,
-    dimension_def: Optional[DimensionDefinition],
-    dimension_name: str,
-    dimension_description: str,
-    domain_name: str,
-    domain_definition: str,
-) -> str:
-    """Build a dimension-specific taxonomy context block for prompts. """
-    if dimension_def is None:
-        # Fallback: generic taxonomy block (no dimension-specific semantics)
-        return f"""<taxonomy_context>
-Dimension: {dimension_name} — {dimension_description}
-Domain: {domain_name} — {domain_definition}
-
-Taxonomy levels:
-- Dimension (L1): the type of information expressed in the response
-- Domain (L2): the subject the statement refers to
-- Facet (L3): the analytical lens applied to the subject
-- Attribute (L4): the specific observable property being described
-</taxonomy_context>"""
-
-    rules = dimension_def.prompt_rules
-
-    # Extract "Key idea:" summaries from instructions
-    domain_key_idea = _extract_key_idea(rules.domain_instruction)
-    facet_key_idea = _extract_key_idea(rules.facet_instruction)
-    attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
-
-    # Build worked example from dimension's examples
-    example_block = ""
-    if dimension_def.examples:
-        ex = dimension_def.examples[0]
-        example_block = f"""
-Example (from a different survey):
-  Survey: {ex.survey_context}
-  Response: "{ex.response}"
-  Domain: {ex.domain}
-  Facet: {ex.facet}
-  Instance: {ex.instance}"""
-
-    return f"""<taxonomy_context>
-Dimension: {dimension_name} — {dimension_description}
-Domain: {domain_name} — {domain_definition}
-
-Taxonomy levels for this dimension:
-- Dimension (L1): {dimension_def.noun_phrase_descriptor}
-- Domain (L2): {domain_key_idea}
-- Facet (L3): {facet_key_idea}
-- Attribute (L4): {attribute_key_idea}
-{example_block}
-</taxonomy_context>"""
 
 
 # =============================================================================
@@ -1134,10 +1080,10 @@ class AttributeAssignmentResult(BaseModel):
 
 
 # =============================================================================
-# §7 ATTRIBUTE CONSOLIDATION (P7) — cross-facet dedup within domain
+# §5b IN-FACET ATTRIBUTE CONSOLIDATION — post-assignment, one facet at a time
 # =============================================================================
 
-def build_attribute_consolidation_prompt(
+def build_in_facet_consolidation_prompt(
     *,
     survey_question: str,
     language: str,
@@ -1147,16 +1093,18 @@ def build_attribute_consolidation_prompt(
     dimension_description: str,
     domain_name: str,
     domain_definition: str,
-    facet_attributes_block: str,
-    excluded_domains: Optional[List[Tuple[str, str]]] = None,
+    facet_name: str,
+    facet_description: str,
+    attributes_block: str,
+    neighbour_block: str,
 ) -> str:
-    """Consolidate attributes across facets within a domain into a MECE set.
+    """Finalise the attribute inventory of ONE facet, after every idea is assigned.
 
-    P7: after P4 discovers attributes per facet independently, this step
-    deduplicates overlapping attributes across facets and assigns each
-    surviving attribute to its best-fitting facet.
+    Runs after P6, so each attribute is shown with its real size and its real
+    contents instead of the examples discovery guessed at. The facet is fixed:
+    nothing in this call can move an attribute to another facet. When a group of
+    ideas belongs elsewhere, the IDEAS move (`misfits`) and the structure stays put.
     """
-    # Dimension-specific guidance
     if dimension_def:
         rules = dimension_def.prompt_rules
         attribute_guidance = rules.attribute_instruction
@@ -1172,15 +1120,10 @@ def build_attribute_consolidation_prompt(
         facet_key_idea = "the analytical lens applied to the subject"
         domain_key_idea = "the subject the statement refers to"
 
-    excluded_block = _build_exclusion_block(
-        excluded_domains or [], "excluded_domains"
-    )
-    excluded_block_light = _build_exclusion_block_light(
-        excluded_domains or []
-    )
-
     return f"""You are a taxonomy consolidation specialist for surveys.
-Your task is to deduplicate attributes across facets within the domain "{domain_name}", producing a single MECE attribute inventory for the entire domain.
+Your task is to finalise the attribute inventory of ONE facet: "{facet_name}", inside domain "{domain_name}".
+
+Every idea has already been assigned, so you see what each attribute ACTUALLY holds -- not what its label promised. Judge the contents, not the name.
 
 Here is the survey context:
 
@@ -1210,24 +1153,26 @@ This is the structure:
 - Attribute (L4): {attribute_key_idea}
 </taxonomy_structure>
 
-You are working within this domain:
-<taxonomy_domain>
-{domain_name} -- {domain_definition}
-</taxonomy_domain>
-{excluded_block}
+You are working inside this one facet:
+<taxonomy_facet>
+Domain: {domain_name} -- {domain_definition}
+Facet:  {facet_name} -- {facet_description}
+</taxonomy_facet>
 </taxonomy_context>
 
-Here are all facets and their discovered attributes:
+Here are this facet's attributes, with their real size and their real contents:
 <facet_attributes>
-{facet_attributes_block}
+{attributes_block}
 </facet_attributes>
+
+{neighbour_block}
 
 # Understanding Attributes
 
 Conceptualization:
 {attribute_guidance}
 
-# Attribute Consolidation Rules
+# Consolidation Rules
 
 <strict_consolidation_rule>
 Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping by these rules, in order.
@@ -1239,8 +1184,10 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
    - Do NOT create separate attributes based only on the object discussed, when the same underlying value applies — an object is not a dimension.
 
 2. PREVALENCE SETS GRANULARITY (within a dimension only).
-   - A high-count value keeps its own attribute — never dissolve a well-supported concept.
-   - Several thin, same-dimension values are GROUPED into one attribute that still names the shared value/contrast in plain language.
+   Each attribute shows its share of this facet. Judge size RELATIVE to its siblings, never against an absolute number.
+   - The largest attributes keep their own identity — never dissolve a well-supported concept.
+   - Attributes far below their siblings are GROUPED, but only with same-dimension neighbours, into one attribute that still names the shared value in plain language.
+   - An attribute holding a large share AND visibly diverse contents is too abstract: SPLIT it (rule 6), do not widen it.
    - Variants that differ only in evaluative direction ("positive X" and "negative X") collapse to ONE attribute "X"; the direction is recorded separately as valence, not as separate attributes.
    Prevalence decides how finely to split WITHIN a dimension; it NEVER licenses merging ACROSS dimensions.
 
@@ -1253,45 +1200,64 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
 4. PLAIN, MEANINGFUL LABELS.
    Name every surviving attribute in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
 
-5. FACET ASSIGNMENT.
-   Assign each surviving attribute to the ONE facet where it fits best.
-   Do NOT restructure or rename facets -- only deduplicate attributes.
+5. THE FACET IS FIXED.
+   Every attribute you return belongs to "{facet_name}". You cannot move an attribute to another facet, and you cannot create an attribute that belongs to another facet.
+   If a GROUP OF IDEAS belongs elsewhere, report it under `misfits` — the ideas move, the attribute stays here.
 
-Precedence when rules conflict: 1 (orthogonality) > 2 (prevalence grouping) > 4 (label clarity).
+6. FOUR EXITS FOR WHAT DOES NOT FIT.
+   Read what each attribute actually contains. Where contents do not match the label, choose per group:
+   - the group points at ONE existing attribute (in this facet or a neighbouring one)
+       -> `misfits`, verdict "move": name the target attribute and the EXACT response texts
+   - the group is one coherent concept that has no attribute yet
+       -> action "split": name the child attributes and which EXACT response texts go to each
+   - the group is diverse but genuinely related to this attribute
+       -> action "widen": restate the description so it honestly covers what is there
+   - the group carries NO SUBSTANTIVE CONTENT WHATSOEVER — a bare evaluation or filler with nothing said about the subject
+       -> `misfits`, verdict "out"
+   "out" is not an escape hatch for "this does not fit the attributes I chose". A text that names something real about the subject HAS substance: if it has no home yet, create one with "split". Only content-free text goes out.
+   Moves and splits must be expressed as EXACT response texts copied from the contents shown above — never as counts, paraphrases or summaries. Every decision has to be checkable against the data.
+
+7. ONE SOURCE, ONE DESTINATION — unless you route by text.
+   Every attribute in the input must end up in exactly ONE returned attribute.
+   If you want to divide one input attribute's contents over TWO returned attributes, that is a SPLIT: use action "split" for each part and list the exact response texts belonging to it in `instance_texts`.
+   Listing the same source attribute under two returned attributes WITHOUT instance_texts is not interpretable — the ideas cannot be routed and will be left where they are.
+
+8. KEEP THE VALUES THAT ARE ACTUALLY THERE.
+   Grouping is not the same as discarding. If the contents hold two distinct values, return two attributes — merging them into one and sending the remainder "out" loses real answers.
+   Collapsing a facet to a SINGLE attribute removes a whole level of the hierarchy: the facet name then says nothing the attribute does not already say. Do that only when the contents genuinely express one value.
+
+Precedence when rules conflict: 1 (orthogonality) > 5 (facet is fixed) > 2 (prevalence grouping) > 4 (label clarity).
 </strict_consolidation_rule>
 
 # Required Process
 
 Before writing your final output, think through your analysis in the scratchpad field:
 
-**Step 1 -- Identify the dimensions present**
-- Group the attributes by the underlying dimension each one answers.
-- Different dimensions stay separate inventories; never collapse across them.
+**Step 1 -- Read the contents against the label**
+For each attribute, compare what it HOLDS with what its name and description CLAIM. Note every group of contents that does not belong.
 
-**Step 2 -- Within each dimension, set granularity by prevalence**
-- Keep high-count values as their own attribute.
-- Group several thin, same-dimension values under one meaningful, plainly-named attribute.
-- Never merge opposite poles of a dimension or values from different dimensions.
+**Step 2 -- Identify the dimensions present**
+Group the attributes by the underlying dimension each one answers. Different dimensions stay separate; never collapse across them.
 
-**Step 3 -- Apply the dimension test to any candidate merge**
-For each pair you consider merging, ask: "Do these answer the SAME dimension and mean the same thing?" Only then merge; different dimensions or opposite poles stay separate.
+**Step 3 -- Set granularity by prevalence, within a dimension**
+Use the shares shown. Keep the large ones. Group the ones far below their siblings. Split the large-and-diverse ones.
 
-**Step 4 -- Verify domain boundaries**
-Ensure each retained attribute belongs to this domain and not to any excluded domain:
-{excluded_block_light}
+**Step 4 -- Route what does not fit**
+For each group from Step 1, pick one of the four exits in rule 6. When the target is in a neighbouring facet, name it exactly as it appears in the neighbour list.
 
 **Step 5 -- Check every label is a plain, stateable value**
-- No dimension-name containers; each label names a value a layperson can picture.
+No dimension-name containers; each label names a value a layperson can picture.
 
 **Step 6 -- Prepare final output**
-Return only the minimal set of consolidated attributes that pass all checks.
+Return the attributes that survive for THIS facet, plus every misfit group you found.
 
-For each consolidated attribute, provide:
+For each surviving attribute, provide:
+- action: "keep", "merge", "widen" or "split"
 - A short descriptive name (2-5 words)
-- A description of what the attribute captures -- a concrete, observable property (1-2 sentences)
-- The parent facet this attribute best belongs to
+- A description of what it captures -- a concrete, observable property (1-2 sentences)
 - 2-3 representative example observations (exact text)
-- source_attributes: list of original attribute names that were merged into this one
+- source_attributes: the original attribute names that feed this one
+- instance_texts: for "split" ONLY, the exact response texts routed to this child
 
 # Output Requirements
 
@@ -1304,253 +1270,167 @@ All attribute names and descriptions must be in {language}.
 # Final Notes
 
 - Attributes must be descriptive, not evaluative
-- Attributes must be grounded in repeated patterns across observations
 - Attributes must be internally coherent (one clear concept each)
 - Attributes must be externally distinctive (no overlap, no subset/superset)
-- Each attribute must be assigned to exactly ONE parent facet (best fit)
+- Every returned attribute belongs to "{facet_name}" — there is no other option
 - All output must be in {language}
 
 Use your scratchpad field for Steps 1-6 to show your analytical thinking. Then provide your final output as valid JSON."""
 
 
-class ConsolidatedAttribute(BaseModel):
-    """An attribute assigned to its best-fitting facet after cross-facet consolidation."""
+def build_neighbour_block(
+    neighbours: List[Tuple[str, List[Tuple[str, int]]]],
+) -> str:
+    """Format adjacent facets as steer-clear context for in-facet consolidation.
+
+    `neighbours`: [(facet_name, [(attribute_name, n_ideas), ...]), ...]
+
+    Shown so the model can write its boundaries against real neighbours instead of
+    abstract ones, and so it can name a target when a group of ideas belongs to one
+    of them. Explicitly NOT merge candidates — without that instruction the model
+    starts merging across facets, which is the failure this phase exists to prevent.
+    """
+    if not neighbours:
+        return ""
+    lines = [
+        "<neighbouring_facets>",
+        "These facets sit beside yours in the same domain. They are shown so you can "
+        "write your boundaries against real neighbours instead of abstract ones.",
+        "THEY ARE NOT MERGE CANDIDATES. You may not merge your attributes into them, "
+        "and you may not restate their attributes as your own. Their only two uses:",
+        "  (a) sharpen your own labels, so yours states what theirs does not;",
+        "  (b) name a target when a group of ideas in YOUR facet clearly belongs to one of them.",
+    ]
+    for facet_name, attrs in neighbours:
+        if not attrs:
+            continue
+        listed = ", ".join(f"{n} ({c})" for n, c in attrs)
+        lines.append(f'  Facet "{facet_name}" — attributes: {listed}')
+    lines.append("</neighbouring_facets>")
+    return "\n".join(lines)
+
+
+class InFacetAttribute(BaseModel):
+    """One attribute surviving in-facet consolidation. Its facet is fixed by the task."""
+    action: Literal["keep", "merge", "widen", "split"] = Field(
+        ..., description=(
+            "What was done: 'keep' unchanged, 'merge' several sources into one, "
+            "'widen' the description to cover the real contents, "
+            "'split' one bucket into children (then instance_texts is required)"
+        )
+    )
     attribute_name: str = Field(
         ..., description="Short descriptive name for the attribute (2-5 words)"
     )
     attribute_description: str = Field(
         ..., description="What this attribute captures (1-2 sentences)"
-    )
-    parent_facet: str = Field(
-        ..., description="The facet name this attribute best belongs to"
     )
     example_observations: List[str] = Field(
-        ..., description="2-3 representative observations from the input"
+        ..., description="2-3 representative observations, exact text from the contents shown"
     )
     source_attributes: List[str] = Field(
         default_factory=list,
-        description="Original attribute names that were merged into this consolidated attribute"
-    )
-
-
-class AttributeConsolidatedResponse(BaseModel):
-    """Consolidated attributes after cross-facet deduplication within a domain."""
-    scratchpad: str = Field(
-        ..., description=(
-            "Step-by-step reasoning before consolidating attributes: "
-            "(1) identify the dimensions present and group attributes by dimension, "
-            "(2) within each dimension, set granularity by prevalence (group thin values, keep high-count ones), "
-            "(3) apply the dimension test -- merge only same-dimension, same-meaning values; keep different dimensions and opposite poles separate, "
-            "(4) verify domain boundaries -- exclude attributes belonging to other domains, "
-            "(5) check every label is a plain, stateable value (no dimension-name containers), "
-            "(6) prepare final minimal set of consolidated attributes"
+        description=(
+            "Original attribute names feeding this one (for 'keep', its own name). "
+            "A source may appear under only ONE returned attribute, unless you are "
+            "splitting it — then use action 'split' and fill instance_texts."
         )
     )
-    attributes: List[ConsolidatedAttribute] = Field(
-        ..., description="Deduplicated attributes, each assigned to its best-fitting facet"
-    )
-
-
-# =============================================================================
-# §8 CROSS-DOMAIN ATTRIBUTE CONSOLIDATION (P8)
-# =============================================================================
-
-def build_cross_domain_consolidation_prompt(
-    *,
-    survey_question: str,
-    language: str,
-    dataset_context_section: str,
-    dimension_def: Optional['DimensionDefinition'],
-    dimension_name: str,
-    dimension_description: str,
-    domain_attributes_block: str,
-) -> str:
-    """Consolidate attributes across domains into a MECE set.
-
-    P8: after P7 consolidates attributes across facets within each domain,
-    this step deduplicates overlapping attributes across domain boundaries
-    and assigns each surviving attribute to its best-fitting domain and facet.
-    """
-    # Dimension-specific guidance
-    if dimension_def:
-        rules = dimension_def.prompt_rules
-        attribute_guidance = rules.attribute_instruction
-        attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
-        facet_key_idea = _extract_key_idea(rules.facet_instruction)
-        domain_key_idea = _extract_key_idea(rules.domain_instruction)
-    else:
-        attribute_guidance = (
-            "An attribute identifies the specific observable property or feature being described. "
-            "It is a named property -- not a verbatim span from the response."
-        )
-        attribute_key_idea = "the specific observable property being described"
-        facet_key_idea = "the analytical lens applied to the subject"
-        domain_key_idea = "the subject the statement refers to"
-
-    return f"""You are a taxonomy consolidation specialist for surveys.
-Your task is to deduplicate attributes across domains, producing a consolidated attribute inventory.
-
-Here is the survey context:
-
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
-
-Use the survey context to:
-
-<survey_context_usage>
-- Interpret the meaning of attributes relative to the survey question
-- Ensure consolidated attributes are directly relevant to what is being asked
-- Preserve terminology and phrasing appropriate to the survey language
-- Avoid introducing attributes that are not grounded in the question intent
-</survey_context_usage>
-
-Here is the taxonomy context you are working within:
-
-<taxonomy_context>
-This is the structure:
-<taxonomy_structure>
-- Dimension (L1): {dimension_name} — {dimension_description}
-- Domain (L2): {domain_key_idea}
-- Facet (L3): {facet_key_idea}
-- Attribute (L4): {attribute_key_idea}
-</taxonomy_structure>
-</taxonomy_context>
-
-Here are all domains, facets, and their attributes for this group:
-<domain_attributes>
-{domain_attributes_block}
-</domain_attributes>
-
-# Understanding Attributes
-
-Conceptualization:
-{attribute_guidance}
-
-# Attribute Consolidation Rules
-
-<strict_consolidation_rule>
-Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping by these rules, in order.
-
-1. DIMENSION FIRST (orthogonality — the guardrail).
-   For each concept, determine WHICH underlying dimension it answers.
-   - Concepts on DIFFERENT dimensions are orthogonal: NEVER merge them into one attribute (e.g. socio-economic class vs political orientation vs age are different dimensions).
-   - Mutually-exclusive VALUES/POLES of the SAME dimension are also kept apart (e.g. "young" vs "old"); merging opposite poles creates an empty container.
-   - Do NOT create separate attributes based only on the object discussed, when the same underlying value applies — an object is not a dimension.
-   - RESPECT DOMAIN BOUNDARIES: each domain above may list what it "Excludes (belong to other domains)". Do NOT merge an attribute into a domain that excludes its concept, and never set a consolidated attribute's parent_domain to a domain whose Excludes covers it.
-
-2. PREVALENCE SETS GRANULARITY (within a dimension only).
-   - A high-count value keeps its own attribute — never dissolve a well-supported concept.
-   - Several thin, same-dimension values are GROUPED into one attribute that still names the shared value/contrast in plain language.
-   Prevalence decides how finely to split WITHIN a dimension; it NEVER licenses merging ACROSS dimensions.
-
-3. LIFT, DON'T FLATTEN.
-   When grouping is needed, raise concepts to a shared higher-abstraction label that still carries their meaning — NOT a label that merely names the axis.
-   FORBIDDEN: a container that only names the axis it sits on — the reader learns what was being measured, not what was said.
-   REQUIRED: a label that states the value itself, so the reader knows what the respondents expressed.
-   Test: read the label alone. If it tells you only which question was asked, it is a container; if it tells you what the answer was, it is a value.
-
-4. PLAIN, MEANINGFUL LABELS.
-   Name every surviving attribute in everyday language. Test: reading the label alone, a layperson knows which distinction is meant, given the survey question. No jargon, no nominalizations, no dimension-names.
-
-5. DOMAIN & FACET ASSIGNMENT.
-   Assign each surviving attribute to the ONE domain and ONE facet where it fits best.
-   If two domains fit equally well, assign to the domain with MORE ideas for that attribute.
-   Do NOT restructure or rename domains or facets -- only deduplicate attributes.
-
-Precedence when rules conflict: 1 (orthogonality) > 2 (prevalence grouping) > 4 (label clarity).
-</strict_consolidation_rule>
-
-# Required Process
-
-Before writing your final output, think through your analysis in the scratchpad field:
-
-**Step 1 -- Identify the dimensions present**
-- Group the attributes by the underlying dimension each one answers.
-- Different dimensions stay separate inventories; never collapse across them.
-
-**Step 2 -- Within each dimension, set granularity by prevalence**
-- Keep high-count values as their own attribute.
-- Group several thin, same-dimension values under one meaningful, plainly-named attribute.
-- Never merge opposite poles of a dimension or values from different dimensions.
-
-**Step 3 -- Apply the dimension test to any candidate merge**
-For each pair you consider merging, ask: "Do these answer the SAME dimension and mean the same thing?" Only then merge; respect domain-exclusion boundaries.
-
-**Step 4 -- Check every label is a plain, stateable value**
-- No dimension-name containers; each label names a value a layperson can picture.
-
-**Step 5 -- Assign domain and facet**
-For each surviving attribute, assign it to the best-fitting domain and facet.
-If equal fit across domains, choose the domain with more ideas.
-
-**Step 6 -- Prepare final output**
-Return only the minimal set of consolidated attributes that pass all checks.
-
-For each consolidated attribute, provide:
-- A short descriptive name (2-5 words)
-- A description of what the attribute captures -- a concrete, observable property (1-2 sentences)
-- The parent domain and parent facet this attribute best belongs to
-- source_attributes: list of original attribute names that were merged into this one
-
-# Output Requirements
-
-Provide output as valid JSON following the response schema provided.
-
-# Language Requirement
-
-All attribute names and descriptions must be in {language}.
-
-# Final Notes
-
-- Attributes must be descriptive, not evaluative
-- Attributes must be grounded in repeated patterns across observations
-- Attributes must be internally coherent (one clear concept each)
-- Attributes must be externally distinctive (no overlap, no subset/superset)
-- Each attribute must be assigned to exactly ONE parent domain and ONE parent facet (best fit)
-- All output must be in {language}
-
-Use your scratchpad field for Steps 1-5 to show your analytical thinking. Then provide your final output as valid JSON."""
-
-
-class CrossDomainConsolidatedAttribute(BaseModel):
-    """An attribute assigned to its best-fitting domain and facet after cross-domain consolidation."""
-    attribute_name: str = Field(
-        ..., description="Short descriptive name for the attribute (2-5 words)"
-    )
-    attribute_description: str = Field(
-        ..., description="What this attribute captures (1-2 sentences)"
-    )
-    parent_domain: str = Field(
-        ..., description="The domain this attribute best belongs to"
-    )
-    parent_facet: str = Field(
-        ..., description="The facet within the domain this attribute best belongs to"
-    )
-    source_attributes: List[str] = Field(
+    instance_texts: List[str] = Field(
         default_factory=list,
-        description="Original attribute names that were merged into this consolidated attribute"
-    )
-
-
-class CrossDomainConsolidatedResponse(BaseModel):
-    """Consolidated attributes after cross-domain deduplication."""
-    scratchpad: str = Field(
-        ..., description=(
-            "Step-by-step reasoning before consolidating attributes: "
-            "(1) identify the dimensions present and group attributes by dimension, "
-            "(2) within each dimension, set granularity by prevalence (group thin values, keep high-count ones), "
-            "(3) apply the dimension test across domains -- merge only same-dimension, same-meaning values; respect domain-exclusion boundaries, "
-            "(4) check every label is a plain, stateable value (no dimension-name containers), "
-            "(5) assign each surviving attribute to the best domain and facet, "
-            "(6) prepare final minimal set of consolidated attributes"
+        description=(
+            "For action 'split' ONLY: the exact response texts routed to this child, "
+            "copied verbatim from the contents shown. Required when a source attribute "
+            "is divided over more than one returned attribute. Empty otherwise."
         )
     )
-    attributes: List[CrossDomainConsolidatedAttribute] = Field(
-        ..., description="Deduplicated attributes, each assigned to its best domain and facet"
+
+
+class MisfitGroup(BaseModel):
+    """A group of ideas sitting in this facet that does not belong to the attribute holding it."""
+    from_attribute: str = Field(
+        ..., description="The attribute currently holding these ideas"
     )
+    instance_texts: List[str] = Field(
+        ..., description=(
+            "The exact response texts that do not belong, copied verbatim from the "
+            "contents shown. Never counts, paraphrases or summaries."
+        )
+    )
+    verdict: Literal["move", "out"] = Field(
+        ..., description=(
+            "'move' when these ideas belong to a named existing attribute; "
+            "'out' when they carry no substantive content at all"
+        )
+    )
+    target_attribute: Optional[str] = Field(
+        default=None,
+        description=(
+            "For verdict 'move': the attribute these ideas belong to, named exactly as "
+            "shown in this facet or in the neighbouring facets list. Null for 'out'."
+        )
+    )
+    reason: str = Field(
+        ..., description="One sentence: why these texts do not belong where they are"
+    )
+
+
+class InFacetConsolidatedResponse(BaseModel):
+    """Final attribute inventory for ONE facet, plus the misfits found in it."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning: (1) read each attribute's contents against its label "
+            "and note groups that do not belong, (2) group attributes by underlying dimension, "
+            "(3) set granularity by prevalence using the shares shown -- keep the large, group "
+            "the thin, split the large-and-diverse, (4) route each non-fitting group to one of "
+            "the four exits, (5) check every label states a value rather than an axis, "
+            "(6) assemble the final inventory."
+        )
+    )
+    attributes: List[InFacetAttribute] = Field(
+        ..., description="The attributes surviving for this facet, all belonging to it"
+    )
+    misfits: List[MisfitGroup] = Field(
+        default_factory=list,
+        description="Groups of ideas that do not belong to the attribute holding them"
+    )
+
+    @model_validator(mode="after")
+    def _routable(self):
+        """Reject an inventory whose ideas cannot be routed.
+
+        Enforced here rather than in the prompt for the same reason `parent_facet`
+        was removed from the schema: a rule the model can decline to follow is not a
+        rule. instructor surfaces these messages and retries, so the model gets to
+        correct itself instead of silently producing an unroutable answer.
+        """
+        for a in self.attributes:
+            if a.action == "split" and not a.instance_texts:
+                raise ValueError(
+                    f'attribute "{a.attribute_name}" has action "split" but no '
+                    f'instance_texts. A split must list the exact response texts '
+                    f'routed to each child, or the ideas cannot be divided.'
+                )
+
+        claimed_by: Dict[str, List[str]] = {}
+        for a in self.attributes:
+            for src in (a.source_attributes or []):
+                claimed_by.setdefault(src, []).append(a.attribute_name)
+
+        for src, claimants in claimed_by.items():
+            if len(claimants) < 2:
+                continue
+            without_texts = [a.attribute_name for a in self.attributes
+                             if src in (a.source_attributes or []) and not a.instance_texts]
+            if without_texts:
+                raise ValueError(
+                    f'source attribute "{src}" is claimed by {len(claimants)} returned '
+                    f'attributes ({", ".join(claimants)}), but {", ".join(without_texts)} '
+                    f'give no instance_texts. Either let ONE attribute take "{src}", or '
+                    f'make every claimant action "split" and list the exact response '
+                    f'texts each one takes.'
+                )
+        return self
 
 
 # =============================================================================

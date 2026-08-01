@@ -146,7 +146,7 @@ class ValenceConsolidator:
     """Collapses safe valence-split attribute pairs into one descriptive attribute."""
 
     def __init__(self, config: CategoriesConfig, cost_tracker=None):
-        self._model = config.qr_model_p7
+        self._model = config.qr_model_p7_5
         self._temperature = config.qr_temperature
         self._cost_tracker = cost_tracker
         self._label_sim_threshold = 0.6

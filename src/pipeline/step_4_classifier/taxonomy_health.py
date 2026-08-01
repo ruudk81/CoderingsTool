@@ -1,6 +1,12 @@
 """Deterministic taxonomy hygiene and health metrics. No LLM.
 
-Two things, both dataset-independent and both cheap enough to run on every build:
+Three things, all dataset-independent and all cheap enough to run on every build:
+
+  attr_structure_home() Maps attribute_name -> (domain, facet) from the structure, so
+                        per-idea (domain, facet) can be a DERIVED projection of the
+                        taxonomy instead of an independently-maintained copy that
+                        drifts from it. Lived in the P8 module before P8 was dropped;
+                        the derivation itself is not P8-specific.
 
   prune_empty_nodes()   Consolidation moves ideas out of an attribute but leaves the
                         structure node behind. The structure-projection fix cannot
@@ -30,11 +36,38 @@ checks ran. It therefore deliberately stays name-based.
 """
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 from models import TaxonomyResultsCache
 
 SENTINELS = {"__UNASSIGNED__", "(no attribute)", "(geen attribuut)"}
+
+
+# =============================================================================
+# STRUCTURE PROJECTION
+# =============================================================================
+
+def attr_structure_home(
+    taxonomy_cache: TaxonomyResultsCache,
+) -> Dict[str, Tuple[str, str]]:
+    """Map attribute_name -> (domain, facet) from the taxonomy STRUCTURE
+    (partition_results[*].attributes).
+
+    Only UNAMBIGUOUS names (present under exactly one (domain, facet)) are
+    returned; ambiguous names are omitted so callers fall back to the existing
+    per-idea assignment. This lets per-idea (domain, facet) be a derived
+    projection of the structure — one source of truth — instead of an
+    independently-maintained copy that can drift from it.
+    """
+    places: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
+    for dom, res in taxonomy_cache.partition_results.items():
+        for fac, lst in (getattr(res, "attributes", {}) or {}).items():
+            for a in lst:
+                name = (a.get("attribute_name") if isinstance(a, dict)
+                        else getattr(a, "attribute_name", None))
+                if name:
+                    places[name].add((dom, fac))
+    return {n: next(iter(p)) for n, p in places.items() if len(p) == 1}
 
 
 # =============================================================================
