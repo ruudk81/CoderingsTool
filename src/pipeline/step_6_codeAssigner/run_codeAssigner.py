@@ -18,6 +18,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from utils.exportNaming import export_filename
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 from utils.costTracker import CostTracker
@@ -276,8 +277,8 @@ def save_prompts_to_json(prompt_printer):
     prompts_dir = project_root / "exports" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt_printer.save_prompts(
-        str(prompts_dir / f"step6_codeAssigner_{variable_key}_assignment.json"))
+    prompt_printer.save_prompts(str(prompts_dir / export_filename(
+        FILENAME, VARIABLE, SAMPLE_SIZE, "prompts_step6", "json")))
 
 
 # =============================================================================

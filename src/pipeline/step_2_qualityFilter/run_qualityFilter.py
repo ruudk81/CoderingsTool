@@ -35,6 +35,7 @@ EXPERIMENT_N     = None   # n or None (limit responses for quick testing)
 import models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from utils.exportNaming import export_filename
 from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
 from utils.promptPrinter import PromptPrinter
@@ -163,7 +164,8 @@ def run_step(config: StepConfig = None):
     if prompt_printer.prompts:
         prompts_dir = project_root / "exports" / "prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
-        prompts_file = prompts_dir / f"step2_{config.var_name}_{variable_key}.json"
+        prompts_file = prompts_dir / export_filename(
+            config.filename, config.var_name, config.sample_size, "prompts_step2", "json")
         prompt_printer.save_prompts(str(prompts_file))
 
     cache_manager.save_to_cache(quality_filtered_text, config.filename, "quality_filter", variable_key, elapsed_time, var_lab=var_lab)

@@ -58,6 +58,7 @@ import models
 from config import CacheConfig
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import DEFAULT_IDEA_EXTRACTION_CONFIG
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from utils.exportNaming import export_filename
 from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
 from utils.promptPrinter import PromptPrinter
@@ -276,7 +277,8 @@ def run_step(config: StepConfig = None):
     if prompt_printer.prompts:
         prompts_dir = project_root / "exports" / "prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
-        prompts_file = prompts_dir / f"step3_{config.var_name}_{variable_key}.json"
+        prompts_file = prompts_dir / export_filename(
+            config.filename, config.var_name, config.sample_size, "prompts_step3", "json")
         prompt_printer.save_prompts(str(prompts_file))
 
     return encoded_text, extractor, prompt_printer

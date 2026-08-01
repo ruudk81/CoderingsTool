@@ -30,6 +30,7 @@ STOP_AFTER_PHASE = None   # None = full pipeline, 1–8 = stop after that phase
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from utils.exportNaming import export_filename
 from identity import ensure_taxonomy_ids, restamp_assignment_ids
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
@@ -392,8 +393,8 @@ def save_prompts_to_json(prompt_printer):
     prompts_dir = project_root / "exports" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt_printer.save_prompts(
-        str(prompts_dir / f"step4_classifier_{variable_key}_taxonomy.json"))
+    prompt_printer.save_prompts(str(prompts_dir / export_filename(
+        FILENAME, VARIABLE, SAMPLE_SIZE, "prompts_step4", "json")))
 
 
 # =============================================================================
