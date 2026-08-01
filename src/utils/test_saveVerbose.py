@@ -1,6 +1,8 @@
 """Tests voor de canonieke verbose-lognaam."""
 
-from utils.saveVerbose import build_log_filename
+import pytest
+
+from utils.saveVerbose import VerboseCapture, build_log_filename
 
 
 def test_name_has_no_timestamp():
@@ -50,3 +52,42 @@ def test_sample_size_as_string_full():
 def test_sample_size_zero_is_not_full():
     """0 is een getal, geen ontbrekende waarde."""
     assert build_log_filename("dataset.sav", "Qd1", 0, 3) == "dataset_Qd1_0_step3.txt"
+
+
+def test_find_latest_log_is_exact(tmp_path):
+    """Regressie: de oude glob `{base}_{varkey}_*step{N}_*.txt` slokte het
+    samplesize-segment op, waardoor een log van sample 500 werd gevonden
+    terwijl 4586 was gevraagd."""
+    (tmp_path / "dataset_Qd1_500_step7.txt").write_text("verkeerde sample")
+    doel = tmp_path / "dataset_Qd1_4586_step7.txt"
+    doel.write_text("juiste sample")
+
+    gevonden = VerboseCapture.find_latest_log(
+        "dataset.sav", "Qd1", 4586, 7, output_dir=tmp_path)
+
+    assert gevonden == doel
+    assert gevonden.read_text() == "juiste sample"
+
+
+def test_find_latest_log_returns_none_when_absent(tmp_path):
+    assert VerboseCapture.find_latest_log(
+        "dataset.sav", "Qd1", 4586, 7, output_dir=tmp_path) is None
+
+
+def test_capture_overwrites_on_rerun(tmp_path):
+    """Een tweede run van dezelfde stap vervangt het log, plakt er niet achter."""
+    for tekst in ("eerste run", "tweede run"):
+        with VerboseCapture("dataset.sav", "Q1", 100, 2, output_dir=tmp_path):
+            print(tekst)
+
+    logs = list(tmp_path.glob("*.txt"))
+    assert len(logs) == 1
+    inhoud = logs[0].read_text()
+    assert "tweede run" in inhoud
+    assert "eerste run" not in inhoud
+
+
+def test_verbose_capture_rejects_removed_parameters():
+    """append_mode en session_id bestaan niet meer."""
+    with pytest.raises(TypeError):
+        VerboseCapture("d.sav", "Q1", 100, 2, append_mode=True)
