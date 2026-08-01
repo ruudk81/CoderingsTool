@@ -1,12 +1,13 @@
 #%%
 
 """
-Step 4: Taxonomy Classifier runner (P1-P7)
+Step 4: Taxonomy Classifier runner (P1-P8)
 
 Pipeline: domain discovery → facet discovery → facet assignment →
-attribute discovery → attribute assignment → in-facet consolidation (P7).
+attribute discovery → attribute assignment → in-facet consolidation (P7) →
+valence-neutral merge (P8).
 
-Always runs the full taxonomy pipeline (P1-P7).
+Always runs the full taxonomy pipeline (P1-P8).
 """
 import sys
 import json
@@ -455,7 +456,8 @@ def _load_and_discover(extraction_metadata=None):
 
 def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                  sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
-    """Run taxonomy stages (P1-P7): facets, attributes, assignments, in-facet consolidation.
+    """Run taxonomy stages (P1-P8): facets, attributes, assignments, in-facet
+    consolidation, valence-neutral merge.
 
     Dataset params default to the module-level TEST_DATA constants (so existing
     callers like run_pipeline.py are unchanged); the UI passes them explicitly.
@@ -464,7 +466,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
     global FILENAME, VARIABLE, SAMPLE_SIZE
     FILENAME, VARIABLE, SAMPLE_SIZE = filename, var_name, sample_size
     print("=" * 70)
-    print("TAXONOMY PIPELINE (P1-P7)")
+    print("TAXONOMY PIPELINE (P1-P8)")
     print("=" * 70)
     print(f"\nDataset: {FILENAME}")
     print(f"Variable: {VARIABLE}")
@@ -588,7 +590,7 @@ if __name__ == "__main__":
         token_tracker.reset()
 
         # force_recalc=True: with production cache keys a valid taxonomy is
-        # already present, so a bare run would skip P1-P7 entirely.
+        # already present, so a bare run would skip P1-P8 entirely.
         partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer = run_taxonomy(force_recalc=True)
 
         # Print token usage

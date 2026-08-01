@@ -1,6 +1,6 @@
 #%%
 """
-View taxonomy results (P1-P7): domains, facets, attributes, assignments.
+View taxonomy results (P1-P8): domains, facets, attributes, assignments.
 
 Loads from cached taxonomy results (step "taxonomy").
 
@@ -28,7 +28,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 def main():
     print("=" * 80)
-    print("TAXONOMY RESULTS VIEWER (P1-P6 + P7)")
+    print("TAXONOMY RESULTS VIEWER (P1-P8)")
     print("=" * 80)
     print(f"Variable:     {VAR_NAME}")
     print(f"Sample size:  {SAMPLE_SIZE}")

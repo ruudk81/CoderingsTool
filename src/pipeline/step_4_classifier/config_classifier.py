@@ -1,9 +1,10 @@
 """
-Configuration for Taxonomy Classifier (P1-P7).
+Configuration for Taxonomy Classifier (P1-P8).
 
 Pipeline: facet discovery → facet consolidation → facet assignment →
 attribute discovery → attribute consolidation r1 → attribute assignment →
-attribute consolidation r2 (P7, in-facet, post-assignment).
+attribute consolidation r2 (P7, in-facet, post-assignment) →
+valence-neutral merge (P8).
 """
 
 from dataclasses import dataclass, field
@@ -46,7 +47,7 @@ class ClassifierRampConfig:
 
 @dataclass
 class CategoriesConfig:
-    """Configuration for Taxonomy Classifier (P1-P7)."""
+    """Configuration for Taxonomy Classifier (P1-P8)."""
 
     # ==========================================================================
     # PARTITION SOURCE
@@ -79,7 +80,7 @@ class CategoriesConfig:
     label_prefix: str = ""
 
     # ==========================================================================
-    # TAXONOMY CLASSIFIER PIPELINE (P1-P7)
+    # TAXONOMY CLASSIFIER PIPELINE (P1-P8)
     # ==========================================================================
 
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)

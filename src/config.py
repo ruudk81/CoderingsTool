@@ -427,7 +427,7 @@ class CacheConfig:
         # Step 3: idea extraction (dev)
         "extracted_ideas": "004",
         "extracted_ideas_metadata": "004",
-        # Step 4: taxonomy classifier (dev, P1-P7)
+        # Step 4: taxonomy classifier (dev, P1-P8)
         "taxonomy": "005",
         "taxonomy_metadata": "005",
         "taxonomy_classified": "005",  # growing model with enriched facet/attribute
