@@ -146,7 +146,7 @@ class ValenceConsolidator:
     """Collapses safe valence-split attribute pairs into one descriptive attribute."""
 
     def __init__(self, config: CategoriesConfig, cost_tracker=None):
-        self._model = config.qr_model_p7_5
+        self._model = config.qr_model_p8
         self._temperature = config.qr_temperature
         self._cost_tracker = cost_tracker
         self._label_sim_threshold = 0.6
@@ -173,7 +173,7 @@ class ValenceConsolidator:
         stats = {"candidates": len(pairs), "merges": 0}
         if not merge_pairs:
             if verbose:
-                print(f"\n  P7.5 valence merge: 0 pairs (of {len(pairs)} candidate(s))")
+                print(f"\n  P8 valence merge: 0 pairs (of {len(pairs)} candidate(s))")
             return taxonomy_cache, classified, [], stats
 
         # Descriptions live in the taxonomy cache (not on the growing model)
@@ -188,7 +188,7 @@ class ValenceConsolidator:
         names = await self._rename(merge_pairs, desc_lookup, language)
         if self._cost_tracker and _snap is not None:
             self._cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p7_5_valence_merge",
+                "step_4_taxonomy_classifier", "p8_valence_merge",
                 _snap, token_tracker.snapshot(), self._model,
             )
 
@@ -216,7 +216,7 @@ class ValenceConsolidator:
         stats["merges"] = len(merge_pairs)
 
         if verbose:
-            print(f"\n  P7.5 valence merge: {len(merge_pairs)} pair(s) collapsed")
+            print(f"\n  P8 valence merge: {len(merge_pairs)} pair(s) collapsed")
             for r in report:
                 print(f"    \"{r['name_a']}\" + \"{r['name_b']}\" -> "
                       f"\"{r['new_name']}\"  [{r['source']}]  ({r['domain']})")
@@ -242,7 +242,7 @@ class ValenceConsolidator:
             )
             return {a.pair_id: (a.attribute_name, a.attribute_description) for a in response.attributes}
         except Exception as e:
-            print(f"    P7.5 rename LLM call failed ({e}); using deterministic fallback names")
+            print(f"    P8 rename LLM call failed ({e}); using deterministic fallback names")
             return {}
 
     def _apply_to_cache(self, taxonomy_cache, merge_map):

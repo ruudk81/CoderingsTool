@@ -185,7 +185,7 @@ class TaxonomyClassifier:
         self._model_p5 = config.qr_model_p5
         self._model_p6 = config.qr_model_p6
         self._model_p7 = config.qr_model_p7
-        self._model_p7_5 = config.qr_model_p7_5
+        self._model_p8 = config.qr_model_p8
 
         if self.cost_tracker:
             self.cost_tracker.set_step_models("step_4_taxonomy_classifier", {
@@ -196,7 +196,7 @@ class TaxonomyClassifier:
                 "p5_attribute_consolidation": self._model_p5,
                 "p6_attribute_assignment": self._model_p6,
                 "p7_in_facet_consolidation": self._model_p7,
-                "p7_5_valence_merge": self._model_p7_5,
+                "p8_valence_merge": self._model_p8,
             })
 
         self._temperature = config.qr_temperature

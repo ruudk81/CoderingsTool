@@ -90,7 +90,7 @@ class CategoriesConfig:
     qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Consolidation
     qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Assignment
     qr_model_p7: str = get_step_model("classifier_p7")   # P7: In-facet Consolidation (post-assignment)
-    qr_model_p7_5: str = get_step_model("classifier_p7")  # P7.5: Valence-neutral merge
+    qr_model_p8: str = get_step_model("classifier_p7")  # P8: Valence-neutral merge
     qr_temperature: float = 0.3
 
     # Output ceilings. A high ceiling is free — billing is per generated token,

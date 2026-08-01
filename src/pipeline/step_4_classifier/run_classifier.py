@@ -512,10 +512,10 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
     )
 
     # Cache taxonomy results (metadata + growing model). The taxonomy is displayed
-    # once at the very end (post P7/P7.5), so the readout reflects the final state.
+    # once at the very end (post P7/P8), so the readout reflects the final state.
     cache_taxonomy_results(partition_set, label_mappings, taxonomy_result, ideas_models=ideas_models)
 
-    # P7.5: Valence-neutral attribute merge (collapse valence-split attribute pairs)
+    # P8: Valence-neutral attribute merge (collapse valence-split attribute pairs)
     if CONFIG.debug_stop_after_phase is None or CONFIG.debug_stop_after_phase >= 8:
         import asyncio
         from pipeline.step_4_classifier.valence_consolidator import ValenceConsolidator
