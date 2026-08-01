@@ -76,14 +76,17 @@ STEP_MODEL_TIERS = {
     "idea_extraction_context": "default",           # specifiers + dimension discovery
     "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": "mini",   # main extraction + retry
-    # Step 4: Taxonomy Classifier (P1-P7)
+    # Step 4: Taxonomy Classifier (P1-P10)
     "classifier_p1":    "mini",      # Facet Discovery
     "classifier_p2":    "default",   # Facet Consolidation
-    "classifier_p3":    "mini",      # Facet Assignment
-    "classifier_p4":    "mini",      # Attribute Discovery
-    "classifier_p5":    "default",   # Attribute Consolidation
-    "classifier_p6":    "mini",      # Attribute Assignment
-    "classifier_p7":    "default",   # In-facet Attribute Consolidation (post-assignment)
+    "classifier_p3":    "default",   # Facet Review (rewrite + flag)
+    "classifier_p4":    "mini",      # Facet Assignment
+    "classifier_p5":    "mini",      # Attribute Discovery
+    "classifier_p6":    "default",   # Attribute Consolidation
+    "classifier_p7":    "default",   # Attribute Review (rewrite + flag)
+    "classifier_p8":    "mini",      # Attribute Assignment
+    "classifier_p9":    "default",   # In-facet Attribute Consolidation (post-assignment)
+    "classifier_p10":   "default",   # Valence-neutral merge
     # Step 5: Code Generator (P8-P9)
     "codegen_p8":       "default",
     "codegen_p9":       "default",
@@ -125,9 +128,12 @@ STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
     "classifier_p1": "low",
     "classifier_p2": "low",
-    "classifier_p4": "low",
+    "classifier_p3": "low",
     "classifier_p5": "low",
+    "classifier_p6": "low",
     "classifier_p7": "low",
+    "classifier_p9": "low",
+    "classifier_p10": "low",
     # All other steps: fall back to TEXT_VERBOSITY
 }
 

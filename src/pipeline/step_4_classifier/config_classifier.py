@@ -1,10 +1,10 @@
 """
-Configuration for Taxonomy Classifier (P1-P8).
+Configuration for Taxonomy Classifier (P1-P10).
 
 Pipeline: facet discovery → facet consolidation → facet assignment →
 attribute discovery → attribute consolidation r1 → attribute assignment →
-attribute consolidation r2 (P7, in-facet, post-assignment) →
-valence-neutral merge (P8).
+attribute consolidation r2 (P9, in-facet, post-assignment) →
+valence-neutral merge (P10).
 """
 
 from dataclasses import dataclass, field
@@ -20,8 +20,8 @@ class ClassifierRampConfig:
     and real API rate limits. Ramp starts at start_fraction and
     advances toward target_fraction proportional to completions.
 
-    Full stack (P1/P3/P4/P6): ConcurrencyGate + TokenBucket + AsyncLimiter + CircuitBreaker
-    Light mode (P2/P5/P7): default semaphore + rate limiter only
+    Full stack (P1/P4/P5/P8): ConcurrencyGate + TokenBucket + AsyncLimiter + CircuitBreaker
+    Light mode (P2/P6/P9): default semaphore + rate limiter only
     """
     # Concurrency ramp
     estimated_latency_seconds: float = 10.0    # Conservative latency estimate
@@ -47,7 +47,7 @@ class ClassifierRampConfig:
 
 @dataclass
 class CategoriesConfig:
-    """Configuration for Taxonomy Classifier (P1-P8)."""
+    """Configuration for Taxonomy Classifier (P1-P10)."""
 
     # ==========================================================================
     # PARTITION SOURCE
@@ -80,18 +80,18 @@ class CategoriesConfig:
     label_prefix: str = ""
 
     # ==========================================================================
-    # TAXONOMY CLASSIFIER PIPELINE (P1-P8)
+    # TAXONOMY CLASSIFIER PIPELINE (P1-P10)
     # ==========================================================================
 
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
     qr_model_p1: str = get_step_model("classifier_p1")    # P1: Facet Discovery
     qr_model_p2: str = get_step_model("classifier_p2")    # P2: Facet Consolidation
-    qr_model_p3: str = get_step_model("classifier_p3")    # P3: Facet Assignment
-    qr_model_p4: str = get_step_model("classifier_p4")    # P4: Attribute Discovery
-    qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Consolidation
-    qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Assignment
-    qr_model_p7: str = get_step_model("classifier_p7")   # P7: In-facet Consolidation (post-assignment)
-    qr_model_p8: str = get_step_model("classifier_p7")  # P8: Valence-neutral merge
+    qr_model_p4: str = get_step_model("classifier_p4")    # P4: Facet Assignment
+    qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Discovery
+    qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Consolidation
+    qr_model_p8: str = get_step_model("classifier_p8")    # P8: Attribute Assignment
+    qr_model_p9: str = get_step_model("classifier_p9")    # P9: In-facet Consolidation (post-assignment)
+    qr_model_p10: str = get_step_model("classifier_p10")  # P10: Valence-neutral merge
     qr_temperature: float = 0.3
 
     # Output ceilings. A high ceiling is free — billing is per generated token,
@@ -101,13 +101,13 @@ class CategoriesConfig:
     # and lost it entirely. Upper bound is the model's own max_output — 128000 for
     # gpt-5.4, 32000 for gpt-4.1 (see OPENAI_MODEL_LIMITS in config.py).
     #
-    # Discovery (P1, P4) and consolidation (P2, P5, P7) enumerate an open-ended
+    # Discovery (P1, P5) and consolidation (P2, P6, P9) enumerate an open-ended
     # list, so their response grows with the data.
     qr_max_tokens_facet_discovery: int = 32000
     qr_max_tokens_attribute_discovery: int = 32000
     qr_max_tokens_consolidation: int = 32000
 
-    # Assignment (P3, P6) takes one idea and returns one label: bounded by
+    # Assignment (P4, P8) takes one idea and returns one label: bounded by
     # construction, so it needs no headroom.
     qr_max_tokens_facet_assignment: int = 4000
 
@@ -117,18 +117,18 @@ class CategoriesConfig:
     target_batches: int = 6        # ideal number of chunks
     chunk_overlap: float = 0.2     # overlap fraction between adjacent chunks
 
-    # Adaptive batching for P4 (attribute discovery chunks within a facet)
+    # Adaptive batching for P5 (attribute discovery chunks within a facet)
     p4_batch_size_min: int = 100   # no splitting below this (single batch)
     p4_batch_size_max: int = 150   # ceiling per chunk
     p4_target_batches: int = 5     # ideal number of chunks
     p4_chunk_overlap: float = 0.2  # overlap fraction between adjacent chunks
 
-    # P7: how many distinct response texts to show per attribute. This is the
+    # P9: how many distinct response texts to show per attribute. This is the
     # phase's whole point — it judges real contents, not the label — so the window
     # has to be wide enough to expose a foreign concept hiding inside a bucket.
-    p7_contents_top_n: int = 12
+    p9_contents_top_n: int = 12
 
-    # Hierarchical consolidation (shared by P2 and P5)
+    # Hierarchical consolidation (shared by P2 and P6)
     # When chunk count or total item count exceeds these limits,
     # consolidation becomes hierarchical: group → consolidate → recurse.
     consolidation_max_chunks_per_call: int = 6   # Rule 2: max chunks per consolidation call

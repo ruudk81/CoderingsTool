@@ -1,11 +1,11 @@
 #%%
 
 """
-View raw (pre-P7) attribute assignments: inspect which attribute each idea was
+View raw (pre-P9) attribute assignments: inspect which attribute each idea was
 assigned to BEFORE cross-facet consolidation.
 
 Groups ideas by domain → facet → raw attribute, showing the abstraction ladder for each.
-Compare with view_assignments_attributes_consolidated.py to see P7 remap effects.
+Compare with view_assignments_attributes_consolidated.py to see P9 remap effects.
 """
 
 import sys
@@ -47,10 +47,10 @@ def load_ideas_with_raw_attributes(
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
 ) -> List[TaxonomyClassifiedSubmodel]:
-    """Load ideas and override their attribute with raw (pre-P7) assignments.
+    """Load ideas and override their attribute with raw (pre-P9) assignments.
 
     Reads raw_attribute_assignments from the metadata cache and applies them
-    to the growing model ideas (which normally carry post-P7 attributes).
+    to the growing model ideas (which normally carry post-P9 attributes).
     """
     variable_key = generate_enhanced_variable_key(
         selected_variables=[variable],
@@ -80,8 +80,8 @@ def load_ideas_with_raw_attributes(
         attr_conf_lookup.update(domain_result.attribute_confidence)
 
     if not has_raw_data:
-        print("WARNING: No raw P6 data found in cache — re-run the pipeline to populate.")
-        print("         Falling back to consolidated (post-P7) attributes.\n")
+        print("WARNING: No raw P8 data found in cache — re-run the pipeline to populate.")
+        print("         Falling back to consolidated (post-P9) attributes.\n")
 
     # Load growing model for idea text
     data = cache_manager.load_from_cache(
@@ -90,7 +90,7 @@ def load_ideas_with_raw_attributes(
     if not data:
         raise FileNotFoundError(
             f"No cached results found for variable_key '{variable_key}'.\n"
-            f"Run at least taxonomy (P1-P6 + P7) first."
+            f"Run at least taxonomy (P1-P9) first."
         )
 
     ideas = []
@@ -98,7 +98,7 @@ def load_ideas_with_raw_attributes(
         if resp.response_ideas:
             ideas.extend(resp.response_ideas)
 
-    # Override attribute with raw (pre-P7) value where available, and apply confidence
+    # Override attribute with raw (pre-P9) value where available, and apply confidence
     if has_raw_data:
         for idea in ideas:
             raw_attr = raw_attr_lookup.get(idea.idea_id)
@@ -129,7 +129,7 @@ def print_by_attribute(ideas: List[TaxonomyClassifiedSubmodel], max_per_attribut
 
     total = len(ideas)
     print(f"\n{'='*80}")
-    print(f"RAW ATTRIBUTE ASSIGNMENTS — pre-P7 ({total} ideas, {len(sorted_attrs)} attributes)")
+    print(f"RAW ATTRIBUTE ASSIGNMENTS — pre-P9 ({total} ideas, {len(sorted_attrs)} attributes)")
     print(f"{'='*80}")
 
     for attr_name, attr_ideas in sorted_attrs:
@@ -169,7 +169,7 @@ def print_by_domain(ideas: List[TaxonomyClassifiedSubmodel], max_per_attribute: 
 
     total = len(ideas)
     print(f"\n{'='*80}")
-    print(f"RAW ATTRIBUTE ASSIGNMENTS BY DOMAIN — pre-P7 ({total} ideas)")
+    print(f"RAW ATTRIBUTE ASSIGNMENTS BY DOMAIN — pre-P9 ({total} ideas)")
     print(f"{'='*80}")
 
     for domain in sorted(hierarchy.keys()):

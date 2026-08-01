@@ -1,6 +1,6 @@
 #%%
 """
-View the prompts step 4 sent to the LLM (P1-P8).
+View the prompts step 4 sent to the LLM (P1-P10).
 
 Usage:
     cd src && python -m pipeline.step_4_classifier.view_prompts
@@ -32,12 +32,12 @@ SHOW_ALL = False
 PROMPT_MODELS = {
     "facet_discovery": FacetDiscoveryResult,                       # P1
     "facet_consolidation": FacetConsolidatedResponse,              # P2
-    "facet_assignment": FacetAssignmentResult,                     # P3
-    "attribute_discovery": AttributeDiscoveryResult,               # P4
-    "attribute_chunk_consolidation": AttributeChunkConsolidatedResponse,  # P5
-    "attribute_assignment": AttributeAssignmentResult,             # P6
-    "in_facet_consolidation": InFacetConsolidatedResponse,         # P7
-    "valence_neutral_rename": ValenceNeutralRenameResponse,        # P8
+    "facet_assignment": FacetAssignmentResult,                     # P4
+    "attribute_discovery": AttributeDiscoveryResult,               # P5
+    "attribute_chunk_consolidation": AttributeChunkConsolidatedResponse,  # P6
+    "attribute_assignment": AttributeAssignmentResult,             # P8
+    "in_facet_consolidation": InFacetConsolidatedResponse,         # P9
+    "valence_neutral_rename": ValenceNeutralRenameResponse,        # P10
 }
 
 

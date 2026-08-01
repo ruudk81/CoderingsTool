@@ -31,7 +31,7 @@ SENTINEL_ATTRIBUTES = {"__UNASSIGNED__", "(no attribute)", ""}
 # =============================================================================
 
 def index_growing_model(classified, code_source):
-    """idea_id -> {text, final (domain, attr), is_sentinel}. Post-P7 (final) state."""
+    """idea_id -> {text, final (domain, attr), is_sentinel}. Post-P9 (final) state."""
     idx = {}
     for resp in classified:
         for idea in (resp.response_ideas or []):
@@ -47,7 +47,7 @@ def index_growing_model(classified, code_source):
 def collect_raw_groups(taxonomy_cache):
     """(domain, raw_attr) -> [idea_id], plus raw_meta[(domain,attr)] = {facet, description}.
 
-    The PRE-P7 provenance inventory from raw_attributes / raw_attribute_assignments.
+    The PRE-P9 provenance inventory from raw_attributes / raw_attribute_assignments.
     """
     groups = defaultdict(list)
     raw_meta = {}
@@ -70,7 +70,7 @@ def collect_raw_groups(taxonomy_cache):
 
 
 def collect_final_groups(idea_index):
-    """(domain, final_attr) -> [idea_id]. Post-P7 (final)."""
+    """(domain, final_attr) -> [idea_id]. Post-P9 (final)."""
     groups = defaultdict(list)
     for idea_id, info in idea_index.items():
         if not info["is_sentinel"]:

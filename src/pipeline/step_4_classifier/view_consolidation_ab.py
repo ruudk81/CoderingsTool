@@ -31,7 +31,7 @@ from pipeline.step_4_classifier.view_assignments_attributes_raw import load_idea
 # =============================================================================
 DOMAIN = "institutionele identiteit en marktpositie"
 FACET = None            # None = whole domain; or a facet string to scope
-PHASE = "classifier_p7"  # model tier to use for both A and B
+PHASE = "classifier_p9"  # model tier to use for both A and B
 
 
 # =============================================================================
@@ -50,7 +50,7 @@ class Inventory(BaseModel):
 
 
 # =============================================================================
-# RULE BLOCKS — A (current P7) vs B (new skeleton)
+# RULE BLOCKS — A (current P9) vs B (new skeleton)
 # =============================================================================
 PREAMBLE = (
     'You are a taxonomy consolidation specialist for surveys. Deduplicate '

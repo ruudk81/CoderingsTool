@@ -6,10 +6,10 @@ step-4 taxonomy. Thin wrapper around `consolidation_balance_core` — it loads t
 cached taxonomy + growing model, runs the shared measurement + the threshold-free
 over-merge decision, and prints two sections:
 
-  RAW SPINE       — every pre-P7 raw attribute (P6 output, from
+  RAW SPINE       — every pre-P9 raw attribute (P8 output, from
                     raw_attributes / raw_attribute_assignments) on two axes
                     (SIZE via pooled quartiles; SEPARABILITY via kNN
-                    own_purity), joined to the post-P7 consolidated bucket
+                    own_purity), joined to the post-P9 consolidated bucket
                     its ideas ended up in. Diagnostic only.
   OVER-MERGE      — per catch-all bucket (>= 2 source attributes), the threshold-
   DECISION          free verdict: a source is "own cluster" iff its within-bucket
@@ -214,11 +214,11 @@ def _print_decision(decision):
 
 def _print_report(raw_records, fin_records, raw_q, thr):
     print(f"\n{'=' * 96}")
-    print("CONSOLIDATION BALANCE  (raw pre-P7 spine -> post-P7 consolidated, size x separability via kNN)")
+    print("CONSOLIDATION BALANCE  (raw pre-P9 spine -> post-P9 consolidated, size x separability via kNN)")
     print(f"{FILENAME}  |  {VARIABLE}  |  n={SAMPLE_SIZE}  |  "
           f"{len(raw_records)} raw -> {len(fin_records)} final  |  k={KNN_K}")
     print(f"{'=' * 96}")
-    print("\nRAW (pre-P7) distributions:")
+    print("\nRAW (pre-P9) distributions:")
     print(f"  size:        Q1={raw_q['size']['q1']:.0f}  med={raw_q['size']['median']:.0f}  "
           f"Q3={raw_q['size']['q3']:.0f}  [{raw_q['size']['min']:.0f}..{raw_q['size']['max']:.0f}]")
     print(f"  own_purity:  Q1={raw_q['own_purity']['q1']:.3f}  med={raw_q['own_purity']['median']:.3f}  "

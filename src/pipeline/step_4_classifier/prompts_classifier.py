@@ -1,15 +1,15 @@
 """
-Prompt builders for Taxonomy Classifier (P1-P6 + P7).
+Prompt builders for Taxonomy Classifier (P1-P10).
 
 Organized in pipeline processing order:
   §0   Dimension Context Block (shared helper)
   §1   Facet Discovery (P1: per-domain, chunked)
   §2   Facet Consolidation (P2: merge chunk-level facets)
-  §3   Facet Assignment (P3: per-domain, batched)
-  §4   Attribute Discovery (P4: per facet within domain)
-  §5   Attribute Chunk Consolidation (P5: merge chunk-level attributes)
-  §6   Attribute Assignment (P6: per facet)
-  §7   In-Facet Attribute Consolidation (P7: post-assignment, one facet at a time)
+  §4   Facet Assignment (P4: per-domain, batched)
+  §5   Attribute Discovery (P5: per facet within domain)
+  §6   Attribute Chunk Consolidation (P6: merge chunk-level attributes)
+  §8   Attribute Assignment (P8: per facet)
+  §9   In-Facet Attribute Consolidation (P9: post-assignment, one facet at a time)
 """
 
 from __future__ import annotations
@@ -481,7 +481,7 @@ class FacetConsolidatedResponse(BaseModel):
 
 
 # =============================================================================
-# §3 FACET ASSIGNMENT (P3) — per-domain batched assignment
+# §4 FACET ASSIGNMENT (P4) — per-domain batched assignment
 # =============================================================================
 
 
@@ -571,7 +571,7 @@ class FacetAssignmentResult(BaseModel):
 
 
 # =============================================================================
-# §4 ATTRIBUTE DISCOVERY (P4) — per facet within domain
+# §5 ATTRIBUTE DISCOVERY (P5) — per facet within domain
 # =============================================================================
 
 def build_attribute_discovery_prompt(
@@ -765,7 +765,7 @@ class DiscoveredAttribute(BaseModel):
 
 
 class AttributeDiscoveryResult(BaseModel):
-    """P4 output: attributes discovered within a facet."""
+    """P5 output: attributes discovered within a facet."""
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before identifying attributes: "
@@ -783,7 +783,7 @@ class AttributeDiscoveryResult(BaseModel):
 
 
 # =============================================================================
-# §5 ATTRIBUTE CHUNK CONSOLIDATION (P5) — merge chunk-level attributes within facet
+# §6 ATTRIBUTE CHUNK CONSOLIDATION (P6) — merge chunk-level attributes within facet
 # =============================================================================
 
 
@@ -997,7 +997,7 @@ class AttributeChunkConsolidatedResponse(BaseModel):
     )
 
 # =============================================================================
-# §6 ATTRIBUTE ASSIGNMENT (P6) — per facet
+# §8 ATTRIBUTE ASSIGNMENT (P8) — per facet
 # =============================================================================
 
 
@@ -1079,7 +1079,7 @@ class AttributeAssignmentResult(BaseModel):
 
 
 # =============================================================================
-# §7 IN-FACET ATTRIBUTE CONSOLIDATION — post-assignment, one facet at a time
+# §9 IN-FACET ATTRIBUTE CONSOLIDATION — post-assignment, one facet at a time
 # =============================================================================
 
 def build_in_facet_consolidation_prompt(
@@ -1099,7 +1099,7 @@ def build_in_facet_consolidation_prompt(
 ) -> str:
     """Finalise the attribute inventory of ONE facet, after every idea is assigned.
 
-    Runs after P6, so each attribute is shown with its real size and its real
+    Runs after P8, so each attribute is shown with its real size and its real
     contents instead of the examples discovery guessed at. The facet is fixed:
     nothing in this call can move an attribute to another facet. When a group of
     ideas belongs elsewhere, the IDEAS move (`misfits`) and the structure stays put.

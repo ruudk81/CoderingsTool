@@ -1,5 +1,5 @@
 """
-Valence-neutral attribute consolidation (post-P7 cleanup).
+Valence-neutral attribute consolidation (post-P9 cleanup).
 
 Detects attribute PAIRS within a facet that differ only in evaluative direction
 (a valence artifact baked into the taxonomy, e.g. "Algemene positieve waardering"
@@ -147,7 +147,7 @@ class ValenceConsolidator:
 
     def __init__(self, config: CategoriesConfig, cost_tracker=None,
                  prompt_printer=None):
-        self._model = config.qr_model_p8
+        self._model = config.qr_model_p10
         self._temperature = config.qr_temperature
         self._cost_tracker = cost_tracker
         self._prompt_printer = prompt_printer
@@ -175,7 +175,7 @@ class ValenceConsolidator:
         stats = {"candidates": len(pairs), "merges": 0}
         if not merge_pairs:
             if verbose:
-                print(f"\n  P8 valence merge: 0 pairs (of {len(pairs)} candidate(s))")
+                print(f"\n  P10 valence merge: 0 pairs (of {len(pairs)} candidate(s))")
             return taxonomy_cache, classified, [], stats
 
         # Descriptions live in the taxonomy cache (not on the growing model)
@@ -190,7 +190,7 @@ class ValenceConsolidator:
         names = await self._rename(merge_pairs, desc_lookup, language)
         if self._cost_tracker and _snap is not None:
             self._cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p8_valence_merge",
+                "step_4_taxonomy_classifier", "p10_valence_merge",
                 _snap, token_tracker.snapshot(), self._model,
             )
 
@@ -218,7 +218,7 @@ class ValenceConsolidator:
         stats["merges"] = len(merge_pairs)
 
         if verbose:
-            print(f"\n  P8 valence merge: {len(merge_pairs)} pair(s) collapsed")
+            print(f"\n  P10 valence merge: {len(merge_pairs)} pair(s) collapsed")
             for r in report:
                 print(f"    \"{r['name_a']}\" + \"{r['name_b']}\" -> "
                       f"\"{r['new_name']}\"  [{r['source']}]  ({r['domain']})")
@@ -255,11 +255,11 @@ class ValenceConsolidator:
                 client, self._model, prompt,
                 response_model=ValenceNeutralRenameResponse,
                 temperature=self._temperature, max_tokens=2000,
-                **get_reasoning_params(self._model, phase="classifier_p7"),
+                **get_reasoning_params(self._model, phase="classifier_p10"),
             )
             return {a.pair_id: (a.attribute_name, a.attribute_description) for a in response.attributes}
         except Exception as e:
-            print(f"    P8 rename LLM call failed ({e}); using deterministic fallback names")
+            print(f"    P10 rename LLM call failed ({e}); using deterministic fallback names")
             return {}
 
     def _apply_to_cache(self, taxonomy_cache, merge_map):

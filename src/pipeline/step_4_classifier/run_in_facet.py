@@ -1,9 +1,9 @@
 #%%
-"""Standalone P7 runner — test in-facet consolidation on cached data.
+"""Standalone P9 runner — test in-facet consolidation on cached data.
 
-Feeds P7 the EXACT state P6 produced (`raw_attributes` + `raw_attribute_assignments`
+Feeds P9 the EXACT state P8 produced (`raw_attributes` + `raw_attribute_assignments`
 from a cached taxonomy), which is also exactly what the old cross-facet consolidation
-was given. So the two designs can be compared on identical input without rerunning P1-P6.
+was given. So the two designs can be compared on identical input without rerunning P1-P8.
 
 READ-ONLY: never writes to any cache. Results and metrics go to
 exports/experiment_logs/.
@@ -37,7 +37,7 @@ from pipeline.step_4_classifier.prompts_classifier import (
 # CONFIGURATION
 # =============================================================================
 
-# Which cached taxonomy to read the P6 state from. The production key is fine here:
+# Which cached taxonomy to read the P8 state from. The production key is fine here:
 # this module never writes, so reading it cannot damage a delivered taxonomy.
 SOURCE_STEP = "taxonomy"
 CLASSIFIED_STEP = "taxonomy_classified"
@@ -146,7 +146,7 @@ async def run_facet(client, sem, pc, tax, ideas_by_id, domain, facet) -> Optiona
         neighbours.append((other, [(a["attribute_name"], counts.get(a["attribute_name"], 0))
                                    for a in oattrs]))
 
-    block = contents_block(raw_attrs, mine_by_attr, CONFIG.p7_contents_top_n)
+    block = contents_block(raw_attrs, mine_by_attr, CONFIG.p9_contents_top_n)
     prompt = build_in_facet_consolidation_prompt(
         **pc, dimension_def=None,
         domain_name=domain, domain_definition=domain_def,
@@ -157,17 +157,17 @@ async def run_facet(client, sem, pc, tax, ideas_by_id, domain, facet) -> Optiona
     async with sem:
         try:
             out = await llm_create_async(
-                client=client, model=CONFIG.qr_model_p7, prompt=prompt,
+                client=client, model=CONFIG.qr_model_p9, prompt=prompt,
                 response_model=InFacetConsolidatedResponse,
                 temperature=0.0, max_tokens=CONFIG.qr_max_tokens_consolidation,
-                **get_reasoning_params(CONFIG.qr_model_p7, phase="classifier_p7"),
+                **get_reasoning_params(CONFIG.qr_model_p9, phase="classifier_p9"),
             )
         except Exception as e:
             print(f"  FAILED {domain} > {facet}: {str(e)[:90]}")
             return {"domain": domain, "facet": facet, "failed": True,
                     "attrs_before": len(raw_attrs), "n_ideas": n_ideas}
 
-    # ---- route ideas deterministically, exactly as _apply_p7_results would ----
+    # ---- route ideas deterministically, exactly as _apply_p9_results would ----
     claims: Dict[str, int] = {}
     for it in out.attributes:
         for s in (it.source_attributes or []):
@@ -342,10 +342,10 @@ async def main():
                 continue
             pairs.append((dom, fac))
 
-    print(f"source={SOURCE_STEP} | {len(ideas)} ideas | model {CONFIG.qr_model_p7} "
+    print(f"source={SOURCE_STEP} | {len(ideas)} ideas | model {CONFIG.qr_model_p9} "
           f"| {len(pairs)} facets\n")
 
-    client = create_client(CONFIG.qr_model_p7, async_mode=True)
+    client = create_client(CONFIG.qr_model_p9, async_mode=True)
     sem = asyncio.Semaphore(CONCURRENCY)
     records = await asyncio.gather(*[
         run_facet(client, sem, pc, tax, ideas_by_id, d, f) for d, f in pairs])
@@ -365,7 +365,7 @@ async def main():
 
     out_dir = Path(__file__).resolve().parents[3] / "exports" / "experiment_logs"
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{Path(TEST_DATA.filename).stem}_{vk}_p7_sweep.json"
+    path = out_dir / f"{Path(TEST_DATA.filename).stem}_{vk}_p9_sweep.json"
     path.write_text(json.dumps(
         {"metrics": metrics,
          "facets": [{k: (dict(v) if isinstance(v, Counter) else v) for k, v in r.items()}
