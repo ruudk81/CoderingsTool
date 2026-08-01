@@ -120,8 +120,46 @@ def get_step_model(phase: str) -> str:
 # REASONING PARAMS & VERBOSITY
 # =============================================================================
 
-REASONING_EFFORT = "none"   # none, minimal, low, medium, high — none only for ≥5.4
+REASONING_EFFORT = "none"   # none, low, medium, high — the floor for bulk phases
 TEXT_VERBOSITY = "medium"      # low, medium, high — default for all steps
+
+# Per-step reasoning effort (absent = use REASONING_EFFORT default).
+#
+# Measured 2026-08-01 on a consolidation task, reasoning tokens per call:
+#   gpt-5.4  none 0 | low 66 | medium 248 | high 215
+#   luna     none 0 | low 24 | medium  33 | high  31
+# "minimal" is rejected by both models, and medium ≈ high, so the real choice is
+# none / low / medium.
+#
+# Why low and not medium: the step that matters is none -> low, where the model
+# starts reasoning at all. low -> medium costs ~4x the reasoning tokens on 5.4
+# and no measurement here shows it classifies better — both produced the same
+# grouping. Raise a phase to medium when a measurement justifies it, not before.
+#
+# Which phases get it: the ones that build the taxonomy rather than apply it.
+# They are ~1.7% of all calls (~278 of 16,700 on a full ASN run). The bulk phases
+# — spell check, quality filter, extraction, both assignments — stay at the
+# default, because they place one item into a structure that already exists.
+STEP_EFFORT = {
+    # Step 3: what the dimensions and domains ARE
+    "idea_extraction_context":  "low",
+    "idea_extraction_taxonomy": "low",
+    # Step 4: discovery, consolidation and review of facets + attributes
+    "classifier_p1":  "low",
+    "classifier_p2":  "low",
+    "classifier_p3":  "low",
+    "classifier_p5":  "low",
+    "classifier_p6":  "low",
+    "classifier_p7":  "low",
+    "classifier_p9":  "low",
+    "classifier_p10": "low",
+    # Step 5: writing and consolidating the codebook
+    "codegen_p8": "low",
+    "codegen_p9": "low",
+    # Absent on purpose (high volume, mechanical): spell_check, quality_filter,
+    # idea_extraction_abstraction_ladder, classifier_p4, classifier_p8,
+    # code_assignment.
+}
 
 # Per-step verbosity overrides (None or absent = use TEXT_VERBOSITY default)
 STEP_VERBOSITY = {
@@ -143,32 +181,31 @@ def get_step_verbosity(phase: str) -> str:
     return STEP_VERBOSITY.get(phase, TEXT_VERBOSITY)
 
 
+def get_step_effort(phase: str) -> str:
+    """Return reasoning effort for a pipeline phase. Falls back to REASONING_EFFORT."""
+    return STEP_EFFORT.get(phase, REASONING_EFFORT)
+
+
 def get_reasoning_params(model: str = None, phase: str = None) -> dict:
     """Return reasoning API params if the model is a reasoning model, else empty dict.
 
     Args:
         model: Model name. If None, uses default model.
         phase: Pipeline phase key (e.g. "classifier_p1"). If provided, uses
-               per-step verbosity from STEP_VERBOSITY.
+               per-step effort from STEP_EFFORT and verbosity from STEP_VERBOSITY.
     """
     if model is None:
         model = get_model()
     if ModelConfig.MODEL_TYPES.get(model) != "reasoning":
         return {}
 
+    effort = get_step_effort(phase) if phase else REASONING_EFFORT
     verbosity = get_step_verbosity(phase) if phase else TEXT_VERBOSITY
-    if API_PROVIDER == "azure":
-        # Chat Completions takes these flat; the nested Responses shape is rejected
-        # client-side by the OpenAI SDK.
-        if model.startswith("gpt-5.6"):
-            # gpt-5.6 rejects reasoning_effort next to function tools on Chat
-            # Completions ("use /v1/responses instead"); verbosity is accepted and
-            # the model reasons adaptively. Effort control for 5.6 requires moving
-            # the Azure route to the Responses API (both resources support it now).
-            return {"verbosity": verbosity}
-        return {"reasoning_effort": REASONING_EFFORT, "verbosity": verbosity}
+    # One shape for both providers: the Responses API takes reasoning effort and
+    # verbosity nested. This is also what gives the gpt-5.6 family effort control —
+    # on Chat Completions those rejected reasoning_effort next to function tools.
     return {
-        "reasoning": {"effort": REASONING_EFFORT},
+        "reasoning": {"effort": effort},
         "text": {"verbosity": verbosity},
     }
 
