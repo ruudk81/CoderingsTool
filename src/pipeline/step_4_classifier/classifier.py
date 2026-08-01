@@ -515,11 +515,17 @@ class TaxonomyClassifier:
 
         if self._debug_stop_after_phase == 1:
             if verbose:
-                print(f"\n  [DEBUG] Early stop after P1 — skipping P2-P9")
+                print(f"\n  [DEBUG] Early stop after P1 — raw chunk facets follow")
+                for name, chunks in domain_chunk_facets.items():
+                    for ci, chunk in enumerate(chunks, 1):
+                        print(f"\n  RAW P1  {name}  — chunk {ci}/{len(chunks)}: {len(chunk)} facet(s)")
+                        for f in chunk:
+                            print(f"    - {f.facet_name}: {f.facet_description}")
             return TaxonomyResult(
-                partition_n_labels={},
-                partition_n_batches={},
-                partition_facets={},
+                partition_n_labels={n: i['n_labels'] for n, i in domain_chunk_info.items()},
+                partition_n_batches={n: i['n_batches'] for n, i in domain_chunk_info.items()},
+                partition_facets={n: [f for ch in chs for f in ch]
+                                  for n, chs in domain_chunk_facets.items()},
                 partition_assignments={},
                 partition_attributes={},
                 attribute_assignments={},
@@ -1016,14 +1022,27 @@ class TaxonomyClassifier:
                 _snap_p4, token_tracker.snapshot(), self._model_p5)
 
         if self._debug_stop_after_phase == 5:
+            fk_home = {}
+            for task in p4_tasks:
+                fk_home.setdefault(task['facet_key'], (task['domain_name'], task['facet_name']))
+            raw_attrs: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
+            for fk, chunks in facet_chunk_attrs.items():
+                dom, fac = fk_home[fk]
+                raw_attrs.setdefault(dom, {})[fac] = [a for ch in chunks for a in ch]
             if verbose:
-                print(f"\n  [DEBUG] Early stop after P5 — skipping P6–P9")
+                print(f"\n  [DEBUG] Early stop after P5 — raw chunk attributes follow")
+                for fk, chunks in facet_chunk_attrs.items():
+                    dom, fac = fk_home[fk]
+                    for ci, chunk in enumerate(chunks, 1):
+                        print(f"\n  RAW P5  {dom} > {fac}  — chunk {ci}/{len(chunks)}: {len(chunk)} attribute(s)")
+                        for a in chunk:
+                            print(f"    - {a.attribute_name}: {a.attribute_description}")
             return TaxonomyResult(
                 partition_n_labels=partition_n_labels,
                 partition_n_batches=partition_n_batches,
                 partition_facets=partition_facets,
                 partition_assignments=partition_assignments,
-                partition_attributes={},
+                partition_attributes=raw_attrs,
                 attribute_assignments={},
                 facet_confidence=self._facet_confidence,
                 facet_valence=self._facet_valence,
