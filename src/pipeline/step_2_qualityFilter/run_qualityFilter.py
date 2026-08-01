@@ -188,10 +188,6 @@ if __name__ == "__main__":
     config = STEP_CONFIG
     var_lab = get_var_lab(config)
 
-    variable_key = generate_enhanced_variable_key(
-        [config.var_name], False, config.sample_size
-    )
-
     verbose_capture = VerboseCapture(
         filename=config.filename,
         var_name=config.var_name,

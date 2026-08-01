@@ -23,7 +23,7 @@ nest_asyncio.apply()
 warnings.filterwarnings("ignore", message="To exit: use 'exit', 'quit', or Ctrl-D.")
 
 from test_data import TEST_DATA
-from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from utils.cacheManager import CacheManager
 from utils.saveVerbose import VerboseCapture
 from utils.llm import token_tracker
 from config import CacheConfig
@@ -168,10 +168,6 @@ def run_pipeline(
 # =============================================================================
 
 if __name__ == "__main__":
-    variable_key = generate_enhanced_variable_key(
-        [TEST_DATA.var_name], False, TEST_DATA.sample_size
-    )
-
     verbose_capture = VerboseCapture(
         filename=TEST_DATA.filename,
         var_name=TEST_DATA.var_name,
