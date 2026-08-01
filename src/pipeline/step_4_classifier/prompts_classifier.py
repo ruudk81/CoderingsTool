@@ -14,7 +14,11 @@ Organized in pipeline processing order:
        merge and split inside the fixed axis system)
   §4   Facet Assignment (P4: per-domain, batched)
   §5   Attribute Discovery (P5: per facet within domain)
+  §5a  Position-Tagged Attribute Discovery (P5, axis-first: per facet,
+       chunked, tagged to the facet's refinement axis)
   §6   Attribute Chunk Consolidation (P6: merge chunk-level attributes)
+  §6a  Per-Position Attribute Consolidation (P6, axis-first: per position,
+       plus adjudication of new-position proposals)
   §7   Attribute Review (P7: per-domain quality gate on the consolidated attribute set)
   §8   Attribute Assignment (P8: per facet)
   §9   In-Facet Attribute Consolidation (P9: post-assignment, one facet at a time)
@@ -1359,6 +1363,18 @@ class DiscoveredAttribute(BaseModel):
     example_observations: List[str] = Field(
         ..., description="2-3 representative observations from the input"
     )
+    position: SkipJsonSchema[str] = Field(
+        default="", description=(
+            "P6 axis-first provenance only: the position on the facet's refinement "
+            "axis this attribute was tagged to (empty on the untagged path)"
+        )
+    )
+    is_residual_attr: SkipJsonSchema[bool] = Field(
+        default=False, description=(
+            "P6 axis-first provenance only: true when this attribute is the residual "
+            "attribute for its facet's residual position (empty/false on the untagged path)"
+        )
+    )
 
 
 class AttributeDiscoveryResult(BaseModel):
@@ -1376,6 +1392,144 @@ class AttributeDiscoveryResult(BaseModel):
     )
     attributes: List[DiscoveredAttribute] = Field(
         ..., description="Concrete attributes identified within the facet"
+    )
+
+
+# =============================================================================
+# §5a POSITION-TAGGED ATTRIBUTE DISCOVERY (P5, axis-first path) — per-facet
+# chunked discovery inside a pre-established, fixed refinement axis. Used only
+# for facets that carry a refinement axis from P2 segment consolidation
+# (axis_first_enabled); facets without one keep the untagged §5 path above
+# untouched.
+# =============================================================================
+
+def _build_refinement_axis_block(refinement: dict) -> str:
+    """Render a facet's refinement axis (positions) as prompt text, mirroring
+    `_build_axis_system_block` one level down: one 'Axis: name — description'
+    line, followed by its positions (residual last, name suffixed
+    ' (residual)')."""
+    positions = refinement.get("positions", [])
+    non_residual = [p for p in positions if not p.get("is_residual")]
+    residual = [p for p in positions if p.get("is_residual")]
+    lines = [f"Axis: {refinement.get('name', '')} — {refinement.get('description', '')}"]
+    for p in non_residual + residual:
+        suffix = " (residual)" if p.get("is_residual") else ""
+        lines.append(f"  - {p.get('position_name', '')}{suffix}: {p.get('position_description', '')}")
+        lines.append(f"    Boundary: {p.get('boundary', '')}")
+    return "\n".join(lines)
+
+
+def _build_neighbour_facets_block(neighbours: List[DiscoveredFacet]) -> str:
+    """Render a domain's other facets as context-only reference for P5
+    (axis-first path): one '- name (segment: segment of axis)' line each."""
+    if not neighbours:
+        return "(none)"
+    return "\n".join(
+        f"- {f.facet_name} (segment: {f.segment} of {f.axis})" for f in neighbours
+    )
+
+
+def build_position_attribute_discovery_prompt(
+    *,
+    survey_question: str,
+    domain_label: str,
+    facet_name: str,
+    facet_description: str,
+    segment_name: str,
+    axis_name: str,
+    refinement: dict,
+    neighbour_facets: List[DiscoveredFacet],
+    chunk_observations: List[str],
+) -> str:
+    """Discover attributes (L4) from a chunk of observations, each proposal
+    tagged to exactly one position of the facet's fixed refinement axis, or
+    proposing a new position explicitly (P5, axis-first path)."""
+    refinement_axis_block = _build_refinement_axis_block(refinement)
+    neighbour_facets_block = _build_neighbour_facets_block(neighbour_facets)
+    observations_block = "\n".join(f"{i}. {obs}" for i, obs in enumerate(chunk_observations, 1))
+
+    return f"""You are a qualitative research analyst for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Domain: {domain_label}
+Facet: {facet_name} — {facet_description}
+This facet occupies segment "{segment_name}" of axis "{axis_name}".
+
+The facet's refinement axis was established beforehand and is your frame:
+
+<refinement_axis>
+{refinement_axis_block}
+</refinement_axis>
+
+Neighbouring facets of this domain (context only — never targets for your
+proposals):
+
+<neighbours>
+{neighbour_facets_block}
+</neighbours>
+
+Below are this chunk's observations for this facet:
+
+<observations>
+{observations_block}
+</observations>
+
+Your task: propose attributes, where every attribute is one atomic concept at
+EXACTLY ONE position of the refinement axis. Tag each proposal with its
+position_name. If this chunk's observations genuinely require a position the
+axis does not have, propose it explicitly (is_new_position = true, with a
+one-sentence boundary) — consolidation will adjudicate it.
+
+Rules:
+- One position can receive multiple proposals; a proposal can never span two
+  positions — split it.
+- Observations that name no recognisable value on the refinement axis belong
+  to the residual position; never invent a general catch-all attribute.
+- If an observation seems to belong to a neighbouring facet, do not propose
+  for it here — it is not yours to place.
+- Ground every attribute in 2-5 verbatim examples. Descriptive wording only.
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class TaggedAttributeProposal(BaseModel):
+    """An attribute proposal from a chunk, tagged to a position of the
+    facet's fixed refinement axis, or explicitly proposing a new position
+    (P5 output, axis-first path)."""
+    attribute_name: str = Field(
+        ..., description="Short descriptive name for the attribute (2-5 words)"
+    )
+    attribute_description: str = Field(
+        ..., description="What this attribute captures — a concrete, observable property (1-2 sentences)"
+    )
+    position_name: str = Field(
+        ..., description=(
+            "Name of the position on the refinement axis this attribute occupies — "
+            "must exist on the axis above, unless is_new_position is true"
+        )
+    )
+    is_new_position: bool = Field(
+        default=False, description=(
+            "True when this chunk's observations genuinely require a position the "
+            "refinement axis does not have"
+        )
+    )
+    new_position_boundary: str = Field(
+        default="", description="One-sentence boundary for the proposed new position — required when is_new_position is true"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-5 example observations grounding this attribute, verbatim from the chunk"
+    )
+
+
+class TaggedAttributeDiscoveryResponse(BaseModel):
+    """P5 output (axis-first path): tagged attribute proposals discovered in
+    a single chunk."""
+    proposals: List[TaggedAttributeProposal] = Field(
+        ..., description="Attribute proposals discovered in this chunk, each tagged to a position (existing or newly proposed)"
     )
 
 
@@ -1591,6 +1745,186 @@ class AttributeChunkConsolidatedResponse(BaseModel):
     )
     attributes: List[DiscoveredAttribute] = Field(
         ..., description="Fewest mutually exclusive attributes needed for full coverage, consolidated from all chunks"
+    )
+
+
+# =============================================================================
+# §6a PER-POSITION ATTRIBUTE CONSOLIDATION (P6, axis-first path) — one
+# consolidation task per populated position, grouped from the facet's tagged
+# P5 proposals IN CODE (not by the model), plus adjudication of any
+# new-position proposals raised during discovery. Used only for facets that
+# carry a refinement axis from P2 segment consolidation; facets without one
+# keep the §6 path above untouched.
+# =============================================================================
+
+def _build_position_proposals_block(proposals: List[DiscoveredAttribute]) -> str:
+    """Render the attribute proposals tagged to one position as prompt text,
+    mirroring `_build_segment_proposals_block` one level down."""
+    lines = []
+    for p in proposals:
+        lines.append(f"- {p.attribute_name}: {p.attribute_description}")
+        lines.append(f"  Examples: {'; '.join(p.example_observations[:5])}")
+    return "\n".join(lines)
+
+
+def build_position_consolidation_prompt(
+    *,
+    survey_question: str,
+    domain_label: str,
+    facet_name: str,
+    facet_description: str,
+    refinement_axis_name: str,
+    refinement_axis_description: str,
+    position_name: str,
+    position_boundary: str,
+    proposals: List[DiscoveredAttribute],
+) -> str:
+    """Consolidate all chunk-level attribute proposals tagged to one position
+    into a single attribute (P6, axis-first path)."""
+    position_proposals_block = _build_position_proposals_block(proposals)
+
+    return f"""You are a taxonomy consolidation specialist for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Domain: {domain_label}
+Facet: {facet_name} — {facet_description}
+Refinement axis: {refinement_axis_name} — {refinement_axis_description}
+Position under consolidation: {position_name}
+Position boundary: {position_boundary}
+
+Below are all chunk-level attribute proposals tagged to this position, with
+their examples:
+
+<proposals>
+{position_proposals_block}
+</proposals>
+
+Your task: consolidate these proposals into ONE attribute for this position:
+one name, one description faithful to what the proposals jointly cover. List
+every proposal you consumed under source_proposals (one-for-one bookkeeping).
+
+Rules:
+- Work strictly inside this position; other positions are consolidated
+  separately and are none of your concern.
+- Descriptive wording only.
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class ConsolidatedAttribute(BaseModel):
+    """P6 output (axis-first path): one consolidated attribute for a single
+    position, plus its source bookkeeping."""
+    position_name: str = Field(
+        ..., description="Name of the position under consolidation — echoed back for bookkeeping"
+    )
+    attribute_name: str = Field(
+        ..., description="Short descriptive name for the consolidated attribute (2-5 words)"
+    )
+    attribute_description: str = Field(
+        ..., description="One description faithful to what the consumed proposals jointly cover"
+    )
+    source_proposals: List[str] = Field(
+        ..., description="attribute_name of every proposal consumed into this attribute, one-for-one"
+    )
+
+
+def _build_positions_block(refinement: dict) -> str:
+    """Render a facet's existing refinement positions for the adjudication
+    prompt: one '- name: description' line each (residual last)."""
+    positions = refinement.get("positions", [])
+    non_residual = [p for p in positions if not p.get("is_residual")]
+    residual = [p for p in positions if p.get("is_residual")]
+    lines = []
+    for p in non_residual + residual:
+        suffix = " (residual)" if p.get("is_residual") else ""
+        lines.append(f"- {p.get('position_name', '')}{suffix}: {p.get('position_description', '')}")
+    return "\n".join(lines)
+
+
+def _build_new_position_proposals_block(new_positions: List[Dict]) -> str:
+    """Render a facet's proposed new positions for the adjudication prompt:
+    one '- name: boundary' line each, plus its pooled examples."""
+    lines = []
+    for np_ in new_positions:
+        lines.append(f"- {np_['position_name']}: {np_['boundary']}")
+        lines.append(f"  Examples: {'; '.join(np_['examples'][:5])}")
+    return "\n".join(lines)
+
+
+def build_new_position_adjudication_prompt(
+    *,
+    survey_question: str,
+    facet_name: str,
+    facet_description: str,
+    refinement_axis_name: str,
+    refinement_axis_description: str,
+    refinement: dict,
+    new_positions: List[Dict],
+) -> str:
+    """Adjudicate a facet's new-position proposals raised during P5
+    discovery: accept (the position joins the refinement axis) or fold into
+    an existing position (P6 adjudication, axis-first path)."""
+    positions_block = _build_positions_block(refinement)
+    new_position_proposals_block = _build_new_position_proposals_block(new_positions)
+
+    return f"""You are a taxonomy consolidation specialist for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Facet: {facet_name} — {facet_description}
+Refinement axis: {refinement_axis_name} — {refinement_axis_description}
+Existing positions:
+
+<positions>
+{positions_block}
+</positions>
+
+During discovery the following NEW positions were proposed, with boundaries
+and examples:
+
+<new_positions>
+{new_position_proposals_block}
+</new_positions>
+
+For every proposed new position, give a verdict:
+- "accept" when it captures a value on the refinement axis that no existing
+  position covers — give its final name and keep its boundary;
+- "fold_into" when an existing position already covers it — name that
+  position and the reason.
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class NewPositionAdjudication(BaseModel):
+    """A verdict on one proposed new position (P6 adjudication output,
+    axis-first path)."""
+    position_name: str = Field(
+        ..., description="Name of the proposed new position being adjudicated — echoed back for bookkeeping"
+    )
+    verdict: Literal["accept", "fold_into"] = Field(
+        ..., description=(
+            "'accept' when this position captures a value on the refinement axis that "
+            "no existing position covers; 'fold_into' when an existing position already covers it"
+        )
+    )
+    fold_into_position: str = Field(
+        default="", description="Name of the existing position this proposal folds into — required when verdict is 'fold_into'"
+    )
+    reason: str = Field(
+        ..., description="One sentence explaining the verdict"
+    )
+
+
+class NewPositionAdjudicationResponse(BaseModel):
+    """P6 adjudication output (axis-first path): verdicts on every new
+    position proposed for one facet."""
+    verdicts: List[NewPositionAdjudication] = Field(
+        ..., description="One verdict per proposed new position for this facet"
     )
 
 
