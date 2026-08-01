@@ -5,6 +5,7 @@ Organized in pipeline processing order:
   §0   Dimension Context Block (shared helper)
   §1   Facet Discovery (P1: per-domain, chunked)
   §2   Facet Consolidation (P2: merge chunk-level facets)
+  §3   Facet Review (P3: per-domain quality gate)
   §4   Facet Assignment (P4: per-domain, batched)
   §5   Attribute Discovery (P5: per facet within domain)
   §6   Attribute Chunk Consolidation (P6: merge chunk-level attributes)
@@ -262,6 +263,9 @@ class DiscoveredFacet(BaseModel):
     example_observations: List[str] = Field(
         ..., description="3-5 representative observations from the input"
     )
+    boundary_test: str = Field(
+        default="", description="One routing sentence for the doubtful case, phrased against a named sibling facet"
+    )
 
 
 class FacetDiscoveryResult(BaseModel):
@@ -477,6 +481,114 @@ class FacetConsolidatedResponse(BaseModel):
     )
     facets: List[DiscoveredFacet] = Field(
         ..., description="Fewest mutually exclusive facets needed for full coverage, consolidated from all chunks"
+    )
+
+
+# =============================================================================
+# §3 FACET REVIEW (P3) — per-domain quality gate on the consolidated facet set
+# =============================================================================
+
+
+def build_facet_review_prompt(
+    *,
+    survey_question: str,
+    primary_dimension: str,
+    domain_label: str,
+    domain_definition: str,
+    domain_boundary_test: str,
+    facets: List[DiscoveredFacet],
+) -> str:
+    """Review a domain's consolidated facet set for definitional MECE-ness.
+
+    Structure change is impossible by construction: the response schema echoes
+    the input set 1-on-1 (matched by original_name) and only carries rewritten
+    names/descriptions plus a boundary test and overlap flags.
+    """
+    facets_block = "\n".join(
+        f"[F{i}] {facet.facet_name}\n    Description: {facet.facet_description}"
+        for i, facet in enumerate(facets, start=1)
+    )
+
+    return f"""You are a taxonomy quality reviewer for open-ended survey coding.
+
+The survey question:
+"{survey_question}"
+
+Primary dimension of the taxonomy: {primary_dimension}
+
+Domain under review: {domain_label}
+Domain definition: {domain_definition}
+Domain boundary test: {domain_boundary_test}
+
+Below are this domain's consolidated facets — the perspectives along which its
+ideas will be organised. Assignment has not happened yet: rewrites are free, but
+the facet SET is fixed.
+
+<facets>
+{facets_block}
+</facets>
+
+Your task, for every facet, in the same order:
+1. Judge the definition from the viewpoint of the survey question: does it delimit
+   exactly one concept, and can a coder tell it apart from every sibling facet by
+   reading the definitions alone?
+2. Rewrite the name and/or description where needed so that the distinction is
+   explicit in the text itself. Descriptive wording only — no evaluative language
+   (evaluation is captured per idea as valence, elsewhere).
+3. Write one boundary test per facet: a single routing sentence for the doubtful
+   case, phrased against a named sibling facet ("mentions X -> this facet; is
+   about Y -> <sibling>").
+4. If two facets appear to capture the same concept even after rewriting, keep
+   both unchanged in your output and flag the pair with a one-sentence reason.
+   Flagging is desired behaviour, not failure: flagged pairs are resolved later
+   with assignment data.
+
+Rules:
+- Return exactly the facets you were given, one for one, matched by original_name.
+  Do not add, merge, split or drop facets.
+- Sharpen, do not re-scope: a rewrite must stay faithful to what the facet
+  already covers.
+- Keep names short and descriptive; keep descriptions one to three sentences.
+
+Provide your output as valid JSON following the response schema provided."""
+
+
+class ReviewedFacet(BaseModel):
+    """A single facet after P3 review — rewrites are free, the set is fixed."""
+    original_name: str = Field(
+        ..., description="Exact name of the existing facet — the match key back to the input"
+    )
+    facet_name: str = Field(
+        ..., description="Facet name, sharpened where needed"
+    )
+    facet_description: str = Field(
+        ..., description="Facet description, reformulated for orthogonality"
+    )
+    boundary_test: str = Field(
+        ..., description="One routing sentence for the doubtful case, phrased against a named sibling facet"
+    )
+
+
+class FacetOverlapFlag(BaseModel):
+    """A pair of facets that still appear to capture the same concept after rewriting."""
+    facet_a: str = Field(
+        ..., description="Name of the first facet in the overlapping pair"
+    )
+    facet_b: str = Field(
+        ..., description="Name of the second facet in the overlapping pair"
+    )
+    reason: str = Field(
+        ..., description="One sentence explaining why the two facets overlap"
+    )
+
+
+class FacetReviewResponse(BaseModel):
+    """P3 output: reviewed facets and any overlap flags for a single domain."""
+    facets: List[ReviewedFacet] = Field(
+        ..., description="Reviewed facets, exactly 1-on-1 with the input set"
+    )
+    overlap_flags: List[FacetOverlapFlag] = Field(
+        ..., description="Pairs of facets that still appear to capture the same concept after rewriting"
     )
 
 
