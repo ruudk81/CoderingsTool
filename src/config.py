@@ -484,19 +484,6 @@ class CacheConfig:
 
 
 # =============================================================================
-# EXPORT CLEANUP CONFIGURATION
-# =============================================================================
-
-@dataclass
-class ExportCleanupConfig:
-    """Configuration for automatic cleanup of exports/ subdirectories."""
-    enabled: bool = True               # Set False to disable auto-cleanup
-    max_age_days: int = 30             # Delete files older than this
-    keep_latest_n: int = 3             # Always keep N newest per group key
-    silent: bool = True                # Suppress console output when auto-running
-
-
-# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
@@ -504,8 +491,6 @@ DEFAULT_MODEL_CONFIG = ModelConfig()
 
 # Processing configuration
 DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
-
-DEFAULT_EXPORT_CLEANUP_CONFIG = ExportCleanupConfig()
 
 
 # =============================================================================
