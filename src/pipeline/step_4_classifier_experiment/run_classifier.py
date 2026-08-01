@@ -471,6 +471,14 @@ def cache_taxonomy_results(
         variable_key=variable_key,
     )
 
+    # A fresh taxonomy supersedes everything derived from the one it replaces.
+    # Step 5 prefers the corrected keys while they are valid (silently feeding it
+    # the superseded taxonomy), and steps 5/6 skip entirely on a valid
+    # mece_codes/taxonomy_codes cache when run without force_recalc.
+    for stale in ("taxonomy_corrected_metadata", "taxonomy_classified_corrected",
+                  "mece_codes", "mece_codes_metadata", "taxonomy_codes"):
+        cache_manager.invalidate_cache(filename, stale, variable_key)
+
     # P5b provenance to disk, not into the shared cache model. Every merge, split and
     # move with the exact texts it touched — this is what makes a bad decision
     # findable afterwards instead of invisible.
