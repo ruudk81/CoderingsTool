@@ -375,7 +375,12 @@ def cache_taxonomy_results(
 # =============================================================================
 
 def save_prompts_to_json(prompt_printer):
-    """Save captured prompts to JSON file."""
+    """Save captured prompts to JSON file.
+
+    Everything the runner captured goes in. A whitelist of prompt types here
+    would have to be extended by hand for every new phase, and drops what it
+    does not recognise without saying so — that is how P7 went missing.
+    """
     if not prompt_printer or not prompt_printer.prompts:
         return
 
@@ -387,23 +392,8 @@ def save_prompts_to_json(prompt_printer):
     prompts_dir = project_root / "exports" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    TAXONOMY_TYPES = {
-        "facet_discovery", "facet_consolidation", "facet_assignment",
-        "attribute_discovery", "attribute_chunk_consolidation",
-        "attribute_consolidation", "attribute_assignment",
-        "cross_domain_consolidation",
-    }
-
-    taxonomy_prompts = [
-        p for p in prompt_printer.prompts
-        if p.get("prompt_type") in TAXONOMY_TYPES
-    ]
-
-    base = f"step4_classifier_{variable_key}"
-    if taxonomy_prompts:
-        pp_tax = PromptPrinter(enabled=True)
-        pp_tax.prompts = taxonomy_prompts
-        pp_tax.save_prompts(str(prompts_dir / f"{base}_taxonomy.json"))
+    prompt_printer.save_prompts(
+        str(prompts_dir / f"step4_classifier_{variable_key}_taxonomy.json"))
 
 
 # =============================================================================
@@ -532,7 +522,10 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         )
         if v_taxonomy and v_classified:
             new_taxonomy, new_classified, _v_report, v_stats = asyncio.run(
-                ValenceConsolidator(CONFIG, cost_tracker=cost_tracker).consolidate(
+                ValenceConsolidator(
+                    CONFIG, cost_tracker=cost_tracker,
+                    prompt_printer=prompt_printer,
+                ).consolidate(
                     v_taxonomy, v_classified, extraction_metadata, verbose=CONFIG.verbose,
                 )
             )

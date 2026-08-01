@@ -138,7 +138,10 @@ def run_step(config: StepConfig = None):
     var_lab = get_var_lab(config)
 
     verbose_reporter = VerboseReporter(config.verbose)
-    prompt_printer = PromptPrinter(enabled=config.prompt_printer_enabled, print_realtime=config.prompt_printer_enabled)
+    prompt_printer = PromptPrinter(
+        enabled=True,  # Always capture prompts for debugging
+        print_realtime=config.prompt_printer_enabled  # Only print if requested
+    )
     spell_check_config = SpellCheckConfig(minimum_timeout_seconds=15.0, maximum_timeout_seconds=60.0)
 
     verbose_reporter.section_header("PREPROCESSING")
@@ -212,6 +215,13 @@ def run_step(config: StepConfig = None):
             ))
 
     elapsed_time = time.time() - start_time
+
+    # Save captured prompts to JSON
+    if prompt_printer.prompts:
+        prompts_dir = project_root / "exports" / "prompts"
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        prompts_file = prompts_dir / f"step1_{config.var_name}_{variable_key}.json"
+        prompt_printer.save_prompts(str(prompts_file))
 
     cache_manager.save_to_cache(preprocessed_text, config.filename, "preprocessed", variable_key, elapsed_time, var_lab=var_lab)
 

@@ -408,7 +408,8 @@ class SpellChecker:
         
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
-        self.prompt_printer = prompt_printer 
+        self.prompt_printer = prompt_printer
+        self._prompt_captured = False  # capture one example, not one per respondent
         self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)
         
         if self.verbose_reporter.enabled:
@@ -1350,6 +1351,21 @@ Suggested corrections: {task_dict['suggestions']}
                         language=DEFAULT_LANGUAGE,
                         var_lab=task_dict.get('var_lab', self.var_lab),
                         tasks=task_text
+                    )
+
+                if self.prompt_printer is not None and not self._prompt_captured:
+                    self._prompt_captured = True
+                    self.prompt_printer.capture_prompt(
+                        step_name="preprocessor",
+                        utility_name="SpellChecker",
+                        prompt_content=full_prompt,
+                        prompt_type="spell_correction",
+                        metadata={
+                            "model": self.model,
+                            "temperature": self.config.temperature,
+                            "language": DEFAULT_LANGUAGE,
+                            "var_lab": task_dict.get('var_lab', self.var_lab),
+                        },
                     )
 
                 try:

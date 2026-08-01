@@ -276,15 +276,8 @@ def save_prompts_to_json(prompt_printer):
     prompts_dir = project_root / "exports" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    base = f"step6_codeAssigner_{variable_key}"
-    assignment_prompts = [
-        p for p in prompt_printer.prompts
-        if p.get("prompt_type") in {"taxonomy_codes", "code_assignment"}
-    ]
-    if assignment_prompts:
-        pp_assign = PromptPrinter(enabled=True)
-        pp_assign.prompts = assignment_prompts
-        pp_assign.save_prompts(str(prompts_dir / f"{base}_assignment.json"))
+    prompt_printer.save_prompts(
+        str(prompts_dir / f"step6_codeAssigner_{variable_key}_assignment.json"))
 
 
 # =============================================================================

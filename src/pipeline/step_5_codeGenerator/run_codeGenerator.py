@@ -289,17 +289,8 @@ def save_prompts_to_json(prompt_printer):
     prompts_dir = project_root / "exports" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    base = f"step5_codeGenerator_{variable_key}"
-    codebook_prompts = [
-        p for p in prompt_printer.prompts
-        if p.get("prompt_type") in {
-            "code_generation_from_attributes", "codebook_consolidation",
-        }
-    ]
-    if codebook_prompts:
-        pp_code = PromptPrinter(enabled=True)
-        pp_code.prompts = codebook_prompts
-        pp_code.save_prompts(str(prompts_dir / f"{base}_codebook.json"))
+    prompt_printer.save_prompts(
+        str(prompts_dir / f"step5_codeGenerator_{variable_key}_codebook.json"))
 
 
 # =============================================================================

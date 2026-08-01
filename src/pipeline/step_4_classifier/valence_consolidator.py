@@ -145,10 +145,12 @@ def detect_valence_splits(
 class ValenceConsolidator:
     """Collapses safe valence-split attribute pairs into one descriptive attribute."""
 
-    def __init__(self, config: CategoriesConfig, cost_tracker=None):
+    def __init__(self, config: CategoriesConfig, cost_tracker=None,
+                 prompt_printer=None):
         self._model = config.qr_model_p8
         self._temperature = config.qr_temperature
         self._cost_tracker = cost_tracker
+        self._prompt_printer = prompt_printer
         self._label_sim_threshold = 0.6
         self._min_skew = 0.7
         self._min_count = 5
@@ -231,11 +233,26 @@ class ValenceConsolidator:
             "name_b": p.name_b, "desc_b": desc_lookup.get((p.domain, p.name_b), ""),
             "samples": (p.samples_a + p.samples_b)[:6],
         } for i, p in enumerate(merge_pairs)]
+        prompt = build_valence_neutral_rename_prompt(payload, language)
+        if self._prompt_printer is not None:
+            self._prompt_printer.capture_prompt(
+                step_name="qualitative_researcher",
+                utility_name="ValenceConsolidator",
+                prompt_content=prompt,
+                prompt_type="valence_neutral_rename",
+                metadata={
+                    "model": self._model,
+                    "temperature": self._temperature,
+                    "max_tokens": 2000,
+                    "language": language,
+                    "n_pairs": len(merge_pairs),
+                },
+            )
+
         try:
             client = create_client(self._model)
             response = await llm_create_async(
-                client, self._model,
-                build_valence_neutral_rename_prompt(payload, language),
+                client, self._model, prompt,
                 response_model=ValenceNeutralRenameResponse,
                 temperature=self._temperature, max_tokens=2000,
                 **get_reasoning_params(self._model, phase="classifier_p7"),
