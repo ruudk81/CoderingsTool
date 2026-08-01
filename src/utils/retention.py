@@ -61,13 +61,13 @@ LOG_PATH = Path(EXPORTS_DIRNAME) / "retention.log"
 RETENTION_ENABLED = True
 
 # Hoeveel analyses bewaren we? None = uit; dan verhuist er niets.
-# Opgeleverd op None: het gereedschap rapporteert wel (--status) maar kan niets
-# verwijderen. Het getal wordt vastgesteld in een apart beslismoment, met de
-# --status-uitvoer erbij.
-MAX_ANALYSES: Optional[int] = None
+# Beschermde analyses (zie PROTECT_DAYS) tellen mee voor dit getal: staan er
+# zes beschermd en is het plafond 10, dan komen er nog vier bij.
+MAX_ANALYSES: Optional[int] = 10
 
 # Plafond op de prullenbak in MB. None = uit. Dit is de enige plek waar iets
-# onherroepelijk verdwijnt.
+# onherroepelijk verdwijnt — zolang dit None is verhuist alles alleen maar en
+# kun je alles terugzetten.
 TRASH_MAX_MB: Optional[int] = None
 
 # Bodem: wat hierbinnen is gewijzigd gaat nooit weg, ook niet als het plafond
