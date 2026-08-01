@@ -29,6 +29,7 @@ from openpyxl.formatting.rule import ColorScaleRule
 from models import CodeAssignedModel
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from models import DomainSet, DomainResultModel
+from utils.exportNaming import export_filename
 from utils.verboseReporter import VerboseReporter
 
 
@@ -65,11 +66,15 @@ def results_export_dir(export_dir=None) -> Path:
     return Path(export_dir)
 
 
-def results_xlsx_path(filename: str, var_name: str, export_dir=None) -> Path:
+def results_xlsx_path(filename: str, var_name: str, sample_size, export_dir=None) -> Path:
     """Canonical path of the results workbook. ResultsExporter.export() AND the app
-    (app_backend.export_path) call THIS, so the name/folder can't drift apart."""
-    base = f"{Path(filename).stem}_{var_name}"
-    return results_export_dir(export_dir) / f"{base}_codering.xlsx"
+    (app_backend.export_path) call THIS, so the name/folder can't drift apart.
+
+    sample_size is part of the name: without it, the same question at 500 and at
+    4586 respondents would write to one file and overwrite each other.
+    """
+    return results_export_dir(export_dir) / export_filename(
+        filename, var_name, sample_size, "codering", "xlsx")
 
 
 def _green_scale() -> ColorScaleRule:
@@ -298,6 +303,7 @@ class ResultsExporter:
                quality_filtered: Optional[List] = None,
                filename: str = "export",
                var_name: str = "VAR",
+               sample_size=None,
                var_lab: str = "",
                export_dir: Optional[str] = None) -> Dict[str, str]:
         """Build the catalog + 4 outputs, write one Excel workbook (5 sheets) and 4 .sav files."""
@@ -327,10 +333,9 @@ class ResultsExporter:
         # output paths — final deliverables go in their own subfolder
         export_dir = results_export_dir(export_dir)
         export_dir.mkdir(parents=True, exist_ok=True)
-        base = f"{Path(filename).stem}_{var_name}"
 
         # Excel (one workbook, 5 sheets)
-        xlsx_path = results_xlsx_path(filename, var_name, export_dir)
+        xlsx_path = results_xlsx_path(filename, var_name, sample_size, export_dir)
         self._write_excel(xlsx_path, cat, codes_df, codes_collabels,
                           grof_df, grof_collabels, fijn_df, fijn_collabels, long_df)
 
@@ -342,7 +347,8 @@ class ResultsExporter:
             ("taxonomie_fijn", fijn_df, fijn_vlabels, fijn_collabels),
             ("gecombineerd", long_df, long_vlabels, long_collabels),
         ]:
-            sav_path = export_dir / f"{base}_{suffix}.sav"
+            sav_path = export_dir / export_filename(
+                filename, var_name, sample_size, suffix, "sav")
             self._write_sav(df, sav_path, vlab, clab)
             paths[suffix] = str(sav_path)
 

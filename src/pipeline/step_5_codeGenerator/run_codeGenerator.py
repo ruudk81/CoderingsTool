@@ -16,6 +16,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from utils.exportNaming import export_filename
 from identity import ensure_codebook_ids
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
@@ -266,8 +267,8 @@ def cache_mece_results(
     if codebook_result.codebook_narrative:
         scratch_dir = project_root / "exports" / "codebook"
         scratch_dir.mkdir(parents=True, exist_ok=True)
-        base = Path(filename).stem.replace(" ", "_")
-        scratch_path = scratch_dir / f"codebook_{base}_{variable_key}_scratchpad.txt"
+        scratch_path = scratch_dir / export_filename(
+            filename, variable, sample_size, "kladblok", "txt")
         scratch_path.write_text(codebook_result.codebook_narrative, encoding="utf-8")
         print(f"P8/P9 scratchpads saved: {scratch_path}")
 

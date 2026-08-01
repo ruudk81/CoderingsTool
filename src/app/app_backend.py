@@ -535,7 +535,7 @@ def export_path(spec: DatasetSpec) -> Path:
     """Canonical results-workbook path — imported from resultsExporter so it can't
     drift from where step 7 actually writes (the old export_path bug class)."""
     from pipeline.step_7_export.resultsExporter import results_xlsx_path
-    return results_xlsx_path(spec.filename, spec.var_name)
+    return results_xlsx_path(spec.filename, spec.var_name, spec.sample_size)
 
 
 def codebook_path(spec: DatasetSpec) -> Path:

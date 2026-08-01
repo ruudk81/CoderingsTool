@@ -187,6 +187,7 @@ def run_step(config: StepConfig = None):
         quality_filtered=quality_filtered_text,
         filename=config.filename,
         var_name=config.var_name,
+        sample_size=config.sample_size,
         var_lab=var_lab,
         export_dir=None,
     )

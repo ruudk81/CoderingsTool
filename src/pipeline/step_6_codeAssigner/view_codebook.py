@@ -42,6 +42,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from utils.exportNaming import export_filename
 from models import CodeAssignedModel
 from models import TaxonomyResultsCache
 from models import CodingResultsCache, ExtractionMetadata, QualityFilteredModel
@@ -379,22 +380,18 @@ def codebook_export_dir() -> Path:
     return project_root / "exports" / "codebook"
 
 
-def _codebook_stem(filename: str, var_name: str, sample_size) -> str:
-    base = Path(filename).stem.replace(" ", "_")
-    size = sample_size if sample_size is not None else "full"   # avoid "_None" for full samples
-    return f"codebook_{base}_{var_name}_{size}"
-
-
 def codebook_xlsx_path(filename: str, var_name: str, sample_size) -> Path:
     """Canonical codebook workbook path — view_codebook AND the app (app_backend) import this,
     so the name/folder can't drift apart."""
-    return codebook_export_dir() / f"{_codebook_stem(filename, var_name, sample_size)}.xlsx"
+    return codebook_export_dir() / export_filename(
+        filename, var_name, sample_size, "codeboek", "xlsx")
 
 
-def save_csv(suffix, header_cols, rows, base_n, n_responses, n_unassigned):
+def save_csv(doctype, header_cols, rows, base_n, n_responses, n_unassigned):
     exports_dir = codebook_export_dir()
     exports_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = exports_dir / f"{_codebook_stem(FILENAME, VARIABLE, SAMPLE_SIZE)}_{suffix}.csv"
+    csv_path = exports_dir / export_filename(
+        FILENAME, VARIABLE, SAMPLE_SIZE, doctype, "csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
         w.writerow(["depth", "label", "richting", "n_bruto", "pct_bruto",
@@ -589,7 +586,7 @@ def _append_leeswijzer(ws):
 
 # (title, sheet_name, header_label, builder spec, csv_suffix)
 VERSIONS = [
-    ("CODEBOOK",             "Codeboek",         "code",                          ("groups", "code", False, False), "codebook"),
+    ("CODEBOOK",             "Codeboek",         "code",                          ("groups", "code", False, False), "codeboek"),
     ("TAXONOMIE",             "Taxonomie (grof)", "domain / facet / attribute",     ("dfa", "consolidated"), "taxonomie"),
     ("TAXONOMIE (ruwe attr)", "Taxonomie (fijn)", "domain / facet / raw attribute", ("dfa", "raw"),          "taxonomie_raw"),
 ]
