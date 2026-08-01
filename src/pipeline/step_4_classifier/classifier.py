@@ -692,6 +692,12 @@ class TaxonomyClassifier:
         # =================================================================
         consolidation_log: List[Dict] = []
         attribute_review_flags: List[Dict] = []
+        # Same flags as attribute_review_flags, keyed by the domain that raised
+        # them. Facet names are NOT unique across domains, so P8/P9 dispatch
+        # must filter per-domain — the flat list alone cannot tell two domains'
+        # same-named facets apart. Internal to this method; never lands on
+        # TaxonomyResult (Task 6's public schema is untouched).
+        domain_review_flags: Dict[str, List[Dict]] = {}
 
         if self._facet_review_enabled:
             _snap_p3r = token_tracker.snapshot() if self.cost_tracker else None
@@ -1246,6 +1252,7 @@ class TaxonomyClassifier:
                 for task, response in zip(p7r_tasks, p7r_results):
                     p7r_domain_counts[task['domain_name']] = self._apply_p7_review(
                         task, response, consolidation_log, attribute_review_flags,
+                        domain_review_flags,
                     )
 
                 if verbose:
@@ -1312,6 +1319,15 @@ class TaxonomyClassifier:
                     continue
 
                 attr_id_to_name = {f"A{i}": a.attribute_name for i, a in enumerate(attributes, 1)}
+                # P7 decision rules for pairs flagged WITHIN this facet, in
+                # THIS domain only — facet names are not unique across
+                # domains, so the flat attribute_review_flags list is not
+                # safe to filter on facet name alone.
+                decision_rules = [
+                    flag['decision_rule']
+                    for flag in domain_review_flags.get(domain_name, [])
+                    if flag['facet_a'] == facet_name and flag['facet_b'] == facet_name
+                ]
                 for idea in facet_ideas:
                     idea_label = format_label(idea, self._label_source, self._label_prefix)
                     p6_tasks.append({
@@ -1323,6 +1339,7 @@ class TaxonomyClassifier:
                         'attributes': attributes,
                         'attr_id_to_name': attr_id_to_name,
                         'facet_key': facet_key,
+                        'decision_rules': decision_rules,
                     })
 
         if p6_tasks:
@@ -1473,6 +1490,14 @@ class TaxonomyClassifier:
                     'attributes_block': self._build_facet_contents_block(
                         attributes, facet_ideas, attribute_assignments),
                     'neighbour_block': build_neighbour_block(neighbours),
+                    # P7 cross-facet flags touching this facet on either side,
+                    # in THIS domain only (facet names are not unique across
+                    # domains — see the P8 decision_rules comment above).
+                    'suspected_overlap': [
+                        flag for flag in domain_review_flags.get(domain_name, [])
+                        if flag['facet_a'] != flag['facet_b']
+                        and (flag['facet_a'] == facet_name or flag['facet_b'] == facet_name)
+                    ],
                 })
 
         p7_results = []
@@ -1631,6 +1656,7 @@ class TaxonomyClassifier:
                 facet_description=task['facet_description'],
                 attributes=task['attributes'],
                 idea_label=task['idea_label'],
+                decision_rules=task.get('decision_rules'),
             )
 
             # Prompt capture (first idea per facet)
@@ -2176,6 +2202,7 @@ class TaxonomyClassifier:
         response: Optional[AttributeReviewResponse],
         consolidation_log: List[Dict],
         attribute_review_flags: List[Dict],
+        domain_review_flags: Dict[str, List[Dict]],
     ) -> Dict[str, int]:
         """Apply one domain's P7 review in place. Mandate is rewrite-and-flag
         only — the attribute SET is fixed. Match key is (facet_name,
@@ -2315,6 +2342,7 @@ class TaxonomyClassifier:
                 "reason": flag.reason, "decision_rule": flag.decision_rule,
             }
             attribute_review_flags.append(flag_dict)
+            domain_review_flags.setdefault(domain, []).append(flag_dict)
             consolidation_log.append({
                 "action": "attribute_review_flag", "domain": domain, **flag_dict,
             })
@@ -2386,6 +2414,7 @@ class TaxonomyClassifier:
                 facet_description=task['facet_description'],
                 attributes_block=task['attributes_block'],
                 neighbour_block=task['neighbour_block'],
+                suspected_overlap=task.get('suspected_overlap'),
             )
 
             gate_key = f"qr_in_facet_consolidation_{task['domain_name']}"

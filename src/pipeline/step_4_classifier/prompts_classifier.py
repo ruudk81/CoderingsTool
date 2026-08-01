@@ -1246,6 +1246,20 @@ def _build_attribute_codebook_block(
     return "\n\n".join(lines)
 
 
+def _build_decision_rules_block(decision_rules: Optional[List[str]]) -> str:
+    """Format P7 overlap decision rules for the facet being dispatched.
+
+    Empty/None renders as an empty string, so a facet with no flagged pairs
+    produces a byte-identical prompt to before this block existed.
+    """
+    if not decision_rules:
+        return ""
+    lines = ["", "Decision rules for closely related attributes:"]
+    lines.extend(f"- {rule}" for rule in decision_rules)
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_attribute_assignment_prompt_single(
     *,
     survey_question: str,
@@ -1255,9 +1269,16 @@ def build_attribute_assignment_prompt_single(
     facet_description: str,
     attributes: List['DiscoveredAttribute'],
     idea_label: str,
+    decision_rules: Optional[List[str]] = None,
 ) -> str:
-    """Build prompt for assigning a single idea to an attribute (L4) within a facet."""
+    """Build prompt for assigning a single idea to an attribute (L4) within a facet.
+
+    `decision_rules`: P7 overlap decision_rule strings for pairs flagged
+    WITHIN this facet (facet_a == facet_b == this facet). None/empty omits
+    the block entirely.
+    """
     attribute_codebook = _build_attribute_codebook_block(attributes)
+    decision_rules_block = _build_decision_rules_block(decision_rules)
 
     return f"""You are a qualitative coding assistant. Assign the survey response idea below to the attribute that best captures the specific quality being described.
 
@@ -1274,7 +1295,7 @@ Facet: {facet_name} -- {facet_description}
 <attributes>
 {attribute_codebook}
 </attributes>
-
+{decision_rules_block}
 <idea>
 {idea_label}
 </idea>
@@ -1312,6 +1333,29 @@ class AttributeAssignmentResult(BaseModel):
 # §9 IN-FACET ATTRIBUTE CONSOLIDATION — post-assignment, one facet at a time
 # =============================================================================
 
+def _build_suspected_overlap_block(suspected_overlap: Optional[List[Dict]]) -> str:
+    """Format P7 cross-facet overlap flags touching this facet.
+
+    Empty/None renders as an empty string, so a facet with no cross-facet
+    flags produces a byte-identical prompt to before this block existed.
+    """
+    if not suspected_overlap:
+        return ""
+    lines = [
+        "", "<suspected_overlap>",
+        "Pairs flagged upstream as possibly one concept — verify against the actual",
+        "contents below and resolve with your normal actions:",
+    ]
+    for flag in suspected_overlap:
+        lines.append(
+            f"- {flag['attr_a']} ({flag['facet_a']}) vs {flag['attr_b']} ({flag['facet_b']}): "
+            f"{flag['reason']}. Rule: {flag['decision_rule']}"
+        )
+    lines.append("</suspected_overlap>")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_in_facet_consolidation_prompt(
     *,
     survey_question: str,
@@ -1326,6 +1370,7 @@ def build_in_facet_consolidation_prompt(
     facet_description: str,
     attributes_block: str,
     neighbour_block: str,
+    suspected_overlap: Optional[List[Dict]] = None,
 ) -> str:
     """Finalise the attribute inventory of ONE facet, after every idea is assigned.
 
@@ -1333,7 +1378,13 @@ def build_in_facet_consolidation_prompt(
     contents instead of the examples discovery guessed at. The facet is fixed:
     nothing in this call can move an attribute to another facet. When a group of
     ideas belongs elsewhere, the IDEAS move (`misfits`) and the structure stays put.
+
+    `suspected_overlap`: P7 CROSS-facet overlap flags (facet_a != facet_b) where
+    either side is this facet, as dicts with attr_a/facet_a/attr_b/facet_b/
+    reason/decision_rule. None/empty omits the block entirely.
     """
+    suspected_overlap_block = _build_suspected_overlap_block(suspected_overlap)
+
     if dimension_def:
         rules = dimension_def.prompt_rules
         attribute_guidance = rules.attribute_instruction
@@ -1395,7 +1446,7 @@ Here are this facet's attributes, with their real size and their real contents:
 </facet_attributes>
 
 {neighbour_block}
-
+{suspected_overlap_block}
 # Understanding Attributes
 
 Conceptualization:
