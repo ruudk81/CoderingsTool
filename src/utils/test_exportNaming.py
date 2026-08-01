@@ -107,6 +107,14 @@ def test_legacy_names_do_not_parse():
         assert parse_export_filename(oud, STEMS) is None
 
 
+def test_sample_must_be_a_number_or_full():
+    """Anders leest een restant als een analyse met een verzonnen steekproef."""
+    assert parse_export_filename("d_Q1_2500 v1_codeboek.xlsx", ["d.sav"]) is None
+    assert parse_export_filename("d_Q1_kladversie_codeboek.xlsx", ["d.sav"]) is None
+    assert parse_export_filename("d_Q1_2500_codeboek.xlsx", ["d.sav"]).sample == "2500"
+    assert parse_export_filename("d_Q1_full_codeboek.xlsx", ["d.sav"]).sample == "full"
+
+
 def test_unknown_dataset_does_not_parse():
     naam = export_filename("Onbekend bestand.sav", "Q1", 100, "kosten", "json")
     assert parse_export_filename(naam, STEMS) is None

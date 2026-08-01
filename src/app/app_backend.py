@@ -424,7 +424,26 @@ def run_step(step: int, spec: DatasetSpec, force_recalc: bool = False) -> str:
         summary += (" ⚠️ WAARSCHUWING: geen cache-resultaat gevonden onder "
                     f"{spec.filename}:{spec.variable_key} — runner schreef mogelijk "
                     "naar de verkeerde dataset-key.")
+
+    # Opruimen op het moment dat er daadwerkelijk bestanden bij zijn gekomen.
+    # Dit is het tweede haakje naast het opstarthaakje in app.py: een app die
+    # dagenlang openstaat zou anders alleen bij een herstart opruimen.
+    melding = run_retention(f"na stap {step}")
+    if melding.startswith("opruimen mislukt"):
+        summary += f" ⚠️ {melding}"
+
     return summary
+
+
+def run_retention(aanleiding: str) -> str:
+    """Ruim exports/ op; geeft één regel terug voor de UI.
+
+    Fouten worden niet verzwegen — ze komen terug als tekst en staan in
+    exports/retention.log. Met alle plafonds op None verplaatst dit niets; het
+    rapporteert alleen.
+    """
+    from utils import retention
+    return retention.opruimen(PROJECT_ROOT, aanleiding)
 
 
 @dataclass

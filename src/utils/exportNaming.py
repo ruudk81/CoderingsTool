@@ -102,4 +102,9 @@ def parse_export_filename(
     var_name, _, sample = head[len(dataset) + 1:].rpartition("_")
     if not var_name or not sample:
         return None
+    # Een steekproef is een getal of "full". Zonder deze eis leest elk restant
+    # met een underscore erin als een analyse — "..._2500 v1_codeboek.xlsx"
+    # zou dan een eigen analyse "2500 v1" opleveren.
+    if sample != "full" and not sample.isdigit():
+        return None
     return ExportName(dataset, var_name, sample, doctype, ext)

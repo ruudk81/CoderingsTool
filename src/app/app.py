@@ -47,6 +47,28 @@ def get_cache_manager() -> CacheManager:
     return CacheManager(CacheConfig())
 
 
+@st.cache_resource
+def _retentie_bij_opstarten() -> None:
+    """Ruim exports/ op zodra de app start.
+
+    @st.cache_resource draait dit exact één keer per serverproces — Streamlit
+    voert het script bij elke klik opnieuw uit, dus zonder die decorator zou
+    het bij elke interactie afgaan. Streamlit kent geen "app sluit"-moment
+    binnen het script; opstarten is het enige haakje dat werkt ongeacht hoe je
+    de app start, en het kan niet overgeslagen worden door een harde kill.
+
+    Faalt het, dan moet je dat weten: de melding komt in de terminal én in
+    exports/retention.log. Dat is de les van de vorige opruimer, die
+    maandenlang stilletjes een ImportError slikte.
+    """
+    melding = be.run_retention("opstarten")
+    if melding.startswith("opruimen mislukt"):
+        print(f"⚠️  {melding}", file=sys.stderr)
+
+
+_retentie_bij_opstarten()
+
+
 def _concat_module():
     """concat_open_ends (concatenate/ is not a package — path-load it)."""
     concat_dir = str(be.PROJECT_ROOT / "concatenate")
