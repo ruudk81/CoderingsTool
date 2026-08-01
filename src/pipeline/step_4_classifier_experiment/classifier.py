@@ -2128,8 +2128,13 @@ class TaxonomyClassifier:
             src = next((a for a in (pre_p5b_attrs.get((dom, fac)) or [])
                         if a.attribute_name == name), None)
             if src is not None and dom in domain_facet_attributes:
-                domain_facet_attributes[dom].setdefault(fac, []).append(src)
-                partition_attributes.setdefault(dom, {}).setdefault(fac, []).append(src)
+                # Both structures usually hold the SAME list object for this facet
+                # (assigned together in step 1), so a bare append to each would
+                # insert the node twice.
+                for attrs in (domain_facet_attributes[dom].setdefault(fac, []),
+                              partition_attributes.setdefault(dom, {}).setdefault(fac, [])):
+                    if all(a.attribute_name != name for a in attrs):
+                        attrs.append(src)
                 home[name] = (dom, fac)
                 restored += 1
         if orphans:
