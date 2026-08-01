@@ -18,7 +18,10 @@ class Embedder:
         verbose: bool = False):
         
         self.config = config or DEFAULT_EMBEDDING_CONFIG
-        self.client = client or AsyncOpenAI(api_key=os.getenv(OPENAI_API_KEY))
+        # OPENAI_API_KEY already stores the actual key from the environment.
+        # Calling os.getenv again would try to read an env var named with the
+        # key's value which returns ``None``. This prevents authentication.
+        self.client = client or AsyncOpenAI(api_key=OPENAI_API_KEY)
         self.embedding_model = embedding_model or self.config.embedding_model
         self.var_lab = var_lab
         self.verbose = verbose
