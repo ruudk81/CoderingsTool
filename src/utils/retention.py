@@ -379,6 +379,20 @@ def _laatste_run(root: Path) -> str:
     return runs[-1][:STEMPEL_LEN] if runs else "nooit"
 
 
+def _kort(key: str, breedte: int = 62) -> str:
+    """Kort de datasetnaam in, nooit de variabele en de steekproef.
+
+    Die twee zijn juist wat twee analyses van dezelfde dataset onderscheidt;
+    een blinde afkapping op breedte snijdt ze eraf en maakt de regels
+    onleesbaar gelijk.
+    """
+    dataset, _, staart = key.partition(" · ")
+    ruimte = breedte - len(staart) - 3
+    if len(dataset) > ruimte:
+        dataset = dataset[: max(ruimte - 1, 1)] + "…"
+    return f"{dataset} · {staart}"
+
+
 def _print_verslag(verslag: dict, apply: bool) -> None:
     if verslag.get("uit"):
         print("RETENTION_ENABLED staat op False — niets gedaan.")
@@ -390,11 +404,11 @@ def _print_verslag(verslag: dict, apply: bool) -> None:
                if PROTECT_DAYS else "beschermingsvenster staat uit")
     print(f"\n{kop}   plafond: {plafond}   ({venster})\n")
 
-    print(f"{'analyse':62s} {'bestanden':>9s} {'MB':>7s} {'laatst':>16s}  ")
-    print("-" * 100)
-    for a in verslag["analyses"]:
+    print(f"{'#':>3s}  {'analyse':62s} {'bestanden':>9s} {'MB':>7s} {'laatst':>16s}  ")
+    print("-" * 106)
+    for i, a in enumerate(verslag["analyses"], 1):
         vlag = "WEG" if a["weg"] else ("beschermd" if a["beschermd"] else "")
-        print(f"{a['key'][:62]:62s} {a['bestanden']:9d} {a['mb']:7.1f} "
+        print(f"{i:3d}  {_kort(a['key']):62s} {a['bestanden']:9d} {a['mb']:7.1f} "
               f"{a['laatst']:>16s}  {vlag}")
 
     print(f"\nrestanten (bij geen analyse): {verslag['restanten']}"
