@@ -14,20 +14,17 @@ from dataclasses import dataclass
 import numpy as np
 import nest_asyncio
 from pydantic import BaseModel
-from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-from aiolimiter import AsyncLimiter
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
-from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
-from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, fetch_rate_limits
+from utils.cached_resources import get_spacy_nlp_conditional
+from utils.smoothRequester import SmoothRequester
 from config import get_reasoning_params
 
 # === CONFIG — generic/universal ========================================================================================================
 from config import (
     OPENAI_API_KEY, DEFAULT_LANGUAGE,
     ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
-    API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
 )
 
 # === CONFIG — step-specific ========================================================================================================
@@ -36,7 +33,7 @@ from pipeline.step_1_preProcessor.config_preProcessor import (
     SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG,
     MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,
     SUGGESTION_BATCH_SIZE, MAX_CONCURRENT_SUGGESTION_BATCHES,
-    OUTPUT_TOKEN_RATIO, SPACY_VECTOR_NORM_THRESHOLD,
+    SPACY_VECTOR_NORM_THRESHOLD,
 )
 
 # === PROMPTS ========================================================================================================
@@ -66,106 +63,6 @@ class SpellCheckModel(BaseModel):
 
 # Note: CorrectionItem and LLMCorrectionResponse moved to prompts_exp.py
 # (co-located with prompts following instructor schema pattern)
-
-# === RATE LIMITING HELPER CLASSES ========================================================================================================
-class TokenBucket:
-    """Simple token bucket for TPM limiting (from qualityFilter.py)"""
-    def __init__(self, tokens_per_minute):
-        self.tpm = tokens_per_minute
-        self.available = tokens_per_minute
-        self.last_update = time.monotonic()
-        self.lock = asyncio.Lock()
-    
-    async def acquire(self, tokens_needed):
-        """Acquire tokens, returning wait time if not available"""
-        async with self.lock:
-            now = time.monotonic()
-            elapsed = now - self.last_update
-            # Regenerate tokens based on time elapsed
-            self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
-            self.last_update = now
-            
-            if self.available >= tokens_needed:
-                self.available -= tokens_needed
-                return True
-            else:
-                # Calculate wait time
-                deficit = tokens_needed - self.available
-                wait_seconds = deficit * 60 / self.tpm
-                return wait_seconds
-    
-    async def wait_and_acquire(self, tokens_needed):
-        """Wait if necessary and acquire tokens incrementally."""
-        logger.debug(f"[TOKEN BUCKET] Requesting {tokens_needed} tokens")
-        remaining = float(tokens_needed)
-        while remaining > 0:
-            async with self.lock:
-                now = time.monotonic()
-                elapsed = now - self.last_update
-                self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
-                self.last_update = now
-
-                take = min(self.available, remaining)
-                if take > 0:
-                    self.available -= take
-                    remaining -= take
-
-            if remaining > 0:
-                # accrue more tokens; 1 token's worth (or a small floor)
-                await asyncio.sleep(max(0.01, 60.0 / self.tpm))
-
-        logger.debug(f"[TOKEN BUCKET] Acquired {tokens_needed} tokens, {self.available:.0f} remaining")
-    
-    async def reconcile(self, delta_tokens):
-        """Reconcile actual vs estimated tokens"""
-        # If we overestimated (delta < 0), return tokens
-        # If we underestimated (delta > 0), we already used them
-        if delta_tokens < 0:
-            async with self.lock:
-                old_available = self.available
-                self.available = min(self.tpm, self.available - delta_tokens)
-                logger.debug(f"[TOKEN BUCKET] Reconciled {-delta_tokens} tokens back, {old_available:.0f} → {self.available:.0f}")
-        else:
-            logger.debug(f"[TOKEN BUCKET] No reconciliation needed for +{delta_tokens} tokens (underestimated)")
-
-
-class LatencyTracker:
-    """Simple EMA tracker for latencies"""
-    def __init__(self, processing_config: Optional[ProcessingConfig] = None):
-        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.ema = None
-        self.alpha = self.processing_config.latency_tracker_ema_alpha
-        self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
-    
-    def add(self, value):
-        """Add a latency measurement"""
-        self.values.append(value)
-        if self.ema is None:
-            self.ema = value
-        else:
-            self.ema = self.alpha * value + (1 - self.alpha) * self.ema
-    
-    def get_timeout(self, est_tokens):
-        """Calculate timeout based on EMA and token count with configurable bounds"""
-        config = self.processing_config
-        if not self.values:
-            return max(config.adaptive_timeout_min_seconds, 180.0)  # Cold-start: generous for reasoning models
-
-        # Use P95 latency as base
-        p95 = np.percentile(list(self.values), 95)
-        # Simple linear scaling with token count
-        # Assume ~100ms per 1000 tokens as baseline
-        token_factor = est_tokens / 1000
-        timeout = p95 + (token_factor * 0.1)
-        # Apply margin and configurable bounds
-        return max(config.adaptive_timeout_min_seconds, min(config.adaptive_timeout_max_seconds, timeout * config.adaptive_timeout_margin))
-    
-    def get_avg_latency(self):
-        """Get average latency for concurrency calculations"""
-        if not self.values:
-            return 2.0  # Default 2s
-        return self.ema if self.ema is not None else 2.0
-
 
 # === HUNSPELL ========================================================================================================
 class HunspellSession:
@@ -404,8 +301,6 @@ class SpellChecker:
         self.suggestion_cache = {} if self.config.enable_suggestion_caching else None
         self.suggestion_cache_hits = 0
 
-        self.client = create_client(self.model, async_mode=True)
-        
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
         self.prompt_printer = prompt_printer
@@ -432,8 +327,7 @@ class SpellChecker:
                 self.verbose_reporter.stat_line("OK Hunspell installation verified")
 
         self.hunspell_pool = None
-        self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
-        self.failed_task_ids = set()  # Track respondent_ids of truly failed API calls
+        self.failed_task_ids = set()  # respondent_ids SmoothRequester could not resolve
         self.stats = {
             'words_checked': 0,
             'oov_words_found': 0,
@@ -522,36 +416,8 @@ class SpellChecker:
         
         return dp[m][n]
     
-    def _estimate_avg_tokens_for_tasks(self, tasks: List[Dict]) -> int:
-        """Estimate average tokens for spell correction tasks (following qualityFilter.py pattern)"""
-        sample_size = min(10, len(tasks))
-        if sample_size == 0:
-            return 200  # Default estimate
-        
-        encoding = get_tiktoken_encoding(self.model)
-        total_tokens = 0
-        
-        for i in range(sample_size):
-            task = tasks[i]
-            task_text = f"""Task:
-Respondent ID: {task['respondent_id']}
-Response: "{task['response_with_placeholders']}"
-Misspelled words: {task['oov_words']}
-Suggested corrections: {task['suggestions']}
-"""
-            full_prompt = SPELLCHECK_INSTRUCTIONS.format(
-                language=DEFAULT_LANGUAGE,
-                var_lab="sample_var",
-                tasks=task_text
-            )
-            total_tokens += len(encoding.encode(full_prompt))
-        
-        avg_input = total_tokens / sample_size
-        # Assume 15% output ratio for spell correction
-        return int(avg_input * 1.15)
-    
-    
-# --- PROCESSING PHASE 1 :: IDENTIFY OOV WORDS  ------------------------------------------------------------------------------------------------------------------ 
+
+# --- PROCESSING PHASE 1 :: IDENTIFY OOV WORDS  ------------------------------------------------------------------------------------------------------------------
     """phase 1 is integrated in main pipeline"""
 
 # --- PROCESSING PHASE 2 :: HUNSPELL SUGGESTIONS  ------------------------------------------------------------------------------------------------------------------ 
@@ -978,495 +844,110 @@ Suggested corrections: {task['suggestions']}
         # Prompt processing starts here
         ########################################################################################################################
         
-        if filtered_tasks:
-
-            nr_tasks = len(filtered_tasks)
-
-            @dataclass
-            class ApiLimits:
-                tokens_per_minute: int
-                requests_per_minute: int
-
-            def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float, processing_config: ProcessingConfig, cap: Optional[int] = None, min_conc: Optional[int] = None, headroom: Optional[float] = None) -> int:
-                cap = cap if cap is not None else processing_config.concurrency_cap_default
-                min_conc = min_conc if min_conc is not None else processing_config.concurrency_min_default
-                headroom = headroom if headroom is not None else processing_config.rate_limit_headroom
-
-                latency_seconds = max(float(latency_seconds or 0.5), 0.05)
-                avg_tokens = max(float(avg_tokens or 1.0), 1.0)
-
-                rpm_throughput = limits.requests_per_minute * headroom / 60
-                tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
-                candidates = [rpm_throughput, tpm_throughput]
-                allowed_rps = max(min(candidates), 0.0)
-                target = allowed_rps * latency_seconds   # Little's Law
-
-                return int(max(min(target, cap), min_conc))
-            
-            async def bootstrap_measure_async(call_fn, n_probes: int = 3):
-                """Run n_probes serial calls and return (avg_latency_s, avg_tokens). call_fn() -> usage dict."""
-                latencies, tokens = [], []
-                for _ in range(n_probes):
-                    t0 = time.perf_counter()
-                    usage = await call_fn()  # Let tenacity handle timeouts and retries
-                    t1 = time.perf_counter()
-                    latencies.append(max(t1 - t0, 0.001))
-                    pt = int(usage.get("prompt_tokens", 0))
-                    ct = int(usage.get("completion_tokens", 0))
-                    tokens.append(max(pt + ct, 1))
-                return sum(latencies)/len(latencies), sum(tokens)/len(tokens)
-
-            
-            async def probe_call_no_structured(self, task_dict):
-
-                task_text = f"""Task:
-Respondent ID: {task_dict['respondent_id']}
-Response: "{task_dict['response_with_placeholders']}"
-Misspelled words: {task_dict['oov_words']}
-Suggested corrections: {task_dict['suggestions']}
-"""
-
-                prompt = SPELLCHECK_INSTRUCTIONS.format(
-                    language=DEFAULT_LANGUAGE,
-                    var_lab=task_dict.get('var_lab', self.var_lab),
-                    tasks=task_text
-                )
-
-                # Use minimal ProbeResponse model for Azure compatibility (instructor requires response_model)
-                resp = await llm_create_async(
-                    client=self.client,
-                    model=self.model,
-                    prompt=prompt,
-                    response_model=ProbeResponse,
-                    temperature=self.config.temperature,
-                    track_usage=False,  # Manual tracking for probes
-                    **get_reasoning_params(self.model),
-                )
-
-                # Extract usage from instructor's _raw_response
-                u = getattr(resp, "_raw_response", None)
-                if u:
-                    u = getattr(u, "usage", None)
-                if not u:
-                    u = getattr(resp, "usage", None)
-                # Handle both Responses API (input_tokens) and Chat API (prompt_tokens)
-                input_tokens = getattr(u, "input_tokens", 0) or getattr(u, "prompt_tokens", 0)
-                output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
-                return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
-
-            # Fetch rate limits dynamically from API response headers
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line("Fetching rate limits from API...")
-
-            limits, _ = await fetch_rate_limits(self.model)
-
-            # Fallback if headers not available
-            if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.stat_line(f"Warning: Using fallback rate limits (TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
-                limits = RateLimits(
-                    tokens_per_minute=FALLBACK_TPM,
-                    requests_per_minute=FALLBACK_RPM,
-                    tokens_per_day=FALLBACK_TPM * 60 * 24
-                )
-            else:
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.stat_line(f"Fetched from API: TPM={limits.tokens_per_minute:,}, RPM={limits.requests_per_minute:,}")
-
-            # Store rate limits on self for use in diagnostics/reporting
-            self.rate_limits = limits
-
-            sample_tasks = filtered_tasks[:min(3, len(filtered_tasks))]
-            if len(sample_tasks) < 3: 
-                # Duplicate tasks if we have fewer than 3
-                sample_tasks = sample_tasks * 3
-                sample_tasks = sample_tasks[:3]
-
-            if self.verbose_reporter.enabled:
-                    print("[CORRECTION WITH AI]")
-                    self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
-            
-            start_time = time.time()
-            task_cycle = itertools.cycle(sample_tasks)                                                                                                              
-            
-            async def probe_with_different_tasks():
-                return await probe_call_no_structured(self, next(task_cycle))                                                                                       
-            
-            avg_latency_s, avg_tokens = await bootstrap_measure_async(probe_with_different_tasks, n_probes=3)
-            
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Probe time: {time.time() - start_time:.3f}s")
-                self.verbose_reporter.stat_line(f"Bootstrap results: {avg_latency_s:.3f}s avg latency, {avg_tokens:.0f} avg tokens")
-                  
-            for i in range(3):  # Add 3 samples to get started
-                self.latency_tracker.add(avg_latency_s)
-
-            Little = compute_optimal_concurrency(ApiLimits(limits.tokens_per_minute, limits.requests_per_minute), avg_latency_s, avg_tokens, self.processing_config)
-            # Use ProcessingConfig for bounds instead of hardcoded constants
-            min_concurrency = self.processing_config.concurrency_min_default
-            optimal = max(Little, min_concurrency)
-            semaphore = asyncio.Semaphore(min(nr_tasks, optimal))
-
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Optimal by Little's law: {Little}")
-
-            print("[RATE LIMITING SETUP]")
-            print(f"- Model: {self.model}")
-            print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
-            print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
-
-            self.avg_tokens = self._estimate_avg_tokens_for_tasks(filtered_tasks)
-            avg_tokens = self.avg_tokens  # Use the instance variable
-
-            logger.info(f"- Calculated avg_tokens: {self.avg_tokens} (from {min(10, len(responses))} sample prompts)")
-
-            # Create unified rate limiting system
-            # Calculate arrival rate from throughput
-            arrival_rate = min(
-                limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
-                limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60
-            )
-
-            if arrival_rate < 1:
-                self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)  # one permit every N seconds
-            else:
-                self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
-
-            self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
-
-            # Use the bootstrap-measured optimal concurrency
-            self.semaphore = semaphore  # Use the dynamically calculated semaphore from bootstrap
-            self.optimal_concurrency = optimal
-
-            rpm_throughput = limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
-            tpm_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
-            bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
-
-            logger.info(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
-            logger.info(f"- Optimal concurrency: {Little} (Little's Law: throughput × latency)")
-            logger.info(f"- Constrained optimum: {optimal} min=100; max =300")
-
-            expected_throughput = min(
-                limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
-                limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
-            )
-            
-            # Use ProcessingConfig for worker bounds
-            max_workers = self.processing_config.max_workers if hasattr(self.processing_config, 'max_workers') else 200
-            min_workers = self.processing_config.min_workers if hasattr(self.processing_config, 'min_workers') else 50
-            num_workers = min(max_workers, max(min_workers, int(expected_throughput * avg_latency_s * 2.0)))
-           
-            print(f"- Concurrent subroutines (workers): {num_workers}")
-            print(f"- Concurrent ceiling (semaphore): {min(nr_tasks,optimal)}")
-            
-        else:
+        if not filtered_tasks:
             print("No correction tasks to process")
             return {}
-        
-        # Process tasks using queue-and-workers pattern (following qualityFilter.py)
-        corrected_sentences_dict = await self._process_all_tasks_async(filtered_tasks, var_lab, num_workers)
-        
-        # Calculate stats after main pass
-        successful_tasks = self.stats.get('llm_calls_successful', 0)
-        failed_tasks = self.stats.get('llm_calls_failed', 0)
 
-        print(f"Processing individual tasks... {len(filtered_tasks)}/{len(filtered_tasks)} (100.0%)")
-        print(f"- Successful: {successful_tasks}")
-        print(f"- Failed: {failed_tasks}")
+        # Dispatch through SmoothRequester: it owns workers, pacing, concurrency
+        # control, adaptive timeouts, the retry pass and the warm start. This
+        # module owns only prompt building and response parsing.
+        requester = SmoothRequester(
+            model=self.model,
+            phase_key="step1_spell_check",
+            num_tasks=len(filtered_tasks),
+            verbose=self.verbose_reporter.enabled,
+            processing_config=self.processing_config,
+        )
 
-        # --- RETRY PASS for truly failed tasks ---
-        if self.failed_task_ids:
-            failed_task_list = [
-                task for task in filtered_tasks
-                if task['respondent_id'] in self.failed_task_ids
-            ]
+        results = await requester.process_all(
+            filtered_tasks,
+            self._build_prepare_fn(),
+            self._build_parse_fn(),
+            self._build_fallback_fn(),
+        )
 
-            if failed_task_list:
-                print(f"\n[RETRY PASS] Retrying {len(failed_task_list)} failed tasks with reduced concurrency...")
+        corrected_sentences_dict = {}
+        for result in results:
+            if result:
+                corrected_sentences_dict.update(result)
 
-                # Reset failure tracking for retry pass
-                retry_failed_ids = set(self.failed_task_ids)  # Save for reporting
-                self.failed_task_ids.clear()
-
-                # Use conservative concurrency for retry (10% of original or min 5)
-                retry_workers = max(5, min(len(failed_task_list), num_workers // 10))
-
-                retry_results = await self._process_all_tasks_async(
-                    failed_task_list, var_lab, retry_workers
-                )
-
-                # Merge retry results (overwrite fallback originals with actual corrections)
-                corrected_sentences_dict.update(retry_results)
-
-                recovered = len(retry_failed_ids) - len(self.failed_task_ids)
-                still_failed = len(self.failed_task_ids)
-                print(f"[RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
-
-                if still_failed > 0:
-                    print(f"[RETRY PASS] Permanently failed respondent_ids: {sorted(self.failed_task_ids)[:20]}{'...' if still_failed > 20 else ''}")
+        self.stats['llm_calls_successful'] = requester.stats['tasks_successful']
+        self.stats['llm_calls_failed'] = requester.stats['tasks_failed']
 
         return corrected_sentences_dict
 
-    async def _process_all_tasks_async(self, filtered_tasks: List[Dict], var_lab: str, num_workers: int) -> Dict[str, str]:
-        """Process all tasks using queue + workers pattern (following qualityFilter.py)"""
-        if not filtered_tasks:
-            return {}
-      
-        # Create queue and results list (following qualityFilter.py pattern)
-        queue = asyncio.Queue()
-        results = [None] * len(filtered_tasks)
-        
- 
-        # Add tasks to queue with result indices
-        for i, task in enumerate(filtered_tasks):
-            task['result_index'] = i
-            task['var_lab'] = var_lab  
-            await queue.put(task)
-        
-        print(f"Processing individual tasks... 0/{len(filtered_tasks)} (0.0%)")
-        
-        # Start workers + actual API call 
-        workers = []
-        #logger.info(f"[DEBUG QUEUE] Starting {num_workers} workers for {len(filtered_tasks)} tasks")
-        for i in range(num_workers):
-            w = asyncio.create_task(self.worker(queue, results))
-            workers.append(w)
-        #logger.info(f"[DEBUG QUEUE] All {num_workers} workers started")
-        
-        # Progress monitoring with diagnostics (following qualityFilter.py pattern)
-        start_time = time.time()
-        last_report = start_time
-        
-    
-        while not queue.empty():
-                await asyncio.sleep(1)
-                now = time.time()
-                
-                # Regular progress report every 5s
-                if now - last_report >= 5:
-                    completed = self.stats.get('llm_calls_attempted', 0)
-                    remaining = queue.qsize()
-                    elapsed = now - start_time
-                    rate = completed / elapsed if elapsed > 0 else 0
-                    successful = self.stats.get('llm_calls_successful', 0)
-                    failed = self.stats.get('llm_calls_failed', 0)
-                    
-                    print(f"Progress: {completed}/{len(filtered_tasks)} ({completed/len(filtered_tasks)*100:.1f}%), "
-                          f"Rate: {rate:.1f}/s, Queue: {remaining}, Success: {successful}, Failed: {failed}")
-                    # logger.info(f"[DEBUG QUEUE] Progress: {completed}/{len(filtered_tasks)}, Queue: {remaining}, "
-                    #           f"Success: {successful}, Failed: {failed}")
-                    last_report = now
-            
-        await queue.join()
-        
-        # Stop workers
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers)
-        
-        # Final performance stats
-        total_processing_time = time.time() - start_time
-        actual_rate = len(filtered_tasks) / max(total_processing_time, 0.1)
-        print(f"\nCompleted {len(filtered_tasks)} tasks in {total_processing_time:.1f}s")
-        print(f"- Average: {total_processing_time/len(filtered_tasks):.2f}s/task")
-        print(f"- Processing rate: {actual_rate:.1f} tasks/sec")
-        
-        # Combine results from workers
-        corrected_sentences_dict = {}
-        for result in results:
-            if result and isinstance(result, dict):
-                corrected_sentences_dict.update(result)
-        
-        return corrected_sentences_dict    
-    
-    async def worker(self, queue: asyncio.Queue, results: List):
-        """Worker coroutine that processes tasks from queue (following qualityFilter.py pattern)"""
-        worker_id = id(asyncio.current_task())
-        #logger.info(f"[DEBUG WORKER] Worker {worker_id} started")
-        
-        while True:
-            try:
-                task = await queue.get()
-                if task is None:  # Sentinel
-                    #logger.info(f"[DEBUG WORKER] Worker {worker_id} received sentinel, stopping")
-                    break
-                
-                try:
-                    #logger.info(f"[DEBUG WORKER] Worker {worker_id} processing task for {task['respondent_id']}")
-                    result = await self._process_task_with_admission_controls(task)
-                    results[task['result_index']] = result
-                    #logger.info(f"[DEBUG WORKER] Worker {worker_id} completed task for {task['respondent_id']}")
-                except Exception as e:
-                    # After all retries failed
-                    logger.error(f"[DEBUG WORKER] Worker {worker_id} - Task for '{task['respondent_id']}' failed: {e}")
-                    self.stats['llm_calls_failed'] += 1
-                    self.failed_task_ids.add(task['respondent_id'])
-                    # Create fallback result (maps respondent_id to original text)
-                    results[task['result_index']] = {task['respondent_id']: task['response']}
-                finally:
-                    self.stats['llm_calls_attempted'] += 1
-                    queue.task_done()
-                    
-            except Exception as e:
-                logger.error(f"[DEBUG WORKER] Worker {worker_id} critical error: {e}")
-                break
-        
-        #logger.info(f"[DEBUG WORKER] Worker {worker_id} stopped")
+    # === SMOOTHREQUESTER CALLBACKS ==============================================
 
-    async def _process_task_with_admission_controls(self, task_dict: Dict[str, Any]) -> Dict[str, str]:
-        """Process individual spell correction task with unified admission controls (from qualityFilter.py pattern)"""
+    def _build_prepare_fn(self):
+        checker = self
 
-        respondent_id = task_dict['respondent_id']
-        #logger.info(f"[DEBUG API] Starting admission controls for {respondent_id}")
-
-        # Count tokens needed for this task
-        tokens_needed = self._count_task_tokens(task_dict)
-        #logger.info(f"[DEBUG API] Acquiring {tokens_needed} tokens for {respondent_id}")
-
-        # Calculate intelligent timeout BEFORE rate limiting to enable progressive learning
-        timeout_seconds = self.latency_tracker.get_timeout(tokens_needed)
-        #logger.info(f"[TIME OUT SECONDS] Task {task_dict['respondent_id']}: {len(self.latency_tracker.values)} samples → {timeout_seconds:.1f}s timeout")
-
-        # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
-        # then acquire token bucket and rate limiter
-        async with self.semaphore:
-            #logger.info(f"[DEBUG API] Entered semaphore for {respondent_id}")
-            await self.tpm_bucket.wait_and_acquire(tokens_needed)
-            #logger.info(f"[DEBUG API] Tokens acquired for {respondent_id}")
-            async with self.rate_limiter:
-                #logger.info(f"[DEBUG API] Entered rate limiter for {respondent_id}")
-                
-                # Initialize response and set fallback corrected_text
-                response = None
-                corrected_text = task_dict['response']  # Default fallback to original text
-                             
-                task_text = f"""Task:
-Respondent ID: {task_dict['respondent_id']}
-Response: "{task_dict['response_with_placeholders']}"
-Misspelled words: {task_dict['oov_words']}
-Suggested corrections: {task_dict['suggestions']}
+        def prepare_fn(task: Dict) -> Dict:
+            task_text = f"""Task:
+Respondent ID: {task['respondent_id']}
+Response: "{task['response_with_placeholders']}"
+Misspelled words: {task['oov_words']}
+Suggested corrections: {task['suggestions']}
 """
-                
-                full_prompt = SPELLCHECK_INSTRUCTIONS.format(
-                        language=DEFAULT_LANGUAGE,
-                        var_lab=task_dict.get('var_lab', self.var_lab),
-                        tasks=task_text
-                    )
+            prompt = SPELLCHECK_INSTRUCTIONS.format(
+                language=DEFAULT_LANGUAGE,
+                var_lab=task.get('var_lab', checker.var_lab),
+                tasks=task_text,
+            )
 
-                if self.prompt_printer is not None and not self._prompt_captured:
-                    self._prompt_captured = True
-                    self.prompt_printer.capture_prompt(
-                        step_name="preprocessor",
-                        utility_name="SpellChecker",
-                        prompt_content=full_prompt,
-                        prompt_type="spell_correction",
-                        metadata={
-                            "model": self.model,
-                            "temperature": self.config.temperature,
-                            "language": DEFAULT_LANGUAGE,
-                            "var_lab": task_dict.get('var_lab', self.var_lab),
-                        },
-                    )
+            if checker.prompt_printer is not None and not checker._prompt_captured:
+                checker._prompt_captured = True
+                checker.prompt_printer.capture_prompt(
+                    step_name="preprocessor",
+                    utility_name="SpellChecker",
+                    prompt_content=prompt,
+                    prompt_type="spell_correction",
+                    metadata={
+                        "model": checker.model,
+                        "temperature": checker.config.temperature,
+                        "language": DEFAULT_LANGUAGE,
+                        "var_lab": task.get('var_lab', checker.var_lab),
+                    },
+                )
 
-                try:
-                    #logger.info(f"[DEBUG API] Starting API call for {respondent_id}")
-                    api_start_time = time.time() 
-                    latency_start_time = time.perf_counter()  # Instead of time.time()
-                    
-                    # Make API call with adaptive timeout
-                    response = await asyncio.wait_for(
-                        llm_create_async(
-                            client=self.client,
-                            model=self.model,
-                            prompt=full_prompt,
-                            response_model=LLMCorrectionResponse,
-                            temperature=self.config.temperature,
-                            **get_reasoning_params(self.model),
-                        ),
-                        timeout=timeout_seconds
-                    )
-                    
-                    # Record latency for future concurrency calculations
-                    api_latency = max(time.perf_counter() - latency_start_time, 0.001)  # Match bootstrap 
-                    self.latency_tracker.add(api_latency)
+            return {
+                'prompt': prompt,
+                'response_model': LLMCorrectionResponse,
+                'temperature': checker.config.temperature,
+                'extra_kwargs': get_reasoning_params(checker.model, phase="spell_check"),
+            }
 
-                    self.stats['llm_calls_successful'] += 1
-                    logger.info(f"Success #{self.stats['llm_calls_successful']}")
+        return prepare_fn
 
-                except asyncio.TimeoutError:
-                    api_latency = time.time() - api_start_time
-                    logger.error(f"[API TIMEOUT] Task {respondent_id} timed out after {timeout_seconds:.1f}s")
-                    self.stats['llm_calls_failed'] += 1
-                    self.failed_task_ids.add(respondent_id)
-                    # Don't add timeout to latency tracker as it's not representative
-                except RateLimitError as e:
-                    logger.error(f"[API] RATE LIMIT (429): {respondent_id} - {str(e)}")
-                    self.stats['llm_calls_failed'] += 1
-                    self.failed_task_ids.add(respondent_id)
-                except APITimeoutError as e:
-                    logger.error(f"[API] API TIMEOUT: {respondent_id} - {str(e)}")
-                    self.stats['llm_calls_failed'] += 1
-                    self.failed_task_ids.add(respondent_id)
-                except APIConnectionError as e:
-                    logger.error(f"[API] CONNECTION ERROR: {respondent_id} - {str(e)}")
-                    self.stats['llm_calls_failed'] += 1
-                    self.failed_task_ids.add(respondent_id)
-                except InternalServerError as e:
-                    logger.error(f"[API] INTERNAL SERVER ERROR: {respondent_id} - {str(e)}")
-                    self.stats['llm_calls_failed'] += 1
-                    self.failed_task_ids.add(respondent_id)
-                except Exception as e:
-                    logger.error(f"[API] UNKNOWN ERROR: {respondent_id} - {type(e).__name__}: {str(e)}")
-                    self.stats['llm_calls_failed'] += 1
-                    self.failed_task_ids.add(respondent_id)
-                    
-                # Track actual token usage for reconciliation (only if response exists)
-                if response and hasattr(response, '_raw_response'):
-                    usage = response._raw_response.usage
-                    if usage:
-                        actual_total_tokens = usage.total_tokens
-                        # Reconcile token difference with TokenBucket
-                        delta = actual_total_tokens - tokens_needed
-                        await self.tpm_bucket.reconcile(delta)
-                        #logger.info(f"[DEBUG API] Token reconciliation for {respondent_id}: {delta} delta")
-                
-                # Parse structured response with validation (only if response exists)
-                if response and response.corrections and len(response.corrections) > 0:
-                    correction = response.corrections[0]  # Single task = single correction
+    def _build_parse_fn(self):
+        checker = self
 
-                    # AUDIT: Log if LLM returned different ID (drift detection)
-                    if str(correction.respondent_id) != str(task_dict['respondent_id']):
-                        logger.warning(
-                            f"ID drift detected: LLM returned '{correction.respondent_id}' "
-                            f"but input was '{task_dict['respondent_id']}'"
-                        )
+        def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
+            if not response or not response.corrections:
+                return None
 
-                    corrected_text = correction.corrected_response
+            correction = response.corrections[0]  # one task = one correction
 
-        return {task_dict['respondent_id']: corrected_text}
+            # AUDIT: the LLM echoing a different id means the prompt drifted
+            if str(correction.respondent_id) != str(task['respondent_id']):
+                logger.warning(
+                    f"ID drift detected: LLM returned '{correction.respondent_id}' "
+                    f"but input was '{task['respondent_id']}'"
+                )
 
-    def _count_task_tokens(self, task_dict: Dict[str, Any]) -> int:
-        """Count tokens needed for individual task (input + estimated output)"""
-        task_text = f"""Task:
-Respondent ID: {task_dict['respondent_id']}
-Response: "{task_dict['response_with_placeholders']}"
-Misspelled words: {task_dict['oov_words']}
-Suggested corrections: {task_dict['suggestions']}
-"""
-        
-        full_prompt = SPELLCHECK_INSTRUCTIONS.format(
-            language=DEFAULT_LANGUAGE,
-            var_lab=task_dict.get('var_lab', self.var_lab),
-            tasks=task_text
-        )
-        
-        encoding = get_tiktoken_encoding(self.model)
-        input_tokens = len(encoding.encode(full_prompt))
-        estimated_output_tokens = int(input_tokens * OUTPUT_TOKEN_RATIO)
-        
-        return input_tokens + estimated_output_tokens
+            return {task['respondent_id']: correction.corrected_response}
 
-#--- RUN PIPELINE, Incl. PROCESSING PHASE 1: IDENTIFYING OOV WORDS -------------------------
+        return parse_fn
+
+    def _build_fallback_fn(self):
+        checker = self
+
+        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
+            """Keep the original text when the call cannot be resolved."""
+            checker.failed_task_ids.add(task['respondent_id'])
+            return {task['respondent_id']: task['response']}
+
+        return fallback_fn
+
 
     async def spell_check_async(self, responses: List[SpellCheckModel], var_lab: str) -> List[SpellCheckModel]:
         """Spell checking with improved performance and accuracy"""
