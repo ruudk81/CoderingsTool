@@ -199,6 +199,42 @@ def test_oud_restant_verhuist_vers_restant_blijft(tmp_path, monkeypatch):
     assert [e.path.name for e in weg] == [oud.name]
 
 
+def test_oude_naam_hecht_zich_aan_zijn_analyse(tmp_path, monkeypatch):
+    """Een logboek met de oude naam hoort bij de analyse, niet bij de restanten.
+
+    Zonder deze regel wordt zo'n bestand alleen door zijn eigen leeftijd
+    beschermd en verdwijnt het binnen een week, terwijl zijn analyse blijft.
+    """
+    monkeypatch.setattr(retention, "MAX_ANALYSES", 10)
+    root = _repo(tmp_path)
+    nu = time.time()
+    _analyse(root, "data.sav", "Q1", 100, nu - 86400)
+    oud = root / "exports" / "verbose_logs" / "data_Q1_100_100_step3_20260301_120000.txt"
+    oud.write_text("oud logboek"); os.utime(oud, (nu - 90 * 86400,) * 2)
+
+    analyses, restanten = retention.collect(root)
+
+    assert restanten == []
+    assert oud in [e.path for e in analyses[0].entries]
+    assert retention.select_orphans_for_removal(restanten, now=nu) == []
+
+
+def test_dubbelzinnige_oude_naam_blijft_restant(tmp_path, monkeypatch):
+    """Twee steekproeven op dezelfde vraag: de naam zegt niet welke. Niet gokken."""
+    monkeypatch.setattr(retention, "MAX_ANALYSES", 10)
+    root = _repo(tmp_path)
+    nu = time.time()
+    _analyse(root, "data.sav", "Q1", 100, nu - 86400)
+    _analyse(root, "data.sav", "Q1", 500, nu - 86400)
+    # oude coderingen-naam: dataset + variabele, geen steekproef
+    oud = root / "exports" / "coderingen" / "data_Q1_codeboek.sav"
+    oud.write_text("welke steekproef?"); os.utime(oud, (nu - 90 * 86400,) * 2)
+
+    _, restanten = retention.collect(root)
+
+    assert [e.path for e in restanten] == [oud]
+
+
 def test_lege_datasetlijst_stopt_de_run(tmp_path):
     """Zonder datasets lijkt elk bestand een restant — dan liever stoppen."""
     root = _repo(tmp_path)

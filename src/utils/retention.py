@@ -188,7 +188,57 @@ def collect(root: Path) -> tuple[list[Analysis], list[Entry]]:
             per_key.setdefault(key, Analysis(key)).entries.append(entry)
 
     analyses = sorted(per_key.values(), key=lambda a: a.mtime, reverse=True)
+    restanten = _hecht_restanten_aan_analyses(restanten, analyses, stems)
     return analyses, restanten
+
+
+def _hecht_restanten_aan_analyses(
+    restanten: list[Entry],
+    analyses: list[Analysis],
+    stems: set[str],
+) -> list[Entry]:
+    """Voeg elk eenduidig toewijsbaar restant bij zijn analyse.
+
+    Een bestand met een oude naam hoort vaak wel degelijk bij een analyse die
+    je bewaart — het logboek van een stap die sinds de hernoeming niet opnieuw
+    is gedraaid. Zonder deze stap wordt zo'n bestand alleen door zijn eigen
+    leeftijd beschermd en verdwijnt het binnen een week, terwijl de analyse
+    blijft. Dat botst met het uitgangspunt dat de analyse de eenheid is.
+
+    Toewijzen gebeurt alleen bij zekerheid: de naam moet beginnen met dataset +
+    variabele van precies één analyse, én de steekproef van die analyse moet
+    als los naamdeel voorkomen. Zo blijven de coderingen waarvan de steekproef
+    nooit is opgeschreven ongemoeid — daar zijn meerdere analyses mogelijk, en
+    gokken is hoe je een bestand onder een verkeerd etiket kwijtraakt.
+    """
+    origineel = {Path(s).stem.replace(" ", "_"): Path(s).stem for s in stems}
+    overig: list[Entry] = []
+
+    for entry in restanten:
+        naam = entry.path.name
+        delen = set(naam.replace(".", "_").split("_"))
+        treffers = [
+            a for a in analyses
+            if a.key.sample in delen
+            and any(naam.startswith(f"{p}_{a.key.var_name}_")
+                    for p in _prefixen(a.key.dataset, origineel))
+        ]
+        if len(treffers) == 1:
+            treffers[0].entries.append(entry)
+        else:
+            overig.append(entry)
+
+    return overig
+
+
+def _prefixen(dataset_slug: str, origineel: dict[str, str]) -> set[str]:
+    """De vormen waarin een datasetnaam vooraan een oude bestandsnaam kan staan.
+
+    Oude namen gebruikten soms spaties, soms underscores, en de verbose logs
+    kapten de naam af op 50 tekens.
+    """
+    vormen = {dataset_slug, origineel.get(dataset_slug, dataset_slug)}
+    return vormen | {v[:50] for v in vormen}
 
 
 def trash_entries(root: Path) -> list[Entry]:
