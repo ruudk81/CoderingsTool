@@ -201,9 +201,6 @@ def cache_mece_results(
     variable: Optional[str] = None,
     sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
-    idea_embeddings: Optional[Dict] = None,
-    embedding_code_source: str = "",
-    embedding_model: str = "",
 ) -> None:
     """Cache codebook results for later use by code assignment (step 6)."""
     filename = FILENAME if filename is None else filename
@@ -216,14 +213,6 @@ def cache_mece_results(
             sample_size=sample_size,
         )
 
-    # Serialize numpy arrays to lists for Pydantic compatibility
-    serialized_embeddings = None
-    if idea_embeddings:
-        serialized_embeddings = {
-            idea_id: emb.tolist() if hasattr(emb, 'tolist') else emb
-            for idea_id, emb in idea_embeddings.items()
-        }
-
     n_codes = len(codebook_result.codes)
     mece_cache = CodingResultsCache(
         partition_set=partition_set,
@@ -234,9 +223,6 @@ def cache_mece_results(
         total_categories=n_codes,
         raw_codes=[c.model_dump() for c in codebook_result.codes],
         codebook_narrative=codebook_result.codebook_narrative,
-        idea_embeddings=serialized_embeddings,
-        embedding_code_source=embedding_code_source,
-        embedding_model=embedding_model,
     )
 
     # Mint K# (list order: P9 codes, then Overig) and fill any source_attribute_ids
@@ -550,12 +536,7 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
     run_scorecard(codebook_result, pydantic_results, variable_key, overig_name)
 
     # Cache for downstream use by step 6 (code assigner)
-    cache_mece_results(
-        partition_set, pydantic_results, codebook_result,
-        idea_embeddings=getattr(generator, '_idea_embeddings', None),
-        embedding_code_source=CONFIG.code_source,
-        embedding_model=CONFIG.embedding_model,
-    )
+    cache_mece_results(partition_set, pydantic_results, codebook_result)
 
     # Save prompts
     save_prompts_to_json(prompt_printer)

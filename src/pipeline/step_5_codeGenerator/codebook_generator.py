@@ -285,7 +285,7 @@ class CodebookGenerator:
                 )
                 print(f"  Enriched {n_enriched} attributes with representative samples")
                 print(f"  Valence example threshold: floor(log(attribute_total)) — counts always shown")
-                print(f"  Cached {len(self._idea_embeddings)} idea embeddings")
+                print(f"  Embedded {len(self._idea_embeddings)} ideas (in-run only)")
         elif verbose:
             print(f"\n  No classified ideas available — skipping representative samples")
 

@@ -286,7 +286,3 @@ class CodingResultsCache(BaseModel):
     total_categories: int = 0
     raw_codes: List[Dict] = Field(default_factory=list)  # ConsolidatedCode dicts
     codebook_narrative: str = ""  # P8/P9 scratchpads — audit trail for split/keep decisions
-    # Cached embeddings for downstream reuse (step 6)
-    idea_embeddings: Optional[Dict[str, List[float]]] = None  # idea_id -> embedding vector
-    embedding_code_source: str = ""  # Text format used for embedding
-    embedding_model: str = ""  # Embedding model name
