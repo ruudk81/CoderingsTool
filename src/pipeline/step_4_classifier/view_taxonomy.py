@@ -72,10 +72,24 @@ def main():
 
         if result and result.facets:
             print(f"\n  Facets ({len(result.facets)}):")
-            for j, facet_dict in enumerate(result.facets, 1):
-                facet_name = facet_dict.get("facet_name", "?")
-                facet_desc = facet_dict.get("facet_description", "")
-                print(f"    {j}. {facet_name}: {facet_desc}")
+            if any(f.get("axis") for f in result.facets):
+                by_axis = {}
+                for j, facet_dict in enumerate(result.facets, 1):
+                    by_axis.setdefault(facet_dict.get("axis", ""), []).append((j, facet_dict))
+                for axis_name, items in by_axis.items():
+                    print(f"    Axis: {axis_name}")
+                    for j, facet_dict in items:
+                        facet_name = facet_dict.get("facet_name", "?")
+                        facet_desc = facet_dict.get("facet_description", "")
+                        print(f"      {j}. {facet_name}: {facet_desc}")
+                        boundary = facet_dict.get("boundary_test", "")
+                        if boundary:
+                            print(f"         Boundary: {boundary}")
+            else:
+                for j, facet_dict in enumerate(result.facets, 1):
+                    facet_name = facet_dict.get("facet_name", "?")
+                    facet_desc = facet_dict.get("facet_description", "")
+                    print(f"    {j}. {facet_name}: {facet_desc}")
 
         if result and result.attributes:
             print(f"\n  Attributes per facet:")

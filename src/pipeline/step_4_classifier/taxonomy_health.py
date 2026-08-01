@@ -150,6 +150,23 @@ def prune_empty_nodes(tax: TaxonomyResultsCache) -> PruneReport:
 # =============================================================================
 
 @dataclass
+class AxisPurityResult:
+    """Axis-zuiverheid over every sibling set: a domain's facets (shared
+    axis, distinct segments) or a facet's attributes (distinct positions).
+    Counting on tags alone, no LLM — see `_classify_facet_siblings` /
+    `_classify_attribute_siblings`. UNTAGGED (no member carries a tag, e.g.
+    a legacy cache or a domain outside the axis-first path) is reported
+    separately and is never a violation."""
+    pure: int = 0
+    untagged: int = 0
+    violations: List[str] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return self.pure + self.untagged + len(self.violations)
+
+
+@dataclass
 class HealthReport:
     n_domains: int = 0
     n_facets: int = 0
@@ -160,6 +177,7 @@ class HealthReport:
     solo_facets: List[str] = field(default_factory=list)
     duplicate_attributes: Dict[str, List[str]] = field(default_factory=dict)
     duplicate_facets: Dict[str, List[str]] = field(default_factory=dict)
+    axis_purity: AxisPurityResult = field(default_factory=AxisPurityResult)
 
     @property
     def solo_facet_share(self) -> float:
@@ -175,6 +193,9 @@ class HealthReport:
             f"  lege attributen    : {len(self.empty_attributes)}",
             f"  dubbele namen      : {len(self.duplicate_attributes)} attribuut, "
             f"{len(self.duplicate_facets)} facet",
+            f"  as-zuiverheid      : {self.axis_purity.pure}/{self.axis_purity.total} sets puur, "
+            f"{self.axis_purity.untagged} untagged, "
+            f"{len(self.axis_purity.violations)} violations",
         ]
         for label, items in (("facet == attribuut", self.facet_equals_attribute),
                              ("lege attributen", self.empty_attributes)):
@@ -184,7 +205,70 @@ class HealthReport:
             out.append(f"    [dubbel attribuut] {name!r}: {', '.join(places)}")
         for name, places in self.duplicate_facets.items():
             out.append(f"    [dubbel facet] {name!r}: {', '.join(places)}")
+        for v in self.axis_purity.violations:
+            out.append(f"    [as-schending] {v}")
         return out
+
+
+def _classify_siblings(
+    items: List[dict], tag_key: str, name_key: str
+) -> Tuple[str, List[str]]:
+    """Classify one sibling set (all items must share ONE tag value each,
+    pairwise distinct) for axis-purity. Returns (status, offending names):
+
+      "untagged"  — no member carries `tag_key` (legacy / non-axis-first)
+      "violation" — some but not all members tagged, or two members share
+                    the same tag value; offenders are the names at fault
+      "pure"      — every member tagged, every tag value distinct
+
+    Used for both sibling-set kinds: facets of a domain (tag_key="axis",
+    paired with a same-axis check by the caller) and attributes of a facet
+    (tag_key="position"). An empty `items` list is the caller's concern —
+    this function assumes at least one item.
+    """
+    tagged = [it for it in items if it.get(tag_key)]
+    if not tagged:
+        return "untagged", []
+    if len(tagged) != len(items):
+        offenders = [it.get(name_key, "?") for it in items if not it.get(tag_key)]
+        return "violation", offenders
+    values = [it.get(tag_key) for it in items]
+    dupes = {v for v, c in Counter(values).items() if c > 1}
+    if dupes:
+        offenders = [it.get(name_key, "?") for it in items if it.get(tag_key) in dupes]
+        return "violation", offenders
+    return "pure", []
+
+
+def _classify_facet_siblings(facets: List[dict]) -> Tuple[str, List[str]]:
+    """Classify a domain's facet sibling set: PURE requires every facet
+    tagged to the SAME axis with pairwise-distinct segments; the segment
+    distinctness check is delegated to `_classify_siblings`, the shared-axis
+    check is this function's own (a facet-level violation the shared helper
+    cannot see, since it only looks at one tag key at a time)."""
+    tagged = [f for f in facets if f.get("axis")]
+    if tagged and len(tagged) == len(facets):
+        axes = {f.get("axis") for f in facets}
+        if len(axes) > 1:
+            offenders = [f"{f.get('facet_name', '?')} ({f.get('axis')})" for f in facets]
+            return "violation", offenders
+    return _classify_siblings(facets, "segment", "facet_name")
+
+
+def _classify_attribute_siblings(attrs: List[dict]) -> Tuple[str, List[str]]:
+    """Classify a facet's attribute sibling set: PURE requires every
+    attribute tagged with a distinct position on the facet's refinement
+    axis (at most one of which is the residual position)."""
+    return _classify_siblings(attrs, "position", "attribute_name")
+
+
+def _record_purity(report: "AxisPurityResult", label: str, status: str, offenders: List[str]) -> None:
+    if status == "pure":
+        report.pure += 1
+    elif status == "untagged":
+        report.untagged += 1
+    else:
+        report.violations.append(f"{label}: {', '.join(offenders) or '?'}")
 
 
 def measure(tax: TaxonomyResultsCache) -> HealthReport:
@@ -200,6 +284,11 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
         ideas.update(k for k, v in (dr.attribute_assignments or {}).items()
                      if v not in SENTINELS)
 
+        facets = dr.facets or []
+        if facets:
+            status, offenders = _classify_facet_siblings(facets)
+            _record_purity(rep.axis_purity, f"domein {dname} (facetten)", status, offenders)
+
         for fname, attrs in (dr.attributes or {}).items():
             rep.n_facets += 1
             facet_where[fname].append(dname)
@@ -214,6 +303,10 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
                     rep.facet_equals_attribute.append(f"{dname} / {fname}")
             if len(names) == 1:
                 rep.solo_facets.append(f"{dname} / {fname} -> {names[0]}")
+
+            if attrs:
+                status, offenders = _classify_attribute_siblings(attrs)
+                _record_purity(rep.axis_purity, f"{dname} / {fname} (attributen)", status, offenders)
 
     rep.n_ideas = len(ideas)
     rep.duplicate_attributes = {k: v for k, v in attr_where.items() if len(v) > 1}

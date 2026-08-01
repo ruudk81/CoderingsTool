@@ -263,6 +263,32 @@ def _write_axes_log(
             print(f"    {name}: {len(axes)} axes / {n_segments} segments")
 
 
+def _dump_facet(facet) -> dict:
+    """Dump a DiscoveredFacet, adding the axis-first provenance keys (axis,
+    segment, refinement) only when actually set on this facet — a guarded
+    add, not a blanket model_dump side effect. Without this, model_dump()
+    would write axis="", segment="", refinement={} onto every facet from the
+    untagged path, widening every cache dict with dead keys. boundary_test
+    is a pre-existing field and keeps persisting unconditionally either way.
+    """
+    data = facet.model_dump()
+    for key in ("axis", "segment", "refinement"):
+        if not data.get(key):
+            data.pop(key, None)
+    return data
+
+
+def _dump_attribute(attribute) -> dict:
+    """Dump a DiscoveredAttribute, adding the axis-first provenance keys
+    (position, is_residual_attr) only when actually set (guarded add — see
+    `_dump_facet`)."""
+    data = attribute.model_dump()
+    for key in ("position", "is_residual_attr"):
+        if not data.get(key):
+            data.pop(key, None)
+    return data
+
+
 def cache_taxonomy_results(
     partition_set: DomainSet,
     label_mappings: Dict[str, PartitionLabelMapping],
@@ -324,15 +350,15 @@ def cache_taxonomy_results(
             partition_name=name,
             n_labels=taxonomy_result.partition_n_labels.get(name, 0),
             n_batches=taxonomy_result.partition_n_batches.get(name, 0),
-            facets=[f.model_dump() for f in taxonomy_result.partition_facets.get(name, [])],
+            facets=[_dump_facet(f) for f in taxonomy_result.partition_facets.get(name, [])],
             facet_assignments=facet_assigns,
             attributes={
-                facet_name: [a.model_dump() for a in attrs]
+                facet_name: [_dump_attribute(a) for a in attrs]
                 for facet_name, attrs in taxonomy_result.partition_attributes.get(name, {}).items()
             },
             attribute_assignments=domain_attr_assigns,
             raw_attributes={
-                facet_name: [a.model_dump() for a in attrs]
+                facet_name: [_dump_attribute(a) for a in attrs]
                 for facet_name, attrs in taxonomy_result.raw_partition_attributes.get(name, {}).items()
             },
             raw_attribute_assignments=domain_raw_attr_assigns,

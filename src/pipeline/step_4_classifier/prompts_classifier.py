@@ -1090,17 +1090,42 @@ class FacetReviewV2Response(BaseModel):
 def _build_facet_codebook_block(
     facets: List[DiscoveredFacet],
     other_label: Optional[str] = None,
+    axis_descriptions: Optional[Dict[str, str]] = None,
 ) -> str:
-    """Format discovered facets as a numbered codebook for assignment."""
-    lines = []
-    for i, facet in enumerate(facets, 1):
+    """Format discovered facets as a numbered codebook for assignment.
+
+    When any facet carries an axis tag (P1b/P2 axis-first path), items are
+    grouped under one 'Axis: {name} — {description}' header per axis, axes
+    in first-seen order (description omitted when not supplied — cache-loaded
+    contexts have no axis-system object to pull it from). F# numbering still
+    reflects each facet's position in `facets`, unchanged from the untagged
+    path, so it stays consistent with the facet_id_to_name mapping built
+    alongside this same list. A facet list with no axis tags renders exactly
+    as before this grouping existed."""
+    def _render(i: int, facet: DiscoveredFacet) -> str:
         examples = "; ".join(facet.example_observations[:3])
-        lines.append(
+        return (
             f"[F{i}] {facet.facet_name}\n"
             f"    Description: {facet.facet_description}\n"
             + (f"    Boundary: {facet.boundary_test}\n" if facet.boundary_test else "")
             + f"    Examples: {examples}"
         )
+
+    numbered = list(enumerate(facets, 1))
+    if any(facet.axis for facet in facets):
+        by_axis: Dict[str, List[Tuple[int, DiscoveredFacet]]] = {}
+        for i, facet in numbered:
+            by_axis.setdefault(facet.axis, []).append((i, facet))
+        axis_descriptions = axis_descriptions or {}
+        lines = []
+        for axis_name, items in by_axis.items():
+            desc = axis_descriptions.get(axis_name, "")
+            header = f"Axis: {axis_name} — {desc}" if desc else f"Axis: {axis_name}"
+            body = "\n\n".join(_render(i, facet) for i, facet in items)
+            lines.append(f"{header}\n\n{body}")
+    else:
+        lines = [_render(i, facet) for i, facet in numbered]
+
     if other_label:
         n = len(facets) + 1
         lines.append(
@@ -1120,9 +1145,17 @@ def build_facet_assignment_prompt_single(
     domain_definition: str,
     facets: List[DiscoveredFacet],
     idea_label: str,
+    axis_descriptions: Optional[Dict[str, str]] = None,
 ) -> str:
-    """Build prompt for assigning a single idea to a facet (L3)."""
-    facet_codebook = _build_facet_codebook_block(facets)
+    """Build prompt for assigning a single idea to a facet (L3).
+
+    `axis_descriptions`: {axis_name: axis_description}, available only when
+    the caller still holds the in-memory AxisSystemResponse for this domain
+    (during a live run, via TaxonomyClassifier.axis_systems). Cache-loaded
+    contexts pass None and the menu falls back to bare 'Axis: {name}'
+    headers.
+    """
+    facet_codebook = _build_facet_codebook_block(facets, axis_descriptions=axis_descriptions)
 
     return f"""You are a qualitative coding assistant. Assign the survey response idea below to the facet that best captures the type of quality being described.
 
@@ -2193,17 +2226,41 @@ class AttributeReviewV2Response(BaseModel):
 
 def _build_attribute_codebook_block(
     attributes: List['DiscoveredAttribute'],
+    refinement: Optional[dict] = None,
 ) -> str:
-    """Format discovered attributes as a numbered list for assignment."""
+    """Format discovered attributes as a numbered list for assignment.
+
+    When the parent facet carries a refinement axis (P6 axis-first path,
+    `refinement` = {name, description, positions}), a 'Refinement axis:
+    {name} — {description}' header precedes the list, and each tagged
+    attribute shows its position and that position's boundary alongside the
+    existing description/examples. The [A#] id is unchanged either way —
+    it is what `attr_id_to_name` keys the response parse on. A facet with
+    no refinement dict (untagged path) renders exactly as before."""
+    refinement = refinement or {}
+    positions_by_name = {
+        p.get("position_name", ""): p for p in refinement.get("positions", [])
+    }
+
     lines = []
     for i, attr in enumerate(attributes, 1):
         examples = "; ".join(attr.example_observations[:3])
-        lines.append(
-            f"[A{i}] {attr.attribute_name}\n"
-            f"    Description: {attr.attribute_description}\n"
-            f"    Examples: {examples}"
-        )
-    return "\n\n".join(lines)
+        item = f"[A{i}] {attr.attribute_name}\n"
+        if refinement and attr.position:
+            item += f"    Position: {attr.position}\n"
+        item += f"    Description: {attr.attribute_description}\n"
+        if refinement and attr.position:
+            boundary = positions_by_name.get(attr.position, {}).get("boundary", "")
+            if boundary:
+                item += f"    Boundary: {boundary}\n"
+        item += f"    Examples: {examples}"
+        lines.append(item)
+
+    block = "\n\n".join(lines)
+    if refinement:
+        header = f"Refinement axis: {refinement.get('name', '')} — {refinement.get('description', '')}"
+        return f"{header}\n\n{block}"
+    return block
 
 
 def _build_decision_rules_block(decision_rules: Optional[List[str]]) -> str:
@@ -2230,14 +2287,19 @@ def build_attribute_assignment_prompt_single(
     attributes: List['DiscoveredAttribute'],
     idea_label: str,
     decision_rules: Optional[List[str]] = None,
+    refinement: Optional[dict] = None,
 ) -> str:
     """Build prompt for assigning a single idea to an attribute (L4) within a facet.
 
     `decision_rules`: P7 overlap decision_rule strings for pairs flagged
     WITHIN this facet (facet_a == facet_b == this facet). None/empty omits
     the block entirely.
+
+    `refinement`: this facet's refinement axis dict (P6 axis-first path),
+    {name, description, positions}. None/empty omits the axis header and
+    per-attribute position/boundary lines.
     """
-    attribute_codebook = _build_attribute_codebook_block(attributes)
+    attribute_codebook = _build_attribute_codebook_block(attributes, refinement=refinement)
     decision_rules_block = _build_decision_rules_block(decision_rules)
 
     return f"""You are a qualitative coding assistant. Assign the survey response idea below to the attribute that best captures the specific quality being described.

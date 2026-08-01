@@ -1991,6 +1991,7 @@ class TaxonomyClassifier:
                         'attr_id_to_name': attr_id_to_name,
                         'facet_key': facet_key,
                         'decision_rules': decision_rules,
+                        'refinement': facet_obj.refinement,
                     })
 
         if p6_tasks:
@@ -2235,6 +2236,11 @@ class TaxonomyClassifier:
     def _p3_prepare_fn(self, prompt_context: PromptContext):
         """Return prepare_fn closure for P4 facet assignment (single idea)."""
         def prepare_fn(task: Dict) -> Dict:
+            axis_system = self.axis_systems.get(task['domain_name'])
+            axis_descriptions = (
+                {axis.axis_name: axis.axis_description for axis in axis_system.axes}
+                if axis_system is not None else None
+            )
             prompt = build_facet_assignment_prompt_single(
                 survey_question=prompt_context.survey_question,
                 language=prompt_context.language,
@@ -2243,6 +2249,7 @@ class TaxonomyClassifier:
                 domain_definition=task['part_context'].partition_definition,
                 facets=task['facets'],
                 idea_label=task['idea_label'],
+                axis_descriptions=axis_descriptions,
             )
 
             # Prompt capture (first idea per domain)
@@ -2310,6 +2317,7 @@ class TaxonomyClassifier:
                 attributes=task['attributes'],
                 idea_label=task['idea_label'],
                 decision_rules=task.get('decision_rules'),
+                refinement=task.get('refinement'),
             )
 
             # Prompt capture (first idea per facet)
