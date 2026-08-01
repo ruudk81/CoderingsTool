@@ -170,7 +170,13 @@ def validate_and_repair_axis_system(
 
     Repaired in place:
       - an axis with no residual segment gets one injected (name
-        "unspecified", spec's residual wording, no invented examples).
+        "unspecified", spec's residual wording, no invented examples) —
+        UNLESS a segment already norms to "unspecified", in which case that
+        segment is marked residual instead. Injecting blindly would create
+        two same-named segments: the likeliest trigger for this repair is a
+        model that names its residual "Unspecified" but omits
+        `is_residual=true`, and `segment_lookup` / the menus are norm-keyed,
+        so the duplicate would silently swallow the model's own segment.
 
     Rejected (returns None — the whole response is invalid, not just one axis):
       - not 1-4 axes;
@@ -195,16 +201,24 @@ def validate_and_repair_axis_system(
         if residual_count > 1:
             return None
         if residual_count == 0:
-            axis.segments.append(AxisSegment(
-                segment_name="unspecified",
-                segment_description=(
-                    "Observations that belong to this domain but do not "
-                    "specify a value on this axis."
-                ),
-                boundary="names no recognisable value on this axis",
-                example_observations=[],
-                is_residual=True,
-            ))
+            collision = next(
+                (seg for seg in axis.segments
+                 if seg.segment_name.strip().lower() == "unspecified"),
+                None,
+            )
+            if collision is not None:
+                collision.is_residual = True
+            else:
+                axis.segments.append(AxisSegment(
+                    segment_name="unspecified",
+                    segment_description=(
+                        "Observations that belong to this domain but do not "
+                        "specify a value on this axis."
+                    ),
+                    boundary="names no recognisable value on this axis",
+                    example_observations=[],
+                    is_residual=True,
+                ))
 
     return response
 
@@ -220,7 +234,10 @@ def validate_and_repair_refinement_positions(
 
     Repaired in place:
       - no residual position gets one injected (name "unspecified", the same
-        residual wording as the axis-level injection, no invented examples).
+        residual wording as the axis-level injection, no invented examples)
+        — UNLESS a position already norms to "unspecified", in which case
+        that position is marked residual instead (same name-collision
+        argument as one level up: `positions_by_norm` is norm-keyed).
 
     Rejected (returns None):
       - no positions at all;
@@ -241,16 +258,24 @@ def validate_and_repair_refinement_positions(
     if residual_count > 1:
         return None
     if residual_count == 0:
-        positions = positions + [RefinementPosition(
-            position_name="unspecified",
-            position_description=(
-                "Observations within this facet that do not specify a value "
-                "on the refinement axis."
-            ),
-            boundary="names no recognisable value on this refinement axis",
-            example_observations=[],
-            is_residual=True,
-        )]
+        collision = next(
+            (pos for pos in positions
+             if pos.position_name.strip().lower() == "unspecified"),
+            None,
+        )
+        if collision is not None:
+            collision.is_residual = True
+        else:
+            positions = positions + [RefinementPosition(
+                position_name="unspecified",
+                position_description=(
+                    "Observations within this facet that do not specify a value "
+                    "on the refinement axis."
+                ),
+                boundary="names no recognisable value on this refinement axis",
+                example_observations=[],
+                is_residual=True,
+            )]
 
     return positions
 
@@ -1853,6 +1878,29 @@ class TaxonomyClassifier:
                 total_attrs = sum(len(attrs) for attrs in facet_attrs.values())
                 if total_attrs < 2:
                     continue
+                # A facet whose P2 segment consolidation failed closed carries
+                # no refinement axis, so the review prompt's structure block
+                # renders none of its attributes — while the applier's coverage
+                # guard still requires every one of them to be claimed. That
+                # domain's review is guaranteed to fail: skip it rather than
+                # pay for a call whose only possible outcome is a logged
+                # failure. The rest of the domain keeps its P6 attributes,
+                # which is exactly what the failed review would have left.
+                unrefined = sorted(
+                    f.facet_name for f in partition_facets.get(name, [])
+                    if not f.refinement and facet_attrs.get(f.facet_name)
+                )
+                if unrefined:
+                    consolidation_log.append({
+                        "action": "attribute_review_skipped", "domain": name,
+                        "note": "facet(s) without a refinement axis — P7 review v2 "
+                                "cannot render or cover their attributes",
+                        "facets": unrefined,
+                    })
+                    if verbose:
+                        print(f"      {name}: axis-first review skipped — "
+                              f"{len(unrefined)} facet(s) without a refinement axis")
+                    continue
                 p7r_v2_tasks.append({
                     'domain_name': name,
                     'facets': partition_facets.get(name, []),
@@ -2979,16 +3027,31 @@ class TaxonomyClassifier:
         Mandate is widened: rewrite, merge and split are all free, as long
         as every output stays inside the domain's fixed axis system.
 
-        Two fail-closed guards, either of which leaves the domain's facets
+        Fail-closed guards, any of which leaves the domain's facets
         untouched and logs `facet_review_failed` with the diff:
-        1. Multiset coverage of `source_facets` vs. the domain's input facet
+        1. Input-name distinctness: two input facets whose names norm to the
+           same string cannot be told apart by a name-keyed coverage check —
+           one would silently vanish from the rebuilt set while the guard
+           passed. Not hypothetical: two axes' residual segments in one
+           domain can each consolidate to an identically named facet.
+        2. Multiset coverage of `source_facets` vs. the domain's input facet
            names (`_norm_text`): every input facet must be claimed by at
            least one output, and no output may claim a name outside the
            domain's facet set. Coverage, not strict equality — a split
            legitimately claims one source across several outputs, which a
            plain Counter `!=` check would misreport as an "extra" mismatch.
-        2. Segment validity: every output's (axis_name, segment_name) must
+           Guard 1 makes the name-keyed index a faithful multiset.
+        3. Segment validity: every output's (axis_name, segment_name) must
            resolve against the domain's validated axis system.
+        4. Output-name distinctness: two outputs norming to the same facet
+           name would collide on `facet_key = "domain::name"` downstream
+           (facet_meta overwritten, chunks pooled, `partition_attributes`
+           collapsed, two indistinguishable menu entries) — all silent.
+
+        Output (axis, segment) tags are stored in the AXIS SYSTEM'S OWN
+        spelling, not the response's echo: the tags are matched normalized,
+        so a case- or whitespace-variant echo would otherwise split the P4
+        menu's axis grouping and the axis-purity metric's sibling sets.
 
         On success, the domain's facet list is rebuilt in place (pre-
         assignment: nothing references facet names yet, same argument as
@@ -3015,9 +3078,26 @@ class TaxonomyClassifier:
             counts['failed'] = 1
             return counts
 
+        # Guard 1: input-name distinctness. `by_norm` (and every downstream
+        # name-keyed structure) collapses same-normalized names, so a
+        # duplicate would let coverage pass while an instance disappears.
+        # Fail closed instead — the same ruling every other unresolvable
+        # ambiguity in this applier gets.
+        input_dups = sorted(
+            name for name, n in Counter(self._norm_text(f.facet_name) for f in facets).items()
+            if n > 1
+        )
+        if input_dups:
+            consolidation_log.append({
+                "action": "facet_review_failed", "domain": domain,
+                "note": "duplicate input facet names", "duplicates": input_dups,
+            })
+            counts['failed'] = 1
+            return counts
+
         by_norm: Dict[str, DiscoveredFacet] = {self._norm_text(f.facet_name): f for f in facets}
 
-        # Guard 1: multiset coverage. Every input facet claimed by >=1
+        # Guard 2: multiset coverage. Every input facet claimed by >=1
         # output; no output may claim a name outside the domain's facet set.
         # An output with an empty source_facets list can't be classified as
         # rewrite/merge/split (there is no source to carry provenance from)
@@ -3051,22 +3131,38 @@ class TaxonomyClassifier:
             counts['failed'] = 1
             return counts
 
-        # Guard 2: segment validity. Every output's (axis, segment) must
-        # exist in the domain's fixed axis system.
-        valid_segments = {
-            (self._norm_text(axis.axis_name), self._norm_text(seg.segment_name))
+        # Guard 3: segment validity. Every output's (axis, segment) must
+        # exist in the domain's fixed axis system. The same map carries the
+        # canonical spelling, which is what gets stored (see docstring).
+        canonical_segments: Dict[Tuple[str, str], Tuple[str, str]] = {
+            (self._norm_text(axis.axis_name), self._norm_text(seg.segment_name)):
+                (axis.axis_name, seg.segment_name)
             for axis in axis_system.axes
             for seg in axis.segments
         }
         invalid = [
             f"{out.facet_name}: ({out.axis_name}, {out.segment_name})"
             for out in response.facets
-            if (self._norm_text(out.axis_name), self._norm_text(out.segment_name)) not in valid_segments
+            if (self._norm_text(out.axis_name), self._norm_text(out.segment_name)) not in canonical_segments
         ]
         if invalid:
             consolidation_log.append({
                 "action": "facet_review_failed", "domain": domain,
                 "note": "invalid (axis, segment) tag", "invalid": invalid,
+            })
+            counts['failed'] = 1
+            return counts
+
+        # Guard 4: output-name distinctness.
+        output_dups = sorted(
+            name for name, n in Counter(
+                self._norm_text(out.facet_name) for out in response.facets
+            ).items() if n > 1
+        )
+        if output_dups:
+            consolidation_log.append({
+                "action": "facet_review_failed", "domain": domain,
+                "note": "duplicate output facet names", "duplicates": output_dups,
             })
             counts['failed'] = 1
             return counts
@@ -3079,14 +3175,17 @@ class TaxonomyClassifier:
         for out in response.facets:
             norm_sources = [self._norm_text(s) for s in out.source_facets]
             source_objs = [by_norm[n] for n in dict.fromkeys(norm_sources)]  # dedup, preserve order
+            canon_axis, canon_segment = canonical_segments[
+                (self._norm_text(out.axis_name), self._norm_text(out.segment_name))
+            ]
 
             new_facet = DiscoveredFacet(
                 facet_name=out.facet_name,
                 facet_description=out.facet_description,
                 example_observations=self._round_robin_examples(source_objs, limit=5),
                 boundary_test=out.boundary,
-                axis=out.axis_name,
-                segment=out.segment_name,
+                axis=canon_axis,
+                segment=canon_segment,
                 refinement=dict(source_objs[0].refinement),
             )
             new_facets.append(new_facet)
@@ -3107,7 +3206,7 @@ class TaxonomyClassifier:
             elif usage[norm_sources[0]] > 1:
                 counts['split'] += 1
                 split_legs.setdefault(norm_sources[0], []).append({
-                    "facet_name": out.facet_name, "axis": out.axis_name, "segment": out.segment_name,
+                    "facet_name": out.facet_name, "axis": canon_axis, "segment": canon_segment,
                     "facet_description": out.facet_description,
                 })
                 consolidation_log.append({
@@ -3123,8 +3222,8 @@ class TaxonomyClassifier:
                 }
                 changed = (out.facet_name != source.facet_name
                            or out.facet_description != source.facet_description
-                           or out.axis_name != source.axis
-                           or out.segment_name != source.segment
+                           or canon_axis != source.axis
+                           or canon_segment != source.segment
                            or out.boundary != source.boundary_test)
                 if changed:
                     counts['rewritten'] += 1
@@ -3979,22 +4078,38 @@ class TaxonomyClassifier:
            `source_objs[0]`).
         2. Facet validity: every output's facet_name must resolve to one of
            the domain's facets.
-        3. Multiset coverage, per (facet, source) pair: every actual
+        3. Input-name distinctness: two facets, or two attributes inside one
+           facet, whose names norm to the same string cannot be told apart
+           by the name-keyed coverage index — one instance would silently
+           vanish from the rebuilt set while coverage passed. Not
+           hypothetical: when `_p6_position_parse_fn` fails closed it keeps
+           the raw chunk proposals, and the same attribute name proposed in
+           two chunks is the normal case there.
+        4. Multiset coverage, per (facet, source) pair: every actual
            (facet, attribute) instance must be claimed by outputs whose OWN
            facet_name matches its real facet — a name claimed under a
            DIFFERENT facet_name does not resolve to the real pair, so it
            surfaces as both a missing real instance and an unresolvable
            extra claim. This is what enforces "own facet only".
-        4. Position validity: every output's position_name must exist on
+        5. Position validity: every output's position_name must exist on
            its facet's refinement axis.
-        5. Residual split: a source attribute with `is_residual_attr=True`
+        6. Residual split: a source attribute with `is_residual_attr=True`
            may not be split (claimed by more than one output) — residual is
            by definition one bucket.
+        7. Output-name distinctness, per facet: two outputs norming to the
+           same attribute name inside one facet collide in every
+           name-keyed structure downstream (assignment menus, the purity
+           metric) and are indistinguishable to a human reader — silently.
+
+        Output position tags are stored in the REFINEMENT AXIS'S OWN
+        spelling, not the response's echo: positions are matched normalized,
+        so a case- or whitespace-variant echo would otherwise split the
+        position grouping in the menus and in the axis-purity metric.
 
         On success, the domain's per-facet attribute lists are rebuilt in
         place. Each output's action is classified by its own
         source_attributes against the per-(facet, source) usage computed for
-        guard 3 (merge: >1 source; split: 1 source also claimed by another
+        guard 4 (merge: >1 source; split: 1 source also claimed by another
         output; rename/redescribe: 1 source, claimed nowhere else) and
         logged as `attribute_review_v2_rewrite` / `_merge` / `_split`.
         `is_residual_attr` is DERIVED from each output's own position_name
@@ -4059,15 +4174,43 @@ class TaxonomyClassifier:
             counts['failed'] = 1
             return counts
 
-        # Actual attributes keyed by (norm_facet, norm_name) — attribute
-        # names are assumed unique within a facet (P6 produces one attribute
-        # per position).
+        # Guard 3: input-name distinctness. `facet_by_norm` and the
+        # (norm_facet, norm_name) index below both collapse same-normalized
+        # names, so a duplicate would let coverage pass while an instance
+        # disappeared from the rebuilt set. Fail closed instead.
+        duplicate_facets = sorted(
+            {name for name, n in Counter(
+                self._norm_text(f.facet_name) for f in facets).items() if n > 1}
+            | {name for name, n in Counter(
+                self._norm_text(name) for name in facet_attributes).items() if n > 1}
+        )
+        attr_key_counts: Counter = Counter()
+        attr_key_display: Dict[Tuple[str, str], str] = {}
+        for fn, a in actual_items:
+            key = (self._norm_text(fn), self._norm_text(a.attribute_name))
+            attr_key_counts[key] += 1
+            attr_key_display.setdefault(key, f"{fn} > {a.attribute_name}")
+        duplicate_attributes = sorted(
+            attr_key_display[key] for key, n in attr_key_counts.items() if n > 1
+        )
+        if duplicate_facets or duplicate_attributes:
+            consolidation_log.append({
+                "action": "attribute_review_failed", "domain": domain,
+                "note": "duplicate input names",
+                "duplicate_facets": duplicate_facets,
+                "duplicate_attributes": duplicate_attributes,
+            })
+            counts['failed'] = 1
+            return counts
+
+        # Actual attributes keyed by (norm_facet, norm_name) — guard 3 has
+        # established that this index is a faithful multiset.
         by_key: Dict[Tuple[str, str], Tuple[str, DiscoveredAttribute]] = {
             (self._norm_text(facet_name), self._norm_text(attr.attribute_name)): (facet_name, attr)
             for facet_name, attr in actual_items
         }
 
-        # Guard 3: multiset coverage. Per-output dedup before flattening (a
+        # Guard 4: multiset coverage. Per-output dedup before flattening (a
         # name repeated within one output's own source_attributes counts
         # once), keyed by the OUTPUT'S OWN facet_name — a source claimed
         # under the wrong facet never resolves to the real (facet, name)
@@ -4107,15 +4250,24 @@ class TaxonomyClassifier:
             counts['failed'] = 1
             return counts
 
-        # Guard 4: position validity. Every output's position_name must
-        # exist on its facet's refinement axis.
+        # Guard 5: position validity. Every output's position_name must
+        # exist on its facet's refinement axis. The same lookup carries the
+        # canonical spelling, which is what gets stored (see docstring).
         invalid_positions = []
+        canonical_positions: Dict[Tuple[str, str], str] = {}
         for out in response.attributes:
-            facet_obj = facet_by_norm[self._norm_text(out.facet_name)]
+            out_facet_norm = self._norm_text(out.facet_name)
+            facet_obj = facet_by_norm[out_facet_norm]
             positions = (facet_obj.refinement or {}).get("positions", [])
-            valid_positions = {self._norm_text(p.get("position_name", "")) for p in positions}
-            if self._norm_text(out.position_name) not in valid_positions:
+            by_pos_norm = {
+                self._norm_text(p.get("position_name", "")): p.get("position_name", "")
+                for p in positions
+            }
+            canonical = by_pos_norm.get(self._norm_text(out.position_name))
+            if canonical is None:
                 invalid_positions.append(f"{out.facet_name} > {out.attribute_name}: {out.position_name}")
+            else:
+                canonical_positions[(out_facet_norm, self._norm_text(out.position_name))] = canonical
         if invalid_positions:
             consolidation_log.append({
                 "action": "attribute_review_failed", "domain": domain,
@@ -4124,7 +4276,7 @@ class TaxonomyClassifier:
             counts['failed'] = 1
             return counts
 
-        # Guard 5: residual split forbidden.
+        # Guard 6: residual split forbidden.
         residual_splits = sorted(
             f"{facet_name} > {attr.attribute_name}"
             for key, (facet_name, attr) in by_key.items()
@@ -4138,8 +4290,26 @@ class TaxonomyClassifier:
             counts['failed'] = 1
             return counts
 
+        # Guard 7: output-name distinctness, per facet.
+        out_key_counts: Counter = Counter()
+        out_key_display: Dict[Tuple[str, str], str] = {}
+        for out in response.attributes:
+            key = (self._norm_text(out.facet_name), self._norm_text(out.attribute_name))
+            out_key_counts[key] += 1
+            out_key_display.setdefault(key, f"{out.facet_name} > {out.attribute_name}")
+        output_dups = sorted(
+            out_key_display[key] for key, n in out_key_counts.items() if n > 1
+        )
+        if output_dups:
+            consolidation_log.append({
+                "action": "attribute_review_failed", "domain": domain,
+                "note": "duplicate output attribute names", "duplicates": output_dups,
+            })
+            counts['failed'] = 1
+            return counts
+
         # Build the rebuilt per-facet attribute lists, classifying each
-        # output by its own source_attributes against `usage` (guard 3).
+        # output by its own source_attributes against `usage` (guard 4).
         new_by_facet: Dict[str, List[DiscoveredAttribute]] = {name: [] for name in facet_attributes}
         split_legs: Dict[Tuple[str, str], List[Dict]] = {}  # (facet, norm source) -> legs, one log entry per split
 
@@ -4151,15 +4321,18 @@ class TaxonomyClassifier:
             source_objs = [attr for _, attr in source_pairs]
             facet_name = source_pairs[0][0]  # actual (unnormalized) facet name
             facet_obj = facet_by_norm[out_facet_norm]
+            canon_position = canonical_positions[
+                (out_facet_norm, self._norm_text(out.position_name))
+            ]
 
             new_attr = DiscoveredAttribute(
                 attribute_name=out.attribute_name,
                 attribute_description=out.attribute_description,
                 parent_facet=facet_name,
                 example_observations=self._round_robin_examples(source_objs, limit=5),
-                position=out.position_name,
+                position=canon_position,
                 is_residual_attr=self._position_is_residual(
-                    (facet_obj.refinement or {}).get('positions', []), out.position_name,
+                    (facet_obj.refinement or {}).get('positions', []), canon_position,
                 ),
             )
             new_by_facet.setdefault(facet_name, []).append(new_attr)
@@ -4176,7 +4349,7 @@ class TaxonomyClassifier:
             elif usage[key0] > 1:
                 counts['split'] += 1
                 split_legs.setdefault((facet_name, source_objs[0].attribute_name), []).append({
-                    "attribute_name": out.attribute_name, "position": out.position_name,
+                    "attribute_name": out.attribute_name, "position": canon_position,
                     "attribute_description": out.attribute_description,
                 })
             else:
@@ -4188,7 +4361,7 @@ class TaxonomyClassifier:
                 }
                 changed = (out.attribute_name != source.attribute_name
                            or out.attribute_description != source.attribute_description
-                           or out.position_name != source.position)
+                           or canon_position != source.position)
                 if changed:
                     counts['rewritten'] += 1
                     consolidation_log.append({
