@@ -174,9 +174,9 @@ if __name__ == "__main__":
 
     verbose_capture = VerboseCapture(
         filename=TEST_DATA.filename,
-        variable_key=variable_key,
+        var_name=TEST_DATA.var_name,
         sample_size=TEST_DATA.sample_size,
-        run_until_step=RUN_UNTIL_STEP,
+        step=RUN_UNTIL_STEP,
     )
 
     with verbose_capture:

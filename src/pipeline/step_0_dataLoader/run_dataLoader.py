@@ -165,9 +165,9 @@ if __name__ == "__main__":
     variable_key = generate_enhanced_variable_key([config.var_name], False, config.sample_size)
     verbose_capture = VerboseCapture(
         filename=config.filename,
-        variable_key=variable_key,
+        var_name=config.var_name,
         sample_size=config.sample_size,
-        run_until_step=0
+        step=0
     )
     verbose_capture.__enter__()
 

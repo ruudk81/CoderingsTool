@@ -316,9 +316,9 @@ if __name__ == "__main__":
     # Start verbose capture
     verbose_capture = VerboseCapture(
         filename=config.filename,
-        variable_key=config.var_name,
+        var_name=config.var_name,
         sample_size=config.sample_size,
-        run_until_step=3
+        step=3
     )
     verbose_capture.__enter__()
 

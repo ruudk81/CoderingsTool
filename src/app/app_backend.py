@@ -374,10 +374,9 @@ def invalidate_from(step: int, spec: DatasetSpec, cm: CacheManager) -> List[str]
 def _verbose(spec: DatasetSpec, step: int) -> VerboseCapture:
     return VerboseCapture(
         filename=spec.filename,
-        variable_key=spec.variable_key,
+        var_name=spec.var_name,
         sample_size=spec.sample_size,
-        run_until_step=step,
-        append_mode=True,
+        step=step,
     )
 
 
@@ -653,8 +652,9 @@ def step_costs(spec: DatasetSpec, step: int) -> Optional[Dict[str, Any]]:
 
 
 def find_verbose_log(spec: DatasetSpec, step: int) -> Optional[str]:
-    """Latest captured console log for a step, or None."""
-    path = VerboseCapture.find_latest_log(spec.filename, spec.variable_key, step)
+    """De opgeslagen console-uitvoer van een stap, of None."""
+    path = VerboseCapture.find_latest_log(
+        spec.filename, spec.var_name, spec.sample_size, step)
     return VerboseCapture.load_log_content(path) if path else None
 
 
@@ -676,7 +676,8 @@ def verbose_log_time(spec: DatasetSpec, step: int) -> Optional[str]:
     """When the latest captured log for a step was produced, or None. Shown next
     to the log so a report from an earlier run can't pass as current (the tab
     already appears only when the step is done)."""
-    path = VerboseCapture.find_latest_log(spec.filename, spec.variable_key, step)
+    path = VerboseCapture.find_latest_log(
+        spec.filename, spec.var_name, spec.sample_size, step)
     if not path:
         return None
     stamp = _log_time_from_name(path.name)
