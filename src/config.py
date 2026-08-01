@@ -286,9 +286,6 @@ OPENAI_MODEL_LIMITS = {
     "gpt-5.4-nano": {"context_window": 400_000, "max_output": 128_000},
     # GPT-5.6 family (Sol > Terra > Luna)
     "gpt-5.6-luna": {"context_window": 1_050_000, "max_output": 128_000},
-    "gpt-5.1": {"context_window": 272_000, "max_output": 128_000},
-    "gpt-5.2": {"context_window": 272_000, "max_output": 128_000},
-    "gpt-5-chat-latest": {"context_window": 272_000, "max_output": 128_000},
     # GPT-4o family  
     "gpt-4o": {"context_window": 128_000, "max_output": 16_000},
     "gpt-4o-mini": {"context_window": 128_000, "max_output": 16_000},
@@ -312,9 +309,6 @@ MODEL_PRICING = {
     "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
     # GPT-5.6 family
     "gpt-5.6-luna": {"input": 0.20, "output": 1.20},  # per 2026-07-30 price cut (-80%)
-    "gpt-5.1": {"input": 1.25, "output": 10.00},
-    "gpt-5.2": {"input": 1.25, "output": 10.00},
-    "gpt-5-chat-latest": {"input": 1.25, "output": 10.00},
     # GPT-4o family (legacy)
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
@@ -378,7 +372,6 @@ class ModelConfig:
         "gpt-4.1": "chat",
         "gpt-4.1-mini": "chat",
         "gpt-4.1-nano": "chat",
-        "gpt-5-chat-latest": "chat",
 
         # GPT-5 family (reasoning models)
         "gpt-5.4": "reasoning",
