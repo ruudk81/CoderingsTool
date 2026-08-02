@@ -76,17 +76,16 @@ STEP_MODEL_TIERS = {
     "idea_extraction_context": "default",           # specifiers + dimension discovery
     "idea_extraction_taxonomy": "default",          # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": "mini",   # main extraction + retry
-    # Step 4: Taxonomy Classifier (P1-P10)
-    "classifier_p1":    "mini",      # Facet Discovery
-    "classifier_p2":    "default",   # Facet Consolidation
-    "classifier_p3":    "default",   # Facet Review (rewrite + flag)
+    # Step 4: Taxonomy Classifier (P1-P9). P3 (facet discovery zonder assen)
+    # is dezelfde dispatch als P2 met een andere prompt en heeft geen eigen key.
+    "classifier_p1":    "default",   # Axis Discovery
+    "classifier_p2":    "mini",      # Facet Discovery (met én zonder assen)
     "classifier_p4":    "mini",      # Facet Assignment
-    "classifier_p5":    "mini",      # Attribute Discovery
-    "classifier_p6":    "default",   # Attribute Consolidation
-    "classifier_p7":    "default",   # Attribute Review (rewrite + flag)
-    "classifier_p8":    "mini",      # Attribute Assignment
-    "classifier_p9":    "default",   # In-facet Attribute Consolidation (post-assignment)
-    "classifier_p10":   "default",   # Valence-neutral merge
+    "classifier_p5":    "default",   # Facet Consolidation (in-axis, post-assignment)
+    "classifier_p6":    "mini",      # Attribute Discovery
+    "classifier_p7":    "mini",      # Attribute Assignment
+    "classifier_p8":    "default",   # Attribute Consolidation (in-facet, post-assignment)
+    "classifier_p9":    "default",   # Valence-neutral merge
     # Step 5: Code Generator (P8-P9)
     "codegen_p8":       "default",
     "codegen_p9":       "default",
@@ -144,20 +143,18 @@ STEP_EFFORT = {
     # Step 3: what the dimensions and domains ARE
     "idea_extraction_context":  "low",
     "idea_extraction_taxonomy": "low",
-    # Step 4: discovery, consolidation and review of facets + attributes
-    "classifier_p1":  "low",
-    "classifier_p2":  "low",
-    "classifier_p3":  "low",
-    "classifier_p5":  "low",
-    "classifier_p6":  "low",
-    "classifier_p7":  "low",
-    "classifier_p9":  "low",
-    "classifier_p10": "low",
+    # Step 4: discovery and consolidation of axes, facets + attributes
+    "classifier_p1": "low",
+    "classifier_p2": "low",
+    "classifier_p5": "low",
+    "classifier_p6": "low",
+    "classifier_p8": "low",
+    "classifier_p9": "low",
     # Step 5: writing and consolidating the codebook
     "codegen_p8": "low",
     "codegen_p9": "low",
     # Absent on purpose (high volume, mechanical): spell_check, quality_filter,
-    # idea_extraction_abstraction_ladder, classifier_p4, classifier_p8,
+    # idea_extraction_abstraction_ladder, classifier_p4, classifier_p7,
     # code_assignment.
 }
 
@@ -166,12 +163,10 @@ STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
     "classifier_p1": "low",
     "classifier_p2": "low",
-    "classifier_p3": "low",
     "classifier_p5": "low",
     "classifier_p6": "low",
-    "classifier_p7": "low",
+    "classifier_p8": "low",
     "classifier_p9": "low",
-    "classifier_p10": "low",
     # All other steps: fall back to TEXT_VERBOSITY
 }
 

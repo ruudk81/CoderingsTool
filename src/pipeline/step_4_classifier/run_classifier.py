@@ -256,37 +256,27 @@ def _write_axes_log(
         encoding="utf-8",
     )
     if CONFIG.verbose:
-        print(f"  P1a axes log written: {path.name} ({len(systems)} domains)")
+        print(f"  P1 axes log written: {path.name} ({len(systems)} domains)")
         for name in sorted(systems):
             axes = systems[name].get("axes", [])
-            n_segments = sum(len(a.get("segments", [])) for a in axes)
-            print(f"    {name}: {len(axes)} axes / {n_segments} segments")
+            print(f"    {name}: {len(axes)} axes")
 
 
 def _dump_facet(facet) -> dict:
-    """Dump a DiscoveredFacet, adding the axis-first provenance keys (axis,
-    segment, refinement) only when actually set on this facet — a guarded
-    add, not a blanket model_dump side effect. Without this, model_dump()
-    would write axis="", segment="", refinement={} onto every facet from the
-    untagged path, widening every cache dict with dead keys. boundary_test
-    is a pre-existing field and keeps persisting unconditionally either way.
+    """Dump a DiscoveredFacet, adding the axis provenance key only when
+    actually set — a guarded add, not a blanket model_dump side effect.
+    Without this, model_dump() would write axis="" onto every facet from a
+    domain without an axis system, widening every cache dict with dead keys.
     """
     data = facet.model_dump()
-    for key in ("axis", "segment", "refinement"):
-        if not data.get(key):
-            data.pop(key, None)
+    if not data.get("axis"):
+        data.pop("axis", None)
     return data
 
 
 def _dump_attribute(attribute) -> dict:
-    """Dump a DiscoveredAttribute, adding the axis-first provenance keys
-    (position, is_residual_attr) only when actually set (guarded add — see
-    `_dump_facet`)."""
-    data = attribute.model_dump()
-    for key in ("position", "is_residual_attr"):
-        if not data.get(key):
-            data.pop(key, None)
-    return data
+    """Dump a DiscoveredAttribute."""
+    return attribute.model_dump()
 
 
 def cache_taxonomy_results(

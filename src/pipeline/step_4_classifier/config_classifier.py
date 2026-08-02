@@ -81,21 +81,22 @@ class CategoriesConfig:
     label_prefix: str = ""
 
     # ==========================================================================
-    # TAXONOMY CLASSIFIER PIPELINE (P1-P10)
+    # TAXONOMY CLASSIFIER PIPELINE (P1-P9)
+    # P3 (facet discovery zonder assen) is dezelfde dispatch als P2 met een
+    # andere prompt — geen eigen model key.
     # ==========================================================================
 
     axis_first_enabled: bool = True
 
     # LLM settings — per-stage model selection (derived from MODEL_FAMILY toggle)
-    qr_model_p1a: str = get_step_model("classifier_p2")   # P1a: Axis Discovery
-    qr_model_p1: str = get_step_model("classifier_p1")    # P1: Facet Discovery
-    qr_model_p2: str = get_step_model("classifier_p2")    # P2: Facet Consolidation
+    qr_model_p1: str = get_step_model("classifier_p1")    # P1: Axis Discovery
+    qr_model_p2: str = get_step_model("classifier_p2")    # P2/P3: Facet Discovery
     qr_model_p4: str = get_step_model("classifier_p4")    # P4: Facet Assignment
-    qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Discovery
-    qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Consolidation
-    qr_model_p8: str = get_step_model("classifier_p8")    # P8: Attribute Assignment
-    qr_model_p9: str = get_step_model("classifier_p9")    # P9: In-facet Consolidation (post-assignment)
-    qr_model_p10: str = get_step_model("classifier_p10")  # P10: Valence-neutral merge
+    qr_model_p5: str = get_step_model("classifier_p5")    # P5: Facet Consolidation (in-axis)
+    qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Discovery
+    qr_model_p7: str = get_step_model("classifier_p7")    # P7: Attribute Assignment
+    qr_model_p8: str = get_step_model("classifier_p8")    # P8: Attribute Consolidation (in-facet)
+    qr_model_p9: str = get_step_model("classifier_p9")    # P9: Valence-neutral merge
     qr_temperature: float = 0.3
 
     # Output ceilings. A high ceiling is free — billing is per generated token,
