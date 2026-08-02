@@ -93,16 +93,10 @@ class CategoriesConfig:
     qr_model_p4: str = get_step_model("classifier_p4")    # P4: Facet Assignment
     qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Discovery
     qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Consolidation
-    qr_model_p7: str = get_step_model("classifier_p7")    # P7: Attribute Review (rewrite + flag)
     qr_model_p8: str = get_step_model("classifier_p8")    # P8: Attribute Assignment
     qr_model_p9: str = get_step_model("classifier_p9")    # P9: In-facet Consolidation (post-assignment)
     qr_model_p10: str = get_step_model("classifier_p10")  # P10: Valence-neutral merge
     qr_temperature: float = 0.3
-
-    # Review phase (P7): schema-enforced rewrite + flag only, never a
-    # structure change. Switchable; off restores byte-identical current
-    # behaviour (no flags, no log entries for that phase).
-    attribute_review_enabled: bool = True
 
     # Output ceilings. A high ceiling is free — billing is per generated token,
     # and smoothRequester throttles on measured throughput (it estimates from the

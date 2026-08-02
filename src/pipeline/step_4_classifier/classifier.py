@@ -104,12 +104,6 @@ from .prompts_classifier import (
     ConsolidatedAttribute,
     build_new_position_adjudication_prompt,
     NewPositionAdjudicationResponse,
-    # P7: Attribute Review
-    build_attribute_review_prompt,
-    AttributeReviewResponse,
-    # P7a: Attribute Review V2 (axis-first path)
-    build_attribute_review_v2_prompt,
-    AttributeReviewV2Response,
     # P8: Attribute Assignment
     build_attribute_assignment_prompt_single,
     AttributeAssignmentResult,
@@ -290,10 +284,6 @@ class TaxonomyResult:
     # NOT put in the shared cache model, which production also uses.
     consolidation_log: List[Dict] = field(default_factory=list)
     # P7 overlap flags: attr_a/facet_a/attr_b/facet_b/reason/decision_rule, one
-    # entry per flagged pair — meant to travel in-memory to P9 as a
-    # suspected-overlap hint (consumed downstream). Also mirrored into
-    # consolidation_log as attribute_review_flag entries.
-    attribute_review_flags: List[Dict] = field(default_factory=list)
 
 # =============================================================================
 # MAIN PROCESSOR
@@ -337,7 +327,6 @@ class TaxonomyClassifier:
         self._model_p4 = config.qr_model_p4
         self._model_p5 = config.qr_model_p5
         self._model_p6 = config.qr_model_p6
-        self._model_p7 = config.qr_model_p7
         self._model_p8 = config.qr_model_p8
         self._model_p9 = config.qr_model_p9
         self._model_p10 = config.qr_model_p10
@@ -350,7 +339,6 @@ class TaxonomyClassifier:
                 "p4_facet_assignment": self._model_p4,
                 "p5_attribute_discovery": self._model_p5,
                 "p6_attribute_consolidation": self._model_p6,
-                "p7_attribute_review": self._model_p7,
                 "p8_attribute_assignment": self._model_p8,
                 "p9_in_facet_consolidation": self._model_p9,
                 "p10_valence_merge": self._model_p10,
@@ -387,7 +375,6 @@ class TaxonomyClassifier:
         self._captured_gates: Set[str] = set()
 
         self._debug_stop_after_phase = config.debug_stop_after_phase
-        self._attribute_review_enabled = config.attribute_review_enabled
 
         # Assignment confidence scores and valence (populated by P4/P8 parse_fns)
         self._facet_confidence: Dict[str, float] = {}
@@ -464,11 +451,10 @@ class TaxonomyClassifier:
         verbose: bool = False,
         extraction_metadata=None,
     ) -> TaxonomyResult:
-        """Run taxonomy stages (P1-P10): facets, attributes, assignments.
+        """Run taxonomy stages: facets, attributes, assignments.
 
-        `extraction_metadata` (models.ExtractionMetadata, optional) feeds P3/P7's
-        drain-domain skip (taxonomy_health.drain_domains) — without it every domain
-        is treated as reviewable, same as a legacy cache with no standing keys.
+        `extraction_metadata` (models.ExtractionMetadata, optional) feeds the
+        drain-domain skip (taxonomy_health.drain_domains) for axis discovery.
         """
         print(f"\n{'='*70}")
         print(f"TAXONOMY DISCOVERY (5 phases)")
@@ -536,7 +522,7 @@ class TaxonomyClassifier:
             print(f"\n  [RATE LIMITING SETUP]")
             print(f"  Models: P1={self._model_p1}, P2={self._model_p2}, "
                   f"P4={self._model_p4}, P5={self._model_p5}, "
-                  f"P6={self._model_p6}, P7={self._model_p7}, P8={self._model_p8}, "
+                  f"P6={self._model_p6}, P8={self._model_p8}, "
                   f"P9={self._model_p9}, P10={self._model_p10}")
             print(f"  RPM: {limits.requests_per_minute:,} "
                   f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
@@ -931,14 +917,6 @@ class TaxonomyClassifier:
                 attribute_assignments={},
                 axis_systems=self._dump_axis_systems(),
             )
-
-        attribute_review_flags: List[Dict] = []
-        # Same flags as attribute_review_flags, keyed by the domain that raised
-        # them. Facet names are NOT unique across domains, so P8/P9 dispatch
-        # must filter per-domain — the flat list alone cannot tell two domains'
-        # same-named facets apart. Internal to this method; never lands on
-        # TaxonomyResult (Task 6's public schema is untouched).
-        domain_review_flags: Dict[str, List[Dict]] = {}
 
         if self._debug_stop_after_phase == 3:
             if verbose:
@@ -1564,13 +1542,6 @@ class TaxonomyClassifier:
                 axis_systems=self._dump_axis_systems(),
             )
 
-        # =================================================================
-        # PHASE 7 (P7): Per-domain Attribute Review (optional, SmoothRequester,
-        # light mode — mirrors the P3/P6 dispatch). Rewrite + flag only: the
-        # attribute SET cannot change, enforced by the response schema. Skips
-        # the standing drain domains and domains with fewer than 2 attributes
-        # in total across their facets (nothing to review against).
-        # =================================================================
         if self._debug_stop_after_phase == 7:
             if verbose:
                 print(f"\n  [DEBUG] Early stop after P7 — skipping P8–P9")
@@ -1584,7 +1555,6 @@ class TaxonomyClassifier:
                 facet_confidence=self._facet_confidence,
                 facet_valence=self._facet_valence,
                 consolidation_log=consolidation_log,
-                attribute_review_flags=attribute_review_flags,
                 axis_systems=self._dump_axis_systems(),
             )
 
@@ -1634,15 +1604,6 @@ class TaxonomyClassifier:
                     continue
 
                 attr_id_to_name = {f"A{i}": a.attribute_name for i, a in enumerate(attributes, 1)}
-                # P7 decision rules for pairs flagged WITHIN this facet, in
-                # THIS domain only — facet names are not unique across
-                # domains, so the flat attribute_review_flags list is not
-                # safe to filter on facet name alone.
-                decision_rules = [
-                    flag['decision_rule']
-                    for flag in domain_review_flags.get(domain_name, [])
-                    if flag['facet_a'] == facet_name and flag['facet_b'] == facet_name
-                ]
                 for idea in facet_ideas:
                     idea_label = format_label(idea, self._label_source, self._label_prefix)
                     p6_tasks.append({
@@ -1654,8 +1615,6 @@ class TaxonomyClassifier:
                         'attributes': attributes,
                         'attr_id_to_name': attr_id_to_name,
                         'facet_key': facet_key,
-                        'decision_rules': decision_rules,
-                        'refinement': facet_obj.refinement,
                     })
 
         if p6_tasks:
@@ -1745,7 +1704,6 @@ class TaxonomyClassifier:
                 facet_valence=self._facet_valence,
                 attribute_valence=self._attribute_valence,
                 consolidation_log=consolidation_log,
-                attribute_review_flags=attribute_review_flags,
                 axis_systems=self._dump_axis_systems(),
             )
 
@@ -1807,14 +1765,6 @@ class TaxonomyClassifier:
                     'attributes_block': self._build_facet_contents_block(
                         attributes, facet_ideas, attribute_assignments),
                     'neighbour_block': build_neighbour_block(neighbours),
-                    # P7 cross-facet flags touching this facet on either side,
-                    # in THIS domain only (facet names are not unique across
-                    # domains — see the P8 decision_rules comment above).
-                    'suspected_overlap': [
-                        flag for flag in domain_review_flags.get(domain_name, [])
-                        if flag['facet_a'] != flag['facet_b']
-                        and (flag['facet_a'] == facet_name or flag['facet_b'] == facet_name)
-                    ],
                 })
 
         p7_results = []
@@ -1889,7 +1839,6 @@ class TaxonomyClassifier:
             facet_valence=self._facet_valence,
             attribute_valence=self._attribute_valence,
             consolidation_log=consolidation_log,
-            attribute_review_flags=attribute_review_flags,
             axis_systems=self._dump_axis_systems(),
         )
 
@@ -1980,8 +1929,6 @@ class TaxonomyClassifier:
                 facet_description=task['facet_description'],
                 attributes=task['attributes'],
                 idea_label=task['idea_label'],
-                decision_rules=task.get('decision_rules'),
-                refinement=task.get('refinement'),
             )
 
             # Prompt capture (first idea per facet)
@@ -2989,567 +2936,6 @@ class TaxonomyClassifier:
             return []
         return fallback_fn
 
-    def _apply_p7_review(
-        self,
-        task: Dict,
-        response: Optional[AttributeReviewResponse],
-        consolidation_log: List[Dict],
-        attribute_review_flags: List[Dict],
-        domain_review_flags: Dict[str, List[Dict]],
-    ) -> Dict[str, int]:
-        """Apply one domain's P7 review in place. Mandate is rewrite-and-flag
-        only — the attribute SET is fixed. Match key is (facet_name,
-        original_name), whitespace-/case-insensitive (`_norm_text`, same
-        helper P3/P9 use) — the spec's codewaarborg is 1-op-1-dekking per
-        (facet, original_name), so coverage is checked per attribute
-        INSTANCE, not per distinct name: two attributes that share a
-        normalized name across different facets are two separate instances
-        that each need their own covering response row.
-
-        Two-pass instance matching (index-based, so duplicate normalized
-        names never collapse into one slot):
-        - Pass 1: exact (facet, name) match — the normal, well-behaved case.
-        - Pass 2: on what's left, name-only match — recovers the case where
-          the row names a real attribute but echoes the wrong facet (facets
-          are read-only context, so this is not a coverage gap by itself).
-        Whatever remains unmatched after both passes is a genuine coverage
-        gap: the whole domain's attributes are left untouched, logged as
-        `attribute_review_failed` with a `facet > name` diff (Pass 2 already
-        absorbed the "known name, wrong facet" case, so anything still
-        unmatched here is a real missing/extra instance, not a facet typo).
-        Pass-2 pairs are NOT applied — the row is left unchanged, logged as
-        `attribute_review_failed` with a note; the rest of the domain (pass-1
-        pairs) still applies normally.
-        """
-        domain = task['domain_name']
-        facet_attributes = task['facet_attributes']  # same dict object as partition_attributes[domain]
-        actual_items: List[Tuple[str, DiscoveredAttribute]] = [
-            (facet_name, attr)
-            for facet_name, attrs in facet_attributes.items()
-            for attr in attrs
-        ]
-        counts = {'reviewed': len(actual_items), 'rewritten': 0, 'flagged': 0, 'failed': 0}
-
-        if response is None or not response.attributes:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "note": "no response",
-            })
-            counts['failed'] = 1
-            return counts
-
-        resp_rows = list(response.attributes)
-
-        # Pass 1: exact (norm_facet, norm_name) match, by index — a plain
-        # Dict keyed on name alone silently drops duplicate-named instances
-        # living in other facets, so indices (not a collapsing dict) carry
-        # the multiplicity.
-        actual_by_key: Dict[Tuple[str, str], List[int]] = {}
-        for i, (facet_name, attr) in enumerate(actual_items):
-            key = (self._norm_text(facet_name), self._norm_text(attr.attribute_name))
-            actual_by_key.setdefault(key, []).append(i)
-
-        exact_pairs: List[Tuple[int, int]] = []
-        leftover_resp_idx: List[int] = []
-        for j, row in enumerate(resp_rows):
-            key = (self._norm_text(row.facet_name), self._norm_text(row.original_name))
-            candidates = actual_by_key.get(key)
-            if candidates:
-                exact_pairs.append((candidates.pop(0), j))
-            else:
-                leftover_resp_idx.append(j)
-
-        matched_actual_idx = {i for i, _ in exact_pairs}
-        leftover_actual_idx = [i for i in range(len(actual_items)) if i not in matched_actual_idx]
-
-        # Pass 2: name-only match on what's left — recovers "right name,
-        # wrong facet" without treating it as a coverage gap.
-        actual_by_name: Dict[str, List[int]] = {}
-        for i in leftover_actual_idx:
-            actual_by_name.setdefault(self._norm_text(actual_items[i][1].attribute_name), []).append(i)
-
-        facet_mismatch_pairs: List[Tuple[int, int]] = []
-        still_unmatched_resp_idx: List[int] = []
-        for j in leftover_resp_idx:
-            row = resp_rows[j]
-            candidates = actual_by_name.get(self._norm_text(row.original_name))
-            if candidates:
-                facet_mismatch_pairs.append((candidates.pop(0), j))
-            else:
-                still_unmatched_resp_idx.append(j)
-
-        name_matched_actual_idx = {i for i, _ in facet_mismatch_pairs}
-        unmatched_actual_idx = [i for i in leftover_actual_idx if i not in name_matched_actual_idx]
-        unmatched_resp_idx = still_unmatched_resp_idx
-
-        if unmatched_actual_idx or unmatched_resp_idx:
-            missing = sorted(
-                f"{actual_items[i][0]} > {actual_items[i][1].attribute_name}"
-                for i in unmatched_actual_idx
-            )
-            extra = sorted(
-                f"{resp_rows[j].facet_name} > {resp_rows[j].original_name}"
-                for j in unmatched_resp_idx
-            )
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "missing": missing, "extra": extra,
-            })
-            counts['failed'] = 1
-            return counts
-
-        for i, j in exact_pairs:
-            facet_name, attr = actual_items[i]
-            row = resp_rows[j]
-            before = {"attribute_name": attr.attribute_name, "attribute_description": attr.attribute_description}
-            changed = (row.attribute_name != attr.attribute_name
-                       or row.attribute_description != attr.attribute_description)
-            attr.attribute_name = row.attribute_name
-            attr.attribute_description = row.attribute_description
-            if changed:
-                counts['rewritten'] += 1
-                consolidation_log.append({
-                    "action": "attribute_review_rewrite", "domain": domain, "facet": facet_name,
-                    "before": before,
-                    "after": {"attribute_name": attr.attribute_name, "attribute_description": attr.attribute_description},
-                })
-
-        for i, j in facet_mismatch_pairs:
-            facet_name, attr = actual_items[i]
-            row = resp_rows[j]
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "facet": facet_name,
-                "note": (
-                    f"facet mismatch for '{attr.attribute_name}': response "
-                    f"facet_name '{row.facet_name}' != actual facet "
-                    f"'{facet_name}' — attribute left unchanged"
-                ),
-            })
-
-        for flag in response.overlap_flags:
-            counts['flagged'] += 1
-            flag_dict = {
-                "attr_a": flag.attr_a, "facet_a": flag.facet_a,
-                "attr_b": flag.attr_b, "facet_b": flag.facet_b,
-                "reason": flag.reason, "decision_rule": flag.decision_rule,
-            }
-            attribute_review_flags.append(flag_dict)
-            domain_review_flags.setdefault(domain, []).append(flag_dict)
-            consolidation_log.append({
-                "action": "attribute_review_flag", "domain": domain, **flag_dict,
-            })
-
-        return counts
-
-    # =========================================================================
-    # PHASE 7a: PER-DOMAIN ATTRIBUTE REVIEW V2 (axis-first path, SmoothRequester)
-    # Widened mandate: rewrite AND restructure (merge/split) inside each
-    # facet's fixed refinement axis. Used only for domains with a validated
-    # P1a axis system; the §7 path above stays untouched for every other
-    # domain.
-    # =========================================================================
-
-    def _p7_review_v2_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P7-review V2 (axis-first path)."""
-        def prepare_fn(task: Dict) -> Dict:
-            prompt = build_attribute_review_v2_prompt(
-                survey_question=prompt_context.survey_question,
-                domain_label=task['domain_name'],
-                domain_definition=task['part_context'].partition_definition,
-                facets=task['facets'],
-                facet_attributes=task['facet_attributes'],
-            )
-
-            gate_key = f"qr_attribute_review_v2_{task['domain_name']}"
-            if (self._prompt_printer is not None
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type="attribute_review_v2",
-                    metadata={
-                        "model": self._model_p7,
-                        "temperature": 0.0,
-                        "max_tokens": self._max_tokens_consolidation,
-                        "language": prompt_context.language,
-                        "partition_name": task['domain_name'],
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
-            return {
-                'prompt': prompt,
-                'response_model': AttributeReviewV2Response,
-                'temperature': 0.0,
-                'max_tokens': self._max_tokens_consolidation,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p7, phase="classifier_p7"),
-            }
-        return prepare_fn
-
-    def _p7_review_v2_parse_fn(self):
-        """Return parse_fn closure for P7-review V2 (axis-first path)."""
-        def parse_fn(task: Dict, response) -> Optional[AttributeReviewV2Response]:
-            return response if response else None
-        return parse_fn
-
-    @staticmethod
-    def _p7_review_v2_fallback_fn():
-        """Return fallback_fn closure for P7-review V2. On failure the
-        domain's attributes are left exactly as P6 produced them — never
-        silently emptied."""
-        def fallback_fn(task: Dict, reason: str) -> None:
-            return None
-        return fallback_fn
-
-    def _apply_p7_review_v2(
-        self,
-        task: Dict,
-        response: Optional[AttributeReviewV2Response],
-        consolidation_log: List[Dict],
-        attribute_review_flags: List[Dict],
-        domain_review_flags: Dict[str, List[Dict]],
-    ) -> Dict[str, int]:
-        """Apply one domain's P7-review V2 in place (axis-first path).
-        Mandate is widened exactly as `_apply_p3_review_v2`, one level down:
-        rewrite, merge and split of attributes are all free, as long as
-        every output stays inside its own facet's fixed refinement axis.
-        Cross-facet restructuring is forbidden — a source attribute may only
-        be claimed by outputs of its own facet; cross-facet SUSPICIONS
-        instead flow through `overlap_flags` into the existing
-        `attribute_review_flags` / `domain_review_flags` plumbing that feeds
-        P9's suspected-overlap hint (same mechanism the V1 path uses).
-
-        Fail-closed guards, any of which leaves the domain's attributes
-        untouched and logs `attribute_review_failed` with a diff:
-        1. Empty source_attributes on any output — rejected before any
-           object construction (the Task-5 lesson: an empty source cannot
-           carry provenance and would otherwise crash downstream on
-           `source_objs[0]`).
-        2. Facet validity: every output's facet_name must resolve to one of
-           the domain's facets.
-        3. Input-name distinctness: two facets, or two attributes inside one
-           facet, whose names norm to the same string cannot be told apart
-           by the name-keyed coverage index — one instance would silently
-           vanish from the rebuilt set while coverage passed. Not
-           hypothetical: when `_p6_position_parse_fn` fails closed it keeps
-           the raw chunk proposals, and the same attribute name proposed in
-           two chunks is the normal case there.
-        4. Multiset coverage, per (facet, source) pair: every actual
-           (facet, attribute) instance must be claimed by outputs whose OWN
-           facet_name matches its real facet — a name claimed under a
-           DIFFERENT facet_name does not resolve to the real pair, so it
-           surfaces as both a missing real instance and an unresolvable
-           extra claim. This is what enforces "own facet only".
-        5. Position validity: every output's position_name must exist on
-           its facet's refinement axis.
-        6. Residual split: a source attribute with `is_residual_attr=True`
-           may not be split (claimed by more than one output) — residual is
-           by definition one bucket.
-        7. Output-name distinctness, per facet: two outputs norming to the
-           same attribute name inside one facet collide in every
-           name-keyed structure downstream (assignment menus, the purity
-           metric) and are indistinguishable to a human reader — silently.
-
-        Output position tags are stored in the REFINEMENT AXIS'S OWN
-        spelling, not the response's echo: positions are matched normalized,
-        so a case- or whitespace-variant echo would otherwise split the
-        position grouping in the menus and in the axis-purity metric.
-
-        On success, the domain's per-facet attribute lists are rebuilt in
-        place. Each output's action is classified by its own
-        source_attributes against the per-(facet, source) usage computed for
-        guard 4 (merge: >1 source; split: 1 source also claimed by another
-        output; rename/redescribe: 1 source, claimed nowhere else) and
-        logged as `attribute_review_v2_rewrite` / `_merge` / `_split`.
-        `is_residual_attr` is DERIVED from each output's own position_name
-        via `_position_is_residual` — never carried from a source object.
-        Provenance carry would silently break on either edge the P3-review
-        lesson missed: a rewrite that moves the residual attribute onto a
-        specific position would otherwise keep the flag past its position,
-        and a merge that lists the residual source anywhere but first would
-        otherwise drop it. Deriving from the output's own position makes the
-        invariant structural instead of an artifact of list order.
-        """
-        domain = task['domain_name']
-        facets: List[DiscoveredFacet] = task['facets']
-        # same dict object as partition_attributes[domain]
-        facet_attributes: Dict[str, List[DiscoveredAttribute]] = task['facet_attributes']
-        actual_items: List[Tuple[str, DiscoveredAttribute]] = [
-            (facet_name, attr)
-            for facet_name, attrs in facet_attributes.items()
-            for attr in attrs
-        ]
-        counts = {
-            'reviewed': len(actual_items), 'rewritten': 0, 'merged': 0,
-            'split': 0, 'flagged': 0, 'failed': 0,
-        }
-
-        if response is None or not response.attributes:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "note": "no response",
-            })
-            counts['failed'] = 1
-            return counts
-
-        # Guard 1: empty source_attributes — reject before any construction.
-        empty_source_outputs = sorted(
-            f"{out.facet_name} > {out.attribute_name}"
-            for out in response.attributes if not out.source_attributes
-        )
-        if empty_source_outputs:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "note": "output(s) with empty source_attributes", "outputs": empty_source_outputs,
-            })
-            counts['failed'] = 1
-            return counts
-
-        facet_by_norm: Dict[str, DiscoveredFacet] = {
-            self._norm_text(f.facet_name): f for f in facets
-        }
-
-        # Guard 2: facet validity.
-        invalid_facets = sorted(
-            f"{out.facet_name} > {out.attribute_name}"
-            for out in response.attributes
-            if self._norm_text(out.facet_name) not in facet_by_norm
-        )
-        if invalid_facets:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "note": "output(s) with unknown facet_name", "outputs": invalid_facets,
-            })
-            counts['failed'] = 1
-            return counts
-
-        # Guard 3: input-name distinctness. `facet_by_norm` and the
-        # (norm_facet, norm_name) index below both collapse same-normalized
-        # names, so a duplicate would let coverage pass while an instance
-        # disappeared from the rebuilt set. Fail closed instead.
-        duplicate_facets = sorted(
-            {name for name, n in Counter(
-                self._norm_text(f.facet_name) for f in facets).items() if n > 1}
-            | {name for name, n in Counter(
-                self._norm_text(name) for name in facet_attributes).items() if n > 1}
-        )
-        attr_key_counts: Counter = Counter()
-        attr_key_display: Dict[Tuple[str, str], str] = {}
-        for fn, a in actual_items:
-            key = (self._norm_text(fn), self._norm_text(a.attribute_name))
-            attr_key_counts[key] += 1
-            attr_key_display.setdefault(key, f"{fn} > {a.attribute_name}")
-        duplicate_attributes = sorted(
-            attr_key_display[key] for key, n in attr_key_counts.items() if n > 1
-        )
-        if duplicate_facets or duplicate_attributes:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "note": "duplicate input names",
-                "duplicate_facets": duplicate_facets,
-                "duplicate_attributes": duplicate_attributes,
-            })
-            counts['failed'] = 1
-            return counts
-
-        # Actual attributes keyed by (norm_facet, norm_name) — guard 3 has
-        # established that this index is a faithful multiset.
-        by_key: Dict[Tuple[str, str], Tuple[str, DiscoveredAttribute]] = {
-            (self._norm_text(facet_name), self._norm_text(attr.attribute_name)): (facet_name, attr)
-            for facet_name, attr in actual_items
-        }
-
-        # Guard 4: multiset coverage. Per-output dedup before flattening (a
-        # name repeated within one output's own source_attributes counts
-        # once), keyed by the OUTPUT'S OWN facet_name — a source claimed
-        # under the wrong facet never resolves to the real (facet, name)
-        # pair, so it shows up as both a missing real instance and an
-        # unresolvable extra claim. `usage_display` keeps the first raw
-        # "facet_name > source_name" string seen for each normalized key, so
-        # a coverage failure can report human-readable names on BOTH sides —
-        # `missing` from the real attribute, `extra` from the response's own
-        # (unresolvable) wording, not the normalized matching key.
-        usage: Counter = Counter()
-        usage_display: Dict[Tuple[str, str], str] = {}
-        for out in response.attributes:
-            out_facet_norm = self._norm_text(out.facet_name)
-            raw_by_norm: Dict[str, str] = {}
-            for raw_source in out.source_attributes:
-                raw_by_norm.setdefault(self._norm_text(raw_source), raw_source)
-            for name, raw_source in raw_by_norm.items():
-                key = (out_facet_norm, name)
-                usage[key] += 1
-                usage_display.setdefault(key, f"{out.facet_name} > {raw_source}")
-
-        missing = sorted(
-            f"{facet_name} > {attr.attribute_name}"
-            for key, (facet_name, attr) in by_key.items()
-            if usage.get(key, 0) == 0
-        )
-        extra = sorted(
-            usage_display[key]
-            for key in usage
-            if key not in by_key
-        )
-        if missing or extra:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "missing": missing, "extra": extra,
-            })
-            counts['failed'] = 1
-            return counts
-
-        # Guard 5: position validity. Every output's position_name must
-        # exist on its facet's refinement axis. The same lookup carries the
-        # canonical spelling, which is what gets stored (see docstring).
-        invalid_positions = []
-        canonical_positions: Dict[Tuple[str, str], str] = {}
-        for out in response.attributes:
-            out_facet_norm = self._norm_text(out.facet_name)
-            facet_obj = facet_by_norm[out_facet_norm]
-            positions = (facet_obj.refinement or {}).get("positions", [])
-            by_pos_norm = {
-                self._norm_text(p.get("position_name", "")): p.get("position_name", "")
-                for p in positions
-            }
-            canonical = by_pos_norm.get(self._norm_text(out.position_name))
-            if canonical is None:
-                invalid_positions.append(f"{out.facet_name} > {out.attribute_name}: {out.position_name}")
-            else:
-                canonical_positions[(out_facet_norm, self._norm_text(out.position_name))] = canonical
-        if invalid_positions:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "note": "invalid position tag", "invalid": sorted(invalid_positions),
-            })
-            counts['failed'] = 1
-            return counts
-
-        # Guard 6: residual split forbidden.
-        residual_splits = sorted(
-            f"{facet_name} > {attr.attribute_name}"
-            for key, (facet_name, attr) in by_key.items()
-            if attr.is_residual_attr and usage.get(key, 0) > 1
-        )
-        if residual_splits:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "note": "residual attribute split", "attributes": residual_splits,
-            })
-            counts['failed'] = 1
-            return counts
-
-        # Guard 7: output-name distinctness, per facet.
-        out_key_counts: Counter = Counter()
-        out_key_display: Dict[Tuple[str, str], str] = {}
-        for out in response.attributes:
-            key = (self._norm_text(out.facet_name), self._norm_text(out.attribute_name))
-            out_key_counts[key] += 1
-            out_key_display.setdefault(key, f"{out.facet_name} > {out.attribute_name}")
-        output_dups = sorted(
-            out_key_display[key] for key, n in out_key_counts.items() if n > 1
-        )
-        if output_dups:
-            consolidation_log.append({
-                "action": "attribute_review_failed", "domain": domain,
-                "note": "duplicate output attribute names", "duplicates": output_dups,
-            })
-            counts['failed'] = 1
-            return counts
-
-        # Build the rebuilt per-facet attribute lists, classifying each
-        # output by its own source_attributes against `usage` (guard 4).
-        new_by_facet: Dict[str, List[DiscoveredAttribute]] = {name: [] for name in facet_attributes}
-        split_legs: Dict[Tuple[str, str], List[Dict]] = {}  # (facet, norm source) -> legs, one log entry per split
-
-        for out in response.attributes:
-            out_facet_norm = self._norm_text(out.facet_name)
-            norm_sources = [self._norm_text(s) for s in out.source_attributes]
-            dedup_sources = list(dict.fromkeys(norm_sources))
-            source_pairs = [by_key[(out_facet_norm, n)] for n in dedup_sources]
-            source_objs = [attr for _, attr in source_pairs]
-            facet_name = source_pairs[0][0]  # actual (unnormalized) facet name
-            facet_obj = facet_by_norm[out_facet_norm]
-            canon_position = canonical_positions[
-                (out_facet_norm, self._norm_text(out.position_name))
-            ]
-
-            new_attr = DiscoveredAttribute(
-                attribute_name=out.attribute_name,
-                attribute_description=out.attribute_description,
-                parent_facet=facet_name,
-                example_observations=self._round_robin_examples(source_objs, limit=5),
-                position=canon_position,
-                is_residual_attr=self._position_is_residual(
-                    (facet_obj.refinement or {}).get('positions', []), canon_position,
-                ),
-            )
-            new_by_facet.setdefault(facet_name, []).append(new_attr)
-
-            key0 = (out_facet_norm, dedup_sources[0])
-            if len(source_objs) > 1:
-                counts['merged'] += 1
-                consolidation_log.append({
-                    "action": "attribute_review_v2_merge", "domain": domain, "facet": facet_name,
-                    "sources": [a.attribute_name for a in source_objs],
-                    "result": out.attribute_name,
-                    "attribute_description": out.attribute_description,
-                })
-            elif usage[key0] > 1:
-                counts['split'] += 1
-                split_legs.setdefault((facet_name, source_objs[0].attribute_name), []).append({
-                    "attribute_name": out.attribute_name, "position": canon_position,
-                    "attribute_description": out.attribute_description,
-                })
-            else:
-                source = source_objs[0]
-                before = {
-                    "attribute_name": source.attribute_name,
-                    "attribute_description": source.attribute_description,
-                    "position": source.position,
-                }
-                changed = (out.attribute_name != source.attribute_name
-                           or out.attribute_description != source.attribute_description
-                           or canon_position != source.position)
-                if changed:
-                    counts['rewritten'] += 1
-                    consolidation_log.append({
-                        "action": "attribute_review_v2_rewrite", "domain": domain, "facet": facet_name,
-                        "before": before,
-                        "after": {
-                            "attribute_name": new_attr.attribute_name,
-                            "attribute_description": new_attr.attribute_description,
-                            "position": new_attr.position,
-                        },
-                    })
-
-        for (facet_name, source_name), legs in split_legs.items():
-            consolidation_log.append({
-                "action": "attribute_review_v2_split", "domain": domain, "facet": facet_name,
-                "source": source_name, "results": legs,
-            })
-
-        facet_attributes.update(new_by_facet)
-
-        for flag in response.overlap_flags:
-            counts['flagged'] += 1
-            flag_dict = {
-                "attr_a": flag.attr_a, "facet_a": flag.facet_a,
-                "attr_b": flag.attr_b, "facet_b": flag.facet_b,
-                "reason": flag.reason, "decision_rule": flag.decision_rule,
-            }
-            attribute_review_flags.append(flag_dict)
-            domain_review_flags.setdefault(domain, []).append(flag_dict)
-            consolidation_log.append({
-                "action": "attribute_review_v2_flag", "domain": domain, **flag_dict,
-            })
-
-        return counts
-
     # =========================================================================
     # PHASE 9: IN-FACET ATTRIBUTE CONSOLIDATION (SmoothRequester)
     # =========================================================================
@@ -3638,7 +3024,6 @@ class TaxonomyClassifier:
                 facet_description=task['facet_description'],
                 attributes_block=task['attributes_block'],
                 neighbour_block=task['neighbour_block'],
-                suspected_overlap=task.get('suspected_overlap'),
             )
 
             gate_key = f"qr_in_facet_consolidation_{task['domain_name']}"

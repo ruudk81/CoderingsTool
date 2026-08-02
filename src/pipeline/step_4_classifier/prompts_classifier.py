@@ -1800,262 +1800,6 @@ class NewPositionAdjudicationResponse(BaseModel):
 
 
 # =============================================================================
-# §7 ATTRIBUTE REVIEW (P7) — per-domain quality gate on the consolidated attribute set
-# =============================================================================
-
-
-def build_attribute_review_prompt(
-    *,
-    survey_question: str,
-    domain_label: str,
-    domain_definition: str,
-    facets: List[DiscoveredFacet],
-    facet_attributes: Dict[str, List[DiscoveredAttribute]],
-) -> str:
-    """Review a domain's consolidated attribute set for definitional MECE-ness.
-
-    One call per domain. Structure change is impossible by construction: the
-    response schema echoes the input attributes 1-on-1 (matched by
-    original_name within their facet) and only carries rewritten
-    names/descriptions plus overlap flags. Facets are read-only context.
-    """
-    tree_lines: List[str] = []
-    for facet in facets:
-        tree_lines.append(f"Facet: {facet.facet_name} — {facet.facet_description}")
-        if facet.boundary_test:
-            tree_lines.append(f"    Boundary: {facet.boundary_test}")
-        for attribute in facet_attributes.get(facet.facet_name, []):
-            tree_lines.append(f"    - {attribute.attribute_name}: {attribute.attribute_description}")
-    tree_block = "\n".join(tree_lines)
-
-    return f"""You are a taxonomy quality reviewer for open-ended survey coding.
-
-The survey question:
-"{survey_question}"
-
-Domain under review: {domain_label} — {domain_definition}
-
-Below is this domain's full tree after attribute consolidation: every facet (with
-its boundary test) and its attributes. Assignment has not happened yet: rewrites
-are free, but the attribute SET is fixed and facets are read-only context.
-
-<tree>
-{tree_block}
-</tree>
-
-Your task:
-1. For every attribute, judge name and description from the viewpoint of the
-   survey question: does it capture one atomic concept, distinguishable from
-   every other attribute in this domain — inside its facet and across sibling
-   facets — by the text alone?
-2. Rewrite names/descriptions where needed so each attribute reads as exactly one
-   concept. Descriptive wording only — no evaluative language.
-3. Flag every pair of attributes (same facet or different facets of this domain)
-   that appear to capture the same concept even after rewriting. For each flagged
-   pair, write one decision_rule: a single routing sentence
-   ("names X -> a; is about Y -> b").
-
-Rules:
-- Return exactly the attributes you were given, one for one, matched by
-  original_name within their facet. Do not add, merge, split, move or drop
-  attributes.
-- Sharpen, do not re-scope.
-- Flagging is desired behaviour, not failure: flagged pairs are resolved later
-  with assignment data.
-
-Provide your output as valid JSON following the response schema provided."""
-
-
-class ReviewedAttribute(BaseModel):
-    """A single attribute after P7 review — rewrites are free, the set is fixed."""
-    original_name: str = Field(
-        ..., description="Exact name of the existing attribute — the match key within its facet"
-    )
-    facet_name: str = Field(
-        ..., description="Read-only reference to the facet this attribute belongs to — not a move field"
-    )
-    attribute_name: str = Field(
-        ..., description="Attribute name, sharpened where needed"
-    )
-    attribute_description: str = Field(
-        ..., description="Attribute description, reformulated for orthogonality"
-    )
-
-
-class AttributeOverlapFlag(BaseModel):
-    """A pair of attributes that still appear to capture the same concept after rewriting."""
-    attr_a: str = Field(
-        ..., description="Name of the first attribute in the overlapping pair"
-    )
-    facet_a: str = Field(
-        ..., description="Facet of the first attribute in the overlapping pair"
-    )
-    attr_b: str = Field(
-        ..., description="Name of the second attribute in the overlapping pair"
-    )
-    facet_b: str = Field(
-        ..., description="Facet of the second attribute in the overlapping pair — may differ from facet_a: cross-facet within the domain"
-    )
-    reason: str = Field(
-        ..., description="One sentence explaining why the two attributes overlap"
-    )
-    decision_rule: str = Field(
-        ..., description='Single routing sentence for the doubtful case, e.g. "names X -> a; is about Y -> b"'
-    )
-
-
-class AttributeReviewResponse(BaseModel):
-    """P7 output: reviewed attributes and any overlap flags for a single domain."""
-    attributes: List[ReviewedAttribute] = Field(
-        ..., description="Reviewed attributes, exactly 1-on-1 with the input set"
-    )
-    overlap_flags: List[AttributeOverlapFlag] = Field(
-        ..., description="Pairs of attributes that still appear to capture the same concept after rewriting"
-    )
-
-
-# =============================================================================
-# §7a ATTRIBUTE REVIEW V2 (P7-review, axis-first path) — widened mandate:
-# rewrite AND restructure (merge/split) a domain's attributes, but only
-# within their own facet's fixed refinement axis. Used only for domains with
-# a validated P1a axis system; the §7 path above stays untouched for every
-# other domain.
-# =============================================================================
-
-def _build_domain_attribute_structure_block(
-    facets: List[DiscoveredFacet],
-    facet_attributes: Dict[str, List[DiscoveredAttribute]],
-) -> str:
-    """Render a domain's full facet+attribute structure for P7-review (V2):
-    per facet its segment/axis, its refinement axis, and per position (non-
-    residual first, residual last — the same ordering convention as
-    `_build_refinement_axis_block`, though the line format differs: one line
-    carrying both the position's own description and its boundary, to keep
-    each position and its attributes visually together) the attributes
-    tagged to it. Built from the facets' own axis/segment/refinement fields
-    (as `_build_domain_structure_block` does for P3-review) plus each
-    attribute's `position` field set by P6."""
-    blocks = []
-    for f in facets:
-        lines = [f"Facet: {f.facet_name} — {f.facet_description} (segment: {f.segment} of {f.axis})"]
-        refinement = f.refinement or {}
-        lines.append(
-            f"  Refinement axis: {refinement.get('name', '')} — {refinement.get('description', '')}"
-        )
-        positions = refinement.get("positions", [])
-        non_residual = [p for p in positions if not p.get("is_residual")]
-        residual = [p for p in positions if p.get("is_residual")]
-        attrs = facet_attributes.get(f.facet_name, [])
-        for p in non_residual + residual:
-            suffix = " (residual)" if p.get("is_residual") else ""
-            lines.append(
-                f"    [{p.get('position_name', '')}]{suffix}: "
-                f"{p.get('position_description', '')} — Boundary: {p.get('boundary', '')}"
-            )
-            for attr in attrs:
-                if attr.position == p.get("position_name", ""):
-                    lines.append(f"      - {attr.attribute_name}: {attr.attribute_description}")
-        blocks.append("\n".join(lines))
-    return "\n\n".join(blocks)
-
-
-def build_attribute_review_v2_prompt(
-    *,
-    survey_question: str,
-    domain_label: str,
-    domain_definition: str,
-    facets: List[DiscoveredFacet],
-    facet_attributes: Dict[str, List[DiscoveredAttribute]],
-) -> str:
-    """Review and, where needed, restructure a domain's consolidated
-    attribute set inside each facet's fixed refinement axis (P7-review, V2 /
-    axis-first path)."""
-    domain_attribute_structure_block = _build_domain_attribute_structure_block(
-        facets, facet_attributes
-    )
-
-    return f"""You are a taxonomy quality reviewer for open-ended survey coding.
-
-The survey question:
-"{survey_question}"
-
-Domain under review: {domain_label} — {domain_definition}
-
-Below is the domain's full consolidated structure: per facet its segment, its
-refinement axis and its attributes on their positions. Assignment has not
-happened yet: restructuring is free, but everything must stay inside the
-refinement axes.
-
-<structure>
-{domain_attribute_structure_block}
-</structure>
-
-Your task, judging from the survey question:
-1. Verify that every attribute occupies exactly one position of its facet's
-   refinement axis and that no two attributes inside a facet capture the same
-   concept. Where they do: merge them (list both under source_attributes).
-   Where one attribute straddles two positions: split it.
-2. Sharpen names, descriptions and position boundaries so every pair of
-   attributes reads as two different concepts.
-3. Where two attributes in DIFFERENT facets of this domain appear to capture
-   the same concept, keep both and flag the pair with a reason and a
-   decision_rule — those are resolved later with assignment data.
-4. Return the complete revised attribute set with full source_attributes
-   bookkeeping; unaccounted or double-counted attributes invalidate the
-   review.
-
-Rules:
-- Facets, segments and refinement axes are fixed context; you restructure
-  attributes only, and only within their own facet.
-- Descriptive wording only.
-
-Provide your output as valid JSON following the response schema provided.
-"""
-
-
-class ReviewedAttributeV2(BaseModel):
-    """A single attribute in the reviewed, possibly restructured, output set
-    (P7-review V2 / axis-first path). Merge = several sources, one output,
-    same facet. Split = the same source attribute appearing across several
-    outputs, each on its own valid position, same facet. Rename/redescribe =
-    one source, one output. Restructuring across facets is forbidden — a
-    source may only be claimed by outputs of its own facet."""
-    attribute_name: str = Field(
-        ..., description="Attribute name, sharpened where needed"
-    )
-    attribute_description: str = Field(
-        ..., description="Attribute description, reformulated for orthogonality"
-    )
-    facet_name: str = Field(
-        ..., description="Name of the facet this attribute belongs to — must exist in this domain; sources may only come from this same facet"
-    )
-    position_name: str = Field(
-        ..., description="Name of the position on that facet's refinement axis this attribute occupies — must exist on that facet's refinement axis"
-    )
-    source_attributes: List[str] = Field(
-        ..., description=(
-            "Every input attribute that goes into this output, by attribute_name, "
-            "all from this same facet (merge: several distinct sources; split: "
-            "the same source attribute listed under several outputs, each on its "
-            "own position of this facet). Every input attribute must appear in "
-            "source_attributes of exactly the outputs that absorb it"
-        )
-    )
-
-
-class AttributeReviewV2Response(BaseModel):
-    """P7-review output (V2 / axis-first path): the domain's complete
-    revised attribute set — rewrites, merges and splits, each staying inside
-    its facet's fixed refinement axis — plus any cross-facet overlap flags."""
-    attributes: List[ReviewedAttributeV2] = Field(
-        ..., description="The domain's complete revised attribute set"
-    )
-    overlap_flags: List[AttributeOverlapFlag] = Field(
-        ..., description="Pairs of attributes in different facets of this domain that appear to capture the same concept"
-    )
-
-
-# =============================================================================
 # §8 ATTRIBUTE ASSIGNMENT (P8) — per facet
 # =============================================================================
 
@@ -2104,20 +1848,6 @@ def _build_attribute_codebook_block(
     return block
 
 
-def _build_decision_rules_block(decision_rules: Optional[List[str]]) -> str:
-    """Format P7 overlap decision rules for the facet being dispatched.
-
-    Empty/None renders as an empty string, so a facet with no flagged pairs
-    produces a byte-identical prompt to before this block existed.
-    """
-    if not decision_rules:
-        return ""
-    lines = ["", "Decision rules for closely related attributes:"]
-    lines.extend(f"- {rule}" for rule in decision_rules)
-    lines.append("")
-    return "\n".join(lines)
-
-
 def build_attribute_assignment_prompt_single(
     *,
     survey_question: str,
@@ -2127,21 +1857,9 @@ def build_attribute_assignment_prompt_single(
     facet_description: str,
     attributes: List['DiscoveredAttribute'],
     idea_label: str,
-    decision_rules: Optional[List[str]] = None,
-    refinement: Optional[dict] = None,
 ) -> str:
-    """Build prompt for assigning a single idea to an attribute (L4) within a facet.
-
-    `decision_rules`: P7 overlap decision_rule strings for pairs flagged
-    WITHIN this facet (facet_a == facet_b == this facet). None/empty omits
-    the block entirely.
-
-    `refinement`: this facet's refinement axis dict (P6 axis-first path),
-    {name, description, positions}. None/empty omits the axis header and
-    per-attribute position/boundary lines.
-    """
-    attribute_codebook = _build_attribute_codebook_block(attributes, refinement=refinement)
-    decision_rules_block = _build_decision_rules_block(decision_rules)
+    """Build prompt for assigning a single idea to an attribute (L4) within a facet."""
+    attribute_codebook = _build_attribute_codebook_block(attributes)
 
     return f"""You are a qualitative coding assistant. Assign the survey response idea below to the attribute that best captures the specific quality being described.
 
@@ -2158,7 +1876,7 @@ Facet: {facet_name} -- {facet_description}
 <attributes>
 {attribute_codebook}
 </attributes>
-{decision_rules_block}
+
 <idea>
 {idea_label}
 </idea>
@@ -2196,29 +1914,6 @@ class AttributeAssignmentResult(BaseModel):
 # §9 IN-FACET ATTRIBUTE CONSOLIDATION — post-assignment, one facet at a time
 # =============================================================================
 
-def _build_suspected_overlap_block(suspected_overlap: Optional[List[Dict]]) -> str:
-    """Format P7 cross-facet overlap flags touching this facet.
-
-    Empty/None renders as an empty string, so a facet with no cross-facet
-    flags produces a byte-identical prompt to before this block existed.
-    """
-    if not suspected_overlap:
-        return ""
-    lines = [
-        "", "<suspected_overlap>",
-        "Pairs flagged upstream as possibly one concept — verify against the actual",
-        "contents below and resolve with your normal actions:",
-    ]
-    for flag in suspected_overlap:
-        lines.append(
-            f"- {flag['attr_a']} ({flag['facet_a']}) vs {flag['attr_b']} ({flag['facet_b']}): "
-            f"{flag['reason']}. Rule: {flag['decision_rule']}"
-        )
-    lines.append("</suspected_overlap>")
-    lines.append("")
-    return "\n".join(lines)
-
-
 def build_in_facet_consolidation_prompt(
     *,
     survey_question: str,
@@ -2233,21 +1928,14 @@ def build_in_facet_consolidation_prompt(
     facet_description: str,
     attributes_block: str,
     neighbour_block: str,
-    suspected_overlap: Optional[List[Dict]] = None,
 ) -> str:
     """Finalise the attribute inventory of ONE facet, after every idea is assigned.
 
-    Runs after P8, so each attribute is shown with its real size and its real
-    contents instead of the examples discovery guessed at. The facet is fixed:
+    Runs after assignment, so each attribute is shown with its real size and its
+    real contents instead of the examples discovery guessed at. The facet is fixed:
     nothing in this call can move an attribute to another facet. When a group of
     ideas belongs elsewhere, the IDEAS move (`misfits`) and the structure stays put.
-
-    `suspected_overlap`: P7 CROSS-facet overlap flags (facet_a != facet_b) where
-    either side is this facet, as dicts with attr_a/facet_a/attr_b/facet_b/
-    reason/decision_rule. None/empty omits the block entirely.
     """
-    suspected_overlap_block = _build_suspected_overlap_block(suspected_overlap)
-
     if dimension_def:
         rules = dimension_def.prompt_rules
         attribute_guidance = rules.attribute_instruction
@@ -2309,7 +1997,7 @@ Here are this facet's attributes, with their real size and their real contents:
 </facet_attributes>
 
 {neighbour_block}
-{suspected_overlap_block}
+
 # Understanding Attributes
 
 Conceptualization:
