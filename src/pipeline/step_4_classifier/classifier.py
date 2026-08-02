@@ -4461,8 +4461,11 @@ class TaxonomyClassifier:
             shown = " · ".join(f'"{t}" x{c}' for t, c in texts.most_common(top_n))
             more = (f" · ... {len(texts) - top_n} further distinct texts"
                     if len(texts) > top_n else "")
+            # Position is shown only where one exists, so the untagged path renders
+            # byte-identically to the pre-axis chain.
+            pos = f' [position: {attr.position}]' if attr.position else ''
             lines.append(
-                f'- "{name}" — {len(mine)} ideas, {pct}% of this facet — '
+                f'- "{name}"{pos} — {len(mine)} ideas, {pct}% of this facet — '
                 f'{attr.attribute_description}'
             )
             lines.append(f'    actually contains: {shown}{more}' if shown
@@ -4619,17 +4622,58 @@ class TaxonomyClassifier:
                             "note": ("claimed by several returned attributes with no "
                                      "instance_texts — ideas left on the source")})
 
+            # Position provenance of every source, for the guard and the carry-over
+            # below. Untagged facets map everything to "" and never trip either.
+            pos_of = {a.attribute_name: (a.position or "", a.is_residual_attr)
+                      for a in task['attributes']}
+
+            def _srcs(item) -> List[str]:
+                return [r for r in (_resolve(s) for s in (item.source_attributes or []))
+                        if r is not None]
+
+            # Guard 8: cross-position merge. An output whose sources sit on two
+            # different positions of the facet's refinement axis launders an
+            # attribute across that axis — the mechanism by which P9 rebuilt the
+            # attribute layer outside the axis discipline (18/144 tags surviving,
+            # measured 2026-08-01). Position is provenance, so this is decided
+            # here rather than asked of the model, and rejected before any
+            # construction: picking a winner would silently move ideas.
+            crossed = []
+            for item in result.attributes:
+                tagged = {pos_of.get(s, ("", False))[0] for s in _srcs(item)}
+                tagged.discard("")
+                if len(tagged) > 1:
+                    crossed.append({"attribute": item.attribute_name,
+                                    "positions": sorted(tagged)})
+            if crossed:
+                log.append({"action": "cross_position_merge_rejected",
+                            "domain": dom, "facet": fac, "merges": crossed,
+                            "attributes_before": before,
+                            "note": "facet left as P8 produced it"})
+                continue
+
             new_attrs: List[DiscoveredAttribute] = []
             for item in result.attributes:
+                sources = _srcs(item)
+                # Same construction rule as parent_facet: carried from the sources,
+                # never named by the model. The guard above guarantees at most one
+                # tagged position here, so `next` is a choice between one and none.
+                tagged = {pos_of.get(s, ("", False))[0] for s in sources}
+                tagged.discard("")
+                position = next(iter(tagged), "")
+                residual = bool(position) and any(
+                    pos_of.get(s, ("", False))[1] for s in sources
+                    if pos_of.get(s, ("", False))[0] == position
+                )
                 new_attrs.append(DiscoveredAttribute(
                     attribute_name=item.attribute_name,
                     attribute_description=item.attribute_description,
                     parent_facet=fac,          # fixed by scope, not by the model
                     example_observations=item.example_observations,
+                    position=position,
+                    is_residual_attr=residual,
                 ))
 
-                sources = [r for r in (_resolve(s) for s in (item.source_attributes or []))
-                           if r is not None]
                 if item.action == "split" and item.instance_texts:
                     for src in (sources or before):
                         for txt in item.instance_texts:
