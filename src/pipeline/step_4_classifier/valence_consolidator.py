@@ -147,7 +147,7 @@ class ValenceConsolidator:
 
     def __init__(self, config: CategoriesConfig, cost_tracker=None,
                  prompt_printer=None):
-        self._model = config.qr_model_p10
+        self._model = config.qr_model_p9
         self._temperature = config.qr_temperature
         self._cost_tracker = cost_tracker
         self._prompt_printer = prompt_printer
@@ -190,7 +190,7 @@ class ValenceConsolidator:
         names = await self._rename(merge_pairs, desc_lookup, language)
         if self._cost_tracker and _snap is not None:
             self._cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p10_valence_merge",
+                "step_4_taxonomy_classifier", "p9_valence_merge",
                 _snap, token_tracker.snapshot(), self._model,
             )
 
@@ -255,7 +255,7 @@ class ValenceConsolidator:
                 client, self._model, prompt,
                 response_model=ValenceNeutralRenameResponse,
                 temperature=self._temperature, max_tokens=2000,
-                **get_reasoning_params(self._model, phase="classifier_p10"),
+                **get_reasoning_params(self._model, phase="classifier_p9"),
             )
             return {a.pair_id: (a.attribute_name, a.attribute_description) for a in response.attributes}
         except Exception as e:

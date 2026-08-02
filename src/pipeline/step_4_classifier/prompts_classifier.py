@@ -1,32 +1,22 @@
 """
-Prompt builders for Taxonomy Classifier (P1-P10).
+Prompt builders for the Taxonomy Classifier (P1-P9).
 
 Pipeline order — discovery, assignment, consolidation, once per level:
 
-  P1   Axis discovery                    build_axis_discovery_prompt
-  P2   Facet discovery WITH axes         build_tagged_facet_discovery_prompt
-  P3   Facet discovery WITHOUT axes      build_facet_discovery_prompt
-  P4   Facet assignment                  build_facet_assignment_prompt_single
-  P5   Facet consolidation (in-axis)     build_in_axis_consolidation_prompt
-  P6   Attribute discovery               build_attribute_discovery_prompt
-                                         build_position_attribute_discovery_prompt
-  P7   Attribute assignment              build_attribute_assignment_prompt_single
+  P1   Axis discovery                     build_axis_discovery_prompt
+  P2   Facet discovery WITH axes          build_tagged_facet_discovery_prompt
+  P3   Facet discovery WITHOUT axes       build_facet_discovery_prompt
+  P4   Facet assignment                   build_facet_assignment_prompt_single
+  P5   Facet consolidation (in-axis)      build_in_axis_consolidation_prompt
+  P6   Attribute discovery                build_attribute_discovery_prompt
+  P7   Attribute assignment               build_attribute_assignment_prompt_single
   P8   Attribute consolidation (in-facet) build_in_facet_consolidation_prompt
-  P9   Valence-neutral merge             build_valence_neutral_rename_prompt
+  P9   Valence-neutral merge              build_valence_neutral_rename_prompt
 
 P2 and P3 are the only fork: a domain with an axis system takes P2, a domain
-without one takes P3. Everything after that is a single route.
-
-Still in the file, outside the numbering — these ran in the pre-consolidation
-order (consolidate before assignment, plus a review step) and are scheduled to
-go once their dispatch branches are removed:
-
-  build_facet_consolidation_prompt            build_attribute_chunk_consolidation_prompt
-  build_segment_consolidation_prompt          build_position_consolidation_prompt
-                                               build_new_position_adjudication_prompt
-                                               build_attribute_review_prompt
-                                               build_attribute_review_v2_prompt
-
+without one takes P3 — same dispatch, different prompt. Everything after that
+is a single route. Both consolidation rounds run AFTER assignment, on real
+idea counts and real response texts.
 """
 
 from __future__ import annotations
@@ -251,7 +241,7 @@ class AxisSystemResponse(BaseModel):
 
 
 # =============================================================================
-# §2  FACET DISCOVERY (P2) — per-domain facet discovery WITH axes pasted in
+# §2 FACET DISCOVERY WITH AXES (P2) — per-domain, chunked; axis system is fixed context
 # =============================================================================
 
 def _build_axis_system_block(axis_system: AxisSystemResponse) -> str:
@@ -423,7 +413,7 @@ def build_tagged_facet_discovery_model(axis_names: List[str]) -> type[BaseModel]
 
 
 # =============================================================================
-# §4  FACET DISCOVERY (P3) — per-domain facet discovery WITHOUT axes pasted in
+# §3 FACET DISCOVERY WITHOUT AXES (P3) — per-domain, chunked
 # =============================================================================
 
 def build_facet_discovery_prompt(
@@ -595,20 +585,7 @@ class FacetDiscoveryResult(BaseModel):
 
 
 # =============================================================================
-# §2 FACET CONSOLIDATION (P2) — merge chunk-level facets into coherent set
-# =============================================================================
-
-
-# =============================================================================
-# §2a SEGMENT FACET CONSOLIDATION (P2, axis-first path) — one consolidation
-# task per (axis, segment), grouped from the domain's tagged P1b proposals in
-# CODE (not by the model). Produces one facet per segment plus that facet's
-# refinement axis. Used only for domains that got a validated axis system
-# from P1a; domains without one keep the §2 path above untouched.
-# =============================================================================
-
-# =============================================================================
-# §4 FACET ASSIGNMENT (P4) — per-domain batched assignment
+# §4 FACET ASSIGNMENT (P4) — one idea per task
 # =============================================================================
 
 
@@ -734,7 +711,188 @@ class FacetAssignmentResult(BaseModel):
 
 
 # =============================================================================
-# §5 ATTRIBUTE DISCOVERY (P5) — per facet within domain
+# §5 FACET CONSOLIDATION (P5) — in-axis, post-assignment
+# =============================================================================
+
+def build_in_axis_consolidation_prompt(
+    *,
+    survey_question: str,
+    language: str,
+    noun_phrase: str,
+    domain_name: str,
+    domain_definition: str,
+    axis_name: str,
+    axis_description: str,
+    facets_block: str,
+    neighbour_axes_block: str = "",
+) -> str:
+    """Consolidate the facets on ONE axis, after every idea has been assigned.
+
+    The mirror of `build_in_facet_consolidation_prompt` one level up: where
+    that one judges attributes inside a fixed facet, this judges facets inside
+    a fixed axis. The axis is not part of the response schema, so a merge can
+    never move a facet to another axis — when a group of ideas belongs
+    elsewhere, the IDEAS move and the structure stays put.
+    """
+    neighbours = f"""
+Here are the other axes in this domain, for reference only. They are NOT merge
+candidates — they are shown so you can name a real destination when a group of
+ideas belongs on another axis, and so you can write boundaries against what
+actually exists next door.
+
+<neighbour_axes>
+{neighbour_axes_block}
+</neighbour_axes>
+""" if neighbour_axes_block else ""
+
+    return f"""You are a qualitative research analyst specializing in open-ended survey coding. Your task is to settle the final facet set on one axis, now that every response has been assigned to a facet.
+
+This is the language you are working in:
+
+<language>
+{language}
+</language>
+
+Here is the survey question being analyzed:
+
+<survey_question>
+"{survey_question}"
+
+answers vary in terms of: {noun_phrase}
+</survey_question>
+
+Here is the domain and the axis you are working within:
+
+<domain>
+{domain_name} — {domain_definition}
+</domain>
+
+<axis>
+{axis_name} — {axis_description}
+</axis>
+
+Here are the facets on this axis, each with the number of responses actually
+assigned to it, its share of the axis, and a sample of the responses it really
+holds:
+
+<axis_facets>
+{facets_block}
+</axis_facets>
+{neighbours}
+Judge each facet on what it actually holds, not on how its label reads. The
+counts and the response texts above are the evidence; the labels were written
+before a single response had been assigned.
+
+<consolidation_rules>
+**1. DIMENSION FIRST.** Facets that describe different dimensions stay apart,
+however similar their labels look. Orthogonality is a guardrail against merging,
+never a reason to merge.
+
+**2. PREVALENCE SETS GRANULARITY** — within one dimension only. Use the shares
+shown: keep what is large, group what is thin, split what is large and diverse.
+
+**3. LIFT, DON'T FLATTEN.** When several thin facets share a dimension, name the
+concept they share. Do not dissolve them into a catch-all.
+
+**4. PLAIN, MEANINGFUL LABELS.** A facet name states a value, not the axis it
+sits on. Descriptive only — evaluation is captured per response as valence,
+elsewhere.
+
+**5. THE AXIS IS FIXED.** Every facet you return belongs to this axis. You
+cannot move a facet to another axis, and you cannot add or rename axes.
+
+**6. FOUR EXITS FOR WHAT DOES NOT FIT.** For a group of responses sitting in a
+facet it does not belong to: move it to a facet that already exists (here or on
+a neighbouring axis), widen the holding facet's description so it honestly
+covers them, split the facet into named children, or — only when the responses
+carry no substantive content at all — send them out. "Out" is not an escape
+hatch for "does not fit what I chose".
+
+**7. ONE SOURCE, ONE DESTINATION.** A source facet may be claimed by only one
+returned facet, unless you route explicitly by response text.
+
+**8. KEEP THE VALUES THAT ARE ACTUALLY THERE.** Do not collapse the axis to a
+single facet because that is tidier. If the responses show four values, return
+four facets.
+</consolidation_rules>
+
+Output requirements:
+- All output (facet names, descriptions and rules) must be in {language}
+- Copy response texts verbatim when you route them; they are matched literally
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class InAxisFacet(BaseModel):
+    """One facet surviving consolidation on this axis."""
+    action: Literal["keep", "merge", "widen", "split"] = Field(
+        ..., description=(
+            "keep = unchanged; merge = several source facets into this one; "
+            "widen = same facet, description restated to cover what it holds; "
+            "split = one source facet divided into named children"
+        )
+    )
+    facet_name: str = Field(..., description="Short descriptive name (2-5 words)")
+    facet_description: str = Field(
+        ..., description="What this facet captures, faithful to the responses it holds"
+    )
+    inclusion_rule: str = Field(
+        ..., description="What types of responses belong in this facet"
+    )
+    exclusion_rule: str = Field(
+        default="", description="What does NOT belong, when it clarifies the boundary"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-5 responses this facet holds, verbatim"
+    )
+    source_facets: List[str] = Field(
+        ..., description="facet_name of every source facet consumed into this one"
+    )
+    instance_texts: List[str] = Field(
+        default_factory=list, description=(
+            "Only for a split: the exact response texts routed to this child, verbatim"
+        )
+    )
+
+
+class FacetMisfitGroup(BaseModel):
+    """A group of responses sitting in a facet they do not belong to."""
+    from_facet: str = Field(..., description="The facet currently holding them")
+    instance_texts: List[str] = Field(
+        ..., description="The exact response texts, verbatim"
+    )
+    verdict: Literal["move", "out"] = Field(
+        ..., description="move = to a named existing facet; out = no substantive content"
+    )
+    target_facet: str = Field(
+        default="", description="For 'move': the facet they belong to. Empty for 'out'."
+    )
+    reason: str = Field(..., description="One sentence on why they do not belong")
+
+
+class InAxisConsolidatedResponse(BaseModel):
+    """Final facet inventory for ONE axis, plus the misfits found on it."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning: (1) read each facet's contents against its label "
+            "and note groups that do not belong, (2) group facets by underlying "
+            "dimension, (3) set granularity by prevalence using the shares shown, "
+            "(4) route each non-fitting group to one of the four exits, (5) check "
+            "every label states a value rather than the axis, (6) assemble the "
+            "final inventory."
+        )
+    )
+    facets: List[InAxisFacet] = Field(
+        ..., description="The complete facet set for this axis after consolidation"
+    )
+    misfits: List[FacetMisfitGroup] = Field(
+        default_factory=list, description="Response groups that do not belong where they sit"
+    )
+
+
+# =============================================================================
+# §6 ATTRIBUTE DISCOVERY (P6) — per facet within domain, chunked
 # =============================================================================
 
 def build_attribute_discovery_prompt(
@@ -946,29 +1104,7 @@ class AttributeDiscoveryResult(BaseModel):
 
 
 # =============================================================================
-# §5a POSITION-TAGGED ATTRIBUTE DISCOVERY (P5, axis-first path) — per-facet
-# chunked discovery inside a pre-established, fixed refinement axis. Used only
-# for facets that carry a refinement axis from P2 segment consolidation
-# (axis_first_enabled); facets without one keep the untagged §5 path above
-# untouched.
-# =============================================================================
-
-# =============================================================================
-# §6 ATTRIBUTE CHUNK CONSOLIDATION (P6) — merge chunk-level attributes within facet
-# =============================================================================
-
-
-# =============================================================================
-# §6a PER-POSITION ATTRIBUTE CONSOLIDATION (P6, axis-first path) — one
-# consolidation task per populated position, grouped from the facet's tagged
-# P5 proposals IN CODE (not by the model), plus adjudication of any
-# new-position proposals raised during discovery. Used only for facets that
-# carry a refinement axis from P2 segment consolidation; facets without one
-# keep the §6 path above untouched.
-# =============================================================================
-
-# =============================================================================
-# §8 ATTRIBUTE ASSIGNMENT (P8) — per facet
+# §7 ATTRIBUTE ASSIGNMENT (P7) — one idea per task
 # =============================================================================
 
 
@@ -1052,7 +1188,7 @@ class AttributeAssignmentResult(BaseModel):
 
 
 # =============================================================================
-# §9 IN-FACET ATTRIBUTE CONSOLIDATION — post-assignment, one facet at a time
+# §8 ATTRIBUTE CONSOLIDATION (P8) — in-facet, post-assignment
 # =============================================================================
 
 def build_in_facet_consolidation_prompt(
@@ -1406,188 +1542,7 @@ class InFacetConsolidatedResponse(BaseModel):
 
 
 # =============================================================================
-# IN-AXIS FACET CONSOLIDATION — post-assignment, one axis at a time
-# =============================================================================
-
-def build_in_axis_consolidation_prompt(
-    *,
-    survey_question: str,
-    language: str,
-    noun_phrase: str,
-    domain_name: str,
-    domain_definition: str,
-    axis_name: str,
-    axis_description: str,
-    facets_block: str,
-    neighbour_axes_block: str = "",
-) -> str:
-    """Consolidate the facets on ONE axis, after every idea has been assigned.
-
-    The mirror of `build_in_facet_consolidation_prompt` one level up: where
-    that one judges attributes inside a fixed facet, this judges facets inside
-    a fixed axis. The axis is not part of the response schema, so a merge can
-    never move a facet to another axis — when a group of ideas belongs
-    elsewhere, the IDEAS move and the structure stays put.
-    """
-    neighbours = f"""
-Here are the other axes in this domain, for reference only. They are NOT merge
-candidates — they are shown so you can name a real destination when a group of
-ideas belongs on another axis, and so you can write boundaries against what
-actually exists next door.
-
-<neighbour_axes>
-{neighbour_axes_block}
-</neighbour_axes>
-""" if neighbour_axes_block else ""
-
-    return f"""You are a qualitative research analyst specializing in open-ended survey coding. Your task is to settle the final facet set on one axis, now that every response has been assigned to a facet.
-
-This is the language you are working in:
-
-<language>
-{language}
-</language>
-
-Here is the survey question being analyzed:
-
-<survey_question>
-"{survey_question}"
-
-answers vary in terms of: {noun_phrase}
-</survey_question>
-
-Here is the domain and the axis you are working within:
-
-<domain>
-{domain_name} — {domain_definition}
-</domain>
-
-<axis>
-{axis_name} — {axis_description}
-</axis>
-
-Here are the facets on this axis, each with the number of responses actually
-assigned to it, its share of the axis, and a sample of the responses it really
-holds:
-
-<axis_facets>
-{facets_block}
-</axis_facets>
-{neighbours}
-Judge each facet on what it actually holds, not on how its label reads. The
-counts and the response texts above are the evidence; the labels were written
-before a single response had been assigned.
-
-<consolidation_rules>
-**1. DIMENSION FIRST.** Facets that describe different dimensions stay apart,
-however similar their labels look. Orthogonality is a guardrail against merging,
-never a reason to merge.
-
-**2. PREVALENCE SETS GRANULARITY** — within one dimension only. Use the shares
-shown: keep what is large, group what is thin, split what is large and diverse.
-
-**3. LIFT, DON'T FLATTEN.** When several thin facets share a dimension, name the
-concept they share. Do not dissolve them into a catch-all.
-
-**4. PLAIN, MEANINGFUL LABELS.** A facet name states a value, not the axis it
-sits on. Descriptive only — evaluation is captured per response as valence,
-elsewhere.
-
-**5. THE AXIS IS FIXED.** Every facet you return belongs to this axis. You
-cannot move a facet to another axis, and you cannot add or rename axes.
-
-**6. FOUR EXITS FOR WHAT DOES NOT FIT.** For a group of responses sitting in a
-facet it does not belong to: move it to a facet that already exists (here or on
-a neighbouring axis), widen the holding facet's description so it honestly
-covers them, split the facet into named children, or — only when the responses
-carry no substantive content at all — send them out. "Out" is not an escape
-hatch for "does not fit what I chose".
-
-**7. ONE SOURCE, ONE DESTINATION.** A source facet may be claimed by only one
-returned facet, unless you route explicitly by response text.
-
-**8. KEEP THE VALUES THAT ARE ACTUALLY THERE.** Do not collapse the axis to a
-single facet because that is tidier. If the responses show four values, return
-four facets.
-</consolidation_rules>
-
-Output requirements:
-- All output (facet names, descriptions and rules) must be in {language}
-- Copy response texts verbatim when you route them; they are matched literally
-
-Provide your output as valid JSON following the response schema provided.
-"""
-
-
-class InAxisFacet(BaseModel):
-    """One facet surviving consolidation on this axis."""
-    action: Literal["keep", "merge", "widen", "split"] = Field(
-        ..., description=(
-            "keep = unchanged; merge = several source facets into this one; "
-            "widen = same facet, description restated to cover what it holds; "
-            "split = one source facet divided into named children"
-        )
-    )
-    facet_name: str = Field(..., description="Short descriptive name (2-5 words)")
-    facet_description: str = Field(
-        ..., description="What this facet captures, faithful to the responses it holds"
-    )
-    inclusion_rule: str = Field(
-        ..., description="What types of responses belong in this facet"
-    )
-    exclusion_rule: str = Field(
-        default="", description="What does NOT belong, when it clarifies the boundary"
-    )
-    example_observations: List[str] = Field(
-        ..., description="2-5 responses this facet holds, verbatim"
-    )
-    source_facets: List[str] = Field(
-        ..., description="facet_name of every source facet consumed into this one"
-    )
-    instance_texts: List[str] = Field(
-        default_factory=list, description=(
-            "Only for a split: the exact response texts routed to this child, verbatim"
-        )
-    )
-
-
-class FacetMisfitGroup(BaseModel):
-    """A group of responses sitting in a facet they do not belong to."""
-    from_facet: str = Field(..., description="The facet currently holding them")
-    instance_texts: List[str] = Field(
-        ..., description="The exact response texts, verbatim"
-    )
-    verdict: Literal["move", "out"] = Field(
-        ..., description="move = to a named existing facet; out = no substantive content"
-    )
-    target_facet: str = Field(
-        default="", description="For 'move': the facet they belong to. Empty for 'out'."
-    )
-    reason: str = Field(..., description="One sentence on why they do not belong")
-
-
-class InAxisConsolidatedResponse(BaseModel):
-    """Final facet inventory for ONE axis, plus the misfits found on it."""
-    scratchpad: str = Field(
-        ..., description=(
-            "Step-by-step reasoning: (1) read each facet's contents against its label "
-            "and note groups that do not belong, (2) group facets by underlying "
-            "dimension, (3) set granularity by prevalence using the shares shown, "
-            "(4) route each non-fitting group to one of the four exits, (5) check "
-            "every label states a value rather than the axis, (6) assemble the "
-            "final inventory."
-        )
-    )
-    facets: List[InAxisFacet] = Field(
-        ..., description="The complete facet set for this axis after consolidation"
-    )
-    misfits: List[FacetMisfitGroup] = Field(
-        default_factory=list, description="Response groups that do not belong where they sit"
-    )
-
-
-# =============================================================================
-# VALENCE-NEUTRAL RENAME (collapse valence-split attribute pairs)
+# §9 VALENCE-NEUTRAL MERGE (P9) — collapse valence-split attribute pairs
 # =============================================================================
 
 class ValenceNeutralAttribute(BaseModel):

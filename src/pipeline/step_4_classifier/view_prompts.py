@@ -17,11 +17,11 @@ from utils.promptViewer import render
 from test_data import TEST_DATA
 
 from pipeline.step_4_classifier.prompts_classifier import (
+    AxisSystemResponse,
     FacetDiscoveryResult,
-    FacetConsolidatedResponse,
     FacetAssignmentResult,
+    InAxisConsolidatedResponse,
     AttributeDiscoveryResult,
-    AttributeChunkConsolidatedResponse,
     AttributeAssignmentResult,
     InFacetConsolidatedResponse,
     ValenceNeutralRenameResponse,
@@ -30,14 +30,17 @@ from pipeline.step_4_classifier.prompts_classifier import (
 SHOW_ALL = False
 
 PROMPT_MODELS = {
-    "facet_discovery": FacetDiscoveryResult,                       # P1
-    "facet_consolidation": FacetConsolidatedResponse,              # P2
+    "axis_discovery": AxisSystemResponse,                          # P1
+    # P2's response model is built at call time (the domain's axis names are
+    # a Literal in the schema), so there is no static model to render here.
+    "tagged_facet_discovery": (lambda metadata: None),             # P2
+    "facet_discovery": FacetDiscoveryResult,                       # P3
     "facet_assignment": FacetAssignmentResult,                     # P4
-    "attribute_discovery": AttributeDiscoveryResult,               # P5
-    "attribute_chunk_consolidation": AttributeChunkConsolidatedResponse,  # P6
-    "attribute_assignment": AttributeAssignmentResult,             # P8
-    "in_facet_consolidation": InFacetConsolidatedResponse,         # P9
-    "valence_neutral_rename": ValenceNeutralRenameResponse,        # P10
+    "in_axis_consolidation": InAxisConsolidatedResponse,           # P5
+    "attribute_discovery": AttributeDiscoveryResult,               # P6
+    "attribute_assignment": AttributeAssignmentResult,             # P7
+    "in_facet_consolidation": InFacetConsolidatedResponse,         # P8
+    "valence_neutral_rename": ValenceNeutralRenameResponse,        # P9
 }
 
 

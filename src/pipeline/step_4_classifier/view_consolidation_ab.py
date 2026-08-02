@@ -31,7 +31,7 @@ from pipeline.step_4_classifier.view_assignments_attributes_raw import load_idea
 # =============================================================================
 DOMAIN = "institutionele identiteit en marktpositie"
 FACET = None            # None = whole domain; or a facet string to scope
-PHASE = "classifier_p9"  # model tier to use for both A and B
+PHASE = "classifier_p8"  # model tier to use for both A and B
 
 
 # =============================================================================

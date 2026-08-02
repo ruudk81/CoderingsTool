@@ -157,10 +157,10 @@ async def run_facet(client, sem, pc, tax, ideas_by_id, domain, facet) -> Optiona
     async with sem:
         try:
             out = await llm_create_async(
-                client=client, model=CONFIG.qr_model_p9, prompt=prompt,
+                client=client, model=CONFIG.qr_model_p8, prompt=prompt,
                 response_model=InFacetConsolidatedResponse,
                 temperature=0.0, max_tokens=CONFIG.qr_max_tokens_consolidation,
-                **get_reasoning_params(CONFIG.qr_model_p9, phase="classifier_p9"),
+                **get_reasoning_params(CONFIG.qr_model_p8, phase="classifier_p8"),
             )
         except Exception as e:
             print(f"  FAILED {domain} > {facet}: {str(e)[:90]}")
@@ -342,10 +342,10 @@ async def main():
                 continue
             pairs.append((dom, fac))
 
-    print(f"source={SOURCE_STEP} | {len(ideas)} ideas | model {CONFIG.qr_model_p9} "
+    print(f"source={SOURCE_STEP} | {len(ideas)} ideas | model {CONFIG.qr_model_p8} "
           f"| {len(pairs)} facets\n")
 
-    client = create_client(CONFIG.qr_model_p9, async_mode=True)
+    client = create_client(CONFIG.qr_model_p8, async_mode=True)
     sem = asyncio.Semaphore(CONCURRENCY)
     records = await asyncio.gather(*[
         run_facet(client, sem, pc, tax, ideas_by_id, d, f) for d, f in pairs])
