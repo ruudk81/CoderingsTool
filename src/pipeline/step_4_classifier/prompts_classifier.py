@@ -1,29 +1,32 @@
 """
 Prompt builders for Taxonomy Classifier (P1-P10).
 
-Organized in pipeline processing order:
-  §0   Dimension Context Block (shared helper)
-  §1a  Axis Discovery (P1a: per-domain axis system discovery)
-  §1b  Tagged Facet Discovery (P1b: per-domain, chunked, axis-tagged)
-  §1   Facet Discovery (P1: per-domain, chunked)
-  §2   Facet Consolidation (P2: merge chunk-level facets)
-  §2a  Segment Facet Consolidation (P2, axis-first: per (axis, segment),
-       plus each facet's refinement axis)
-  §3   Facet Review (P3: per-domain quality gate)
-  §3a  Facet Review V2 (P3-review, axis-first: widened mandate — rewrite,
-       merge and split inside the fixed axis system)
-  §4   Facet Assignment (P4: per-domain, batched)
-  §5   Attribute Discovery (P5: per facet within domain)
-  §5a  Position-Tagged Attribute Discovery (P5, axis-first: per facet,
-       chunked, tagged to the facet's refinement axis)
-  §6   Attribute Chunk Consolidation (P6: merge chunk-level attributes)
-  §6a  Per-Position Attribute Consolidation (P6, axis-first: per position,
-       plus adjudication of new-position proposals)
-  §7   Attribute Review (P7: per-domain quality gate on the consolidated attribute set)
-  §7a  Attribute Review V2 (P7-review, axis-first: widened mandate — rewrite,
-       merge and split inside each facet's fixed refinement axis)
-  §8   Attribute Assignment (P8: per facet)
-  §9   In-Facet Attribute Consolidation (P9: post-assignment, one facet at a time)
+Pipeline order — discovery, assignment, consolidation, once per level:
+
+  P1   Axis discovery                    build_axis_discovery_prompt
+  P2   Facet discovery WITH axes         build_tagged_facet_discovery_prompt
+  P3   Facet discovery WITHOUT axes      build_facet_discovery_prompt
+  P4   Facet assignment                  build_facet_assignment_prompt_single
+  P5   Facet consolidation (in-axis)     build_in_axis_consolidation_prompt
+  P6   Attribute discovery               build_attribute_discovery_prompt
+                                         build_position_attribute_discovery_prompt
+  P7   Attribute assignment              build_attribute_assignment_prompt_single
+  P8   Attribute consolidation (in-facet) build_in_facet_consolidation_prompt
+  P9   Valence-neutral merge             build_valence_neutral_rename_prompt
+
+P2 and P3 are the only fork: a domain with an axis system takes P2, a domain
+without one takes P3. Everything after that is a single route.
+
+Still in the file, outside the numbering — these ran in the pre-consolidation
+order (consolidate before assignment, plus a review step) and are scheduled to
+go once their dispatch branches are removed:
+
+  build_facet_consolidation_prompt            build_attribute_chunk_consolidation_prompt
+  build_segment_consolidation_prompt          build_position_consolidation_prompt
+  build_facet_review_prompt                   build_new_position_adjudication_prompt
+  build_facet_review_v2_prompt                build_attribute_review_prompt
+                                              build_attribute_review_v2_prompt
+
 """
 
 from __future__ import annotations
@@ -118,13 +121,15 @@ def _build_exclusion__light_block(
 
 
 # =============================================================================
-# §1a AXIS DISCOVERY (P1a) — per-domain axis system discovery
+# §1 AXIS DISCOVERY (P1) — per-domain axis system discovery
 # =============================================================================
 
 def build_axis_discovery_prompt(
     *,
     survey_question: str,
+    language: str,
     primary_dimension: str,
+    noun_phrase: str,
     domain_label: str,
     domain_definition: str,
     domain_boundary_test: str,
@@ -133,127 +138,140 @@ def build_axis_discovery_prompt(
     """Discover the axes along which observations in a domain differ (P1a)."""
     observations_block = "\n".join(f"- {obs}" for obs in sample_observations)
 
-    return f"""You are a taxonomy methodologist for open-ended survey coding.
+    return f"""You are a taxonomy methodologist working on open-ended survey coding. Your task is to identify coordinate axes within a specific domain of survey responses.
 
-The survey question:
+This is the language you are working in:
+
+<language>
+{language}
+</language>
+
+Here is the survey question that was asked:
+
+<survey_question>
 "{survey_question}"
 
-Primary dimension of the taxonomy: {primary_dimension}
+answers vary in terms of: {noun_phrase}
+</survey_question>
 
-Domain under analysis: {domain_label}
-Domain definition: {domain_definition}
-Domain boundary test: {domain_boundary_test}
+You are analyzing responses within the following domain:
 
-Below is a broad sample of observations from this domain (drawn across the
-whole domain, not one slice):
+<domain_name>
+{domain_label}
+</domain_name>
+
+<domain_definition>
+{domain_definition}
+</domain_definition>
+
+<domain_boundary_test>
+{domain_boundary_test}
+</domain_boundary_test>
+
+Here is a broad sample of observations from this domain:
 
 <observations>
 {observations_block}
 </observations>
 
-Your task: identify the AXES along which these observations differ — the
-underlying dimensions that explain why two observations in this domain are
-about different things. Think of the domain as a space; you are naming its
-coordinate axes so that categories can later be built as non-overlapping
-segments on those axes.
+Your task
 
-For every axis:
-1. Name it and describe, in one or two sentences, the difference in the data
-   it captures.
-2. Divide it into 2-6 segments that are mutually exclusive by their boundary
-   statements: each boundary is one routing sentence phrased against the
-   neighbouring segments ("is about X -> this segment; is about Y -> <other>").
-3. Quote 2-5 example observations per segment, verbatim from the sample.
-4. Add exactly one residual segment (is_residual = true) for observations that
-   belong to this domain but do not specify a value on this axis. Do not
-   invent content for it; its boundary is "names no recognisable value on
-   this axis".
+<task>
+You are identifying coordinate axes, not categories or segments.
+An axis must represent a dimension along which observations could vary within the domain, independently of other axes.
+If you cannot demonstrate such independence, do not create another axis.
+If the data support only one axis, return exactly one axis. Do not decompose one axis into multiple pseudo-axes.
+Before returning more than one axis, verify that observations could differ on axis A while sharing the same value on axis B, and differ on axis B while sharing the same value on axis A. If not, merge or drop the axis.
+</task>
 
-Rules:
-- Axes must come from the data in front of you — never from general knowledge
-  of the topic. If the sample only supports one axis, return one axis.
-- Prefer few axes that carry many observations over many thin axes.
-- Segments are conceptual values on the axis, not levels of specificity:
-  "general/unspecified" is what the residual segment is for.
-- Descriptive wording only; evaluation is captured per idea as valence,
-  elsewhere.
+
+PROCESS:
+
+Use the scratchpad to:
+- Examine the observations for patterns of variation
+- Identify potential axes
+- Test each potential axis for independence from others
+- Provide concrete examples demonstrating independence (if proposing multiple axes)
+- Decide on the final number of axes
+
+Then provide your final answer with:
+- A clear description of each axis
+- The dimension of variation it represents
+- If multiple axes: explicit demonstration of their independence using examples from the observations
+
+For each axis you identify, describe:
+- The axis name
+- What dimension of variation it captures
+- The range or types of values observations can take along this axis
+- If proposing multiple axes: concrete examples showing how observations vary independently on each axis
+
+Important requirements:
+- All output (axis names and descriptions) must be in {language}
 
 Provide your output as valid JSON following the response schema provided.
 """
 
 
-class AxisSegment(BaseModel):
-    """A single segment (conceptual value) on a discovered axis."""
-    segment_name: str = Field(
-        ..., description="Short descriptive name for the segment — a value on the axis"
-    )
-    segment_description: str = Field(
-        ..., description="What this segment captures on the axis (1-2 sentences)"
-    )
-    boundary: str = Field(
-        ..., description=(
-            "One routing sentence phrased against the neighbouring segments "
-            "(\"is about X -> this segment; is about Y -> <other>\")"
-        )
-    )
-    example_observations: List[str] = Field(
-        ..., description="2-5 example observations for this segment, verbatim from the sample"
-    )
-    is_residual: bool = Field(
-        default=False, description=(
-            "True for exactly one segment per axis: the residual segment for observations "
-            "that belong to this domain but name no recognisable value on this axis"
-        )
-    )
-
-
 class DiscoveredAxis(BaseModel):
     """An axis along which observations within a domain differ."""
     axis_name: str = Field(
-        ..., description="Short name for the axis — the underlying dimension the observations differ along"
+        ..., description="Short name for the axis"
     )
     axis_description: str = Field(
-        ..., description="One or two sentences describing the difference in the data this axis captures"
+        ..., description="What independent dimension of variation this axis captures (1-2 sentences)"
     )
-    segments: List[AxisSegment] = Field(
-        ..., description="2-6 substantive segments plus exactly one residual segment"
+    value_range: str = Field(
+        ..., description="The range or types of values observations can take along this axis"
     )
 
 
 class AxisSystemResponse(BaseModel):
     """P1a output: the axis system discovered for a single domain."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning before naming the axes: "
+            "(1) examine the observations for patterns of variation, "
+            "(2) identify potential axes, "
+            "(3) test each potential axis for independence and orthogonality from the others, "
+            "(4) give concrete examples demonstrating independence when proposing "
+            "more than one axis, "
+            "(5) decide on the final number of axes"
+        )
+    )
+    independence_evidence: str = Field(
+        default="", description=(
+            "When more than one axis is returned: concrete examples from the observations "
+            "showing that observations can differ on one axis while sharing the same value "
+            "on another, in both directions. Empty when a single axis is returned."
+        )
+    )
     axes: List[DiscoveredAxis] = Field(
-        ..., description="1-4 axes discovered for this domain"
+        ..., description="Axes discovered for this domain"
     )
 
 
 # =============================================================================
-# §1b TAGGED FACET DISCOVERY (P1b) — per-domain chunked discovery inside a
-# pre-established, fixed axis system. Used only for domains that got a
-# validated axis system from P1a (axis_first_enabled); domains without one
-# keep the untagged §1 path below untouched.
+# §2  FACET DISCOVERY (P2) — per-domain facet discovery WITH axes pasted in
 # =============================================================================
 
 def _build_axis_system_block(axis_system: AxisSystemResponse) -> str:
-    """Render a validated axis system as prompt text: one 'Axis: name —
-    description' line per axis, followed by its segments (residual segment
-    last, name suffixed ' (residual)')."""
-    axis_blocks = []
-    for axis in axis_system.axes:
-        lines = [f"Axis: {axis.axis_name} — {axis.axis_description}"]
-        non_residual = [seg for seg in axis.segments if not seg.is_residual]
-        residual = [seg for seg in axis.segments if seg.is_residual]
-        for seg in non_residual + residual:
-            suffix = " (residual)" if seg.is_residual else ""
-            lines.append(f"  - {seg.segment_name}{suffix}: {seg.segment_description}")
-            lines.append(f"    Boundary: {seg.boundary}")
-        axis_blocks.append("\n".join(lines))
-    return "\n\n".join(axis_blocks)
+    """Render a validated axis system as prompt text: one numbered block per
+    axis — its name, what it captures, and the values observations can take
+    along it. Each block ends with a blank line, so the axes stay visually
+    separated when several are shown."""
+    return "".join(
+        f"Axis {i}: {axis.axis_name}\n"
+        f"  What it captures: {axis.axis_description}\n"
+        f"  Values along this axis: {axis.value_range}\n\n"
+        for i, axis in enumerate(axis_system.axes, 1)
+    )
 
 
 def build_tagged_facet_discovery_prompt(
     *,
     survey_question: str,
+    language: str,
+    noun_phrase: str,
     domain_label: str,
     domain_definition: str,
     axis_system: AxisSystemResponse,
@@ -264,72 +282,148 @@ def build_tagged_facet_discovery_prompt(
     axis_system_block = _build_axis_system_block(axis_system)
     observations_block = "\n".join(f"{i}. {obs}" for i, obs in enumerate(chunk_observations, 1))
 
-    return f"""You are a qualitative research analyst for open-ended survey coding.
+    return f"""You are a qualitative research analyst specializing in open-ended survey coding. Your task is to induce the minimal set of facets needed to classify all observations within a specific domain.
 
-The survey question:
+This is the language you are working in:
+
+<language>
+{language}
+</language>
+
+Here is the survey question being analyzed:
+
+<survey_question>
 "{survey_question}"
 
-Domain: {domain_label} — {domain_definition}
+answers vary in terms of: {noun_phrase}
+</survey_question>
 
-This domain's axis system was established beforehand and is FIXED — you work
-inside it, you do not change it:
+Here is the domain you are working within:
+
+<domain>
+Domain: {domain_label} — {domain_definition}
+</domain>
+
+Here is the axis system that defines how responses vary within this domain:
 
 <axis_system>
 {axis_system_block}
 </axis_system>
 
-Below are the observations of your chunk:
+Here are the observations you need to classify:
 
 <observations>
 {observations_block}
 </observations>
 
-Your task: propose facets for this chunk, where every facet is a coherent
-recurring theme that occupies EXACTLY ONE segment of ONE axis above. Tag every
-proposal with that (axis_name, segment_name) — proposals with tags outside the
-system are rejected unseen.
+Your task is to induce the least number of facets needed to classify all observations within this domain.
 
-Rules:
-- One segment can receive multiple proposals (consolidation merges later);
-  a proposal can never span two segments — split it.
-- An observation pattern that names no recognisable value on an axis belongs
-  to that axis's residual segment; never invent a general catch-all facet.
-- Ground every facet in this chunk's observations (quote 2-5 as examples).
-- Descriptive wording only.
+Requirements:
+
+1. **Facet only along the provided axes.** Do not introduce facets based on themes outside the axis system. The axis defines the dimension of variation you must capture.
+
+2. **Use the fewest facets possible.** Only create distinct facets when observations differ in the core way specified by the axis. Do not over-differentiate.
+
+3. **Facets must be:**
+   - Mutually exclusive (each observation fits in only one facet)
+   - Atomically distinct (each facet represents one clear variation type)
+   - Meaningfully differentiated (facets capture real differences along the axis)
+   - Orthogonal to other domains/facets (don't overlap with distinctions that belong in other domains)
+
+4. **Handle rare or singleton patterns appropriately.** Put rare or singleton patterns into a general/residual facet unless they represent a clearly recurring and axis-relevant distinction that appears multiple times.
+
+5. **Context-dependent responses.** If a response contains a substantive improvement suggestion plus a statement of no further advice, classify only the part relevant to this domain. Note it as context-dependent or general unless it forms a recurring pattern.
+
+Before providing your final facet set, use the scratchpad to:
+- Identify the different types of variation the observations show along each axis
+- Group observations by similarity along the axis
+- Consider whether apparent differences are meaningful enough to warrant separate facets
+- Determine the minimal set that captures all meaningful variation
+
+Now provide your final facet set. For each facet, include:
+
+- **Facet name**: A clear, concise label
+- **Definition**: A precise description of what this facet captures
+- **Inclusion rule**: What types of responses belong in this facet
+- **Exclusion rule**: What types of responses do NOT belong (if helpful for clarity)
+- **Example observation numbers**: List 3-5 observation numbers that exemplify this facet
+
+After listing all facets, provide:
+
+- **Rationale for minimality**: Explain why this is the minimal facet set needed and why you did not split or merge facets further
+
+Output requirements:
+- All output (facet names and descriptions) must be in {language}
 
 Provide your output as valid JSON following the response schema provided.
 """
 
-
-class TaggedFacetProposal(BaseModel):
-    """A facet proposal from a chunk, tagged to a segment of the domain's
-    fixed axis system (P1b output)."""
+class FacetProposal(BaseModel):
+    """One facet proposed on one of the domain's axes (P1b output)."""
     facet_name: str = Field(
-        ..., description="Short descriptive name for the facet (2-5 words)"
+        ..., description="A clear, concise label for this facet"
     )
-    facet_description: str = Field(
-        ..., description="What this facet captures — the specific viewpoint or aspect (1-2 sentences)"
+    facet_definition: str = Field(
+        ..., description="A precise description of what this facet captures"
     )
-    axis_name: str = Field(
-        ..., description="Name of the axis this facet's segment belongs to — must exist in the axis system above"
+    inclusion_rule: str = Field(
+        ..., description="What types of responses belong in this facet"
     )
-    segment_name: str = Field(
-        ..., description="Name of the segment on that axis this facet occupies — must exist on that axis above"
+    exclusion_rule: str = Field(
+        default="", description=(
+            "What types of responses do NOT belong in this facet — "
+            "only when it helps clarify the boundary, otherwise empty"
+        )
     )
-    example_observations: List[str] = Field(
-        ..., description="2-5 example observations grounding this facet, verbatim from the chunk"
+    example_observations: List[int] = Field(
+        ..., description="3-5 observation numbers that exemplify this facet"
     )
 
 
-class TaggedFacetDiscoveryResponse(BaseModel):
-    """P1b output: tagged facet proposals discovered in a single chunk."""
-    proposals: List[TaggedFacetProposal] = Field(
-        ..., description="Facet proposals discovered in this chunk, each tagged to one (axis, segment)"
-    )
+def build_tagged_facet_discovery_model(axis_names: List[str]) -> type[BaseModel]:
+    """Build the P1b response model for one domain (P1b).
+
+    The domain's axes are already known from P1a, so they are fixed in the
+    schema itself: `axis_name` is a Literal over exactly those names. The
+    model does not name an axis, it picks one of ours — and adds as many
+    facets under it as that axis needs.
+    """
+    AxisNameLiteral = Literal[tuple(axis_names)]  # type: ignore[valid-type]
+
+    class AxisFacets(BaseModel):
+        """The facets proposed on one axis."""
+        axis_name: AxisNameLiteral = Field(
+            ..., description="The axis these facets sit on"
+        )
+        facets: List[FacetProposal] = Field(
+            ..., description="The minimal set of facets needed on this axis"
+        )
+
+    class TaggedFacetDiscoveryResponse(BaseModel):
+        """P1b output: facets discovered in a single chunk, grouped per axis."""
+        scratchpad: str = Field(
+            ..., description=(
+                "Reasoning before the final facet set: group the observations by "
+                "similarity along each axis, consider whether apparent differences "
+                "are meaningful enough to warrant separate facets, and determine "
+                "the minimal set that captures all meaningful variation"
+            )
+        )
+        axes: List[AxisFacets] = Field(
+            ..., description="One entry per axis, with the facets proposed on it"
+        )
+        minimality_rationale: str = Field(
+            ..., description=(
+                "Why this is the minimal facet set needed, and why facets were "
+                "not split or merged further"
+            )
+        )
+
+    return TaggedFacetDiscoveryResponse
 
 
 # =============================================================================
-# §1 FACET DISCOVERY (P1) — per-domain chunked pattern extraction
+# §4  FACET DISCOVERY (P3) — per-domain facet discovery WITHOUT axes pasted in
 # =============================================================================
 
 def build_facet_discovery_prompt(
@@ -362,14 +456,12 @@ def build_facet_discovery_prompt(
     # Dimension-specific guidance
     if dimension_def:
         rules = dimension_def.prompt_rules
-        #facet_guidance = rules.facet_instruction
         facet_definition = _extract_definition(rules.facet_instruction)
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
     else:
-        facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
         facet_definition = "A facet identifies the analytical lens through which the domain is being examined."
         facet_key_idea = "the analytical lens applied to the subject"
         attribute_key_idea = "the specific observable property being described"
@@ -384,105 +476,76 @@ def build_facet_discovery_prompt(
         excluded_domains or []
     )
 
-    return f"""You are a qualitative research analyst specializing in survey response analysis. 
-Your task is to identify the fewest recurring facets that provide full coverage of a set of observations from a survey.
+    return f"""You are a qualitative research analyst specializing in open-ended survey coding. Your task is to induce the minimal set of facets needed to classify all observations within a specific domain.
 
-{facet_definition} Facets must be:
-- Descriptive and data-grounded (not evaluative)
-- Internally coherent (one clear underlying concept)
-- Externally distinctive (ontologically distinct and semantically separable from other facets)
-- Strictly within domain boundaries
-- Supported by multiple observations or repeated patterns
+This is the language you are working in:
 
-Here is the survey context you are working with:
+<language>
+{language}
+</language>
 
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-{dimension_description}
-</survey_context>
+Here is the survey question being analyzed:
 
-Here is the taxonomy context that defines your working framework:
+<survey_question>
+"{survey_question}"
+answers vary in terms of: {noun_phrase}
+</survey_question>
 
-<taxonomy_context>
-This is the structure:
-<taxonomy_structure>
-- Dimension (L1): {noun_phrase}
-- Domain (L2): {domain_key_idea}
-- Facet (L3): {facet_key_idea}
-- Attribute (L4): {attribute_key_idea}
-</taxonomy_structure>
-
-You are working within this domain:
+Here is the domain you are working within:
 
 <taxonomy_domain>
 {partition_name} — {partition_definition}{domain_boundary_block}
 </taxonomy_domain>
 {excluded_block}
-</taxonomy_context>
 
-Here are the observations you need to analyze:
+Here are the observations you need to classify:
 
 <observations>
 {observations_block}
 </observations>
 
-Before providing your final output, you must work through your analysis systematically in a scratchpad section. Follow these steps:
+Your task is to induce the least number of facets needed to classify all observations within this domain.
 
-**Step 1: Cluster observations**
-Group similar observations together based on shared descriptive meaning. Identify recurring patterns in what is being described. Focus on the type of quality, characteristic, principle, or practice being described, not on evaluation or sentiment.
+Requirements:
 
-**Step 2: Identify candidate facets**
-Based on your clusters, identify candidate facets. For each candidate facet, assess:
-- The facet name (2-5 words in {language})
-- The underlying type of quality or attribute it captures
-- Which observations support it
-- Whether it is internally coherent (captures one clear concept)
-- Whether it is ontologically distinct from other candidate facets
+1. **Identify the coordinate axes within this domain.** Find the dimensions along which responses vary orthogonally to each other.
 
-Remember: a facet identifies an analytical lens, not a single concrete observation. It captures a type of meaning that recurs across multiple observations.
+2. **Facet only along the axes you identified.** Do not introduce facets based on themes outside those axes. The axis defines the dimension of variation you must capture.
 
-**Step 3: Verify internal coherence**
-Check whether each candidate facet captures one clear underlying concept. Reject or split candidate facets that:
-- Combine multiple different kinds of phenomena
-- Mix descriptive content with evaluation
-- Are too broad to support clear coding
+3. **Use the fewest facets possible.** Only create distinct facets when observations differ in the core way specified by the axis. Do not over-differentiate.
 
-**Step 4: Verify distinctness**
-Check each pair of candidate facets to ensure they are:
-- Ontologically distinct (not overlapping in conceptual space; one is not a subset of another)
-- Semantically separable (a coder would clearly know which facet applies, with no ambiguity)
-- Not two different lenses on the same phenomenon
+4. **Facets must be:**
+   - Mutually exclusive (each observation fits in only one facet)
+   - Atomically distinct (each facet represents one clear variation type)
+   - Meaningfully differentiated (facets capture real differences along the axis)
+   - Orthogonal to other domains/facets (don't overlap with distinctions that belong in other domains)
 
-If two facets fail this test, consolidate them into one broader facet or redefine the boundaries more clearly.
+5. **Handle rare or singleton patterns appropriately.** Put rare or singleton patterns into a general/residual facet unless they represent a clearly recurring and axis-relevant distinction that appears multiple times.
 
-**Step 5: Verify domain boundaries**
-Check that each retained facet falls strictly within the included domain of {partition_name}.
+6. **Context-dependent responses.** If a response contains a substantive improvement suggestion plus a statement of no further advice, classify only the part relevant to this domain. Note it as context-dependent or general unless it forms a recurring pattern.
 
-Exclude facets that belong more naturally to other domains, including:
-{excluded_block_light}
+Before providing your final facet set, use the scratchpad to:
+- Identify the different types of variation the observations show along each axis
+- Group observations by similarity along the axis
+- Consider whether apparent differences are meaningful enough to warrant separate facets
+- Determine the minimal set that captures all meaningful variation
 
-**Step 6: Prepare final output**
-Retain only the dominant facets that pass all checks above. For each facet, prepare:
-- A short descriptive name in {language} (2-5 words)
-- A description in {language} of what the facet captures (1-2 sentences)
-- 3-5 representative observations from the input, using the exact observation text (not observation numbers)
+Now provide your final facet set. For each facet, include:
 
-Your response must be structured as valid JSON with two fields:
-1. "scratchpad": containing your step-by-step analytical reasoning (Steps 1-6)
-2. "facets": an array of discovered facets, each with "facet_name", "facet_description", and "example_observations"
+- **Facet name**: A clear, concise label
+- **Definition**: A precise description of what this facet captures
+- **Inclusion rule**: What types of responses belong in this facet
+- **Exclusion rule**: What types of responses do NOT belong (if helpful for clarity)
+- **Example observation numbers**: List 3-5 observation numbers that exemplify this facet
 
-Important requirements:
-- All output (facet names, descriptions, and example observations) must be in {language}
-- Facets must be descriptive, not evaluative
-- Facets must be grounded in repeated patterns across observations
-- Each facet must capture one type of quality, not multiple
-- Use exact observation text in the examples
-- Only include facets that strictly belong to the included domain
-- Aim for the fewest facets that provide full coverage of the observations
+After listing all facets, provide:
 
-Provide your complete analysis in the scratchpad field, then provide your final facets as a JSON array.
+- **Rationale for minimality**: Explain why this is the minimal facet set needed and why you did not split or merge facets further
+
+Output requirements:
+- All output (facet names and descriptions) must be in {language}
+
+Provide your output as valid JSON following the response schema provided.
 """
 
 class DiscoveredFacet(BaseModel):
@@ -492,6 +555,15 @@ class DiscoveredFacet(BaseModel):
     )
     facet_description: str = Field(
         ..., description="What this facet captures — the specific viewpoint or aspect (1-2 sentences)"
+    )
+    inclusion_rule: str = Field(
+        default="", description="What types of responses belong in this facet"
+    )
+    exclusion_rule: str = Field(
+        default="", description=(
+            "What types of responses do NOT belong in this facet — only when it "
+            "helps clarify the boundary, otherwise empty"
+        )
     )
     example_observations: List[str] = Field(
         ..., description="3-5 representative observations from the input"
@@ -553,14 +625,12 @@ def build_facet_consolidation_prompt(
     # Dimension-specific guidance
     if dimension_def:
         rules = dimension_def.prompt_rules
-        facet_guidance = rules.facet_instruction
         facet_definition = _extract_definition(rules.facet_instruction)
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         noun_phrase = dimension_def.noun_phrase_descriptor
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
     else:
-        facet_guidance = "Identify the specific viewpoint or characteristic within the domain."
         facet_definition = "A facet identifies the analytical lens through which the domain is being examined."
         facet_key_idea = "the analytical lens applied to the subject"
         attribute_key_idea = "the specific observable property being described"
@@ -1115,6 +1185,8 @@ def _build_facet_codebook_block(
         return (
             f"[F{i}] {facet.facet_name}\n"
             f"    Description: {facet.facet_description}\n"
+            + (f"    Belongs here: {facet.inclusion_rule}\n" if facet.inclusion_rule else "")
+            + (f"    Does not belong here: {facet.exclusion_rule}\n" if facet.exclusion_rule else "")
             + (f"    Boundary: {facet.boundary_test}\n" if facet.boundary_test else "")
             + f"    Examples: {examples}"
         )
@@ -2746,6 +2818,187 @@ class InFacetConsolidatedResponse(BaseModel):
                     f'texts each one takes.'
                 )
         return self
+
+
+# =============================================================================
+# IN-AXIS FACET CONSOLIDATION — post-assignment, one axis at a time
+# =============================================================================
+
+def build_in_axis_consolidation_prompt(
+    *,
+    survey_question: str,
+    language: str,
+    noun_phrase: str,
+    domain_name: str,
+    domain_definition: str,
+    axis_name: str,
+    axis_description: str,
+    facets_block: str,
+    neighbour_axes_block: str = "",
+) -> str:
+    """Consolidate the facets on ONE axis, after every idea has been assigned.
+
+    The mirror of `build_in_facet_consolidation_prompt` one level up: where
+    that one judges attributes inside a fixed facet, this judges facets inside
+    a fixed axis. The axis is not part of the response schema, so a merge can
+    never move a facet to another axis — when a group of ideas belongs
+    elsewhere, the IDEAS move and the structure stays put.
+    """
+    neighbours = f"""
+Here are the other axes in this domain, for reference only. They are NOT merge
+candidates — they are shown so you can name a real destination when a group of
+ideas belongs on another axis, and so you can write boundaries against what
+actually exists next door.
+
+<neighbour_axes>
+{neighbour_axes_block}
+</neighbour_axes>
+""" if neighbour_axes_block else ""
+
+    return f"""You are a qualitative research analyst specializing in open-ended survey coding. Your task is to settle the final facet set on one axis, now that every response has been assigned to a facet.
+
+This is the language you are working in:
+
+<language>
+{language}
+</language>
+
+Here is the survey question being analyzed:
+
+<survey_question>
+"{survey_question}"
+
+answers vary in terms of: {noun_phrase}
+</survey_question>
+
+Here is the domain and the axis you are working within:
+
+<domain>
+{domain_name} — {domain_definition}
+</domain>
+
+<axis>
+{axis_name} — {axis_description}
+</axis>
+
+Here are the facets on this axis, each with the number of responses actually
+assigned to it, its share of the axis, and a sample of the responses it really
+holds:
+
+<axis_facets>
+{facets_block}
+</axis_facets>
+{neighbours}
+Judge each facet on what it actually holds, not on how its label reads. The
+counts and the response texts above are the evidence; the labels were written
+before a single response had been assigned.
+
+<consolidation_rules>
+**1. DIMENSION FIRST.** Facets that describe different dimensions stay apart,
+however similar their labels look. Orthogonality is a guardrail against merging,
+never a reason to merge.
+
+**2. PREVALENCE SETS GRANULARITY** — within one dimension only. Use the shares
+shown: keep what is large, group what is thin, split what is large and diverse.
+
+**3. LIFT, DON'T FLATTEN.** When several thin facets share a dimension, name the
+concept they share. Do not dissolve them into a catch-all.
+
+**4. PLAIN, MEANINGFUL LABELS.** A facet name states a value, not the axis it
+sits on. Descriptive only — evaluation is captured per response as valence,
+elsewhere.
+
+**5. THE AXIS IS FIXED.** Every facet you return belongs to this axis. You
+cannot move a facet to another axis, and you cannot add or rename axes.
+
+**6. FOUR EXITS FOR WHAT DOES NOT FIT.** For a group of responses sitting in a
+facet it does not belong to: move it to a facet that already exists (here or on
+a neighbouring axis), widen the holding facet's description so it honestly
+covers them, split the facet into named children, or — only when the responses
+carry no substantive content at all — send them out. "Out" is not an escape
+hatch for "does not fit what I chose".
+
+**7. ONE SOURCE, ONE DESTINATION.** A source facet may be claimed by only one
+returned facet, unless you route explicitly by response text.
+
+**8. KEEP THE VALUES THAT ARE ACTUALLY THERE.** Do not collapse the axis to a
+single facet because that is tidier. If the responses show four values, return
+four facets.
+</consolidation_rules>
+
+Output requirements:
+- All output (facet names, descriptions and rules) must be in {language}
+- Copy response texts verbatim when you route them; they are matched literally
+
+Provide your output as valid JSON following the response schema provided.
+"""
+
+
+class InAxisFacet(BaseModel):
+    """One facet surviving consolidation on this axis."""
+    action: Literal["keep", "merge", "widen", "split"] = Field(
+        ..., description=(
+            "keep = unchanged; merge = several source facets into this one; "
+            "widen = same facet, description restated to cover what it holds; "
+            "split = one source facet divided into named children"
+        )
+    )
+    facet_name: str = Field(..., description="Short descriptive name (2-5 words)")
+    facet_description: str = Field(
+        ..., description="What this facet captures, faithful to the responses it holds"
+    )
+    inclusion_rule: str = Field(
+        ..., description="What types of responses belong in this facet"
+    )
+    exclusion_rule: str = Field(
+        default="", description="What does NOT belong, when it clarifies the boundary"
+    )
+    example_observations: List[str] = Field(
+        ..., description="2-5 responses this facet holds, verbatim"
+    )
+    source_facets: List[str] = Field(
+        ..., description="facet_name of every source facet consumed into this one"
+    )
+    instance_texts: List[str] = Field(
+        default_factory=list, description=(
+            "Only for a split: the exact response texts routed to this child, verbatim"
+        )
+    )
+
+
+class FacetMisfitGroup(BaseModel):
+    """A group of responses sitting in a facet they do not belong to."""
+    from_facet: str = Field(..., description="The facet currently holding them")
+    instance_texts: List[str] = Field(
+        ..., description="The exact response texts, verbatim"
+    )
+    verdict: Literal["move", "out"] = Field(
+        ..., description="move = to a named existing facet; out = no substantive content"
+    )
+    target_facet: str = Field(
+        default="", description="For 'move': the facet they belong to. Empty for 'out'."
+    )
+    reason: str = Field(..., description="One sentence on why they do not belong")
+
+
+class InAxisConsolidatedResponse(BaseModel):
+    """Final facet inventory for ONE axis, plus the misfits found on it."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning: (1) read each facet's contents against its label "
+            "and note groups that do not belong, (2) group facets by underlying "
+            "dimension, (3) set granularity by prevalence using the shares shown, "
+            "(4) route each non-fitting group to one of the four exits, (5) check "
+            "every label states a value rather than the axis, (6) assemble the "
+            "final inventory."
+        )
+    )
+    facets: List[InAxisFacet] = Field(
+        ..., description="The complete facet set for this axis after consolidation"
+    )
+    misfits: List[FacetMisfitGroup] = Field(
+        default_factory=list, description="Response groups that do not belong where they sit"
+    )
 
 
 # =============================================================================

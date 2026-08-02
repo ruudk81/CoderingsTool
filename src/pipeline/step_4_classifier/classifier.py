@@ -76,7 +76,7 @@ from .prompts_classifier import (
     AxisSegment,
     # P1b: Tagged Facet Discovery
     build_tagged_facet_discovery_prompt,
-    TaggedFacetDiscoveryResponse,
+    build_tagged_facet_discovery_model,
     # P1: Facet Discovery
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
@@ -2427,7 +2427,12 @@ class TaxonomyClassifier:
         def prepare_fn(task: Dict) -> Dict:
             prompt = build_axis_discovery_prompt(
                 survey_question=prompt_context.survey_question,
+                language=prompt_context.language,
                 primary_dimension=prompt_context.dimension_name,
+                noun_phrase=(
+                    prompt_context.dimension_def.noun_phrase_descriptor
+                    if prompt_context.dimension_def else prompt_context.dimension_name
+                ),
                 domain_label=task['domain_name'],
                 domain_definition=task['part_context'].partition_definition,
                 domain_boundary_test=task['part_context'].boundary_test,
@@ -2494,12 +2499,19 @@ class TaxonomyClassifier:
             if axis_system is not None:
                 prompt = build_tagged_facet_discovery_prompt(
                     survey_question=prompt_context.survey_question,
+                    language=prompt_context.language,
+                    noun_phrase=(
+                        prompt_context.dimension_def.noun_phrase_descriptor
+                        if prompt_context.dimension_def else prompt_context.dimension_name
+                    ),
                     domain_label=domain_name,
                     domain_definition=task['part_context'].partition_definition,
                     axis_system=axis_system,
                     chunk_observations=task['observations'],
                 )
-                response_model = TaggedFacetDiscoveryResponse
+                response_model = build_tagged_facet_discovery_model(
+                    [axis.axis_name for axis in axis_system.axes]
+                )
                 prompt_type = "tagged_facet_discovery"
             else:
                 prompt = build_facet_discovery_prompt(
