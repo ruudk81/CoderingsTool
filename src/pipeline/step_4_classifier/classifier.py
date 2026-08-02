@@ -2989,64 +2989,6 @@ class TaxonomyClassifier:
             return []
         return fallback_fn
 
-    # =========================================================================
-    # PHASE 7 (P7): PER-DOMAIN ATTRIBUTE REVIEW (SmoothRequester, optional)
-    # =========================================================================
-
-    def _p7_review_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P7 attribute review."""
-        def prepare_fn(task: Dict) -> Dict:
-            prompt = build_attribute_review_prompt(
-                survey_question=prompt_context.survey_question,
-                domain_label=task['domain_name'],
-                domain_definition=task['part_context'].partition_definition,
-                facets=task['facets'],
-                facet_attributes=task['facet_attributes'],
-            )
-
-            gate_key = f"qr_attribute_review_{task['domain_name']}"
-            if (self._prompt_printer is not None
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type="attribute_review",
-                    metadata={
-                        "model": self._model_p7,
-                        "temperature": 0.0,
-                        "max_tokens": self._max_tokens_consolidation,
-                        "language": prompt_context.language,
-                        "partition_name": task['domain_name'],
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
-            return {
-                'prompt': prompt,
-                'response_model': AttributeReviewResponse,
-                'temperature': 0.0,
-                'max_tokens': self._max_tokens_consolidation,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p7, phase="classifier_p7"),
-            }
-        return prepare_fn
-
-    def _p7_review_parse_fn(self):
-        """Return parse_fn closure for P7 attribute review."""
-        def parse_fn(task: Dict, response) -> Optional[AttributeReviewResponse]:
-            return response if response else None
-        return parse_fn
-
-    @staticmethod
-    def _p7_review_fallback_fn():
-        """Return fallback_fn closure for P7. On failure the domain's attributes
-        are left exactly as P6 produced them — never silently emptied."""
-        def fallback_fn(task: Dict, reason: str) -> None:
-            return None
-        return fallback_fn
-
     def _apply_p7_review(
         self,
         task: Dict,
