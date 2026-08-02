@@ -1,11 +1,11 @@
 """
 Configuration for Taxonomy Classifier (P1-P10).
 
-Pipeline: facet discovery → facet consolidation → facet review (P3, optional
-rewrite + flag gate) → facet assignment → attribute discovery → attribute
-consolidation r1 → attribute review (P7, optional rewrite + flag gate) →
-attribute assignment → attribute consolidation r2 (P9, in-facet,
-post-assignment) → valence-neutral merge (P10).
+Pipeline: facet discovery → facet consolidation → facet assignment →
+attribute discovery → attribute consolidation r1 → attribute review (P7,
+optional rewrite + flag gate) → attribute assignment → attribute
+consolidation r2 (P9, in-facet, post-assignment) → valence-neutral merge
+(P10).
 """
 
 from dataclasses import dataclass, field
@@ -22,7 +22,7 @@ class ClassifierRampConfig:
     advances toward target_fraction proportional to completions.
 
     Full stack (P1/P4/P5/P8): ConcurrencyGate + TokenBucket + AsyncLimiter + CircuitBreaker
-    Light mode (P2/P3/P6/P7/P9): default semaphore + rate limiter only
+    Light mode (P2/P6/P7/P9): default semaphore + rate limiter only
     """
     # Concurrency ramp
     estimated_latency_seconds: float = 10.0    # Conservative latency estimate
@@ -90,7 +90,6 @@ class CategoriesConfig:
     qr_model_p1a: str = get_step_model("classifier_p2")   # P1a: Axis Discovery
     qr_model_p1: str = get_step_model("classifier_p1")    # P1: Facet Discovery
     qr_model_p2: str = get_step_model("classifier_p2")    # P2: Facet Consolidation
-    qr_model_p3: str = get_step_model("classifier_p3")    # P3: Facet Review (rewrite + flag)
     qr_model_p4: str = get_step_model("classifier_p4")    # P4: Facet Assignment
     qr_model_p5: str = get_step_model("classifier_p5")    # P5: Attribute Discovery
     qr_model_p6: str = get_step_model("classifier_p6")    # P6: Attribute Consolidation
@@ -100,11 +99,9 @@ class CategoriesConfig:
     qr_model_p10: str = get_step_model("classifier_p10")  # P10: Valence-neutral merge
     qr_temperature: float = 0.3
 
-    # Review phases (P3, P7): schema-enforced rewrite + flag only, never a
-    # structure change. Each is independently switchable; off restores
-    # byte-identical current behaviour (no boundary tests, no flags, no log
-    # entries for that phase).
-    facet_review_enabled: bool = True
+    # Review phase (P7): schema-enforced rewrite + flag only, never a
+    # structure change. Switchable; off restores byte-identical current
+    # behaviour (no flags, no log entries for that phase).
     attribute_review_enabled: bool = True
 
     # Output ceilings. A high ceiling is free — billing is per generated token,
