@@ -34,6 +34,7 @@ import app_backend as be
 import app_views as av
 from app_backend import DatasetSpec, LAST_STEP, Screen
 from config import CacheConfig
+from utils import concatOpenEnds as co
 from utils.cacheManager import CacheManager
 
 st.set_page_config(page_title="CoderingsTool", page_icon="📊", layout="wide")
@@ -68,14 +69,6 @@ def _retentie_bij_opstarten() -> None:
 
 _retentie_bij_opstarten()
 
-
-def _concat_module():
-    """concat_open_ends (concatenate/ is not a package — path-load it)."""
-    concat_dir = str(be.PROJECT_ROOT / "concatenate")
-    if concat_dir not in sys.path:
-        sys.path.insert(0, concat_dir)
-    import concat_open_ends
-    return concat_open_ends
 
 st.session_state.setdefault("step", 0)
 st.session_state.setdefault("language", ui.DEFAULT_LANGUAGE)
@@ -323,7 +316,7 @@ def render_merge_intent(fname: str, insp, string_vars: list):
     Merge-integrity rule: every member must carry the same question (cleaned
     label); a mismatching series stays visible but is blocked, labels shown.
     The merged variable inherits the FIRST member's cleaned question."""
-    groups = _concat_module().find_slot_groups(string_vars)
+    groups = co.find_slot_groups(string_vars)
     if not groups:
         return None
     with st.expander(T("Variabelen samenvoegen (bijv. xQd1_1 … xQd1_10)",
@@ -376,7 +369,6 @@ def render_selection_preview(insp, intent, text_var: str):
     """Sample of the (to-be-)analyzed variable from the bounded 200-row frame —
     a merge intent is previewed by combining the slots in memory."""
     if intent:
-        co = _concat_module()
         values = insp.frame[intent["cols"]].apply(
             lambda r: co.combine_row(r, intent["sep"]), axis=1)
     else:
@@ -394,7 +386,6 @@ def commit_selection(fname: str, intent, text_var: str, sample_size, id_col: str
                      var_lab: str):
     """§3.7 phase 2: ALL heavy work at one moment, behind one status box —
     merge (reuse-when-fresh) → step 0 (load + cache) → navigate to step 1."""
-    co = _concat_module()
     with st.status(T("Dataset vastleggen…", "Committing dataset…"),
                    expanded=True) as box:
         # Echo the exact identity being committed — a silently lost sample

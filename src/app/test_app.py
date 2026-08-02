@@ -22,6 +22,7 @@ for _p in (_APP_DIR, _SRC_DIR):
 
 import app_backend as be
 from app_backend import Screen, screen_for, LAST_STEP
+from utils import concatOpenEnds as co
 
 APP = os.path.join(_APP_DIR, "app.py")
 
@@ -83,16 +84,10 @@ def test_models_line_resolves_for_all_steps():
 
 
 # =============================================================================
-# Unit: variable merging (upload pre-step, concat_open_ends)
+# Unit: variable merging (upload pre-step, utils/concatOpenEnds.py)
 # =============================================================================
 
-_CONCAT_DIR = os.path.join(be.PROJECT_ROOT, "concatenate")
-if _CONCAT_DIR not in sys.path:
-    sys.path.insert(0, _CONCAT_DIR)
-
-
 def test_concat_slot_group_detection():
-    import concat_open_ends as co
     cols = ["resp_id", "xQd1_1", "xQd1_2", "xQd1_10", "Q5", "opm_1"]
     groups = co.find_slot_groups(cols)
     # Numeric order (2 before 10), singles like opm_1 excluded
@@ -100,7 +95,6 @@ def test_concat_slot_group_detection():
 
 
 def test_concat_combine_row_skips_empty():
-    import concat_open_ends as co
     import pandas as pd
     assert co.combine_row(["goed", "", None, " duur "], ", ") == "goed, duur"
     assert co.combine_row(["", None], ", ") is pd.NA
@@ -111,7 +105,6 @@ def test_concat_variables_roundtrip(tmp_dir=None):
     import tempfile
     import pandas as pd
     import pyreadstat
-    import concat_open_ends as co
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "mini.sav")
         pyreadstat.write_sav(pd.DataFrame({

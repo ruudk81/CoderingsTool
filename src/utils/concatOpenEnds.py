@@ -11,17 +11,17 @@ verified against a fresh recomputation before the script reports success.
 Examples
 --------
 Select by prefix (grabs xQd1_1 .. xQd1_10, numeric order):
-    python concatenate/concat_open_ends.py \
+    python src/utils/concatOpenEnds.py \
         --infile "data/M000000 Merkonderzoek tabellenbestand.sav" \
         --prefix xQd1_ --newvar Qd1
 
 Select an explicit list of variables:
-    python concatenate/concat_open_ends.py \
+    python src/utils/concatOpenEnds.py \
         --infile "data/some file.sav" \
         --vars xQd1_1,xQd1_2,xQd1_3 --newvar Qd1
 
 Custom separator and output path:
-    python concatenate/concat_open_ends.py --infile "..." --prefix xQd1_ \
+    python src/utils/concatOpenEnds.py --infile "..." --prefix xQd1_ \
         --newvar Qd1 --sep " | " --outfile "data/out.sav"
 """
 import argparse
