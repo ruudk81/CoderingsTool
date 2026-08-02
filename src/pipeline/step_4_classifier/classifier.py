@@ -72,8 +72,6 @@ from .prompts_classifier import (
     # P1a: Axis Discovery
     build_axis_discovery_prompt,
     AxisSystemResponse,
-    DiscoveredAxis,
-    AxisSegment,
     # P1b: Tagged Facet Discovery
     build_tagged_facet_discovery_prompt,
     build_tagged_facet_discovery_model,
@@ -158,61 +156,16 @@ def sample_axis_observations(
 def validate_and_repair_axis_system(
     response: Optional[AxisSystemResponse],
 ) -> Optional[AxisSystemResponse]:
-    """Validate a P1a response and repair what the spec allows to be repaired
-    deterministically; anything else fails open (returns None) so the caller
-    falls back to the pre-existing untagged path for that domain.
-
-    Repaired in place:
-      - an axis with no residual segment gets one injected (name
-        "unspecified", spec's residual wording, no invented examples) —
-        UNLESS a segment already norms to "unspecified", in which case that
-        segment is marked residual instead. Injecting blindly would create
-        two same-named segments: the likeliest trigger for this repair is a
-        model that names its residual "Unspecified" but omits
-        `is_residual=true`, and `segment_lookup` / the menus are norm-keyed,
-        so the duplicate would silently swallow the model's own segment.
-
-    Rejected (returns None — the whole response is invalid, not just one axis):
-      - not 1-4 axes;
-      - duplicate segment names within an axis (case-insensitive);
-      - more than one segment marked residual on an axis (ambiguous — not
-        safe to pick one without guessing).
+    """Validate a P1a response. `DiscoveredAxis` carries no sub-structure to
+    repair (axis_name, axis_description, value_range only), so the only
+    remaining check is the axis count: not 1-4 axes fails the whole response
+    (returns None) so the caller falls back to the pre-existing untagged path
+    for that domain.
     """
     if response is None or not response.axes:
         return None
     if not (1 <= len(response.axes) <= 4):
         return None
-
-    for axis in response.axes:
-        seen_names: Set[str] = set()
-        for seg in axis.segments:
-            norm = seg.segment_name.strip().lower()
-            if norm in seen_names:
-                return None
-            seen_names.add(norm)
-
-        residual_count = sum(1 for seg in axis.segments if seg.is_residual)
-        if residual_count > 1:
-            return None
-        if residual_count == 0:
-            collision = next(
-                (seg for seg in axis.segments
-                 if seg.segment_name.strip().lower() == "unspecified"),
-                None,
-            )
-            if collision is not None:
-                collision.is_residual = True
-            else:
-                axis.segments.append(AxisSegment(
-                    segment_name="unspecified",
-                    segment_description=(
-                        "Observations that belong to this domain but do not "
-                        "specify a value on this axis."
-                    ),
-                    boundary="names no recognisable value on this axis",
-                    example_observations=[],
-                    is_residual=True,
-                ))
 
     return response
 
@@ -673,10 +626,9 @@ class TaxonomyClassifier:
                         })
                         continue
                     self.axis_systems[name] = validated
-                    n_segments = sum(len(axis.segments) for axis in validated.axes)
                     consolidation_log.append({
                         "action": "axis_system_discovered", "domain": name,
-                        "n_axes": len(validated.axes), "n_segments": n_segments,
+                        "n_axes": len(validated.axes),
                     })
 
                 if verbose:
@@ -749,7 +701,7 @@ class TaxonomyClassifier:
         p1_results = await p1_requester.process_all(
             p1_tasks,
             self._p1_prepare_fn(prompt_context),
-            self._p1_parse_fn(consolidation_log),
+            self._p1_parse_fn(),
             self._p1_fallback_fn(),
         )
 
@@ -805,7 +757,7 @@ class TaxonomyClassifier:
 
         # Build P2 task list — one task per domain (single-round) or per group (multi-round)
         # Axis-first domains (validated axis system from P1a) skip this path
-        # entirely: they consolidate per (axis, segment) below, untouched here.
+        # entirely: they pass through unconsolidated below, untouched here.
         p2_tasks = []
         for name in sorted(domain_chunk_facets.keys()):
             if name in self.axis_systems:
@@ -923,65 +875,27 @@ class TaxonomyClassifier:
                     partition_facets[task['domain_name']] = result or []
 
         # -----------------------------------------------------------------
-        # P2 (axis-first path): group each axis-first domain's tagged P1b
-        # facets by (axis, segment) IN CODE, one consolidation task per
-        # populated segment. Non-axis domains never reach this block — they
-        # were skipped above and are already in partition_facets.
+        # P2 (axis-first path): no consolidation call exists yet for
+        # axis-first domains — the segment-keyed consolidation this used to
+        # dispatch to depended on each axis carrying a list of named
+        # segments, which the P1a schema no longer provides (axes are now
+        # axis_name/axis_description/value_range only; P1b tags each facet
+        # to an axis, not a segment).
+        # Until a replacement consolidation phase is wired in, axis-first
+        # domains' P1b facets pass straight through unconsolidated. Non-axis
+        # domains never reach this block — they were skipped above and are
+        # already in partition_facets.
         # -----------------------------------------------------------------
-        seg_tasks = []
         for name in sorted(n for n in domain_chunk_facets if n in self.axis_systems):
             all_facets = [f for chunk in domain_chunk_facets[name] for f in chunk]
-            if not all_facets:
-                partition_facets[name] = []
-                continue
-
-            partition_n_labels[name] = domain_chunk_info[name]['n_labels']
-            partition_n_batches[name] = domain_chunk_info[name]['n_batches']
-            partition_facets[name] = []
-
-            axis_system = self.axis_systems[name]
-            segment_lookup: Dict[Tuple[str, str], Tuple[DiscoveredAxis, AxisSegment]] = {
-                (self._norm_text(axis.axis_name), self._norm_text(seg.segment_name)): (axis, seg)
-                for axis in axis_system.axes
-                for seg in axis.segments
-            }
-            segment_proposals: Dict[Tuple[str, str], List[DiscoveredFacet]] = defaultdict(list)
-            for f in all_facets:
-                key = (self._norm_text(f.axis), self._norm_text(f.segment))
-                if key in segment_lookup:
-                    segment_proposals[key].append(f)
-
-            for key, proposals in segment_proposals.items():
-                axis, seg = segment_lookup[key]
-                seg_tasks.append({
-                    'domain_name': name,
-                    'domain_definition': partition_contexts[name].partition_definition,
-                    'axis_name': axis.axis_name,
-                    'axis_description': axis.axis_description,
-                    'segment_name': seg.segment_name,
-                    'segment_boundary': seg.boundary,
-                    'proposals': proposals,
+            partition_facets[name] = all_facets
+            if all_facets:
+                partition_n_labels[name] = domain_chunk_info[name]['n_labels']
+                partition_n_batches[name] = domain_chunk_info[name]['n_batches']
+                consolidation_log.append({
+                    "action": "axis_first_facets_passthrough", "domain": name,
+                    "n_facets": len(all_facets),
                 })
-
-        if seg_tasks:
-            seg_requester = SmoothRequester(
-                model=self._model_p2,
-                phase_key="step4_p2_segment_consolidation",
-                num_tasks=len(seg_tasks),
-                verbose=verbose,
-                known_limits=self._fetched_limits,
-                has_server_headers=self._fetched_has_headers,
-                show_setup=False,
-                quiet=True,
-            )
-            seg_results = await seg_requester.process_all(
-                seg_tasks,
-                self._p2_segment_prepare_fn(prompt_context),
-                self._p2_segment_parse_fn(consolidation_log),
-                self._p2_segment_fallback_fn(),
-            )
-            for task, result in zip(seg_tasks, seg_results):
-                partition_facets[task['domain_name']].extend(result or [])
 
         t_consolidation = time.time() - t_consolidation
         if verbose:
@@ -989,11 +903,6 @@ class TaxonomyClassifier:
             print(f"    P2 consolidation: {len(p2_tasks)} tasks, {t_consolidation:.1f}s "
                   f"({s.get('tasks_successful', 0)} ok, {s.get('timeouts', 0)} timeouts, "
                   f"{s.get('recovered', 0)} retries)")
-            if seg_tasks:
-                s2 = seg_requester.stats
-                print(f"    P2 segment consolidation: {len(seg_tasks)} tasks "
-                      f"({s2.get('tasks_successful', 0)} ok, {s2.get('timeouts', 0)} timeouts, "
-                      f"{s2.get('recovered', 0)} retries)")
 
         phase1_elapsed = time.time() - t_phase1
         if verbose:
@@ -2423,13 +2332,16 @@ class TaxonomyClassifier:
             }
         return prepare_fn
 
-    def _p1_parse_fn(self, consolidation_log: List[Dict]):
+    def _p1_parse_fn(self):
         """Return parse_fn closure for P1 facet discovery. Tagged responses
-        (domain has a validated axis system) are validated proposal-by-proposal
-        against that system: a valid (axis, segment) tag becomes a
-        DiscoveredFacet carrying axis/segment; an invalid tag drops the
-        proposal and logs `invalid_axis_tag`. Untagged responses (domain
-        without a system) pass through unchanged, as before."""
+        (domain has a validated axis system) are grouped by axis in the
+        response schema itself — `build_tagged_facet_discovery_model` binds
+        `axis_name` to a Literal over the domain's known axes, so every
+        proposal is inherently tagged to a valid axis; no rejection step is
+        needed. Each proposal becomes a DiscoveredFacet carrying its axis for
+        downstream provenance (segment-less: P1a axes carry no
+        sub-structure). Untagged responses (domain without a system) pass
+        through unchanged, as before."""
         def parse_fn(task: Dict, response) -> Optional[List[DiscoveredFacet]]:
             if response is None:
                 return []
@@ -2439,30 +2351,21 @@ class TaxonomyClassifier:
             if axis_system is None:
                 return response.facets
 
-            valid_tags = {
-                (self._norm_text(axis.axis_name), self._norm_text(seg.segment_name))
-                for axis in axis_system.axes
-                for seg in axis.segments
-            }
-
+            observations = task['observations']
             facets: List[DiscoveredFacet] = []
-            for proposal in response.proposals:
-                tag = (self._norm_text(proposal.axis_name), self._norm_text(proposal.segment_name))
-                if tag not in valid_tags:
-                    consolidation_log.append({
-                        "action": "invalid_axis_tag",
-                        "domain": domain_name,
-                        "facet": proposal.facet_name,
-                        "tag": f"{proposal.axis_name} / {proposal.segment_name}",
-                    })
-                    continue
-                facets.append(DiscoveredFacet(
-                    facet_name=proposal.facet_name,
-                    facet_description=proposal.facet_description,
-                    example_observations=proposal.example_observations,
-                    axis=proposal.axis_name,
-                    segment=proposal.segment_name,
-                ))
+            for axis_facets in response.axes:
+                for proposal in axis_facets.facets:
+                    facets.append(DiscoveredFacet(
+                        facet_name=proposal.facet_name,
+                        facet_description=proposal.facet_definition,
+                        inclusion_rule=proposal.inclusion_rule,
+                        exclusion_rule=proposal.exclusion_rule,
+                        example_observations=[
+                            observations[i - 1] for i in proposal.example_observations
+                            if 1 <= i <= len(observations)
+                        ],
+                        axis=axis_facets.axis_name,
+                    ))
             return facets
         return parse_fn
 
