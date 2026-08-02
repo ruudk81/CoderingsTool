@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 # === CONFIG ========================================================================================================
 from config import CacheConfig
-from identity import ensure_ids
+from utils.identity import ensure_ids
 
 logger = logging.getLogger(__name__)
 T = TypeVar('T', bound=BaseModel)

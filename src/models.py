@@ -135,7 +135,7 @@ class TaxonomyClassifiedSubmodel(IdeasExtractedSubmodel):
     corrected_attribute: Optional[str] = None  # post-hoc over-merge correction (None = unchanged)
     corrected_facet: Optional[str] = None
     # Stable ids of the effective (corrected if set, else consolidated) taxonomy
-    # placement — see identity.py. None on pre-id artifacts until stamped.
+    # placement — see utils/identity.py. None on pre-id artifacts until stamped.
     domain_id: Optional[str] = None
     facet_id: Optional[str] = None
     attribute_id: Optional[str] = None
@@ -176,7 +176,7 @@ class CodeAssignedSubmodel(TaxonomyClassifiedSubmodel):
     partition_name). Adds code assignment fields from step 6.
     """
     assigned_code: Optional[str] = None      # code_name — display only
-    assigned_code_id: Optional[str] = None   # stable K# id (identity.py); __UNASSIGNED__ passes through
+    assigned_code_id: Optional[str] = None   # stable K# id (utils/identity.py); __UNASSIGNED__ passes through
     assigned_attribute: Optional[str] = None
     confidence: Optional[float] = None
     rationale: Optional[str] = None
@@ -233,7 +233,7 @@ class DomainSet(BaseModel):
 class DomainResultModel(BaseModel):
     """Pydantic-serializable partition result for caching (taxonomy version).
 
-    Stable ids (see identity.py): the domain carries `domain_id` (D#); facet
+    Stable ids (see utils/identity.py): the domain carries `domain_id` (D#); facet
     dicts carry a `facet_id` key (F#) and attribute dicts an `attribute_id` key
     (A#). Minted at artifact finalization; lazily minted at load for pre-id
     caches. Raw (fijn) attribute dicts carry no ids (display-only).

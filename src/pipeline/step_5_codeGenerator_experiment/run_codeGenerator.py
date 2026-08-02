@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from identity import ensure_codebook_ids
+from utils.identity import ensure_codebook_ids
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
 from utils.costTracker import CostTracker
