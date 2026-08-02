@@ -53,23 +53,31 @@ class Idea:
         self.instance = instance
 
 
-def run(attributes, outputs):
-    """Drive _apply_p9_results on one facet; return (structure, log)."""
+def run(attributes, outputs, ideas=None):
+    """Drive _apply_p9_results on one facet; return (structure, assignments).
+
+    `ideas` is an optional list of (instance_text, attribute) pairs. The default
+    puts one idea on each attribute, its text equal to the attribute name.
+    """
     clf = TaxonomyClassifier(CategoriesConfig())
-    ideas = [Idea(f"i{n}", a.attribute_name) for n, a in enumerate(attributes)]
+    if ideas is None:
+        ideas = [(a.attribute_name, a.attribute_name) for a in attributes]
+    objs = [Idea(f"i{n}", text) for n, (text, _) in enumerate(ideas)]
+    assignments = {f"i{n}": att for n, (_, att) in enumerate(ideas)}
     tasks = [{"domain_name": DOM, "facet_name": FAC, "attributes": attributes,
-              "facet_ideas": ideas}]
+              "facet_ideas": objs}]
     results = [InFacetConsolidatedResponse(scratchpad="s", attributes=outputs, misfits=[])]
     dfa = {DOM: {FAC: list(attributes)}}
     pa = {DOM: {FAC: list(attributes)}}
-    assignments = {f"i{n}": a.attribute_name for n, a in enumerate(attributes)}
-    part_assignments = {DOM: dict(assignments)}
+    # partition_assignments maps idea -> FACET (not attribute); _apply_p9_results
+    # needs it to place an idea before it can remap or restore anything.
+    part_assignments = {DOM: {o.idea_id: FAC for o in objs}}
     clf._apply_p9_results(
         tasks=tasks, results=results, domain_facet_attributes=dfa,
         partition_attributes=pa, attribute_assignments=assignments,
         partition_assignments=part_assignments, verbose=False,
     )
-    return dfa[DOM][FAC], []
+    return dfa[DOM][FAC], assignments
 
 
 def _names(structure):
@@ -101,7 +109,7 @@ def test_merge_within_one_position_carries_it():
 
 
 def test_cross_position_merge_is_rejected():
-    """Sources on two positions must not be merged — the facet stays as P8 left it."""
+    """Sources on two positions must not be merged — both survive under their own name."""
     a = [attr("minder zout", position="reductie"),
          attr("zout vervangen", position="substitutie")]
     o = [out("zoutaanpak", ["minder zout", "zout vervangen"])]
@@ -109,6 +117,33 @@ def test_cross_position_merge_is_rejected():
     assert _names(struct) == ["minder zout", "zout vervangen"], _names(struct)
     assert _pos(struct, "minder zout") == "reductie"
     assert _pos(struct, "zout vervangen") == "substitutie"
+
+
+def test_rejected_merge_leaves_no_orphaned_assignment():
+    """The regression this pins: rejecting must never strand an idea on a name that
+    is gone. A first attempt skipped the whole facet, which stopped the structure
+    from being rebuilt — 354 of 774 assignments (46%) pointed at nothing."""
+    a = [attr("minder zout", position="reductie"),
+         attr("zout vervangen", position="substitutie")]
+    o = [out("zoutaanpak", ["minder zout", "zout vervangen"])]
+    struct, assignments = run(a, o)
+    present = {x.attribute_name for x in struct}
+    stranded = {n for n in assignments.values() if n and n not in present}
+    assert not stranded, f"toewijzingen zonder attribuut: {stranded}"
+
+
+def test_rejection_does_not_block_the_rest_of_the_facet():
+    """A rejected merge is local: other consolidations in the same facet still apply."""
+    a = [attr("minder zout", position="reductie"),
+         attr("zout vervangen", position="substitutie"),
+         attr("zout weglaten", position="reductie")]
+    o = [out("zoutaanpak", ["minder zout", "zout vervangen"]),          # gekruist -> af
+         out("zout eruit", ["zout weglaten"], action="keep")]           # blijft staan
+    struct, assignments = run(a, o)
+    assert "zout eruit" in _names(struct), _names(struct)
+    assert "minder zout" in _names(struct) and "zout vervangen" in _names(struct)
+    present = {x.attribute_name for x in struct}
+    assert not {n for n in assignments.values() if n and n not in present}
 
 
 def test_split_children_inherit_the_parent_position():
@@ -120,7 +155,9 @@ def test_split_children_inherit_the_parent_position():
          InFacetAttribute(action="split", attribute_name="geen zout",
                           attribute_description="d", example_observations=["o"],
                           source_attributes=["zout"], instance_texts=["geen zout"])]
-    struct, _ = run(a, o)
+    # Both ideas must carry a text one of the children claims, or they stay on the
+    # parent and the self-check rightly puts that node back.
+    struct, _ = run(a, o, ideas=[("minder zout", "zout"), ("geen zout", "zout")])
     assert _names(struct) == ["geen zout", "minder zout"], _names(struct)
     assert all(a.position == "reductie" for a in struct), [a.position for a in struct]
 

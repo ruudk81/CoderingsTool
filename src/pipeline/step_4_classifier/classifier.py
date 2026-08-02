@@ -4631,35 +4631,38 @@ class TaxonomyClassifier:
                 return [r for r in (_resolve(s) for s in (item.source_attributes or []))
                         if r is not None]
 
-            # Guard 8: cross-position merge. An output whose sources sit on two
-            # different positions of the facet's refinement axis launders an
-            # attribute across that axis — the mechanism by which P9 rebuilt the
-            # attribute layer outside the axis discipline (18/144 tags surviving,
-            # measured 2026-08-01). Position is provenance, so this is decided
-            # here rather than asked of the model, and rejected before any
-            # construction: picking a winner would silently move ideas.
-            crossed = []
-            for item in result.attributes:
-                tagged = {pos_of.get(s, ("", False))[0] for s in _srcs(item)}
-                tagged.discard("")
-                if len(tagged) > 1:
-                    crossed.append({"attribute": item.attribute_name,
-                                    "positions": sorted(tagged)})
-            if crossed:
-                log.append({"action": "cross_position_merge_rejected",
-                            "domain": dom, "facet": fac, "merges": crossed,
-                            "attributes_before": before,
-                            "note": "facet left as P8 produced it"})
-                continue
+            src_obj = {a.attribute_name: a for a in task['attributes']}
 
             new_attrs: List[DiscoveredAttribute] = []
             for item in result.attributes:
                 sources = _srcs(item)
-                # Same construction rule as parent_facet: carried from the sources,
-                # never named by the model. The guard above guarantees at most one
-                # tagged position here, so `next` is a choice between one and none.
+                # Guard 8: cross-position merge. An output whose sources sit on
+                # two different positions of the facet's refinement axis launders
+                # an attribute across that axis — the mechanism by which P9 rebuilt
+                # the attribute layer outside the axis discipline (18/144 tags
+                # surviving, measured 2026-08-01). Position is provenance, so this
+                # is decided here rather than asked of the model. Only the MERGE is
+                # undone, never the facet: the sources are carried over untouched,
+                # so every idea keeps a name that exists and the rest of the
+                # facet's consolidation still applies.
                 tagged = {pos_of.get(s, ("", False))[0] for s in sources}
                 tagged.discard("")
+                if len(tagged) > 1:
+                    kept = []
+                    for s in sources:
+                        obj = src_obj.get(s)
+                        if obj is not None and all(a.attribute_name != s for a in new_attrs):
+                            new_attrs.append(obj)
+                            kept.append(s)
+                    log.append({"action": "cross_position_merge_rejected",
+                                "domain": dom, "facet": fac,
+                                "attribute": item.attribute_name,
+                                "positions": sorted(tagged), "sources_kept": kept,
+                                "note": "merge undone, sources kept as they were"})
+                    continue
+                # Same construction rule as parent_facet: carried from the sources,
+                # never named by the model. The guard above already reduced `tagged`
+                # to at most one, so `next` is a choice between one and none.
                 position = next(iter(tagged), "")
                 residual = bool(position) and any(
                     pos_of.get(s, ("", False))[1] for s in sources
