@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, create_model, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 if TYPE_CHECKING:
@@ -371,45 +371,46 @@ class FacetProposal(BaseModel):
 
 
 def build_tagged_facet_discovery_model(axis_names: List[str]) -> type[BaseModel]:
-    """Build the P1b response model for one domain (P1b).
+    """Build the P2 response model for one domain.
 
-    The domain's axes are already known from P1a, so they are fixed in the
+    The domain's axes are already known from P1, so they are fixed in the
     schema itself: `axis_name` is a Literal over exactly those names. The
     model does not name an axis, it picks one of ours — and adds as many
     facets under it as that axis needs.
+
+    Built with `create_model` because the Literal only exists at call time —
+    a static annotation over a runtime value is unevaluable for type
+    checkers; this way no annotation refers to it.
     """
-    AxisNameLiteral = Literal[tuple(axis_names)]  # type: ignore[valid-type]
+    axis_name_literal = Literal[tuple(axis_names)]  # type: ignore[valid-type]
 
-    class AxisFacets(BaseModel):
-        """The facets proposed on one axis."""
-        axis_name: AxisNameLiteral = Field(
-            ..., description="The axis these facets sit on"
-        )
-        facets: List[FacetProposal] = Field(
-            ..., description="The minimal set of facets needed on this axis"
-        )
+    axis_facets = create_model(
+        "AxisFacets",
+        __doc__="The facets proposed on one axis.",
+        axis_name=(axis_name_literal, Field(
+            ..., description="The axis these facets sit on")),
+        facets=(List[FacetProposal], Field(
+            ..., description="The minimal set of facets needed on this axis")),
+    )
 
-    class TaggedFacetDiscoveryResponse(BaseModel):
-        """P1b output: facets discovered in a single chunk, grouped per axis."""
-        scratchpad: str = Field(
+    return create_model(
+        "TaggedFacetDiscoveryResponse",
+        __doc__="P2 output: facets discovered in a single chunk, grouped per axis.",
+        scratchpad=(str, Field(
             ..., description=(
                 "Reasoning before the final facet set: group the observations by "
                 "similarity along each axis, consider whether apparent differences "
                 "are meaningful enough to warrant separate facets, and determine "
                 "the minimal set that captures all meaningful variation"
-            )
-        )
-        axes: List[AxisFacets] = Field(
-            ..., description="One entry per axis, with the facets proposed on it"
-        )
-        minimality_rationale: str = Field(
+            ))),
+        axes=(List[axis_facets], Field(
+            ..., description="One entry per axis, with the facets proposed on it")),
+        minimality_rationale=(str, Field(
             ..., description=(
                 "Why this is the minimal facet set needed, and why facets were "
                 "not split or merged further"
-            )
-        )
-
-    return TaggedFacetDiscoveryResponse
+            ))),
+    )
 
 
 # =============================================================================
