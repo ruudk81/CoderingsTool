@@ -143,12 +143,14 @@ STEP_EFFORT = {
     # Step 3: what the dimensions and domains ARE
     "idea_extraction_context":  "low",
     "idea_extraction_taxonomy": "low",
-    # Step 4: discovery and consolidation of axes, facets + attributes
-    "classifier_p1": "low",
-    "classifier_p2": "low",
+    # Step 4: discovery and consolidation of axes, facets + attributes.
+    # medium op P1 (assen), P2/P3 en P6 (discovery) en P8 (in-facet
+    # consolidatie) — besluit Ruud 2026-08-03 bij de herordende pijplijn.
+    "classifier_p1": "medium",
+    "classifier_p2": "medium",
     "classifier_p5": "low",
-    "classifier_p6": "low",
-    "classifier_p8": "low",
+    "classifier_p6": "medium",
+    "classifier_p8": "medium",
     "classifier_p9": "low",
     # Step 5: writing and consolidating the codebook
     "codegen_p8": "low",
