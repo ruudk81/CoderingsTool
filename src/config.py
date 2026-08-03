@@ -148,7 +148,7 @@ STEP_EFFORT = {
     # consolidatie) — besluit Ruud 2026-08-03 bij de herordende pijplijn.
     "classifier_p1": "medium",
     "classifier_p2": "medium",
-    "classifier_p5": "low",
+    "classifier_p5": "medium",
     "classifier_p6": "medium",
     "classifier_p8": "medium",
     "classifier_p9": "low",
