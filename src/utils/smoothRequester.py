@@ -1104,9 +1104,24 @@ class SmoothRequester:
 
 
     def _recalculate_rate_limit_concurrency(self):
-        """Recalculate rate-limit concurrency from current avg_tokens and latency."""
+        """Recalculate rate-limit concurrency from current avg_tokens and latency.
+
+        The latency term is floored at the warm-start p50 from the curve fit.
+        Measured p50 at low occupancy is self-referential: fewer in flight →
+        faster calls → smaller cap → fewer in flight, an equilibrium well below
+        what the quota affords (observed 22 → 15 at 63% utilization). The
+        predicted p50 is the model's normal working latency at this token
+        weight, independent of current fleet size. Upward the cap still follows
+        the measurement; overspend stays impossible (TokenBucket debits actual
+        tokens), and genuine server overload is the server-concurrency arm's job.
+        """
         headroom = self._headroom
-        latency = self.latency_tracker.get_p50() if self.latency_tracker.values else DEFAULT_LATENCY_SECONDS
+        predicted = self._pred.p50_latency_s
+        if self.latency_tracker.values:
+            measured = self.latency_tracker.get_p50()
+            latency = max(measured, predicted) if predicted else measured
+        else:
+            latency = predicted or DEFAULT_LATENCY_SECONDS
         api_limits = ApiLimits(self.rate_limits.tokens_per_minute, self.rate_limits.requests_per_minute)
         self._rate_limit_concurrency = compute_optimal_concurrency(
             api_limits, latency, self.avg_tokens, headroom
