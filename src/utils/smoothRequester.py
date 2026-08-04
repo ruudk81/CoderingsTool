@@ -61,6 +61,7 @@ WARM_UP_SAMPLE_MIN = 15
 WARM_UP_SAMPLE_MAX = 30
 THROUGHPUT_ADJUSTMENT_MIN_SAMPLES = 10
 THROUGHPUT_ADJUSTMENT_THRESHOLD = 1.05
+THROUGHPUT_ADJUSTMENT_LOWER = 0.95
 ADJUSTMENT_INTERVAL = 20  # seconds between PID adjustments (System B)
 DEFAULT_OUTPUT_RATIO = 0.25
 DISPATCH_DELAY_P50_THRESHOLD = 5.0   # seconds — no delay below this P50
@@ -1442,8 +1443,12 @@ class SmoothRequester:
     # === WARM-UP + PID ========================================================
 
     def _calibrate_tokens(self):
-        """Shared warm-up: recalibrate avg_tokens and arrival rate."""
-        measured_avg = int(np.mean(list(self.actual_total_tokens)))
+        """Shared warm-up: recalibrate avg_tokens and arrival rate.
+
+        Median for the same reason as _adjust_throughput_if_needed: size for
+        the typical call, let the TokenBucket absorb the tail.
+        """
+        measured_avg = int(np.median(list(self.actual_total_tokens)))
         old_avg = self.avg_tokens
         self.avg_tokens = measured_avg
         self._warm_up_measured_latency = float(np.percentile(list(self.latency_tracker.values), 10))
@@ -1481,16 +1486,23 @@ class SmoothRequester:
             print(f"[WARM-UP] avg_tokens {old_avg} → {new_avg}, concurrency unchanged at {old_conc}")
 
     def _adjust_throughput_if_needed(self):
-        """Token estimate correction when actual exceeds estimate by >5%."""
+        """Token estimate correction when the typical call deviates >5% from the estimate.
+
+        Median, not mean: the rate-limit cap should size in-flight work for the
+        typical call. A heavy tail (a few huge-menu calls) is the TokenBucket's
+        job — it debits actual tokens and stalls dispatch when the budget is
+        truly spent. Symmetric: the estimate also comes back down after a heavy
+        stretch, so the cap recovers instead of ratcheting up for the whole run.
+        """
         if len(self.actual_total_tokens) < THROUGHPUT_ADJUSTMENT_MIN_SAMPLES:
             return False
-        actual_avg = sum(self.actual_total_tokens) / len(self.actual_total_tokens)
-        ratio = actual_avg / self.avg_tokens if self.avg_tokens > 0 else 1.0
-        if ratio <= THROUGHPUT_ADJUSTMENT_THRESHOLD:
+        actual_typical = float(np.median(list(self.actual_total_tokens)))
+        ratio = actual_typical / self.avg_tokens if self.avg_tokens > 0 else 1.0
+        if THROUGHPUT_ADJUSTMENT_LOWER <= ratio <= THROUGHPUT_ADJUSTMENT_THRESHOLD:
             return False
         old = self.avg_tokens
-        self.avg_tokens = int(actual_avg)
-        print(f"[TOKEN CORRECTION] avg_tokens: {old} → {self.avg_tokens} (actual {actual_avg:.0f}, +{(ratio-1)*100:.0f}%)")
+        self.avg_tokens = int(actual_typical)
+        print(f"[TOKEN CORRECTION] avg_tokens: {old} → {self.avg_tokens} (median {actual_typical:.0f}, {(ratio-1)*100:+.0f}%)")
         return True
 
     async def _apply_pid(self):
