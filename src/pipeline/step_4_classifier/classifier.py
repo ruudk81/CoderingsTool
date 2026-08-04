@@ -55,7 +55,8 @@ from utils.llm import (
     fetch_rate_limits as llm_fetch_rate_limits,
 )
 from config import (
-    DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, get_reasoning_params,
+    API_PROVIDER, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM,
+    get_azure_route, get_reasoning_params,
 )
 
 from pipeline.step_3_ideaExtractor.dimension_data import (
@@ -313,9 +314,10 @@ class TaxonomyClassifier:
         # TaxonomyResult only needs the model_dump for the final return.
         self.axis_systems: Dict[str, AxisSystemResponse] = {}
 
-        # Rate limits — fetched once in _initialize_async_resources()
-        self._fetched_limits = None
-        self._fetched_has_headers = None
+        # Rate limits — fetched in _initialize_async_resources(), one probe per
+        # unique deployment; each phase reads the limits of its own model
+        self._limits_by_model: Dict[str, RateLimits] = {}
+        self._has_headers_by_model: Dict[str, bool] = {}
 
     # =========================================================================
     # PUBLIC API
@@ -422,38 +424,63 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool,
     ):
-        """Fetch rate limits from API. All LLM calls go through SmoothRequester."""
-        # --- Fetch real rate limits from API headers ---
+        """Fetch rate limits from API — one probe per unique deployment.
+
+        Quota is per deployment, so each phase must read the limits of the
+        deployment its own model resolves to — not whatever P2 happens to run
+        on. Probes for distinct deployments run in parallel, so wall-clock cost
+        stays that of a single probe.
+        """
+        phase_models = [
+            self._model_p1, self._model_p2, self._model_p4, self._model_p5,
+            self._model_p6, self._model_p7, self._model_p8,
+        ]
+
+        def route_key(model):
+            if API_PROVIDER == "azure":
+                endpoint, _, deployment = get_azure_route(model)
+                return (endpoint, deployment)
+            return (model,)
+
+        representatives: Dict[tuple, str] = {}
+        for m in phase_models:
+            representatives.setdefault(route_key(m), m)
+
         if verbose:
-            print("  Fetching rate limits from API...")
-        limits, has_headers = await llm_fetch_rate_limits(self._model_p2)
+            print(f"  Fetching rate limits from API "
+                  f"({len(representatives)} deployment(s))...")
+        probes = await asyncio.gather(
+            *(llm_fetch_rate_limits(m) for m in representatives.values())
+        )
+        by_route = dict(zip(representatives.keys(), probes))
 
-        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
-            if verbose:
-                print(f"  WARNING: Using fallback rate limits "
-                      f"(TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
-            limits = RateLimits(
-                tokens_per_minute=FALLBACK_TPM,
-                requests_per_minute=FALLBACK_RPM,
-            )
-        elif verbose:
-            print(f"  Fetched from API: TPM={limits.tokens_per_minute:,}, "
-                  f"RPM={limits.requests_per_minute:,}")
-
-        self._fetched_limits = limits
-        self._fetched_has_headers = has_headers
-        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
+        for m in set(phase_models):
+            limits, has_headers = by_route[route_key(m)]
+            if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+                if verbose:
+                    print(f"  WARNING: {m}: using fallback rate limits "
+                          f"(TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+                limits = RateLimits(
+                    tokens_per_minute=FALLBACK_TPM,
+                    requests_per_minute=FALLBACK_RPM,
+                )
+            self._limits_by_model[m] = limits
+            self._has_headers_by_model[m] = has_headers
 
         if verbose:
+            headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
             print(f"\n  [RATE LIMITING SETUP]")
-            print(f"  Models: P1={self._model_p2}, P2={self._model_p5}, "
+            print(f"  Models: P1={self._model_p1}, P2/P3={self._model_p2}, "
                   f"P4={self._model_p4}, P5={self._model_p5}, "
                   f"P6={self._model_p6}, P7={self._model_p7}, "
                   f"P8={self._model_p8}, P9={self._model_p9}")
-            print(f"  RPM: {limits.requests_per_minute:,} "
-                  f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
-            print(f"  TPM: {limits.tokens_per_minute:,} "
-                  f"({limits.tokens_per_minute * headroom:,.0f} with headroom)")
+            for key, m in representatives.items():
+                limits = self._limits_by_model[m]
+                label = key[-1] if API_PROVIDER == "azure" else m
+                print(f"  {label}: TPM={limits.tokens_per_minute:,} "
+                      f"({limits.tokens_per_minute * headroom:,.0f} with headroom) | "
+                      f"RPM={limits.requests_per_minute:,} "
+                      f"({limits.requests_per_minute * headroom:,.0f} with headroom)")
 
     async def _process_taxonomy_async(
         self,
@@ -516,8 +543,8 @@ class TaxonomyClassifier:
                     phase_key="step4_p1_axis_discovery",
                     num_tasks=len(p1a_tasks),
                     verbose=verbose,
-                    known_limits=self._fetched_limits,
-                    has_server_headers=self._fetched_has_headers,
+                    known_limits=self._limits_by_model[self._model_p1],
+                    has_server_headers=self._has_headers_by_model[self._model_p1],
                     show_setup=False,
                     quiet=True,
                 )
@@ -604,8 +631,8 @@ class TaxonomyClassifier:
             phase_key="step4_p2_facet_discovery",
             num_tasks=len(p1_tasks),
             verbose=verbose,
-            known_limits=self._fetched_limits,
-            has_server_headers=self._fetched_has_headers,
+            known_limits=self._limits_by_model[self._model_p2],
+            has_server_headers=self._has_headers_by_model[self._model_p2],
             show_setup=False,
             quiet=True,
         )
@@ -730,8 +757,8 @@ class TaxonomyClassifier:
                 phase_key="step4_p4_facet_assignment",
                 num_tasks=len(p3_tasks),
                 verbose=verbose,
-                known_limits=self._fetched_limits,
-                has_server_headers=self._fetched_has_headers,
+                known_limits=self._limits_by_model[self._model_p4],
+                has_server_headers=self._has_headers_by_model[self._model_p4],
                 show_setup=False,
                 quiet=False,
             )
@@ -873,8 +900,8 @@ class TaxonomyClassifier:
                 phase_key="step4_p5_facet_consolidation",
                 num_tasks=len(fc_tasks),
                 verbose=verbose,
-                known_limits=self._fetched_limits,
-                has_server_headers=self._fetched_has_headers,
+                known_limits=self._limits_by_model[self._model_p5],
+                has_server_headers=self._has_headers_by_model[self._model_p5],
                 show_setup=False,
                 quiet=True,
             )
@@ -987,8 +1014,8 @@ class TaxonomyClassifier:
                 phase_key="step4_p6_attribute_discovery",
                 num_tasks=len(p4_tasks),
                 verbose=verbose,
-                known_limits=self._fetched_limits,
-                has_server_headers=self._fetched_has_headers,
+                known_limits=self._limits_by_model[self._model_p6],
+                has_server_headers=self._has_headers_by_model[self._model_p6],
                 show_setup=False,
                 quiet=True,
             )
@@ -1136,8 +1163,8 @@ class TaxonomyClassifier:
                 phase_key="step4_p7_attribute_assignment",
                 num_tasks=len(p6_tasks),
                 verbose=verbose,
-                known_limits=self._fetched_limits,
-                has_server_headers=self._fetched_has_headers,
+                known_limits=self._limits_by_model[self._model_p7],
+                has_server_headers=self._has_headers_by_model[self._model_p7],
                 show_setup=False,
                 quiet=False,
             )
@@ -1287,8 +1314,8 @@ class TaxonomyClassifier:
                 phase_key="step4_p8_attribute_consolidation",
                 num_tasks=len(p7_tasks),
                 verbose=verbose,
-                known_limits=self._fetched_limits,
-                has_server_headers=self._fetched_has_headers,
+                known_limits=self._limits_by_model[self._model_p8],
+                has_server_headers=self._has_headers_by_model[self._model_p8],
                 show_setup=False,
                 quiet=True,
             )
