@@ -62,6 +62,7 @@ WARM_UP_SAMPLE_MAX = 30
 THROUGHPUT_ADJUSTMENT_MIN_SAMPLES = 10
 THROUGHPUT_ADJUSTMENT_THRESHOLD = 1.05
 THROUGHPUT_ADJUSTMENT_LOWER = 0.95
+PREFLIGHT_SAMPLE = 5
 ADJUSTMENT_INTERVAL = 20  # seconds between PID adjustments (System B)
 DEFAULT_OUTPUT_RATIO = 0.25
 DISPATCH_DELAY_P50_THRESHOLD = 5.0   # seconds — no delay below this P50
@@ -966,6 +967,40 @@ class SmoothRequester:
 
     # === PROBE + SETUP ========================================================
 
+    def _preflight_token_check(self, tasks, prepare_fn):
+        """Rebase the warm-start token estimate on real prompts, before launch.
+
+        The stored estimate is history, and history can be stale: the same phase
+        key meeting a much heavier dataset launched a full worker fleet on a 7x
+        underestimate (2026-08-04). The inputs already exist at launch time, so
+        measure a small spread-out sample and rebase avg_tokens before it sizes
+        the initial concurrency and arrival rate. Warm-up calibration stays the
+        fine-tuner for what can't be known upfront (actual output, API overhead,
+        latency). prepare_fn's prompt capture may fire here instead of in the
+        run — same gate, equally representative content.
+        """
+        n = len(tasks)
+        idxs = sorted({0, n // 4, n // 2, (3 * n) // 4, n - 1})[:PREFLIGHT_SAMPLE]
+        try:
+            inputs = [
+                len(self.encoding.encode(prepare_fn(tasks[i]).get('prompt', '') or ''))
+                for i in idxs
+            ]
+        except Exception:
+            return  # a broken task surfaces properly in the worker path
+        measured_in = float(np.median(inputs)) + self.tiktoken_offset_learner.get_offset()
+        expected_out = self._pred.expected_output_tokens
+        if expected_out is None:
+            expected_out = int(measured_in * DEFAULT_OUTPUT_RATIO)
+        candidate = int(measured_in + expected_out)
+        ratio = candidate / self.avg_tokens if self.avg_tokens > 0 else 1.0
+        if THROUGHPUT_ADJUSTMENT_LOWER <= ratio <= THROUGHPUT_ADJUSTMENT_THRESHOLD:
+            return
+        old = self.avg_tokens
+        self.avg_tokens = candidate
+        print(f"[PREFLIGHT] avg_tokens {old} → {candidate} "
+              f"(measured input ~{measured_in:.0f} over {len(idxs)} prompts, {(ratio - 1) * 100:+.0f}%)")
+
     async def _probe_and_setup(self, num_tasks: int):
         """Probe API for rate limits + headers, then set up all components."""
         # Create client with header capture
@@ -1543,6 +1578,7 @@ class SmoothRequester:
             return []
 
         num_tasks = len(tasks)
+        self._preflight_token_check(tasks, prepare_fn)
         await self._probe_and_setup(num_tasks)
 
         # Print setup (gated by show_setup)
