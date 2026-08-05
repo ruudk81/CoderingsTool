@@ -27,20 +27,10 @@ import models
 from test_data import TEST_DATA
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.embedder import SharedEmbedder
+from pipeline.step_4_classifier.assignment_batching import facet_card_text
 from pipeline.step_4_classifier.partition_labels import format_label
 
 RANK_BUCKETS = (1, 3, 10)
-
-
-def facet_card_text(facet: dict) -> str:
-    """The same content P4's menu renders, joined for embedding."""
-    parts = [facet.get("facet_name", ""), facet.get("facet_description", "")]
-    if facet.get("inclusion_rule"):
-        parts.append(facet["inclusion_rule"])
-    examples = facet.get("example_observations") or []
-    if examples:
-        parts.append("; ".join(examples[:3]))
-    return ". ".join(p for p in parts if p)
 
 
 async def main() -> None:
