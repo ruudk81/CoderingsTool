@@ -69,6 +69,11 @@ from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
 from .taxonomy_health import drain_domains
 from .dedup import dedup_exact_attributes, dedup_exact_facets
+from utils.embedder import SharedEmbedder
+from .assignment_batching import (
+    LabelRep, facet_card_text, group_label_reps, make_batches,
+    shortlist_indices, validate_batch_response,
+)
 from models import DomainSet, DomainDescription
 from .prompts_classifier import (
     # P1: Axis Discovery
@@ -84,6 +89,9 @@ from .prompts_classifier import (
     # Facet Assignment
     build_facet_assignment_prompt_single,
     FacetAssignmentResult,
+    # Facet Assignment (batch)
+    build_batch_facet_assignment_model,
+    build_facet_assignment_prompt_batch,
     # Facet Consolidation (in-axis, post-assignment)
     build_in_axis_consolidation_prompt,
     InAxisConsolidatedResponse,
@@ -297,6 +305,13 @@ class TaxonomyClassifier:
         # Label source for observation formatting
         self._label_source = config.label_source
         self._label_prefix = config.label_prefix
+
+        # P4 facet assignment — batch mode
+        self._assign_batch_enabled = config.facet_assignment_batch_enabled
+        self._assign_batch_k = config.facet_assignment_batch_k
+        self._assign_shortlist_enabled = config.facet_assignment_shortlist_enabled
+        self._assign_shortlist_k = config.facet_assignment_shortlist_k
+        self._assign_label_dedup = config.facet_assignment_label_dedup
 
         # Prompt capture (optional)
         self._prompt_printer = prompt_printer
@@ -748,11 +763,17 @@ class TaxonomyClassifier:
 
         t_phase3 = time.time()
 
-        # Build flat task list: one task per idea
         # Single-facet domains are auto-assigned without LLM call
         p3_tasks = []
+        p3_batch_tasks = []
         partition_assignments: Dict[str, Dict[str, str]] = {}
         p3_auto_assigned: Dict[str, int] = {}  # domain → idea count (for reporting)
+        p3_pending_singles: List[Dict] = []    # escalated reps → full-menu single pass
+
+        embedder = (SharedEmbedder()
+                    if self._assign_batch_enabled and self._assign_shortlist_enabled
+                    else None)
+
         for domain_name in sorted(partition_facets.keys()):
             if not partition_facets[domain_name] or not label_mappings[domain_name].ideas:
                 continue
@@ -769,18 +790,128 @@ class TaxonomyClassifier:
                 p3_auto_assigned[domain_name] = len(ideas)
                 continue
 
-            # Multi-facet: one task per idea
-            facet_id_to_name = {f"F{i}": f.facet_name for i, f in enumerate(facets, 1)}
-            for idea in ideas:
-                idea_label = format_label(idea, self._label_source, self._label_prefix)
-                p3_tasks.append({
+            if not self._assign_batch_enabled:
+                # Multi-facet: one task per idea (pre-batch path, byte-identical)
+                facet_id_to_name = {f"F{i}": f.facet_name for i, f in enumerate(facets, 1)}
+                for idea in ideas:
+                    idea_label = format_label(idea, self._label_source, self._label_prefix)
+                    p3_tasks.append({
+                        'domain_name': domain_name,
+                        'idea_id': idea.idea_id,
+                        'idea_label': idea_label,
+                        'facets': facets,
+                        'facet_id_to_name': facet_id_to_name,
+                        'part_context': partition_contexts[domain_name],
+                    })
+                continue
+
+            # Batch mode: unique-label reps, K per call, optional shortlist menu
+            reps = group_label_reps(ideas, self._label_source, self._label_prefix,
+                                    dedup=self._assign_label_dedup)
+            label_vectors = card_vectors = None
+            if embedder is not None and len(facets) > self._assign_shortlist_k:
+                card_vectors = await embedder.embed_texts(
+                    [facet_card_text(f.model_dump()) for f in facets])
+                label_vectors = await embedder.embed_texts([rep.label for rep in reps])
+            for index_group in make_batches(len(reps), self._assign_batch_k):
+                menu = facets
+                if card_vectors is not None:
+                    keep = shortlist_indices(
+                        label_vectors[index_group], card_vectors, self._assign_shortlist_k)
+                    menu = [facets[i] for i in keep]
+                p3_batch_tasks.append({
                     'domain_name': domain_name,
-                    'idea_id': idea.idea_id,
-                    'idea_label': idea_label,
-                    'facets': facets,
-                    'facet_id_to_name': facet_id_to_name,
+                    'reps': [reps[i] for i in index_group],
+                    'menu_facets': menu,
+                    'full_facets': facets,
+                    'facet_id_to_name': {f"F{i}": f.facet_name for i, f in enumerate(menu, 1)},
                     'part_context': partition_contexts[domain_name],
                 })
+
+        if p3_batch_tasks:
+            batch_requester = SmoothRequester(
+                model=self._model_p4,
+                phase_key="step4_p4_facet_assignment",
+                num_tasks=len(p3_batch_tasks),
+                verbose=verbose,
+                known_limits=self._limits_by_model[self._model_p4],
+                has_server_headers=self._has_headers_by_model[self._model_p4],
+                show_setup=False,
+                quiet=False,
+            )
+            batch_results = await batch_requester.process_all(
+                p3_batch_tasks,
+                self._p4_batch_prepare_fn(prompt_context),
+                self._p4_batch_parse_fn(p3_pending_singles),
+                self._p4_batch_fallback_fn(p3_pending_singles),
+            )
+            for task, result in zip(p3_batch_tasks, batch_results):
+                domain_name = task['domain_name']
+                if domain_name not in partition_assignments:
+                    partition_assignments[domain_name] = {}
+                if result:
+                    partition_assignments[domain_name].update(result)
+
+            if p3_pending_singles:
+                single_tasks = []
+                for pending in p3_pending_singles:
+                    facets = pending['facets']
+                    single_tasks.append({
+                        'domain_name': pending['domain_name'],
+                        'idea_id': pending['rep'].idea_ids[0],
+                        'idea_label': pending['rep'].label,
+                        'facets': facets,
+                        'facet_id_to_name': {f"F{i}": f.facet_name
+                                             for i, f in enumerate(facets, 1)},
+                        'part_context': pending['part_context'],
+                    })
+                escalation_requester = SmoothRequester(
+                    model=self._model_p4,
+                    phase_key="step4_p4_facet_assignment",
+                    num_tasks=len(single_tasks),
+                    verbose=verbose,
+                    known_limits=self._limits_by_model[self._model_p4],
+                    has_server_headers=self._has_headers_by_model[self._model_p4],
+                    show_setup=False,
+                    quiet=True,
+                )
+                single_results = await escalation_requester.process_all(
+                    single_tasks,
+                    self._p4_prepare_fn(prompt_context),
+                    self._p4_parse_fn(),
+                    self._p4_fallback_fn(),
+                )
+                for pending, result in zip(p3_pending_singles, single_results):
+                    domain_name = pending['domain_name']
+                    if domain_name not in partition_assignments:
+                        partition_assignments[domain_name] = {}
+                    if result:
+                        rep = pending['rep']
+                        facet_name = next(iter(result.values()))
+                        anchor = rep.idea_ids[0]
+                        for idea_id in rep.idea_ids:
+                            partition_assignments[domain_name][idea_id] = facet_name
+                            self._facet_confidence[idea_id] = \
+                                self._facet_confidence.get(anchor, 0.0)
+                            self._facet_valence[idea_id] = \
+                                self._facet_valence.get(anchor, "0")
+
+                escalation_reasons: Dict[str, Counter] = defaultdict(Counter)
+                for pending in p3_pending_singles:
+                    escalation_reasons[pending['domain_name']][pending['reason']] += 1
+                for domain_name, reasons in sorted(escalation_reasons.items()):
+                    consolidation_log.append({
+                        "action": "p4_batch_escalation", "domain": domain_name,
+                        "reasons": dict(reasons),
+                    })
+
+            if verbose:
+                s = batch_requester.stats
+                n_reps = sum(len(t['reps']) for t in p3_batch_tasks)
+                print(f"    Assignment (batch): {len(p3_batch_tasks)} calls voor "
+                      f"{n_reps} unieke labels, {s.get('wall_time', 0):.1f}s "
+                      f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts); "
+                      f"{len(p3_pending_singles)} geëscaleerd naar losse calls")
 
         if p3_tasks:
             p3_requester = SmoothRequester(
@@ -815,22 +946,22 @@ class TaxonomyClassifier:
                     partition_assignments[domain_name] = {}
                 if result:
                     partition_assignments[domain_name].update(result)
-
-            # __UNASSIGNED__ fallback for missing ideas (LLM-assigned domains only)
-            for domain_name in partition_assignments:
-                if domain_name in p3_auto_assigned:
-                    continue
-                ideas = label_mappings[domain_name].ideas
-                expected = {idea.idea_id for idea in ideas}
-                assigned = set(partition_assignments[domain_name].keys())
-                missing = expected - assigned
-                if missing:
-                    print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
-                    for idea_id in missing:
-                        partition_assignments[domain_name][idea_id] = "__UNASSIGNED__"
-                        self._facet_confidence[idea_id] = 0.0
         elif verbose and p3_auto_assigned:
             print(f"    Assignment: all {len(p3_auto_assigned)} domains auto-assigned (1 facet each)")
+
+        # __UNASSIGNED__ fallback for missing ideas (LLM-assigned domains only)
+        for domain_name in partition_assignments:
+            if domain_name in p3_auto_assigned:
+                continue
+            ideas = label_mappings[domain_name].ideas
+            expected = {idea.idea_id for idea in ideas}
+            assigned = set(partition_assignments[domain_name].keys())
+            missing = expected - assigned
+            if missing:
+                print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
+                for idea_id in missing:
+                    partition_assignments[domain_name][idea_id] = "__UNASSIGNED__"
+                    self._facet_confidence[idea_id] = 0.0
 
         t_phase3 = time.time() - t_phase3
         if verbose:
@@ -1488,6 +1619,99 @@ class TaxonomyClassifier:
     def _p4_fallback_fn():
         """Return fallback_fn closure for P4 facet assignment."""
         def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
+            return {}
+        return fallback_fn
+
+    def _p4_batch_prepare_fn(self, prompt_context: PromptContext):
+        """Return prepare_fn closure for P4 facet assignment (batch of reps)."""
+        def prepare_fn(task: Dict) -> Dict:
+            axis_system = self.axis_systems.get(task['domain_name'])
+            axis_descriptions = (
+                {axis.axis_name: axis.axis_description for axis in axis_system.axes}
+                if axis_system is not None else None
+            )
+            ideas = [(rep.idea_ids[0], rep.label) for rep in task['reps']]
+            prompt = build_facet_assignment_prompt_batch(
+                survey_question=prompt_context.survey_question,
+                language=prompt_context.language,
+                dataset_context_section=prompt_context.dataset_context_section,
+                domain_name=task['domain_name'],
+                domain_definition=task['part_context'].partition_definition,
+                facets=task['menu_facets'],
+                ideas=ideas,
+                axis_descriptions=axis_descriptions,
+            )
+
+            # Prompt capture (first batch per domain)
+            gate_key = f"qr_facet_assign_batch_{task['domain_name']}"
+            if (self._prompt_printer is not None
+                    and gate_key not in self._captured_gates):
+                self._prompt_printer.capture_prompt(
+                    step_name="qualitative_researcher",
+                    utility_name="QualitativeResearcher",
+                    prompt_content=prompt,
+                    prompt_type="facet_assignment_batch",
+                    metadata={
+                        "model": self._model_p4,
+                        "temperature": self._temperature,
+                        "max_tokens": self._max_tokens_facet_assignment * 2,
+                        "language": prompt_context.language,
+                        "partition_name": task['domain_name'],
+                        "n_facets": len(task['menu_facets']),
+                        "n_ideas": len(ideas),
+                        "dimension_name": prompt_context.dimension_name,
+                    }
+                )
+                self._captured_gates.add(gate_key)
+
+            return {
+                'prompt': prompt,
+                'response_model': build_batch_facet_assignment_model(
+                    list(task['facet_id_to_name'].keys()),
+                    [idea_id for idea_id, _ in ideas]),
+                'temperature': self._temperature,
+                'max_tokens': self._max_tokens_facet_assignment * 2,
+                'max_retries': 3,
+                'extra_kwargs': get_reasoning_params(self._model_p4, phase="classifier_p4"),
+            }
+        return prepare_fn
+
+    def _p4_batch_parse_fn(self, pending_singles: List[Dict]):
+        """Return parse_fn: accept validated items (fanned out over the rep's
+        instances), route the rest to the escalation list with a reason."""
+        def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
+            rep_by_id = {rep.idea_ids[0]: rep for rep in task['reps']}
+            ok, escalate = validate_batch_response(list(rep_by_id.keys()), response)
+            out: Dict[str, str] = {}
+            for rep_id, item in ok.items():
+                facet_name = task['facet_id_to_name'][item.assigned_facet_id]
+                for idea_id in rep_by_id[rep_id].idea_ids:
+                    out[idea_id] = facet_name
+                    self._facet_confidence[idea_id] = item.confidence
+                    self._facet_valence[idea_id] = item.valence
+            for rep_id, reason in escalate.items():
+                pending_singles.append({
+                    'domain_name': task['domain_name'],
+                    'rep': rep_by_id[rep_id],
+                    'reason': reason,
+                    'facets': task['full_facets'],
+                    'part_context': task['part_context'],
+                })
+            return out
+        return parse_fn
+
+    @staticmethod
+    def _p4_batch_fallback_fn(pending_singles: List[Dict]):
+        """Return fallback_fn: a definitively failed batch escalates whole."""
+        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
+            for rep in task['reps']:
+                pending_singles.append({
+                    'domain_name': task['domain_name'],
+                    'rep': rep,
+                    'reason': 'batch_failed',
+                    'facets': task['full_facets'],
+                    'part_context': task['part_context'],
+                })
             return {}
         return fallback_fn
 

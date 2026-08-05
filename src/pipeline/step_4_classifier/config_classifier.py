@@ -116,6 +116,16 @@ class CategoriesConfig:
     # construction, so it needs no headroom.
     qr_max_tokens_facet_assignment: int = 4000
 
+    # P4 facet assignment — batch mode (gemeten 2026-08-05: beide armen PASS,
+    # judge verkiest batch; armen 98% identiek). Uit-knoppen zijn byte-identiek:
+    # batch uit = het oude per-idee-pad; shortlist uit = vol menu in de batch;
+    # label_dedup wordt alleen in de batch-tak gelezen.
+    facet_assignment_batch_enabled: bool = True
+    facet_assignment_batch_k: int = 5
+    facet_assignment_shortlist_enabled: bool = True
+    facet_assignment_shortlist_k: int = 10
+    facet_assignment_label_dedup: bool = True
+
     # Adaptive batching for P1 (facet discovery chunks)
     batch_size_min: int = 100      # no splitting below this (single batch)
     batch_size_max: int = 150      # ceiling: keeps prompt quality high
