@@ -735,8 +735,9 @@ def build_batch_facet_assignment_model(
                 "Use F_NONE when no facet fits this idea."))),
         confidence=(float, Field(
             ..., ge=0.0, le=1.0, description="Assignment confidence (0.0-1.0)")),
-        valence=(str, Field(
-            ..., description="Evaluative direction relative to the facet: +, - or 0")),
+        valence=(Literal["+", "-", "0"], Field(
+            default="0",
+            description="Evaluative direction relative to the facet: + positive, - negative, 0 neutral")),
     )
     return create_model(
         "BatchFacetAssignmentResult",

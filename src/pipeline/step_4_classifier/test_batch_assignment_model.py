@@ -43,6 +43,14 @@ def test_rejects_out_of_range_confidence():
         model(assignments=[bad])
 
 
+def test_rejects_invalid_valence():
+    model = build_batch_facet_assignment_model(FACET_IDS, IDEA_IDS)
+    bad = make_item()
+    bad["valence"] = "positief"
+    with pytest.raises(ValidationError):
+        model(assignments=[bad])
+
+
 def test_batch_prompt_contains_menu_ideas_escape_and_schema_hint():
     from pipeline.step_4_classifier.prompts_classifier import DiscoveredFacet
     facets = [
