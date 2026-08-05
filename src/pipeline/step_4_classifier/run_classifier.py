@@ -26,7 +26,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 LIMIT_N = None     # Limit number of responses for a test run (None = use all)
-STOP_AFTER_PHASE = None   # None = full pipeline, 1–10 = stop after that phase
+STOP_AFTER_PHASE = None   # None = full pipeline; valid stops: 1, 2, 4, 6, 7 (other values run everything)
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -57,7 +57,7 @@ from models import (
 CONFIG = CategoriesConfig(
     label_source="ladder",                         # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
     label_prefix="",                              # "" or any static prefix string
-    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline, 1–10 = stop after that phase
+    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline; valid stops: 1, 2, 4, 6, 7
 )
 
 
@@ -237,7 +237,7 @@ def _write_axes_log(
     filename: str,
     variable_key: str,
 ) -> None:
-    """Dump the P1a discovered axis systems to exports/experiment_logs/ as JSON
+    """Dump the P1 discovered axis systems to exports/experiment_logs/ as JSON
     (eye-checkable, per the spec's persistence section), and print one line per
     domain. A file, not a cache field — same reasoning as the P9 log: this is a
     diagnostic side-artifact, not part of the shared TaxonomyResultsCache.
@@ -555,6 +555,16 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         verbose=CONFIG.verbose,
         extraction_metadata=extraction_metadata,
     )
+
+    # P1-only debug run: no facets or assignments exist, so the normal cache save
+    # would overwrite the taxonomy cache with an empty structure and invalidate the
+    # derived step-5/6 keys. Write the diagnostic side-artifacts and stop here.
+    if CONFIG.debug_stop_after_phase == 1:
+        _write_consolidation_log(taxonomy_result, FILENAME, variable_key)
+        _write_axes_log(taxonomy_result, FILENAME, variable_key)
+        cost_tracker.finalize_step("step_4_taxonomy_classifier")
+        save_prompts_to_json(prompt_printer)
+        return partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer
 
     # Cache taxonomy results (metadata + growing model). The taxonomy is displayed
     # once at the very end (post P9/P10), so the readout reflects the final state.

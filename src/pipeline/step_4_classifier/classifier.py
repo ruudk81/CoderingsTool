@@ -576,11 +576,35 @@ class TaxonomyClassifier:
                           f"{time.time() - t_p1a:.1f}s ({s.get('tasks_successful', 0)} ok, "
                           f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries)")
                     print(f"    {len(self.axis_systems)}/{len(p1a_tasks)} domains got an axis system")
+                    for name in sorted(self.axis_systems):
+                        system = self.axis_systems[name]
+                        print(f"      {name} ({len(system.axes)} axes):")
+                        for axis in system.axes:
+                            print(f"        - {axis.axis_name}: {axis.value_range}")
+                    failed = [t['domain_name'] for t in p1a_tasks
+                              if t['domain_name'] not in self.axis_systems]
+                    if failed:
+                        print(f"      no axis system (P3 path): {', '.join(sorted(failed))}")
 
             if self.cost_tracker and _snap_p1a is not None:
                 self.cost_tracker.record_phase(
                     "step_4_taxonomy_classifier", "p1_axis_discovery",
                     _snap_p1a, token_tracker.snapshot(), self._model_p1)
+
+        if self._debug_stop_after_phase == 1:
+            if verbose:
+                print(f"\n  [DEBUG] Early stop after P1 — "
+                      f"{len(self.axis_systems)} axis system(s), no facets built")
+            return TaxonomyResult(
+                partition_n_labels={},
+                partition_n_batches={},
+                partition_facets={},
+                partition_assignments={},
+                partition_attributes={},
+                attribute_assignments={},
+                consolidation_log=consolidation_log,
+                axis_systems=self._dump_axis_systems(),
+            )
 
         # =================================================================
         # PHASE 2/3 (P2/P3): Per-domain Facet Discovery (SmoothRequester)
