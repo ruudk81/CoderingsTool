@@ -68,6 +68,7 @@ from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from .domain_discoverer import PartitionLabelMapping
 from .partition_labels import format_label
 from .taxonomy_health import drain_domains
+from .dedup import dedup_exact_attributes, dedup_exact_facets
 from models import DomainSet, DomainDescription
 from .prompts_classifier import (
     # P1: Axis Discovery
@@ -714,7 +715,13 @@ class TaxonomyClassifier:
         partition_n_labels: Dict[str, int] = {}
         partition_n_batches: Dict[str, int] = {}
         for name in sorted(domain_chunk_facets.keys()):
-            all_facets = [f for chunk in domain_chunk_facets[name] for f in chunk]
+            raw_facets = [f for chunk in domain_chunk_facets[name] for f in chunk]
+            all_facets = dedup_exact_facets(raw_facets)
+            if len(all_facets) < len(raw_facets):
+                consolidation_log.append({
+                    "action": "facet_exact_dedup", "domain": name,
+                    "before": len(raw_facets), "after": len(all_facets),
+                })
             partition_facets[name] = all_facets
             if all_facets:
                 partition_n_labels[name] = domain_chunk_info[name]['n_labels']
@@ -1108,7 +1115,13 @@ class TaxonomyClassifier:
         partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
         for facet_key, chunk_attributes in sorted(facet_chunk_attrs.items()):
             domain_name, facet_name = facet_key.split("::", 1)
-            flat = [a for chunk in chunk_attributes for a in chunk]
+            raw_attrs = [a for chunk in chunk_attributes for a in chunk]
+            flat = dedup_exact_attributes(raw_attrs)
+            if len(flat) < len(raw_attrs):
+                consolidation_log.append({
+                    "action": "attribute_exact_dedup", "domain": domain_name,
+                    "facet": facet_name, "before": len(raw_attrs), "after": len(flat),
+                })
             domain_facet_attributes.setdefault(domain_name, {})[facet_name] = flat
             partition_attributes.setdefault(domain_name, {})[facet_name] = flat
 
