@@ -332,6 +332,9 @@ async def main() -> None:
     n = len(sample)
     n_unassigned = sum(1 for r in rows if r["batch_facet"] == UNASSIGNED)
     n_agree = sum(1 for r in rows if r["batch_facet"] == r["baseline_facet"])
+    n_batch = sum(1 for r in rows if r["route"] == "batch")
+    n_assigned = n - n_unassigned
+    batch_share = n_batch / n_assigned if n_assigned else 0.0
     counts = defaultdict(int)
     for v in verdicts:
         counts[v] += 1
@@ -346,16 +349,24 @@ async def main() -> None:
         "model": assign_model, "judge_model": judge_model,
         "agreement": n_agree / n if n else 0.0,
         "unassigned": n_unassigned,
+        "batch_share": batch_share,
         "judge_counts": dict(counts),
         "rows": rows,
     }, indent=1, ensure_ascii=False), encoding="utf-8")
 
     print(f"\n=== batch-assignment experiment ({arm}) ===")
     print(f"sample: {n} ideeen | agreement met baseline: {n_agree / n * 100:.1f}%")
-    print(f"routes: batch={sum(1 for r in rows if r['route'] == 'batch')}, "
+    print(f"routes: batch={n_batch}, "
           f"escalated={sum(1 for r in rows if r['route'] == 'escalated_single')}, "
           f"unassigned={n_unassigned}")
     print(f"disagreements: {len(disagreements)} | judge: {dict(counts)}")
+    precondition_ok = batch_share >= 0.8
+    print(f"precondition: batch-route dekte {batch_share:.0%} van de toegewezen "
+          f"ideeën ({'OK' if precondition_ok else 'FAIL'})")
+    if not precondition_ok:
+        print(f"GATE precondition: FAIL — batch-route dekte slechts "
+              f"{batch_share:.0%} van de toegewezen ideeën; gates zeggen niets "
+              f"over batching")
     gate_a = n_unassigned / n <= 0.02 if n else False
     print(f"GATE a (<=2% unassigned): {'PASS' if gate_a else 'FAIL'}")
     if not disagreements:
@@ -366,7 +377,10 @@ async def main() -> None:
     else:
         gate_b = counts.get("baseline", 0) / n_judged <= 1 / 3
         print(f"GATE b (judge kiest <=1/3 baseline): {'PASS' if gate_b else 'FAIL'}")
-    print(f"resultaat: {out_path}")
+    if not precondition_ok:
+        print(f"resultaat: PRECONDITION FAILED — {out_path}")
+    else:
+        print(f"resultaat: {out_path}")
 
 
 if __name__ == "__main__":
