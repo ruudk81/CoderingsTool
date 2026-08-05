@@ -114,6 +114,7 @@ def main():
     # -- bucket by domain --------------------------------------------------
     facet_by_domain = defaultdict(list)
     attr_by_domain = defaultdict(list)
+    p4_escalation_by_domain = defaultdict(list)
     totals = []
     for e in actions:
         a = e.get("action", "")
@@ -124,11 +125,22 @@ def main():
             facet_by_domain[e.get("domain", "?")].append(e)
         elif a in ATTR_ACTIONS:
             attr_by_domain[e.get("domain", "?")].append(e)
+        elif a == "p4_batch_escalation":
+            p4_escalation_by_domain[e.get("domain", "?")].append(e)
         # axis_system_* entries are P1 provenance; view_taxonomy covers them
 
-    domains = sorted(set(facet_by_domain) | set(attr_by_domain))
+    domains = sorted(set(facet_by_domain) | set(attr_by_domain)
+                      | set(p4_escalation_by_domain))
     for dom in domains:
         print(f"\n{RULE}\nDOMEIN: {dom}\n{RULE}")
+
+        p4_entries = p4_escalation_by_domain.get(dom, [])
+        if p4_entries:
+            print("\n  P4 — batch-escalaties:")
+            for e in p4_entries:
+                reasons = e.get("reasons") or {}
+                reasons_str = ", ".join(f"{k}={v}" for k, v in reasons.items())
+                print(f"    P4-escalaties: {reasons_str}")
 
         f_entries = facet_by_domain.get(dom, [])
         if f_entries:

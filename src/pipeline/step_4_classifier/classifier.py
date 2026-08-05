@@ -71,7 +71,7 @@ from .taxonomy_health import drain_domains
 from .dedup import dedup_exact_attributes, dedup_exact_facets
 from utils.embedder import SharedEmbedder
 from .assignment_batching import (
-    LabelRep, facet_card_text, group_label_reps, make_batches,
+    facet_card_text, group_label_reps, make_batches,
     shortlist_indices, validate_batch_response,
 )
 from models import DomainSet, DomainDescription
@@ -812,7 +812,7 @@ class TaxonomyClassifier:
             if embedder is not None and len(facets) > self._assign_shortlist_k:
                 card_vectors = await embedder.embed_texts(
                     [facet_card_text(f.model_dump()) for f in facets])
-                label_vectors = await embedder.embed_texts([rep.label for rep in reps])
+                label_vectors = await embedder.embed_texts([rep.label or " " for rep in reps])
             for index_group in make_batches(len(reps), self._assign_batch_k):
                 menu = facets
                 if card_vectors is not None:
