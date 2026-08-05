@@ -297,7 +297,7 @@ async def main() -> None:
             try:
                 verdict = await llm_create_async(
                     judge_client, judge_model, prompt,
-                    response_model=JudgeVerdict, temperature=0.0, max_tokens=1000,
+                    response_model=JudgeVerdict, temperature=0.0, max_tokens=4000,
                     **get_reasoning_params(judge_model, phase="classifier_p5"),
                 )
             except Exception:
@@ -357,9 +357,15 @@ async def main() -> None:
           f"unassigned={n_unassigned}")
     print(f"disagreements: {len(disagreements)} | judge: {dict(counts)}")
     gate_a = n_unassigned / n <= 0.02 if n else False
-    gate_b = (counts["baseline"] / n_judged <= 1 / 3) if n_judged else True
     print(f"GATE a (<=2% unassigned): {'PASS' if gate_a else 'FAIL'}")
-    print(f"GATE b (judge kiest <=1/3 baseline): {'PASS' if gate_b else 'FAIL'}")
+    if not disagreements:
+        print("GATE b (judge kiest <=1/3 baseline): N/A (geen disagreements)")
+    elif n_judged == 0:
+        print("GATE b (judge kiest <=1/3 baseline): FAIL — judges onbruikbaar "
+              "(alle judge-calls faalden)")
+    else:
+        gate_b = counts.get("baseline", 0) / n_judged <= 1 / 3
+        print(f"GATE b (judge kiest <=1/3 baseline): {'PASS' if gate_b else 'FAIL'}")
     print(f"resultaat: {out_path}")
 
 
