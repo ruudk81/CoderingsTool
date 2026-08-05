@@ -710,6 +710,92 @@ class FacetAssignmentResult(BaseModel):
     )
 
 
+def build_batch_facet_assignment_model(
+    facet_ids: List[str],
+    idea_ids: List[str],
+):
+    """Runtime response model for batch facet assignment.
+
+    Literal fields make a hallucinated facet id or idea id a schema violation
+    (instructor retries) instead of a content error — the same
+    construction-over-instruction pattern as the tagged P2 discovery model.
+    "F_NONE" is the escape hatch: no facet fits; the caller escalates that
+    idea to a single full-menu call.
+    """
+    facet_id_literal = Literal[tuple(facet_ids + ["F_NONE"])]  # type: ignore[valid-type]
+    idea_id_literal = Literal[tuple(idea_ids)]  # type: ignore[valid-type]
+
+    item_model = create_model(
+        "BatchFacetAssignmentItem",
+        idea_id=(idea_id_literal, Field(
+            ..., description="The [id] tag of the idea, echoed exactly")),
+        assigned_facet_id=(facet_id_literal, Field(
+            ..., description=(
+                "The facet ID from the [F#] prefix. Return ONLY the ID. "
+                "Use F_NONE when no facet fits this idea."))),
+        confidence=(float, Field(
+            ..., ge=0.0, le=1.0, description="Assignment confidence (0.0-1.0)")),
+        valence=(str, Field(
+            ..., description="Evaluative direction relative to the facet: +, - or 0")),
+    )
+    return create_model(
+        "BatchFacetAssignmentResult",
+        assignments=(List[item_model], Field(
+            ..., description=(
+                "Exactly one assignment per idea listed in the prompt, "
+                "no idea skipped, no idea added"))),
+    )
+
+
+def build_facet_assignment_prompt_batch(
+    *,
+    survey_question: str,
+    language: str,
+    dataset_context_section: str,
+    domain_name: str,
+    domain_definition: str,
+    facets: List[DiscoveredFacet],
+    ideas: List[Tuple[str, str]],
+    axis_descriptions: Optional[Dict[str, str]] = None,
+) -> str:
+    """Batch variant of build_facet_assignment_prompt_single: one menu, a list
+    of (idea_id, idea_label) pairs, one schema-validated assignment per idea.
+    """
+    facet_codebook = _build_facet_codebook_block(facets, axis_descriptions=axis_descriptions)
+    ideas_block = "\n".join(f"[{idea_id}] {label}" for idea_id, label in ideas)
+
+    return f"""You are a qualitative coding assistant. Assign each survey response idea below to the facet that best captures the type of quality being described.
+
+<survey_context>
+Survey question: "{survey_question}"
+Language: {language}
+{dataset_context_section}
+</survey_context>
+
+<domain_context>
+Domain: {domain_name} -- {domain_definition}
+</domain_context>
+
+<facets>
+{facet_codebook}
+
+[F_NONE] None of the facets above fits the idea.
+</facets>
+
+<ideas>
+{ideas_block}
+</ideas>
+
+### VALENCE (evaluation relative to facet)
+- "+" Positive — The attribute is described as meeting or enhancing the facet
+- "-" Negative — The attribute is described as failing to meet or detracting from the facet
+- "0" Neutral — The response is descriptive, ambiguous, or does not express evaluation
+- Valence is not emotional sentiment, but evaluative direction relative to the facet
+
+Judge every idea independently on its own text; do not let one assignment influence the next. Return exactly one item per idea, echoing that idea's [id]. Do not skip ideas; do not add ideas. If no facet fits an idea, use "F_NONE" for that idea.
+
+Provide your output as valid JSON following the response schema provided."""
+
 
 # =============================================================================
 # §5 FACET CONSOLIDATION (P5) — in-axis, post-assignment
