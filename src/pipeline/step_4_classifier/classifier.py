@@ -946,7 +946,7 @@ class TaxonomyClassifier:
                     partition_assignments[domain_name] = {}
                 if result:
                     partition_assignments[domain_name].update(result)
-        elif verbose and p3_auto_assigned:
+        elif verbose and p3_auto_assigned and not p3_batch_tasks:
             print(f"    Assignment: all {len(p3_auto_assigned)} domains auto-assigned (1 facet each)")
 
         # __UNASSIGNED__ fallback for missing ideas (LLM-assigned domains only)
