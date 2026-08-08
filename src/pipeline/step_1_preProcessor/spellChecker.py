@@ -1169,7 +1169,7 @@ Suggested corrections: {task['suggestions']}
                     diag_skipped_too_short += 1
                     continue
 
-                # Word passed filters (is_alpha and len > 2). The cache is keyed on
+                # Word passed filters (is_checkable and len > 2). The cache is keyed on
                 # the word as written: Hunspell is case-sensitive, so "Nederlands"
                 # and "nederlands" get different verdicts and cannot share an entry.
                 word = token.text
