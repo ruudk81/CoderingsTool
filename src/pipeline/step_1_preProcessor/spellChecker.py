@@ -32,6 +32,7 @@ from pipeline.step_1_preProcessor.config_preProcessor import (
     MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,
     SUGGESTION_BATCH_SIZE, MAX_CONCURRENT_SUGGESTION_BATCHES,
     SPACY_VECTOR_NORM_THRESHOLD,
+    MAX_SUGGESTIONS_SHOWN,
     WORD_VOWELS,
     MAX_REPEATED_CHARS,
     MAX_CONSONANT_RUN,
@@ -480,7 +481,7 @@ class SpellChecker:
         except Exception as e:
             logger.error(f"Suggestion generation failed: {e}")
             print("⚠️  Suggestion generation error - using fallback")
-            new_suggestions = {word: [(None, None)] for word in unique_oov_words}
+            new_suggestions = {word: [] for word in unique_oov_words}
         
         # Update cache if enabled
         if self.suggestion_cache is not None:
@@ -525,26 +526,40 @@ class SpellChecker:
                 try:
                     # Process words concurrently within batch using reliable subprocess approach
                     async def process_single_word(word):
-                        """Process a single word and return results"""
+                        """Rank Hunspell's candidates; do not choose between them.
+
+                        Edit distance cannot: for "Geeb" it puts Gees, Geer, Geel,
+                        Geen and Geef all at 1, so an argmin here returns whichever
+                        Hunspell listed first and the right answer never reaches the
+                        prompt. Ranking is useful, deciding is not — the model has the
+                        survey question and the sentence, and needs candidates to
+                        apply them to.
+                        """
                         try:
-                            # Get unsplit suggestions using existing reliable method
                             unsplit_suggestions = await self.run_hunspell_word_async(word)
-                            
-                            # Get split suggestions (async operation)
-                            split_result = await self.find_best_split_for_spellcheck(word)
-                            left_part, right_part = split_result
-                            split_suggestion = f"{left_part} {right_part}" if (left_part and right_part) else None
-                            
-                            # Select best unsplit suggestion
-                            unsplit_suggestion = (
-                                min(unsplit_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
-                                if unsplit_suggestions else None)
-                            
-                            return word, (unsplit_suggestion, split_suggestion)
-                            
+
+                            left_part, right_part = await self.find_best_split_for_spellcheck(word)
+                            # A "split" where either half is the whole word is not a
+                            # split; it used to reach the prompt as "reklame reklame".
+                            split_suggestion = (
+                                f"{left_part} {right_part}"
+                                if (left_part and right_part
+                                    and left_part.lower() != word.lower()
+                                    and right_part.lower() != word.lower())
+                                else None)
+
+                            ranked = sorted(
+                                dict.fromkeys(s for s in unsplit_suggestions if s and s != word),
+                                key=lambda s: self.cached_levenshtein_distance(word, s),
+                            )[:MAX_SUGGESTIONS_SHOWN]
+                            if split_suggestion:
+                                ranked.append(split_suggestion)
+
+                            return word, ranked
+
                         except Exception as e:
                             logger.error(f"Error processing word '{word}' in batch {batch_index}: {e}")
-                            return word, (None, None)
+                            return word, []
                     
                     # Process all words in batch concurrently
                     word_tasks = [process_single_word(word) for word in batch_words]
@@ -567,17 +582,17 @@ class SpellChecker:
                 except Exception as e:
                     logger.error(f"Error in batch {batch_index}: {e}")
                     # Return empty results for failed batch
-                    return {word: (None, None) for word in batch_words}
+                    return {word: [] for word in batch_words}
         
         # Process all batches concurrently
         print("- Starting concurrent batch processing...")
         batch_tasks = [process_batch(batch_words, batch_idx) for batch_words, batch_idx in batches]
         batch_results = await asyncio.gather(*batch_tasks)
         
-        # Combine results from all batches
+        # Combine results from all batches: word -> ranked list of candidates
         for batch_result in batch_results:
-            for word, (unsplit_suggestion, split_suggestion) in batch_result.items():
-                best_suggestions[word].append((unsplit_suggestion, split_suggestion))
+            for word, ranked in batch_result.items():
+                best_suggestions[word] = ranked
         
         total_time = time.time() - start_time
         rate = len(unique_oov_words) / max(total_time, 0.1)
@@ -712,14 +727,8 @@ class SpellChecker:
 
             for word in oov_words:
                 if len(word) > 2 and word in best_suggestions_dict:
-                    suggestions = best_suggestions_dict.get(word, ["OOV"])
-                    cleaned_suggestions = []
-                    for sug in suggestions:
-                        if isinstance(sug, tuple):
-                            cleaned_suggestions.extend(s for s in sug if s and s != "OOV")
-                        elif sug and sug != "OOV":
-                            cleaned_suggestions.append(sug)
-                    word_to_suggestion_str[word] = cleaned_suggestions
+                    word_to_suggestion_str[word] = [
+                        s for s in best_suggestions_dict[word] if s and s != "OOV"]
             
             # Create tasks using inverted index
             for idx, item in enumerate(responses_with_ids):
@@ -779,16 +788,9 @@ class SpellChecker:
                         # Get suggestions for all OOV words
                         all_suggestions = []
                         for word in response_oov_words:
-                            suggestions = best_suggestions_dict.get(word, ["OOV"])
-                            # Clean up suggestion format
-                            cleaned_suggestions = []
-                            for sug in suggestions:
-                                if isinstance(sug, tuple):
-                                    cleaned_suggestions.extend([s for s in sug if s and s != "OOV"])
-                                else:
-                                    cleaned_suggestions.append(sug)
-
-                            all_suggestions.append(", ".join(cleaned_suggestions))
+                            cleaned = [s for s in best_suggestions_dict.get(word, [])
+                                       if s and s != "OOV"]
+                            all_suggestions.append(", ".join(cleaned) if cleaned else "OOV")
 
                         tasks.append({
                             "respondent_id": item['respondent_id'],

@@ -81,6 +81,12 @@ MAX_CONCURRENT_SUGGESTION_BATCHES = 6    # Concurrent batches for suggestion pro
 OUTPUT_TOKEN_RATIO = 0.15                # Estimated output/input token ratio for spell correction
 SPACY_VECTOR_NORM_THRESHOLD = 5          # Minimum vector norm for valid SpaCy tokens
 
+# How many of Hunspell's candidates reach the prompt. Edit distance ranks them but
+# cannot choose between them — "Geeb" has Gees, Geer, Geel, Geen and Geef all at
+# distance 1 — so the model gets the shortlist and applies the survey question and
+# the sentence, which is context only it has.
+MAX_SUGGESTIONS_SHOWN = 5
+
 # Unrepairable input: a token that is not language at all. Hunspell flags it like
 # any other unknown word, but there is nothing to correct it to, so the LLM has to
 # invent something — and it invents plausible words, which is worse than leaving
