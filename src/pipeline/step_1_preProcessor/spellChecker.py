@@ -35,12 +35,16 @@ from pipeline.step_1_preProcessor.config_preProcessor import (
     WORD_VOWELS,
     MAX_REPEATED_CHARS,
     MAX_CONSONANT_RUN,
+    COMPOUND_FIRST_POS,
+    COMPOUND_MIN_WORD_LENGTH,
 )
 
 # === PROMPTS ========================================================================================================
 from pipeline.step_1_preProcessor.prompts_preProcessor import (
     SPELLCHECK_INSTRUCTIONS,
     LLMCorrectionResponse,
+    SPLIT_COMPOUND_INSTRUCTIONS,
+    SplitCompoundResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -340,6 +344,8 @@ class SpellChecker:
             'unique_oov_words': 0,
             'dataset_vocabulary_words': 0,
             'unrepairable_words': 0,
+            'split_compound_candidates': 0,
+            'split_compounds_joined': 0,
             'oov_words_in_tasks': 0,
             'responses_with_tasks': 0,
             'tasks_filtered_out': 0,
@@ -938,6 +944,142 @@ Suggested corrections: {task['suggestions']}
         return fallback_fn
 
 
+    # === SPLIT COMPOUNDS ========================================================
+
+    async def _confirm_split_compounds(self, candidates: Dict[int, List[Tuple[str, str]]]
+                                       ) -> Dict[int, List[Tuple[str, str]]]:
+        """Keep only the pairs whose glued form Hunspell recognises as a word."""
+        if not candidates:
+            return {}
+
+        glued = sorted({(a + b).lower() for pairs in candidates.values() for a, b in pairs})
+        if self.hunspell_pool is None:
+            self._init_hunspell_pool()
+        outputs = await self.hunspell_pool.check_words_batch(
+            glued, self.config.hunspell_batch_size)
+        is_word = {w: not (o and o.startswith(('&', '#')))
+                   for w, o in zip(glued, outputs)}
+
+        confirmed = {idx: [(a, b) for a, b in pairs if is_word.get((a + b).lower())]
+                     for idx, pairs in candidates.items()}
+        confirmed = {idx: pairs for idx, pairs in confirmed.items() if pairs}
+
+        self.stats['split_compound_candidates'] = sum(len(p) for p in confirmed.values())
+        if confirmed:
+            print(f"  • Split-compound candidates: {self.stats['split_compound_candidates']} "
+                  f"pairs in {len(confirmed)} responses")
+        return confirmed
+
+    async def _resolve_split_compounds(self, responses: List[SpellCheckModel],
+                                       corrected: Dict[Any, str],
+                                       candidates: Dict[int, List[Tuple[str, str]]],
+                                       var_lab: str) -> Dict[Any, str]:
+        """Ask which candidate pairs are one word, then glue those. The model returns
+        verdicts, never text: the edit itself is a string join here, so this phase
+        cannot reword, drop or reorder anything."""
+        tasks = []
+        for idx, pairs in candidates.items():
+            response = responses[idx]
+            text = corrected.get(response.respondent_id, response.original_response)
+            # Only pairs still present after spell correction can be glued.
+            live = [(a, b) for a, b in pairs
+                    if re.search(rf'\b{re.escape(a)}\s+{re.escape(b)}\b', text)]
+            if live:
+                tasks.append({'respondent_id': response.respondent_id,
+                              'response': text, 'pairs': live, 'var_lab': var_lab})
+
+        if not tasks:
+            return corrected
+
+        requester = SmoothRequester(
+            model=self.model,
+            phase_key="step1_split_compound",
+            num_tasks=len(tasks),
+            verbose=self.verbose_reporter.enabled,
+            processing_config=self.processing_config,
+        )
+
+        _snap_before = token_tracker.snapshot() if self.cost_tracker else None
+        results = await requester.process_all(
+            tasks,
+            self._build_compound_prepare_fn(),
+            self._build_compound_parse_fn(),
+            lambda task, reason: {},          # unresolved: leave the text as it is
+        )
+        if self.cost_tracker and _snap_before is not None:
+            self.cost_tracker.record_phase(
+                "step_1_preprocessing", "split_compound",
+                _snap_before, token_tracker.snapshot(), self.model)
+
+        # One verdict per pair, not per response. Whether two words form a compound is
+        # a property of the pair, not of the sentence it sits in — and the model does
+        # not treat it that way: measured on ASN Qd1 it joined "milieu vriendelijk"
+        # four times and refused three, in near-identical responses. Half a corpus
+        # corrected is worse than none, because step 3 then sees two strings for one
+        # idea. So the corpus votes, and every occurrence follows the majority.
+        # A tie joins: in Dutch the closed compound is the more common correct form.
+        votes = defaultdict(lambda: [0, 0])
+        for result in results:
+            for verdicts in (result or {}).values():
+                for a, b, join in verdicts:
+                    key = (a.lower(), b.lower())
+                    votes[key][0] += int(join)
+                    votes[key][1] += 1
+
+        join_pairs = {key for key, (yes, total) in votes.items() if yes and yes * 2 >= total}
+        split_votes = sum(1 for key in join_pairs if votes[key][0] < votes[key][1])
+
+        merged = dict(corrected)
+        joined = 0
+        for task in tasks:
+            text = task['response']
+            for a, b in task['pairs']:
+                if (a.lower(), b.lower()) in join_pairs:
+                    text, n = re.subn(rf'\b{re.escape(a)}\s+{re.escape(b)}\b', a + b, text)
+                    joined += n
+            if text != task['response']:
+                merged[task['respondent_id']] = text
+
+        self.stats['split_compounds_joined'] = joined
+        print(f"  • Split compounds joined: {joined} of "
+              f"{self.stats['split_compound_candidates']} candidates "
+              f"({len(join_pairs)} distinct pairs, {split_votes} decided by corpus majority)")
+        return merged
+
+    def _build_compound_prepare_fn(self):
+        checker = self
+
+        def prepare_fn(task: Dict) -> Dict:
+            candidates = "\n".join(f'- "{a} {b}"' for a, b in task['pairs'])
+            prompt = SPLIT_COMPOUND_INSTRUCTIONS.format(
+                language=DEFAULT_LANGUAGE,
+                var_lab=task['var_lab'],
+                response=task['response'],
+                candidates=candidates,
+            )
+            return {
+                'prompt': prompt,
+                'response_model': SplitCompoundResponse,
+                'temperature': checker.config.temperature,
+                'extra_kwargs': get_reasoning_params(checker.model, phase="spell_check"),
+            }
+
+        return prepare_fn
+
+    def _build_compound_parse_fn(self):
+        def parse_fn(task: Dict, response) -> Optional[Dict[Any, List[Tuple[str, str, bool]]]]:
+            if not response or not response.verdicts:
+                return None
+            # Match verdicts back on the pair text, not on position: a model that
+            # drops or reorders one must not shift the others onto wrong pairs.
+            # Both answers are kept — the corpus vote needs the refusals too.
+            wanted = {f"{a} {b}".lower(): (a, b) for a, b in task['pairs']}
+            verdicts = [(*wanted[key], bool(v.join)) for v in response.verdicts
+                        if (key := v.pair.strip().lower()) in wanted]
+            return {task['respondent_id']: verdicts}
+
+        return parse_fn
+
     async def spell_check_async(self, responses: List[SpellCheckModel], var_lab: str) -> List[SpellCheckModel]:
         """Spell checking with improved performance and accuracy"""
         stats = ProcessingStats()
@@ -977,7 +1119,20 @@ Suggested corrections: {task['suggestions']}
         diag_skipped_named_entity = 0
         diag_skipped_too_short = 0
 
+        # Candidate split compounds, collected in this same SpaCy pass. A pair only
+        # qualifies once Hunspell confirms the glued form is a word — checked below,
+        # together with the OOV batch.
+        compound_candidates = defaultdict(list)
+
         for response_idx, doc in enumerate(self.get_nlp().pipe(sentences_list, batch_size=self.config.spacy_batch_size)):
+            for first, second in zip(doc[:-1], doc[1:]):
+                if (first.pos_ in COMPOUND_FIRST_POS
+                        and first.is_alpha and second.is_alpha
+                        and len(first.text) >= COMPOUND_MIN_WORD_LENGTH
+                        and len(second.text) >= COMPOUND_MIN_WORD_LENGTH
+                        and second.idx == first.idx + len(first.text) + 1):
+                    compound_candidates[response_idx].append((first.text, second.text))
+
             for token in doc:
                 diag_total_tokens += 1
 
@@ -1072,6 +1227,13 @@ Suggested corrections: {task['suggestions']}
             print(f"  • Completed OOV identification: {len(all_words_to_check):,} words in {processing_time:.1f}s ({words_per_second:.1f} words/sec)")
             print("    Performance improvement: HunspellPool eliminated subprocess creation overhead")
             
+        # --- Split compounds ---------------------------------------------------
+        # A pair of words whose glued form is in the dictionary. Hunspell cannot see
+        # this error class at all — both halves are valid words — so it never reaches
+        # the OOV path. Keeping the pairs whose glued form exists turns the whole
+        # class into a short list of yes/no questions.
+        compound_candidates = await self._confirm_split_compounds(compound_candidates)
+
         # --- Dataset vocabulary ------------------------------------------------
         # An unknown word that recurs across many responses is this dataset's own
         # vocabulary — a brand, an abbreviation, a term of art — not a typo. Asking
@@ -1154,6 +1316,12 @@ Suggested corrections: {task['suggestions']}
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line("No OOV words found - skipping correction step")
             corrected_sentences_dict = {}
+
+        # Split compounds are invisible to Hunspell, so this phase runs on its own
+        # candidate list — independent of whether the response had an OOV word.
+        if compound_candidates:
+            corrected_sentences_dict = await self._resolve_split_compounds(
+                responses, corrected_sentences_dict, compound_candidates, var_lab)
         
         # Step 3: Update sentences with tracked respondent IDs
         corrections_made = 0

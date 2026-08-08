@@ -35,6 +35,24 @@ class LLMCorrectionResponse(BaseModel):
     )
 
 
+class CompoundVerdict(BaseModel):
+    """One decision about one candidate pair."""
+    pair: str = Field(
+        description="The candidate pair, copied exactly as it was given"
+    )
+    join: bool = Field(
+        description="True if these two words must be written as a single word here"
+    )
+
+
+class SplitCompoundResponse(BaseModel):
+    """Structured output for the split-compound decision. Verdicts only: the edit
+    itself is made in code, so this phase can never reword the response."""
+    verdicts: List[CompoundVerdict] = Field(
+        description="One verdict per candidate pair, in the order they were given"
+    )
+
+
 # =============================================================================
 # STEP 1: SPELL CHECKING
 # =============================================================================
@@ -71,4 +89,44 @@ Additional guidelines:
 - If a suggested correction doesn't fit the context, consider alternative corrections that preserve the meaning.
 
 Begin processing the correction tasks now and provide your output as valid JSON following the response schema provided.
+"""
+
+
+# =============================================================================
+# STEP 1: SPLIT COMPOUNDS
+# =============================================================================
+
+SPLIT_COMPOUND_INSTRUCTIONS = """
+You are a {language} language expert judging open-ended survey responses.
+
+Each candidate below is a pair of adjacent words in the response. For each pair, decide
+whether those two words are one compound word that the respondent wrote apart by mistake,
+or two separate words that are correctly written apart.
+
+First, here is the survey question that the response is answering:
+<survey_question>
+{var_lab}
+</survey_question>
+
+Here is the response:
+<response>
+{response}
+</response>
+
+Here are the candidate pairs:
+<candidates>
+{candidates}
+</candidates>
+
+Judge each pair on its own, using these rules:
+1. Answer true only when the two words together name one single thing or one single
+   property, and writing them apart is a spelling mistake in this sentence.
+2. Answer false when the first word describes the second as a separate word, when the
+   two words belong to different parts of the sentence, or when both spellings are
+   acceptable.
+3. Judge the sentence as the respondent meant it. Read the pair in its context in the
+   response, not in isolation.
+4. Copy each pair back exactly as it was given, and return one verdict per candidate.
+
+Provide your output as valid JSON following the response schema provided.
 """

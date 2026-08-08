@@ -90,6 +90,14 @@ WORD_VOWELS = "aeiouyàáâäèéêëìíîïòóôöùúûü"
 MAX_REPEATED_CHARS = 3      # "allles" is a typo worth fixing, "xxxx" is a hammered key
 MAX_CONSONANT_RUN = 4       # "maatschappelihjk" survives this, "Jsisjdkdjd" does not
 
+# Split compounds: a compound written as two words. Both halves are valid words, so
+# Hunspell is blind to it. Candidates are adjacent pairs whose glued form is in the
+# dictionary. Restricting the first word to a noun is what makes the list usable —
+# measured on ASN Qd1, precision goes from ~55% to ~89%, because adjective + noun
+# ("fijne bank", "laag inkomen") is the normal way to write two words in Dutch.
+COMPOUND_FIRST_POS = frozenset({"NOUN", "PROPN"})
+COMPOUND_MIN_WORD_LENGTH = 3
+
 
 # =============================================================================
 # SPELL CHECK CONFIGURATION
