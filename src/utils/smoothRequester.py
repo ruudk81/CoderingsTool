@@ -21,25 +21,23 @@ import asyncio
 import logging
 import math
 import time
-from collections import deque, OrderedDict
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from aiolimiter import AsyncLimiter
-from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
+from openai import RateLimitError, APIConnectionError, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from instructor.exceptions import InstructorRetryException
 
-from config import (
-    API_PROVIDER, OPENAI_API_KEY,
-    FALLBACK_TPM, FALLBACK_RPM, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
-)
+from config import FALLBACK_TPM, FALLBACK_RPM, ProcessingConfig, DEFAULT_PROCESSING_CONFIG
 from utils.llm import (
-    create_client, llm_create_async, RateLimits,
+    create_client,
+    llm_create_async,
+    RateLimits,
     fetch_rate_limits as llm_fetch_rate_limits,
-    HeaderCaptureTransport,
 )
 from utils.perfModel import perf_model
 from utils.cached_resources import get_tiktoken_encoding

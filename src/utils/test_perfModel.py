@@ -1,5 +1,4 @@
 """Tests for perfModel. Run: python -m utils.test_perfModel (from src/)."""
-import json
 import math
 import tempfile
 from datetime import date, timedelta

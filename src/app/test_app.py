@@ -10,7 +10,6 @@ Run:  cd src && python app/test_app.py     (or: pytest app/test_app.py)
 NOTE: tests never click a 🚀 run button — that would start a real LLM run.
 """
 
-import glob
 import os
 import sys
 

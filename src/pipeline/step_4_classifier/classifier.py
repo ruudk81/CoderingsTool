@@ -74,7 +74,7 @@ from .assignment_batching import (
     facet_card_text, group_label_reps, make_batches,
     shortlist_indices, validate_batch_response,
 )
-from models import DomainSet, DomainDescription
+from models import DomainSet
 from .prompts_classifier import (
     # Axis Discovery
     build_axis_discovery_prompt,

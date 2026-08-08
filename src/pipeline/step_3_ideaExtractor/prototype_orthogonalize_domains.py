@@ -23,7 +23,6 @@ Usage:
 import asyncio
 import sys
 from pathlib import Path
-from typing import List
 
 import numpy as np
 
@@ -36,7 +35,8 @@ from utils.llm import create_client, llm_create_async
 from config import get_step_model, get_reasoning_params
 import models
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
-    DomainItem, build_orthogonalize_domains_prompt, ReformulatedDomains,
+    build_orthogonalize_domains_prompt,
+    ReformulatedDomains,
 )
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
 from test_data import TEST_DATA

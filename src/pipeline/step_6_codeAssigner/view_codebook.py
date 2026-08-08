@@ -30,9 +30,9 @@ Usage:
 
 import csv
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill

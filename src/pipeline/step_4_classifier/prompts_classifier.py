@@ -21,7 +21,6 @@ idea counts and real response texts.
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field, create_model, model_validator
 from pydantic.json_schema import SkipJsonSchema

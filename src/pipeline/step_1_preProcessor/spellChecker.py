@@ -8,10 +8,7 @@ import logging
 import time
 from functools import lru_cache
 from typing import List, Dict, Any, Optional, Tuple
-from collections import defaultdict, deque, Counter
-import itertools
-from dataclasses import dataclass
-import numpy as np
+from collections import defaultdict, Counter
 import nest_asyncio
 from pydantic import BaseModel
 
@@ -40,7 +37,6 @@ from pipeline.step_1_preProcessor.config_preProcessor import (
 # === PROMPTS ========================================================================================================
 from pipeline.step_1_preProcessor.prompts_preProcessor import (
     SPELLCHECK_INSTRUCTIONS,
-    CorrectionItem,
     LLMCorrectionResponse,
 )
 

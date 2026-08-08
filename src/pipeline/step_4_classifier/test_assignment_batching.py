@@ -2,7 +2,6 @@
 import numpy as np
 
 from pipeline.step_4_classifier.assignment_batching import (
-    LabelRep,
     facet_card_text,
     group_label_reps,
     make_batches,

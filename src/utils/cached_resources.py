@@ -2,7 +2,7 @@ import instructor
 import tiktoken
 import logging
 from openai import AsyncOpenAI
-from config import DEFAULT_LANGUAGE, OPENAI_API_KEY
+from config import OPENAI_API_KEY
 from .bare_mode_utils import conditional_cache_resource, conditional_spinner
 
 logger = logging.getLogger(__name__)

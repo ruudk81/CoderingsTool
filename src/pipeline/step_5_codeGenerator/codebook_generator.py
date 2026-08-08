@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional, Set, Tuple
 
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import Field, create_model
 import nest_asyncio
 
 from utils.smoothRequester import SmoothRequester

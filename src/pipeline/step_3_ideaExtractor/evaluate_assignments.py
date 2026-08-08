@@ -27,9 +27,8 @@ Usage:
 
 import asyncio
 import sys
-from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List
 
 import numpy as np
 

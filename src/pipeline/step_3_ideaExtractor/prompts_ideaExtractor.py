@@ -37,9 +37,12 @@ STANDING_OTHER_KEY = "other"
 
 
 try:
-    from .dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
+    from .dimension_data import DimensionDefinition, get_dimensions_in_decision_order
 except ImportError:
-    from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition, PromptRules, get_dimensions_in_decision_order
+    from pipeline.step_3_ideaExtractor.dimension_data import (
+        DimensionDefinition,
+        get_dimensions_in_decision_order,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════

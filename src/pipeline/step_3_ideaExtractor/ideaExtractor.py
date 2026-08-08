@@ -15,21 +15,12 @@ which handles rate pacing, concurrency control, workers, monitoring, and retry.
 # === MODULES ========================================================================================================
 import asyncio
 import random
-import re
-import time
 import statistics
-import itertools
 import logging
-from typing import Dict, List, Optional, Union, Tuple
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 from collections import deque
-from enum import Enum
-import numpy as np
 
 import nest_asyncio
-from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
-from instructor.exceptions import InstructorRetryException
 from aiolimiter import AsyncLimiter
 
 logger = logging.getLogger(__name__)

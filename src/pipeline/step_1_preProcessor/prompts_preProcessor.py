@@ -11,7 +11,7 @@ migrate-output-schema pattern - instructor uses Field(description=...) to
 communicate schema to the LLM.
 """
 
-from typing import List, Any
+from typing import List
 from pydantic import BaseModel, Field
 
 # =============================================================================

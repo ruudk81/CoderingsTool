@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import models
 
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
-from .partition_labels import collect_unique_labels, collect_unique_labels_with_domains, format_label
+from .partition_labels import collect_unique_labels_with_domains, format_label
 from models import DomainDescription, DomainSet
 
 
