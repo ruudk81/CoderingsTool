@@ -1,6 +1,7 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
+import html
 import re
 from typing import List, Union, Optional
 from pydantic import BaseModel, Field, field_validator
@@ -35,7 +36,17 @@ class TextNormalizer:
             self.verbose_reporter.stat_line(f"Minimum length: {self.config.min_length} characters", indent=1)
             self.verbose_reporter.stat_line(f"NA placeholder: '{self.config.na_placeholder}'", indent=1)
             self.verbose_reporter.stat_line(f"Custom symbols: '{self.config.custom_symbols}'", indent=1)
-    
+
+    def unescape_entities(self, text: str) -> str:
+        """HTML-entiteiten uit het bronbestand terugbrengen naar tekens.
+
+        SPSS-exports bevatten soms `&quot;` of `&#304;` in plaats van het teken
+        zelf. Onvertaald is dat geen woord, dus de speller ziet het niet en het
+        bereikt step 3 als inhoud. Ontsleutelen zet zo'n token terug in het
+        bereik van de gewone correctie.
+        """
+        return html.unescape(text)
+
     def replace_slash(self, text: str) -> str: 
         return re.sub(r'\s*/\s*|/', ' , ', text) 
 
@@ -53,11 +64,12 @@ class TextNormalizer:
         try:
             if not isinstance(text, str):
                 return self.config.na_placeholder
-                
+
+            text = self.unescape_entities(text)
             text = self.replace_slash(text)
             text = self.normalize_whitespace(text)
             text = self.handle_empty(text)
-            
+
             return text
         except Exception as e:
             # Improved error reporting
