@@ -1,54 +1,24 @@
 """
-Configuration for Taxonomy Classifier (P1-P10).
+Configuration for Taxonomy Classifier (P1-P9).
 
-Pipeline: facet discovery → facet consolidation → facet assignment →
-attribute discovery → attribute consolidation r1 → attribute review (P7,
-optional rewrite + flag gate) → attribute assignment → attribute
-consolidation r2 (P9, in-facet, post-assignment) → valence-neutral merge
-(P10).
+Pipeline, per level: discovery → assignment → consolidation.
+  P1 axis discovery → P2/P3 facet discovery (with/without axes) →
+  P4 facet assignment → P5 facet consolidation (in-axis) →
+  P6 attribute discovery → P7 attribute assignment →
+  P8 attribute consolidation (in-facet) → P9 valence-neutral merge.
+
+Consolidation runs after assignment so it sees real idea counts and texts
+rather than discovery's guesses. See dev/CLAUDE.md.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 from config import get_step_model
 
 
 @dataclass
-class ClassifierRampConfig:
-    """4-layer rate limiting with completion-based ramp.
-
-    Concurrency is computed from Little's Law using estimated latency
-    and real API rate limits. Ramp starts at start_fraction and
-    advances toward target_fraction proportional to completions.
-
-    Full stack (P1/P4/P5/P8): ConcurrencyGate + TokenBucket + AsyncLimiter + CircuitBreaker
-    Light mode (P2/P6/P7/P9): default semaphore + rate limiter only
-    """
-    # Concurrency ramp
-    estimated_latency_seconds: float = 10.0    # Conservative latency estimate
-    estimated_avg_tokens: int = 3000           # Conservative token estimate
-    start_fraction: float = 0.50               # Start at 50% of Little's Law
-    target_fraction: float = 0.90              # Ramp toward 90% of Little's Law
-    min_initial: int = 5                       # Concurrency floor
-    monitor_poll_interval: float = 0.5         # Monitor coroutine sleep (seconds)
-    min_completions_per_step: int = 3          # Min completions before evaluating ramp
-
-    # Warm-up calibration (recalibrate Little's Law with measured data)
-    warm_up_sample_min: int = 15               # Min completions before calibration
-    warm_up_sample_max: int = 30               # Max completions before forced calibration
-    warm_up_min_tasks_to_enable: int = 30      # Skip warm-up for phases with fewer tasks
-
-    # Circuit breaker (monitors timeout rate, reduces concurrency on sustained pressure)
-    circuit_breaker_enabled: bool = True
-    circuit_breaker_min_tasks: int = 20        # Skip CB for small phases
-
-    # Adaptive timeout (P95 × margin, computed after gate acquisition)
-    timeout_floor_seconds: float = 60.0        # Cold-start floor (chunk processing = 60s for large discovery prompts)
-
-
-@dataclass
 class CategoriesConfig:
-    """Configuration for Taxonomy Classifier (P1-P10)."""
+    """Configuration for Taxonomy Classifier (P1-P9)."""
 
     # ==========================================================================
     # PARTITION SOURCE
@@ -149,12 +119,6 @@ class CategoriesConfig:
     consolidation_max_chunks_per_call: int = 6   # Rule 2: max chunks per consolidation call
     consolidation_max_items_per_call: int = 150  # Rule 3: max total items per consolidation call
     consolidation_max_rounds: int = 5            # safety cap on recursive rounds
-
-    # ==========================================================================
-    # CONCURRENCY RAMP (completion-based, no bootstrap)
-    # ==========================================================================
-
-    ramp_config: ClassifierRampConfig = field(default_factory=ClassifierRampConfig)
 
     # ==========================================================================
     # OUTPUT
