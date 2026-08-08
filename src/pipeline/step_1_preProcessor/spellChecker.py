@@ -404,6 +404,18 @@ class SpellChecker:
     
     
     @staticmethod
+    def is_checkable(text: str) -> bool:
+        """Kan dit token een verkeerd gespeld woord zijn?
+
+        Ruimer dan `is_alpha`, en precies één klasse ruimer: letters met een
+        cijfer ertussen ("2eet", "Go4ed"). Dat is een typefout waarvan Hunspell
+        het antwoord kent. Tokens met een leesteken blijven buiten beeld —
+        "zzp-ers" en "i.o." zijn correct zoals ze staan, en binnenhalen zou ze
+        aan een model aanbieden dat verplicht is iets te veranderen.
+        """
+        return text.isalnum() and any(c.isalpha() for c in text)
+
+    @staticmethod
     def is_unrepairable(word: str) -> bool:
         """True for a token that is not language: no vowel, a hammered key, or a
         consonant run no word has. There is nothing to correct such a token to, so
@@ -414,6 +426,12 @@ class SpellChecker:
         26 known typos alone, and protects 14 of 15 acronyms as a side effect.
         """
         w = word.lower()
+        if any(c.isdigit() for c in w):
+            # Een cijfer staat voor een letter die we niet kunnen zien: "N8ks"
+            # is "Niks". De klinkertoets zou hier "geen klinker" concluderen op
+            # grond van een teken dat juist de klinker vervangt. Alleen de
+            # hamerslag-toets bewijst dan nog iets.
+            return bool(_REPEATED_CHARS.search(w))
         return (not any(c in WORD_VOWELS for c in w)
                 or bool(_REPEATED_CHARS.search(w))
                 or bool(_CONSONANT_RUN.search(w)))
@@ -1117,7 +1135,7 @@ Suggested corrections: {task['suggestions']}
 
         # DIAGNOSTIC: Track what's being filtered at word identification level
         diag_total_tokens = 0
-        diag_skipped_not_alpha = 0
+        diag_skipped_not_word = 0
         diag_skipped_named_entity = 0
         diag_skipped_too_short = 0
 
@@ -1138,8 +1156,8 @@ Suggested corrections: {task['suggestions']}
             for token in doc:
                 diag_total_tokens += 1
 
-                if not token.is_alpha:
-                    diag_skipped_not_alpha += 1
+                if not self.is_checkable(token.text):
+                    diag_skipped_not_word += 1
                     continue
 
                 # Named entity filter REMOVED - was catching typos like "merkiglo", "merr"
@@ -1169,9 +1187,9 @@ Suggested corrections: {task['suggestions']}
 
         # DIAGNOSTIC: Print word identification filter stats
         # Note: Named entities are now INCLUDED (not skipped) - only tracking for info
-        diag_passed_filters = diag_total_tokens - diag_skipped_not_alpha - diag_skipped_too_short
+        diag_passed_filters = diag_total_tokens - diag_skipped_not_word - diag_skipped_too_short
         print(f"  • Word filters: {diag_total_tokens:,} tokens → {diag_passed_filters:,} passed ({diag_passed_filters/max(diag_total_tokens,1)*100:.1f}%)")
-        print(f"    (skipped: {diag_skipped_not_alpha:,} non-alpha, {diag_skipped_too_short:,} too short; {diag_skipped_named_entity:,} named entities now included)")
+        print(f"    (skipped: {diag_skipped_not_word:,} geen woord, {diag_skipped_too_short:,} too short; {diag_skipped_named_entity:,} named entities now included)")
         print(f"  • Cached words processed, {len(all_words_to_check):,} words need Hunspell verification")
         
         if all_words_to_check:
