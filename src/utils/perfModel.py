@@ -36,6 +36,23 @@ def _model_key(model: str) -> str:
     return f"{API_PROVIDER}:{model}"
 
 
+def _serves(stored_key: str, deployment: str) -> bool:
+    """Does a stored buffer key point at this deployment?
+
+    Stored keys outlive config: perf_model.json accumulates a key per model it
+    has ever seen, so it can hold a model that has since left config.MODELS.
+    get_model_for_api() rejects a name it doesn't know, and one such key would
+    otherwise take down the whole warm start — predict() catches broadly and
+    falls back to cold for *every* model, not just the stale one.
+    """
+    if not stored_key.startswith(f"{API_PROVIDER}:"):
+        return False
+    try:
+        return get_model_for_api(stored_key.split(":", 1)[1]) == deployment
+    except RuntimeError:
+        return False
+
+
 @dataclass
 class Prediction:
     expected_input_tokens: Optional[int] = None
@@ -123,7 +140,7 @@ class PerfModel:
                 deployment = get_model_for_api(model)
                 dep_buffers = [list(b)
                                for mk, phs in self._buffers.items()
-                               if mk.startswith(f"{API_PROVIDER}:") and get_model_for_api(mk.split(":", 1)[1]) == deployment
+                               if _serves(mk, deployment)
                                for b in phs.values()]
             pred = _cold()
             buf = phases.get(phase, [])

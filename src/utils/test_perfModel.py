@@ -169,6 +169,27 @@ def test_predict_ignores_foreign_provider_capacity():
     assert p.concurrency is None
 
 
+def test_predict_survives_a_model_that_left_config():
+    """A stored key for a model no longer in config.MODELS must cost nothing.
+
+    perf_model.json accumulates a key per model it has ever seen, so it outlives
+    config. get_model_for_api() rejects names it doesn't know (refactor
+    2026-08-08), and predict() catches broadly — so without a guard one retired
+    model would silently drop the whole warm start to cold, for every model.
+    """
+    pm = PerfModel(_tmp_store())
+    for i in range(20):
+        pm.observe("gpt-5.4", "p_test", 1000 + i * 100, 200, 2.0 + i * 0.05, 10 + i * 5, False)
+    warm = pm.predict("gpt-5.4", "p_test")
+    assert warm.origins["avg_tokens"] == "phase"
+
+    pm._buffers[_model_key("gpt-4o-mini-retired")] = {"p_gone": [_obs(800, 100, conc=50)]}
+    after = pm.predict("gpt-5.4", "p_test")
+    assert after.origins == warm.origins
+    assert after.avg_tokens == warm.avg_tokens
+    assert after.concurrency == warm.concurrency
+
+
 def test_predict_new_phase_uses_pool():
     pm = PerfModel(_tmp_store())
     for i in range(20):
