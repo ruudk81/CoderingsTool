@@ -24,25 +24,13 @@ from config import get_step_model
 class IdeaExtractionConfig:
     """Configuration for idea extraction step"""
     max_tokens: int = 16000
-    completion_reserve: int = 1000
-    min_batch_size: int = 5  # Minimum responses per batch for efficiency
-    max_batch_size: int = 20  # Maximum responses per batch for manageability
-    target_token_utilization: float = 0.8  # Use 80% of available tokens per batch
-    retry_delay: int = 2
-    max_retries: int = 3
     spacy_batch_size: int = 32
-    umap_n_jobs: int = 1
     max_code_examples: int = 5  # For verbose output
-    max_sample_responses: int = 3  # For verbose output
-    # Models per stage (derived from MODEL_FAMILY toggle in config.py)
+    # Models per stage
     model_context: str = get_step_model("idea_extraction_context")
     model_taxonomy: str = get_step_model("idea_extraction_taxonomy")
     model_abstraction_ladder: str = get_step_model("idea_extraction_abstraction_ladder")
     temperature: float = 0.0  # Temperature for generation
-    max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
-    # Timeout configuration for API calls
-    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
-    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
 
 # =============================================================================
 # TOKEN HISTORY CONFIGURATION
@@ -72,8 +60,6 @@ class TiktokenOffsetConfig:
     - Message formatting tokens
     """
     api_offset_default: int = 300           # Default offset (instructor overhead ~300 tokens)
-    offset_history_maxlen: int = 30         # Samples to learn the offset
-    offset_min_samples: int = 5             # Min samples before using learned offset
 
 
 # =============================================================================
@@ -90,19 +76,6 @@ class TimeoutConfig:
     timeout_floor_seconds: float = 10.0     # Cold-start floor for timeout safety net
     default_timeout_seconds: float = 10.0   # Cold-start default timeout
     default_latency_seconds: float = 2.0    # Default latency estimate
-    max_token_acquire_attempts: int = 1000  # Max attempts to acquire tokens before failing
-
-
-# =============================================================================
-# REPORTING CONFIGURATION
-# =============================================================================
-
-@dataclass
-class ReportingConfig:
-    """Configuration for progress and diagnostic reporting intervals."""
-    progress_report_interval: int = 5       # Seconds between progress reports
-    diagnostic_interval: int = 10           # Seconds between diagnostic outputs
-    adjustment_interval: int = 20           # Seconds between concurrency/throughput adjustments
 
 
 # =============================================================================
@@ -131,30 +104,8 @@ class ConcurrencyControlConfig:
     """
     ramp_step_pct: float = 0.025           # +2.5% of starting concurrency per tick (min 2)
     backoff_throughput_pct: float = 0.90   # BACKOFF = 0.9 × healthy_throughput × healthy_p50 (cooling room)
-    steady_ratio: float = 2.0             # inflight_P95/P50 > 2× → STEADY
     inflight_ratio: float = 5.0           # inflight_P100/P50 > 5× → BACKOFF (after 2 consecutive ticks)
     min_concurrency: int = 2              # hard floor
-
-
-# =============================================================================
-# RAMP-UP CONFIGURATION
-# =============================================================================
-
-@dataclass
-class RampUpConfig:
-    """Completion-based concurrency ramp with congestion detection.
-
-    Concurrency scales linearly with completion progress:
-      0% complete → start_fraction (50%) of Little's Law
-      100% complete → target_fraction (90%) of Little's Law
-
-    Stop early if throughput drops OR queue starts backing up.
-    """
-    start_fraction: float = 0.50
-    target_fraction: float = 0.90
-    min_initial: int = 5
-    measurement_window_seconds: float = 0.5
-    min_completions_per_step: int = 3
 
 
 # =============================================================================
@@ -196,34 +147,6 @@ class PIDControllerConfig:
     kp_down: float = 0.2                    # Proportional gain when over-utilizing
     ki: float = 0.05                        # Integral gain (accumulated error correction)
     kd: float = 0.1                         # Derivative gain (dampen oscillations)
-    min_adjustment: float = 0.02            # Minimum adjustment to apply (2%)
-    max_adjustment: float = 0.15            # Maximum single adjustment (15%)
-
-
-# =============================================================================
-# TPM TRACKING CONFIGURATION
-# =============================================================================
-
-@dataclass
-class TPMTrackingConfig:
-    """Real-time TPM (Tokens Per Minute) tracking for PID input.
-
-    Tracks actual token consumption in a sliding window to provide
-    accurate utilization metrics for PID control.
-    """
-    sliding_window_seconds: float = 60.0    # Track TPM over last 60 seconds
-    target_utilization: float = 1.00        # Target 100% of headroom-adjusted TPM limit (headroom provides the buffer)
-
-
-# =============================================================================
-# THROUGHPUT ADJUSTMENT CONFIGURATION
-# =============================================================================
-
-@dataclass
-class ThroughputConfig:
-    """Configuration for threshold-based token estimate correction."""
-    adjustment_min_samples: int = 10        # Min samples before adjustment
-    adjustment_threshold: float = 1.05      # Sensitivity threshold (5%)
 
 
 # =============================================================================
@@ -286,49 +209,6 @@ class DomainDiscoveryConfig:
     chunk_overlap: float = 0.2         # overlap between adjacent chunks
 
 
-
-# =============================================================================
-# HEADER-AWARE CONCURRENCY CONTROLLER CONFIGURATION
-# =============================================================================
-
-@dataclass
-class HeaderAwareConfig:
-    """Header-aware concurrency controller thresholds.
-
-    Residual latency = observed latency - openai-processing-ms.
-    Baseline is learned from the first evaluation after warm-up.
-    All thresholds are relative to baseline (drift ratios), not absolute.
-
-    Same drift pattern as old P50-drift, but on a clean signal where
-    server processing time is subtracted out.
-    """
-    # Residual drift thresholds (relative to learned baseline)
-    drift_steady: float = 1.2             # drift > 1.2 → slowing → STEADY (hold)
-    drift_backoff: float = 1.5            # drift > 1.5 for 2 ticks → stressed → BACKOFF
-    drift_resume: float = 1.1             # drift < 1.1 in STEADY → resume RAMP-UP
-
-    # Trend thresholds (recent vs previous median ratio)
-    trend_recover_ratio: float = 0.8      # trend below this → recovering
-
-    # Header pressure (1.0 - remaining/limit)
-    budget_pressure_threshold: float = 0.9  # pressure above this → BACKOFF
-
-    # Tracker settings
-    tracker_window: int = 200             # max entries in residual tracker
-    median_window: int = 20              # samples for median computation
-    trend_recent: int = 10               # recent window for trend
-    trend_previous: int = 10             # previous window for trend
-
-    # Header detection
-    header_detection_samples: int = 10   # responses to check before declaring availability
-    header_detection_threshold: float = 0.8  # fraction that must have headers (8/10)
-
-    # Simplified circuit breaker (defense-in-depth)
-    cb_window: int = 100                 # count-based window
-    cb_trip_threshold: float = 0.05      # >5% timeout rate
-    cb_cooldown_s: float = 10.0          # fixed cooldown
-
-
 # =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
@@ -337,14 +217,10 @@ DEFAULT_IDEA_EXTRACTION_CONFIG = IdeaExtractionConfig()
 DEFAULT_TOKEN_HISTORY_CONFIG = TokenHistoryConfig()
 DEFAULT_TIKTOKEN_OFFSET_CONFIG = TiktokenOffsetConfig()
 DEFAULT_TIMEOUT_CONFIG = TimeoutConfig()
-DEFAULT_REPORTING_CONFIG = ReportingConfig()
 DEFAULT_BOOTSTRAP_CONFIG = BootstrapConfig()
-DEFAULT_THROUGHPUT_CONFIG = ThroughputConfig()
 DEFAULT_WARM_UP_CONFIG = WarmUpConfig()
 DEFAULT_CONCURRENCY_CONTROL_CONFIG = ConcurrencyControlConfig()
 DEFAULT_CIRCUIT_BREAKER_CONFIG = CircuitBreakerConfig()
 DEFAULT_PID_CONTROLLER_CONFIG = PIDControllerConfig()
-DEFAULT_TPM_TRACKING_CONFIG = TPMTrackingConfig()
 DEFAULT_SPECIFIER_CONFIG = SpecifierConfig()
 DEFAULT_DOMAIN_DISCOVERY_CONFIG = DomainDiscoveryConfig()
-DEFAULT_HEADER_AWARE_CONFIG = HeaderAwareConfig()
