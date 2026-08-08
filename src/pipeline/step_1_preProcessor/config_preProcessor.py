@@ -110,6 +110,14 @@ class SpellCheckConfig:
     enable_word_frequency_cache: bool = True  # skip Hunspell for words already seen
     max_unique_oov_words: int = 5000          # cap on unique OOV words processed
 
+    # Dataset vocabulary: an unknown word that recurs across many responses is
+    # this dataset's own vocabulary (a brand, an abbreviation, a term), not a
+    # typo. Threshold is the higher of the two, so it scales with sample size
+    # without collapsing on a small one. Calibrated on one dataset — remeasure
+    # before trusting it on a corpus of a very different size.
+    dataset_vocab_min_responses: int = 4
+    dataset_vocab_response_ratio: float = 0.0025
+
     # Output formatting
     repeated_char_threshold: int = 5    # a "word" of 5+ identical chars is not spell-checkable
     max_correction_examples: int = 10   # verbose output only

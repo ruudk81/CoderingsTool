@@ -57,7 +57,6 @@ class TextFinalizer:
             if not isinstance(text, str) or not text:
                 return text
                 
-            text = text.lower()
             text = self.capitalize_first_letter(text)
             text = self.ensure_ending_punctuation(text)
             text = self.remove_duplicate_punctuation(text)

@@ -54,7 +54,6 @@ class TextNormalizer:
             if not isinstance(text, str):
                 return self.config.na_placeholder
                 
-            text = text.lower()
             text = self.replace_slash(text)
             text = self.normalize_whitespace(text)
             text = self.handle_empty(text)
@@ -78,7 +77,6 @@ class TextNormalizer:
         stats.input_count = len(data)
                   
         # Track changes and examples
-        case_changes = 0
         whitespace_changes = 0
         invalid_filtered = 0
         slash_changes = 0
@@ -104,8 +102,6 @@ class TextNormalizer:
                 valid_responses_before += 1
                 
                 # Track specific changes
-                if original != original.lower():
-                    case_changes += 1
                 if re.search(r'\s{2,}', original):
                     whitespace_changes += 1
                 if '/' in original:
@@ -127,7 +123,6 @@ class TextNormalizer:
         self.stats = {
             'input_count': stats.input_count,
             'output_count': stats.output_count,
-            'case_changes': case_changes,
             'whitespace_changes': whitespace_changes,
             'slash_changes': slash_changes,
             'invalid_filtered': invalid_filtered
@@ -139,8 +134,6 @@ class TextNormalizer:
         
         # Verbose detailed transformation statistics
         if self.verbose_reporter.enabled:
-            if case_changes > 0:
-                self.verbose_reporter.stat_line(f"Case normalization: {case_changes} responses updated")
             if whitespace_changes > 0:
                 self.verbose_reporter.stat_line(f"Whitespace cleanup: {whitespace_changes} responses updated")
             if slash_changes > 0:

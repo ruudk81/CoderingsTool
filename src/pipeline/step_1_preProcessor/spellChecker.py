@@ -332,6 +332,7 @@ class SpellChecker:
             'words_checked': 0,
             'oov_words_found': 0,
             'unique_oov_words': 0,
+            'dataset_vocabulary_words': 0,
             'oov_words_in_tasks': 0,
             'responses_with_tasks': 0,
             'tasks_filtered_out': 0,
@@ -971,20 +972,21 @@ Suggested corrections: {task['suggestions']}
                     diag_skipped_too_short += 1
                     continue
 
-                # Word passed filters (is_alpha and len > 2)
-                word_normalized = token.text.lower()
-                word_original = token.text
+                # Word passed filters (is_alpha and len > 2). The cache is keyed on
+                # the word as written: Hunspell is case-sensitive, so "Nederlands"
+                # and "nederlands" get different verdicts and cannot share an entry.
+                word = token.text
 
                 # Check cache first
-                if word_frequency_cache is not None and word_normalized in word_frequency_cache:
-                    is_oov = word_frequency_cache[word_normalized]
+                if word_frequency_cache is not None and word in word_frequency_cache:
+                    is_oov = word_frequency_cache[word]
                     if is_oov:
-                        oov_words.append(word_original)
+                        oov_words.append(word)
                         self.stats['oov_words_found'] += 1
-                        word_to_responses[word_original].append(response_idx)
+                        word_to_responses[word].append(response_idx)
                 else:
                     # Add to batch for Hunspell checking
-                    all_words_to_check.append((word_normalized, word_original, response_idx))
+                    all_words_to_check.append((word, response_idx))
 
         # DIAGNOSTIC: Print word identification filter stats
         # Note: Named entities are now INCLUDED (not skipped) - only tracking for info
@@ -1004,9 +1006,9 @@ Suggested corrections: {task['suggestions']}
             
             start_time = time.time()
             
-            # Extract just the original words for batch processing
-            words_only = [item[1] for item in all_words_to_check]  # word_original
-            
+            # Hunspell sees the word as written, capitals included
+            words_only = [word for word, _ in all_words_to_check]
+
             # Process all words in efficient batches using HunspellPool
             batch_outputs = await self.hunspell_pool.check_words_batch(words_only, batch_size)
 
@@ -1018,18 +1020,18 @@ Suggested corrections: {task['suggestions']}
 
             # Process results and update cache
             response_flagged = set()
-            for i, (word_normalized, word_original, response_idx) in enumerate(all_words_to_check):
+            for i, (word, response_idx) in enumerate(all_words_to_check):
                 self.stats['words_checked'] += 1
                 output = batch_outputs[i]
                 is_oov = output and output.startswith(('&', '#'))
-                
+
                 # Cache the result
                 if word_frequency_cache is not None:
-                    word_frequency_cache[word_normalized] = is_oov
-                
+                    word_frequency_cache[word] = is_oov
+
                 if is_oov:
-                    oov_words.append(word_original)
-                    word_to_responses[word_original].append(response_idx)
+                    oov_words.append(word)
+                    word_to_responses[word].append(response_idx)
                     response_flagged.add(response_idx)
                     self.stats['oov_words_found'] += 1
                 
@@ -1048,6 +1050,35 @@ Suggested corrections: {task['suggestions']}
             print(f"  • Completed OOV identification: {len(all_words_to_check):,} words in {processing_time:.1f}s ({words_per_second:.1f} words/sec)")
             print("    Performance improvement: HunspellPool eliminated subprocess creation overhead")
             
+        # --- Dataset vocabulary ------------------------------------------------
+        # An unknown word that recurs across many responses is this dataset's own
+        # vocabulary — a brand, an abbreviation, a term of art — not a typo. Asking
+        # the LLM to "correct" it is what damages the data, so it never becomes a
+        # task. Case-insensitive, because respondents write the same name several
+        # ways. This fails the safe way: a protected typo merely stays uncorrected,
+        # while an unprotected name gets rewritten and the original is gone.
+        response_count_per_word = defaultdict(set)
+        for word, response_indices in word_to_responses.items():
+            response_count_per_word[word.lower()].update(response_indices)
+
+        vocab_threshold = max(
+            self.config.dataset_vocab_min_responses,
+            round(len(responses) * self.config.dataset_vocab_response_ratio))
+        dataset_vocabulary = {
+            word for word, indices in response_count_per_word.items()
+            if len(indices) >= vocab_threshold}
+
+        if dataset_vocabulary:
+            oov_words = [w for w in oov_words if w.lower() not in dataset_vocabulary]
+            word_to_responses = defaultdict(list, {
+                w: idx for w, idx in word_to_responses.items()
+                if w.lower() not in dataset_vocabulary})
+            preview = ", ".join(sorted(dataset_vocabulary)[:10])
+            print(f"  • Dataset vocabulary left uncorrected "
+                  f"(seen in >={vocab_threshold} responses): {preview}"
+                  f"{', ...' if len(dataset_vocabulary) > 10 else ''}")
+        self.stats['dataset_vocabulary_words'] = len(dataset_vocabulary)
+
         # FIXED: Process only unique OOV words to avoid duplicates
         unique_oov_words = list(set(oov_words))
         self.stats['unique_oov_words'] = len(unique_oov_words)
@@ -1063,12 +1094,14 @@ Suggested corrections: {task['suggestions']}
             unique_oov_words = most_common_oov
             self.stats['unique_oov_words'] = len(unique_oov_words)
         
-        # Verbose OOV analysis details
+        # Verbose OOV analysis details. Count after the dataset-vocabulary filter:
+        # before it, this number includes responses whose only unknown word is a
+        # name that will never become a correction task.
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
-            if word_frequency_cache:
-                cache_hits = sum(1 for cached in word_frequency_cache.values() if not cached)
-                self.verbose_reporter.stat_line(f"Word frequency cache hits: {cache_hits}")
+            responses_to_correct = len({idx for idxs in word_to_responses.values() for idx in idxs})
+            self.verbose_reporter.stat_line(
+                f"Responses requiring correction: {responses_to_correct} "
+                f"(flagged before vocabulary filter: {docs_with_oov})")
         
         # Verbose progress indicators for large datasets
         if self.verbose_reporter.enabled and len(responses) > 1000:
