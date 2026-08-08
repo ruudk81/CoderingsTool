@@ -1,32 +1,32 @@
 """
 Taxonomy Classifier: inductive taxonomy discovery (P1-P9).
 
-Pipeline (9 stages, P3/P7 optional):
-  P1.  Facet Discovery (chunked, per domain) — dimension-specific semantics
-  P2.  Facet Consolidation (per domain) — conceptual merge + orthogonal formulation
-  P3.  Facet Review (per domain, optional) — rewrite name/description for
-       orthogonality, write a boundary test, flag suspected concept overlap.
-       Schema-enforced rewrite-and-flag only: the facet SET cannot change.
-       Skipped for the two standing drain domains and for single-facet domains.
-  P4.  Facet Assignment (per domain) — assign ideas to consolidated facets
-  P5.  Attribute Discovery (per facet within domain) — concrete observables
-  P6.  Attribute Consolidation, round 1 (per facet) — dedup the chunk discoveries
-  P7.  Attribute Review (per domain, optional) — rewrite name/description for
-       orthogonality, flag suspected concept overlap across the domain's
-       consolidated attribute set. Schema-enforced rewrite-and-flag only: the
-       attribute SET cannot change. Skipped for the two standing drain domains
-       and for domains with fewer than 2 attributes in total.
-  P8.  Attribute Assignment (per facet) — assign ideas to attributes
-  P9.  Attribute Consolidation, round 2 (per facet, AFTER assignment) — judged on
-       real counts and real contents, with four actions: merge / split / widen /
-       move. Scope is one facet: no cross-facet or cross-domain structural
-       consolidation exists, so a structure merge can never relocate an idea's
-       facet or domain — because per-idea (domain, facet) is DERIVED from where
-       the attribute lives, that relocation would otherwise move every idea in
-       the bucket at once. When a group of ideas belongs elsewhere the IDEAS
-       move and the structure stays put.
+Pipeline. The authoritative phase numbering is `config.STEP_MODEL_TIERS` — these
+numbers have been renumbered several times, so keep this list in sync with it.
 
-Per-domain steps run CONCURRENTLY; P9 runs per facet after P8.
+  P1.  Axis Discovery (per domain) — the analytical lenses the domain is read
+       through. Behind `axis_first_enabled`; when off, or when a domain's axis
+       system is rejected, that domain falls back to the untagged builders.
+  P2.  Facet Discovery (chunked, per domain) — dimension-specific semantics.
+       Tagged against the axis system when there is one; the untagged fallback
+       path is referred to as P3 and shares this phase's tier and phase_key.
+  P4.  Facet Assignment (per domain) — assign ideas to discovered facets.
+       Batch mode is the default (K=5, shortlisted menu); items the batch route
+       cannot place escalate to the single-item path.
+  P5.  Facet Consolidation (in-axis, per domain, AFTER assignment)
+  P6.  Attribute Discovery (per facet within domain) — concrete observables
+  P7.  Attribute Assignment (per facet) — assign ideas to attributes
+  P8.  Attribute Consolidation (in-facet, per facet, AFTER assignment) — judged
+       on real counts and real contents, with four actions: merge / split /
+       widen / move. Scope is one facet: no cross-facet or cross-domain
+       structural consolidation exists, so a structure merge can never relocate
+       an idea's facet or domain — because per-idea (domain, facet) is DERIVED
+       from where the attribute lives, that relocation would otherwise move
+       every idea in the bucket at once. When a group of ideas belongs elsewhere
+       the IDEAS move and the structure stays put.
+  P9.  Valence-neutral merge — lives in `valence_consolidator.py`.
+
+Per-domain steps run CONCURRENTLY; P8 runs per facet after P7.
 
 Usage:
     from .classifier import TaxonomyClassifier
@@ -76,13 +76,13 @@ from .assignment_batching import (
 )
 from models import DomainSet, DomainDescription
 from .prompts_classifier import (
-    # P1: Axis Discovery
+    # Axis Discovery
     build_axis_discovery_prompt,
     AxisSystemResponse,
-    # P1b: Tagged Facet Discovery
+    # Facet Discovery (tagged against the axis system)
     build_tagged_facet_discovery_prompt,
     build_tagged_facet_discovery_model,
-    # P1: Facet Discovery
+    # Facet Discovery (untagged fallback)
     build_facet_discovery_prompt,
     FacetDiscoveryResult,
     DiscoveredFacet,
@@ -102,7 +102,7 @@ from .prompts_classifier import (
     # Attribute Assignment
     build_attribute_assignment_prompt_single,
     AttributeAssignmentResult,
-    # P9: In-facet Attribute Consolidation (post-assignment)
+    # Attribute Consolidation (in-facet, post-assignment)
     build_in_facet_consolidation_prompt,
     build_neighbour_block,
     InFacetConsolidatedResponse,
@@ -231,28 +231,24 @@ class TaxonomyClassifier:
     """
     Taxonomy Classifier: inductive taxonomy discovery (P1-P9).
 
-    Pipeline (9 stages, P3/P7 optional):
-    P1.  FACET DISCOVERY:              Per domain, chunked with overlap (concurrent)
-    P2.  FACET CONSOLIDATION:          Per domain, conceptual merge + orthogonal labels
-    P3.  FACET REVIEW (optional):      Per domain, rewrite + flag only — sharpens
-                                       names/descriptions, writes a boundary test,
-                                       flags suspected overlap. Skipped for drain
-                                       domains and single-facet domains.
-    P4.  FACET ASSIGNMENT:             Per domain, assign ideas to facets (concurrent)
-    P5.  ATTRIBUTE DISCOVERY:          Per (domain, facet), discover attributes (concurrent)
-    P6.  ATTRIBUTE CONSOLIDATION r1:   Per facet, dedup the chunk discoveries
-    P7.  ATTRIBUTE REVIEW (optional):  Per domain, rewrite + flag only — sharpens
-                                       names/descriptions across the domain's
-                                       consolidated attribute set, flags suspected
-                                       overlap. Skipped for drain domains and
-                                       domains with fewer than 2 attributes total.
-    P8.  ATTRIBUTE ASSIGNMENT:         Per facet, assign ideas to attributes (concurrent)
-    P9.  ATTRIBUTE CONSOLIDATION r2:   Per facet, AFTER assignment — real counts and
-                                       real contents; merge / split / widen / move.
-                                       The facet is fixed and is not in the schema:
-                                       no cross-facet or cross-domain structural
-                                       consolidation exists, so a merge can never
-                                       relocate an idea across facets or domains.
+    Pipeline — numbering follows config.STEP_MODEL_TIERS:
+    P1.  AXIS DISCOVERY:               Per domain, the analytical lenses; behind
+                                       axis_first_enabled, with an untagged fallback
+    P2.  FACET DISCOVERY:              Per domain, chunked with overlap (concurrent);
+                                       tagged against the axis system when there is
+                                       one, otherwise the untagged path (aka P3)
+    P4.  FACET ASSIGNMENT:             Per domain, assign ideas to facets (concurrent);
+                                       batch by default, escalating to single items
+    P5.  FACET CONSOLIDATION:          Per domain, in-axis, AFTER assignment
+    P6.  ATTRIBUTE DISCOVERY:          Per (domain, facet), discover attributes (concurrent)
+    P7.  ATTRIBUTE ASSIGNMENT:         Per facet, assign ideas to attributes (concurrent)
+    P8.  ATTRIBUTE CONSOLIDATION:      Per facet, in-facet, AFTER assignment — real
+                                       counts and real contents; merge / split /
+                                       widen / move. The facet is fixed and is not in
+                                       the schema: no cross-facet or cross-domain
+                                       structural consolidation exists, so a merge can
+                                       never relocate an idea across facets or domains.
+    P9.  VALENCE-NEUTRAL MERGE:        See valence_consolidator.py
     """
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None, cost_tracker=None):
