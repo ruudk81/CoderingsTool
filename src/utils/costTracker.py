@@ -58,7 +58,7 @@ Output format
       "dataset": "data.sav",
       "var_name": "Q20",
       "sample_size": 500,
-      "deployment": {"provider": "azure", "model_family": "gpt-5.4"},
+      "deployment": {"provider": "azure", "generations": "5.4+5.6"},
       "steps": {
         "step_2_quality_filter": {
           "model_config": {"grading": "gpt-5.4-nano"},
@@ -90,14 +90,14 @@ class CostTracker:
         sample_size,
         exports_dir: Optional[Path] = None,
     ):
-        from config import API_PROVIDER, MODEL_FAMILY
+        from config import ACTIVE_GENERATIONS, API_PROVIDER
         from utils.exportNaming import export_filename
 
         self._filename = filename
         self._var_name = var_name
         self._sample_size = sample_size
         self._provider = API_PROVIDER
-        self._model_family = MODEL_FAMILY
+        self._generations = ACTIVE_GENERATIONS
 
         if exports_dir is None:
             exports_dir = Path(__file__).parent.parent.parent / "exports" / "costs"
@@ -180,7 +180,7 @@ class CostTracker:
             "sample_size": self._sample_size,
             "deployment": {
                 "provider": self._provider,
-                "model_family": self._model_family,
+                "generations": self._generations,
             },
             "steps": {},
         }

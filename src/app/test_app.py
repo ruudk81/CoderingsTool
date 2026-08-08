@@ -68,10 +68,10 @@ def test_registry_covers_all_steps():
 
 def test_registry_phases_exist_in_config():
     import app_views as av
-    from config import STEP_MODEL_TIERS
+    from config import STEP_MODEL
     for step, view in av.STEP_VIEWS.items():
         for phase in view.phases:
-            assert phase in STEP_MODEL_TIERS, f"step {step}: unknown phase {phase!r}"
+            assert phase in STEP_MODEL, f"step {step}: unknown phase {phase!r}"
 
 def test_models_line_resolves_for_all_steps():
     import app_views as av

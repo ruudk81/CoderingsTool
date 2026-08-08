@@ -47,11 +47,24 @@ class StepView:
 
 
 def models_line(step: int) -> Optional[str]:
-    """Read-only 'which model(s) run this step' line, derived from config.py."""
+    """Read-only 'which model(s) run this step' line, derived from config.py.
+
+    This registry's phase list and config's are hand-synced, so during a rename
+    they are briefly out of step. A phase config no longer knows shows as "?"
+    rather than taking the whole page down for a cosmetic caption; the drift
+    itself is caught by test_registry_phases_exist_in_config.
+    """
     phases = STEP_VIEWS[step].phases
     if not phases:
         return None
-    models = list(dict.fromkeys(get_step_model(p) for p in phases))  # unique, ordered
+
+    def model_of(phase: str) -> str:
+        try:
+            return get_step_model(phase)
+        except RuntimeError:
+            return "?"
+
+    models = list(dict.fromkeys(model_of(p) for p in phases))  # unique, ordered
     return ", ".join(models)
 
 
@@ -164,7 +177,7 @@ def costs_overview(spec: DatasetSpec, lang: str):
         })
     st.dataframe(rows, width="stretch", hide_index=True)
     dep = (data or {}).get("deployment") or {}
-    dep_txt = " · ".join(v for v in (dep.get("provider"), dep.get("model_family")) if v)
+    dep_txt = " · ".join(v for v in (dep.get("provider"), dep.get("generations")) if v)
     st.caption(f"**{_t(lang, 'Totaal', 'Total')}: {_usd(total)}**"
                + (f" · {dep_txt}" if dep_txt else ""))
 

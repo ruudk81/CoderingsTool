@@ -4,8 +4,8 @@ Model limits checker — verify config.py against the live OpenAI API.
 Audits the three kinds of "limits" stored in config.py, each against its only
 authoritative source:
 
-  1. Model existence  -> GET /v1/models (free, read-only). Confirms every tier
-     of the current MODEL_FAMILY still exists on this account.
+  1. Model existence  -> GET /v1/models (free, read-only). Confirms every model
+     the pipeline is configured to call still exists on this account.
   2. Rate limits      -> response headers (x-ratelimit-limit-*). OpenAI has no
      dedicated endpoint, so we make one tiny probe call per model and read the
      headers, then compare against FALLBACK_RPM/TPM.
@@ -29,12 +29,12 @@ if _src_dir not in sys.path:
 
 from openai import OpenAI
 
-import config
 from config import (
+    ACTIVE_GENERATIONS,
     API_PROVIDER,
-    MODEL_FAMILY,
-    get_model,
+    STEP_MODEL,
     get_reasoning_params,
+    get_step_model,
     OPENAI_MODEL_LIMITS,
     MODEL_PRICING,
     FALLBACK_RPM,
@@ -48,19 +48,20 @@ WARN = "⚠️"  # ⚠️
 MISS = "❌"   # ❌
 
 
-def _tier_models() -> list[tuple[str, str]]:
-    """Resolve (tier, model) for the current MODEL_FAMILY, deduped by model.
+def _configured_models() -> list[tuple[str, str]]:
+    """Resolve (rung, model) for every model the phases actually use, deduped.
 
-    FAMILY_TIER_OVERRIDES can collapse tiers (e.g. gpt-4.1 nano->mini), so two
-    tiers may resolve to the same model; we keep the first tier that maps to it.
+    Checking the whole MODELS table would flag rungs that are merely available;
+    what matters is whether the models this pipeline is configured to call really
+    exist. Several phases share a rung, hence the dedup.
     """
     seen = set()
     pairs = []
-    for tier in ("default", "mini", "nano"):
-        model = get_model(tier)
+    for phase, (generation, level) in STEP_MODEL.items():
+        model = get_step_model(phase)
         if model not in seen:
             seen.add(model)
-            pairs.append((tier, model))
+            pairs.append((f"{generation}/{level}", model))
     return pairs
 
 
@@ -90,13 +91,13 @@ def fetch_rate_limits(client: OpenAI, model: str) -> tuple[str | None, str | Non
 
 
 def main() -> int:
-    """Returns an exit code: 0 = all tiers exist, 1 = a configured model is
-    missing from the live API (config stale), 2 = could not verify (no key)."""
+    """Returns an exit code: 0 = all configured models exist, 1 = one is missing
+    from the live API (config stale), 2 = could not verify (no key)."""
     print("=" * 72)
     print("MODEL LIMITS CHECK")
     print("=" * 72)
     print(f"Provider:     {API_PROVIDER}")
-    print(f"Model family: {MODEL_FAMILY}")
+    print(f"Generations:  {ACTIVE_GENERATIONS}")
     print("=" * 72)
 
     if API_PROVIDER != "openai":
@@ -120,10 +121,10 @@ def main() -> int:
     # --- 2. Live rate limits via response headers (one probe per model) ---
     print(f"\nFallback (used only when headers are unavailable): "
           f"RPM={_fmt(FALLBACK_RPM)}  TPM={_fmt(FALLBACK_TPM)}\n")
-    print(f"{'tier':9s} {'model':16s} {'exists':7s} {'live RPM':>12s} {'live TPM':>16s}")
+    print(f"{'rung':9s} {'model':16s} {'exists':7s} {'live RPM':>12s} {'live TPM':>16s}")
     print("-" * 72)
     missing = []
-    for tier, model in _tier_models():
+    for rung, model in _configured_models():
         if model not in available:
             missing.append(model)
         exists = OK if model in available else MISS
@@ -131,9 +132,9 @@ def main() -> int:
         if model in available:
             rpm, tpm = fetch_rate_limits(client, model)
         if tpm and str(tpm).startswith("ERROR"):
-            print(f"{tier:9s} {model:16s} {exists:7s}  {tpm}")
+            print(f"{rung:9s} {model:16s} {exists:7s}  {tpm}")
         else:
-            print(f"{tier:9s} {model:16s} {exists:7s} {_fmt(rpm):>12s} {_fmt(tpm):>16s}")
+            print(f"{rung:9s} {model:16s} {exists:7s} {_fmt(rpm):>12s} {_fmt(tpm):>16s}")
 
     # --- 3. Pricing & context window: manual reference ---
     _print_pricing_section()
@@ -142,7 +143,7 @@ def main() -> int:
     if missing:
         print(f"{MISS} Stale config: not on live API -> {', '.join(missing)}\n")
         return 1
-    print(f"{OK} All {MODEL_FAMILY} tiers exist on the live API.\n")
+    print(f"{OK} All configured models ({ACTIVE_GENERATIONS}) exist on the live API.\n")
     return 0
 
 
@@ -152,7 +153,7 @@ def _print_pricing_section() -> None:
     print("-" * 72)
     print(f"{'model':16s} {'$in/Mtok':>9s} {'$out/Mtok':>10s} {'context':>12s} {'max_out':>10s}")
     print("-" * 72)
-    for _, model in _tier_models():
+    for _, model in _configured_models():
         price = MODEL_PRICING.get(model, {})
         limits = OPENAI_MODEL_LIMITS.get(model, {})
         print(
