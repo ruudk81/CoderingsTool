@@ -40,7 +40,7 @@ from utils.llm import (
     fetch_rate_limits as llm_fetch_rate_limits,
 )
 from utils.perfModel import perf_model
-from utils.cached_resources import get_tiktoken_encoding
+from utils.cachedResources import get_tiktoken_encoding
 
 logger = logging.getLogger(__name__)
 

@@ -83,7 +83,7 @@ from utils.smoothRequester import (
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
-from utils.cached_resources import get_tiktoken_encoding
+from utils.cachedResources import get_tiktoken_encoding
 from utils.embedder import SharedEmbedder, find_representative_samples
 
 # Post-extraction domain orthogonalization (one-shot reformulation; no reassignment)

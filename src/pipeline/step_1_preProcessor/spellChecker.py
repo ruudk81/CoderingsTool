@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
-from utils.cached_resources import get_spacy_nlp_conditional
+from utils.cachedResources import get_spacy_nlp_conditional
 from utils.smoothRequester import SmoothRequester
 from utils.llm import token_tracker
 from config import get_reasoning_params
