@@ -82,7 +82,9 @@ def concat_variables(infile, newvar, prefix=None, vars_list=None, sep=", ",
     cols = select_columns(meta.column_names, prefix=prefix, vars_list=vars_list)
     df[newvar] = df[cols].apply(lambda r: combine_row(r, sep), axis=1)
 
-    label = label or f"{newvar} (samengevoegd uit {cols[0]} t/m {cols[-1]})"
+    # The label becomes the survey question downstream (it reaches the prompts via
+    # var_lab), so it must stay pure question text — no provenance note.
+    label = label or newvar
     column_labels = [meta.column_names_to_labels.get(c, "") or "" for c in meta.column_names]
     column_labels.append(label)
 
