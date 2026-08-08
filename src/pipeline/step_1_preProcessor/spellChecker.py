@@ -847,7 +847,11 @@ class SpellChecker:
             print(f"  • Task creation completed in {task_creation_time:.1f}s using regex search (fallback)")
          
         repeated_char_pattern = re.compile(rf'^(.)\1{{{self.config.repeated_char_threshold-1},}}$')
-        single_word_pattern = re.compile(r'^[A-Za-z]+$')
+        # Eén woord zonder enige suggestie is de slechtst denkbare taak: het model
+        # krijgt een los token en niets om het naar te corrigeren. Het patroon moet
+        # meebewegen met is_checkable, anders glipt precies dat geval erdoor —
+        # "24u" en "café" matchten [A-Za-z]+ niet en omzeilden deze zeef.
+        single_word_pattern = re.compile(r'^[^\W_]+$')
         filtered_tasks = [
             task for task in tasks
             if not (
