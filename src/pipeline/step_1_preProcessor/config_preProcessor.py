@@ -88,57 +88,31 @@ SPACY_VECTOR_NORM_THRESHOLD = 5          # Minimum vector norm for valid SpaCy t
 
 @dataclass
 class SpellCheckConfig:
-    """Configuration for spell checking step"""
+    """Configuration for spell checking step.
+
+    Only the LLM call's own parameters and the local Hunspell/SpaCy machinery live
+    here. Workers, pacing, concurrency, timeouts and retries belong to
+    SmoothRequester (phase key `step1_spell_check`) — a copy here would not
+    override it, it would simply do nothing.
+    """
     model: str = get_step_model("spell_check")
-    batch_size: int = 20
     temperature: float = 0.0
-    max_tokens: int = 4000
-    retries: int = 3
-    retry_delay: int = 2
-    max_batch_size: int = 5
-    completion_reserve: int = 1000
-    cache_size: int = 10000
-    spacy_batch_size: int = 64  # Increased for better performance
-    repeated_char_threshold: int = 5  # Characters repeated 5+ times
-    max_correction_examples: int = 10  # For verbose output
-    seed: int = 42
-    context_chars: int = 20  # Characters of context for spell checking
-    max_concurrent_requests: int = 5  # For API rate limiting
 
-    # Performance optimization settings
-    max_words_to_check: int = 100000  # Skip spell checking if more words than this
-    enable_word_frequency_cache: bool = True  # Cache common words
-    progress_report_interval: int = 10000  # Report progress every N words
-    max_unique_oov_words: int = 5000  # Limit unique OOV words to process
-    enable_early_termination: bool = True  # Allow early termination for large datasets
+    # Batching for the local NLP work
+    spacy_batch_size: int = 64
 
-    # Aggressive parallel processing settings for suggestion generation
-    max_concurrent_suggestion_chunks: int = 20
-    max_words_per_chunk: int = 1200
-    enable_adaptive_chunking: bool = True
-    chunk_progress_reporting: bool = True
-    suggestion_processing_semaphore_limit: int = 100
+    # Hunspell
+    hunspell_pool_size: int = 20        # always used, so the pool never auto-tunes
+    hunspell_batch_size: int = 1000     # words per check batch
 
-    # Hunspell optimization
-    hunspell_concurrent_sessions: int = 20
-    hunspell_batch_size: int = 1000
-    enable_streaming_oov_detection: bool = True
-    oov_detection_queue_size: int = 10000
-
-    # Rate limiting optimization parameters
-    rate_limit_safety_factor: float = 0.95
-    rate_limit_utilization: float = 0.98
-    concurrent_burst_multiplier: float = 3.0
-
-    # Suggestion validation parameters
-    enable_suggestion_pre_validation: bool = True
-    disable_pre_validation_above_oov_words: int = 2000
+    # Suggestion caching
     enable_suggestion_caching: bool = True
+    enable_word_frequency_cache: bool = True  # skip Hunspell for words already seen
+    max_unique_oov_words: int = 5000          # cap on unique OOV words processed
 
-    # Performance optimization parameters
-    hunspell_pool_size: int = 20
-    ultra_batch_threshold: int = 1000
-    ultra_batch_size: int = 10000
+    # Output formatting
+    repeated_char_threshold: int = 5    # a "word" of 5+ identical chars is not spell-checkable
+    max_correction_examples: int = 10   # verbose output only
 
 
 # =============================================================================

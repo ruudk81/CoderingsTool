@@ -319,7 +319,7 @@ class SpellChecker:
             self.verbose_reporter.stat_line(f"Language: {DEFAULT_LANGUAGE}", indent=1)
             self.verbose_reporter.stat_line(f"Dictionary: {self.dict_path}", indent=1)
             self.verbose_reporter.stat_line(f"Hunspell path: {self.hunspell_path}", indent=1)
-            self.verbose_reporter.stat_line(f"Batch size: {self.config.batch_size}", indent=1)
+            self.verbose_reporter.stat_line(f"Hunspell batch: {self.config.hunspell_batch_size * 10} words", indent=1)
 
         if not self.check_hunspell_installation():
             if self.verbose_reporter.enabled:
@@ -675,10 +675,6 @@ class SpellChecker:
         
         responses_with_ids = [{'respondent_id': response.respondent_id, 'response': response.original_response} for response in responses]
     
-        # Pre-validation tracking
-        pre_validation_filtered = 0
-        enable_pre_validation = False  # Flag for pre-validation (currently disabled)
-
         # Performance tracking for task creation
         task_creation_start = time.time()
 
@@ -688,31 +684,16 @@ class SpellChecker:
             
             # Pre-compute suggestion strings for all OOV words to avoid redundant processing
             word_to_suggestion_str = {}
-            validation_cache = {}  # Cache validation results
-         
-            # Process suggestions with cached validation results
+
             for word in oov_words:
                 if len(word) > 2 and word in best_suggestions_dict:
                     suggestions = best_suggestions_dict.get(word, ["OOV"])
                     cleaned_suggestions = []
                     for sug in suggestions:
                         if isinstance(sug, tuple):
-                            for s in sug:
-                                if s and s != "OOV":
-                                    # Use cached validation result if available
-                                    if enable_pre_validation:
-                                        if validation_cache.get(s, False):
-                                            cleaned_suggestions.append(s)
-                                    else:
-                                        cleaned_suggestions.append(s)
-                        else:
-                            if sug and sug != "OOV":
-                                # Use cached validation result if available
-                                if enable_pre_validation:
-                                    if validation_cache.get(sug, False):
-                                        cleaned_suggestions.append(sug)
-                                else:
-                                    cleaned_suggestions.append(sug)
+                            cleaned_suggestions.extend(s for s in sug if s and s != "OOV")
+                        elif sug and sug != "OOV":
+                            cleaned_suggestions.append(sug)
                     word_to_suggestion_str[word] = cleaned_suggestions
             
             # Create tasks using inverted index
@@ -734,30 +715,18 @@ class SpellChecker:
                     
                     # Get suggestions for all OOV words - use pre-computed suggestions
                     all_suggestions = []
-                    has_valid_suggestions = False
-                    
                     for word in response_oov_words:
-                        # Get pre-validated suggestions (already validated in batch)
                         cleaned_suggestions = word_to_suggestion_str.get(word, [])
-                        
-                        if cleaned_suggestions:
-                            has_valid_suggestions = True
-                            all_suggestions.append(", ".join(cleaned_suggestions))
-                        else:
-                            all_suggestions.append("OOV")  # No valid suggestions
-                    
-                    # Only create task if we have at least one valid suggestion
-                    if has_valid_suggestions or not enable_pre_validation:
-                        tasks.append({
-                            "respondent_id": item['respondent_id'],
-                            "response": response,
-                            "response_with_placeholders": response_with_placeholders,
-                            "oov_words": ", ".join(response_oov_words),
-                            "suggestions": " | ".join(all_suggestions)
-                        })
-                    else:
-                        pre_validation_filtered += 1
-            
+                        all_suggestions.append(", ".join(cleaned_suggestions) if cleaned_suggestions else "OOV")
+
+                    tasks.append({
+                        "respondent_id": item['respondent_id'],
+                        "response": response,
+                        "response_with_placeholders": response_with_placeholders,
+                        "oov_words": ", ".join(response_oov_words),
+                        "suggestions": " | ".join(all_suggestions)
+                    })
+
             # Report performance improvement
             task_creation_time = time.time() - task_creation_start
             logger.info(f"  • Task creation completed in {task_creation_time:.1f}s using inverted index (optimized)")
@@ -782,10 +751,8 @@ class SpellChecker:
                             # Remove count=1 to replace ALL occurrences
                             response_with_placeholders = re.sub(pattern, '<oov_word>', response_with_placeholders)
                         
-                        # Get suggestions for all OOV words with pre-validation
+                        # Get suggestions for all OOV words
                         all_suggestions = []
-                        has_valid_suggestions = False
-                        
                         for word in response_oov_words:
                             suggestions = best_suggestions_dict.get(word, ["OOV"])
                             # Clean up suggestion format
@@ -795,23 +762,17 @@ class SpellChecker:
                                     cleaned_suggestions.extend([s for s in sug if s and s != "OOV"])
                                 else:
                                     cleaned_suggestions.append(sug)
-                                  
-                            if cleaned_suggestions and any(s != "OOV" for s in cleaned_suggestions): 
-                                has_valid_suggestions = True
+
                             all_suggestions.append(", ".join(cleaned_suggestions))
 
-                        # Only create task if we have at least one valid suggestion
-                        if has_valid_suggestions or not enable_pre_validation:
-                            tasks.append({
-                                "respondent_id": item['respondent_id'],
-                                "response": response,
-                                "response_with_placeholders": response_with_placeholders,
-                                "oov_words": ", ".join(response_oov_words),
-                                "suggestions": " | ".join(all_suggestions)
-                            })
-                        else:
-                            pre_validation_filtered += 1
-            
+                        tasks.append({
+                            "respondent_id": item['respondent_id'],
+                            "response": response,
+                            "response_with_placeholders": response_with_placeholders,
+                            "oov_words": ", ".join(response_oov_words),
+                            "suggestions": " | ".join(all_suggestions)
+                        })
+
             # Report performance
             task_creation_time = time.time() - task_creation_start
             print(f"  • Task creation completed in {task_creation_time:.1f}s using regex search (fallback)")
@@ -835,8 +796,8 @@ class SpellChecker:
         # Track task creation and filtering stats
         self.stats['responses_with_tasks'] = len(tasks)
         self.stats['tasks_filtered_out'] = len(tasks) - len(filtered_tasks)
-        self.stats['pre_validation_filtered'] = pre_validation_filtered
-        
+
+
         # Count unique OOV words that made it into tasks
         oov_words_in_tasks = set()
         for task in filtered_tasks:
