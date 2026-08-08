@@ -33,7 +33,7 @@ _load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Azure deployments are spread over two resources in the Motivaction tenant.
+# Azure deployments are spread over two resources in the organisation's tenant.
 AZURE_RESOURCES = {
     "prod": {"endpoint": os.getenv("AZURE_OPENAI_ENDPOINT"),
              "api_key":  os.getenv("AZURE_OPENAI_API_KEY")},
@@ -264,7 +264,7 @@ TEXT_VERBOSITY = "medium"      # low, medium, high — default for all steps
 # grouping. Raise a phase to medium when a measurement justifies it, not before.
 #
 # Which phases get it: the ones that build the taxonomy rather than apply it.
-# They are ~1.7% of all calls (~278 of 16,700 on a full ASN run). The bulk phases
+# They are ~1.7% of all calls (~278 of 16,700 on a full production run). The bulk phases
 # — spell check, quality filter, extraction, both assignments — stay at the
 # default, because they place one item into a structure that already exists.
 STEP_EFFORT = {
