@@ -200,27 +200,6 @@ def get_model_for_api(model: str) -> str:
     return _model(model).deployment if API_PROVIDER == "azure" else model
 
 
-def _validate() -> None:
-    """Fail at import if the tables disagree.
-
-    This has to run at import: six config_*.py files call get_step_model() as a
-    dataclass default, so by the time a phase actually runs it is far too late to
-    notice that its model was never deployed.
-    """
-    for phase, (generation, level) in STEP_MODEL.items():
-        try:
-            _rung(generation, level)
-        except RuntimeError as exc:
-            raise RuntimeError(f"STEP_MODEL[{phase!r}]: {exc}") from None
-
-    names = [m.name for m in MODELS.values()]
-    duplicates = sorted({n for n in names if names.count(n) > 1})
-    if duplicates:
-        raise RuntimeError(f"model on more than one rung of MODELS: {duplicates}")
-
-
-_validate()
-
 # Which generations this configuration actually uses — reported alongside costs.
 ACTIVE_GENERATIONS = "+".join(sorted({gen for gen, _ in STEP_MODEL.values()}))
 
@@ -247,8 +226,12 @@ DEFAULT_PRICING = {"input": 1.00, "output": 4.00}
 # REASONING PARAMS & VERBOSITY
 # =============================================================================
 
-REASONING_EFFORT = "none"      # none, low, medium, high — the floor for bulk phases
-TEXT_VERBOSITY = "medium"      # low, medium, high — default for all steps
+# "minimal" is absent on purpose: both gpt-5.4 and gpt-5.6-luna reject it.
+VALID_EFFORTS = ("none", "low", "medium", "high")
+VALID_VERBOSITIES = ("low", "medium", "high")
+
+REASONING_EFFORT = "none"      # the floor for bulk phases
+TEXT_VERBOSITY = "medium"      # default for all steps
 
 # Per-step reasoning effort (absent = use REASONING_EFFORT default).
 #
@@ -300,6 +283,50 @@ STEP_VERBOSITY = {
     # All other steps: fall back to TEXT_VERBOSITY
 }
 
+
+def _validate() -> None:
+    """Fail at import if the three per-phase tables disagree.
+
+    This has to run at import: six config_*.py files call get_step_model() as a
+    dataclass default, so by the time a phase actually runs it is far too late to
+    notice that its model was never deployed.
+
+    It also covers what the getters cannot. STEP_EFFORT and STEP_VERBOSITY are
+    read with .get(), so a renamed phase does not raise — it silently serves the
+    default, and the setting is simply lost. An unsupported value is worse: it
+    survives import and 400s on a live call, mid-run.
+    """
+    for phase, (generation, level) in STEP_MODEL.items():
+        try:
+            _rung(generation, level)
+        except RuntimeError as exc:
+            raise RuntimeError(f"STEP_MODEL[{phase!r}]: {exc}") from None
+
+    names = [m.name for m in MODELS.values()]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise RuntimeError(f"model on more than one rung of MODELS: {duplicates}")
+
+    for label, table, default, valid in (
+        ("STEP_EFFORT", STEP_EFFORT, REASONING_EFFORT, VALID_EFFORTS),
+        ("STEP_VERBOSITY", STEP_VERBOSITY, TEXT_VERBOSITY, VALID_VERBOSITIES),
+    ):
+        if default not in valid:
+            raise RuntimeError(f"{label} default {default!r} is not one of {list(valid)}")
+        for phase, value in table.items():
+            if phase not in STEP_MODEL:
+                raise RuntimeError(
+                    f"{label}[{phase!r}]: not a phase in STEP_MODEL — renamed? "
+                    f"the phase would silently fall back to {default!r}"
+                )
+            if value not in valid:
+                raise RuntimeError(
+                    f"{label}[{phase!r}]: {value!r} is rejected by the API; "
+                    f"use one of {list(valid)}"
+                )
+
+
+_validate()
 
 def get_step_verbosity(phase: str) -> str:
     """Return verbosity for a pipeline phase. Falls back to TEXT_VERBOSITY."""
