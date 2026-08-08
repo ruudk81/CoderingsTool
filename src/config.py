@@ -33,7 +33,6 @@ _load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Azure deployments are spread over two resources in the organisation's tenant.
 AZURE_RESOURCES = {
     "prod": {"endpoint": os.getenv("AZURE_OPENAI_ENDPOINT"),
              "api_key":  os.getenv("AZURE_OPENAI_API_KEY")},
@@ -41,18 +40,11 @@ AZURE_RESOURCES = {
              "api_key":  os.getenv("AZURE_OPENAI_DEV_API_KEY")},
 }
 
-AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING = os.getenv(
-    "AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING", "text-embedding-3-large")
+AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING", "text-embedding-3-large")
 
 
 # =============================================================================
 # DEPLOYMENT — which model runs which phase
-#
-# Two tables and nothing else. MODELS says what exists, STEP_MODEL says who uses
-# what. There is no computation in between: a model name is never assembled from
-# parts, so it can never name something that isn't there. That is what went wrong
-# before — a family name plus a "-mini" suffix produced a model that did not
-# exist, and a fallback quietly routed it somewhere else entirely.
 # =============================================================================
 
 API_PROVIDER = "azure"           # "openai" (own account) or "azure" (deployments below)
@@ -69,23 +61,6 @@ class Model:
     context: int
     max_output: int
 
-
-# (generation, level) -> model. Level 5 is the largest of its generation, 1 the
-# smallest; OpenAI ships roughly three (default/mini/nano) but leaves room above
-# and below. The ladder is deliberately sparse: it lists what this tenant has
-# actually deployed, not what the vendor offers. The 5.6 family is
-# Sol > Terra > Luna, so luna sits at level 3 and levels 5 and 4 are simply absent.
-#
-# Pricing is one flat input/output rate per model — the vendor bills three axes we
-# do not model, so a reported cost is an estimate, not the invoice:
-#   - cached input is ~10x cheaper (luna $0.02 vs $0.20). Step 4 repeats a large
-#     fixed menu across calls, so real spend is likely BELOW what we report.
-#   - long context costs more (gpt-5.4 $5.00/$22.50, luna $0.40/$1.80), so long
-#     prompts push real spend ABOVE what we report.
-#   - Fast mode (service_tier) roughly doubles both; we never set it.
-# The gpt-5 rates below were verified against platform.openai.com/docs/pricing on
-# 2026-08-08 (standard tier, short context) and matched exactly. These are OpenAI
-# list prices; Azure bills separately and may differ — unverified.
 MODELS: Dict[Tuple[str, int], Model] = {
     #             name              deployment             resource  reason  in    out    context    max_output
     ("5.4", 5): Model("gpt-5.4",      "gpt-5.4",             "prod",  True,   2.50, 15.00, 1_000_000, 128_000),
@@ -99,45 +74,33 @@ MODELS: Dict[Tuple[str, int], Model] = {
 
 # Embeddings have no ladder — one entry per model, same fields.
 EMBEDDINGS: Dict[str, Model] = {
-    "text-embedding-3-large": Model("text-embedding-3-large", "text-embedding-3-large",
-                                    "prod", False, 0.13, 0.0, 8_191, 0),
+    "text-embedding-3-large": Model("text-embedding-3-large", "text-embedding-3-large","prod", False, 0.13, 0.0, 8_191, 0),
 }
 
-# Every phase names one rung. This is the only place model choice is expressed.
-#
-# Two groups, by what the phase does rather than by how big it is: phases that
-# BUILD the taxonomy get the large model, phases that APPLY it get the cheap one.
-# The second group is ~98% of all calls, which is why it is worth separating.
-# Benchmark 2026-07-31 (exports/diagnostics/2026-07-31-luna-vs-mini-benchmark):
-# luna beats gpt-5.4-mini on steps 2/3/4 — better filter verdicts, cleaner
-# taxonomy (solo-facet 12.5% vs 23-24%, placement errors 7.5% vs 11-12.5%) — at
-# 2-4x lower cost. Hence ("5.6", 3) for the bulk rather than ("5.4", 4).
 STEP_MODEL: Dict[str, Tuple[str, int]] = {
     # Step 1: Preprocessing
     "spell_check":                        ("5.6", 3),
     # Step 2: Quality Filter
     "quality_filter":                     ("5.6", 3),
     # Step 3: Idea Extraction
-    "idea_extraction_context":            ("5.4", 5),   # specifiers + dimension discovery
-    "idea_extraction_taxonomy":           ("5.4", 5),   # domain discovery + consolidation
+    "idea_extraction_context":            ("5.6", 3),   # specifiers + dimension discovery
+    "idea_extraction_taxonomy":           ("5.6", 3),   # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": ("5.6", 3),   # main extraction + retry
-    # Step 4: Taxonomy Classifier (P1-P9). P3 (facet discovery zonder assen) is
-    # dezelfde dispatch als P2 met een andere prompt en heeft geen eigen key.
-    "classifier_p1":                      ("5.4", 5),   # Axis Discovery
+    # Step 4: Taxonomy Classifier (P1-P9)
+    "classifier_p1":                      ("5.6", 3),   # Axis Discovery
     "classifier_p2":                      ("5.6", 3),   # Facet Discovery (met én zonder assen)
     "classifier_p4":                      ("5.6", 3),   # Facet Assignment
-    "classifier_p5":                      ("5.4", 5),   # Facet Consolidation (in-axis)
+    "classifier_p5":                      ("5.6", 3),   # Facet Consolidation (in-axis)
     "classifier_p6":                      ("5.6", 3),   # Attribute Discovery
     "classifier_p7":                      ("5.6", 3),   # Attribute Assignment
-    "classifier_p8":                      ("5.4", 5),   # Attribute Consolidation (in-facet)
-    "classifier_p9":                      ("5.4", 5),   # Valence-neutral merge
+    "classifier_p8":                      ("5.6", 3),   # Attribute Consolidation (in-facet)
+    "classifier_p9":                      ("5.6", 3),   # Valence-neutral merge
     # Step 5: Code Generator (P8-P9)
-    "codegen_p8":                         ("5.4", 5),
-    "codegen_p9":                         ("5.4", 5),
+    "codegen_p8":                         ("5.6", 3),
+    "codegen_p9":                         ("5.6", 3),
     # Step 6: Code Assigner
     "code_assignment":                    ("5.6", 3),
 }
-
 
 # =============================================================================
 # RESOLUTION — lookups only, no synthesis
@@ -206,9 +169,6 @@ ACTIVE_GENERATIONS = "+".join(sorted({gen for gen, _ in STEP_MODEL.values()}))
 
 # =============================================================================
 # DERIVED MODEL REGISTERS
-#
-# One fact, one place: these are views on MODELS/EMBEDDINGS, so a model can never
-# be present in one register and missing from another.
 # =============================================================================
 
 MODEL_PRICING = {n: {"input": m.price_in, "output": m.price_out}
@@ -217,8 +177,6 @@ MODEL_PRICING = {n: {"input": m.price_in, "output": m.price_out}
 OPENAI_MODEL_LIMITS = {n: {"context_window": m.context, "max_output": m.max_output}
                        for n, m in _BY_NAME.items()}
 
-# Only reachable for a model outside both tables (an ad-hoc call, say) — every
-# configured phase is guaranteed to have real pricing by _validate().
 DEFAULT_PRICING = {"input": 1.00, "output": 4.00}
 
 
@@ -233,30 +191,11 @@ VALID_VERBOSITIES = ("low", "medium", "high")
 REASONING_EFFORT = "none"      # the floor for bulk phases
 TEXT_VERBOSITY = "medium"      # default for all steps
 
-# Per-step reasoning effort (absent = use REASONING_EFFORT default).
-#
-# Measured 2026-08-01 on a consolidation task, reasoning tokens per call:
-#   gpt-5.4  none 0 | low 66 | medium 248 | high 215
-#   luna     none 0 | low 24 | medium  33 | high  31
-# "minimal" is rejected by both models, and medium ≈ high, so the real choice is
-# none / low / medium.
-#
-# Why low and not medium: the step that matters is none -> low, where the model
-# starts reasoning at all. low -> medium costs ~4x the reasoning tokens on 5.4
-# and no measurement here shows it classifies better — both produced the same
-# grouping. Raise a phase to medium when a measurement justifies it, not before.
-#
-# Which phases get it: the ones that build the taxonomy rather than apply it.
-# They are ~1.7% of all calls (~278 of 16,700 on a full production run). The bulk phases
-# — spell check, quality filter, extraction, both assignments — stay at the
-# default, because they place one item into a structure that already exists.
 STEP_EFFORT = {
     # Step 3: what the dimensions and domains ARE
-    "idea_extraction_context":  "low",
-    "idea_extraction_taxonomy": "low",
+    "idea_extraction_context":  "medium",
+    "idea_extraction_taxonomy": "medium",
     # Step 4: discovery and consolidation of axes, facets + attributes.
-    # medium op P1 (assen), P2/P3 en P6 (discovery) en P8 (in-facet
-    # consolidatie) — besluit Ruud 2026-08-03 bij de herordende pijplijn.
     "classifier_p1": "medium",
     "classifier_p2": "medium",
     "classifier_p5": "medium",
@@ -264,14 +203,11 @@ STEP_EFFORT = {
     "classifier_p8": "medium",
     "classifier_p9": "low",
     # Step 5: writing and consolidating the codebook
-    "codegen_p8": "low",
-    "codegen_p9": "low",
-    # Absent on purpose (high volume, mechanical): spell_check, quality_filter,
-    # idea_extraction_abstraction_ladder, classifier_p4, classifier_p7,
-    # code_assignment.
+    "codegen_p8": "medium",
+    "codegen_p9": "medium",
+    # All other steps: fall back to REASONING_EFFORT
 }
 
-# Per-step verbosity overrides (None or absent = use TEXT_VERBOSITY default)
 STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
     "classifier_p1": "low",
@@ -328,6 +264,7 @@ def _validate() -> None:
 
 _validate()
 
+
 def get_step_verbosity(phase: str) -> str:
     """Return verbosity for a pipeline phase. Falls back to TEXT_VERBOSITY."""
     return STEP_VERBOSITY.get(phase, TEXT_VERBOSITY)
@@ -351,9 +288,7 @@ def get_reasoning_params(model: str, phase: str = None) -> dict:
 
     effort = get_step_effort(phase) if phase else REASONING_EFFORT
     verbosity = get_step_verbosity(phase) if phase else TEXT_VERBOSITY
-    # One shape for both providers: the Responses API takes reasoning effort and
-    # verbosity nested. This is also what gives the gpt-5.6 family effort control —
-    # on Chat Completions those rejected reasoning_effort next to function tools.
+   
     return {
         "reasoning": {"effort": effort},
         "text": {"verbosity": verbosity},
@@ -449,9 +384,9 @@ class CacheConfig:
         # Step 4: taxonomy classifier (dev, P1-P8)
         "taxonomy": "005",
         "taxonomy_metadata": "005",
-        "taxonomy_classified": "005",  # growing model with enriched facet/attribute
-        "taxonomy_xdomain": "005",             # cross-domain consolidated metadata
-        "taxonomy_classified_xdomain": "005",  # cross-domain consolidated growing model
+        "taxonomy_classified": "005",            # growing model with enriched facet/attribute
+        "taxonomy_xdomain": "005",               # cross-domain consolidated metadata
+        "taxonomy_classified_xdomain": "005",    # cross-domain consolidated growing model
         "taxonomy_corrected": "005",             # legacy P9-era over-merge corrected metadata; old chains only, nothing writes these anymore
         "taxonomy_classified_corrected": "005",  # post-hoc over-merge corrected growing model
         # Step 5: code generator (dev, P8-P9)
