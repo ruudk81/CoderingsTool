@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 class CorrectionItem(BaseModel):
     """A single spell correction result."""
-    respondent_id: Any = Field(
+    respondent_id: str = Field(
         description="The respondent ID from the correction task"
     )
     corrected_response: str = Field(
