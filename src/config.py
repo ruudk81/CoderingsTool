@@ -75,6 +75,17 @@ class Model:
 # and below. The ladder is deliberately sparse: it lists what this tenant has
 # actually deployed, not what the vendor offers. The 5.6 family is
 # Sol > Terra > Luna, so luna sits at level 3 and levels 5 and 4 are simply absent.
+#
+# Pricing is one flat input/output rate per model — the vendor bills three axes we
+# do not model, so a reported cost is an estimate, not the invoice:
+#   - cached input is ~10x cheaper (luna $0.02 vs $0.20). Step 4 repeats a large
+#     fixed menu across calls, so real spend is likely BELOW what we report.
+#   - long context costs more (gpt-5.4 $5.00/$22.50, luna $0.40/$1.80), so long
+#     prompts push real spend ABOVE what we report.
+#   - Fast mode (service_tier) roughly doubles both; we never set it.
+# The gpt-5 rates below were verified against platform.openai.com/docs/pricing on
+# 2026-08-08 (standard tier, short context) and matched exactly. These are OpenAI
+# list prices; Azure bills separately and may differ — unverified.
 MODELS: Dict[Tuple[str, int], Model] = {
     #             name              deployment             resource  reason  in    out    context    max_output
     ("5.4", 5): Model("gpt-5.4",      "gpt-5.4",             "prod",  True,   2.50, 15.00, 1_000_000, 128_000),
