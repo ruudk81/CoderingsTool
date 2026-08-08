@@ -9,8 +9,6 @@ class QualityFilterConfig:
     temperature: float = 0.0
     max_tokens: int = 4000
     retries: int = 3
-    high_quality_threshold: float = 0.7
-    medium_quality_threshold: float = 0.4
     max_filter_examples: int = 5
     model: str = get_step_model("quality_filter")
 
