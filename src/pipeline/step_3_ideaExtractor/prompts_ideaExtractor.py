@@ -5,51 +5,35 @@ from pydantic import BaseModel, Field, field_validator
 # ═══════════════════════════════════════════════════════════════════════
 # STANDING DOMAINS — always offered, never discovered
 # ═══════════════════════════════════════════════════════════════════════
-# Two answer types that every open-ended survey produces and that theme discovery
-# reliably fails to name, because neither is a theme:
+# Every dimension organises its domains along one axis — the one its
+# `domain_diagnostic` asks about. An idea the discovered domains cannot place fails
+# that axis in exactly one of two ways, and those two failures are the standing
+# domains:
 #
-#   bare_evaluation  the respondent HAS an impression but names no subject —
-#                    a real, codeable answer type, not a reject; a coder reports
-#                    it as a positive or negative overall impression
-#   other            has content, but fits no discovered domain
+#   bare_evaluation  names NOTHING on the axis, while still saying something
+#   other            names something ON the axis that no discovered domain covers
 #
-# They are kept apart on purpose. Merged, the bare evaluations lose their identity
-# (8% of ideas on the 500-run) and the genuine residue can no longer be reported as
-# unclassifiable. A third case — no association at all — is normally discovered on
-# its own, because absence IS a theme respondents state explicitly.
+# Neither is a theme, so theme discovery reliably fails to produce them, and both
+# are real codeable answer types rather than rejects.
+#
+# They are kept apart on purpose. Merged, the axis-less answers lose their identity
+# and the genuine residue can no longer be reported as unclassifiable. A third case
+# — the respondent stating there is nothing to say — is normally discovered on its
+# own, because absence IS a theme respondents state explicitly.
 #
 # Offered as standing labels rather than left to discovery: the whole point is that
 # they are always available. A model that has to invent them sometimes will not, and
 # then answers get force-fitted into a substantive domain — where every later step
 # treats them as if they belonged there.
 #
-# Keys are stable and internal; labels are generated in the survey language by the
-# domain-consolidation call, so a Dutch taxonomy does not carry English labels.
+# The WORDING lives per dimension, in `dimension_data.py` (`StandingDomain`), because
+# "names nothing on the axis" reads differently when the axis is a target of change
+# than when it is a subject area. The KEYS below are fixed and internal: consumers
+# identify these two by key, never by label, since labels are rendered in the survey
+# language by the domain-consolidation call.
 
 STANDING_BARE_KEY = "bare_evaluation"
 STANDING_OTHER_KEY = "other"
-
-STANDING_DOMAINS = {
-    STANDING_BARE_KEY: {
-        "fallback_label": "General impression",
-        "definition": (
-            "The idea expresses only an evaluation, a feeling or a general impression, "
-            "with no subject it is about. The respondent does have an impression — it "
-            "simply names nothing the other domains could cover."
-        ),
-        "short": "only an evaluation or impression, with no subject of its own",
-    },
-    STANDING_OTHER_KEY: {
-        "fallback_label": "Other",
-        "definition": (
-            "The idea names a subject, but one that no domain above covers. Use this "
-            "for genuinely off-topic or idiosyncratic content — not for answers that "
-            "merely express an impression, which belong to the general-impression domain."
-        ),
-        "short": "names a subject no domain above covers",
-    },
-}
-
 
 
 try:
@@ -653,12 +637,20 @@ def build_domain_consolidation_prompt(
     intent: str,
     primary_dimension: str,
     chunk_results: str,
-    domain_diagnostic: str,
+    dimension: DimensionDefinition,
     chunk_responses: str = "",
 ) -> str:
-    """Build the domain consolidation prompt."""
-    bare_def = STANDING_DOMAINS[STANDING_BARE_KEY]["definition"]
-    other_def = STANDING_DOMAINS[STANDING_OTHER_KEY]["definition"]
+    """Build the domain consolidation prompt.
+
+    Takes the whole `dimension` rather than loose strings: the domain diagnostic and
+    both standing-domain definitions all come from it, and passing them separately
+    alongside the object they are read from is one source too many.
+    """
+    domain_diagnostic = dimension.prompt_rules.domain_diagnostic
+    bare_def = dimension.standing_bare.definition
+    other_def = dimension.standing_other.definition
+    bare_short = dimension.standing_bare.short
+    other_short = dimension.standing_other.short
     sample_block = ""
     if chunk_responses:
         sample_block = f"""
@@ -739,10 +731,10 @@ For EACH consolidated domain provide: a label, a one-sentence inclusion definiti
 
 Two further domains always exist alongside the ones you consolidated. Do NOT discover them from the data, do not merge them into your domains, do not drop them. Render each in the survey language with the same fields as any other domain, and set `key` exactly as given. Return both under `standing_domains`:
 
-  - key "bare_evaluation" — {bare_def}
-  - key "other" — {other_def}
+  - key "{STANDING_BARE_KEY}" — {bare_def}
+  - key "{STANDING_OTHER_KEY}" — {other_def}
 
-Keep these two apart: the first is an impression without a subject, the second is a subject nothing covers. Their definitions must stay this broad — do not narrow them to something you saw in the data.
+Keep these two apart: the first is {bare_short}; the second {other_short}. Their definitions must stay this broad — do not narrow them to something you saw in the data.
 
 After completing your analysis in the scratchpad, provide your consolidated taxonomy as valid JSON inside <output> tags.
 
@@ -756,9 +748,9 @@ class DomainConsolidatedResponse(BaseModel):
     standing_domains: List[DomainItem] = Field(
         default_factory=list,
         description=(
-            "Exactly two entries with key set to 'bare_evaluation' and 'other'. These "
-            "are not discovered from the data — you only render them in the survey "
-            "language, with the same fields as any other domain."
+            f"Exactly two entries with key set to '{STANDING_BARE_KEY}' and "
+            f"'{STANDING_OTHER_KEY}'. These are not discovered from the data — you only "
+            "render them in the survey language, with the same fields as any other domain."
         )
     )
 

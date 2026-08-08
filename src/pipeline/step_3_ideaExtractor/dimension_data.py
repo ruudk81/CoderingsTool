@@ -49,6 +49,27 @@ class PromptRules:
 
 
 @dataclass(frozen=True)
+class StandingDomain:
+    """One of the two standing drain domains, worded for this dimension.
+
+    A standing domain is a failure mode of the dimension's own domain axis — the
+    axis its `domain_diagnostic` asks about. An idea the discovered domains cannot
+    place fails in exactly one of two ways: it names nothing on the axis
+    (`standing_bare`), or it names something no discovered domain covers
+    (`standing_other`). Both are real, codeable answer types, not rejects.
+
+    The two are always offered and never discovered, which is why they live here
+    rather than in the data: a model that has to invent them sometimes will not,
+    and the answers then get force-fitted into a substantive domain. Their keys are
+    fixed and stable (`prompts_ideaExtractor.py`); only the wording varies per
+    dimension.
+    """
+    fallback_label: str   # English; used only when the LLM omits the rendered label
+    definition: str       # inclusion definition, goes into the consolidation prompt
+    short: str            # one clause; builds the fallback boundary_test
+
+
+@dataclass(frozen=True)
 class DimensionExample:
     """One worked example for the extraction prompt.
 
@@ -83,6 +104,8 @@ class DimensionDefinition:
     prompt_rules: PromptRules
     anchor_slot: SlotDefinition
     domain_slot: SlotDefinition
+    standing_bare: StandingDomain            # idea names nothing on this dimension's domain axis
+    standing_other: StandingDomain           # idea names something no discovered domain covers
     examples: Tuple[DimensionExample, ...] = ()  # Worked examples for the extraction prompt
     clarification: Tuple[str, ...] = ()      # Optional clarification notes (empty tuple = none)
 
@@ -178,6 +201,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing a proposed action, improvement, recommendation, or solution.",
         ),
+        standing_bare=StandingDomain(
+            fallback_label="Unspecified improvement",
+            definition=(
+                "The idea calls for change or improvement, but names no target the change "
+                "should apply to. The respondent does want something to change — it simply "
+                "names nothing the other domains could cover."
+            ),
+            short="a call for change with no target of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names a target for change, but one that no domain above covers. "
+                "Use this for genuinely off-topic or idiosyncratic proposals — not for answers "
+                "that merely call for improvement without naming a target, which belong to the "
+                "unspecified-improvement domain."
+            ),
+            short="names a target for change that no domain above covers",
+        ),
         examples=(
             DimensionExample(
                 survey_context="City improvement survey (entity: City of Springfield)",
@@ -263,6 +305,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase defining or framing what the entity is, its nature, or its purpose.",
         ),
+        standing_bare=StandingDomain(
+            fallback_label="Unspecified identity claim",
+            definition=(
+                "The idea asserts what the entity is in the most general terms, but names no "
+                "area of its identity the claim is about. The respondent does make an identity "
+                "claim — it simply names nothing the other domains could cover."
+            ),
+            short="an identity claim with no area of identity of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names an area of the entity's identity, but one that no domain above "
+                "covers. Use this for genuinely off-topic or idiosyncratic content — not for "
+                "answers that merely assert what the entity is in general terms, which belong "
+                "to the unspecified-identity domain."
+            ),
+            short="names an area of identity that no domain above covers",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Brand identity survey (entity: Trailmark Apparel)",
@@ -345,6 +406,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             type_name="noun_like_phrase",
             required=True,
             guidance="A concise phrase identifying an actor, stakeholder, user group, or affected party.",
+        ),
+        standing_bare=StandingDomain(
+            fallback_label="Unplaced actor",
+            definition=(
+                "The idea names an actor or affected party, but no sphere of activity that "
+                "places them. The respondent does point at someone — it simply names nothing "
+                "the other domains could cover."
+            ),
+            short="an actor with no sphere of activity of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names a sphere of activity, but one that no domain above covers. "
+                "Use this for genuinely off-topic or idiosyncratic content — not for answers "
+                "that name only an actor without a sphere, which belong to the unplaced-actor "
+                "domain."
+            ),
+            short="names a sphere of activity that no domain above covers",
         ),
         examples=(
             DimensionExample(
@@ -429,6 +509,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase specifying the condition, context, setting, or circumstance.",
         ),
+        standing_bare=StandingDomain(
+            fallback_label="Unplaced condition",
+            definition=(
+                "The idea states a condition or circumstance, but names no subject area it "
+                "applies to. The respondent does describe a condition — it simply names nothing "
+                "the other domains could cover."
+            ),
+            short="a condition with no subject area of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names a subject area a condition sits in, but one that no domain "
+                "above covers. Use this for genuinely off-topic or idiosyncratic content — not "
+                "for answers that state a bare condition without a subject area, which belong "
+                "to the unplaced-condition domain."
+            ),
+            short="names a subject area that no domain above covers",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Remote work survey (entity: TechCorp)",
@@ -511,6 +610,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             type_name="noun_like_phrase",
             required=True,
             guidance="A concise phrase describing a need, goal, motivation, value, or reason.",
+        ),
+        standing_bare=StandingDomain(
+            fallback_label="Unspecified motivation",
+            definition=(
+                "The idea expresses that something matters or is wanted, but names no area of "
+                "life or concern it is about. The respondent does express a motivation — it "
+                "simply names nothing the other domains could cover."
+            ),
+            short="a motivation with no area of concern of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names an area of life or concern, but one that no domain above "
+                "covers. Use this for genuinely off-topic or idiosyncratic content — not for "
+                "answers that merely express that something matters, which belong to the "
+                "unspecified-motivation domain."
+            ),
+            short="names an area of concern that no domain above covers",
         ),
         examples=(
             DimensionExample(
@@ -595,6 +713,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             type_name="noun_like_phrase",
             required=True,
             guidance="A concise phrase describing an experience, perception, impression, or feeling.",
+        ),
+        standing_bare=StandingDomain(
+            fallback_label="Overall impression",
+            definition=(
+                "The idea conveys a feeling or overall impression of the experience, but names "
+                "no part of the experience it refers to. The respondent does report an "
+                "impression — it simply names nothing the other domains could cover."
+            ),
+            short="an impression with no part of the experience of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names a part of the experience, but one that no domain above covers. "
+                "Use this for genuinely off-topic or idiosyncratic content — not for answers "
+                "that convey only an overall impression, which belong to the overall-impression "
+                "domain."
+            ),
+            short="names a part of the experience that no domain above covers",
         ),
         examples=(
             DimensionExample(
@@ -685,6 +822,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase expressing a judgment, preference, opinion, or evaluative stance.",
         ),
+        standing_bare=StandingDomain(
+            fallback_label="General impression",
+            definition=(
+                "The idea expresses only a judgment or preference, with no aspect of the entity "
+                "it is about. The respondent does pass judgment — it simply names nothing the "
+                "other domains could cover."
+            ),
+            short="a judgment with no aspect of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names an aspect being judged, but one that no domain above covers. "
+                "Use this for genuinely off-topic or idiosyncratic content — not for answers "
+                "that express only a judgment without an aspect, which belong to the "
+                "general-impression domain."
+            ),
+            short="names an aspect that no domain above covers",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Airline satisfaction survey (entity: SkyAir)",
@@ -772,6 +928,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             type_name="noun_like_phrase",
             required=True,
             guidance="A concise phrase describing an action, process, behavior, or functional output of the entity.",
+        ),
+        standing_bare=StandingDomain(
+            fallback_label="Unplaced behaviour",
+            definition=(
+                "The idea reports that something happens or works, but names no system or "
+                "process it belongs to. The respondent does report a behaviour — it simply "
+                "names nothing the other domains could cover."
+            ),
+            short="a behaviour with no system or process of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names a system or process, but one that no domain above covers. Use "
+                "this for genuinely off-topic or idiosyncratic content — not for answers that "
+                "report a bare behaviour without a system, which belong to the "
+                "unplaced-behaviour domain."
+            ),
+            short="names a system or process that no domain above covers",
         ),
         examples=(
             DimensionExample(
@@ -861,6 +1036,27 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing a quality, trait, image, association, or perceived characteristic of the entity.",
         ),
+        # Byte-identical to the pre-2026-08-08 shared wording: this dimension is the one
+        # the old hardcoded pair was written for, so keeping it exact makes any change on
+        # a dataset that selects it a construction fault, never a wording change.
+        standing_bare=StandingDomain(
+            fallback_label="General impression",
+            definition=(
+                "The idea expresses only an evaluation, a feeling or a general impression, "
+                "with no subject it is about. The respondent does have an impression — it "
+                "simply names nothing the other domains could cover."
+            ),
+            short="only an evaluation or impression, with no subject of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names a subject, but one that no domain above covers. Use this "
+                "for genuinely off-topic or idiosyncratic content — not for answers that "
+                "merely express an impression, which belong to the general-impression domain."
+            ),
+            short="names a subject no domain above covers",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Brand association survey (entity: Novabank)",
@@ -948,6 +1144,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             type_name="noun_like_phrase",
             required=True,
             guidance="A concise phrase describing a relationship, dependency, comparison, or influence.",
+        ),
+        standing_bare=StandingDomain(
+            fallback_label="Unplaced relation",
+            definition=(
+                "The idea points at a connection, dependency or trade-off, but names no sphere "
+                "it exists in. The respondent does report a relation — it simply names nothing "
+                "the other domains could cover."
+            ),
+            short="a relation with no sphere of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names a sphere a relationship exists in, but one that no domain above "
+                "covers. Use this for genuinely off-topic or idiosyncratic content — not for "
+                "answers that point at a bare connection without a sphere, which belong to the "
+                "unplaced-relation domain."
+            ),
+            short="names a sphere that no domain above covers",
         ),
         examples=(
             DimensionExample(
@@ -1037,6 +1252,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             type_name="noun_like_phrase",
             required=True,
             guidance="A concise phrase summarizing the general idea or statement.",
+        ),
+        standing_bare=StandingDomain(
+            fallback_label="Contentless remark",
+            definition=(
+                "The idea carries a reaction or stance, but names no subject at all. The "
+                "respondent does say something — it simply names nothing the other domains "
+                "could cover."
+            ),
+            short="a remark with no subject of its own",
+        ),
+        standing_other=StandingDomain(
+            fallback_label="Other",
+            definition=(
+                "The idea names a subject, but one that no domain above covers. Use this for "
+                "genuinely off-topic or idiosyncratic content — not for answers that carry only "
+                "a reaction without a subject, which belong to the contentless-remark domain."
+            ),
+            short="names a subject that no domain above covers",
         ),
         examples=(
             DimensionExample(

@@ -1307,6 +1307,9 @@ def build_in_facet_consolidation_prompt(
         attribute_key_idea = _extract_key_idea(rules.attribute_instruction)
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
+        # What "no substantive content" means depends on the dimension's domain axis:
+        # step 3 already words it per dimension for the standing drain domain.
+        contentless_test = dimension_def.standing_bare.short
     else:
         attribute_guidance = (
             "An attribute identifies the specific observable property or feature being described. "
@@ -1315,6 +1318,7 @@ def build_in_facet_consolidation_prompt(
         attribute_key_idea = "the specific observable property being described"
         facet_key_idea = "the analytical lens applied to the subject"
         domain_key_idea = "the subject the statement refers to"
+        contentless_test = "an evaluation or filler with nothing named on the domain axis"
 
     return f"""You are a taxonomy consolidation specialist for surveys.
 Your task is to finalise the attribute inventory of ONE facet: "{facet_name}", inside domain "{domain_name}".
@@ -1408,9 +1412,9 @@ Consolidation is the goal: do NOT keep every concept separate — group. But gov
        -> action "split": name the child attributes and which EXACT response texts go to each
    - the group is diverse but genuinely related to this attribute
        -> action "widen": restate the description so it honestly covers what is there
-   - the group carries NO SUBSTANTIVE CONTENT WHATSOEVER — a bare evaluation or filler with nothing said about the subject
+   - the group carries NO SUBSTANTIVE CONTENT WHATSOEVER — filler, or {contentless_test}
        -> `misfits`, verdict "out"
-   "out" is not an escape hatch for "this does not fit the attributes I chose". A text that names something real about the subject HAS substance: if it has no home yet, create one with "split". Only content-free text goes out.
+   "out" is not an escape hatch for "this does not fit the attributes I chose". A text that names something real HAS substance: if it has no home yet, create one with "split". Only content-free text goes out.
    Moves and splits must be expressed as EXACT response texts copied from the contents shown above — never as counts, paraphrases or summaries. Every decision has to be checkable against the data.
 
 7. ONE SOURCE, ONE DESTINATION — unless you route by text.

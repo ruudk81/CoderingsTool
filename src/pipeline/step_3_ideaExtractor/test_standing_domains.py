@@ -1,0 +1,158 @@
+"""Tests voor de dimensie-specifieke standing domains.
+
+Structureel, geen LLM. Wat hier bewezen wordt is de CONSTRUCTIE: elke dimensie
+levert er twee, ze bereiken de prompt, en de keys overleven. Of de teksten goed
+GEFORMULEERD zijn is niet mechanisch te toetsen — dat blijkt pas op data die een
+andere dimensie kiest.
+"""
+
+import pytest
+
+from pipeline.step_3_ideaExtractor.dimension_data import (
+    DIMENSIONS,
+    StandingDomain,
+    get_dimension,
+)
+from pipeline.step_3_ideaExtractor.ideaExtractor import IdeaExtractor
+from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
+    STANDING_BARE_KEY,
+    STANDING_OTHER_KEY,
+    DomainConsolidatedResponse,
+    DomainItem,
+    build_domain_consolidation_prompt,
+)
+
+ALL_KEYS = sorted(DIMENSIONS)
+
+
+# ── 1. Volledigheid ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_every_dimension_carries_both_standing_domains(dimension_key):
+    """Een dimensie zonder standing domains laat step 3 zonder afvoerdomein draaien."""
+    d = get_dimension(dimension_key)
+    for spec in (d.standing_bare, d.standing_other):
+        assert isinstance(spec, StandingDomain)
+        for field in ("fallback_label", "definition", "short"):
+            value = getattr(spec, field)
+            assert value and value.strip(), f"{dimension_key}.{field} is leeg"
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_the_two_standing_domains_are_distinct(dimension_key):
+    """Samengevallen definities maken de twee afvoeren ononderscheidbaar."""
+    d = get_dimension(dimension_key)
+    assert d.standing_bare.definition != d.standing_other.definition
+    assert d.standing_bare.short != d.standing_other.short
+
+
+def test_standing_domains_are_required_fields():
+    """Zonder default kan een nieuwe dimensie ze niet vergeten: TypeError bij import."""
+    fields = DIMENSIONS[ALL_KEYS[0]].__dataclass_fields__
+    import dataclasses
+    for name in ("standing_bare", "standing_other"):
+        assert fields[name].default is dataclasses.MISSING
+        assert fields[name].default_factory is dataclasses.MISSING
+
+
+# ── 2. Resolutie ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_resolve_falls_back_when_the_llm_returns_nothing(dimension_key):
+    """Het fallback-pad: de consolidatie leverde geen standing_domains."""
+    d = get_dimension(dimension_key)
+    out = IdeaExtractor._resolve_standing_domains(
+        DomainConsolidatedResponse(domains=[]), d)
+
+    assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
+    assert out[0].label == d.standing_bare.fallback_label
+    assert out[0].definition == d.standing_bare.definition
+    assert out[1].definition == d.standing_other.definition
+    assert all(c.boundary_test.strip() for c in out)
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_resolve_keeps_llm_labels_but_forces_the_keys(dimension_key):
+    """Het normale pad: labels in enquêtetaal, keys onaantastbaar.
+
+    De key is het downstream-contract (step 4 DRAIN_KEYS). Wat het model ook
+    terugstuurt, de key wordt gezet.
+    """
+    d = get_dimension(dimension_key)
+    consolidated = DomainConsolidatedResponse(
+        domains=[],
+        standing_domains=[
+            DomainItem(key=STANDING_BARE_KEY, label="Algemene indruk",
+                       definition="Vertaalde definitie.", boundary_test="Test?",
+                       exclusions=[]),
+            DomainItem(key=STANDING_OTHER_KEY, label="Overig",
+                       definition="Vertaalde definitie twee.", boundary_test="Test?",
+                       exclusions=[]),
+        ],
+    )
+    out = IdeaExtractor._resolve_standing_domains(consolidated, d)
+
+    assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
+    assert [c.label for c in out] == ["Algemene indruk", "Overig"]
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_resolve_repairs_a_mangled_key(dimension_key):
+    """Zet het model de key op het label, dan wordt hij teruggezet, niet overgenomen."""
+    d = get_dimension(dimension_key)
+    consolidated = DomainConsolidatedResponse(
+        domains=[],
+        standing_domains=[
+            DomainItem(key="Algemene indruk zonder onderwerp", label="Algemene indruk",
+                       definition="Vertaald.", boundary_test="Test?", exclusions=[]),
+            DomainItem(key=STANDING_OTHER_KEY, label="Overig",
+                       definition="Vertaald.", boundary_test="Test?", exclusions=[]),
+        ],
+    )
+    out = IdeaExtractor._resolve_standing_domains(consolidated, d)
+    assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
+
+
+# ── 3. De teksten bereiken de prompt ───────────────────────────────────────
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_consolidation_prompt_carries_this_dimensions_wording(dimension_key):
+    """De builder leest de standing domains uit de meegegeven dimensie."""
+    d = get_dimension(dimension_key)
+    prompt = build_domain_consolidation_prompt(
+        language="nl-NL", survey_question="Vraag?", sector="s", entity="e",
+        topic="t", perspective="p", intent="i", primary_dimension=dimension_key,
+        chunk_results="chunk", dimension=d,
+    )
+    assert d.standing_bare.definition in prompt
+    assert d.standing_other.definition in prompt
+    assert d.standing_bare.short in prompt
+    assert d.prompt_rules.domain_diagnostic in prompt
+    assert f'key "{STANDING_BARE_KEY}"' in prompt
+    assert f'key "{STANDING_OTHER_KEY}"' in prompt
+
+
+# ── 4. No-op-garantie voor de dimensie die de oude tekst bezat ─────────────
+
+def test_attributes_associations_wording_is_unchanged():
+    """De pre-2026-08-08 gedeelde tekst hoorde bij deze dimensie.
+
+    Byte-identiek houden maakt elke afwijking op een dataset die ATTRIBUTES_ASSOCIATIONS
+    kiest een constructiefout, nooit een tekstwijziging.
+    """
+    d = get_dimension("ATTRIBUTES_ASSOCIATIONS")
+    assert d.standing_bare.fallback_label == "General impression"
+    assert d.standing_bare.definition == (
+        "The idea expresses only an evaluation, a feeling or a general impression, "
+        "with no subject it is about. The respondent does have an impression — it "
+        "simply names nothing the other domains could cover."
+    )
+    assert d.standing_bare.short == (
+        "only an evaluation or impression, with no subject of its own")
+    assert d.standing_other.fallback_label == "Other"
+    assert d.standing_other.definition == (
+        "The idea names a subject, but one that no domain above covers. Use this "
+        "for genuinely off-topic or idiosyncratic content — not for answers that "
+        "merely express an impression, which belong to the general-impression domain."
+    )
+    assert d.standing_other.short == "names a subject no domain above covers"

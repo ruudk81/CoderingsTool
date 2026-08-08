@@ -45,10 +45,8 @@ from utils.perfModel import perf_model
 
 # === PROMPTS (builders + response models) =========================================================================
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
-    STANDING_DOMAINS,
     STANDING_BARE_KEY,
     STANDING_OTHER_KEY,
-    DomainItem,
     build_context_specifier_group1_prompt,
     build_context_specifier_group2_prompt,
     build_consolidate_specifiers_group1_prompt,
@@ -596,7 +594,7 @@ class IdeaExtractor:
             intent=context_specifiers['intent'],
             primary_dimension=self.primary_dimension,
             chunk_results="\n\n".join(formatted_results),
-            domain_diagnostic=dimension.prompt_rules.domain_diagnostic,
+            dimension=dimension,
             chunk_responses=chunk_responses_text,
         )
 
@@ -825,7 +823,8 @@ class IdeaExtractor:
             # The two standing domains join the discovered ones here, so every consumer
             # downstream — the assignment menu, the domain table, the persisted
             # metadata — sees a single list and needs no special case.
-            standing = self._resolve_standing_domains(categories_consolidated)
+            standing = self._resolve_standing_domains(
+                categories_consolidated, get_dimension(self.primary_dimension))
             categories_consolidated.domains = list(categories_consolidated.domains) + standing
 
             self.verbose_reporter.stat_line(
@@ -1254,29 +1253,31 @@ class IdeaExtractor:
         ]
 
     @staticmethod
-    def _resolve_standing_domains(consolidated) -> List:
+    def _resolve_standing_domains(consolidated, dimension: DimensionDefinition) -> List:
         """Return the two standing domains as DomainItems, in survey language.
 
-        The consolidation call renders them; if it omits or mangles one, fall back to
-        the English structural wording. Never returns fewer than two — an assignment
-        menu without them is what forced contentless answers into substantive domains.
+        Wording comes from the selected dimension, because "names nothing on the axis"
+        reads differently per dimension. The consolidation call renders them in the
+        survey language; if it omits or mangles one, fall back to the dimension's own
+        English structural wording. Never returns fewer than two — an assignment menu
+        without them is what forced contentless answers into substantive domains.
         """
         got = {getattr(d, "key", "") or "": d for d in (getattr(consolidated, "standing_domains", None) or [])}
         out = []
-        for key in (STANDING_BARE_KEY, STANDING_OTHER_KEY):
-            spec = STANDING_DOMAINS[key]
+        for key, spec in ((STANDING_BARE_KEY, dimension.standing_bare),
+                          (STANDING_OTHER_KEY, dimension.standing_other)):
             d = got.get(key)
             if d is not None and (d.label or "").strip():
                 d.key = key
                 if not (d.definition or "").strip():
-                    d.definition = spec["definition"]
+                    d.definition = spec.definition
                 out.append(d)
             else:
                 out.append(DomainItem(
                     key=key,
-                    label=spec["fallback_label"],
-                    definition=spec["definition"],
-                    boundary_test=f"Does this idea match: {spec['short']}?",
+                    label=spec.fallback_label,
+                    definition=spec.definition,
+                    boundary_test=f"Does this idea match: {spec.short}?",
                     exclusions=[],
                 ))
         return out
