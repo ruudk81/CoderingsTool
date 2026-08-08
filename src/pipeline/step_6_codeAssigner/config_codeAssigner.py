@@ -42,7 +42,7 @@ class AssignmentConfig:
     # sampling-noise divergence at the source and saves LLM calls.
     bind_enabled: bool = True
     bind_lemmatize: bool = True             # lemmatize instances before grouping (language-aware, via simplemma)
-    bind_strip_articles: bool = True        # drop articles/determiners before lemmatizing ("een eekhoorn" → "eekhoorn")
+    bind_strip_articles: bool = True        # drop articles/determiners before lemmatizing ("een fiets" → "fiets")
     bind_use_embeddings: bool = True        # cosine-merge near-duplicate keys (typos/synonyms lemma misses)
     bind_cosine_threshold: float = 0.85     # near-duplicate merge (measured: variants ~0.85-0.91, distinct ≤0.56)
     bind_min_cluster_size: int = 2          # only bind groups of ≥ this size

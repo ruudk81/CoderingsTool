@@ -2,7 +2,7 @@
 
 WHY
     Step 3 costs per RESPONSE; steps 4 and 6 cost per IDEA. On a short-answer survey
-    most ideas repeat: ASN Qd1 has 4833 ideas over 1658 distinct instance texts. P3,
+    most ideas repeat: a 2,000-response run had 4833 ideas over 1658 distinct texts. P3,
     P6 and code assignment then pay 4833 times to answer the same question.
 
     Grouping is safe exactly where the consuming phase is blind: two ideas whose
@@ -12,15 +12,15 @@ WHY
 
 HOW
     The survey question is prepended to every instance before embedding. Without it
-    the ranking breaks: measured on ASN, `vriendelijk`/`klantvriendelijk` (0.79, do
-    NOT belong together) outranked `milieu`/`voor het milieu` (0.55, do). With it the
-    order is correct.
+    the ranking breaks: an adjective versus a compound containing it (0.79, do NOT
+    belong together) outranked a noun versus that same noun with a preposition
+    (0.55, do). With it the order is correct.
 
     Ideas link to a group REPRESENTATIVE, not to each other. Single-link chaining put
-    `duurzaam`, `groen`, `natuur`, `bank` and `goed` in one group of 2780 at 0.97.
+    five thematically adjacent one-word answers in one group of 2780 at 0.97.
 
 THRESHOLD
-    0.99, measured on ASN. The workable window is narrow — the lowest true pair sat
+    0.99, measured on one dataset. The workable window is narrow — the lowest true pair sat
     at 0.9882 and the highest false pair at 0.9857 — so treat this as calibrated, not
     derived, and re-check it on a dataset unlike the ones it was set on. Too high
     fails safe: fewer groups, no wrong merges.

@@ -297,8 +297,8 @@ def page_select_dataset():
     var_lab = st.text_area(
         T("Enquêtevraag (LLM-context)", "Survey question (LLM context)"),
         value=default_q or text_var, key=f"upload_varlab_{fname}_{text_var}", height=80,
-        help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de eekhoorn is het logo van merk X').",
-               "Fix formatting/spelling or add context (e.g. 'the squirrel is brand X's logo)."))
+        help=T("Corrigeer opmaak/spelling of voeg context toe (bv. 'de mascotte is het logo van merk X').",
+               "Fix formatting/spelling or add context (e.g. 'the mascot is brand X's logo')."))
 
     # Preview on demand, from the bounded frame (§3.7 decision 1)
     if st.toggle(T("Voorbeeld (eerste 200 rijen)", "Preview (first 200 rows)"),

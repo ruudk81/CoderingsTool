@@ -13,14 +13,15 @@ EXPERIMENT_N  = None  # n or None
 
 # Idea deduplication (utils/ideaDedup.py) — OFF until the threshold is fixed.
 #
-# It works, and saves 69% of the per-idea calls on ASN. But the 0.99 threshold is
+# It works, and saves 69% of the per-idea calls. But the 0.99 threshold is
 # calibrated against a specific survey question, and the question is prepended to
-# every text before embedding, so its LENGTH shifts every similarity:
+# every text before embedding, so its LENGTH shifts every similarity. Measured on
+# three pairs, described by their structure rather than their text:
 #
-#     pair                          no question   30 chars   120 chars (ASN var_lab)
-#     eekhoorn / de eekhoorn  same       0.8936     0.9875     0.9934
-#     milieu / voor het milieu same      0.5445     0.9773     0.9882
-#     natuur / milieu          DIFF      0.4941     0.9252     0.9593
+#     pair                                     no question   30 chars   120 chars
+#     noun / that noun with an article    same      0.8936     0.9875     0.9934
+#     noun / that noun with a preposition same      0.5445     0.9773     0.9882
+#     two related but distinct nouns      DIFF      0.4941     0.9252     0.9593
 #
 # At 0.99 the same data with a shorter question groups nothing at all. The ORDERING
 # is stable across all three — true pairs always rank above false ones — so a

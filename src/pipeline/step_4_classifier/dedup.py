@@ -2,8 +2,9 @@
 
 P2/P3 (facet discovery) and P6 (attribute discovery) run one independent LLM
 call per chunk; every chunk rediscovers largely the same structure, so the
-flattened raw yield contains byte-identical re-proposals (measured on ASN Qd1:
-115 raw facets -> 60 exact-unique in the largest domain). Assignment (P4/P7)
+flattened raw yield contains byte-identical re-proposals (measured on a
+2,000-response run: 115 raw facets -> 60 exact-unique in the largest domain).
+Assignment (P4/P7)
 renders the full raw yield as its menu, so every duplicate is paid for in every
 assignment call and splits that concept's ideas over interchangeable ids.
 

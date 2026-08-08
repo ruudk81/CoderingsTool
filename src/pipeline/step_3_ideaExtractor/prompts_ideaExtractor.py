@@ -8,10 +8,9 @@ from pydantic import BaseModel, Field, field_validator
 # Two answer types that every open-ended survey produces and that theme discovery
 # reliably fails to name, because neither is a theme:
 #
-#   bare_evaluation  the respondent HAS an impression but names no subject
-#                    ("goed", "prima") — a real, codeable answer type; the
-#                    approved ASN codebook carries it as Positieve/Negatieve
-#                    totaalindruk
+#   bare_evaluation  the respondent HAS an impression but names no subject —
+#                    a real, codeable answer type, not a reject; a coder reports
+#                    it as a positive or negative overall impression
 #   other            has content, but fits no discovered domain
 #
 # They are kept apart on purpose. Merged, the bare evaluations lose their identity

@@ -67,8 +67,8 @@ def normalize_instance(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-# Leading articles/determiners stripped before lemmatizing (so "een eekhoorn"
-# folds onto "eekhoorn"). Per language; unknown languages skip stripping.
+# Leading articles/determiners stripped before lemmatizing (so "een fiets"
+# folds onto "fiets"). Per language; unknown languages skip stripping.
 _ARTICLES = {
     "nl": {"de", "het", "een", "die", "deze", "dat", "dit", "der", "den", "des"},
     "en": {"the", "a", "an"},

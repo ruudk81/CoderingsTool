@@ -16,12 +16,13 @@ sys.path.insert(0, str(src_dir))
 import random
 import models
 from config import CacheConfig
+from test_data import TEST_DATA
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 
-# Configuration (match your experiment)
-FILENAME = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-VAR_NAME = "Q20"
-SAMPLE_SIZE = 500
+# Dataset comes from test_data.py — never hardcode a filename here.
+FILENAME = TEST_DATA.filename
+VAR_NAME = TEST_DATA.var_name
+SAMPLE_SIZE = TEST_DATA.sample_size
 N_SAMPLES = 5
 
 

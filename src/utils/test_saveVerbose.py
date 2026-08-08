@@ -8,10 +8,10 @@ from utils.saveVerbose import VerboseCapture, build_log_filename
 def test_name_has_no_timestamp():
     """Twee aanroepen op verschillende momenten geven dezelfde naam —
     dat is wat overschrijven mogelijk maakt."""
-    a = build_log_filename("M241030 Vezet 2024 databestand.sav", "Q20", 1000, 7)
-    b = build_log_filename("M241030 Vezet 2024 databestand.sav", "Q20", 1000, 7)
+    a = build_log_filename("M000001 Merkonderzoek 2024 databestand.sav", "Q20", 1000, 7)
+    b = build_log_filename("M000001 Merkonderzoek 2024 databestand.sav", "Q20", 1000, 7)
     assert a == b
-    assert a == "M241030_Vezet_2024_databestand_Q20_1000_log_step7.txt"
+    assert a == "M000001_Merkonderzoek_2024_databestand_Q20_1000_log_step7.txt"
 
 
 def test_sample_size_appears_once():
@@ -30,10 +30,10 @@ def test_long_names_stay_distinct():
     """Zonder afkapping blijven twee datasets met een gelijk begin
     onderscheiden. Mét afkapping op 50 tekens zouden ze elkaar overschrijven."""
     lang = build_log_filename(
-        "M260502 Associatiemonitor ASN Bank tabellenbestand vergelijkend met Qd1.sav",
+        "M000002 Associatiemonitor Merk X tabellenbestand vergelijkend met Qd1.sav",
         "Qd1", 4586, 4)
     kort = build_log_filename(
-        "M260502 Associatiemonitor ASN Bank tabellenbestand.sav",
+        "M000002 Associatiemonitor Merk X tabellenbestand.sav",
         "Qd1", 4586, 4)
     assert lang != kort
 

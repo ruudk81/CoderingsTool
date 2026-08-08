@@ -4,7 +4,7 @@
 Read-only. For every cached per-idea facet assignment (the full-menu
 baseline), compute where that facet ranks when the domain's facet cards are
 ordered by embedding similarity to the idea's ladder label. No LLM calls;
-only embedding calls (~$0.02 on the ASN chain).
+only embedding calls (~$0.02 on a full chain).
 
 Known limitation: the cached taxonomy is post-consolidation (few cards per
 domain), while shortlisting matters for raw menus of dozens of cards. This

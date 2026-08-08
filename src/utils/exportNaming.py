@@ -9,7 +9,7 @@ truncation of the dataset name either — two datasets sharing a long prefix wou
 otherwise overwrite each other's output.
 
 Reading a name back needs BOTH the known dataset stems and the doctype
-vocabulary, because a dataset stem (M260421_Tabellenbestand_Casus), a variable
+vocabulary, because a dataset stem (M000003_Tabellenbestand_Casus), a variable
 name (Qd1_combined) and a doctype (taxonomie_fijn) can each contain underscores.
 Splitting on "_" alone is ambiguous, so parse_export_filename() anchors on the
 longest match at each end and takes what is left in the middle.
