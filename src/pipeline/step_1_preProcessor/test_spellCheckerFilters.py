@@ -47,3 +47,32 @@ def test_is_checkable(token, verwacht):
 ])
 def test_is_unrepairable(word, verwacht):
     assert SpellChecker.is_unrepairable(word) is verwacht
+
+
+@pytest.mark.parametrize("tekst, verwacht", [
+    ("oké", "oke"),
+    ("ideëel", "ideeel"),
+    ("georiënteerd", "georienteerd"),
+    ("één", "een"),
+    ("Café", "cafe"),
+    # Zonder accent verandert alleen de kapitalisatie.
+    ("Eekhoorn", "eekhoorn"),
+    ("asn", "asn"),
+])
+def test_deaccent(tekst, verwacht):
+    assert SpellChecker.deaccent(tekst) == verwacht
+
+
+@pytest.mark.parametrize("woord, suggesties, verwacht", [
+    # Alleen een accent verschil: dit is een typefout, geen naam.
+    ("oke", ["oké", "koe", "ode"], True),
+    ("ideeel", ["ideëel"], True),
+    # Hunspell biedt soms alleen een andere kapitalisatie aan. Dat is geen
+    # accentfout, en een merknaam mag daar zijn bescherming niet door verliezen.
+    ("sns", ["SNS", "sos"], False),
+    ("asn", ["ASN", "aan"], False),
+    # Een echt ander woord laat de bescherming staan.
+    ("nvt", ["nv", "n.v.t."], False),
+])
+def test_accentfout_herkennen(woord, suggesties, verwacht):
+    assert any(SpellChecker._is_diacritic_variant(woord, s) for s in suggesties) is verwacht

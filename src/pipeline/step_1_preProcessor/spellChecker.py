@@ -3,6 +3,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 # === MODULES ========================================================================================================
 import re
 import asyncio
+import unicodedata
 import subprocess
 import logging
 import time
@@ -344,6 +345,7 @@ class SpellChecker:
             'oov_words_found': 0,
             'unique_oov_words': 0,
             'dataset_vocabulary_words': 0,
+            'diacritic_typos': 0,
             'unrepairable_words': 0,
             'split_compound_candidates': 0,
             'split_compounds_joined': 0,
@@ -403,6 +405,28 @@ class SpellChecker:
             self.hunspell_pool = None
     
     
+    @staticmethod
+    def deaccent(text: str) -> str:
+        """De tekst zonder accenten en zonder hoofdletters.
+
+        Dient één doel: vaststellen of twee woorden alleen door een accent van
+        elkaar verschillen.
+        """
+        return "".join(c for c in unicodedata.normalize("NFD", text.lower())
+                       if not unicodedata.combining(c))
+
+    @staticmethod
+    def _is_diacritic_variant(word: str, suggestion: str) -> bool:
+        """Verschilt suggestion van word uitsluitend door een accent?
+
+        `s.lower() != word.lower()` sluit uit dat een kapitalisatieverschil
+        meetelt: op "sns" biedt Hunspell soms "SNS" aan, en zonder deze toets
+        zou een merknaam zijn bescherming verliezen op grond van een
+        hoofdletter, niet van een accent.
+        """
+        return (suggestion.lower() != word.lower()
+                and SpellChecker.deaccent(suggestion) == SpellChecker.deaccent(word))
+
     @staticmethod
     def is_checkable(text: str) -> bool:
         """Kan dit token een verkeerd gespeld woord zijn?
@@ -963,6 +987,24 @@ Suggested corrections: {task['suggestions']}
 
         return fallback_fn
 
+    async def _diacritic_typos(self, words: set) -> set:
+        """Welke van deze woorden verschillen alleen door een accent van een
+        woordenboekwoord?
+
+        Zulke woorden zijn typefouten, nooit merknamen — dat geldt in elke taal
+        met accenten en hoeft niet per dataset gekalibreerd te worden. Ze moeten
+        dus door het vocabulairefilter heen kunnen, hoe vaak ze ook voorkomen.
+        """
+        if not words:
+            return set()
+        found = set()
+        for word, suggestions in zip(
+                sorted(words),
+                await asyncio.gather(*(self.run_hunspell_word_async(w) for w in sorted(words)))):
+            if any(self._is_diacritic_variant(word, s) for s in suggestions):
+                found.add(word)
+        return found
+
 
     # === SPLIT COMPOUNDS ========================================================
 
@@ -1271,6 +1313,17 @@ Suggested corrections: {task['suggestions']}
         dataset_vocabulary = {
             word for word, indices in response_count_per_word.items()
             if len(indices) >= vocab_threshold}
+
+        # Een woord dat alleen door een accent van een woordenboekwoord verschilt
+        # is een typefout, geen naam. Zonder deze uitzondering beschermt de
+        # frequentiedrempel juist de fout: "oke" haalt de drempel en blijft staan,
+        # terwijl Hunspell "oké" als eerste suggestie geeft.
+        accent_typos = await self._diacritic_typos(dataset_vocabulary)
+        if accent_typos:
+            dataset_vocabulary -= accent_typos
+            print(f"  • Accentfout, dus geen dataset-vocabulaire: "
+                  f"{', '.join(sorted(accent_typos))}")
+        self.stats['diacritic_typos'] = len(accent_typos)
 
         # Same treatment for tokens that are not language at all: nothing to correct
         # them to, so they must not become a task either.
