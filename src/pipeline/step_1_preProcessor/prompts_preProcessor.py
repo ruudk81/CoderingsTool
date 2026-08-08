@@ -55,12 +55,10 @@ For each correction task, you will receive:
 
 Follow these rules when making corrections:
 1. Replace each <oov_word> placeholder with the best possible correction of the corresponding misspelled word.
-2. A flagged word is not always a misspelling. Survey answers contain names, brands, abbreviations and loanwords that no dictionary holds. If the word is plausibly one of these — judge it against the survey question above and the rest of the response — reproduce it exactly as written, capitalization included. Never replace such a word with a dictionary word that merely resembles it.
-3. Change nothing outside the placeholders. Every other word, and the order of all words, must be reproduced verbatim.
-4. Consider the meaning and context of the survey question when choosing corrections.
-5. If a better correction exists than the ones provided, use that instead.
-6. You may split a misspelled word into two words only if the split preserves the intended meaning and fits grammatically.
-7. If no suitable correction is possible, use "[NO RESPONSE]" as the corrected sentence for that task.
+2. Consider the meaning and context of the survey question when choosing corrections.
+3. If a better correction exists than the ones provided, use that instead.
+4. You may split a misspelled word into two words only if the split preserves the intended meaning and fits grammatically.
+5. If no suitable correction is possible, use "[NO RESPONSE]" as the corrected sentence for that task.
 
 Here are the correction tasks to process:
 <correction_tasks>
