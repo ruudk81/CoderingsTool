@@ -119,10 +119,6 @@ class SpellCheckConfig:
     chunk_progress_reporting: bool = True
     suggestion_processing_semaphore_limit: int = 100
 
-    # Timeout configuration for API calls
-    minimum_timeout_seconds: float = 15.0
-    maximum_timeout_seconds: float = 60.0
-
     # Hunspell optimization
     hunspell_concurrent_sessions: int = 20
     hunspell_batch_size: int = 1000

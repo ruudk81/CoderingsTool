@@ -33,13 +33,13 @@ from typing import Optional
 # =============================================================================
 import models
 from config import CacheConfig
-from pipeline.step_1_preProcessor.config_preProcessor import SpellCheckConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.exportNaming import export_filename
 from utils.verboseReporter import VerboseReporter
 from utils.saveVerbose import VerboseCapture
 from utils.promptPrinter import PromptPrinter
 from utils.llm import token_tracker
+from utils.costTracker import CostTracker
 from utils import dataLoader
 
 from test_data import TEST_DATA
@@ -143,17 +143,18 @@ def run_step(config: StepConfig = None):
         enabled=True,  # Always capture prompts for debugging
         print_realtime=config.prompt_printer_enabled  # Only print if requested
     )
-    spell_check_config = SpellCheckConfig(minimum_timeout_seconds=15.0, maximum_timeout_seconds=60.0)
-
     verbose_reporter.section_header("PREPROCESSING")
     verbose_reporter.stat_line(f"Variable: {config.var_name} - {var_lab}")
     verbose_reporter.stat_line(f"Input: {len(raw_text_list)} responses")
+
+    cost_tracker = CostTracker(filename=config.filename, var_name=config.var_name,
+                               sample_size=config.sample_size)
 
     start_time = time.time()
 
     # Initialize utils
     text_normalizer = TextNormalizer(verbose=config.verbose)
-    spell_checker = SpellChecker(config=spell_check_config, verbose=config.verbose, prompt_printer=prompt_printer)
+    spell_checker = SpellChecker(verbose=config.verbose, prompt_printer=prompt_printer, cost_tracker=cost_tracker)
     text_finalizer = TextFinalizer(verbose=config.verbose)
 
     # Process strings
@@ -216,6 +217,8 @@ def run_step(config: StepConfig = None):
             ))
 
     elapsed_time = time.time() - start_time
+
+    cost_tracker.finalize_step("step_1_preprocessing")
 
     # Save captured prompts to JSON
     if prompt_printer.prompts:

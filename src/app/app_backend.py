@@ -634,8 +634,9 @@ def load_taxonomy(spec: DatasetSpec) -> Optional[Any]:
 # =============================================================================
 
 # App step number → step key used by the pipeline when recording costs.
-# Steps 0/1/7 record no LLM costs and have no key.
+# Steps 0/7 record no LLM costs and have no key.
 STEP_COSTS_KEY: Dict[int, str] = {
+    1: "step_1_preprocessing",
     2: "step_2_quality_filter",
     3: "step_3_idea_extraction",
     4: "step_4_taxonomy_classifier",

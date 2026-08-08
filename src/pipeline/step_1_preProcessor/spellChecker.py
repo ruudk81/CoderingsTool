@@ -19,12 +19,13 @@ from pydantic import BaseModel
 from utils.verboseReporter import VerboseReporter, ProcessingStats
 from utils.cached_resources import get_spacy_nlp_conditional
 from utils.smoothRequester import SmoothRequester
+from utils.llm import token_tracker
 from config import get_reasoning_params
 
 # === CONFIG — generic/universal ========================================================================================================
 from config import (
-    OPENAI_API_KEY, DEFAULT_LANGUAGE,
-    ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+    DEFAULT_LANGUAGE,
+    ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
 )
 
 # === CONFIG — step-specific ========================================================================================================
@@ -291,13 +292,17 @@ class HunspellPool:
 # === MAIN UTIL  ========================================================================================================
 
 class SpellChecker:
-    def __init__(self, config: SpellCheckConfig = None, model_config: ModelConfig = None, processing_config: ProcessingConfig = None, openai_api_key: Optional[str] = None, verbose: bool = False, prompt_printer = None, verbose_reporter: Optional['VerboseReporter'] = None):
+    def __init__(self, config: SpellCheckConfig = None, processing_config: ProcessingConfig = None, verbose: bool = False, prompt_printer = None, verbose_reporter: Optional['VerboseReporter'] = None, cost_tracker = None):
         self.config = config or DEFAULT_SPELLCHECK_CONFIG
-        self.model_config = model_config or ModelConfig()  # kept for backward compat
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
-        self.openai_api_key = openai_api_key or OPENAI_API_KEY
         self.model = self.config.model
-        
+        self.cost_tracker = cost_tracker
+
+        if self.cost_tracker:
+            self.cost_tracker.set_step_models("step_1_preprocessing", {
+                "spell_check": self.model,
+            })
+
         self.suggestion_cache = {} if self.config.enable_suggestion_caching else None
         self.suggestion_cache_hits = 0
 
@@ -315,8 +320,7 @@ class SpellChecker:
             self.verbose_reporter.stat_line(f"Dictionary: {self.dict_path}", indent=1)
             self.verbose_reporter.stat_line(f"Hunspell path: {self.hunspell_path}", indent=1)
             self.verbose_reporter.stat_line(f"Batch size: {self.config.batch_size}", indent=1)
-            self.verbose_reporter.stat_line(f"Timeout range: {self.config.minimum_timeout_seconds}s - {self.config.maximum_timeout_seconds}s", indent=1)
-            
+
         if not self.check_hunspell_installation():
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.warning("Hunspell is not properly installed or configured - spell checking may fail")
@@ -859,12 +863,19 @@ class SpellChecker:
             processing_config=self.processing_config,
         )
 
+        _snap_before = token_tracker.snapshot() if self.cost_tracker else None
+
         results = await requester.process_all(
             filtered_tasks,
             self._build_prepare_fn(),
             self._build_parse_fn(),
             self._build_fallback_fn(),
         )
+
+        if self.cost_tracker and _snap_before is not None:
+            self.cost_tracker.record_phase(
+                "step_1_preprocessing", "spell_check",
+                _snap_before, token_tracker.snapshot(), self.model)
 
         corrected_sentences_dict = {}
         for result in results:
@@ -919,8 +930,6 @@ Suggested corrections: {task['suggestions']}
         return prepare_fn
 
     def _build_parse_fn(self):
-        checker = self
-
         def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
             if not response or not response.corrections:
                 return None
