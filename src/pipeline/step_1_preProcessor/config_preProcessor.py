@@ -81,6 +81,15 @@ MAX_CONCURRENT_SUGGESTION_BATCHES = 6    # Concurrent batches for suggestion pro
 OUTPUT_TOKEN_RATIO = 0.15                # Estimated output/input token ratio for spell correction
 SPACY_VECTOR_NORM_THRESHOLD = 5          # Minimum vector norm for valid SpaCy tokens
 
+# Unrepairable input: a token that is not language at all. Hunspell flags it like
+# any other unknown word, but there is nothing to correct it to, so the LLM has to
+# invent something — and it invents plausible words, which is worse than leaving
+# the noise visible. Doubles as acronym protection: BLG and ZZP have no vowel
+# either, and must reach the output as written.
+WORD_VOWELS = "aeiouyàáâäèéêëìíîïòóôöùúûü"
+MAX_REPEATED_CHARS = 3      # "allles" is a typo worth fixing, "xxxx" is a hammered key
+MAX_CONSONANT_RUN = 4       # "maatschappelihjk" survives this, "Jsisjdkdjd" does not
+
 
 # =============================================================================
 # SPELL CHECK CONFIGURATION
