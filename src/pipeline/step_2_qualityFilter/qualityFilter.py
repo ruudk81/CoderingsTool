@@ -311,21 +311,37 @@ class Grader:
         # Count codes assigned by the LLM only (graded items), so pre-filtered
         # empties are not conflated with LLM-assigned absence (code 99999998).
         llm_graded = list(llm_results_map.values())
-        llm_dont_know = sum(1 for r in llm_graded if r.quality_filter_code == 99999997)
-        llm_absence   = sum(1 for r in llm_graded if r.quality_filter_code == 99999998)
-        llm_gibberish = sum(1 for r in llm_graded if r.quality_filter_code == 99999999)
-        llm_error     = sum(1 for r in llm_graded if r.quality_filter_code == -1)
-        llm_meaningful = sum(1 for r in llm_graded if r.quality_filter_code is None)
-        llm_filtered = llm_dont_know + llm_absence + llm_gibberish
+        llm_codes = Counter(r.quality_filter_code for r in llm_graded)
+        llm_dont_know  = llm_codes[99999997]
+        llm_absence    = llm_codes[99999998]
+        llm_gibberish  = llm_codes[99999999]
+        llm_error      = llm_codes[-1]
+        llm_meaningful = llm_codes[None]
 
         # Honest totals: a response is filtered iff quality_filter is True.
         total_filtered = sum(1 for r in merged_results if r.quality_filter)
         meaningful = total - total_filtered
 
+        # Pre-filtered items carry whichever code set them: step 1 passes through
+        # any of the three missing codes it finds in the source data. So count the
+        # codes rather than naming one, and keep each gloss wide enough to cover
+        # both origins — 99999998 means an empty from step 1 and a deferral from
+        # the LLM, and the label may not claim only one of those.
+        code_labels = {
+            99999997: "don't know / n.a.",
+            99999998: "no response / deferral",
+            99999999: "gibberish/nonsense",
+        }
+        pre_filtered_codes = Counter(r.quality_filter_code for r in pre_filtered_items)
+
         print(f"\n{'─' * 60}")
         print(f"SUMMARY ({total} total responses)")
         print(f"{'─' * 60}")
-        print(f"  Pre-filtered (empty/NA, code 99999998): {pre_filtered_count:>5}")
+        print(f"  Pre-filtered:                           {pre_filtered_count:>5}")
+        for code, count in sorted(pre_filtered_codes.items(), key=lambda kv: -kv[1]):
+            label = code_labels.get(code, "unknown code")
+            print(f"    → {label:<23}({code}):  {count:>5}")
+        print(f"      of which caught here (empty/NA):    {pre_filter_count:>5}")
         print(f"  LLM evaluated:                          {llm_processed:>5}")
         print(f"    → Don't know       (99999997):        {llm_dont_know:>5}")
         print(f"    → Absence/deferral (99999998):        {llm_absence:>5}")
@@ -338,22 +354,21 @@ class Grader:
         print(f"  Total meaningful (passed):              {meaningful:>5}  ({meaningful / total * 100:.1f}%)")
         print(f"{'─' * 60}")
 
-        # Show filtered examples — sample LLM-assigned codes across ALL filter
-        # categories (incl. 99999998 absence/deferral, the easiest to over-flag).
-        code_labels = {
-            99999997: "don't know",
-            99999998: "absence/deferral",
-            99999999: "gibberish/nonsense",
-        }
-        filtered_examples = []
-        for result in llm_graded:
-            label = code_labels.get(result.quality_filter_code)
-            if label:
-                filtered_examples.append(f'"{result.response}" ({label})')
-                if len(filtered_examples) >= self.config.max_filter_examples:
-                    break
-        if filtered_examples:
-            self.verbose_reporter.sample_list("Sample LLM-filtered responses", filtered_examples)
+        # Filtered examples, one list per category. A single shared list is
+        # dominated by the largest category, so the rare codes — where
+        # over-flagging hides — are never shown. Hand sample_list every distinct
+        # text and let it draw at random: duplicates would otherwise crowd the
+        # draw, and taking the first N would sample completion order.
+        for code, label in code_labels.items():
+            texts = list(dict.fromkeys(
+                str(r.response).strip() for r in llm_graded if r.quality_filter_code == code
+            ))
+            if texts:
+                self.verbose_reporter.sample_list(
+                    f"LLM-filtered — {label} ({code}): {llm_codes[code]} responses, {len(texts)} distinct",
+                    texts,
+                    max_samples=self.config.max_filter_examples,
+                )
 
         if self.failure_log:
             print(f"\n{'=' * 70}")
