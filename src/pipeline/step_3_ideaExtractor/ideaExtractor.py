@@ -1112,11 +1112,19 @@ class IdeaExtractor:
         """
         extractor = self
 
-        def parse_fn(task: Dict, response) -> Optional[models.IdeasExtractedModel]:
+        def parse_fn(task: Dict, response) -> models.IdeasExtractedModel:
             """Parse LLM response into ideas.
 
             idea is derived from instance — the LLM no longer returns an idea field.
             All ladder fields are enforced non-empty by the Pydantic model.
+
+            A response with nothing to extract yields zero ideas, and that is a
+            successful extraction, not a failure — every open question produces
+            answers that carry no idea. Returning None here would be indistinguishable
+            from a timeout inside the requester (both surface as a None result), so
+            such a response used to cost a retry pass and then land in the data as
+            `PROCESSING_ERROR: timeout`. Downstream reads `response_ideas or []`
+            throughout, so an empty list needs no special case.
             """
             ideas = []
             for i, idea_response in enumerate(response):
@@ -1133,17 +1141,15 @@ class IdeaExtractor:
                     domain=idea_response.domain,
                 ))
 
-            if ideas:
-                return models.IdeasExtractedModel(
-                    respondent_id=task['respondent_id'],
-                    response=task['response'],
-                    quality_filter=task.get('quality_filter', True),
-                    quality_filter_code=task.get('quality_filter_code', 0),
-                    response_ideas=ideas,
-                    idea_count=len(ideas),
-                    template_prefix=extractor.template_prefix or ""
-                )
-            return None
+            return models.IdeasExtractedModel(
+                respondent_id=task['respondent_id'],
+                response=task['response'],
+                quality_filter=task.get('quality_filter', True),
+                quality_filter_code=task.get('quality_filter_code', 0),
+                response_ideas=ideas,
+                idea_count=len(ideas),
+                template_prefix=extractor.template_prefix or ""
+            )
 
         return parse_fn
 

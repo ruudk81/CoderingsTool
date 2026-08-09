@@ -1780,19 +1780,27 @@ class SmoothRequester:
                 if results[idx] is not None:
                     recovered += 1
 
-            # Fallback for still-failed
+            # Fallback for still-failed. Counted here, not afterwards: the loops below
+            # fill every remaining None with a fallback, so a count taken after them can
+            # only ever be 0 whenever a fallback_fn exists. It reported "Still failed: 0"
+            # over runs that had just written fallbacks into the data (fixed 2026-08-09).
+            still_failed = 0
             for idx, data in retry_timed_out:
                 if results[idx] is None:
                     self.stats['tasks_failed'] += 1
+                    still_failed += 1
                     if fallback_fn:
-                        results[idx] = fallback_fn(data, 'timeout')
+                        # No result after two passes. Cause is not established here:
+                        # a timeout and a parse that yielded nothing both arrive as
+                        # None. `stats['timeouts']` counts only the former — compare
+                        # the two before concluding anything about a run.
+                        results[idx] = fallback_fn(data, 'no result after retry')
             for idx, data, reason in failed_for_retry:
                 if results[idx] is None:
                     self.stats['tasks_failed'] += 1
+                    still_failed += 1
                     if fallback_fn:
                         results[idx] = fallback_fn(data, reason)
-
-            still_failed = sum(1 for r in results if r is None)
             if not self._quiet:
                 print(f"[RETRY PASS] Recovered: {recovered}, Still failed: {still_failed}")
 
