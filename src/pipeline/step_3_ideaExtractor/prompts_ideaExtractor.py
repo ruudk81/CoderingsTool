@@ -519,10 +519,21 @@ def build_domain_discovery_prompt(
     topic: str,
     primary_dimension: str,
     primary_dimension_description: str,
-    domain_diagnostic: str,
-    domain_instruction: str,
+    dimension: DimensionDefinition,
 ) -> str:
-    """Build the domain discovery prompt for a single chunk."""
+    """Build the domain discovery prompt for a single chunk.
+
+    Takes the whole dimension rather than loose strings, like the consolidation
+    builder. Discovery has to know that the two standing domains exist: asked for
+    "the smallest set that gives every response a clear home" while blind to them,
+    it invents a second home for the contentless case — and whether it does varies
+    per run, which moves the whole partition (see dev/WORK.md).
+    """
+    domain_diagnostic = dimension.prompt_rules.domain_diagnostic
+    domain_instruction = dimension.prompt_rules.domain_instruction
+    bare_def = dimension.standing_bare.definition
+    other_def = dimension.standing_other.definition
+
     return f"""You are a qualitative research methodologist specializing in taxonomy development for survey analysis.
 Your task is to identify domains within a given dimension based on survey response data.
 
@@ -585,7 +596,12 @@ Your goal is the smallest set of domains that still gives every response a clear
 - A natural grouping of related phenomena within the dimension
 - Strictly within the boundaries and through the lens of the primary dimension above
 
-NO broad evaluative catch-all: do not create a vague impression bucket such as "general impression", "overall reputation", or "character" that mixes many unrelated qualities. If such a domain would absorb a large share of responses, split it along sharper subject axes. EXCEPTION: a clean, well-defined "no/weak association" domain IS allowed when many responses genuinely express the absence of any association — this is a real response type, not a catch-all.
+NO broad evaluative catch-all: do not create a vague impression bucket such as "general impression", "overall reputation", or "character" that mixes many unrelated qualities. If such a domain would absorb a large share of responses, split it along sharper subject axes.
+
+TWO DOMAINS ALREADY EXIST and are added after this step. Do not propose either of them, and do not create a variant of them:
+  - {bare_def}
+  - {other_def}
+Responses of those two kinds already have a home, so they need no domain of yours. Discover domains only for what remains.
 
 DESCRIPTIVE DOMAINS ONLY: every domain must name a DESCRIPTIVE subject/aspect of the entity — never a sentiment or judgment. Even if all responses in a group are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; the direction (positive/negative) is captured separately by valence, never by domains (which MUST be descriptive). Do not create evaluative domains (e.g. "reputation/appreciation", "good vs bad", "trust as a verdict"); reframe them descriptively as the subject being judged.
 
@@ -710,7 +726,8 @@ Important consolidation principles:
 - ENSURE semantic distance: a coder assigning a response must not plausibly hesitate between two domains. No "could go either way" situations.
 - MAINTAIN full coverage: the consolidated domains must collectively cover all concepts present in the chunk-level analyses
 - MINIMIZE the total number of domains while preserving meaningful distinctions — aim for 4–8 domains
-- NO broad evaluative catch-all: do not keep or create a vague impression bucket such as "general impression", "overall reputation", or "character" that mixes many unrelated qualities. If one domain would absorb a large share of responses, split it along sharper subject axes. EXCEPTION: a clean, well-defined "no/weak association" domain IS allowed when many responses genuinely express the absence of any association — this is a real response type, not a catch-all
+- NO broad evaluative catch-all: do not keep or create a vague impression bucket such as "general impression", "overall reputation", or "character" that mixes many unrelated qualities. If one domain would absorb a large share of responses, split it along sharper subject axes
+- DROP any chunk-level domain that duplicates a standing domain below: the contentless case and the uncovered-subject case are already provided, so a domain of yours for either of them is a duplicate, not a finding
 - DESCRIPTIVE DOMAINS ONLY: every domain names a DESCRIPTIVE subject/aspect — never a sentiment or judgment. Even if all its responses are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; direction (positive/negative) is captured separately by valence, never by domains. Reframe any evaluative bucket (e.g. "reputation/appreciation", "good vs bad") descriptively as the subject being judged
 - All domains must stay strictly within the boundaries and through the lens of the primary dimension
 - Each domain definition must complete: "This domain covers responses about [single aspect]." Abstract boundary only, no examples or enumerations

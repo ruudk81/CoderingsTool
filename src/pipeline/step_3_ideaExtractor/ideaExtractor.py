@@ -944,8 +944,7 @@ class IdeaExtractor:
                         topic=ctx['topic'],
                         primary_dimension=self.primary_dimension,
                         primary_dimension_description=self.primary_dimension_description,
-                        domain_diagnostic=dimension.prompt_rules.domain_diagnostic,
-                        domain_instruction=dimension.prompt_rules.domain_instruction,
+                        dimension=dimension,
                     )
                     response_model = DomainChunkResponse
                     if self.prompt_printer and not self._captured_domain_chunk:
