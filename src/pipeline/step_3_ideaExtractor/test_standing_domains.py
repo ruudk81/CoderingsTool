@@ -113,6 +113,36 @@ def test_resolve_repairs_a_mangled_key(dimension_key):
     assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
 
 
+# ── 2b. De normalisatie ná consolidatie ────────────────────────────────────
+
+def test_set_domain_keys_derives_from_label_but_spares_the_standing_two():
+    """Ontdekte domeinen krijgen hun key uit het label, de staande twee houden de hunne.
+
+    Regressie (2026-08-09): deze normalisatie liep onvoorwaardelijk over álle
+    domeinen en wiste de staande keys vóórdat _orthogonalize_domains ze kon
+    beschermen. De guard daar bewaakte dus iets dat al vernietigd was, en step 4's
+    DRAIN_KEYS vond niets meer — zonder foutmelding.
+    """
+    domains = [
+        DomainItem(key="", label="Duurzaamheid",
+                   definition="d", boundary_test="t", exclusions=[]),
+        DomainItem(key=STANDING_BARE_KEY, label="Algemene beoordeling",
+                   definition="d", boundary_test="t", exclusions=[]),
+        DomainItem(key=STANDING_OTHER_KEY, label="Niet-geclassificeerd onderwerp",
+                   definition="d", boundary_test="t", exclusions=[]),
+    ]
+    IdeaExtractor._set_domain_keys(domains)
+
+    assert [c.key for c in domains] == [
+        "Duurzaamheid", STANDING_BARE_KEY, STANDING_OTHER_KEY]
+
+
+def test_set_domain_keys_accepts_no_domains():
+    """Fase 3 kan overgeslagen zijn; dan is er niets te normaliseren."""
+    IdeaExtractor._set_domain_keys(None)
+    IdeaExtractor._set_domain_keys([])
+
+
 # ── 3. De teksten bereiken de prompt ───────────────────────────────────────
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)

@@ -1242,6 +1242,26 @@ class IdeaExtractor:
         ]
 
     @staticmethod
+    def _set_domain_keys(domains) -> None:
+        """Derive `key` from `label`, except for the two standing domains.
+
+        The LLM no longer returns a key, so discovered domains take theirs from the
+        label. The standing domains are the exception and must survive every rebuild:
+        consumers identify them by the literal key — step 4's drain-domain skip
+        (`taxonomy_health.DRAIN_KEYS`) — while a label is language-dependent and can be
+        re-described by the orthogonalization pass.
+
+        Every place that (re)builds DomainItems goes through here. It is a single
+        function because it was two: `_orthogonalize_domains` guarded the standing keys
+        while the normalization after consolidation overwrote them unconditionally, so
+        the guard protected something already destroyed and the keys never reached the
+        cache (fixed 2026-08-09; the same loss was fixed once before in 6404da8e).
+        """
+        for d in domains or []:
+            if d.key not in (STANDING_BARE_KEY, STANDING_OTHER_KEY):
+                d.key = d.label
+
+    @staticmethod
     def _resolve_standing_domains(consolidated, dimension: DimensionDefinition) -> List:
         """Return the two standing domains as DomainItems, in survey language.
 
@@ -1332,10 +1352,9 @@ class IdeaExtractor:
         # Store domains for use in per-response extraction model
         # Empty list (Phase 3 skipped) → None to trigger on-the-fly mode in model factories
         self.domains = categories_result.domains or None
-        # key is no longer produced by the LLM (removed from prompts) — set it from the label
-        if self.domains:
-            for _d in self.domains:
-                _d.key = _d.label
+        # key is no longer produced by the LLM (removed from prompts) — derive it from
+        # the label, standing domains excepted (see _set_domain_keys)
+        self._set_domain_keys(self.domains)
 
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"\nTaxonomy axis selected: {self.primary_dimension}")
@@ -1488,11 +1507,9 @@ class IdeaExtractor:
         # by-order remap: old label → new label (deterministic rename, NOT reassignment)
         rename = {}
         for old, nd in zip(domains, new):
-            # Standing domains (other, bare_evaluation) carry a fixed key set at
-            # _resolve_standing_domains time — preserve it. Discovered domains have
-            # no fixed identity, so their key still mirrors the (possibly renamed) label.
-            nd.key = old.key if old.key in (STANDING_BARE_KEY, STANDING_OTHER_KEY) else nd.label
+            nd.key = old.key          # carry identity across the rebuild...
             rename[old.label] = nd.label
+        self._set_domain_keys(new)    # ...then re-derive it, standing keys excepted
         self.domains = new
         for resp in results:
             for idea in (resp.response_ideas or []):
