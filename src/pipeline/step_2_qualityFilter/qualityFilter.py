@@ -38,31 +38,40 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# CATEGORY → CODE MAPPING
+# CATEGORY → CODE PROJECTION
 # =============================================================================
-# 1, 2  → 99999997  (don't know / no answer)
-# 3     → 99999998  (absence of answer)
-# 4     → 99999998  (no text / empty)
-# 5     → 99999999  (gibberish / nonsense)
-# null  → None      (keep for analysis)
-CATEGORY_TO_CODE = {"1": 99999997, "2": 99999997, "3": 99999998, "4": 99999998, "5": 99999999}
+# The prompt distinguishes six categories; the Motivaction missing-value
+# convention has three slots. This table is the projection between them, and it
+# is deliberately many-to-one. The category itself survives on
+# QualityFilteredModel.quality_filter_category, so the quality report keeps the
+# detail that the .sav cannot carry.
+CATEGORY_TO_CODE = {
+    "1": 99999997,   # cannot give the answer      → weet niet / geen mening
+    "2": 99999998,   # not applicable              → geen van dezen / geen van allen
+    "3": 99999998,   # no content to report        → idem
+    "4": 99999999,   # referring elsewhere         → missing
+    "5": 99999999,   # no text                     → missing
+    "6": 99999999,   # meaningless text            → missing
+}
+
+# Code assigned without an LLM category: empties caught before dispatch, and any
+# code step 1 passed through from the source data.
+CODE_NO_TEXT = 99999999
 
 
-def parse_quality_code(raw_text: str) -> Optional[int]:
-    """Parse <category> tag from LLM output into a quality filter code.
+def parse_category(raw_text: str) -> Optional[int]:
+    """Parse the <category> tag from raw LLM output into a category number.
 
-    Returns a code from CATEGORY_TO_CODE, or None (= keep the response).
-    Unparseable output defaults to None (conservative: don't flag).
+    Returns None (= keep the response); unparseable output must not cost a
+    response. Mapping to a code happens in one place, in parse_fn.
     """
     match = re.search(r'<category>\s*(.*?)\s*</category>', raw_text, re.DOTALL | re.IGNORECASE)
     if match:
-        value = match.group(1).strip().lower()
-        return CATEGORY_TO_CODE.get(value)
-    # Fallback: scan for standalone category number near end of response
-    match = re.search(r'\b([1-5])\b', raw_text[-50:])
-    if match:
-        return CATEGORY_TO_CODE.get(match.group(1))
-    return None
+        value = match.group(1).strip()
+        return int(value) if value in CATEGORY_TO_CODE else None
+    # Fallback: scan for a standalone category number near the end of the response
+    match = re.search(r'\b([1-6])\b', raw_text[-50:])
+    return int(match.group(1)) if match else None
 
 
 # =============================================================================
@@ -150,18 +159,18 @@ class Grader:
         def parse_fn(task: Dict, response) -> Optional[models.QualityFilteredModel]:
             if grader._is_nano:
                 raw_text = response.output_text if hasattr(response, 'output_text') else str(response)
-                quality_code = parse_quality_code(raw_text)
+                category = parse_category(raw_text)
             else:
-                quality_code = (
-                    CATEGORY_TO_CODE.get(str(response.category))
-                    if response.category else None
-                )
+                category = response.category
+
+            quality_code = CATEGORY_TO_CODE.get(str(category)) if category else None
 
             return models.QualityFilteredModel(
                 respondent_id=task['respondent_id'],
                 response=task['response_text'],
                 quality_filter=quality_code is not None,
                 quality_filter_code=quality_code,
+                quality_filter_category=category,
             )
 
         return parse_fn
@@ -228,18 +237,19 @@ class Grader:
         self._stats.start_timing()
         self._stats.input_count = len(self.responses)
 
-        # Pre-filter empty/None responses (code 99999998 = no response)
+        # Pre-filter empty/None responses. These never reach the LLM, so they get
+        # the code directly — the same one category 5 (no text) projects onto.
         empty_values = {'none', 'nan', '<na>', 'na', ''}
         pre_filter_count = 0
         for r in self.responses:
             if r.quality_filter_code is None:
                 response_text = str(r.response).strip() if r.response else ""
                 if not response_text or response_text.lower() in empty_values:
-                    r.quality_filter_code = 99999998
+                    r.quality_filter_code = CODE_NO_TEXT
                     r.quality_filter = True
                     pre_filter_count += 1
         if pre_filter_count > 0:
-            print(f"Pre-filtered {pre_filter_count} empty/None responses (code 99999998)")
+            print(f"Pre-filtered {pre_filter_count} empty/None responses (code {CODE_NO_TEXT})")
 
         # Separate items that need LLM evaluation
         items_to_process = [r for r in self.responses if r.quality_filter_code is None]
@@ -309,63 +319,72 @@ class Grader:
         pre_filtered_count = len(pre_filtered_items)
 
         # Count codes assigned by the LLM only (graded items), so pre-filtered
-        # empties are not conflated with LLM-assigned absence (code 99999998).
+        # empties are not conflated with an LLM-assigned no-text on the same code.
         llm_graded = list(llm_results_map.values())
         llm_codes = Counter(r.quality_filter_code for r in llm_graded)
-        llm_dont_know  = llm_codes[99999997]
-        llm_absence    = llm_codes[99999998]
-        llm_gibberish  = llm_codes[99999999]
-        llm_error      = llm_codes[-1]
-        llm_meaningful = llm_codes[None]
+        llm_categories = Counter(r.quality_filter_category for r in llm_graded)
 
         # Honest totals: a response is filtered iff quality_filter is True.
         total_filtered = sum(1 for r in merged_results if r.quality_filter)
         meaningful = total - total_filtered
 
-        # Pre-filtered items carry whichever code set them: step 1 passes through
-        # any of the three missing codes it finds in the source data. So count the
-        # codes rather than naming one, and keep each gloss wide enough to cover
-        # both origins — 99999998 means an empty from step 1 and a deferral from
-        # the LLM, and the label may not claim only one of those.
+        # Codes are the Motivaction convention; categories are what the model
+        # decided. Several categories share one code, so report both — the code
+        # is what ships in the .sav, the category is what it was based on.
         code_labels = {
-            99999997: "don't know / n.a.",
-            99999998: "no response / deferral",
-            99999999: "gibberish/nonsense",
+            99999997: "weet niet / geen mening",
+            99999998: "geen van dezen",
+            99999999: "missing",
+        }
+        category_labels = {
+            1: "cannot give the answer",
+            2: "not applicable",
+            3: "no content to report",
+            4: "referring elsewhere",
+            5: "no text",
+            6: "meaningless text",
         }
         pre_filtered_codes = Counter(r.quality_filter_code for r in pre_filtered_items)
+
+        def code_line(label, code, count):
+            return f"    → {label:<23}{'(' + str(code) + '):':<13}{count:>5}"
 
         print(f"\n{'─' * 60}")
         print(f"SUMMARY ({total} total responses)")
         print(f"{'─' * 60}")
         print(f"  Pre-filtered:                           {pre_filtered_count:>5}")
         for code, count in sorted(pre_filtered_codes.items(), key=lambda kv: -kv[1]):
-            label = code_labels.get(code, "unknown code")
-            print(f"    → {label:<23}({code}):  {count:>5}")
+            print(code_line(code_labels.get(code, "unknown code"), code, count))
         print(f"      of which caught here (empty/NA):    {pre_filter_count:>5}")
         print(f"  LLM evaluated:                          {llm_processed:>5}")
-        print(f"    → Don't know       (99999997):        {llm_dont_know:>5}")
-        print(f"    → Absence/deferral (99999998):        {llm_absence:>5}")
-        print(f"    → Gibberish        (99999999):        {llm_gibberish:>5}")
-        print(f"    → Meaningful       (null):            {llm_meaningful:>5}")
-        if llm_error:
-            print(f"    → Errors           (-1):             {llm_error:>5}")
+        for code, label in code_labels.items():
+            print(code_line(label, code, llm_codes[code]))
+        print(code_line("meaningful", "null", llm_codes[None]))
+        if llm_codes[-1]:
+            print(code_line("errors", -1, llm_codes[-1]))
+        print(f"{'─' * 60}")
+        print("  Categories the LLM assigned, behind those codes:")
+        for cat, label in category_labels.items():
+            if llm_categories[cat]:
+                print(f"      {cat}. {label:<24}→ {CATEGORY_TO_CODE[str(cat)]}  {llm_categories[cat]:>5}")
         print(f"{'─' * 60}")
         print(f"  Total filtered out:                     {total_filtered:>5}  ({total_filtered / total * 100:.1f}%)")
         print(f"  Total meaningful (passed):              {meaningful:>5}  ({meaningful / total * 100:.1f}%)")
         print(f"{'─' * 60}")
 
-        # Filtered examples, one list per category. A single shared list is
-        # dominated by the largest category, so the rare codes — where
-        # over-flagging hides — are never shown. Hand sample_list every distinct
-        # text and let it draw at random: duplicates would otherwise crowd the
-        # draw, and taking the first N would sample completion order.
-        for code, label in code_labels.items():
+        # Filtered examples, one list per category — per category rather than per
+        # code, because three categories share code 99999999 and lumping them
+        # hides the rare ones. A single shared list is dominated by the largest
+        # category, and that is where over-flagging hides. Hand sample_list every
+        # distinct text and let it draw at random: duplicates would otherwise
+        # crowd the draw, and taking the first N would sample completion order.
+        for cat, label in category_labels.items():
             texts = list(dict.fromkeys(
-                str(r.response).strip() for r in llm_graded if r.quality_filter_code == code
+                str(r.response).strip() for r in llm_graded if r.quality_filter_category == cat
             ))
             if texts:
                 self.verbose_reporter.sample_list(
-                    f"LLM-filtered — {label} ({code}): {llm_codes[code]} responses, {len(texts)} distinct",
+                    f"LLM-filtered — {cat}. {label}: {llm_categories[cat]} responses, {len(texts)} distinct",
                     texts,
                     max_samples=self.config.max_filter_examples,
                 )

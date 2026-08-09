@@ -37,10 +37,11 @@ from utils.verboseReporter import VerboseReporter
 UNASSIGNED_SENTINEL = "__UNASSIGNED__"
 
 # Quality-filter codes (8-digit) from step 2 — treated as "codes" in output 1/3.
+# Motivaction missing-value convention; step 2's six categories project onto these.
 FILTER_CODE_LABELS = {
-    99999997: "Weet niet / geen antwoord",
-    99999998: "Geen antwoord / leeg",
-    99999999: "Betekenisloos",
+    99999997: "Weet niet / geen mening",
+    99999998: "Geen van dezen / geen van allen",
+    99999999: "Missing",
 }
 
 DICHOTOMOUS_VALUE_LABELS = {0: "Niet Genoemd", 1: "Wel Genoemd"}

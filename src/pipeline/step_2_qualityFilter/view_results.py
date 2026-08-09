@@ -5,7 +5,7 @@ View quality filter results: inspect what the LLM classified.
 
 Shows:
 - Summary: counts by quality_filter_code
-- Filtered responses: all responses marked as don't know or gibberish
+- Filtered responses: everything the quality filter excluded, grouped by code
 - Sample meaningful responses: random sample of passed responses
 
 Usage:
@@ -80,8 +80,8 @@ def main():
     meaningful = [r for r in results if not r.quality_filter]
     filtered = [r for r in results if r.quality_filter]
     dont_know = [r for r in results if r.quality_filter_code == 99999997]
-    no_response = [r for r in results if r.quality_filter_code == 99999998]
-    gibberish = [r for r in results if r.quality_filter_code == 99999999]
+    none_of_these = [r for r in results if r.quality_filter_code == 99999998]
+    missing = [r for r in results if r.quality_filter_code == 99999999]
     errors = [r for r in results if r.quality_filter_code == -1]
 
     print("=" * 100)
@@ -92,9 +92,9 @@ def main():
     print(f"Total:       {len(results)}")
     print()
     print(f"  Meaningful (null):     {len(meaningful):>5}  ({len(meaningful)/len(results)*100:.1f}%)")
-    print(f"  Don't know (99999997): {len(dont_know):>5}  ({len(dont_know)/len(results)*100:.1f}%)")
-    print(f"  No response(99999998): {len(no_response):>5}  ({len(no_response)/len(results)*100:.1f}%)")
-    print(f"  Gibberish  (99999999): {len(gibberish):>5}  ({len(gibberish)/len(results)*100:.1f}%)")
+    print(f"  Weet niet  (99999997): {len(dont_know):>5}  ({len(dont_know)/len(results)*100:.1f}%)")
+    print(f"  Geen v.dez.(99999998): {len(none_of_these):>5}  ({len(none_of_these)/len(results)*100:.1f}%)")
+    print(f"  Missing    (99999999): {len(missing):>5}  ({len(missing)/len(results)*100:.1f}%)")
     if errors:
         print(f"  Errors     (-1):       {len(errors):>5}  ({len(errors)/len(results)*100:.1f}%)")
     print()
@@ -104,27 +104,27 @@ def main():
 
     if dont_know:
         print(f"\n{'='*100}")
-        print(f"DON'T KNOW RESPONSES — code 99999997 ({len(dont_know)})")
+        print(f"WEET NIET / GEEN MENING — code 99999997 ({len(dont_know)})")
         print(f"{'='*100}")
         for r in dont_know:
             idx += 1
             text = str(r.response)[:300] if r.response else "(empty)"
             print(f"  {idx:>4}. [{r.respondent_id}] \"{text}\"")
 
-    if no_response:
+    if none_of_these:
         print(f"\n{'='*100}")
-        print(f"NO RESPONSE (empty/NA) — code 99999998 ({len(no_response)})")
+        print(f"GEEN VAN DEZEN / GEEN VAN ALLEN — code 99999998 ({len(none_of_these)})")
         print(f"{'='*100}")
-        for r in no_response:
+        for r in none_of_these:
             idx += 1
             text = str(r.response)[:300] if r.response else "(empty)"
             print(f"  {idx:>4}. [{r.respondent_id}] \"{text}\"")
 
-    if gibberish:
+    if missing:
         print(f"\n{'='*100}")
-        print(f"GIBBERISH / OFF-TOPIC RESPONSES — code 99999999 ({len(gibberish)})")
+        print(f"MISSING (geen tekst, verwijzing, betekenisloos) — code 99999999 ({len(missing)})")
         print(f"{'='*100}")
-        for r in gibberish:
+        for r in missing:
             idx += 1
             text = str(r.response)[:300] if r.response else "(empty)"
             print(f"  {idx:>4}. [{r.respondent_id}] \"{text}\"")

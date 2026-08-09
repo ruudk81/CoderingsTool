@@ -17,23 +17,46 @@ from pydantic import BaseModel, Field
 _CATEGORIES_BLOCK = """A response should be flagged as noise ONLY if it clearly and unambiguously matches one of the categories below.
 If a response CLEARLY carries substantive content about the question, it is meaningful: do NOT flag it.
 
-**Category 1: Don't know / Not knowing the answer**
-Explicit statements of not knowing, such as:
+Three kinds of response look alike but are not the same. Separate them by what the
+response reports:
+
+- "I cannot produce an answer" — the respondent lacks the answer, the memory, or an
+  opinion. Noise: category 1.
+- "The answer is: none" — the respondent does answer, and what they report is that
+  there is nothing. Noise: category 3.
+- "I do not know the subject" — never heard of it, never used it, no experience with
+  it. NOT noise: that reports a real fact about this respondent's relation to the
+  subject the question asks about. Keep it.
+
+**Category 1: Cannot give the answer**
+Explicit statements of not knowing what to answer, or of having no opinion:
 - "I don't know"
 - "Not sure"
 - "No idea"
+- "No opinion"
 - Equivalent phrases in any language
+A response that instead states the subject itself is unknown to the respondent does
+NOT belong here — that is meaningful content.
 
-**Category 2: Not applicable / Not having the answer**
-Explicit statement of absence, such as:
-- "No answer"
+**Category 2: Not applicable**
+The respondent states that the question does not apply to them:
 - "Not applicable"
-- "No explanation"
-- Empty placeholders: "-", "?", "N/A"
+- "Does not apply to me"
+- Abbreviations of the same, such as "N/A"
 - Equivalent phrases in any language
 
-**Category 3: Deferral / Referring elsewhere**
-The response explicitly points to an answer given elsewhere instead of answering here, such as:
+**Category 3: No content to report**
+The respondent does answer, and the answer is that there is nothing:
+- "Nothing"
+- "None"
+- "None at all"
+- "Nothing comes to mind"
+- Equivalent phrases in any language
+The test: the response can be rewritten as "the answer is: none". If it can only be
+rewritten as "I cannot give the answer", it is category 1 instead.
+
+**Category 4: Referring elsewhere**
+The response explicitly points to an answer given elsewhere instead of answering here:
 - "Already mentioned it"
 - "See previous question"
 - "It's written above"
@@ -41,15 +64,13 @@ The response explicitly points to an answer given elsewhere instead of answering
 - Equivalent phrases in any language
 This category requires an EXPLICIT pointer elsewhere. A brief on-topic answer does NOT belong here — being short is not the same as not addressing the question.
 
-**Category 4: No text / Empty**
-Item nonresponse, such as:
-- Completely blank responses
-- Only whitespace
-- Single characters like "-" or "?"
-- Equivalent phrases in any language
+**Category 5: No text**
+No answer was entered, or only a placeholder mark:
+- Completely blank, or only whitespace
+- Single characters such as "-", ".", "?"
 
-**Category 5: Invalid text / Nonsense**
-Random or meaningless text, such as:
+**Category 6: Meaningless text**
+Random or meaningless text:
 - Keyboard mashing: "asdf", "qwerty", "jjjjj"
 - Random punctuation: "!!!", "????"
 - Placeholder text: "lorem ipsum", "test"
@@ -81,11 +102,12 @@ _DECISION_RULE = """First, work through your evaluation following these three st
 2. Consider whether the response should be categorized as noise WITHOUT HESITATION and AMBIGUITY
 3. Then provide your final categorization. Return one of:
 
-1 → Don't know / Not knowing the answer
-2 → Not applicable  / Not having the answer
-3 → Deferral / Referring elsewhere
-4 → No text / Empty
-5 → Invalid text / Nonsense
+1 → Cannot give the answer
+2 → Not applicable
+3 → No content to report
+4 → Referring elsewhere
+5 → No text
+6 → Meaningless text
 null → Keep the response"""
 
 
@@ -102,7 +124,7 @@ Output
 </scratchpad>
 
 <category>
-[Return only the category number: 1, 2, 3, 4, 5 - or "null"]
+[Return only the category number: 1, 2, 3, 4, 5, 6 - or "null"]
 </category>"""
 
 
@@ -120,16 +142,17 @@ class QualityFilterStructuredResponse(BaseModel):
     scratchpad: str = Field(
         description="Your evaluation reasoning: 1) interpret the response, 2) assess noise fit, 3) categorize"
     )
-    category: Optional[Literal[1, 2, 3, 4, 5]] = Field(
+    category: Optional[Literal[1, 2, 3, 4, 5, 6]] = Field(
         default=None,
         description=(
             "Quality filter category: "
-            "1 = don't know / not knowing the answer; "
-            "2 = not applicable / not having the answer; "
-            "3 = deferral / explicitly referring to an answer given elsewhere; "
-            "4 = no text / empty; "
-            "5 = invalid text / nonsense; "
+            "1 = cannot give the answer: does not know, no opinion — NOT: unfamiliar with the subject, which is meaningful; "
+            "2 = not applicable: the question does not apply to the respondent, incl. 'n/a'; "
+            "3 = no content to report: the answer is 'none', 'nothing', 'nothing comes to mind'; "
+            "4 = explicitly refers to an answer given elsewhere; "
+            "5 = no text: blank, whitespace, or a bare placeholder mark such as '-' or '?'; "
+            "6 = meaningless text: keyboard mashing, random punctuation, placeholder text; "
             "null = keep the response (meaningful)"
         ),
-        examples=[1, 5, None],
+        examples=[1, 3, None],
     )

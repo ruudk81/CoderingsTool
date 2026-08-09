@@ -77,11 +77,17 @@ class ResponseModel(BaseModel):
 
 class PreprocessedModel(ResponseModel):
     quality_filter: Optional[bool] = None
-    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=don't know, 99999998=no response/empty, 99999999=gibberish
+    # Motivaction missing-value convention: 99999997=weet niet/geen mening,
+    # 99999998=geen van dezen/geen van allen, 99999999=missing. Several step-2
+    # categories project onto one code; see CATEGORY_TO_CODE in qualityFilter.py.
+    quality_filter_code: Optional[int] = None
 
 
 class QualityFilteredModel(PreprocessedModel):
-    pass
+    # The fine-grained step-2 category (1-6), of which quality_filter_code is a
+    # projection. Kept so the quality report can still tell, say, meaningless text
+    # from no text — both of which land on 99999999. None for pre-filtered items.
+    quality_filter_category: Optional[int] = None
 
 
 class IdeasExtractedSubmodel(BaseModel):

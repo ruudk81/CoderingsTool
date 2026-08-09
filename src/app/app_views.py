@@ -289,9 +289,9 @@ def stats_quality_filter(spec: DatasetSpec, lang: str, epoch: int):
     # Meaningful responses carry no filter code (None); 0 also = meaningful.
     labels = {None: _t(lang, "Betekenisvol", "Meaningful"),
               0: _t(lang, "Betekenisvol", "Meaningful"),
-              99999997: _t(lang, "Weet niet / geen mening", "Don't know"),
-              99999998: _t(lang, "Geen antwoord / leeg", "No answer / empty"),
-              99999999: _t(lang, "Betekenisloos", "Gibberish")}
+              99999997: _t(lang, "Weet niet / geen mening", "Don't know / no opinion"),
+              99999998: _t(lang, "Geen van dezen / geen van allen", "None of these"),
+              99999999: _t(lang, "Missing", "Missing")}
     counts = collections.Counter(getattr(d, "quality_filter_code", None) for d in data)
     total = len(data) or 1
     st.subheader(_t(lang, "Kwaliteitsfilter — uitsplitsing", "Quality filter — breakdown"))
@@ -308,9 +308,9 @@ def samples_quality_filter(spec: DatasetSpec, lang: str, epoch: int):
     data = _quality_filtered(spec.filename, spec.var_name, spec.sample_size, epoch)
     if not data:
         return
-    labels = {99999997: _t(lang, "Weet niet / geen mening", "Don't know"),
-              99999998: _t(lang, "Geen antwoord / leeg", "No answer / empty"),
-              99999999: _t(lang, "Betekenisloos", "Gibberish")}
+    labels = {99999997: _t(lang, "Weet niet / geen mening", "Don't know / no opinion"),
+              99999998: _t(lang, "Geen van dezen / geen van allen", "None of these"),
+              99999999: _t(lang, "Missing", "Missing")}
     excluded = {code: [d for d in data if getattr(d, "quality_filter_code", None) == code]
                 for code in labels}
     if not any(excluded.values()):

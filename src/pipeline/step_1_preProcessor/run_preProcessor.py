@@ -201,7 +201,8 @@ def run_step(config: StepConfig = None):
             item = processed_map[original.respondent_id]
             desc_item = item.to_model(models.PreprocessedModel)
             if item.response == 'nan':
-                desc_item.quality_filter_code = 99999998
+                # 99999999 = missing, per the Motivaction convention: no text.
+                desc_item.quality_filter_code = 99999999
                 desc_item.quality_filter = True
             elif isinstance(item.response, int) and item.response in [99999997, 99999998, 99999999]:
                 desc_item.quality_filter_code = int(item.response)
@@ -212,7 +213,7 @@ def run_step(config: StepConfig = None):
                 respondent_id=original.respondent_id,
                 response='<NA>',
                 response_type='nan',
-                quality_filter_code=99999998,
+                quality_filter_code=99999999,
                 quality_filter=True
             ))
 
