@@ -1036,24 +1036,22 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing a quality, trait, image, association, or perceived characteristic of the entity.",
         ),
-        # Byte-identical to the pre-2026-08-08 shared wording: this dimension is the one
-        # the old hardcoded pair was written for, so keeping it exact makes any change on
-        # a dataset that selects it a construction fault, never a wording change.
         standing_bare=StandingDomain(
-            fallback_label="General impression",
+            fallback_label="Unplaced association",
             definition=(
-                "The idea expresses only an evaluation, a feeling or a general impression, "
-                "with no subject it is about. The respondent does have an impression — it "
-                "simply names nothing the other domains could cover."
+                "The idea associates something with the entity, but names no subject area "
+                "of the entity the association describes. The respondent does make an "
+                "association — it simply names nothing the other domains could cover."
             ),
-            short="only an evaluation or impression, with no subject of its own",
+            short="an association with no subject area of its own",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a subject, but one that no domain above covers. Use this "
                 "for genuinely off-topic or idiosyncratic content — not for answers that "
-                "merely express an impression, which belong to the general-impression domain."
+                "associate without naming a subject area, which belong to the "
+                "unplaced-association domain."
             ),
             short="names a subject no domain above covers",
         ),

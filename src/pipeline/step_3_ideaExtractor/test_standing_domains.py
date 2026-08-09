@@ -162,27 +162,48 @@ def test_consolidation_prompt_carries_this_dimensions_wording(dimension_key):
     assert f'key "{STANDING_OTHER_KEY}"' in prompt
 
 
-# ── 4. No-op-garantie voor de dimensie die de oude tekst bezat ─────────────
+# ── 4. Elke dimensie stelt de structurele toets, geen inhoudelijke ─────────
+#
+# Verving de no-op-pin op ATTRIBUTES_ASSOCIATIONS (2026-08-09). Die legde de tekst
+# byte voor byte vast om te bewijzen dat de per-dimensie-refactor daar niets
+# veranderde. Dat bewijs is geleverd — en de pin bevroor intussen een fout: de
+# refactor verbreedde het concept naar "noemt niets op de as" en schreef tien nieuwe
+# definities, terwijl de elfde op de oude, smallere tekst bleef staan. Een snapshot
+# bewaakt de letter; deze tests bewaken de vorm.
 
-def test_attributes_associations_wording_is_unchanged():
-    """De pre-2026-08-08 gedeelde tekst hoorde bij deze dimensie.
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_standing_bare_states_an_axis_failure_not_a_content_type(dimension_key):
+    """De as-faalmodus, niet een opsomming van inhoudsvormen.
 
-    Byte-identiek houden maakt elke afwijking op een dataset die ATTRIBUTES_ASSOCIATIONS
-    kiest een constructiefout, nooit een tekstwijziging.
+    De vorm is: [de handeling van deze dimensie] + [maar geen eenheid op de as].
+    Wie inhoudsvormen opsomt sluit stilzwijgend uit wat er niet in staat, en die
+    ideeën worden dan in een inhoudelijk domein geperst.
+    """
+    d = get_dimension(dimension_key)
+    t = d.standing_bare.definition
+
+    assert t.rstrip().endswith("it simply names nothing the other domains could cover.")
+    assert "names no" in t or "no sphere" in t or "with no" in t
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_standing_other_sends_axis_failures_back_to_the_bare_domain(dimension_key):
+    """`other` is voor een genoemd onderwerp dat geen domein dekt — niet voor leegte.
+
+    Zonder die afbakening lopen de twee vol elkaar in: alles wat nergens past wordt
+    `other`, en de kale antwoorden verliezen hun eigen categorie.
+    """
+    d = get_dimension(dimension_key)
+    assert "not for" in d.standing_other.definition
+
+
+def test_attributes_associations_no_longer_enumerates_affective_forms():
+    """Regressie: de dimensie van kwaliteiten en beelden noemde er drie op.
+
+    'evaluation, a feeling or a general impression' liet elke associatie die geen
+    van drieën is buiten de definitie vallen — de kale categorie-associatie het
+    duidelijkst.
     """
     d = get_dimension("ATTRIBUTES_ASSOCIATIONS")
-    assert d.standing_bare.fallback_label == "General impression"
-    assert d.standing_bare.definition == (
-        "The idea expresses only an evaluation, a feeling or a general impression, "
-        "with no subject it is about. The respondent does have an impression — it "
-        "simply names nothing the other domains could cover."
-    )
-    assert d.standing_bare.short == (
-        "only an evaluation or impression, with no subject of its own")
-    assert d.standing_other.fallback_label == "Other"
-    assert d.standing_other.definition == (
-        "The idea names a subject, but one that no domain above covers. Use this "
-        "for genuinely off-topic or idiosyncratic content — not for answers that "
-        "merely express an impression, which belong to the general-impression domain."
-    )
-    assert d.standing_other.short == "names a subject no domain above covers"
+    assert "a feeling or a general impression" not in d.standing_bare.definition
+    assert "general-impression domain" not in d.standing_other.definition
