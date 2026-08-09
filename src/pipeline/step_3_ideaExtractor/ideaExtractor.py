@@ -522,17 +522,21 @@ class IdeaExtractor:
         return response
 
 
-    def _build_domain_chunks(self) -> List[List]:
+    @staticmethod
+    def build_domain_chunks(responses: List) -> List[List]:
         """Chunk EVERY response for domain discovery, with overlap.
 
         Not the specifier sample: reading a dataset's properties from a fifth of the
         responses is sound, finding which themes exist is not. A theme that misses
         the draw gets no domain, and its ideas then fall through to 'Other' for the
         whole dataset. Same treatment step 4 gives facet discovery one level down.
+
+        Static and public so `exp_consolidation_variance.py` chunks exactly the way
+        production does, rather than keeping a copy that can drift.
         """
-        n = len(self.responses)
+        n = len(responses)
         if n <= DOMAIN_CHUNK_SIZE_MIN:
-            return [list(self.responses)]
+            return [list(responses)]
 
         size = max(DOMAIN_CHUNK_SIZE_MIN,
                    min(max(n // DOMAIN_TARGET_CHUNKS, 1), DOMAIN_CHUNK_SIZE_MAX))
@@ -540,10 +544,10 @@ class IdeaExtractor:
 
         chunks, i = [], 0
         while i < n:
-            chunks.append(list(self.responses[i:i + size]))
+            chunks.append(list(responses[i:i + size]))
             i += step
             if i < n and i + size > n:
-                chunks.append(list(self.responses[-size:]))
+                chunks.append(list(responses[-size:]))
                 break
         return chunks
 
@@ -764,7 +768,7 @@ class IdeaExtractor:
         if self.discover_domains:
             self.verbose_reporter.stat_line(f"  Phase 3: Discovering domains from response data...")
 
-            domain_chunks = self._build_domain_chunks()
+            domain_chunks = self.build_domain_chunks(self.responses)
             domain_chunk_texts = [
                 "\n".join([f"- {r.response}" for r in ch]) for ch in domain_chunks
             ]
@@ -994,31 +998,37 @@ class IdeaExtractor:
             finally:
                 queue.task_done()
 
+    @staticmethod
+    def build_domain_table(domains: Optional[List]) -> str:
+        """The assignment menu as the extraction prompt shows it.
+
+        Static and public so `exp_assignment_variance.py` presents the model exactly
+        the menu production presents, rather than keeping a copy that can drift.
+        """
+        if not domains:
+            # During token estimation (_calculate_avg_tokens), domains haven't been
+            # discovered yet — a placeholder is enough for sizing.
+            return "(domains will be discovered during extraction)"
+
+        return (
+            "Pick the single best-fitting domain. The ✓ test and ✗ list help you CHOOSE BETWEEN "
+            "domains; they are not grounds to reject a plausibly related idea.\n"
+            "There are two ways to get this wrong and they are equally bad:\n"
+            "  - sending an idea to a catch-all domain that one of the others does name;\n"
+            "  - forcing an idea into a domain whose subject the idea never mentions.\n"
+            "Each domain lists its definition, ✓ a membership test, and ✗ neighbouring domains it should not be confused with:\n"
+            + "\n".join(
+                f"  • {c.label} = \"{c.definition}\"\n      ✓ {c.boundary_test}\n      ✗ {', '.join(c.exclusions)}"
+                for c in domains
+            )
+        )
+
     def _build_taxonomy_enriched_prompt(self, response: str) -> str:
         """Build taxonomy-enriched prompt for idea extraction."""
         assert self.primary_dimension is not None, "primary_dimension must be set before building extraction prompt"
         dimension = get_dimension(self.primary_dimension)
 
-        # Build domain table from discovered thematic domains
-        discovered_domains = getattr(self, 'domains', None)
-        if discovered_domains:
-            domain_table = (
-                "Pick the single best-fitting domain. The ✓ test and ✗ list help you CHOOSE BETWEEN "
-                "domains; they are not grounds to reject a plausibly related idea.\n"
-                "There are two ways to get this wrong and they are equally bad:\n"
-                "  - sending an idea to a catch-all domain that one of the others does name;\n"
-                "  - forcing an idea into a domain whose subject the idea never mentions.\n"
-                "Each domain lists its definition, ✓ a membership test, and ✗ neighbouring domains it should not be confused with:\n"
-                + "\n".join(
-                    f"  • {c.label} = \"{c.definition}\"\n      ✓ {c.boundary_test}\n      ✗ {', '.join(c.exclusions)}"
-                    for c in discovered_domains
-                )
-
-            )
-        else:
-            # During token estimation (_calculate_avg_tokens), domains haven't been
-            # discovered yet — use a placeholder table for sizing purposes.
-            domain_table = "(domains will be discovered during extraction)"
+        domain_table = self.build_domain_table(getattr(self, 'domains', None))
 
         return build_taxonomy_enriched_extraction_prompt(
             language=self.language,
