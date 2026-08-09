@@ -119,11 +119,18 @@ def main() -> None:
     print(f"  same menu, two passes   : 0.927   (exp_assignment_variance)")
     print(f"  full rerun, everything  : 0.38 - 0.82")
 
-    print("\nwhere they land differently (label pairs, most frequent first)")
+    # The full contingency table, not a disagreement list: the two menus use
+    # different labels, so "A != B" counts renamings as moves. Which rows are the
+    # same theme under another name is a judgement, and it belongs to the reader —
+    # printing only mismatched labels would hide that judgement inside the script.
     from collections import Counter
     pairs = Counter((a[r][0], b[r][0]) for r in single)
-    for (x, y), count in pairs.most_common(12):
-        print(f"  {count:>3}x  {x}  ->  {y}")
+    print(f"\ncontingency table, menu A -> menu B ({len(single)} responses)")
+    print("  read it yourself: a row whose two labels name the same theme is a")
+    print("  renaming, not a move. Only the rest is genuine disagreement.")
+    for (x, y), count in pairs.most_common():
+        flag = "   =" if x == y else "    "
+        print(f"  {count:>3}x{flag}  {x}  ->  {y}")
 
 
 if __name__ == "__main__":
