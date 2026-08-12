@@ -24,13 +24,11 @@ async def resolve_relations(
 ) -> RelationsResult:
     """One call across the whole concept inventory. If it fails there is no
     grouping, so step 5 stops here — no fallback."""
-    model = make_relations_model(concepts)
-    prompt = build_relations_prompt(concepts, language)
 
-    def prepare_fn(_task):
+    def prepare_fn(task):
         return {
-            "prompt": prompt,
-            "response_model": model,
+            "prompt": build_relations_prompt(task["concepts"], task["language"]),
+            "response_model": make_relations_model(task["concepts"]),
             "temperature": config.temperature_relations,
             "max_tokens": config.max_tokens_relations,
             "max_retries": 2,
@@ -52,7 +50,8 @@ async def resolve_relations(
         has_server_headers=has_server_headers,
         quiet=True,
     )
-    results = await requester.process_all([None], prepare_fn, parse_fn, fallback_fn)
+    tasks = [{"concepts": concepts, "language": language}]
+    results = await requester.process_all(tasks, prepare_fn, parse_fn, fallback_fn)
     if not results or results[0] is None:
         raise RuntimeError(
             "Step 5 stap 2 (relaties) is mislukt. Zonder groepering is er geen "
