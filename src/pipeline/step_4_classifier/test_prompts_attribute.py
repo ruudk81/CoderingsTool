@@ -7,8 +7,11 @@ from pipeline.step_4_classifier.prompts_attribute import (
     AttributeDiscoveryResult,
     ConsolidatedAttribute,
     DiscoveredAttribute,
+    build_attribute_assignment_model,
+    build_attribute_assignment_prompt,
     build_attribute_consolidation_prompt,
     build_attribute_discovery_prompt,
+    build_attribute_menu,
 )
 
 DIM = get_dimensions_in_decision_order()[0]
@@ -143,3 +146,69 @@ def test_geconsolideerd_attribuut_noemt_zijn_bronnen():
 
 def test_consolidatieresultaat_accepteert_lege_lijst():
     assert AttributeConsolidationResult(scratchpad="s", attributes=[]).attributes == []
+
+
+# =============================================================================
+# Taak 8 — toewijzing
+# =============================================================================
+
+ASSIGN_CTX = dict(
+    language="Dutch", survey_question="Waar denkt u aan?",
+    sector="finance", entity="asn_bank", topic="brand_association",
+    perspective="consumer", intent="associate",
+    facet_name="Groene uitstraling",
+    facet_definition="Hoe groen de entiteit oogt.",
+)
+
+
+def _attributen():
+    return [ConsolidatedAttribute(
+        attribute_name="Windenergie", attribute_definition="Windopwekking.",
+        boundary_test="Noemt dit wind?", exclusions=["zonne-energie"],
+        example_observations=["windmolens"], source_attributes=["Windenergie"],
+    )]
+
+
+def test_menu_nummert_en_toont_grens_en_uitsluiting():
+    menu = build_attribute_menu(_attributen())
+    assert "[A1]" in menu
+    assert "Noemt dit wind?" in menu
+    assert "zonne-energie" in menu
+
+
+def test_toewijzingsprompt_bevat_menu_facet_en_ideeen():
+    prompt = build_attribute_assignment_prompt(
+        **ASSIGN_CTX, attributes=_attributen(), ideas=[("i1", "windmolens op zee")]
+    )
+    assert "[A1]" in prompt
+    assert "Groene uitstraling" in prompt
+    assert "[i1] windmolens op zee" in prompt
+    assert "A_NONE" in prompt
+
+
+def test_model_weigert_onbekend_attribuut_id():
+    Model = build_attribute_assignment_model(["A1"], ["i1"])
+    with pytest.raises(ValidationError):
+        Model(assignments=[{"idea_id": "i1", "assigned_attribute_id": "A9",
+                            "confidence": 0.9, "valence": "0"}])
+
+
+def test_model_weigert_onbekend_idea_id():
+    Model = build_attribute_assignment_model(["A1"], ["i1"])
+    with pytest.raises(ValidationError):
+        Model(assignments=[{"idea_id": "zz", "assigned_attribute_id": "A1",
+                            "confidence": 0.9, "valence": "0"}])
+
+
+def test_model_weigert_valence_buiten_de_drie_waarden():
+    Model = build_attribute_assignment_model(["A1"], ["i1"])
+    with pytest.raises(ValidationError):
+        Model(assignments=[{"idea_id": "i1", "assigned_attribute_id": "A1",
+                            "confidence": 0.9, "valence": "positief"}])
+
+
+def test_model_accepteert_a_none():
+    Model = build_attribute_assignment_model(["A1"], ["i1"])
+    result = Model(assignments=[{"idea_id": "i1", "assigned_attribute_id": "A_NONE",
+                                 "confidence": 0.1, "valence": "0"}])
+    assert result.assignments[0].assigned_attribute_id == "A_NONE"

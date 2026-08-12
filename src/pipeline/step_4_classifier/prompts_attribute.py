@@ -13,9 +13,9 @@ is the facet — everything else about the shape is the same, deliberately.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Dict, List, Literal, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model, model_validator
 
 from .prompts_shared import (
     INSTRUCTOR_HINT,
@@ -352,5 +352,134 @@ For EACH consolidated attribute provide:
 - **source_attributes** — the attribute_name of every candidate consumed into this one
 
 All attribute names, definitions, boundary tests and exclusions must be written in {language}.
+
+Begin processing now and {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# §3 ASSIGNMENT — ideas into the settled inventory
+# =============================================================================
+#
+# Like the facet layer's assignment, this phase carries no taxonomy block and no
+# universal rules: it creates nothing, it picks an id from a menu whose entries
+# already carry their definitions and boundaries, and it runs at the volume of
+# the dataset.
+
+
+def build_attribute_menu(attributes: List[ConsolidatedAttribute]) -> str:
+    """Render the settled attributes as a numbered menu.
+
+    The [A#] id is what the response is keyed on, so the numbering here and the
+    id list handed to `build_attribute_assignment_model` must come from the same
+    list in the same order.
+    """
+    lines = []
+    for i, a in enumerate(attributes, 1):
+        exclusions = "; ".join(a.exclusions) if a.exclusions else ""
+        examples = "; ".join(a.example_observations[:3])
+        block = (
+            f"[A{i}] {a.attribute_name}\n"
+            f"     Description: {a.attribute_definition}\n"
+            f"     Boundary: {a.boundary_test}"
+        )
+        if exclusions:
+            block += f"\n     Does not belong here: {exclusions}"
+        if examples:
+            block += f"\n     Examples: {examples}"
+        lines.append(block)
+    return "\n\n".join(lines)
+
+
+def build_attribute_assignment_model(attribute_ids: List[str], idea_ids: List[str]):
+    """Runtime response model for one assignment call.
+
+    The attribute layer had no Literal on the assigned id until this rewrite —
+    it was the weakest link in the chain, where the facet layer had one and step
+    3's domain assignment had an enum. Both id spaces are Literals here, so a
+    hallucinated id is a schema violation instructor retries.
+    """
+    attribute_id_literal = Literal[tuple(attribute_ids + ["A_NONE"])]  # type: ignore[valid-type]
+    idea_id_literal = Literal[tuple(idea_ids)]  # type: ignore[valid-type]
+
+    item_model = create_model(
+        "AttributeAssignmentItem",
+        idea_id=(idea_id_literal, Field(
+            ..., description="The [id] tag of the idea, echoed exactly")),
+        assigned_attribute_id=(attribute_id_literal, Field(
+            ..., description=(
+                "The attribute id from the [A#] prefix. Return ONLY the id. "
+                "Use A_NONE when no attribute fits this idea"))),
+        confidence=(float, Field(
+            ..., ge=0.0, le=1.0, description="Assignment confidence (0.0-1.0)")),
+        valence=(Literal["+", "-", "0"], Field(
+            default="0",
+            description=(
+                "Evaluative direction relative to the attribute: "
+                "+ positive, - negative, 0 neutral"))),
+    )
+    return create_model(
+        "AttributeAssignmentResult",
+        assignments=(List[item_model], Field(
+            ..., description=(
+                "Exactly one assignment per idea listed in the prompt, "
+                "no idea skipped, no idea added"))),
+    )
+
+
+def build_attribute_assignment_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    facet_name: str,
+    facet_definition: str,
+    attributes: List[ConsolidatedAttribute],
+    ideas: List[Tuple[str, str]],
+) -> str:
+    """Assign one or more ideas to an attribute, with valence."""
+    context_block = build_context_block(
+        language=language, survey_question=survey_question, sector=sector,
+        entity=entity, topic=topic, perspective=perspective, intent=intent,
+    )
+    menu = build_attribute_menu(attributes)
+    ideas_block = "\n".join(f"[{idea_id}] {label}" for idea_id, label in ideas)
+
+    return f"""You are a qualitative coding assistant. Assign each survey response idea below to the attribute it belongs to.
+
+{context_block}
+
+<facet>
+Facet: {facet_name} — {facet_definition}
+</facet>
+
+<attributes>
+{menu}
+
+[A_NONE] None of the attributes above fits the idea.
+</attributes>
+
+<ideas>
+{ideas_block}
+</ideas>
+
+### VALENCE (evaluation relative to the attribute)
+- "+" Positive — the idea describes a positive instance of this attribute (present,
+  sufficient, meeting expectations)
+- "-" Negative — the idea describes a negative instance of this attribute (absent,
+  insufficient, failing expectations)
+- "0" Neutral — the idea is descriptive, ambiguous, or expresses no evaluation
+
+Valence is not emotional sentiment. It is evaluative direction relative to the attribute.
+
+Use each attribute's Boundary line to decide the doubtful cases; that is what it is for.
+
+Judge every idea independently on its own text; do not let one assignment influence the
+next. Return exactly one item per idea, echoing that idea's [id]. Do not skip ideas and
+do not add ideas. If no attribute fits an idea, use "A_NONE" for that idea rather than
+forcing it into the nearest one.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
