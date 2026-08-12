@@ -92,7 +92,7 @@ class AttributeDiscoveryResult(BaseModel):
         ..., description=(
             "Reasoning before the final set: "
             "(1) read the observations for the ways they differ from one another, "
-            "(2) name the candidate dimensions of variation, "
+            "(2) name the candidate dimensions, "
             "(3) test each pair of dimensions for independence in both directions and "
             "merge them where independence cannot be shown, "
             "(4) check no dimension is an evaluative direction in disguise, "
@@ -109,7 +109,7 @@ class AttributeDiscoveryResult(BaseModel):
     )
     dimensions: List[DiscoveredAttributeDimension] = Field(
         ..., description=(
-            "The dimensions of variation found in these observations, each with its "
+            "The dimensions found in these observations, each with its "
             "values. As few as account for every difference the observations show"
         )
     )
@@ -175,13 +175,9 @@ Here are the observations you need to account for:
 
 ## YOUR TASK
 
-Find the **dimensions of variation** in these observations — the ways in which responses
+Find the **dimensions** in these observations — the ways in which responses
 within this facet differ from one another — and then give the values each dimension
 takes. Those values are the attributes (level 4).
-
-A dimension of variation is not the L1 dimension named in the taxonomy above. That one is
-fixed for the whole study; these are the axes along which the answers inside THIS facet
-differ from each other.
 
 **Look for orthogonal dimensions.** Dimensions that do not overlap, that live in a
 different semantic space from one another. The test: two observations must be able to
@@ -193,10 +189,9 @@ observations in front of you, you have one dimension, not two.
 show, and not one more. If the responses vary in only one way, return exactly one
 dimension — do not decompose one dimension into several.
 
-**A dimension of variation is DESCRIPTIVE.** It names WHAT differs between responses,
+**A dimension is DESCRIPTIVE.** It names WHAT differs between responses,
 never how positively or negatively the subject is judged. "Positive versus negative",
-"satisfied versus dissatisfied" and any rephrasing of those is not a dimension of
-variation — evaluative direction is recorded per response as valence and never becomes
+"satisfied versus dissatisfied" and any rephrasing of those is not a dimension — evaluative direction is recorded per response as valence and never becomes
 structure. If the only variation you can find here is evaluative, return the single
 descriptive dimension the responses share and let valence carry the rest.
 
@@ -234,7 +229,7 @@ when the same distinction recurs.
 
 Work through your reasoning in the scratchpad field first.
 
-For EACH dimension of variation provide:
+For EACH dimension provide:
 - **dimension_name** — how responses differ along it, in a few words
 - **dimension_description** — one sentence on what varies
 - **attributes** — the values it takes, each one a full attribute
@@ -352,7 +347,7 @@ Domain: {domain_label} — {domain_definition}
 Facet:  {facet_name} — {facet_definition}
 </parents>
 
-The question every attribute must answer for this dimension is:
+The question every attribute must answer under this lens is:
 
 <attribute_diagnostic>
 {diagnostic}
@@ -761,7 +756,7 @@ Domain: {domain_label} — {domain_definition}
 Facet:  {facet_name} — {facet_definition}
 </parents>
 
-The question every attribute answers for this dimension is:
+The question every attribute answers under this lens is:
 
 <attribute_diagnostic>
 {diagnostic}

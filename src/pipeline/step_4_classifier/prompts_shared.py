@@ -14,10 +14,20 @@ the diagnostic question has to be selected rather than fixed: step 3 always
 asks `domain_diagnostic`, step 4 asks `facet_diagnostic` or
 `attribute_diagnostic` depending on which layer the phase is building.
 
-There is no axis here, and there is none anywhere in step 4. A dimension
-organises each of its layers along one axis, and that axis is what the layer's
-diagnostic question asks about — it is a constant of the dimension, stated in
-dimension_data.py, not something a phase discovers.
+## Two things called a dimension, and why only one of them is
+
+L1 is the **lens**: the one perspective the whole study reads every response
+through, fixed in `dimension_data.py` and named in the taxonomy block. The code
+still calls it `dimension_name`, because that is what `ExtractionMetadata`
+carries across the step boundary — but no prompt calls it that, or the word
+would mean two things on one page.
+
+The **dimensions** the prompts ask for are the ways responses inside one scope
+differ from each other: discovery finds them per domain and per facet, and the
+facets respectively attributes are the values they take. They are a construction
+aid, not a taxonomy level — the parse flattens them away and the cache never
+sees them. Their whole job is to force the model to say what its list is a list
+OF before it makes the list.
 """
 from __future__ import annotations
 
@@ -171,7 +181,9 @@ def build_taxonomy_block(
 The taxonomy has four levels. All four are given so you can see where your own task
 sits, and so you do not return something that belongs one level up or one level down.
 
-L1 — Dimension: {dimension_name}
+L1 — Lens: {dimension_name}
+     The lens the whole study looks through. Fixed for every response, every
+     domain and every level below.
      {dimension_description}
 
 L2 — Domain: {_extract_definition(rules.domain_instruction)}
