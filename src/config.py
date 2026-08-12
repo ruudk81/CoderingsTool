@@ -99,6 +99,7 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     "codegen_p8":                         ("5.6", 3),
     "codegen_p9":                         ("5.6", 3),
     "codegen_relations":                  ("5.6", 3),   # relations between attributes
+    "codegen_umbrella_merge":             ("5.6", 3),   # consolidate umbrella names before pooling
     "codegen_writer":                     ("5.6", 3),   # codebook writing from clusters
     # Step 6: Code Assigner
     "code_assignment":                    ("5.6", 3),
@@ -208,6 +209,7 @@ STEP_EFFORT = {
     "codegen_p8": "medium",
     "codegen_p9": "medium",
     "codegen_relations": "medium",  # replaces codegen_p8/p9 — same level, not "none"
+    "codegen_umbrella_merge": "medium",
     "codegen_writer": "medium",
     # All other steps: fall back to REASONING_EFFORT
 }
