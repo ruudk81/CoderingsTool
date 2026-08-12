@@ -85,23 +85,21 @@ from .assignment_batching import (
 )
 from models import DomainSet
 from .prompts_facet import (
-    DiscoveredFacet, ConsolidatedFacet, RefinedFacet,
+    DiscoveredFacet, ConsolidatedFacet,
     FacetDiscoveryResult, FacetConsolidationResult, FacetRefinementResult,
     build_facet_discovery_prompt,
     build_facet_consolidation_prompt,
-    build_facet_menu,
     build_facet_assignment_model,
     build_facet_assignment_prompt,
     build_facet_contents_block,
     build_facet_refinement_prompt,
 )
 from .prompts_attribute import (
-    DiscoveredAttribute, ConsolidatedAttribute, RefinedAttribute,
+    DiscoveredAttribute, ConsolidatedAttribute,
     AttributeDiscoveryResult, AttributeConsolidationResult,
     AttributeRefinementResult,
     build_attribute_discovery_prompt,
     build_attribute_consolidation_prompt,
-    build_attribute_menu,
     build_attribute_assignment_model,
     build_attribute_assignment_prompt,
     build_attribute_contents_block,
@@ -388,7 +386,7 @@ class TaxonomyClassifier:
         no facets, because step 3 defines them as deliberately broad catch-alls.
         """
         print(f"\n{'='*70}")
-        print(f"TAXONOMY DISCOVERY (8 phases)")
+        print("TAXONOMY DISCOVERY (8 phases)")
         print(f"{'='*70}")
 
         prompt_context, active_partitions = self._prepare_context(
@@ -403,7 +401,7 @@ class TaxonomyClassifier:
             n_partitions = len(active_partitions)
             print(f"  Processing {n_partitions} domains concurrently "
                   f"({total_labels} observations, {total_ideas} ideas)")
-            print(f"  Per level: discovery → consolidation → assignment → refinement")
+            print("  Per level: discovery → consolidation → assignment → refinement")
 
         async def _run():
             await self._initialize_async_resources(verbose)
@@ -459,7 +457,7 @@ class TaxonomyClassifier:
 
         if verbose:
             headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
-            print(f"\n  [RATE LIMITING SETUP]")
+            print("\n  [RATE LIMITING SETUP]")
             print("  Models: " + ", ".join(
                 f"{phase}={self._model[phase]}" for phase in self.PHASES))
             for key, m in representatives.items():
@@ -476,1048 +474,151 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool,
     ) -> TaxonomyResult:
-        """Taxonomy stages P1-P9: facets, attributes, assignments."""
-        start_time = time.time()
+        """The eight phases, in order. Each one logs its own lines and its own
+        cost; this method only decides what runs and what feeds what.
+
+        `stop_after_phase` returns the state as it stands after that phase. A
+        partial return is a real result, not an empty one — the phases that did
+        run are in it, so the runner can still cache and inspect them.
+        """
+        started = time.time()
         self._facet_confidence.clear()
         self._attribute_confidence.clear()
         self._facet_valence.clear()
         self._attribute_valence.clear()
-        self.axis_systems.clear()
+        self._action_log.clear()
 
-        # P9 action log — declared here (not at its historical P3 site) because
-        # P1, which runs first, needs it too.
-        consolidation_log: List[Dict] = []
+        ctx = prompt_context
 
-        # =================================================================
-        # PHASE 1 (P1): Per-domain Axis Discovery (optional, SmoothRequester,
-        # light mode — mirrors the P2/P3 dispatch). Establishes 1-4 axes per
-        # domain from a deterministic sample of its observations, before P1
-        # facet discovery runs. Behind axis_first_enabled; off is
-        # byte-identical to the pre-existing chain — this whole block is
-        # skipped, axis_systems stays empty, no domain is touched.
-        # Skips the standing drain domains and domains too small to be worth
-        # an axis call (< 2 chunks AND < 20 labels).
-        # =================================================================
-        if self._axis_first_enabled:
-            _snap_p1a = token_tracker.snapshot() if self.cost_tracker else None
-            t_p1a = time.time()
-
-            drain_p1a = drain_domains(extraction_metadata)
-
-            p1a_tasks = []
-            for name, mapping in sorted(label_mappings.items()):
-                if name in drain_p1a:
-                    continue
-                n_labels = len(mapping.labels)
-                # Recomputed here (domain_chunk_info builds it too, just below,
-                # for P1) — cheap list slicing, and P1 must gate before facet discovery exists.
-                n_chunks = len(self._create_batches(mapping.labels))
-                if n_chunks < 2 and n_labels < 20:
-                    continue
-                p1a_tasks.append({
-                    'domain_name': name,
-                    'part_context': partition_contexts[name],
-                    'sample_observations': sample_axis_observations(mapping.labels),
-                })
-
-            if p1a_tasks:
-                if verbose:
-                    print(f"\n  Phase 1a: Axis Discovery")
-
-                p1a_requester = SmoothRequester(
-                    model=self._model_p1,
-                    phase_key="step4_p1_axis_discovery",
-                    num_tasks=len(p1a_tasks),
-                    verbose=verbose,
-                    known_limits=self._limits_by_model[self._model_p1],
-                    has_server_headers=self._has_headers_by_model[self._model_p1],
-                    show_setup=False,
-                    quiet=True,
-                )
-                p1a_results = await p1a_requester.process_all(
-                    p1a_tasks,
-                    self._p1_prepare_fn(prompt_context),
-                    self._p1_parse_fn(),
-                    self._p1_fallback_fn(),
-                )
-
-                for task, response in zip(p1a_tasks, p1a_results):
-                    name = task['domain_name']
-                    validated = validate_and_repair_axis_system(response)
-                    if validated is None:
-                        consolidation_log.append({
-                            "action": "axis_system_failed", "domain": name,
-                            "reason": "no response" if response is None else "invalid axis system",
-                        })
-                        continue
-                    self.axis_systems[name] = validated
-                    consolidation_log.append({
-                        "action": "axis_system_discovered", "domain": name,
-                        "n_axes": len(validated.axes),
-                    })
-
-                if verbose:
-                    s = p1a_requester.stats
-                    print(f"    P1 axis discovery: {len(p1a_tasks)} tasks, "
-                          f"{time.time() - t_p1a:.1f}s ({s.get('tasks_successful', 0)} ok, "
-                          f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries)")
-                    print(f"    {len(self.axis_systems)}/{len(p1a_tasks)} domains got an axis system")
-                    for name in sorted(self.axis_systems):
-                        system = self.axis_systems[name]
-                        print(f"      {name} ({len(system.axes)} axes):")
-                        for axis in system.axes:
-                            print(f"        - {axis.axis_name}: {axis.value_range}")
-                    failed = [t['domain_name'] for t in p1a_tasks
-                              if t['domain_name'] not in self.axis_systems]
-                    if failed:
-                        print(f"      no axis system (P3 path): {', '.join(sorted(failed))}")
-
-            if self.cost_tracker and _snap_p1a is not None:
-                self.cost_tracker.record_phase(
-                    "step_4_taxonomy_classifier", "p1_axis_discovery",
-                    _snap_p1a, token_tracker.snapshot(), self._model_p1)
-
-        if self._debug_stop_after_phase == 1:
-            if verbose:
-                print(f"\n  [DEBUG] Early stop after P1 — "
-                      f"{len(self.axis_systems)} axis system(s), no facets built")
-            return TaxonomyResult(
-                partition_n_labels={},
-                partition_n_batches={},
-                partition_facets={},
-                partition_assignments={},
-                partition_attributes={},
-                attribute_assignments={},
-                consolidation_log=consolidation_log,
-                axis_systems=self._dump_axis_systems(),
-            )
-
-        # =================================================================
-        # PHASE 2/3 (P2/P3): Per-domain Facet Discovery (SmoothRequester)
-        # =================================================================
-        _snap_p1 = token_tracker.snapshot() if self.cost_tracker else None
-
-        if verbose:
-            print(f"\n  Phase 1-2: Facet Discovery + Consolidation")
-
-        t_phase1 = time.time()
-
-        # Build flat task list: one task per (domain, chunk)
-        p1_tasks = []
-        domain_chunk_info: Dict[str, Dict] = {}  # domain → {labels, n_batches, excluded}
-
-        for name, mapping in sorted(label_mappings.items()):
-            batches = self._create_batches(mapping.labels)
-            excluded = [
-                (other_name, partition_contexts[other_name].partition_definition)
-                for other_name in partition_contexts
-                if other_name != name
-            ]
-            domain_chunk_info[name] = {
-                'n_labels': len(mapping.labels),
-                'n_batches': len(batches),
-                'excluded': excluded,
+        # One rendered label per idea, per domain. Rendered once, here: every
+        # phase downstream shows the model the same text, and the refinement
+        # remaps match on it.
+        labels: Dict[str, Dict[str, str]] = {
+            domain_label: {
+                idea.idea_id: format_label(
+                    idea, self._label_source, self._label_prefix)
+                for idea in mapping.ideas
             }
-
-            for chunk_idx, observations in enumerate(batches):
-                p1_tasks.append({
-                    'domain_name': name,
-                    'chunk_idx': chunk_idx,
-                    'total_chunks': len(batches),
-                    'observations': observations,
-                    'part_context': partition_contexts[name],
-                    'excluded_domains': excluded,
-                })
-
-        if verbose:
-            total_obs = sum(info['n_labels'] for info in domain_chunk_info.values())
-            max_chunks = max(info['n_batches'] for info in domain_chunk_info.values())
-            chunk_desc = "1 chunk each" if max_chunks == 1 else f"up to {max_chunks} chunks"
-            print(f"    Input: {len(domain_chunk_info)} domains, {total_obs} observations ({chunk_desc})")
-
-        # P1 discovery via SmoothRequester
-        p1_requester = SmoothRequester(
-            model=self._model_p2,
-            phase_key="step4_p2_facet_discovery",
-            num_tasks=len(p1_tasks),
-            verbose=verbose,
-            known_limits=self._limits_by_model[self._model_p2],
-            has_server_headers=self._has_headers_by_model[self._model_p2],
-            show_setup=False,
-            quiet=True,
-        )
-        p1_results = await p1_requester.process_all(
-            p1_tasks,
-            self._p2_prepare_fn(prompt_context),
-            self._p2_parse_fn(),
-            self._p2_fallback_fn(),
-        )
-
-        # Group chunk results by domain
-        domain_chunk_facets: Dict[str, List[List[DiscoveredFacet]]] = {}
-        for task, result in zip(p1_tasks, p1_results):
-            name = task['domain_name']
-            if name not in domain_chunk_facets:
-                domain_chunk_facets[name] = []
-            domain_chunk_facets[name].append(result or [])
-
-        t_discovery = time.time() - t_phase1
-        if verbose:
-            s = p1_requester.stats
-            print(f"    P1 discovery: {len(p1_tasks)} tasks, {t_discovery:.1f}s "
-                  f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
-                  f"{s.get('recovered', 0)} retries)")
-
-        if self.cost_tracker and _snap_p1 is not None:
-            self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p2_facet_discovery",
-                _snap_p1, token_tracker.snapshot(), self._model_p2)
-
-        if self._debug_stop_after_phase == 2:
-            if verbose:
-                print(f"\n  [DEBUG] Early stop after P2/P3 — raw chunk facets follow")
-                for name, chunks in domain_chunk_facets.items():
-                    for ci, chunk in enumerate(chunks, 1):
-                        print(f"\n  RAW P1  {name}  — chunk {ci}/{len(chunks)}: {len(chunk)} facet(s)")
-                        for f in chunk:
-                            print(f"    - {f.facet_name}: {f.facet_description}")
-            return TaxonomyResult(
-                partition_n_labels={n: i['n_labels'] for n, i in domain_chunk_info.items()},
-                partition_n_batches={n: i['n_batches'] for n, i in domain_chunk_info.items()},
-                partition_facets={n: [f for ch in chs for f in ch]
-                                  for n, chs in domain_chunk_facets.items()},
-                partition_assignments={},
-                partition_attributes={},
-                attribute_assignments={},
-                consolidation_log=consolidation_log,
-                axis_systems=self._dump_axis_systems(),
-            )
-
-        # Facet discovery flows straight to assignment: every domain's chunk
-        # proposals are flattened as-is. Consolidation happens AFTER
-        # assignment, per axis, on real contents (the in-axis phase below).
-        partition_facets: Dict[str, List[DiscoveredFacet]] = {}
-        partition_n_labels: Dict[str, int] = {}
-        partition_n_batches: Dict[str, int] = {}
-        for name in sorted(domain_chunk_facets.keys()):
-            raw_facets = [f for chunk in domain_chunk_facets[name] for f in chunk]
-            all_facets = dedup_exact_facets(raw_facets)
-            if len(all_facets) < len(raw_facets):
-                consolidation_log.append({
-                    "action": "facet_exact_dedup", "domain": name,
-                    "before": len(raw_facets), "after": len(all_facets),
-                })
-            partition_facets[name] = all_facets
-            if all_facets:
-                partition_n_labels[name] = domain_chunk_info[name]['n_labels']
-                partition_n_batches[name] = domain_chunk_info[name]['n_batches']
-
-        phase1_elapsed = time.time() - t_phase1
-        if verbose:
-            total_facets = sum(len(f) for f in partition_facets.values())
-            print(f"    Raw facets to assignment ({phase1_elapsed:.1f}s -> {total_facets} facets):")
-            for name in sorted(partition_facets.keys()):
-                facets = partition_facets.get(name, [])
-                facet_names = ", ".join(f.facet_name for f in facets) if facets else "(none)"
-                print(f"      {name}: {len(facets)} facet(s): {facet_names}")
-
-
-
-        # =================================================================
-        # PHASE 4 (P4): Per-domain Facet Assignment (SmoothRequester)
-        # =================================================================
-        _snap_p3 = token_tracker.snapshot() if self.cost_tracker else None
-
-        if verbose:
-            print(f"\n  Phase 4: Facet Assignment")
-
-        t_phase3 = time.time()
-
-        # Single-facet domains are auto-assigned without LLM call
-        p3_tasks = []
-        p3_batch_tasks = []
-        partition_assignments: Dict[str, Dict[str, str]] = {}
-        p3_auto_assigned: Dict[str, int] = {}  # domain → idea count (for reporting)
-        p3_pending_singles: List[Dict] = []    # escalated reps → full-menu single pass
-
-        embedder = (SharedEmbedder()
-                    if self._assign_batch_enabled and self._assign_shortlist_enabled
-                    else None)
-
-        for domain_name in sorted(partition_facets.keys()):
-            if not partition_facets[domain_name] or not label_mappings[domain_name].ideas:
-                continue
-            facets = partition_facets[domain_name]
-            ideas = label_mappings[domain_name].ideas
-
-            # Single-facet domain: auto-assign all ideas
-            if len(facets) == 1:
-                partition_assignments[domain_name] = {
-                    idea.idea_id: facets[0].facet_name for idea in ideas
-                }
-                for idea in ideas:
-                    self._facet_confidence[idea.idea_id] = 1.0
-                p3_auto_assigned[domain_name] = len(ideas)
-                continue
-
-            if not self._assign_batch_enabled:
-                # Multi-facet: one task per idea (pre-batch path, byte-identical)
-                facet_id_to_name = {f"F{i}": f.facet_name for i, f in enumerate(facets, 1)}
-                for idea in ideas:
-                    idea_label = format_label(idea, self._label_source, self._label_prefix)
-                    p3_tasks.append({
-                        'domain_name': domain_name,
-                        'idea_id': idea.idea_id,
-                        'idea_label': idea_label,
-                        'facets': facets,
-                        'facet_id_to_name': facet_id_to_name,
-                        'part_context': partition_contexts[domain_name],
-                    })
-                continue
-
-            # Batch mode: unique-label reps, K per call, optional shortlist menu
-            reps = group_label_reps(ideas, self._label_source, self._label_prefix,
-                                    dedup=self._assign_label_dedup)
-            label_vectors = card_vectors = None
-            if embedder is not None and len(facets) > self._assign_shortlist_k:
-                card_vectors = await embedder.embed_texts(
-                    [facet_card_text(f.model_dump()) for f in facets])
-                label_vectors = await embedder.embed_texts([rep.label or " " for rep in reps])
-            for index_group in make_batches(len(reps), self._assign_batch_k):
-                menu = facets
-                if card_vectors is not None:
-                    keep = shortlist_indices(
-                        label_vectors[index_group], card_vectors, self._assign_shortlist_k)
-                    menu = [facets[i] for i in keep]
-                p3_batch_tasks.append({
-                    'domain_name': domain_name,
-                    'reps': [reps[i] for i in index_group],
-                    'menu_facets': menu,
-                    'full_facets': facets,
-                    'facet_id_to_name': {f"F{i}": f.facet_name for i, f in enumerate(menu, 1)},
-                    'part_context': partition_contexts[domain_name],
-                })
-
-        if p3_batch_tasks:
-            batch_requester = SmoothRequester(
-                model=self._model_p4,
-                phase_key="step4_p4_facet_assignment",
-                num_tasks=len(p3_batch_tasks),
-                verbose=verbose,
-                known_limits=self._limits_by_model[self._model_p4],
-                has_server_headers=self._has_headers_by_model[self._model_p4],
-                show_setup=False,
-                quiet=False,
-            )
-            batch_results = await batch_requester.process_all(
-                p3_batch_tasks,
-                self._p4_batch_prepare_fn(prompt_context),
-                self._p4_batch_parse_fn(p3_pending_singles),
-                self._p4_batch_fallback_fn(p3_pending_singles),
-            )
-            for task, result in zip(p3_batch_tasks, batch_results):
-                domain_name = task['domain_name']
-                if domain_name not in partition_assignments:
-                    partition_assignments[domain_name] = {}
-                if result:
-                    partition_assignments[domain_name].update(result)
-
-            if p3_pending_singles:
-                single_tasks = []
-                for pending in p3_pending_singles:
-                    facets = pending['facets']
-                    single_tasks.append({
-                        'domain_name': pending['domain_name'],
-                        'idea_id': pending['rep'].idea_ids[0],
-                        'idea_label': pending['rep'].label,
-                        'facets': facets,
-                        'facet_id_to_name': {f"F{i}": f.facet_name
-                                             for i, f in enumerate(facets, 1)},
-                        'part_context': pending['part_context'],
-                    })
-                escalation_requester = SmoothRequester(
-                    model=self._model_p4,
-                    phase_key="step4_p4_facet_assignment",
-                    num_tasks=len(single_tasks),
-                    verbose=verbose,
-                    known_limits=self._limits_by_model[self._model_p4],
-                    has_server_headers=self._has_headers_by_model[self._model_p4],
-                    show_setup=False,
-                    quiet=True,
-                )
-                single_results = await escalation_requester.process_all(
-                    single_tasks,
-                    self._p4_prepare_fn(prompt_context),
-                    self._p4_parse_fn(),
-                    self._p4_fallback_fn(),
-                )
-                for pending, result in zip(p3_pending_singles, single_results):
-                    domain_name = pending['domain_name']
-                    if domain_name not in partition_assignments:
-                        partition_assignments[domain_name] = {}
-                    if result:
-                        rep = pending['rep']
-                        facet_name = next(iter(result.values()))
-                        anchor = rep.idea_ids[0]
-                        for idea_id in rep.idea_ids:
-                            partition_assignments[domain_name][idea_id] = facet_name
-                            self._facet_confidence[idea_id] = \
-                                self._facet_confidence.get(anchor, 0.0)
-                            self._facet_valence[idea_id] = \
-                                self._facet_valence.get(anchor, "0")
-
-                escalation_reasons: Dict[str, Counter] = defaultdict(Counter)
-                for pending in p3_pending_singles:
-                    escalation_reasons[pending['domain_name']][pending['reason']] += 1
-                for domain_name, reasons in sorted(escalation_reasons.items()):
-                    consolidation_log.append({
-                        "action": "p4_batch_escalation", "domain": domain_name,
-                        "reasons": dict(reasons),
-                    })
-
-            if verbose:
-                s = batch_requester.stats
-                n_reps = sum(len(t['reps']) for t in p3_batch_tasks)
-                print(f"    Assignment (batch): {len(p3_batch_tasks)} calls voor "
-                      f"{n_reps} unieke labels, {s.get('wall_time', 0):.1f}s "
-                      f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts); "
-                      f"{len(p3_pending_singles)} geëscaleerd naar losse calls")
-
-        if p3_tasks:
-            p3_requester = SmoothRequester(
-                model=self._model_p4,
-                phase_key="step4_p4_facet_assignment",
-                num_tasks=len(p3_tasks),
-                verbose=verbose,
-                known_limits=self._limits_by_model[self._model_p4],
-                has_server_headers=self._has_headers_by_model[self._model_p4],
-                show_setup=False,
-                quiet=False,
-            )
-            p3_results = await p3_requester.process_all(
-                p3_tasks,
-                self._p4_prepare_fn(prompt_context),
-                self._p4_parse_fn(),
-                self._p4_fallback_fn(),
-            )
-
-            if verbose:
-                s = p3_requester.stats
-                t_sr = s.get('wall_time', 0)
-                auto_msg = f" + {len(p3_auto_assigned)} auto-assigned" if p3_auto_assigned else ""
-                print(f"    Assignment: {len(p3_tasks)} tasks, {t_sr:.1f}s "
-                      f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
-                      f"{s.get('recovered', 0)} retries){auto_msg}")
-
-            # Reassemble: merge per-idea results into per-domain assignments
-            for task, result in zip(p3_tasks, p3_results):
-                domain_name = task['domain_name']
-                if domain_name not in partition_assignments:
-                    partition_assignments[domain_name] = {}
-                if result:
-                    partition_assignments[domain_name].update(result)
-        elif verbose and p3_auto_assigned and not p3_batch_tasks:
-            print(f"    Assignment: all {len(p3_auto_assigned)} domains auto-assigned (1 facet each)")
-
-        # __UNASSIGNED__ fallback for missing ideas (LLM-assigned domains only)
-        for domain_name in partition_assignments:
-            if domain_name in p3_auto_assigned:
-                continue
-            ideas = label_mappings[domain_name].ideas
-            expected = {idea.idea_id for idea in ideas}
-            assigned = set(partition_assignments[domain_name].keys())
-            missing = expected - assigned
-            if missing:
-                print(f"    WARNING: {len(missing)}/{len(ideas)} ideas received no facet assignment")
-                for idea_id in missing:
-                    partition_assignments[domain_name][idea_id] = "__UNASSIGNED__"
-                    self._facet_confidence[idea_id] = 0.0
-
-        t_phase3 = time.time() - t_phase3
-        if verbose:
-            total_assigned = sum(len(a) for a in partition_assignments.values())
-            print(f"    Results ({t_phase3:.1f}s → {total_assigned} ideas assigned):")
-            for domain_name in sorted(partition_assignments):
-                n_assigned = len(partition_assignments[domain_name])
-                n_ideas = len(label_mappings[domain_name].ideas)
-                auto_tag = " (auto)" if domain_name in p3_auto_assigned else ""
-                print(f"      {domain_name}: {n_assigned}/{n_ideas}{auto_tag}")
-
-        if self.cost_tracker and _snap_p3 is not None:
-            self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p4_facet_assignment",
-                _snap_p3, token_tracker.snapshot(), self._model_p4)
-
-        if self._debug_stop_after_phase == 4:
-            if verbose:
-                print(f"\n  [DEBUG] Early stop after P4 — skipping P5-P9")
-            return TaxonomyResult(
-                partition_n_labels=partition_n_labels,
-                partition_n_batches=partition_n_batches,
-                partition_facets=partition_facets,
-                partition_assignments=partition_assignments,
-                partition_attributes={},
-                attribute_assignments={},
-                facet_confidence=self._facet_confidence,
-                facet_valence=self._facet_valence,
-                consolidation_log=consolidation_log,
-                axis_systems=self._dump_axis_systems(),
-            )
-
-        # =================================================================
-        # Facet Consolidation (in-axis, post-assignment): judge every axis
-        # group's facets on their real idea counts and real contents, mirror
-        # of the in-facet attribute round one level up. The axis is fixed —
-        # a merge can never move a facet to another axis; when a group of
-        # ideas belongs elsewhere, the IDEAS move and the structure stays.
-        # =================================================================
-        _snap_fc = token_tracker.snapshot() if self.cost_tracker else None
-        if verbose:
-            print(f"\n  Phase 5: Facet Consolidation (in-axis)")
-        t_fc = time.time()
-
-        facet_ideas_now = self._group_ideas_by_facet(
-            label_mappings, partition_facets, partition_assignments
-        )
-
-        fc_tasks = []
-        for domain_name in sorted(partition_facets.keys()):
-            facets = partition_facets[domain_name]
-            if len(facets) < 2:
-                continue
-            part_ctx = partition_contexts[domain_name]
-
-            # Group facets by their axis tag; untagged facets form one group
-            # per domain, scoped by the domain itself.
-            groups: Dict[str, List[DiscoveredFacet]] = {}
-            for f in facets:
-                groups.setdefault(self._norm_text(f.axis) if f.axis else "", []).append(f)
-
-            axis_sys = self.axis_systems.get(domain_name)
-            axis_name_by_norm: Dict[str, str] = {}
-            axis_desc_by_norm: Dict[str, str] = {}
-            if axis_sys:
-                for ax in axis_sys.axes:
-                    axis_name_by_norm[self._norm_text(ax.axis_name)] = ax.axis_name
-                    axis_desc_by_norm[self._norm_text(ax.axis_name)] = ax.axis_description
-
-            for gkey, gfacets in sorted(groups.items()):
-                if len(gfacets) < 2:
-                    continue
-                axis_name = axis_name_by_norm.get(gkey) or (gfacets[0].axis or domain_name)
-                axis_description = axis_desc_by_norm.get(
-                    gkey, part_ctx.partition_definition)
-                neighbour_lines = []
-                for okey, ofacets in sorted(groups.items()):
-                    if okey == gkey:
-                        continue
-                    oname = axis_name_by_norm.get(okey) or (ofacets[0].axis or domain_name)
-                    onames = ", ".join(f.facet_name for f in ofacets)
-                    neighbour_lines.append(f"Axis: {oname} — facets: {onames}")
-                fc_tasks.append({
-                    'domain_name': domain_name,
-                    'axis_name': axis_name,
-                    'axis_description': axis_description,
-                    'axis_tag_raw': gfacets[0].axis,
-                    'part_context': part_ctx,
-                    'facets': gfacets,
-                    'facets_block': self._build_axis_facets_block(
-                        gfacets, facet_ideas_now, domain_name),
-                    'neighbour_axes_block': "\n".join(neighbour_lines),
-                })
-
-        if fc_tasks:
-            fc_requester = SmoothRequester(
-                model=self._model_p5,
-                phase_key="step4_p5_facet_consolidation",
-                num_tasks=len(fc_tasks),
-                verbose=verbose,
-                known_limits=self._limits_by_model[self._model_p5],
-                has_server_headers=self._has_headers_by_model[self._model_p5],
-                show_setup=False,
-                quiet=True,
-            )
-            fc_results = await fc_requester.process_all(
-                fc_tasks,
-                self._p5_prepare_fn(prompt_context),
-                self._p5_parse_fn(),
-                self._p5_fallback_fn(),
-            )
-            partition_assignments, fc_log = self._apply_in_axis_results(
-                tasks=fc_tasks,
-                results=fc_results,
-                partition_facets=partition_facets,
-                partition_assignments=partition_assignments,
-                label_mappings=label_mappings,
-                verbose=verbose,
-            )
-            consolidation_log.extend(fc_log)
-
-            if verbose:
-                s = fc_requester.stats
-                total_facets = sum(len(f) for f in partition_facets.values())
-                print(f"    Facet consolidation: {len(fc_tasks)} tasks, "
-                      f"{time.time() - t_fc:.1f}s ({s.get('tasks_successful', 0)} ok, "
-                      f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries) "
-                      f"→ {total_facets} facets")
-        elif verbose:
-            print(f"    Facet consolidation: nothing to consolidate (no axis group ≥ 2 facets)")
-
-        if self.cost_tracker and _snap_fc is not None:
-            self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p5_facet_consolidation",
-                _snap_fc, token_tracker.snapshot(), self._model_p5)
-
-        # =================================================================
-        # Attribute Discovery (per facet, chunked)
-        # =================================================================
-        _snap_p4 = token_tracker.snapshot() if self.cost_tracker else None
-
-        if verbose:
-            print(f"\n  Phase 6: Attribute Discovery")
-
-        t_phase4 = time.time()
-
-        # Group ideas by (domain, facet) using P4 assignments
-        domain_facet_ideas = self._group_ideas_by_facet(
-            label_mappings, partition_facets, partition_assignments
-        )
-
-        # Build flat task list: one task per (domain, facet, chunk)
-        p4_tasks = []
-        facet_meta: Dict[str, Dict] = {}  # facet_key → {observations, excluded_facets, facet_obj}
-
-        for (domain_name, facet_name), ideas in domain_facet_ideas.items():
-            facet_obj = None
-            for f in partition_facets.get(domain_name, []):
-                if f.facet_name == facet_name:
-                    facet_obj = f
-                    break
-            if not facet_obj or not ideas:
-                continue
-
-            observations = []
-            for idea in ideas:
-                label = format_label(idea, self._label_source, self._label_prefix)
-                if label:
-                    observations.append(label)
-            if not observations:
-                continue
-
-            excluded_f = [
-                (f.facet_name, f.facet_description)
-                for f in partition_facets.get(domain_name, [])
-                if f.facet_name != facet_name
-            ]
-
-            facet_key = f"{domain_name}::{facet_name}"
-            batches = self._create_batches(
-                observations,
-                size_min=self._p4_batch_size_min,
-                size_max=self._p4_batch_size_max,
-                target=self._p4_target_batches,
-                overlap=self._p4_chunk_overlap,
-            )
-            facet_meta[facet_key] = {
-                'observations': observations,
-                'excluded_facets': excluded_f,
-                'facet_obj': facet_obj,
-                'n_batches': len(batches),
-                'chunk_observations': batches,
-            }
-
-            for chunk_idx, chunk_obs in enumerate(batches):
-                p4_tasks.append({
-                    'domain_name': domain_name,
-                    'facet_name': facet_name,
-                    'facet_description': facet_obj.facet_description,
-                    'chunk_idx': chunk_idx,
-                    'total_chunks': len(batches),
-                    'observations': chunk_obs,
-                    'part_context': partition_contexts[domain_name],
-                    'facet_obj': facet_obj,
-                    'excluded_facets': excluded_f,
-                    'facet_key': facet_key,
-                })
-
-        if p4_tasks:
-            p4_requester = SmoothRequester(
-                model=self._model_p6,
-                phase_key="step4_p6_attribute_discovery",
-                num_tasks=len(p4_tasks),
-                verbose=verbose,
-                known_limits=self._limits_by_model[self._model_p6],
-                has_server_headers=self._has_headers_by_model[self._model_p6],
-                show_setup=False,
-                quiet=True,
-            )
-            p4_results = await p4_requester.process_all(
-                p4_tasks,
-                self._p6_prepare_fn(prompt_context),
-                self._p6_parse_fn(),
-                self._p6_fallback_fn(),
-            )
-        else:
-            p4_results = []
-
-        # Group chunk results by facet_key
-        facet_chunk_attrs: Dict[str, List[List[DiscoveredAttribute]]] = {}
-        for task, result in zip(p4_tasks, p4_results):
-            fk = task['facet_key']
-            if fk not in facet_chunk_attrs:
-                facet_chunk_attrs[fk] = []
-            facet_chunk_attrs[fk].append(result or [])
-
-        t_p4_discovery = time.time() - t_phase4
-        if verbose and p4_tasks:
-            s = p4_requester.stats
-            print(f"    P6 discovery: {len(p4_tasks)} tasks, {t_p4_discovery:.1f}s "
-                  f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
-                  f"{s.get('recovered', 0)} retries)")
-
-        if self.cost_tracker and _snap_p4 is not None:
-            self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p6_attribute_discovery",
-                _snap_p4, token_tracker.snapshot(), self._model_p6)
-
-        if self._debug_stop_after_phase == 6:
-            fk_home = {}
-            for task in p4_tasks:
-                fk_home.setdefault(task['facet_key'], (task['domain_name'], task['facet_name']))
-            raw_attrs: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
-            for fk, chunks in facet_chunk_attrs.items():
-                dom, fac = fk_home[fk]
-                raw_attrs.setdefault(dom, {})[fac] = [a for ch in chunks for a in ch]
-            if verbose:
-                print(f"\n  [DEBUG] Early stop after P6 — raw chunk attributes follow")
-                for fk, chunks in facet_chunk_attrs.items():
-                    dom, fac = fk_home[fk]
-                    for ci, chunk in enumerate(chunks, 1):
-                        print(f"\n  RAW P5  {dom} > {fac}  — chunk {ci}/{len(chunks)}: {len(chunk)} attribute(s)")
-                        for a in chunk:
-                            print(f"    - {a.attribute_name}: {a.attribute_description}")
-            return TaxonomyResult(
-                partition_n_labels=partition_n_labels,
-                partition_n_batches=partition_n_batches,
-                partition_facets=partition_facets,
-                partition_assignments=partition_assignments,
-                partition_attributes=raw_attrs,
-                attribute_assignments={},
-                facet_confidence=self._facet_confidence,
-                facet_valence=self._facet_valence,
-                consolidation_log=consolidation_log,
-                axis_systems=self._dump_axis_systems(),
-            )
-
-        # Attribute discovery flows straight to assignment: each facet's chunk
-        # proposals are flattened as-is. Consolidation happens AFTER
-        # assignment, in-facet, on real contents (the in-facet phase below).
-        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
-        partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
-        for facet_key, chunk_attributes in sorted(facet_chunk_attrs.items()):
-            domain_name, facet_name = facet_key.split("::", 1)
-            raw_attrs = [a for chunk in chunk_attributes for a in chunk]
-            flat = dedup_exact_attributes(raw_attrs)
-            if len(flat) < len(raw_attrs):
-                consolidation_log.append({
-                    "action": "attribute_exact_dedup", "domain": domain_name,
-                    "facet": facet_name, "before": len(raw_attrs), "after": len(flat),
-                })
-            domain_facet_attributes.setdefault(domain_name, {})[facet_name] = flat
-            partition_attributes.setdefault(domain_name, {})[facet_name] = flat
-
-        if verbose:
-            total_attrs = sum(
-                len(attrs)
-                for facet_attrs in domain_facet_attributes.values()
-                for attrs in facet_attrs.values()
-            )
-            print(f"    Raw attributes to assignment: {total_attrs} across {len(facet_chunk_attrs)} facets")
-
-
-
-        # =================================================================
-        # PHASE 7 (P7): Per-facet Attribute Assignment (SmoothRequester)
-        # =================================================================
-        _snap_p6 = token_tracker.snapshot() if self.cost_tracker else None
-
-        if verbose:
-            print(f"\n  Phase 7: Attribute Assignment")
-
-        t_phase6 = time.time()
-
-        # Build flat task list: one task per (domain, facet, batch)
-        # Single-attribute facets are auto-assigned without LLM call
-        p6_tasks = []
-        attribute_assignments: Dict[str, str] = {}
-        p6_auto_assigned: Dict[str, int] = {}  # facet_key → idea count (for reporting)
-        facet_idea_sets: Dict[str, List] = {}
-
-        for domain_name, facet_attrs in domain_facet_attributes.items():
-            for facet_name, attributes in facet_attrs.items():
-                if not attributes:
-                    continue
-                facet_ideas = domain_facet_ideas.get((domain_name, facet_name), [])
-                if not facet_ideas:
-                    continue
-
-                facet_key = f"{domain_name}::{facet_name}"
-                facet_idea_sets[facet_key] = facet_ideas
-
-                # Single-attribute facet: auto-assign all ideas
-                if len(attributes) == 1:
-                    for idea in facet_ideas:
-                        attribute_assignments[idea.idea_id] = attributes[0].attribute_name
-                        self._attribute_confidence[idea.idea_id] = 1.0
-                    p6_auto_assigned[facet_key] = len(facet_ideas)
-                    continue
-
-                # Multi-attribute: one task per idea
-                facet_obj = None
-                for f in partition_facets.get(domain_name, []):
-                    if f.facet_name == facet_name:
-                        facet_obj = f
-                        break
-                if not facet_obj:
-                    continue
-
-                attr_id_to_name = {f"A{i}": a.attribute_name for i, a in enumerate(attributes, 1)}
-                for idea in facet_ideas:
-                    idea_label = format_label(idea, self._label_source, self._label_prefix)
-                    p6_tasks.append({
-                        'domain_name': domain_name,
-                        'facet_name': facet_name,
-                        'facet_description': facet_obj.facet_description,
-                        'idea_id': idea.idea_id,
-                        'idea_label': idea_label,
-                        'attributes': attributes,
-                        'attr_id_to_name': attr_id_to_name,
-                        'facet_key': facet_key,
-                    })
-
-        if p6_tasks:
-            p6_requester = SmoothRequester(
-                model=self._model_p7,
-                phase_key="step4_p7_attribute_assignment",
-                num_tasks=len(p6_tasks),
-                verbose=verbose,
-                known_limits=self._limits_by_model[self._model_p7],
-                has_server_headers=self._has_headers_by_model[self._model_p7],
-                show_setup=False,
-                quiet=False,
-            )
-            p6_results = await p6_requester.process_all(
-                p6_tasks,
-                self._p7_prepare_fn(prompt_context),
-                self._p7_parse_fn(),
-                self._p7_fallback_fn(),
-            )
-
-            if verbose:
-                s = p6_requester.stats
-                t_sr = s.get('wall_time', 0)
-                auto_msg = f" + {len(p6_auto_assigned)} auto-assigned" if p6_auto_assigned else ""
-                print(f"    Assignment: {len(p6_tasks)} tasks, {t_sr:.1f}s "
-                      f"({s['tasks_successful']} ok, {s.get('timeouts', 0)} timeouts, "
-                      f"{s.get('recovered', 0)} retries){auto_msg}")
-
-            # Reassemble: merge per-idea results
-            for task, result in zip(p6_tasks, p6_results):
-                if result:
-                    attribute_assignments.update(result)
-
-            # __UNASSIGNED__ fallback per facet (only for LLM-assigned facets)
-            for facet_key, facet_ideas in facet_idea_sets.items():
-                if facet_key in p6_auto_assigned:
-                    continue
-                expected = {idea.idea_id for idea in facet_ideas}
-                assigned = {iid for iid in expected if iid in attribute_assignments}
-                missing = expected - assigned
-                if missing:
-                    facet_name = facet_key.split("::", 1)[1]
-                    print(f"    WARNING: {len(missing)}/{len(facet_ideas)} ideas received no attribute "
-                          f"assignment in facet '{facet_name}'")
-                    for idea_id in missing:
-                        attribute_assignments[idea_id] = "__UNASSIGNED__"
-                        self._attribute_confidence[idea_id] = 0.0
-        elif verbose and p6_auto_assigned:
-            print(f"    Assignment: all {len(p6_auto_assigned)} facets auto-assigned (1 attribute each)")
-
-        t_phase6 = time.time() - t_phase6
-        if verbose:
-            print(f"    Results ({t_phase6:.1f}s → {len(attribute_assignments)} ideas assigned):")
-            for facet_key, facet_ideas in sorted(facet_idea_sets.items()):
-                n_assigned = sum(1 for idea in facet_ideas if idea.idea_id in attribute_assignments)
-                domain_name, facet_name = facet_key.split("::", 1)
-                auto_tag = " (auto)" if facet_key in p6_auto_assigned else ""
-                print(f"      {domain_name}/{facet_name}: {n_assigned}/{len(facet_ideas)}{auto_tag}")
-
-        if self.cost_tracker and _snap_p6 is not None:
-            self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p7_attribute_assignment",
-                _snap_p6, token_tracker.snapshot(), self._model_p7)
-
-        # Snapshot P8 state before the post-assignment consolidation round remaps.
-        # This is what makes a bad merge diagnosable after the fact — keep it.
-        raw_attribute_assignments = dict(attribute_assignments)
-        raw_partition_attributes = {
-            d: {f: list(attrs) for f, attrs in facets.items()}
-            for d, facets in partition_attributes.items()
+            for domain_label, mapping in label_mappings.items()
         }
 
-        if self._debug_stop_after_phase == 7:
+        state: Dict = {
+            "partition_n_labels": {
+                d: len(m.labels) for d, m in label_mappings.items()},
+            "partition_n_batches": {
+                d: len(self._create_batches(m.labels))
+                for d, m in label_mappings.items()},
+            "partition_facets": {},
+            "partition_assignments": {},
+            "partition_attributes": {},
+            "attribute_assignments": {},
+            "partition_raw_facets": {},
+            "raw_partition_attributes": {},
+            "raw_attribute_assignments": {},
+        }
+
+        def _stop(phase: str) -> bool:
+            if self._stop_after_phase != phase:
+                return False
             if verbose:
-                print(f"\n  [DEBUG] Early stop after P7 — skipping P8-P9")
-            return TaxonomyResult(
-                partition_n_labels=partition_n_labels,
-                partition_n_batches=partition_n_batches,
-                partition_facets=partition_facets,
-                partition_assignments=partition_assignments,
-                partition_attributes=partition_attributes,
-                attribute_assignments=attribute_assignments,
-                raw_partition_attributes=raw_partition_attributes,
-                raw_attribute_assignments=raw_attribute_assignments,
-                facet_confidence=self._facet_confidence,
-                attribute_confidence=self._attribute_confidence,
-                facet_valence=self._facet_valence,
-                attribute_valence=self._attribute_valence,
-                consolidation_log=consolidation_log,
-                axis_systems=self._dump_axis_systems(),
-            )
+                print(f"\n  [STOP] after {phase} — remaining phases skipped")
+            return True
 
-        # =================================================================
-        # PHASE 8 (P8): In-facet Attribute Consolidation (post-assignment)
-        # Replaces the earlier cross-facet and cross-domain consolidation rounds
-        # that used to follow attribute assignment.
-        # Scope is ONE facet, so no merge can relocate an idea's facet; when a
-        # group of ideas belongs elsewhere the IDEAS move and the structure stays.
-        # =================================================================
-        _snap_p7 = token_tracker.snapshot() if self.cost_tracker else None
+        # ---- facet level -----------------------------------------------------
+        raw_facets = await self._run_facet_discovery(ctx, verbose)
+        state["partition_raw_facets"] = raw_facets
+        if _stop("facet_discovery"):
+            state["partition_facets"] = {
+                d: [self._as_consolidated_facet(f) for f in items]
+                for d, items in raw_facets.items()}
+            return self._taxonomy_result(state, started, verbose)
 
+        facets = await self._run_facet_consolidation(ctx, raw_facets, verbose)
+        state["partition_facets"] = facets
+        if _stop("facet_consolidation"):
+            return self._taxonomy_result(state, started, verbose)
+
+        assignments = await self._run_facet_assignment(ctx, facets, labels, verbose)
+        state["partition_assignments"] = assignments
+        if _stop("facet_assignment"):
+            return self._taxonomy_result(state, started, verbose)
+
+        facets, assignments = await self._run_facet_refinement(
+            ctx, facets, assignments, labels, verbose)
+        state["partition_facets"] = facets
+        state["partition_assignments"] = assignments
+        if _stop("facet_refinement"):
+            return self._taxonomy_result(state, started, verbose)
+
+        # ---- attribute level -------------------------------------------------
+        # Rebuilt from the refined assignments: which ideas a facet holds only
+        # settles once refinement has moved what did not belong.
+        ideas_per_facet = self._ideas_per_facet(assignments, labels)
+        observations = {key: list(texts.values())
+                        for key, texts in ideas_per_facet.items()}
+
+        raw_attributes = await self._run_attribute_discovery(
+            ctx, facets, observations, verbose)
+        state["raw_partition_attributes"] = raw_attributes
+        if _stop("attribute_discovery"):
+            state["partition_attributes"] = {
+                d: {f: [self._as_consolidated_attribute(a) for a in items]
+                    for f, items in facet_items.items()}
+                for d, facet_items in raw_attributes.items()}
+            return self._taxonomy_result(state, started, verbose)
+
+        attributes = await self._run_attribute_consolidation(
+            ctx, raw_attributes, facets, verbose)
+        state["partition_attributes"] = attributes
+        if _stop("attribute_consolidation"):
+            return self._taxonomy_result(state, started, verbose)
+
+        attribute_assignments = await self._run_attribute_assignment(
+            ctx, attributes, ideas_per_facet, facets, verbose)
+        state["attribute_assignments"] = attribute_assignments
+        # The state before refinement remaps anything. This is what makes a bad
+        # merge diagnosable afterwards, and what the standalone replay runs on.
+        state["raw_attribute_assignments"] = dict(attribute_assignments)
+        if _stop("attribute_assignment"):
+            return self._taxonomy_result(state, started, verbose)
+
+        attributes, attribute_assignments, assignments = (
+            await self._run_attribute_refinement(
+                ctx, attributes, attribute_assignments, assignments, facets,
+                ideas_per_facet, verbose))
+        state["partition_attributes"] = attributes
+        state["attribute_assignments"] = attribute_assignments
+        state["partition_assignments"] = assignments
+
+        return self._taxonomy_result(state, started, verbose)
+
+    @staticmethod
+    def _ideas_per_facet(
+        assignments: Dict[str, Dict[str, str]],
+        labels: Dict[str, Dict[str, str]],
+    ) -> Dict[Tuple[str, str], Dict[str, str]]:
+        """Regroup the rendered labels by (domain, facet), following assignment."""
+        out: Dict[Tuple[str, str], Dict[str, str]] = {}
+        for domain_label, assigned in assignments.items():
+            texts = labels.get(domain_label) or {}
+            for idea_id, facet_name in assigned.items():
+                out.setdefault((domain_label, facet_name), {})[idea_id] = \
+                    texts.get(idea_id, "")
+        return out
+
+    def _taxonomy_result(
+        self, state: Dict, started: float, verbose: bool,
+    ) -> TaxonomyResult:
+        """Assemble the result from whatever the phases that ran produced."""
         if verbose:
-            print(f"\n  Phase 8: Attribute Consolidation (in-facet)")
-
-        t_phase9 = time.time()
-        # `consolidation_log` already exists (initialised before P3, which may
-        # have appended to it); P9's own actions are appended below, not a
-        # replacement, so P3's rewrite/flag entries survive into the final result.
-
-        p7_tasks = []
-        for domain_name, facet_attrs in domain_facet_attributes.items():
-            for facet_name, attributes in facet_attrs.items():
-                facet_ideas = domain_facet_ideas.get((domain_name, facet_name), [])
-                if not attributes or not facet_ideas:
-                    continue
-
-                facet_obj = next(
-                    (f for f in partition_facets.get(domain_name, [])
-                     if f.facet_name == facet_name), None)
-                if facet_obj is None:
-                    continue
-
-                # Adjacent facets in the SAME domain, with their real sizes — context
-                # for boundary-writing and move targets, never merge candidates.
-                neighbours = []
-                for other_facet, other_attrs in facet_attrs.items():
-                    if other_facet == facet_name or not other_attrs:
-                        continue
-                    other_ideas = domain_facet_ideas.get((domain_name, other_facet), [])
-                    counts = Counter(
-                        attribute_assignments.get(i.idea_id) for i in other_ideas
-                    )
-                    neighbours.append((
-                        other_facet,
-                        [(a.attribute_name, counts.get(a.attribute_name, 0))
-                         for a in other_attrs],
-                    ))
-
-                p7_tasks.append({
-                    'domain_name': domain_name,
-                    'facet_name': facet_name,
-                    'facet_description': facet_obj.facet_description,
-                    'attributes': attributes,
-                    'facet_ideas': facet_ideas,
-                    'part_context': partition_contexts[domain_name],
-                    # Rendered here, where the assignments are in scope: the real
-                    # contents of each bucket, not the examples discovery guessed at.
-                    'attributes_block': self._build_facet_contents_block(
-                        attributes, facet_ideas, attribute_assignments),
-                    'neighbour_block': build_neighbour_block(neighbours),
-                })
-
-        p7_results = []
-        if p7_tasks:
-            p7_requester = SmoothRequester(
-                model=self._model_p8,
-                phase_key="step4_p8_attribute_consolidation",
-                num_tasks=len(p7_tasks),
-                verbose=verbose,
-                known_limits=self._limits_by_model[self._model_p8],
-                has_server_headers=self._has_headers_by_model[self._model_p8],
-                show_setup=False,
-                quiet=True,
-            )
-            p7_results = await p7_requester.process_all(
-                p7_tasks,
-                self._p8_prepare_fn(prompt_context),
-                self._p8_parse_fn(),
-                self._p8_fallback_fn(),
-            )
-
-            if verbose:
-                s = p7_requester.stats
-                print(f"    P8 consolidation: {len(p7_tasks)} tasks, "
-                      f"{s.get('wall_time', 0):.1f}s ({s['tasks_successful']} ok, "
-                      f"{s.get('timeouts', 0)} timeouts, {s.get('recovered', 0)} retries)")
-
-            attribute_assignments, partition_assignments, p9_log = (
-                self._apply_in_facet_results(
-                    tasks=p7_tasks,
-                    results=p7_results,
-                    domain_facet_attributes=domain_facet_attributes,
-                    partition_attributes=partition_attributes,
-                    attribute_assignments=attribute_assignments,
-                    partition_assignments=partition_assignments,
-                    verbose=verbose,
-                )
-            )
-            consolidation_log.extend(p9_log)
-
-        t_phase9 = time.time() - t_phase9
-        if verbose:
-            n_after = sum(
-                len(attrs)
-                for facet_attrs in domain_facet_attributes.values()
-                for attrs in facet_attrs.values()
-            )
-            acts = Counter(e["action"] for e in p9_log) if p7_tasks else Counter()
-            print(f"    Results ({t_phase9:.1f}s → {n_after} attributes): "
-                  + (", ".join(f"{k}={v}" for k, v in sorted(acts.items())) or "no changes"))
-
-        if self.cost_tracker and _snap_p7 is not None:
-            self.cost_tracker.record_phase(
-                "step_4_taxonomy_classifier", "p8_attribute_consolidation",
-                _snap_p7, token_tracker.snapshot(), self._model_p8)
-
-        taxonomy_elapsed = time.time() - start_time
-        if verbose:
-            print(f"\n  Taxonomy complete in {taxonomy_elapsed:.1f}s")
-
+            print(f"\n  Taxonomy complete in {time.time() - started:.1f}s")
         return TaxonomyResult(
-            partition_n_labels=partition_n_labels,
-            partition_n_batches=partition_n_batches,
-            partition_facets=partition_facets,
-            partition_assignments=partition_assignments,
-            partition_attributes=partition_attributes,
-            attribute_assignments=attribute_assignments,
-            raw_partition_attributes=raw_partition_attributes,
-            raw_attribute_assignments=raw_attribute_assignments,
+            **state,
             facet_confidence=self._facet_confidence,
             attribute_confidence=self._attribute_confidence,
             facet_valence=self._facet_valence,
             attribute_valence=self._attribute_valence,
-            consolidation_log=consolidation_log,
-            axis_systems=self._dump_axis_systems(),
+            consolidation_log=list(self._action_log),
         )
 
     # =========================================================================
@@ -1666,7 +767,7 @@ class TaxonomyClassifier:
         together with the observations that produced it.
         """
         if verbose:
-            print(f"\n  Facet discovery")
+            print("\n  Facet discovery")
         started = time.time()
 
         tasks = self._build_facet_discovery_tasks(ctx)
@@ -1828,7 +929,7 @@ class TaxonomyClassifier:
         that already fits in one call is settled after one round.
         """
         if verbose:
-            print(f"\n  Facet consolidation")
+            print("\n  Facet consolidation")
         started = time.time()
 
         settled: Dict[str, List[ConsolidatedFacet]] = {}
@@ -2036,7 +1137,7 @@ class TaxonomyClassifier:
     ) -> Dict[str, Dict[str, str]]:
         """Assign every idea to a facet within its own domain, with valence."""
         if verbose:
-            print(f"\n  Facet assignment")
+            print("\n  Facet assignment")
         started = time.time()
 
         assignments: Dict[str, Dict[str, str]] = {}
@@ -2111,528 +1212,7 @@ class TaxonomyClassifier:
         return assignments
 
     # =========================================================================
-    # PHASE 4 (P4): PER-DOMAIN FACET ASSIGNMENT (SmoothRequester)
-    # =========================================================================
-
-    def _p4_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P4 facet assignment (single idea)."""
-        def prepare_fn(task: Dict) -> Dict:
-            axis_system = self.axis_systems.get(task['domain_name'])
-            axis_descriptions = (
-                {axis.axis_name: axis.axis_description for axis in axis_system.axes}
-                if axis_system is not None else None
-            )
-            prompt = build_facet_assignment_prompt_single(
-                survey_question=prompt_context.survey_question,
-                language=prompt_context.language,
-                dataset_context_section=prompt_context.dataset_context_section,
-                domain_name=task['domain_name'],
-                domain_definition=task['part_context'].partition_definition,
-                facets=task['facets'],
-                idea_label=task['idea_label'],
-                axis_descriptions=axis_descriptions,
-            )
-
-            # Prompt capture (first idea per domain)
-            gate_key = f"qr_facet_assign_{task['domain_name']}"
-            if (self._prompt_printer is not None
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type="facet_assignment",
-                    metadata={
-                        "model": self._model_p4,
-                        "temperature": self._temperature,
-                        "max_tokens": self._max_tokens_facet_assignment,
-                        "language": prompt_context.language,
-                        "partition_name": task['domain_name'],
-                        "n_facets": len(task['facets']),
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
-            return {
-                'prompt': prompt,
-                'response_model': FacetAssignmentResult,
-                'temperature': self._temperature,
-                'max_tokens': self._max_tokens_facet_assignment,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p4, phase="classifier_p4"),
-            }
-        return prepare_fn
-
-    def _p4_parse_fn(self):
-        """Return parse_fn closure for P4 facet assignment (single idea)."""
-        def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
-            facet_name = task['facet_id_to_name'].get(response.assigned_facet_id)
-            if facet_name is None:
-                return {}
-            self._facet_confidence[task['idea_id']] = response.confidence
-            self._facet_valence[task['idea_id']] = response.valence
-            return {task['idea_id']: facet_name}
-        return parse_fn
-
-    @staticmethod
-    def _p4_fallback_fn():
-        """Return fallback_fn closure for P4 facet assignment."""
-        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
-            return {}
-        return fallback_fn
-
-    def _p4_batch_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P4 facet assignment (batch of reps)."""
-        def prepare_fn(task: Dict) -> Dict:
-            axis_system = self.axis_systems.get(task['domain_name'])
-            axis_descriptions = (
-                {axis.axis_name: axis.axis_description for axis in axis_system.axes}
-                if axis_system is not None else None
-            )
-            ideas = [(rep.idea_ids[0], rep.label) for rep in task['reps']]
-            prompt = build_facet_assignment_prompt_batch(
-                survey_question=prompt_context.survey_question,
-                language=prompt_context.language,
-                dataset_context_section=prompt_context.dataset_context_section,
-                domain_name=task['domain_name'],
-                domain_definition=task['part_context'].partition_definition,
-                facets=task['menu_facets'],
-                ideas=ideas,
-                axis_descriptions=axis_descriptions,
-            )
-
-            # Prompt capture (first batch per domain)
-            gate_key = f"qr_facet_assign_batch_{task['domain_name']}"
-            if (self._prompt_printer is not None
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type="facet_assignment_batch",
-                    metadata={
-                        "model": self._model_p4,
-                        "temperature": self._temperature,
-                        "max_tokens": self._max_tokens_facet_assignment * 2,
-                        "language": prompt_context.language,
-                        "partition_name": task['domain_name'],
-                        "n_facets": len(task['menu_facets']),
-                        "n_ideas": len(ideas),
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
-            return {
-                'prompt': prompt,
-                'response_model': build_batch_facet_assignment_model(
-                    list(task['facet_id_to_name'].keys()),
-                    [idea_id for idea_id, _ in ideas]),
-                'temperature': self._temperature,
-                'max_tokens': self._max_tokens_facet_assignment * 2,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p4, phase="classifier_p4"),
-            }
-        return prepare_fn
-
-    def _p4_batch_parse_fn(self, pending_singles: List[Dict]):
-        """Return parse_fn: accept validated items (fanned out over the rep's
-        instances), route the rest to the escalation list with a reason."""
-        def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
-            rep_by_id = {rep.idea_ids[0]: rep for rep in task['reps']}
-            ok, escalate = validate_batch_response(list(rep_by_id.keys()), response)
-            out: Dict[str, str] = {}
-            for rep_id, item in ok.items():
-                facet_name = task['facet_id_to_name'][item.assigned_facet_id]
-                for idea_id in rep_by_id[rep_id].idea_ids:
-                    out[idea_id] = facet_name
-                    self._facet_confidence[idea_id] = item.confidence
-                    self._facet_valence[idea_id] = item.valence
-            for rep_id, reason in escalate.items():
-                pending_singles.append({
-                    'domain_name': task['domain_name'],
-                    'rep': rep_by_id[rep_id],
-                    'reason': reason,
-                    'facets': task['full_facets'],
-                    'part_context': task['part_context'],
-                })
-            return out
-        return parse_fn
-
-    @staticmethod
-    def _p4_batch_fallback_fn(pending_singles: List[Dict]):
-        """Return fallback_fn: a definitively failed batch escalates whole."""
-        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
-            for rep in task['reps']:
-                pending_singles.append({
-                    'domain_name': task['domain_name'],
-                    'rep': rep,
-                    'reason': 'batch_failed',
-                    'facets': task['full_facets'],
-                    'part_context': task['part_context'],
-                })
-            return {}
-        return fallback_fn
-
-    # =========================================================================
-    # PHASE 7 (P7): PER-FACET ATTRIBUTE ASSIGNMENT (SmoothRequester)
-    # =========================================================================
-
-    def _p7_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P8 attribute assignment (single idea)."""
-        def prepare_fn(task: Dict) -> Dict:
-            prompt = build_attribute_assignment_prompt_single(
-                survey_question=prompt_context.survey_question,
-                language=prompt_context.language,
-                dataset_context_section=prompt_context.dataset_context_section,
-                facet_name=task['facet_name'],
-                facet_description=task['facet_description'],
-                attributes=task['attributes'],
-                idea_label=task['idea_label'],
-            )
-
-            # Prompt capture (first idea per facet)
-            gate_key = f"qr_attr_assign_{task['domain_name']}_{task['facet_name']}"
-            if (self._prompt_printer is not None
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type="attribute_assignment",
-                    metadata={
-                        "model": self._model_p7,
-                        "temperature": self._temperature,
-                        "max_tokens": self._max_tokens_facet_assignment,
-                        "language": prompt_context.language,
-                        "partition_name": task['domain_name'],
-                        "facet_name": task['facet_name'],
-                        "n_attributes": len(task['attributes']),
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
-            return {
-                'prompt': prompt,
-                'response_model': AttributeAssignmentResult,
-                'temperature': self._temperature,
-                'max_tokens': self._max_tokens_facet_assignment,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p7, phase="classifier_p7"),
-            }
-        return prepare_fn
-
-    def _p7_parse_fn(self):
-        """Return parse_fn closure for P8 attribute assignment (single idea)."""
-        def parse_fn(task: Dict, response) -> Optional[Dict[str, str]]:
-            attr_name = task['attr_id_to_name'].get(response.assigned_attribute_id)
-            if attr_name is None:
-                return {}
-            self._attribute_confidence[task['idea_id']] = response.confidence
-            self._attribute_valence[task['idea_id']] = response.valence
-            return {task['idea_id']: attr_name}
-        return parse_fn
-
-    @staticmethod
-    def _p7_fallback_fn():
-        """Return fallback_fn closure for P8 attribute assignment."""
-        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
-            return {}
-        return fallback_fn
-
-    # =========================================================================
-    # PHASE 1 (P1): PER-DOMAIN AXIS DISCOVERY (SmoothRequester, light mode)
-    # =========================================================================
-
-    def _p1_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P1 axis discovery."""
-        def prepare_fn(task: Dict) -> Dict:
-            prompt = build_axis_discovery_prompt(
-                survey_question=prompt_context.survey_question,
-                language=prompt_context.language,
-                primary_dimension=prompt_context.dimension_name,
-                noun_phrase=(
-                    prompt_context.dimension_def.noun_phrase_descriptor
-                    if prompt_context.dimension_def else prompt_context.dimension_name
-                ),
-                domain_label=task['domain_name'],
-                domain_definition=task['part_context'].partition_definition,
-                domain_boundary_test=task['part_context'].boundary_test,
-                sample_observations=task['sample_observations'],
-            )
-
-            gate_key = f"qr_axis_discovery_{task['domain_name']}"
-            if (self._prompt_printer is not None
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type="axis_discovery",
-                    metadata={
-                        "model": self._model_p1,
-                        "temperature": 0.0,
-                        "max_tokens": self._max_tokens_consolidation,
-                        "language": prompt_context.language,
-                        "partition_name": task['domain_name'],
-                        "n_sample_observations": len(task['sample_observations']),
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
-            return {
-                'prompt': prompt,
-                'response_model': AxisSystemResponse,
-                'temperature': 0.0,
-                'max_tokens': self._max_tokens_consolidation,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p1, phase="classifier_p1"),
-            }
-        return prepare_fn
-
-    def _p1_parse_fn(self):
-        """Return parse_fn closure for P1 axis discovery."""
-        def parse_fn(task: Dict, response) -> Optional[AxisSystemResponse]:
-            return response if response else None
-        return parse_fn
-
-    @staticmethod
-    def _p1_fallback_fn():
-        """Return fallback_fn closure for P1. On failure the domain simply gets
-        no axis system — it runs the old untagged path for the whole run."""
-        def fallback_fn(task: Dict, reason: str) -> None:
-            return None
-        return fallback_fn
-
-    # =========================================================================
-    # PHASE 2/3 (P2/P3): PER-DOMAIN FACET DISCOVERY (SmoothRequester)
-    # =========================================================================
-
-    def _p2_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P1 facet discovery. A domain with a
-        validated axis system (axis_first_enabled) gets the tagged P1b prompt
-        and response model; a domain without one (flag off / axis failed /
-        drain) gets the untouched untagged P1 path — byte-identical to before."""
-        def prepare_fn(task: Dict) -> Dict:
-            domain_name = task['domain_name']
-            axis_system = self.axis_systems.get(domain_name)
-
-            if axis_system is not None:
-                prompt = build_tagged_facet_discovery_prompt(
-                    survey_question=prompt_context.survey_question,
-                    language=prompt_context.language,
-                    noun_phrase=(
-                        prompt_context.dimension_def.noun_phrase_descriptor
-                        if prompt_context.dimension_def else prompt_context.dimension_name
-                    ),
-                    domain_label=domain_name,
-                    domain_definition=task['part_context'].partition_definition,
-                    axis_system=axis_system,
-                    chunk_observations=task['observations'],
-                )
-                response_model = build_tagged_facet_discovery_model(
-                    [axis.axis_name for axis in axis_system.axes]
-                )
-                prompt_type = "tagged_facet_discovery"
-            else:
-                prompt = build_facet_discovery_prompt(
-                    survey_question=prompt_context.survey_question,
-                    language=prompt_context.language,
-                    dataset_context_section=prompt_context.dataset_context_section,
-                    dimension_def=prompt_context.dimension_def,
-                    dimension_name=prompt_context.dimension_name,
-                    dimension_description=prompt_context.dimension_description,
-                    partition_name=domain_name,
-                    partition_definition=task['part_context'].partition_definition,
-                    boundary_test=task['part_context'].boundary_test,
-                    exclusions=task['part_context'].exclusions,
-                    observations=task['observations'],
-                    excluded_domains=task['excluded_domains'],
-                )
-                response_model = FacetDiscoveryResult
-                prompt_type = "facet_discovery"
-
-            # Prompt capture (first chunk per domain)
-            gate_key = f"qr_facets_{domain_name}"
-            if (self._prompt_printer is not None
-                    and task['chunk_idx'] == 0
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type=prompt_type,
-                    metadata={
-                        "model": self._model_p2,
-                        "temperature": self._temperature,
-                        "max_tokens": self._max_tokens_facet_discovery,
-                        "language": prompt_context.language,
-                        "partition_name": domain_name,
-                        "batch_number": task['chunk_idx'] + 1,
-                        "total_batches": task['total_chunks'],
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
-            return {
-                'prompt': prompt,
-                'response_model': response_model,
-                'temperature': self._temperature,
-                'max_tokens': self._max_tokens_facet_discovery,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p2, phase="classifier_p2"),
-            }
-        return prepare_fn
-
-    def _p2_parse_fn(self):
-        """Return parse_fn closure for P1 facet discovery. Tagged responses
-        (domain has a validated axis system) are grouped by axis in the
-        response schema itself — `build_tagged_facet_discovery_model` binds
-        `axis_name` to a Literal over the domain's known axes, so every
-        proposal is inherently tagged to a valid axis; no rejection step is
-        needed. Each proposal becomes a DiscoveredFacet carrying its axis for
-        downstream provenance (segment-less: P1 axes carry no
-        sub-structure). Untagged responses (domain without a system) pass
-        through unchanged, as before."""
-        def parse_fn(task: Dict, response) -> Optional[List[DiscoveredFacet]]:
-            if response is None:
-                return []
-
-            domain_name = task['domain_name']
-            axis_system = self.axis_systems.get(domain_name)
-            if axis_system is None:
-                return response.facets
-
-            observations = task['observations']
-            facets: List[DiscoveredFacet] = []
-            for axis_facets in response.axes:
-                for proposal in axis_facets.facets:
-                    facets.append(DiscoveredFacet(
-                        facet_name=proposal.facet_name,
-                        facet_description=proposal.facet_definition,
-                        inclusion_rule=proposal.inclusion_rule,
-                        exclusion_rule=proposal.exclusion_rule,
-                        example_observations=[
-                            observations[i - 1] for i in proposal.example_observations
-                            if 1 <= i <= len(observations)
-                        ],
-                        axis=axis_facets.axis_name,
-                    ))
-            return facets
-        return parse_fn
-
-    @staticmethod
-    def _p2_fallback_fn():
-        """Return fallback_fn closure for P1 facet discovery."""
-        def fallback_fn(task: Dict, reason: str) -> List[DiscoveredFacet]:
-            return []
-        return fallback_fn
-
-    @staticmethod
-    def _round_robin_examples(proposals: List, *, limit: int = 5) -> List[str]:
-        """Pool example observations from a group's consumed proposals
-        (facet proposals in P2, attribute proposals in P6), one per proposal
-        per pass (round-robin), preserving each proposal's own example
-        order, stopping at `limit`. Unlike a flat concatenation, this can't
-        exhaust the pool on one proposal — every proposal that has an
-        example contributes before any proposal contributes a second one,
-        echoing the old path's model-curated "representative across the
-        merged [sources]" spread."""
-        examples: List[str] = []
-        round_idx = 0
-        while len(examples) < limit:
-            added = False
-            for p in proposals:
-                if round_idx < len(p.example_observations):
-                    examples.append(p.example_observations[round_idx])
-                    added = True
-                    if len(examples) == limit:
-                        break
-            if not added:
-                break
-            round_idx += 1
-        return examples
-
-    # =========================================================================
-    # PHASE 6 (P6): PER-FACET ATTRIBUTE DISCOVERY (SmoothRequester)
-    # =========================================================================
-
-    def _p6_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for attribute discovery."""
-        def prepare_fn(task: Dict) -> Dict:
-            prompt = build_attribute_discovery_prompt(
-                survey_question=prompt_context.survey_question,
-                language=prompt_context.language,
-                dataset_context_section=prompt_context.dataset_context_section,
-                dimension_def=prompt_context.dimension_def,
-                dimension_name=prompt_context.dimension_name,
-                dimension_description=prompt_context.dimension_description,
-                domain_name=task['domain_name'],
-                domain_definition=task['part_context'].partition_definition,
-                facet_name=task['facet_name'],
-                facet_description=task['facet_description'],
-                observations=task['observations'],
-                excluded_facets=task['excluded_facets'],
-            )
-            response_model = AttributeDiscoveryResult
-            prompt_type = "attribute_discovery"
-
-            # Prompt capture (first chunk per facet)
-            gate_key = f"qr_attributes_{task['domain_name']}_{task['facet_name']}"
-            if (self._prompt_printer is not None
-                    and task['chunk_idx'] == 0
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type=prompt_type,
-                    metadata={
-                        "model": self._model_p6,
-                        "temperature": self._temperature,
-                        "max_tokens": self._max_tokens_attribute_discovery,
-                        "language": prompt_context.language,
-                        "partition_name": task['domain_name'],
-                        "facet_name": task['facet_name'],
-                        "n_observations": len(task['observations']),
-                        "batch_number": task['chunk_idx'] + 1,
-                        "total_batches": task['total_chunks'],
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
-            return {
-                'prompt': prompt,
-                'response_model': response_model,
-                'temperature': self._temperature,
-                'max_tokens': self._max_tokens_attribute_discovery,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p6, phase="classifier_p6"),
-            }
-        return prepare_fn
-
-    def _p6_parse_fn(self):
-        """Return parse_fn closure for attribute discovery."""
-        def parse_fn(task: Dict, response) -> Optional[List[DiscoveredAttribute]]:
-            if response is None:
-                return []
-            return response.attributes
-        return parse_fn
-
-    @staticmethod
-    def _p6_fallback_fn():
-        """Return fallback_fn closure for P5 attribute discovery."""
-        def fallback_fn(task: Dict, reason: str) -> List[DiscoveredAttribute]:
-            return []
-        return fallback_fn
-
-    # =========================================================================
-    # PHASE 8 (P8): IN-FACET ATTRIBUTE CONSOLIDATION (SmoothRequester)
+    # TEXT MATCHING
     # =========================================================================
 
     @staticmethod
@@ -2986,7 +1566,7 @@ class TaxonomyClassifier:
         texts do not exist before it.
         """
         if verbose:
-            print(f"\n  Facet refinement")
+            print("\n  Facet refinement")
         started = time.time()
 
         tasks = self._build_facet_refinement_tasks(ctx, facets, assignments, labels)
@@ -3114,7 +1694,7 @@ class TaxonomyClassifier:
     ) -> Dict[str, Dict[str, List[DiscoveredAttribute]]]:
         """Propose attributes per facet, then collapse byte-identical repeats."""
         if verbose:
-            print(f"\n  Attribute discovery")
+            print("\n  Attribute discovery")
         started = time.time()
 
         tasks = self._build_attribute_discovery_tasks(ctx, facets, observations)
@@ -3291,7 +1871,7 @@ class TaxonomyClassifier:
         together so the groups still get to see each other.
         """
         if verbose:
-            print(f"\n  Attribute consolidation")
+            print("\n  Attribute consolidation")
         started = time.time()
 
         settled: Dict[str, Dict[str, List[ConsolidatedAttribute]]] = {}
@@ -3490,7 +2070,7 @@ class TaxonomyClassifier:
         facet level's: it is judged against the attribute the idea landed on.
         """
         if verbose:
-            print(f"\n  Attribute assignment")
+            print("\n  Attribute assignment")
         started = time.time()
 
         assignments: Dict[str, str] = {}
@@ -3974,7 +2554,7 @@ class TaxonomyClassifier:
                Dict[str, Dict[str, str]]]:
         """Judge each facet's attributes against what they actually hold."""
         if verbose:
-            print(f"\n  Attribute refinement")
+            print("\n  Attribute refinement")
         started = time.time()
 
         definition_of = {
