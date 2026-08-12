@@ -13,7 +13,7 @@ is the facet — everything else about the shape is the same, deliberately.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Literal, Tuple
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, create_model, model_validator
 
@@ -215,14 +215,19 @@ class AttributeConsolidationResult(BaseModel):
     )
 
 
-def _build_candidate_block(candidates: List[DiscoveredAttribute]) -> str:
+def _build_candidate_block(candidates: List[DiscoveredAttribute], recurrence=None,
+                          n_passes: int = 0) -> str:
     """Render the chunk yield as numbered candidates, each with its evidence."""
     blocks = []
     for i, candidate in enumerate(candidates, 1):
         exclusions = "; ".join(candidate.exclusions) if candidate.exclusions else "(none)"
         observations = "; ".join(candidate.example_observations)
+        seen = recurrence.get(candidate.attribute_name) if recurrence else None
+        support = (f"     Proposed in {seen} of {n_passes} independent passes\n"
+                   if seen and n_passes else "")
         blocks.append(
             f"[C{i}] {candidate.attribute_name}\n"
+            f"{support}"
             f"     Definition: {candidate.attribute_definition}\n"
             f"     Boundary test: {candidate.boundary_test}\n"
             f"     Does not belong: {exclusions}\n"
@@ -248,6 +253,8 @@ def build_attribute_consolidation_prompt(
     facet_name: str,
     facet_definition: str,
     candidates: List[DiscoveredAttribute],
+    recurrence: Optional[Dict[str, int]] = None,
+    n_passes: int = 0,
 ) -> str:
     """Settle one facet's attribute inventory, across all chunk proposals."""
     context_block = build_context_block(
@@ -259,7 +266,7 @@ def build_attribute_consolidation_prompt(
         dimension_description=dimension_description,
     )
     diagnostic = level_diagnostic(dimension, "attribute")
-    candidate_block = _build_candidate_block(candidates)
+    candidate_block = _build_candidate_block(candidates, recurrence, n_passes)
 
     return f"""You are a taxonomy consolidation specialist for survey coding.
 Your task is to merge attribute proposals from several independent passes over one facet
@@ -300,26 +307,43 @@ Judge the candidates on their observations, not on their labels. Two labels that
 differently but were produced by the same kind of observation are ONE attribute. Two
 labels that read alike but were produced by different observations are TWO.
 
-Consolidation principles:
+Consolidation is the goal: do NOT keep every concept separate — group. Govern the
+grouping by these rules, in this order of precedence.
 
-- **MERGE** candidates that overlap conceptually, are near-equivalent, or where one is
-  a subset of the other.
-- **MERGE** candidates that are two lenses on the same phenomenon — different wording
-  for one underlying property.
-- **THE BOUNDARY TEST DECIDES.** For each pair of survivors, write the boundary that
-  separates them. If you cannot state a clean boundary between an attribute and its
-  nearest neighbour, they are not two attributes — merge them.
-- **ENSURE ontological distinctness** — no two attributes may share conceptual space,
-  and none may be a subset of another.
-- **ENSURE semantic separability** — a coder must not plausibly hesitate between two
-  attributes.
-- **MAINTAIN full coverage** — the survivors must collectively cover everything the
-  candidates covered. Consolidating is not discarding.
-- **MINIMIZE the count** while preserving distinctions the observations actually show.
-  If the observations hold four distinct answers to the attribute question, return four
-  attributes — do not collapse them because fewer is tidier.
-- **STAY inside the facet.** A candidate that falls outside the facet is not an
-  attribute to keep; leave it out rather than widening the facet to fit it.
+**1. DIMENSION FIRST — orthogonality is the guardrail.**
+For each candidate, determine WHICH underlying dimension it answers. Candidates on
+DIFFERENT dimensions are orthogonal: never merge them into one attribute. Mutually exclusive
+values or poles of the SAME dimension are also kept apart — merging opposite poles creates
+an empty container. Do NOT create separate attributes based only on the object discussed when
+the same underlying value applies; an object is not a dimension.
+
+**2. PREVALENCE SETS GRANULARITY — within one dimension only.**
+Each candidate shows in how many independent passes it was proposed. A candidate that
+recurs across passes is well supported: it keeps its own attribute. Several thin,
+same-dimension candidates are GROUPED into one attribute that still names the shared value in
+plain language. Prevalence decides how finely to split WITHIN a dimension; it never
+licenses merging ACROSS dimensions.
+
+**3. LIFT, DON'T FLATTEN.**
+When grouping is needed, raise the concepts to a shared higher-abstraction label that
+still carries their meaning — not a label that merely names the axis they sit on.
+FORBIDDEN: an empty container that only names the dimension it sorts on. REQUIRED: a
+stateable value a reader can picture. Read the label alone — if it tells you only which
+question was asked, it is a container; if it tells you what the answer was, it is a value.
+
+**4. PLAIN, MEANINGFUL LABELS.**
+Name every surviving attribute in everyday language. Reading the label alone, and knowing the
+survey question, a layperson knows which distinction is meant. No jargon, no
+nominalizations, no dimension-names.
+
+**5. STAY INSIDE THE SCOPE.** A candidate that falls outside the boundary stated above is
+not a attribute to keep; leave it out rather than widening the scope to fit it.
+
+**6. MAINTAIN FULL COVERAGE.** The survivors must collectively cover everything the
+candidates covered. Consolidating is not discarding.
+
+**Precedence when rules conflict: 1 (orthogonality) > 2 (prevalence grouping) > 4 (label
+clarity).**
 
 Two things are FORBIDDEN in what you return:
 
@@ -785,5 +809,157 @@ named children). Every misfit group carries verdict "move" or "out".
 
 All attribute names, definitions, boundary tests and exclusions must be written in {language}.
 Copy response texts verbatim when you route them; they are matched literally.
+
+Begin processing now and {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# §5 CROSS-SCOPE CONSOLIDATION — every domain, facet and attribute at once
+# =============================================================================
+#
+# The only phase in step 4 that sees more than one scope. Every other phase is
+# scope-locked by design: a structural merge across a boundary would drag every
+# idea in the bucket along. This one is allowed to, and that is the point — with
+# forty-odd facets each settled on its own, the same concept survives in several
+# of them and nothing else can ever see that.
+#
+# It moves by id, never by name. An attribute keeps the (domain, facet) of the
+# source it names as its home, so relocation is a choice among the inputs rather
+# than free text that has to be matched back.
+
+
+def build_cross_scope_model(attribute_ids: List[str]):
+    """Runtime response model: merged attributes over a fixed id space."""
+    id_literal = Literal[tuple(attribute_ids)]  # type: ignore[valid-type]
+
+    item = create_model(
+        "MergedAttribute",
+        attribute_name=(str, Field(
+            ..., description="Short descriptive name for the merged attribute")),
+        attribute_definition=(str, Field(
+            ..., description="One sentence naming the single observable property")),
+        source_ids=(List[id_literal], Field(
+            ..., description=(
+                "Every input id that folds into this attribute, including its own. "
+                "An attribute kept unchanged lists exactly one id"))),
+        home_id=(id_literal, Field(
+            ..., description=(
+                "The id whose domain and facet this attribute keeps. Must be one of "
+                "the source_ids. Pick the home where most of these responses sit"))),
+    )
+    return create_model(
+        "CrossScopeResult",
+        scratchpad=(str, Field(
+            ..., description=(
+                "Reasoning: (1) group the attributes that mean the same thing across "
+                "facets and domains, (2) for each group pick the home where most of "
+                "its responses already sit, (3) check every id appears exactly once")
+        )),
+        attributes=(List[item], Field(
+            ..., description="The merged inventory. Every input id appears exactly once")),
+    )
+
+
+def build_cross_scope_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+    inventory_block: str,
+) -> str:
+    """Deduplicate the attribute inventory across every facet and domain."""
+    context_block = build_context_block(
+        language=language, survey_question=survey_question, sector=sector,
+        entity=entity, topic=topic, perspective=perspective, intent=intent,
+    )
+    taxonomy_block = build_taxonomy_block(
+        dimension=dimension, dimension_name=dimension_name,
+        dimension_description=dimension_description,
+    )
+
+    return f"""You are a taxonomy consolidation specialist for survey coding.
+Your task is to remove duplication from a finished attribute inventory, across every facet
+and every domain at once.
+
+{context_block}
+
+{taxonomy_block}
+
+Here is the complete inventory. Each attribute carries its id, the domain and facet it
+currently sits in, and how many responses it holds:
+
+<inventory>
+{inventory_block}
+</inventory>
+
+## YOUR TASK
+
+Every facet settled its own attributes without seeing any other facet. The same concept
+therefore survives in several places under different names. Find those and fold them
+together.
+
+Govern the grouping by these rules, in this order of precedence.
+
+**1. DIMENSION FIRST — orthogonality is the guardrail.**
+Attributes on DIFFERENT dimensions are orthogonal: never merge them, however similar the
+labels look. Mutually exclusive values or poles of the SAME dimension are also kept apart
+— merging opposite poles creates an empty container. Do NOT merge on the object discussed
+when the underlying value differs, and do NOT keep apart on the object when the underlying
+value is the same.
+
+**2. PREVALENCE SETS GRANULARITY — within one dimension only.**
+A well-supported attribute keeps its own identity. Several thin, same-dimension attributes
+are GROUPED into one that still names the shared value in plain language. Prevalence
+decides how finely to split WITHIN a dimension; it never licenses merging ACROSS
+dimensions.
+
+**3. LIFT, DON'T FLATTEN.**
+When grouping, raise the concepts to a shared higher-abstraction label that still carries
+their meaning — not a label that merely names the axis they sit on. FORBIDDEN: an empty
+container that only names the dimension it sorts on. REQUIRED: a stateable value a reader
+can picture.
+
+**4. PLAIN, MEANINGFUL LABELS.**
+Everyday language. Reading the label alone, and knowing the survey question, a layperson
+knows which distinction is meant.
+
+**5. EVERY ID EXACTLY ONCE.** Every id in the inventory appears in exactly one returned
+attribute. Nothing may be dropped and nothing may be listed twice — an id you leave out
+loses its responses.
+
+**6. THE HOME FOLLOWS THE RESPONSES.** Each merged attribute keeps the domain and facet of
+the id you name as `home_id`. Pick the home where most of its responses already sit. The
+ideas follow the attribute, so a home you pick badly moves responses to a facet they do
+not belong to.
+
+**Precedence when rules conflict: 1 (orthogonality) > 2 (prevalence grouping) > 4 (label
+clarity).**
+
+Two things are FORBIDDEN in what you return:
+
+- **FORBIDDEN: attributes that overlap conceptually, semantically or in meaning**, judged
+  in terms of the reactions and answers people gave to the survey question.
+- **FORBIDDEN: any pair that fails the researcher's test.** Picture a researcher reading
+  your final inventory and saying: *"these two do not actually help me organise
+  meaningfully different reactions to this question — they essentially mean the same
+  thing."* If a pair invites that sentence, it is one attribute.
+
+{UNIVERSAL_RULES}
+
+## OUTPUT
+
+Work through the grouping in the scratchpad first.
+
+For EACH returned attribute: attribute_name, attribute_definition, source_ids (every id
+that folds in, including its own), and home_id (one of its own source_ids).
+
+All names and definitions must be written in {language}.
 
 Begin processing now and {INSTRUCTOR_HINT}"""

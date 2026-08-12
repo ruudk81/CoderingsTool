@@ -4,7 +4,11 @@ Nine phases, in the order step 3 uses for the domain layer, once per level:
 
   facet:      discovery → consolidation → assignment → refinement
   attribute:  discovery → consolidation → assignment → refinement
-  then:       valence-neutral merge
+  then:       cross-scope consolidation → valence-neutral merge
+
+Cross-scope consolidation is the one phase that sees more than one scope. Every
+other phase is scope-locked, so the same concept survives in several facets and
+nothing else can ever see that.
 
 Consolidation settles the inventory BEFORE a single idea is assigned, on the
 observations each candidate was built from. Refinement runs AFTER assignment, on
@@ -69,6 +73,7 @@ class CategoriesConfig:
     model_attribute_consolidation: str = get_step_model("classifier_attribute_consolidation")
     model_attribute_assignment: str = get_step_model("classifier_attribute_assignment")
     model_attribute_refinement: str = get_step_model("classifier_attribute_refinement")
+    model_cross_scope_consolidation: str = get_step_model("classifier_cross_scope_consolidation")
     model_valence_merge: str = get_step_model("classifier_valence_merge")
 
     qr_temperature: float = 0.3

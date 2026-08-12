@@ -14,7 +14,7 @@ can move a facet or an idea to another domain.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Literal, Tuple
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, create_model, model_validator
 
@@ -216,7 +216,8 @@ class FacetConsolidationResult(BaseModel):
     )
 
 
-def _build_candidate_block(candidates: List[DiscoveredFacet]) -> str:
+def _build_candidate_block(candidates: List[DiscoveredFacet], recurrence=None,
+                          n_passes: int = 0) -> str:
     """Render the chunk yield as numbered candidates, each with its evidence.
 
     The observations that produced a proposal travel with it. That is what makes
@@ -228,8 +229,12 @@ def _build_candidate_block(candidates: List[DiscoveredFacet]) -> str:
     for i, candidate in enumerate(candidates, 1):
         exclusions = "; ".join(candidate.exclusions) if candidate.exclusions else "(none)"
         observations = "; ".join(candidate.example_observations)
+        seen = recurrence.get(candidate.facet_name) if recurrence else None
+        support = (f"     Proposed in {seen} of {n_passes} independent passes\n"
+                   if seen and n_passes else "")
         blocks.append(
             f"[C{i}] {candidate.facet_name}\n"
+            f"{support}"
             f"     Definition: {candidate.facet_definition}\n"
             f"     Boundary test: {candidate.boundary_test}\n"
             f"     Does not belong: {exclusions}\n"
@@ -254,6 +259,8 @@ def build_facet_consolidation_prompt(
     domain_definition: str,
     domain_boundary_test: str,
     candidates: List[DiscoveredFacet],
+    recurrence: Optional[Dict[str, int]] = None,
+    n_passes: int = 0,
 ) -> str:
     """Settle one domain's facet inventory, across all chunk proposals.
 
@@ -270,7 +277,7 @@ def build_facet_consolidation_prompt(
         dimension_description=dimension_description,
     )
     diagnostic = level_diagnostic(dimension, "facet")
-    candidate_block = _build_candidate_block(candidates)
+    candidate_block = _build_candidate_block(candidates, recurrence, n_passes)
 
     return f"""You are a taxonomy consolidation specialist for survey coding.
 Your task is to merge facet proposals from several independent passes over one domain
@@ -312,26 +319,43 @@ Judge the candidates on their observations, not on their labels. Two labels that
 differently but were produced by the same kind of observation are ONE facet. Two labels
 that read alike but were produced by different observations are TWO.
 
-Consolidation principles:
+Consolidation is the goal: do NOT keep every concept separate — group. Govern the
+grouping by these rules, in this order of precedence.
 
-- **MERGE** candidates that overlap conceptually, are near-equivalent, or where one is
-  a subset of the other.
-- **MERGE** candidates that are two lenses on the same phenomenon — different wording
-  for one underlying distinction.
-- **THE BOUNDARY TEST DECIDES.** For each pair of survivors, write the boundary that
-  separates them. If you cannot state a clean boundary between a facet and its nearest
-  neighbour, they are not two facets — merge them.
-- **ENSURE ontological distinctness** — no two facets may share conceptual space, and
-  none may be a subset of another.
-- **ENSURE semantic distance** — a coder must not plausibly hesitate between two
-  facets. No "could go either way" situations.
-- **MAINTAIN full coverage** — the survivors must collectively cover everything the
-  candidates covered. Consolidating is not discarding.
-- **MINIMIZE the count** while preserving distinctions that the observations actually
-  show. If the observations hold four distinct answers to the facet question, return
-  four facets — do not collapse them because fewer is tidier.
-- **STAY inside the domain.** A candidate that falls outside the domain boundary is not
-  a facet to keep; leave it out rather than widening the domain to fit it.
+**1. DIMENSION FIRST — orthogonality is the guardrail.**
+For each candidate, determine WHICH underlying dimension it answers. Candidates on
+DIFFERENT dimensions are orthogonal: never merge them into one facet. Mutually exclusive
+values or poles of the SAME dimension are also kept apart — merging opposite poles creates
+an empty container. Do NOT create separate facets based only on the object discussed when
+the same underlying value applies; an object is not a dimension.
+
+**2. PREVALENCE SETS GRANULARITY — within one dimension only.**
+Each candidate shows in how many independent passes it was proposed. A candidate that
+recurs across passes is well supported: it keeps its own facet. Several thin,
+same-dimension candidates are GROUPED into one facet that still names the shared value in
+plain language. Prevalence decides how finely to split WITHIN a dimension; it never
+licenses merging ACROSS dimensions.
+
+**3. LIFT, DON'T FLATTEN.**
+When grouping is needed, raise the concepts to a shared higher-abstraction label that
+still carries their meaning — not a label that merely names the axis they sit on.
+FORBIDDEN: an empty container that only names the dimension it sorts on. REQUIRED: a
+stateable value a reader can picture. Read the label alone — if it tells you only which
+question was asked, it is a container; if it tells you what the answer was, it is a value.
+
+**4. PLAIN, MEANINGFUL LABELS.**
+Name every surviving facet in everyday language. Reading the label alone, and knowing the
+survey question, a layperson knows which distinction is meant. No jargon, no
+nominalizations, no dimension-names.
+
+**5. STAY INSIDE THE SCOPE.** A candidate that falls outside the boundary stated above is
+not a facet to keep; leave it out rather than widening the scope to fit it.
+
+**6. MAINTAIN FULL COVERAGE.** The survivors must collectively cover everything the
+candidates covered. Consolidating is not discarding.
+
+**Precedence when rules conflict: 1 (orthogonality) > 2 (prevalence grouping) > 4 (label
+clarity).**
 
 Two things are FORBIDDEN in what you return:
 

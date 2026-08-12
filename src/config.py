@@ -97,6 +97,7 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     "classifier_attribute_consolidation": ("5.6", 3),
     "classifier_attribute_assignment":    ("5.6", 3),
     "classifier_attribute_refinement":    ("5.6", 3),
+    "classifier_cross_scope_consolidation":    ("5.6", 3),
     "classifier_valence_merge":           ("5.6", 3),
     # Step 5: Code Generator (P8-P9)
     "codegen_p8":                         ("5.6", 3),
@@ -207,6 +208,7 @@ STEP_EFFORT = {
     "classifier_attribute_discovery": "medium",
     "classifier_attribute_consolidation": "medium",
     "classifier_attribute_refinement": "medium",
+    "classifier_cross_scope_consolidation": "medium",
     "classifier_valence_merge": "low",
     # Step 5: writing and consolidating the codebook
     "codegen_p8": "medium",
@@ -222,6 +224,7 @@ STEP_VERBOSITY = {
     "classifier_attribute_discovery": "low",
     "classifier_attribute_consolidation": "low",
     "classifier_attribute_refinement": "low",
+    "classifier_cross_scope_consolidation": "low",
     "classifier_valence_merge": "low",
     # All other steps: fall back to TEXT_VERBOSITY
 }

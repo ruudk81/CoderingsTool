@@ -105,6 +105,8 @@ from .prompts_attribute import (
     build_attribute_contents_block,
     build_attribute_refinement_prompt,
     build_neighbour_block,
+    build_cross_scope_model,
+    build_cross_scope_prompt,
 )
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
@@ -238,7 +240,8 @@ class TaxonomyClassifier:
     PHASES = (
         "facet_discovery", "facet_consolidation", "facet_assignment",
         "facet_refinement", "attribute_discovery", "attribute_consolidation",
-        "attribute_assignment", "attribute_refinement", "valence_merge",
+        "attribute_assignment", "attribute_refinement",
+        "cross_scope_consolidation", "valence_merge",
     )
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None, cost_tracker=None):
@@ -303,6 +306,10 @@ class TaxonomyClassifier:
         # orchestrator reads as the nine phase calls it is, and the task
         # builders stay pure because only the run methods touch this.
         self._action_log: List[Dict] = []
+        # Hoe vaak elke kandidaat door een onafhankelijke chunk is
+        # voorgesteld — de enige prevalentie die vóór toewijzing bestaat.
+        self._recurrence: Dict[tuple, Dict[str, int]] = {}
+        self._passes: Dict[tuple, int] = {}
         self._last_stats: Dict = {}
 
         # Assignment confidence scores and valence (populated by the two
@@ -608,6 +615,15 @@ class TaxonomyClassifier:
             await self._run_attribute_refinement(
                 ctx, attributes, attribute_assignments, assignments, facets,
                 ideas_per_facet, verbose))
+        if _stop("attribute_refinement"):
+            state["partition_attributes"] = attributes
+            state["attribute_assignments"] = attribute_assignments
+            state["partition_assignments"] = assignments
+            return self._taxonomy_result(state, started, verbose)
+
+        attributes, attribute_assignments, assignments = (
+            await self._run_cross_scope_consolidation(
+                ctx, attributes, attribute_assignments, assignments, verbose))
         state["partition_attributes"] = attributes
         state["attribute_assignments"] = attribute_assignments
         state["partition_assignments"] = assignments
@@ -642,6 +658,208 @@ class TaxonomyClassifier:
             attribute_valence=self._attribute_valence,
             consolidation_log=list(self._action_log),
         )
+
+    # =========================================================================
+    # PHASE — CROSS-SCOPE CONSOLIDATION (every domain and facet at once)
+    # =========================================================================
+
+    def _build_cross_scope_task(
+        self,
+        attributes: Dict[str, Dict[str, List[ConsolidatedAttribute]]],
+        assignments: Dict[str, str],
+    ) -> Optional[Dict]:
+        """One task holding the whole inventory, keyed on stable ids.
+
+        Every other phase is scope-locked: a structural merge across a boundary
+        would drag every idea in the bucket along. This is the one place where
+        that is the intent — forty-odd facets each settled alone, so the same
+        concept survives in several of them and nothing else can see it.
+        """
+        counts = Counter(assignments.values())
+        entries: List[Dict] = []
+        for domain_label in sorted(attributes):
+            for facet_name in sorted(attributes[domain_label]):
+                for attribute in attributes[domain_label][facet_name]:
+                    entries.append({
+                        "id": f"A{len(entries) + 1}",
+                        "domain": domain_label,
+                        "facet": facet_name,
+                        "attribute": attribute,
+                        "n": counts.get(attribute.attribute_name, 0),
+                    })
+        if len(entries) < 2:
+            return None
+
+        lines, current = [], None
+        for e in entries:
+            head = f"{e['domain']} > {e['facet']}"
+            if head != current:
+                lines.append(f"\n{head}")
+                current = head
+            lines.append(
+                f"  [{e['id']}] {e['attribute'].attribute_name} — {e['n']} responses\n"
+                f"        {e['attribute'].attribute_definition}")
+        return {"entries": entries, "inventory_block": "\n".join(lines)}
+
+    def _cross_scope_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            ids = [e["id"] for e in task["entries"]]
+            prompt = build_cross_scope_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                dimension_name=ctx.dimension_name,
+                dimension_description=ctx.dimension_description,
+                inventory_block=task["inventory_block"],
+            )
+            self._capture("cross_scope", prompt, "cross_scope_consolidation",
+                          {"model": self._model["cross_scope_consolidation"],
+                           "temperature": 0.0,
+                           "max_tokens": self._max_tokens_consolidation,
+                           "language": ctx.language,
+                           "n_attributes": len(ids),
+                           "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": build_cross_scope_model(ids),
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens_consolidation,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["cross_scope_consolidation"],
+                    phase="classifier_cross_scope_consolidation"),
+            }
+        return prepare_fn
+
+    @staticmethod
+    def _cross_scope_parse_fn():
+        def parse_fn(task: Dict, response):
+            return response if response else None
+        return parse_fn
+
+    @staticmethod
+    def _cross_scope_fallback_fn():
+        """On failure the inventory is left exactly as the facets settled it."""
+        def fallback_fn(task: Dict, reason: str) -> None:
+            return None
+        return fallback_fn
+
+    async def _run_cross_scope_consolidation(
+        self,
+        ctx: PromptContext,
+        attributes: Dict[str, Dict[str, List[ConsolidatedAttribute]]],
+        assignments: Dict[str, str],
+        facet_assignments: Dict[str, Dict[str, str]],
+        verbose: bool,
+    ):
+        """Fold duplicate attributes together across facets and domains.
+
+        An id the model does not claim keeps its own attribute where it is — the
+        same fail-safe every other consolidation has, and here it is what stops a
+        forgotten id from taking its responses with it.
+        """
+        if verbose:
+            print("\n  Cross-scope consolidation")
+        started = time.time()
+
+        task = self._build_cross_scope_task(attributes, assignments)
+        if task is None:
+            return attributes, assignments, facet_assignments
+
+        results = await self._dispatch(
+            "cross_scope_consolidation", [task],
+            self._cross_scope_prepare_fn(ctx),
+            self._cross_scope_parse_fn(),
+            self._cross_scope_fallback_fn(),
+            verbose,
+        )
+        result = results[0] if results else None
+        by_id = {e["id"]: e for e in task["entries"]}
+        before = len(by_id)
+
+        if result is None or not result.attributes:
+            self._action_log.append({
+                "action": "cross_scope_failed", "n_attributes": before,
+                "note": "no result — inventory left as the facets settled it"})
+            return attributes, assignments, facet_assignments
+
+        # ---- 1. structure: id -> (new name, home) -------------------------
+        rename: Dict[str, str] = {}
+        home: Dict[str, Tuple[str, str]] = {}
+        settled: Dict[str, Dict[str, List[ConsolidatedAttribute]]] = {}
+        claimed: Set[str] = set()
+
+        for item in result.attributes:
+            sources = [i for i in (item.source_ids or []) if i in by_id]
+            if not sources:
+                continue
+            anchor = by_id.get(item.home_id) or by_id[sources[0]]
+            dom, fac = anchor["domain"], anchor["facet"]
+            merged = ConsolidatedAttribute(
+                attribute_name=item.attribute_name,
+                attribute_definition=item.attribute_definition,
+                boundary_test=anchor["attribute"].boundary_test,
+                exclusions=anchor["attribute"].exclusions,
+                example_observations=anchor["attribute"].example_observations,
+                source_attributes=[by_id[i]["attribute"].attribute_name for i in sources],
+            )
+            settled.setdefault(dom, {}).setdefault(fac, []).append(merged)
+            for i in sources:
+                claimed.add(i)
+                rename[i] = item.attribute_name
+                home[i] = (dom, fac)
+            if len(sources) > 1:
+                self._action_log.append({
+                    "action": "cross_scope_merge", "result": item.attribute_name,
+                    "home": f"{dom} > {fac}",
+                    "sources": [f"{by_id[i]['domain']} > {by_id[i]['facet']} > "
+                                f"{by_id[i]['attribute'].attribute_name}" for i in sources]})
+
+        for entry_id, e in by_id.items():
+            if entry_id in claimed:
+                continue
+            settled.setdefault(e["domain"], {}).setdefault(e["facet"], []).append(
+                e["attribute"])
+            rename[entry_id] = e["attribute"].attribute_name
+            home[entry_id] = (e["domain"], e["facet"])
+            self._action_log.append({
+                "action": "cross_scope_kept_unclaimed",
+                "attribute": e["attribute"].attribute_name})
+
+        # ---- 2. ideas follow their attribute ------------------------------
+        by_old: Dict[Tuple[str, str, str], str] = {}
+        for entry_id, e in by_id.items():
+            by_old[(e["domain"], e["facet"], e["attribute"].attribute_name)] = entry_id
+
+        idea_home: Dict[str, Tuple[str, str]] = {}
+        for dom, assigns in facet_assignments.items():
+            for idea_id, fac in assigns.items():
+                idea_home[idea_id] = (dom, fac)
+
+        n_moved = 0
+        for idea_id, name in list(assignments.items()):
+            place = idea_home.get(idea_id)
+            if not place:
+                continue
+            entry_id = by_old.get((place[0], place[1], name))
+            if entry_id is None:
+                continue
+            assignments[idea_id] = rename[entry_id]
+            dom, fac = home[entry_id]
+            if (dom, fac) != place:
+                facet_assignments.setdefault(dom, {})[idea_id] = fac
+                facet_assignments.get(place[0], {}).pop(idea_id, None)
+                n_moved += 1
+
+        after = sum(len(a) for f in settled.values() for a in f.values())
+        self._action_log.append({
+            "action": "_cross_scope_totals", "before": before, "after": after,
+            "ideas_rehoused": n_moved})
+        if verbose:
+            print(f"    {time.time() - started:.1f}s → {before} - {before - after} = "
+                  f"{after} attributes, {n_moved} ideas rehoused")
+        return settled, assignments, facet_assignments
 
     # =========================================================================
     # SHARED PHASE PLUMBING
@@ -805,9 +1023,14 @@ class TaxonomyClassifier:
         for task, result in zip(tasks, results):
             flat.setdefault(task["domain_label"], []).extend(result or [])
 
+        passes = Counter(t["domain_label"] for t in tasks)
         raw: Dict[str, List[DiscoveredFacet]] = {}
         for label in sorted(flat):
+            seen = Counter(_norm(f.facet_name) for f in flat[label])
             deduped = dedup_exact_facets(flat[label])
+            self._recurrence[(label,)] = {
+                f.facet_name: seen[_norm(f.facet_name)] for f in deduped}
+            self._passes[(label,)] = passes[label]
             if len(deduped) < len(flat[label]):
                 self._action_log.append({
                     "action": "facet_exact_dedup", "domain": label,
@@ -844,7 +1067,10 @@ class TaxonomyClassifier:
             if not candidates:
                 continue
             for group in self._consolidation_groups(candidates):
-                tasks.append({"domain_label": label, "candidates": group})
+                tasks.append({
+                    "domain_label": label, "candidates": group,
+                    "recurrence": self._recurrence.get((label,)),
+                    "n_passes": self._passes.get((label,), 0)})
         return tasks
 
     def _facet_consolidation_prepare_fn(self, ctx: PromptContext):
@@ -861,6 +1087,8 @@ class TaxonomyClassifier:
                 domain_definition=domain["definition"],
                 domain_boundary_test=domain["boundary_test"],
                 candidates=task["candidates"],
+                recurrence=task.get("recurrence"),
+                n_passes=task.get("n_passes", 0),
             )
             self._capture(
                 f"facet_consolidation_{task['domain_label']}", prompt,
@@ -1726,9 +1954,15 @@ class TaxonomyClassifier:
             flat.setdefault(
                 (task["domain_label"], task["facet_name"]), []).extend(result or [])
 
+        passes = Counter((t["domain_label"], t["facet_name"]) for t in tasks)
         raw: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
         for (domain_label, facet_name), attributes in sorted(flat.items()):
+            seen = Counter(_norm(a.attribute_name) for a in attributes)
             deduped = dedup_exact_attributes(attributes)
+            key = (domain_label, facet_name)
+            self._recurrence[key] = {
+                a.attribute_name: seen[_norm(a.attribute_name)] for a in deduped}
+            self._passes[key] = passes[key]
             if len(deduped) < len(attributes):
                 self._action_log.append({
                     "action": "attribute_exact_dedup", "domain": domain_label,
@@ -1777,6 +2011,8 @@ class TaxonomyClassifier:
                         "facet_name": facet_name,
                         "facet": by_name.get((domain_label, facet_name)),
                         "candidates": group,
+                        "recurrence": self._recurrence.get((domain_label, facet_name)),
+                        "n_passes": self._passes.get((domain_label, facet_name), 0),
                     })
         return tasks
 
@@ -1796,6 +2032,8 @@ class TaxonomyClassifier:
                 facet_name=task["facet_name"],
                 facet_definition=facet.facet_definition if facet else "",
                 candidates=task["candidates"],
+                recurrence=task.get("recurrence"),
+                n_passes=task.get("n_passes", 0),
             )
             self._capture(
                 f"attribute_consolidation_{task['domain_label']}_{task['facet_name']}",

@@ -5,7 +5,7 @@ from pipeline.step_4_classifier.config_classifier import CategoriesConfig, DEFAU
 PHASES = (
     "facet_discovery", "facet_consolidation", "facet_assignment", "facet_refinement",
     "attribute_discovery", "attribute_consolidation", "attribute_assignment",
-    "attribute_refinement", "valence_merge",
+    "attribute_refinement", "cross_scope_consolidation", "valence_merge",
 )
 
 
