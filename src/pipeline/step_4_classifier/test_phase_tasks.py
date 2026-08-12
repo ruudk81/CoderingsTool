@@ -198,3 +198,25 @@ def test_attribuutconsolidatie_is_een_taak_per_facet():
     raw = {"A": {"f1": [_attr("a1"), _attr("a2")], "f2": [_attr("b1")]}}
     tasks = clf._build_attribute_consolidation_tasks(ctx, raw)
     assert {t["facet_name"] for t in tasks} == {"f1", "f2"}
+
+
+# =============================================================================
+# Attribuut toewijzing
+# =============================================================================
+
+def test_attribuuttoewijzing_batcht_binnen_het_facet():
+    clf = TaxonomyClassifier(CategoriesConfig(assignment_batch_k=2))
+    ctx = _fixture_context(["A"])
+    attrs = {"A": {"f1": [_consolidated_attr("a1"), _consolidated_attr("a2")]}}
+    ideas = {("A", "f1"): {"i1": "x", "i2": "y", "i3": "z"}}
+    tasks = clf._build_attribute_assignment_tasks(ctx, attrs, ideas)
+    assert len(tasks) == 2
+    assert all(t["facet_name"] == "f1" for t in tasks)
+
+
+def test_facet_met_een_attribuut_krijgt_geen_taak():
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["A"])
+    tasks = clf._build_attribute_assignment_tasks(
+        ctx, {"A": {"f1": [_consolidated_attr("enig")]}}, {("A", "f1"): {"i1": "x"}})
+    assert tasks == []

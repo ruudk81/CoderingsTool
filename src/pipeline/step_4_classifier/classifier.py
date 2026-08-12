@@ -3358,6 +3358,213 @@ class TaxonomyClassifier:
             print(f"    {time.time() - started:.1f}s → {total} attributes")
         return settled
 
+    # =========================================================================
+    # PHASE — ATTRIBUTE ASSIGNMENT (ideas into the settled inventory)
+    # =========================================================================
+
+    def _build_attribute_assignment_tasks(
+        self,
+        ctx: PromptContext,
+        attributes: Dict[str, Dict[str, List[ConsolidatedAttribute]]],
+        ideas: Dict[Tuple[str, str], Dict[str, str]],
+        facets: Optional[Dict[str, List[ConsolidatedFacet]]] = None,
+    ) -> List[Dict]:
+        """One task per batch of unique labels within one facet.
+
+        This level used to run one call per idea, which resent the whole menu
+        every time. It now takes the same shape as the facet level: reps on the
+        normalized label, batches of K, and the same escalation ladder.
+
+        A facet with fewer than two attributes gets no task — nothing to choose.
+        """
+        by_name: Dict[Tuple[str, str], ConsolidatedFacet] = {}
+        for domain_label, items in (facets or {}).items():
+            for facet in items:
+                by_name[(domain_label, facet.facet_name)] = facet
+
+        tasks: List[Dict] = []
+        for domain_label in sorted(attributes):
+            for facet_name in sorted(attributes[domain_label]):
+                menu = attributes[domain_label][facet_name]
+                if len(menu) < 2:
+                    continue
+                labels = ideas.get((domain_label, facet_name)) or {}
+                reps = group_label_reps(labels.items())
+                for group in make_batches(len(reps), self._assign_batch_k):
+                    tasks.append({
+                        "domain_label": domain_label,
+                        "facet_name": facet_name,
+                        "facet": by_name.get((domain_label, facet_name)),
+                        "scope": (domain_label, facet_name),
+                        "reps": [reps[i] for i in group],
+                        "menu": list(menu),
+                        "full_menu": list(menu),
+                    })
+        return tasks
+
+    def _attribute_assignment_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            facet = task["facet"]
+            menu = task["menu"]
+            ideas = [(rep.idea_ids[0], rep.label) for rep in task["reps"]]
+            prompt = build_attribute_assignment_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                facet_name=task["facet_name"],
+                facet_definition=facet.facet_definition if facet else "",
+                attributes=menu,
+                ideas=ideas,
+            )
+            self._capture(
+                f"attribute_assignment_{task['domain_label']}_{task['facet_name']}",
+                prompt, "attribute_assignment",
+                {"model": self._model["attribute_assignment"],
+                 "temperature": self._temperature,
+                 "max_tokens": self._max_tokens_assignment,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "facet": task["facet_name"],
+                 "n_attributes": len(menu),
+                 "n_ideas": len(ideas),
+                 "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": build_attribute_assignment_model(
+                    [f"A{i}" for i in range(1, len(menu) + 1)],
+                    [idea_id for idea_id, _ in ideas]),
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens_assignment,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["attribute_assignment"],
+                    phase="classifier_attribute_assignment"),
+            }
+        return prepare_fn
+
+    def _attribute_assignment_parse_fn(self, pending: Optional[List[Dict]]):
+        """Accept validated items, fan them out over the rep's instances."""
+        def parse_fn(task: Dict, response) -> Dict[str, str]:
+            id_to_name = {f"A{i}": a.attribute_name
+                          for i, a in enumerate(task["menu"], 1)}
+            rep_by_id = {rep.idea_ids[0]: rep for rep in task["reps"]}
+            ok, escalate = validate_batch_response(
+                list(rep_by_id), response,
+                id_field="assigned_attribute_id", none_id="A_NONE")
+
+            out: Dict[str, str] = {}
+            for rep_id, item in ok.items():
+                attribute_name = id_to_name[item.assigned_attribute_id]
+                for idea_id in rep_by_id[rep_id].idea_ids:
+                    out[idea_id] = attribute_name
+                    self._attribute_confidence[idea_id] = item.confidence
+                    self._attribute_valence[idea_id] = item.valence
+
+            if pending is not None:
+                for rep_id, reason in escalate.items():
+                    pending.append(_escalated(task, rep_by_id[rep_id], reason))
+            return out
+        return parse_fn
+
+    @staticmethod
+    def _attribute_assignment_fallback_fn(pending: Optional[List[Dict]]):
+        """A definitively failed batch escalates whole."""
+        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
+            if pending is not None:
+                for rep in task["reps"]:
+                    pending.append(_escalated(task, rep, "batch_failed"))
+            return {}
+        return fallback_fn
+
+    async def _run_attribute_assignment(
+        self,
+        ctx: PromptContext,
+        attributes: Dict[str, Dict[str, List[ConsolidatedAttribute]]],
+        ideas: Dict[Tuple[str, str], Dict[str, str]],
+        facets: Dict[str, List[ConsolidatedFacet]],
+        verbose: bool,
+    ) -> Dict[str, str]:
+        """Assign every idea to an attribute within its own facet, with valence.
+
+        The valence recorded here is the more precise one and supersedes the
+        facet level's: it is judged against the attribute the idea landed on.
+        """
+        if verbose:
+            print(f"\n  Attribute assignment")
+        started = time.time()
+
+        assignments: Dict[str, str] = {}
+        auto_assigned: Set[Tuple[str, str]] = set()
+        for domain_label, items in attributes.items():
+            for facet_name, menu in items.items():
+                if len(menu) != 1:
+                    continue
+                for idea_id in (ideas.get((domain_label, facet_name)) or {}):
+                    assignments[idea_id] = menu[0].attribute_name
+                    self._attribute_confidence[idea_id] = 1.0
+                auto_assigned.add((domain_label, facet_name))
+
+        tasks = self._build_attribute_assignment_tasks(
+            ctx, attributes, ideas, facets)
+        await self._apply_shortlist(tasks, attribute_card_text)
+
+        pending: List[Dict] = []
+        results = await self._dispatch(
+            "attribute_assignment", tasks,
+            self._attribute_assignment_prepare_fn(ctx),
+            self._attribute_assignment_parse_fn(pending),
+            self._attribute_assignment_fallback_fn(pending),
+            verbose, quiet=False,
+        )
+        for result in results:
+            if result:
+                assignments.update(result)
+
+        if pending:
+            escalated = await self._dispatch(
+                "attribute_assignment", pending,
+                self._attribute_assignment_prepare_fn(ctx),
+                self._attribute_assignment_parse_fn(None),
+                self._attribute_assignment_fallback_fn(None),
+                verbose,
+            )
+            for result in escalated:
+                if result:
+                    assignments.update(result)
+
+            reasons: Dict[str, Counter] = defaultdict(Counter)
+            for task in pending:
+                reasons[f"{task['domain_label']}::{task['facet_name']}"][
+                    task["reason"]] += 1
+            for scope, counts in sorted(reasons.items()):
+                domain_label, facet_name = scope.split("::", 1)
+                self._action_log.append({
+                    "action": "attribute_assignment_escalation",
+                    "domain": domain_label, "facet": facet_name,
+                    "reasons": dict(counts)})
+
+        # The net, after both passes.
+        for domain_label, items in attributes.items():
+            for facet_name, menu in items.items():
+                if not menu or (domain_label, facet_name) in auto_assigned:
+                    continue
+                expected = set(ideas.get((domain_label, facet_name)) or {})
+                missing = expected - set(assignments)
+                if missing:
+                    print(f"    WARNING: {len(missing)}/{len(expected)} ideas received "
+                          f"no attribute assignment in facet '{facet_name}'")
+                    for idea_id in missing:
+                        assignments[idea_id] = "__UNASSIGNED__"
+                        self._attribute_confidence[idea_id] = 0.0
+
+        if verbose:
+            n_reps = sum(len(t["reps"]) for t in tasks)
+            print(f"    {len(tasks)} calls for {n_reps} unique labels, "
+                  f"{time.time() - started:.1f}s; {len(pending)} escalated; "
+                  f"{len(auto_assigned)} facets auto-assigned → "
+                  f"{len(assignments)} ideas assigned")
+        return assignments
+
     def _build_facet_contents_block(
         self,
         attributes: List[DiscoveredAttribute],
