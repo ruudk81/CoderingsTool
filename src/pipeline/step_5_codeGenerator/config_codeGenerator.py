@@ -33,3 +33,10 @@ class CodebookConfig:
 
     # Output
     verbose: bool = True
+
+    # Prevalentiedrempel: een concept krijgt een eigen code als het door minstens
+    # dit aandeel van de respondenten wordt genoemd (1% → later eventueel 5% als
+    # het codeboek te veel fragmenteert). Let op: deze drempel en het Overig-
+    # plafond van 10% bewegen tegen elkaar in — hoger hier betekent meer Overig.
+    t_keep_share: float = 0.01
+    t_keep_min_respondents: int = 3
