@@ -60,59 +60,39 @@ def test_standing_domains_are_required_fields():
 # ── 2. Resolutie ───────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_resolve_falls_back_when_the_llm_returns_nothing(dimension_key):
-    """Het fallback-pad: de consolidatie leverde geen standing_domains."""
+def test_resolve_falls_back_when_there_is_no_translation(dimension_key):
+    """Geen vertaling (call gefaald of overgeslagen): het Engelse fallback-label."""
     d = get_dimension(dimension_key)
-    out = IdeaExtractor._resolve_standing_domains(
-        DomainConsolidatedResponse(domains=[]), d)
+    out = IdeaExtractor._resolve_standing_domains(None, d)
 
     assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
     assert out[0].label == d.standing_bare.fallback_label
-    assert out[0].definition == d.standing_bare.definition
-    assert out[1].definition == d.standing_other.definition
+    assert out[1].label == d.standing_other.fallback_label
     assert all(c.boundary_test.strip() for c in out)
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_resolve_keeps_llm_labels_but_forces_the_keys(dimension_key):
-    """Het normale pad: labels in enquêtetaal, keys onaantastbaar.
-
-    De key is het downstream-contract (step 4 DRAIN_KEYS). Wat het model ook
-    terugstuurt, de key wordt gezet.
-    """
+def test_resolve_takes_the_label_and_nothing_else(dimension_key):
+    """Het label komt van de vertaling, de betekenis uit dimension_data."""
     d = get_dimension(dimension_key)
-    consolidated = DomainConsolidatedResponse(
-        domains=[],
-        standing_domains=[
-            DomainItem(key=STANDING_BARE_KEY, label="Algemene indruk",
-                       definition="Vertaalde definitie.", boundary_test="Test?",
-                       exclusions=[]),
-            DomainItem(key=STANDING_OTHER_KEY, label="Overig",
-                       definition="Vertaalde definitie twee.", boundary_test="Test?",
-                       exclusions=[]),
-        ],
-    )
-    out = IdeaExtractor._resolve_standing_domains(consolidated, d)
+    out = IdeaExtractor._resolve_standing_domains(
+        StandingLabelsResponse(bare_label="Kale associatie", other_label="Overig"), d)
 
+    assert [c.label for c in out] == ["Kale associatie", "Overig"]
+    assert out[0].definition == d.standing_bare.definition
+    assert out[1].definition == d.standing_other.definition
     assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
-    assert [c.label for c in out] == ["Algemene indruk", "Overig"]
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_resolve_repairs_a_mangled_key(dimension_key):
-    """Zet het model de key op het label, dan wordt hij teruggezet, niet overgenomen."""
+def test_resolve_ignores_an_empty_translated_label(dimension_key):
+    """Een leeg of blank label mag geen naamloos domein op het menu zetten."""
     d = get_dimension(dimension_key)
-    consolidated = DomainConsolidatedResponse(
-        domains=[],
-        standing_domains=[
-            DomainItem(key="Algemene indruk zonder onderwerp", label="Algemene indruk",
-                       definition="Vertaald.", boundary_test="Test?", exclusions=[]),
-            DomainItem(key=STANDING_OTHER_KEY, label="Overig",
-                       definition="Vertaald.", boundary_test="Test?", exclusions=[]),
-        ],
-    )
-    out = IdeaExtractor._resolve_standing_domains(consolidated, d)
-    assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
+    out = IdeaExtractor._resolve_standing_domains(
+        StandingLabelsResponse(bare_label="   ", other_label=""), d)
+
+    assert out[0].label == d.standing_bare.fallback_label
+    assert out[1].label == d.standing_other.fallback_label
 
 
 # ── 2b. De normalisatie ná consolidatie ────────────────────────────────────

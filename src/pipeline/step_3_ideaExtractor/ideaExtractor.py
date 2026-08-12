@@ -817,7 +817,7 @@ class IdeaExtractor:
             # downstream — the assignment menu, the domain table, the persisted
             # metadata — sees a single list and needs no special case.
             standing = self._resolve_standing_domains(
-                categories_consolidated, get_dimension(self.primary_dimension))
+                None, get_dimension(self.primary_dimension))
             categories_consolidated.domains = list(categories_consolidated.domains) + standing
 
             self.verbose_reporter.stat_line(
@@ -1277,34 +1277,33 @@ class IdeaExtractor:
                 d.key = d.label
 
     @staticmethod
-    def _resolve_standing_domains(consolidated, dimension: DimensionDefinition) -> List:
-        """Return the two standing domains as DomainItems, in survey language.
+    def _resolve_standing_domains(labels, dimension: DimensionDefinition) -> List:
+        """Return the two standing domains as DomainItems, built from the dimension.
 
-        Wording comes from the selected dimension, because "names nothing on the axis"
-        reads differently per dimension. The consolidation call renders them in the
-        survey language; if it omits or mangles one, fall back to the dimension's own
-        English structural wording. Never returns fewer than two — an assignment menu
-        without them is what forced contentless answers into substantive domains.
+        Definition, boundary_test and exclusions come from dimension_data.py and are
+        never model output. A standing domain catches a failure mode of the domain
+        axis, so its breadth IS its function — a phase that re-describes domains by
+        their content will narrow it, and everything it used to catch then needs a
+        home of its own. Only the label is translated (`labels` is a
+        StandingLabelsResponse or None); a blank one falls back to the dimension's
+        own wording. Never returns fewer than two — an assignment menu without them
+        is what forced contentless answers into substantive domains.
         """
-        got = {getattr(d, "key", "") or "": d for d in (getattr(consolidated, "standing_domains", None) or [])}
-        out = []
-        for key, spec in ((STANDING_BARE_KEY, dimension.standing_bare),
-                          (STANDING_OTHER_KEY, dimension.standing_other)):
-            d = got.get(key)
-            if d is not None and (d.label or "").strip():
-                d.key = key
-                if not (d.definition or "").strip():
-                    d.definition = spec.definition
-                out.append(d)
-            else:
-                out.append(DomainItem(
-                    key=key,
-                    label=spec.fallback_label,
-                    definition=spec.definition,
-                    boundary_test=f"Does this idea match: {spec.short}?",
-                    exclusions=[],
-                ))
-        return out
+        bare_label = (getattr(labels, "bare_label", "") or "").strip()
+        other_label = (getattr(labels, "other_label", "") or "").strip()
+        return [
+            DomainItem(
+                key=key,
+                label=label or spec.fallback_label,
+                definition=spec.definition,
+                boundary_test=f"Does this idea match: {spec.short}?",
+                exclusions=[],
+            )
+            for key, spec, label in (
+                (STANDING_BARE_KEY, dimension.standing_bare, bare_label),
+                (STANDING_OTHER_KEY, dimension.standing_other, other_label),
+            )
+        ]
 
     def _initialize_context_rate_limiters(self, limits: 'RateLimits', num_tasks: int = 20) -> None:
         """Rate limiters for the context extraction phases (few, large calls)."""
