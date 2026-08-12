@@ -2,7 +2,8 @@
 
 """Toon de groepering uit stap 2 — de poort voor de rest van de herbouw.
 
-Draait op de bestaande step-4-cache: één LLM-call, geen volledige pijplijnrun.
+Draait op de bestaande step-4-cache: twee LLM-calls (relaties + verzamelnaam-
+consolidatie), geen volledige pijplijnrun.
 
     cd src && python -m pipeline.step_5_codeGenerator.view_relations
     cd src && python -m pipeline.step_5_codeGenerator.view_relations --cache-dir <pad>
@@ -15,7 +16,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
@@ -28,7 +29,8 @@ from pipeline.step_5_codeGenerator import run_codeGenerator
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult, tagged
-from pipeline.step_5_codeGenerator.relations import resolve_relations
+from pipeline.step_5_codeGenerator.prompts_umbrella_merge import Umbrella, UmbrellaMergeResult, umbrellas_from_relations
+from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
 from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, build_idea_units
 
 CLEAR, SMALL = "✓ eigen code", "· te klein"
@@ -92,6 +94,39 @@ def group_by_umbrella(
                     synonym_pairs.append((concept, other))
 
     return umbrellas, umbrella_defs, synonym_pairs
+
+
+def format_consolidation(
+    umbrellas_before: List[Umbrella], merge_result: Optional[UmbrellaMergeResult],
+) -> str:
+    """Toon wat stap 2b (verzamelnamen consolideren) deed — of, bij een
+    mislukte call, dat er ongeconsolideerd is doorgegaan."""
+    lines = ["VERZAMELNAMEN OPGESCHOOND"]
+    if merge_result is None:
+        lines.append(
+            "  Consolidatie is mislukt (2e LLM-call zonder resultaat) — "
+            "doorgegaan met de ongeconsolideerde koepelnamen hieronder."
+        )
+        lines.append("")
+        return "\n".join(lines)
+
+    n_before = len(umbrellas_before)
+    n_after = len(merge_result.groups)
+    lines.append(f"  {n_before} namen  →  {n_after} namen")
+
+    renames = [
+        (member, group.canonical_name)
+        for group in merge_result.groups
+        for member in group.members
+        if member != group.canonical_name
+    ]
+    if renames:
+        lines.append("  Samengevoegd:")
+        width = max(len(old) for old, _ in renames) + 2
+        for old, new in renames:
+            lines.append(f"    {old:<{width}}→  {new}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def format_report(
@@ -247,10 +282,19 @@ def main() -> None:
     t = t_keep(n_resp_total, config)
 
     print(f"Concepten in inventaris: {len(concepts)}")
-    print("Relatiecall wordt uitgevoerd (1 LLM-call)...\n")
+    print("Relatiecall + consolidatiecall worden uitgevoerd (2 LLM-calls)...\n")
 
-    relations = asyncio.run(resolve_relations(concepts, config, language, verbose=True))
+    async def _run():
+        relations_result = await resolve_relations(concepts, config, language, verbose=True)
+        umbrellas_before = umbrellas_from_relations(relations_result)
+        merge_result = await resolve_umbrella_merge(umbrellas_before, config, language, verbose=True)
+        return relations_result, umbrellas_before, merge_result
 
+    relations, umbrellas_before, merge_result = asyncio.run(_run())
+    if merge_result is not None:
+        relations = apply_umbrella_merge(relations, merge_result)
+
+    print(format_consolidation(umbrellas_before, merge_result))
     print(format_report(concepts, relations, t, n_resp_total, config.t_keep_share))
     print(format_facet_comparison(concepts, relations))
 
