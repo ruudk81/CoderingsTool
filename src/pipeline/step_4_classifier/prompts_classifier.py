@@ -1307,8 +1307,8 @@ def build_in_facet_consolidation_prompt(
         facet_key_idea = _extract_key_idea(rules.facet_instruction)
         domain_key_idea = _extract_key_idea(rules.domain_instruction)
         # What "no substantive content" means depends on the dimension's domain axis:
-        # step 3 already words it per dimension for the standing drain domain.
-        contentless_test = dimension_def.standing_bare.short
+        # step 3 already words it per dimension, for this same diagnostic.
+        contentless_test = rules.contentless_test
     else:
         attribute_guidance = (
             "An attribute identifies the specific observable property or feature being described. "

@@ -52,6 +52,19 @@ def test_the_two_standing_domains_are_distinct(dimension_key):
     assert d.standing_not_known.short != d.standing_other.short
 
 
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_contentless_test_is_present_and_distinct_from_not_known(dimension_key):
+    """`contentless_test` (P8) en `standing_not_known.short` (step 3) zijn andere concepten.
+
+    De eerste is "noemt niets op de as", de tweede "kent het onderwerp niet". Ze
+    mogen niet stilzwijgend samenvallen — dat zou P8 de verkeerde toets geven.
+    """
+    d = get_dimension(dimension_key)
+    contentless_test = d.prompt_rules.contentless_test
+    assert contentless_test and contentless_test.strip()
+    assert contentless_test != d.standing_not_known.short
+
+
 def test_standing_domains_are_required_fields():
     """Zonder default kan een nieuwe dimensie ze niet vergeten: TypeError bij import."""
     fields = DIMENSIONS[ALL_KEYS[0]].__dataclass_fields__

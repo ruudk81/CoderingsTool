@@ -35,6 +35,9 @@ class PromptRules:
     - attribute_instruction      → Attribute (L4): dimension-specific observable property question
     - attribute_diagnostic       → Attribute (L4): short-form question for prompt headers
     - code_diagnostic            → Code: sentence stem for P9 consolidation diagnostic test
+    - contentless_test           → Attribute (L4): P8 in-facet consolidation diagnostic — what
+                                    "nothing named on this dimension's domain axis" looks like,
+                                    for spotting attributes that hold no substantive content
     """
     instance_instruction: str
     interpretation_instruction: str
@@ -46,6 +49,7 @@ class PromptRules:
     attribute_instruction: str
     attribute_diagnostic: str
     code_diagnostic: str
+    contentless_test: str
 
 
 @dataclass(frozen=True)
@@ -190,6 +194,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What exactly is the proposed improvement?",
             code_diagnostic="This code is about what should change regarding …",
+            contentless_test="a call for change with no target of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -297,6 +302,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What defining feature is mentioned?",
             code_diagnostic="This code is about how the entity is defined as …",
+            contentless_test="an identity claim with no area of identity of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -402,6 +408,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="Which specific actor group is referenced?",
             code_diagnostic="This code is about which actors are involved in …",
+            contentless_test="an actor with no sphere of activity of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -507,6 +514,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What specific condition is mentioned?",
             code_diagnostic="This code is about the condition or situation of …",
+            contentless_test="a condition with no subject area of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -615,6 +623,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What specific reason is stated?",
             code_diagnostic="This code is about why people care about …",
+            contentless_test="a motivation with no area of concern of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -721,6 +730,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What specific experience feature was observed or felt?",
             code_diagnostic="This code is about the experience of …",
+            contentless_test="an impression with no part of the experience of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -832,6 +842,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What specific evidence of evaluation appears?",
             code_diagnostic="This code is about how the entity is judged on …",
+            contentless_test="a judgment with no aspect of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -942,6 +953,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What specific action occurs?",
             code_diagnostic="This code is about what happens regarding …",
+            contentless_test="a behaviour with no system or process of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -1051,6 +1063,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What specific quality is described?",
             code_diagnostic="This code is about the quality of the entity being …",
+            contentless_test="an association with no subject area of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -1161,6 +1174,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What specific relationship is described?",
             code_diagnostic="This code is about the relationship between …",
+            contentless_test="a relation with no sphere of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
@@ -1272,6 +1286,7 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             attribute_diagnostic="What specific feature is mentioned?",
             code_diagnostic="This code is about …",
+            contentless_test="a remark with no subject of its own",
         ),
         anchor_slot=SlotDefinition(
             name="ANCHOR_SUBJECT",
