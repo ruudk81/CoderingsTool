@@ -4,16 +4,21 @@
 PROTOTYPE (standalone, read-mostly) — sharpen domain boundaries for maximal orthogonality.
 
 Idea: embeddings only SELECT representative exemplars (medoid) per domain; the LLM then
-re-describes ALL domains jointly to be maximally orthogonal — WITHOUT reassigning any idea.
+re-describes the DISCOVERED domains jointly to be maximally orthogonal — WITHOUT
+reassigning any idea. The two standing domains are shown as fixed reference only (not
+re-described, not returned), same contract as production `_orthogonalize_domains`.
 "embeddings select, the LLM decides." No pipeline change; nothing is reassigned.
 
 Flow:
   1. load cached step-3 ideas (LLM-assigned domains) + metadata domains
-  2. per domain: medoid → top-N representative ideas (instance → interpretation → abstraction)
-  3. ONE LLM call: all domains + their exemplars → reformulated label/definition/
-     boundary_test/exclusions (same keys, same count — only sharper wording)
-  4. measure idea→own-definition agreement BEFORE vs AFTER (the thermometer), same
-     assignments throughout. Rising agreement = sharper definitions describe the contents
+  2. per discovered domain: medoid → top-N representative ideas (instance → interpretation → abstraction)
+  3. ONE LLM call: discovered domains + their exemplars, standing domains as fixed
+     reference → reformulated label/definition/boundary_test/exclusions for the
+     discovered ones (same keys, same count — only sharper wording)
+  4. measure idea→own-definition agreement BEFORE vs AFTER (the thermometer) across ALL
+     domains — discovered AND standing — same assignments throughout. The standing two
+     keep their old anchor unchanged, so their agreement is expected to be flat; rising
+     agreement on the discovered domains means sharper definitions describe the contents
      better. (Caveat: this sharpens DESCRIPTIONS; it cannot beat the data's separability.)
 
 Usage:
@@ -37,6 +42,8 @@ import models
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     build_orthogonalize_domains_prompt,
     ReformulatedDomains,
+    STANDING_BARE_KEY,
+    STANDING_OTHER_KEY,
 )
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
 from test_data import TEST_DATA
@@ -106,10 +113,16 @@ async def main():
         rep = find_representative_samples(sub, n=min(TOP_N, len(di)))
         exemplars[k] = [ideas[di[r]] for r in rep]
 
+    # standing domains are fixed reference only — not re-described, not returned
+    standing_keys = {STANDING_BARE_KEY, STANDING_OTHER_KEY}
+    discovered_domains = [d for d in domains if d["key"] not in standing_keys]
+    standing_domains = [d for d in domains if d["key"] in standing_keys]
+    discovered_keys = [d["key"] for d in discovered_domains]
+
     # build reformulation prompt
     diag = get_dimension(meta.primary_dimension).prompt_rules.domain_diagnostic
     blocks = []
-    for d in domains:
+    for d in discovered_domains:
         k = d["key"]
         ex = "\n".join(
             f"      • {(i.instance or '')[:40]} → {(i.interpretation or '')[:70]} → {(i.abstraction or '')[:60]}"
@@ -123,11 +136,13 @@ async def main():
         block += f"\n    representative ideas:\n{ex}"
         blocks.append(block)
     domains_block = "\n\n".join(blocks)
+    standing_block = "\n".join(f"  {d['label']}: {d.get('definition', '')}" for d in standing_domains)
 
     prompt = build_orthogonalize_domains_prompt(
         language=meta.lang, survey_question=meta.var_lab, sector=meta.sector,
         entity=meta.entity, topic=meta.topic, perspective=meta.perspective, intent=meta.intent,
-        primary_dimension=meta.primary_dimension, domain_diagnostic=diag, domains_block=domains_block,
+        primary_dimension=meta.primary_dimension, domain_diagnostic=diag,
+        domains_block=domains_block, standing_block=standing_block,
     )
 
     model = get_step_model("idea_extraction_taxonomy")
@@ -135,8 +150,9 @@ async def main():
     res = await llm_create_async(client=client, model=model, prompt=prompt,
                                  response_model=ReformulatedDomains, temperature=0.0,
                                  **get_reasoning_params(model))
-    # map by ORDER (key is no longer produced): res.domains[j] ↔ keys[j]
-    new_by_key = {keys[j]: res.domains[j] for j in range(min(len(keys), len(res.domains)))}
+    # map by ORDER (key is no longer produced): res.domains[j] ↔ discovered_keys[j].
+    # Standing keys are absent on purpose — they fall back to their old anchor below.
+    new_by_key = {discovered_keys[j]: res.domains[j] for j in range(min(len(discovered_keys), len(res.domains)))}
 
     # anchors: old (label+definition) vs new (label+def+boundary+excl) vs new (def only)
     old_anchors = _l2(await emb.embed_texts([f"{labels[j]}: {old_def[keys[j]]}" for j in range(len(keys))]))
