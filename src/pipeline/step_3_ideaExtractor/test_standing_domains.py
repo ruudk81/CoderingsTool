@@ -15,14 +15,15 @@ from pipeline.step_3_ideaExtractor.dimension_data import (
 )
 from pipeline.step_3_ideaExtractor.ideaExtractor import IdeaExtractor
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
+    NON_ANSWER_DOMAIN,
     STANDING_NOT_KNOWN_KEY,
     STANDING_OTHER_KEY,
     DiscoveredDomainItem,
     DomainChunkResponse,
     DomainConsolidatedResponse,
     DomainItem,
+    MenuEntryRenderResponse,
     ReformulatedDomains,
-    StandingLabelsResponse,
     build_domain_consolidation_prompt,
     build_domain_discovery_prompt,
     build_orthogonalize_domains_prompt,
@@ -93,11 +94,13 @@ def test_resolve_falls_back_when_there_is_no_translation(dimension_key):
 def test_resolve_prefers_the_rendered_text_but_keeps_the_english_as_source(dimension_key):
     """Label, definitie én lidmaatschapstoets komen uit de weergave als die er is."""
     d = get_dimension(dimension_key)
-    rendered = StandingLabelsResponse(
+    rendered = MenuEntryRenderResponse(
         not_known_label="Kent het merk niet", not_known_definition="NL definitie een.",
         not_known_boundary_test="Meldt de respondent het merk niet te kennen?",
         other_label="Overig onderwerp", other_definition="NL definitie twee.",
-        other_boundary_test="Noemt het antwoord een onderwerp dat geen domein dekt?")
+        other_boundary_test="Noemt het antwoord een onderwerp dat geen domein dekt?",
+        non_answer_label="Geen inhoud", non_answer_definition="NL definitie drie.",
+        non_answer_boundary_test="Zegt het fragment alleen dat er geen antwoord is?")
     out = IdeaExtractor._resolve_standing_domains(rendered, d)
     assert [c.label for c in out] == ["Kent het merk niet", "Overig onderwerp"]
     assert out[0].definition == "NL definitie een."
@@ -132,9 +135,10 @@ def test_resolve_ignores_an_empty_translated_label(dimension_key):
     dat mag onafhankelijk zijn van of de definitie/boundary_test wél gerenderd is."""
     d = get_dimension(dimension_key)
     out = IdeaExtractor._resolve_standing_domains(
-        StandingLabelsResponse(
+        MenuEntryRenderResponse(
             not_known_label="   ", not_known_definition="d1", not_known_boundary_test="t1",
-            other_label="", other_definition="d2", other_boundary_test="t2"), d)
+            other_label="", other_definition="d2", other_boundary_test="t2",
+            non_answer_label="", non_answer_definition="d3", non_answer_boundary_test="t3"), d)
 
     assert out[0].label == d.standing_not_known.fallback_label
     assert out[1].label == d.standing_other.fallback_label
@@ -278,11 +282,22 @@ def test_standing_labels_prompt_carries_both_fixed_definitions(dimension_key):
         "provide your output as valid JSON following the response schema provided.")
 
 
-def test_standing_labels_response_carries_three_fields_per_net():
-    """Label, definitie én boundary_test — voor beide vangnetten."""
-    assert set(StandingLabelsResponse.model_fields) == {
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_standing_labels_prompt_also_carries_the_non_answer_bucket(dimension_key):
+    """Bevinding C: de tijdelijke bak krijgt dezelfde vertaalbehandeling."""
+    d = get_dimension(dimension_key)
+    prompt = build_standing_labels_prompt(language="nl-NL", entity="e", dimension=d)
+
+    assert NON_ANSWER_DOMAIN.definition in prompt
+    assert NON_ANSWER_DOMAIN.short in prompt
+
+
+def test_menu_entry_render_response_carries_three_fields_per_entry():
+    """Label, definitie én boundary_test — voor beide vangnetten én de non-answer-bak."""
+    assert set(MenuEntryRenderResponse.model_fields) == {
         "not_known_label", "not_known_definition", "not_known_boundary_test",
-        "other_label", "other_definition", "other_boundary_test"}
+        "other_label", "other_definition", "other_boundary_test",
+        "non_answer_label", "non_answer_definition", "non_answer_boundary_test"}
 
 
 # ── 6. Orthogonalisatie raakt de vangnetten niet ──────────────────────────
@@ -572,17 +587,25 @@ def test_both_prompts_ban_a_residual_boundary_not_a_subject_type():
 
 def test_domain_table_offers_the_non_answer_bucket():
     """Zonder zichtbare bak kan het model zo'n fragment nergens kwijt."""
-    from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import NON_ANSWER_DOMAIN
     doms = [DomainItem(key="Duurzaamheid", label="Duurzaamheid", definition="d",
                        boundary_test="t?", exclusions=["x"])]
+    non_answer = DomainItem(key="non_answer", label="Geen inhoud", definition="d?",
+                            boundary_test="t2?", exclusions=[])
+    table = IdeaExtractor.build_domain_table(doms, non_answer)
+    assert non_answer.label in table
+    assert non_answer.boundary_test in table
+
+
+def test_domain_table_falls_back_to_canonical_english_without_a_rendering():
+    """Geen `non_answer` meegegeven: het Engelse fallback-label, niet stil niets."""
+    doms = [DomainItem(key="Duurzaamheid", label="Duurzaamheid", definition="d",
+                       boundary_test="t?", exclusions=[])]
     table = IdeaExtractor.build_domain_table(doms)
-    assert NON_ANSWER_DOMAIN["label"] in table
-    assert NON_ANSWER_DOMAIN["boundary_test"] in table
+    assert NON_ANSWER_DOMAIN.fallback_label in table
 
 
 def test_drop_non_answer_ideas_removes_them_and_reports_what_went():
     """Verwijderen mag, ongemerkt verwijderen niet."""
-    from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import NON_ANSWER_DOMAIN
     import models
 
     def _idea(idea_id, instance, domain):
@@ -590,14 +613,15 @@ def test_drop_non_answer_ideas_removes_them_and_reports_what_went():
             idea_id=str(idea_id), idea=instance, instance=instance,
             interpretation=instance, abstraction=instance, domain=domain)
 
+    label = "Geen inhoud"
     rows = [models.IdeasExtractedModel(
         respondent_id=1, response="Eekhoorn, Niks.", response_type="text",
         quality_filter=False, response_ideas=[
             _idea(1, "Eekhoorn", "Merkuitingen"),
-            _idea(2, "Niks", NON_ANSWER_DOMAIN["label"]),
+            _idea(2, "Niks", label),
         ], idea_count=2)]
 
-    dropped, texts = IdeaExtractor._drop_non_answer_ideas(rows)
+    dropped, texts = IdeaExtractor._drop_non_answer_ideas(rows, label)
 
     assert dropped == 1
     assert texts == ["Niks"]
@@ -613,5 +637,54 @@ def test_drop_non_answer_ideas_is_a_noop_without_them():
             idea_id="1", idea="Eekhoorn", instance="Eekhoorn",
             interpretation="Eekhoorn", abstraction="Eekhoorn", domain="Merkuitingen")],
         idea_count=1)]
-    assert IdeaExtractor._drop_non_answer_ideas(rows) == (0, [])
+    assert IdeaExtractor._drop_non_answer_ideas(rows, "Geen inhoud") == (0, [])
     assert rows[0].idea_count == 1
+
+
+def test_drop_non_answer_ideas_handles_a_response_with_no_ideas():
+    """Bevinding H: `response_ideas=None` mag niet crashen — de `or []`-guard."""
+    import models
+    rows = [models.IdeasExtractedModel(
+        respondent_id=1, response="", response_type="text",
+        quality_filter=True, response_ideas=None, idea_count=0)]
+
+    assert IdeaExtractor._drop_non_answer_ideas(rows, "Geen inhoud") == (0, [])
+    assert rows[0].response_ideas is None
+    assert rows[0].idea_count == 0
+
+
+def test_drop_non_answer_ideas_can_drop_every_idea_in_a_response():
+    """Bevinding H: alle ideeën van één respons zitten in de non-answer-bak."""
+    import models
+    label = "Geen inhoud"
+
+    def _idea(idea_id, instance):
+        return models.IdeasExtractedSubmodel(
+            idea_id=str(idea_id), idea=instance, instance=instance,
+            interpretation=instance, abstraction=instance, domain=label)
+
+    rows = [models.IdeasExtractedModel(
+        respondent_id=1, response="Niks, niks.", response_type="text",
+        quality_filter=False, response_ideas=[_idea(1, "Niks"), _idea(2, "niks")],
+        idea_count=2)]
+
+    dropped, texts = IdeaExtractor._drop_non_answer_ideas(rows, label)
+
+    assert dropped == 2
+    assert texts == ["Niks", "niks"]
+    assert rows[0].response_ideas == []
+    assert rows[0].idea_count == 0
+
+
+# ── 14. De drie sleutel-definities blijven synchroon (bevinding F) ─────────
+
+def test_drain_key_literals_agree_across_the_three_definitions():
+    """`prompts_ideaExtractor`, `measure_stability` en `taxonomy_health` houden
+    elk hun eigen kopie van dezelfde twee sleutels — niets anders bewaakte dat
+    een hernoeming ze alle drie raakt."""
+    from pipeline.step_3_ideaExtractor.measure_stability import DRAIN_KEYS as stability_keys
+    from pipeline.step_4_classifier.taxonomy_health import DRAIN_KEYS as health_keys
+
+    canonical = {STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY}
+    assert set(stability_keys) == canonical
+    assert set(health_keys) == canonical

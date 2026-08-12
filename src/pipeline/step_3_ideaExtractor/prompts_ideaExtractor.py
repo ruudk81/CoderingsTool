@@ -2,6 +2,15 @@ from __future__ import annotations
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
+try:
+    from .dimension_data import DimensionDefinition, StandingDomain, get_dimensions_in_decision_order
+except ImportError:
+    from pipeline.step_3_ideaExtractor.dimension_data import (
+        DimensionDefinition,
+        StandingDomain,
+        get_dimensions_in_decision_order,
+    )
+
 # ═══════════════════════════════════════════════════════════════════════
 # STANDING DOMAINS — always offered, never discovered
 # ═══════════════════════════════════════════════════════════════════════
@@ -38,29 +47,24 @@ STANDING_OTHER_KEY = "other"
 
 # Offered in the assignment menu only, never in the taxonomy. A response that is
 # nothing but a non-answer is removed by step 2; what reaches here is a fragment of
-# a response that does carry content elsewhere ("Eekhoorn, Niks."). Giving the model
-# somewhere to put it makes the fragment visible, and visible is removable — an
-# instruction not to emit it would leave nothing to count.
-NON_ANSWER_DOMAIN = {
-    "label": "Weet niet / niet van toepassing (non-answer)",
-    "definition": (
+# a response that does carry content elsewhere (e.g. one substantive answer plus one
+# throwaway word next to it). Giving the model somewhere to put it makes the fragment
+# visible, and visible is removable — an instruction not to emit it would leave
+# nothing to count.
+#
+# Canonical English, same shape as `StandingDomain` (dimension-agnostic, so it is
+# not one of the per-dimension entries in dimension_data.py): `fallback_label` is
+# used when the translation call is skipped or fails, `short` builds the fallback
+# boundary_test. Rendered into the survey language by `build_standing_labels_prompt`
+# alongside the two standing domains, in `_resolve_non_answer_domain`.
+NON_ANSWER_DOMAIN = StandingDomain(
+    fallback_label="No answer / not applicable",
+    definition=(
         "The span says only that the respondent does not know, or that the question "
         "does not apply, without saying anything about the subject."
     ),
-    "boundary_test": (
-        "Does this span only state that there is no answer, rather than say anything "
-        "about the subject?"
-    ),
-}
-
-
-try:
-    from .dimension_data import DimensionDefinition, get_dimensions_in_decision_order
-except ImportError:
-    from pipeline.step_3_ideaExtractor.dimension_data import (
-        DimensionDefinition,
-        get_dimensions_in_decision_order,
-    )
+    short="says only that there is no answer, without naming the subject",
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -695,9 +699,9 @@ def build_domain_consolidation_prompt(
     alongside the object they are read from is one source too many.
     """
     domain_diagnostic = dimension.prompt_rules.domain_diagnostic
-    bare_def = dimension.standing_not_known.definition
+    not_known_def = dimension.standing_not_known.definition
     other_def = dimension.standing_other.definition
-    bare_short = dimension.standing_not_known.short
+    not_known_short = dimension.standing_not_known.short
     other_short = dimension.standing_other.short
     sample_block = ""
     if chunk_responses:
@@ -779,13 +783,13 @@ For EACH consolidated domain provide: a label, a one-sentence inclusion definiti
 
 This dimension always has two fixed domains. They are given, not discovered, and you do NOT return them:
 
-  - {bare_short} — {bare_def}
+  - {not_known_short} — {not_known_def}
   - {other_short} — {other_def}
 
 Consolidate the chunk-level analyses into the domains that exist ALONGSIDE these two:
 
 - Anything that belongs in one of the two fixed domains is already covered. Do not create a domain for it.
-- Every domain you return must name a subject area that neither fixed domain covers. If a candidate domain would mostly collect answers that name no unit on the domain axis at all, it belongs in the first fixed domain — drop it rather than keeping it as its own domain.
+- Every domain you return must name a subject area that neither fixed domain covers. If a candidate domain would mostly collect answers reporting that the respondent does not know the subject, it belongs in the "{not_known_short}" domain above — drop it rather than keeping it as its own domain.
 - The two fixed domains are broad by design and need no sharpening from you. The orthogonality requirement runs one way: the domains you return must not reach into their territory.
 
 Return ONLY the domains you consolidated from the chunks.
@@ -864,7 +868,8 @@ def build_standing_labels_prompt(
     entity: str,
     dimension: DimensionDefinition,
 ) -> str:
-    """Render the two standing domains in the survey language. Nothing else.
+    """Render the two standing domains, and the non-answer bucket, in the
+    survey language. Nothing else.
 
     Deliberately a call of its own. Asking for these inside the consolidation
     call put them under a partitioning objective, and the wording drifted with
@@ -872,14 +877,18 @@ def build_standing_labels_prompt(
     as a judgment, after which every trait-without-subject had to go somewhere
     else.
 
-    Renders label, definition and a membership test for both catch-nets in one
-    call. That is also what lets `other`'s rendered definition cross-reference
-    `not_known` by the label a coder will actually see, instead of a name that
-    appears nowhere on the menu.
+    Renders label, definition and a composed membership test for the two
+    catch-nets and the non-answer bucket, in one call. The non-answer bucket
+    is not a taxonomy domain — it never joins `self.domains` — but it is
+    offered on the per-response assignment menu, so it needs the same
+    per-language treatment as the two that are. Rendering all three together
+    is also what lets `other`'s rendered definition cross-reference
+    `not_known` by the label a coder will actually see, instead of a name
+    that appears nowhere on the menu.
     """
-    return f"""You are rendering two fixed domains of a survey coding scheme into {language}.
+    return f"""You are rendering three fixed entries of a survey coding scheme into {language}: two fixed domains and one fixed entry on the per-response assignment menu.
 
-These two domains are not discovered from data. Their meaning is fixed and given below in English. Your task is to render each one — a label, its definition, and a membership test — in {language}. This is a rendering of the given text, not a reformulation: do not narrow it, widen it, or add a subject area it does not name.
+None of the three is discovered from data. Their meaning is fixed and given below in English. Your task is to render each one's label and definition in {language}, and to compose its membership test — a yes/no question a coder can answer about a single response — from the given short clause, also in {language}. This is a rendering of the given text, not a reformulation: do not narrow it, widen it, or add a subject area it does not name.
 
 <domain_a>
 Definition: {dimension.standing_not_known.definition}
@@ -891,29 +900,44 @@ Definition: {dimension.standing_other.definition}
 In short: {dimension.standing_other.short}
 </domain_b>
 
+<domain_c>
+Definition: {NON_ANSWER_DOMAIN.definition}
+In short: {NON_ANSWER_DOMAIN.short}
+</domain_c>
+
+domain_c is not a domain of the coding scheme — it is a temporary entry on the assignment menu that catches a contentless fragment of an otherwise substantive answer. It is never returned as a domain and never appears in the taxonomy.
+
 The entity the survey is about is: {entity}
 
 Rules:
 - The label must name what its definition says. Do not narrow it, do not widen it, and do not invent a subject area for it.
-- Do not make the label evaluative. Neither domain is about how good or bad something is, unless its definition says so in as many words.
-- Both are catches for a failure mode of the coding scheme, so both are broad on purpose. A label that sounds broad is correct here.
-- A short noun phrase in {language}, as a coder would see it in a list of domains.
+- Do not make the label evaluative. None of the three is about how good or bad something is, unless its definition says so in as many words.
+- Render each at exactly the breadth of its source definition: one is narrow and specific, the other broad. Neither is a judgment about quality.
+- The label: a short noun phrase in {language}, as a coder would see it in a list of domains.
 - Render the given definition in {language}. Do not narrow it, do not widen it, and do not add anything the source does not say.
-- Where one domain's definition refers to the other, use the label you just gave that other domain, so the two texts refer to each other by the names a coder will actually see.
+- Where one domain's definition refers to another, use the label you just gave that domain, so the two texts refer to each other by the names a coder will actually see.
 - The membership test is one yes/no question a coder can answer about a single response, phrased in {language}.
 
-Now render both domains, and provide your output as valid JSON following the response schema provided."""
+Now render all three, and provide your output as valid JSON following the response schema provided."""
 
 
-class StandingLabelsResponse(BaseModel):
-    """Rendering of the two standing domains in the survey language: label,
-    definition and boundary test for each, faithful to the canonical English
-    in dimension_data.py — a rendering, never a reformulation.
+class MenuEntryRenderResponse(BaseModel):
+    """Rendering of the three fixed entries of the per-response assignment
+    menu in the survey language: label, definition and a composed membership
+    test for each.
+
+    Label and definition are renderings of the canonical English — the two
+    standing domains from `dimension_data.py`, the non-answer bucket from
+    `NON_ANSWER_DOMAIN` in this module — faithful, never a reformulation.
+    boundary_test has no canonical English counterpart to translate: it is
+    composed from the canonical `short` clause into a yes/no question, both
+    by the model here and by the fallback in `_resolve_standing_domains` /
+    `_resolve_non_answer_domain` when the model omits it.
 
     `exclusions` is absent by construction: it comes from the pipeline itself
-    (always `[]` for a standing domain), not the model. Each of the six fields
-    falls back independently in `_resolve_standing_domains` — a blank
-    definition must not blank the label, and vice versa.
+    (always `[]` for these entries), not the model. Each of the nine fields
+    falls back independently — a blank definition must not blank the label,
+    and vice versa.
     """
     not_known_label: str = Field(
         description="Rendering, in the survey language, of domain_a's label — faithful to its given definition, not a reformulation"
@@ -932,6 +956,15 @@ class StandingLabelsResponse(BaseModel):
     )
     other_boundary_test: str = Field(
         description="One yes/no membership question for domain_b, in the survey language, that a coder can answer about a single response"
+    )
+    non_answer_label: str = Field(
+        description="Rendering, in the survey language, of domain_c's label — faithful to its given definition, not a reformulation"
+    )
+    non_answer_definition: str = Field(
+        description="Rendering, in the survey language, of domain_c's definition — same meaning as the given English text, nothing narrowed, widened, or added"
+    )
+    non_answer_boundary_test: str = Field(
+        description="One yes/no membership question for domain_c, in the survey language, that a coder can answer about a single response"
     )
 
 

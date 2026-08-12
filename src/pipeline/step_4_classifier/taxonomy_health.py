@@ -15,9 +15,11 @@ Four things, all dataset-independent and all cheap enough to run on every build:
 
   drain_domains()       Labels of the standing drain domains (other, not_known),
                         identified by their metadata key rather than their (possibly
-                        translated/re-described) label. Used to keep the P3/P7
-                        upstream MECE reviews off the two domains that exist to
-                        catch everything else, not to be internally orthogonal.
+                        translated/re-described) label. Used in classifier.py to skip
+                        the two catch-all domains for P1a axis discovery, which needs
+                        a domain to be internally orthogonal — these two exist to
+                        catch everything else instead. Warns (never fails silently)
+                        when it finds fewer than the two it expects.
 
   measure()             Turns "the taxonomy feels flat" into numbers you can compare
                         across datasets. Every metric below marks a label layer that
@@ -55,13 +57,29 @@ DRAIN_KEYS = frozenset({"other", "not_known"})
 # =============================================================================
 
 def drain_domains(extraction_metadata) -> Set[str]:
-    """Labels of the standing drain domains, identified by their metadata key.
+    """Labels of the standing drain domains, identified by their metadata key
+    rather than their (possibly translated/re-described) label.
 
-    Legacy caches persisted key == label; then no domain qualifies and callers
-    treat every domain as reviewable (and say so once in the verbose output).
+    Always two by construction (`DRAIN_KEYS`) whenever `extraction_metadata`
+    carries domains at all. A cache written under a stale key — this module's
+    own `DRAIN_KEYS`, `measure_stability.DRAIN_KEYS` and
+    `prompts_ideaExtractor.STANDING_NOT_KNOWN_KEY`/`STANDING_OTHER_KEY` can
+    drift apart on a rename that touches only one of them — matches on
+    whichever key survived and returns fewer than two. That result is
+    non-empty, so nothing downstream would otherwise notice: prints a warning
+    naming what it did find whenever the count is short. A run with domain
+    discovery off carries no domains at all, and that stays a silent,
+    legitimate zero.
     """
     domains = getattr(extraction_metadata, "domains", None) or []
-    return {d.get("label", "") for d in domains if d.get("key") in DRAIN_KEYS}
+    found = {d.get("label", "") for d in domains if d.get("key") in DRAIN_KEYS}
+    if domains and len(found) < len(DRAIN_KEYS):
+        print(
+            f"  WARNING: drain_domains found {len(found)}/{len(DRAIN_KEYS)} "
+            f"standing domains ({sorted(found)}) — a cache key may be stale "
+            f"against DRAIN_KEYS={sorted(DRAIN_KEYS)}."
+        )
+    return found
 
 
 # =============================================================================

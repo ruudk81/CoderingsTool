@@ -28,7 +28,7 @@ from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     DomainChunkResponse,
     DomainConsolidatedResponse,
     ReformulatedDomains,
-    StandingLabelsResponse,
+    MenuEntryRenderResponse,
     create_extraction_model,
 )
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
@@ -52,7 +52,7 @@ PROMPT_MODELS = {
     "domain_chunk": DomainChunkResponse,
     "domain_consolidation": DomainConsolidatedResponse,
     "domain_orthogonalize": ReformulatedDomains,
-    "standing_labels": StandingLabelsResponse,
+    "standing_labels": MenuEntryRenderResponse,
     "idea_extraction": _extraction_model,
 }
 

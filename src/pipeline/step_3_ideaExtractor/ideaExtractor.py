@@ -61,7 +61,7 @@ from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     build_orthogonalize_domains_prompt,
     ReformulatedDomains,
     build_standing_labels_prompt,
-    StandingLabelsResponse,
+    MenuEntryRenderResponse,
 )
 
 # === DIMENSION DATA ===============================================================================================
@@ -842,7 +842,9 @@ class IdeaExtractor:
             # The two standing domains join the discovered ones here, so every consumer
             # downstream — the assignment menu, the domain table, the persisted
             # metadata — sees a single list and needs no special case.
-            standing = self._resolve_standing_domains(await labels_task, dimension)
+            labels = await labels_task
+            standing = self._resolve_standing_domains(labels, dimension)
+            self.non_answer_domain = self._resolve_non_answer_domain(labels)
 
             # Nothing guarantees a discovered label differs from a standing one — the
             # standing labels come from a call that runs in parallel and never sees
@@ -1036,11 +1038,64 @@ class IdeaExtractor:
                 queue.task_done()
 
     @staticmethod
-    def build_domain_table(domains: Optional[List]) -> str:
+    def _default_non_answer_domain() -> DomainItem:
+        """The non-answer bucket rendered as the canonical English — used
+        whenever no survey-language rendering is available: the translation
+        call failed or was never run, or a caller (an experiment script
+        replaying a menu from an older cache, which never stored the
+        rendering — the bucket is menu-only and never reaches the cache)
+        builds a menu outside a full extraction run."""
+        return DomainItem(
+            key="non_answer",
+            label=NON_ANSWER_DOMAIN.fallback_label,
+            definition=NON_ANSWER_DOMAIN.definition,
+            boundary_test=f"Does this idea match: {NON_ANSWER_DOMAIN.short}?",
+            exclusions=[],
+        )
+
+    def _non_answer_domain(self) -> DomainItem:
+        """The non-answer bucket to show on the menu, in the schema enum, and
+        to match against when dropping — the SAME object at all three call
+        sites, so they can never drift out of sync. The rendered version once
+        Phase 3 has run (`self.non_answer_domain`), else the canonical
+        English fallback."""
+        existing = getattr(self, 'non_answer_domain', None)
+        return existing if existing is not None else self._default_non_answer_domain()
+
+    @staticmethod
+    def _resolve_non_answer_domain(labels) -> DomainItem:
+        """Return the non-answer bucket as a DomainItem, rendered in the survey
+        language when available. `labels` is a MenuEntryRenderResponse or None —
+        the same rendering `_resolve_standing_domains` reads, for the one entry
+        that never joins `self.domains`. Each field falls back independently to
+        the canonical English in NON_ANSWER_DOMAIN, mirroring
+        `_resolve_standing_domains` exactly.
+        """
+        def _rendered(field: str, fallback: str) -> str:
+            value = (getattr(labels, f"non_answer_{field}", "") or "").strip()
+            return value or fallback
+
+        return DomainItem(
+            key="non_answer",
+            label=_rendered("label", NON_ANSWER_DOMAIN.fallback_label),
+            definition=_rendered("definition", NON_ANSWER_DOMAIN.definition),
+            boundary_test=_rendered(
+                "boundary_test", f"Does this idea match: {NON_ANSWER_DOMAIN.short}?"),
+            exclusions=[],
+        )
+
+    @staticmethod
+    def build_domain_table(domains: Optional[List], non_answer: Optional[DomainItem] = None) -> str:
         """The assignment menu as the extraction prompt shows it.
 
         Static and public so `exp_assignment_variance.py` presents the model exactly
         the menu production presents, rather than keeping a copy that can drift.
+
+        `non_answer` is the non-answer bucket exactly as rendered for this run — the
+        SAME DomainItem the schema enum and `_drop_non_answer_ideas` use, so the menu,
+        the schema and the drop match on identical text (a mismatch there silently
+        strands those ideas in the dataset). Falls back to the canonical English when
+        omitted.
         """
         if not domains:
             # During token estimation (_calculate_avg_tokens), domains haven't been
@@ -1056,9 +1111,10 @@ class IdeaExtractor:
                 line += f"\n      ✗ {', '.join(c.exclusions)}"
             return line
 
+        non_answer = non_answer or IdeaExtractor._default_non_answer_domain()
         non_answer_line = (
-            f"  • {NON_ANSWER_DOMAIN['label']} = \"{NON_ANSWER_DOMAIN['definition']}\"\n"
-            f"      ✓ {NON_ANSWER_DOMAIN['boundary_test']}"
+            f"  • {non_answer.label} = \"{non_answer.definition}\"\n"
+            f"      ✓ {non_answer.boundary_test}"
         )
 
         return (
@@ -1073,13 +1129,15 @@ class IdeaExtractor:
         )
 
     @staticmethod
-    def _drop_non_answer_ideas(results) -> Tuple[int, List[str]]:
+    def _drop_non_answer_ideas(results, label: str) -> Tuple[int, List[str]]:
         """Remove ideas the model parked in the non-answer bucket, and report them.
 
-        They get no code and never reach the cache. The count and the texts go to the
-        verbose report: removing data silently is how a pipeline loses its audit trail.
+        `label` is the SAME rendered string offered on the assignment menu and in the
+        schema enum — passed in rather than read from a module constant, so the menu,
+        the schema and this match can never drift apart silently. They get no code and
+        never reach the cache. The count and the texts go to the verbose report:
+        removing data silently is how a pipeline loses its audit trail.
         """
-        label = NON_ANSWER_DOMAIN["label"]
         dropped: List[str] = []
         for resp in results:
             keep = []
@@ -1098,7 +1156,7 @@ class IdeaExtractor:
         assert self.primary_dimension is not None, "primary_dimension must be set before building extraction prompt"
         dimension = get_dimension(self.primary_dimension)
 
-        domain_table = self.build_domain_table(getattr(self, 'domains', None))
+        domain_table = self.build_domain_table(getattr(self, 'domains', None), self._non_answer_domain())
 
         return build_taxonomy_enriched_extraction_prompt(
             language=self.language,
@@ -1172,16 +1230,11 @@ class IdeaExtractor:
             # bucket has to be in it too, or the model could never actually select
             # it — the enum constraint would reject the only value the construction
             # exists to offer. Added here, on a local copy, so `extractor.domains`
-            # itself (consolidation, orthogonalization, the cache) stays clean.
+            # itself (consolidation, orthogonalization, the cache) stays clean. The
+            # SAME object the menu just showed — see `_non_answer_domain`.
             schema_domains = getattr(extractor, 'domains', None)
             if schema_domains:
-                schema_domains = list(schema_domains) + [DomainItem(
-                    label=NON_ANSWER_DOMAIN["label"],
-                    definition=NON_ANSWER_DOMAIN["definition"],
-                    boundary_test=NON_ANSWER_DOMAIN["boundary_test"],
-                    exclusions=[],
-                    key="non_answer",
-                )]
+                schema_domains = list(schema_domains) + [extractor._non_answer_domain()]
 
             AxisExtractionModel = create_extraction_model(
                 dimension=dimension,
@@ -1509,7 +1562,7 @@ class IdeaExtractor:
                 await self.rate_limiter.acquire()
                 return await llm_create_async(
                     client=client, model=model,
-                    response_model=StandingLabelsResponse,
+                    response_model=MenuEntryRenderResponse,
                     prompt=prompt, temperature=0.0,
                     **get_reasoning_params(model, phase="idea_extraction_taxonomy"),
                 )
@@ -1522,7 +1575,7 @@ class IdeaExtractor:
     def _resolve_standing_domains(labels, dimension: DimensionDefinition) -> List:
         """Return the two standing domains as DomainItems, built from the dimension.
 
-        `labels` is a StandingLabelsResponse or None — the rendering from
+        `labels` is a MenuEntryRenderResponse or None — the rendering from
         `_translate_standing_labels`. A standing domain catches a failure mode of
         the domain axis, so its breadth IS its function — a phase that re-describes
         domains by their content will narrow it, and everything it used to catch
@@ -1682,14 +1735,15 @@ class IdeaExtractor:
         # Before orthogonalization: that pass groups exemplars by domain, and a
         # domain that exists only in the assignment menu (never in self.domains)
         # has no slot there anyway — removing first keeps its exemplar pool clean.
-        n_dropped, dropped_texts = self._drop_non_answer_ideas(results)
+        n_dropped, dropped_texts = self._drop_non_answer_ideas(
+            results, self._non_answer_domain().label)
         if n_dropped:
             self.verbose_reporter.stat_line(
                 f"  Non-answer fragments removed: {n_dropped}")
             for t in dropped_texts[:20]:
                 self.verbose_reporter.stat_line(f"      • {t}")
             if n_dropped > 20:
-                self.verbose_reporter.stat_line(f"      … en {n_dropped - 20} meer")
+                self.verbose_reporter.stat_line(f"      … and {n_dropped - 20} more")
 
         # === Post-extraction: orthogonalize domain descriptions (no reassignment) ===
         if ENABLE_DOMAIN_ORTHOGONALIZE:
