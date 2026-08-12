@@ -102,7 +102,7 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     "codegen_umbrella_merge":             ("5.6", 3),   # consolidate umbrella names before pooling
     "codegen_writer":                     ("5.6", 3),   # codebook writing from clusters
     "codegen_mece_detect":                ("5.6", 3),   # MECE pass A: hardest-to-separate-from per code
-    "codegen_mece_adjudicate":            ("5.6", 3),   # MECE pass B: per-pair separation rule + merge verdict
+    "codegen_mece_probe":                 ("5.6", 3),   # MECE pass B: blind per-pair idea-assignment probe
     # Step 6: Code Assigner
     "code_assignment":                    ("5.6", 3),
 }
@@ -214,7 +214,7 @@ STEP_EFFORT = {
     "codegen_umbrella_merge": "medium",
     "codegen_writer": "medium",
     "codegen_mece_detect": "medium",     # same rung as codegen_relations
-    "codegen_mece_adjudicate": "medium",
+    "codegen_mece_probe": "medium",
     # All other steps: fall back to REASONING_EFFORT
 }
 

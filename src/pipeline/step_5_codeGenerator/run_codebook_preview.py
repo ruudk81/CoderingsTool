@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import sqlite3
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
@@ -41,7 +42,7 @@ from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from pipeline.step_5_codeGenerator.prompts_mece import CodeCandidate
 from pipeline.step_5_codeGenerator.prompts_umbrella_merge import umbrellas_from_relations
 from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
-from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, build_idea_units
+from pipeline.step_5_codeGenerator.taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from pipeline.step_5_codeGenerator.view_relations import load_cache
 
 # Step 4 is being rewritten in a parallel worktree. Unlike view_relations.py's
@@ -187,6 +188,10 @@ def main() -> None:
     concepts = build_inventory(units, refs)
     concept_by_id = {c.attribute_id: c for c in concepts}
 
+    idea_units_by_attribute: Dict[str, List[IdeaUnit]] = defaultdict(list)
+    for unit in units:
+        idea_units_by_attribute[unit.attribute_id].append(unit)
+
     config = CodebookConfig()
     n_resp_total = len(classified_ideas)
     threshold = t_keep(n_resp_total, config)
@@ -222,7 +227,9 @@ def main() -> None:
             for code in codes if _match_shape(code, shape_lookup) is not None
         ]
         round_log = _RoundLog()
-        final_candidates = await enforce_mece(candidates, config, log=round_log, verbose=True)
+        final_candidates = await enforce_mece(
+            candidates, idea_units_by_attribute, config, log=round_log, verbose=True,
+        )
         merged = [c for c in final_candidates if c.shape.origin == "mece_merge"]
         untouched = [c for c in final_candidates if c.shape.origin != "mece_merge"]
 
@@ -242,8 +249,13 @@ def main() -> None:
 
     total_merges = sum(r["merges"] for r in mece_rounds)
     if mece_rounds:
-        rounds_desc = ", ".join(f"ronde {r['round']}: {r['merges']}" for r in mece_rounds)
-        print(f"MECE: {len(mece_rounds)} ronde(s), {total_merges} samenvoeging(en) totaal ({rounds_desc})")
+        print(f"MECE: {len(mece_rounds)} ronde(s), {total_merges} samenvoeging(en) totaal")
+        for r in mece_rounds:
+            acc = f"{r['mean_accuracy']:.0%}" if r["mean_accuracy"] is not None else "—"
+            reason = f", reden einde: {r['reason']}" if r["reason"] else ""
+            print(f"  ronde {r['round']}: {r['pairs_found']} paar/paren gevonden, "
+                  f"{r['pairs_probed']} bevraagd, gem. accuracy {acc}, "
+                  f"{r['merges']} samenvoeging(en){reason}")
 
     lookup = _shape_lookup(shapes, concept_by_id)
     unmatched = [c.code_name for c in codes if _match_shape(c, lookup) is None]

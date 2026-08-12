@@ -1,9 +1,9 @@
 """Tests voor de MECE-prompts (stap 5 van step 5): Pass A (detectie) en
-Pass B (adjudicatie)."""
+Pass B (blinde toewijzingsproef)."""
 from pipeline.step_5_codeGenerator.consolidator import CodeShape
 from pipeline.step_5_codeGenerator.prompts_mece import (
-    CandidatePair, CodeCandidate, build_overlap_prompt, build_pair_prompt,
-    make_overlap_model, make_pair_model,
+    CandidatePair, CodeCandidate, ProbeIdea, build_overlap_prompt, build_probe_prompt,
+    make_overlap_model, make_probe_model,
 )
 
 
@@ -91,78 +91,95 @@ def test_overlap_model_allows_null_hardest_to_separate_from():
 
 
 # ---------------------------------------------------------------------------
-# Pass B — adjudicatie
+# Pass B — blinde toewijzingsproef
 # ---------------------------------------------------------------------------
 
-def test_pair_prompt_shows_both_codes_of_every_pair():
-    candidates = [candidate("Prijs", definition="Over prijs."),
-                  candidate("Kosten", definition="Over kosten.")]
-    candidate_by_name = {c.name: c for c in candidates}
-    pairs = [CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")]
-    prompt = build_pair_prompt(pairs, candidate_by_name)
+def test_probe_idea_carries_only_a_ref_and_text():
+    import dataclasses
+    names = {f.name for f in dataclasses.fields(ProbeIdea)}
+    assert names == {"idea_ref", "text"}
+
+
+def test_probe_prompt_shows_both_code_names_and_definitions():
+    candidate_by_name = {"Prijs": candidate("Prijs", definition="Over prijs."),
+                         "Kosten": candidate("Kosten", definition="Over kosten.")}
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    prompt = build_probe_prompt(pair, candidate_by_name, [ProbeIdea(idea_ref=1, text="tekst")])
     assert "Prijs" in prompt and "Over prijs." in prompt
     assert "Kosten" in prompt and "Over kosten." in prompt
-    assert "[1]" in prompt
 
 
-def test_pair_prompt_forces_the_rule_before_the_verdict():
+def test_probe_prompt_shows_every_idea_with_its_ref():
     candidate_by_name = {"Prijs": candidate("Prijs"), "Kosten": candidate("Kosten")}
-    pairs = [CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")]
-    prompt = build_pair_prompt(pairs, candidate_by_name)
-    assert "write" in prompt.lower() and "rule" in prompt.lower()
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    ideas = [ProbeIdea(idea_ref=1, text="tekst een"), ProbeIdea(idea_ref=2, text="tekst twee")]
+    prompt = build_probe_prompt(pair, candidate_by_name, ideas)
+    assert "[1]" in prompt and "tekst een" in prompt
+    assert "[2]" in prompt and "tekst twee" in prompt
 
 
-def test_pair_prompt_contains_no_respondent_counts():
+def test_probe_prompt_does_not_say_which_code_an_idea_came_from():
+    candidate_by_name = {"Prijs": candidate("Prijs"), "Kosten": candidate("Kosten")}
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    ideas = [ProbeIdea(idea_ref=1, text="tekst een"), ProbeIdea(idea_ref=2, text="tekst twee")]
+    prompt = build_probe_prompt(pair, candidate_by_name, ideas)
+    line1 = next(l for l in prompt.splitlines() if "tekst een" in l)
+    line2 = next(l for l in prompt.splitlines() if "tekst twee" in l)
+    assert "Prijs" not in line1 and "Kosten" not in line1
+    assert "Prijs" not in line2 and "Kosten" not in line2
+
+
+def test_probe_prompt_contains_no_respondent_counts():
     candidate_by_name = {"Prijs": candidate("Prijs", n_resp=312),
                          "Kosten": candidate("Kosten", n_resp=8)}
-    pairs = [CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")]
-    prompt = build_pair_prompt(pairs, candidate_by_name)
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    prompt = build_probe_prompt(pair, candidate_by_name, [ProbeIdea(idea_ref=1, text="tekst")])
     assert "312" not in prompt and "8" not in prompt
 
 
-def test_pair_prompt_contains_no_attribute_ids():
+def test_probe_prompt_contains_no_attribute_ids():
     candidate_by_name = {"Prijs": candidate("Prijs", members=("A17",)),
                          "Kosten": candidate("Kosten", members=("A42",))}
-    pairs = [CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")]
-    prompt = build_pair_prompt(pairs, candidate_by_name)
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    prompt = build_probe_prompt(pair, candidate_by_name, [ProbeIdea(idea_ref=1, text="tekst")])
     assert "A17" not in prompt and "A42" not in prompt
 
 
-def test_pair_prompt_order_is_not_the_input_order():
-    candidate_by_name = {f"C{i}": candidate(f"C{i}") for i in range(10)}
-    pairs = [CandidatePair(pair_id=i, code_a=f"C{i}", code_b=f"C{i+1}") for i in range(9)]
-    prompt = build_pair_prompt(pairs, candidate_by_name)
-    rendered_order = sorted(pairs, key=lambda p: prompt.index(f"[{p.pair_id}]"))
-    assert [p.pair_id for p in rendered_order] != [p.pair_id for p in pairs]
-
-
-def test_pair_prompt_order_is_stable_across_calls():
-    candidate_by_name = {f"C{i}": candidate(f"C{i}") for i in range(6)}
-    pairs = [CandidatePair(pair_id=i, code_a=f"C{i}", code_b=f"C{i+1}") for i in range(5)]
-    first = build_pair_prompt(pairs, candidate_by_name)
-    second = build_pair_prompt(pairs, candidate_by_name)
-    assert first == second
-
-
-def test_pair_prompt_ends_with_the_instructor_hint():
+def test_probe_prompt_ends_with_the_instructor_hint():
     candidate_by_name = {"Prijs": candidate("Prijs"), "Kosten": candidate("Kosten")}
-    pairs = [CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")]
-    prompt = build_pair_prompt(pairs, candidate_by_name)
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    prompt = build_probe_prompt(pair, candidate_by_name, [ProbeIdea(idea_ref=1, text="tekst")])
     assert prompt.rstrip().endswith(
         "provide your output as valid JSON following the response schema provided"
     )
 
 
-def test_pair_model_constrains_pair_id_to_existing_pairs():
-    pairs = [CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten"),
-             CandidatePair(pair_id=2, code_a="Service", code_b="Klantcontact")]
-    model = make_pair_model(pairs)
-    ok = model(verdicts=[{"pair_id": 1, "separation_rule": "r", "one_dimension": False}])
-    assert ok.verdicts[0].pair_id == 1
+def test_probe_model_constrains_idea_ref_to_shown_ideas():
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    ideas = [ProbeIdea(idea_ref=1, text="a"), ProbeIdea(idea_ref=2, text="b")]
+    model = make_probe_model(pair, ideas)
+    ok = model(assignments=[{"idea_ref": 1, "assigned_to": "Prijs"},
+                             {"idea_ref": 2, "assigned_to": "Kosten"}])
+    assert ok.assignments[0].idea_ref == 1
 
     import pydantic
     try:
-        model(verdicts=[{"pair_id": 99, "separation_rule": "r", "one_dimension": False}])
+        model(assignments=[{"idea_ref": 99, "assigned_to": "Prijs"}])
     except pydantic.ValidationError:
         return
-    raise AssertionError("een niet-bestaand pair_id had geweigerd moeten worden")
+    raise AssertionError("een niet-getoond idea_ref had geweigerd moeten worden")
+
+
+def test_probe_model_constrains_assigned_to_to_the_pairs_two_codes():
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    ideas = [ProbeIdea(idea_ref=1, text="a")]
+    model = make_probe_model(pair, ideas)
+    ok = model(assignments=[{"idea_ref": 1, "assigned_to": "Kosten"}])
+    assert ok.assignments[0].assigned_to == "Kosten"
+
+    import pydantic
+    try:
+        model(assignments=[{"idea_ref": 1, "assigned_to": "Service"}])
+    except pydantic.ValidationError:
+        return
+    raise AssertionError("een codenaam buiten dit paar had geweigerd moeten worden")

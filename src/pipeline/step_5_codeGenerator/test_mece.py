@@ -1,6 +1,7 @@
 """Tests voor stap 5 van step 5: MECE-afdwinging over de codeverzameling
 (`mece.py`). Deterministische delen (samenvoegen, componenten, vereniging i.p.v.
-som, alleen-zelfde-richting, iteratiestop) staan los van de dispatch-tests."""
+som, alleen-zelfde-richting, iteratiestop, scoring, drempelbeslissing) staan
+los van de dispatch-tests."""
 import asyncio
 
 from utils.smoothRequester import SmoothRequester
@@ -9,9 +10,10 @@ from pipeline.step_5_codeGenerator import mece
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.consolidator import CodeShape
 from pipeline.step_5_codeGenerator.prompts_mece import (
-    CandidatePair, CodeCandidate, OverlapDetectionResult, OverlapVerdict,
-    PairAdjudicationResult, PairVerdict,
+    CandidatePair, CodeCandidate, IdeaAssignment, OverlapDetectionResult, OverlapVerdict,
+    ProbeResult,
 )
+from pipeline.step_5_codeGenerator.taxonomy_input import IdeaUnit
 
 
 def shape(key, valence, members, n_resp=10, origin="solo"):
@@ -25,6 +27,12 @@ def candidate(name, valence="positive", members=None, n_resp=10, indicators=("a"
     members = members or (f"A_{name}",)
     return CodeCandidate(name=name, definition=f"def {name}", indicators=tuple(indicators),
                          valence=valence, shape=shape(name, valence, members, n_resp))
+
+
+def idea(idea_id, attribute_id, instance="tekst", interpretation="", respondent_id=None):
+    return IdeaUnit(idea_id=idea_id, respondent_id=respondent_id or f"R{idea_id}",
+                    attribute_id=attribute_id, valence="+", instance=instance,
+                    interpretation=interpretation)
 
 
 # ---------------------------------------------------------------------------
@@ -83,15 +91,15 @@ def test_build_candidate_pairs_ids_are_stable_across_calls():
 
 def test_merge_components_chain_collapses_to_one_group():
     pair_by_id = {1: CandidatePair(1, "A", "B"), 2: CandidatePair(2, "B", "C")}
-    verdicts = [PairVerdict(pair_id=1, separation_rule="", one_dimension=True),
-                PairVerdict(pair_id=2, separation_rule="", one_dimension=True)]
+    verdicts = [mece.PairVerdict(pair_id=1, accuracy=0.3, one_dimension=True),
+                mece.PairVerdict(pair_id=2, accuracy=0.3, one_dimension=True)]
     components = mece.merge_components(pair_by_id, verdicts)
     assert components == [{"A", "B", "C"}]
 
 
 def test_merge_components_ignores_a_pair_judged_separate():
     pair_by_id = {1: CandidatePair(1, "A", "B")}
-    verdicts = [PairVerdict(pair_id=1, separation_rule="a real rule", one_dimension=False)]
+    verdicts = [mece.PairVerdict(pair_id=1, accuracy=0.95, one_dimension=False)]
     components = mece.merge_components(pair_by_id, verdicts)
     assert components == []
 
@@ -100,8 +108,8 @@ def test_merge_components_chain_order_independent():
     # Same chain, verdicts in the opposite order — the union-find result must
     # not depend on which pair was resolved first.
     pair_by_id = {1: CandidatePair(1, "A", "B"), 2: CandidatePair(2, "B", "C")}
-    verdicts = [PairVerdict(pair_id=2, separation_rule="", one_dimension=True),
-                PairVerdict(pair_id=1, separation_rule="", one_dimension=True)]
+    verdicts = [mece.PairVerdict(pair_id=2, accuracy=0.3, one_dimension=True),
+                mece.PairVerdict(pair_id=1, accuracy=0.3, one_dimension=True)]
     components = mece.merge_components(pair_by_id, verdicts)
     assert components == [{"A", "B", "C"}]
 
@@ -208,37 +216,196 @@ def test_resolve_overlap_detection_returns_none_when_the_call_fails(monkeypatch)
     assert result is None
 
 
-def test_resolve_pair_adjudication_sends_a_one_element_list_of_dicts(monkeypatch):
+# ---------------------------------------------------------------------------
+# build_pair_probe — deterministisch: bemonstering, schudden, waarheidssleutel
+# ---------------------------------------------------------------------------
+
+def test_build_pair_probe_pools_ideas_from_both_sides():
+    a, b = candidate("A", members=("Attr1",)), candidate("B", members=("Attr2",))
+    candidate_by_name = {"A": a, "B": b}
+    idea_units = {"Attr1": [idea(f"ia{i}", "Attr1") for i in range(3)],
+                 "Attr2": [idea(f"ib{i}", "Attr2") for i in range(3)]}
+    probe = mece.build_pair_probe(CandidatePair(1, "A", "B"), candidate_by_name, idea_units, 8)
+    assert len(probe.ideas) == 6
+    assert len(probe.truth) == 6
+    assert list(probe.truth.values()).count("A") == 3
+    assert list(probe.truth.values()).count("B") == 3
+
+
+def test_build_pair_probe_caps_at_ideas_per_code():
+    a, b = candidate("A", members=("Attr1",)), candidate("B", members=("Attr2",))
+    candidate_by_name = {"A": a, "B": b}
+    idea_units = {"Attr1": [idea(f"ia{i}", "Attr1") for i in range(10)],
+                 "Attr2": [idea(f"ib{i}", "Attr2") for i in range(10)]}
+    probe = mece.build_pair_probe(CandidatePair(1, "A", "B"), candidate_by_name, idea_units, 2)
+    assert len(probe.ideas) == 4
+
+
+def test_build_pair_probe_returns_none_when_one_side_has_no_ideas():
+    a, b = candidate("A", members=("Attr1",)), candidate("B", members=("Attr2",))
+    candidate_by_name = {"A": a, "B": b}
+    idea_units = {"Attr1": [idea("ia0", "Attr1")]}  # Attr2 heeft niets
+    probe = mece.build_pair_probe(CandidatePair(1, "A", "B"), candidate_by_name, idea_units, 8)
+    assert probe is None
+
+
+def test_build_pair_probe_is_deterministic_across_calls():
+    a, b = candidate("A", members=("Attr1",)), candidate("B", members=("Attr2",))
+    candidate_by_name = {"A": a, "B": b}
+    idea_units = {"Attr1": [idea(f"ia{i}", "Attr1") for i in range(4)],
+                 "Attr2": [idea(f"ib{i}", "Attr2") for i in range(4)]}
+    pair = CandidatePair(1, "A", "B")
+    first = mece.build_pair_probe(pair, candidate_by_name, idea_units, 8)
+    second = mece.build_pair_probe(pair, candidate_by_name, idea_units, 8)
+    assert [i.text for i in first.ideas] == [i.text for i in second.ideas]
+    assert first.truth == second.truth
+
+
+# ---------------------------------------------------------------------------
+# score_assignments — deterministisch: nooit de eigen claim van het model
+# ---------------------------------------------------------------------------
+
+def test_score_assignments_all_correct_is_one():
+    truth = {1: "A", 2: "B"}
+    assignments = [IdeaAssignment(idea_ref=1, assigned_to="A"),
+                   IdeaAssignment(idea_ref=2, assigned_to="B")]
+    assert mece.score_assignments(assignments, truth) == 1.0
+
+
+def test_score_assignments_all_wrong_is_zero():
+    truth = {1: "A", 2: "B"}
+    assignments = [IdeaAssignment(idea_ref=1, assigned_to="B"),
+                   IdeaAssignment(idea_ref=2, assigned_to="A")]
+    assert mece.score_assignments(assignments, truth) == 0.0
+
+
+def test_score_assignments_missing_assignment_counts_as_wrong():
+    truth = {1: "A", 2: "B"}
+    assignments = [IdeaAssignment(idea_ref=1, assigned_to="A")]
+    assert mece.score_assignments(assignments, truth) == 0.5
+
+
+def test_score_assignments_duplicate_ref_lets_the_last_answer_win():
+    truth = {1: "A"}
+    assignments = [IdeaAssignment(idea_ref=1, assigned_to="B"),
+                   IdeaAssignment(idea_ref=1, assigned_to="A")]
+    assert mece.score_assignments(assignments, truth) == 1.0
+
+
+def test_score_assignments_empty_truth_is_zero_not_a_crash():
+    assert mece.score_assignments([], {}) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# is_one_dimension — de drempelbeslissing
+# ---------------------------------------------------------------------------
+
+def test_is_one_dimension_false_above_threshold():
+    assert mece.is_one_dimension(0.9, 0.70) is False
+
+
+def test_is_one_dimension_true_at_threshold():
+    assert mece.is_one_dimension(0.70, 0.70) is True
+
+
+def test_is_one_dimension_true_below_threshold():
+    assert mece.is_one_dimension(0.4, 0.70) is True
+
+
+# ---------------------------------------------------------------------------
+# Dispatch — het SmoothRequester-contract, zoals test_relations.py
+# ---------------------------------------------------------------------------
+
+def test_resolve_pair_probes_sends_one_task_per_pair(monkeypatch):
     captured = {}
 
     async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
         captured["tasks"] = tasks
-        call_params = prepare_fn(tasks[0])
-        assert "prompt" in call_params
-        assert "response_model" in call_params
-        return [PairAdjudicationResult(verdicts=[])]
+        results = []
+        for task in tasks:
+            call_params = prepare_fn(task)
+            assert "prompt" in call_params
+            assert "response_model" in call_params
+            results.append(ProbeResult(assignments=[]))
+        return results
 
     monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
 
+    a, b = candidate("A", members=("Attr1",)), candidate("B", members=("Attr2",))
+    candidate_by_name = {"A": a, "B": b}
+    idea_units = {"Attr1": [idea("ia0", "Attr1")], "Attr2": [idea("ib0", "Attr2")]}
     pairs = [CandidatePair(1, "A", "B")]
-    candidate_by_name = {"A": candidate("A"), "B": candidate("B")}
-    result = asyncio.run(mece.resolve_pair_adjudication(pairs, candidate_by_name, CodebookConfig()))
 
-    tasks = captured["tasks"]
-    assert isinstance(tasks, list) and len(tasks) == 1 and isinstance(tasks[0], dict)
-    assert result.verdicts == []
+    verdicts = asyncio.run(
+        mece.resolve_pair_probes(pairs, candidate_by_name, idea_units, CodebookConfig())
+    )
+
+    assert len(captured["tasks"]) == 1
+    # empty assignments -> accuracy 0.0 -> op/onder de standaarddrempel (0.70)
+    assert verdicts[1].accuracy == 0.0
+    assert verdicts[1].one_dimension is True
 
 
-def test_resolve_pair_adjudication_returns_none_when_the_call_fails(monkeypatch):
+def test_resolve_pair_probes_skips_pairs_without_material_and_makes_no_call(monkeypatch):
+    called = False
+
     async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
-        return [fallback_fn(tasks[0], "boom")]
+        nonlocal called
+        called = True
+        return []
 
     monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
 
+    a, b = candidate("A", members=("Attr1",)), candidate("B", members=("Attr2",))
+    candidate_by_name = {"A": a, "B": b}
+    idea_units = {"Attr1": [idea("ia0", "Attr1")]}  # Attr2 heeft niets
     pairs = [CandidatePair(1, "A", "B")]
-    candidate_by_name = {"A": candidate("A"), "B": candidate("B")}
-    result = asyncio.run(mece.resolve_pair_adjudication(pairs, candidate_by_name, CodebookConfig()))
-    assert result is None
+
+    verdicts = asyncio.run(
+        mece.resolve_pair_probes(pairs, candidate_by_name, idea_units, CodebookConfig())
+    )
+    assert verdicts == {}
+    assert called is False
+
+
+def test_resolve_pair_probes_returns_empty_dict_when_the_call_fails(monkeypatch):
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [fallback_fn(t, "boom") for t in tasks]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    a, b = candidate("A", members=("Attr1",)), candidate("B", members=("Attr2",))
+    candidate_by_name = {"A": a, "B": b}
+    idea_units = {"Attr1": [idea("ia0", "Attr1")], "Attr2": [idea("ib0", "Attr2")]}
+    pairs = [CandidatePair(1, "A", "B")]
+
+    verdicts = asyncio.run(
+        mece.resolve_pair_probes(pairs, candidate_by_name, idea_units, CodebookConfig())
+    )
+    assert verdicts == {}
+
+
+def test_resolve_pair_probes_scores_a_perfect_response_as_separable(monkeypatch):
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        results = []
+        for probe in tasks:
+            assignments = [IdeaAssignment(idea_ref=ref, assigned_to=code)
+                           for ref, code in probe.truth.items()]
+            results.append(ProbeResult(assignments=assignments))
+        return results
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    a, b = candidate("A", members=("Attr1",)), candidate("B", members=("Attr2",))
+    candidate_by_name = {"A": a, "B": b}
+    idea_units = {"Attr1": [idea("ia0", "Attr1")], "Attr2": [idea("ib0", "Attr2")]}
+    pairs = [CandidatePair(1, "A", "B")]
+
+    verdicts = asyncio.run(
+        mece.resolve_pair_probes(pairs, candidate_by_name, idea_units, CodebookConfig())
+    )
+    assert verdicts[1].accuracy == 1.0
+    assert verdicts[1].one_dimension is False
 
 
 # ---------------------------------------------------------------------------
@@ -266,17 +433,15 @@ def test_enforce_mece_merges_and_stops_when_fewer_than_two_candidates_remain(mon
             OverlapVerdict(code="A", hardest_to_separate_from="B")
         ])
 
-    async def fake_pair(pairs, candidate_by_name, config, *a, **kw):
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
         calls["pair"] += 1
-        return PairAdjudicationResult(verdicts=[
-            PairVerdict(pair_id=pairs[0].pair_id, separation_rule="", one_dimension=True)
-        ])
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, one_dimension=True)}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
-    monkeypatch.setattr(mece, "resolve_pair_adjudication", fake_pair)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
 
     candidates = [candidate("A"), candidate("B")]
-    result = asyncio.run(mece.enforce_mece(candidates, CodebookConfig()))
+    result = asyncio.run(mece.enforce_mece(candidates, {}, CodebookConfig()))
 
     assert len(result) == 1
     assert result[0].shape.origin == "mece_merge"
@@ -291,15 +456,15 @@ def test_enforce_mece_stops_immediately_when_pass_a_finds_nothing(monkeypatch):
         calls["overlap"] += 1
         return OverlapDetectionResult(verdicts=[])
 
-    async def fake_pair(pairs, candidate_by_name, config, *a, **kw):
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
         calls["pair"] += 1
-        return PairAdjudicationResult(verdicts=[])
+        return {}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
-    monkeypatch.setattr(mece, "resolve_pair_adjudication", fake_pair)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
 
     candidates = [candidate("A"), candidate("B")]
-    result = asyncio.run(mece.enforce_mece(candidates, CodebookConfig()))
+    result = asyncio.run(mece.enforce_mece(candidates, {}, CodebookConfig()))
 
     assert [c.name for c in result] == ["A", "B"]
     assert calls["overlap"] == 1
@@ -312,16 +477,14 @@ def test_enforce_mece_stops_when_no_pair_is_judged_one_dimension(monkeypatch):
             OverlapVerdict(code="A", hardest_to_separate_from="B")
         ])
 
-    async def fake_pair(pairs, candidate_by_name, config, *a, **kw):
-        return PairAdjudicationResult(verdicts=[
-            PairVerdict(pair_id=pairs[0].pair_id, separation_rule="a real rule", one_dimension=False)
-        ])
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.95, one_dimension=False)}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
-    monkeypatch.setattr(mece, "resolve_pair_adjudication", fake_pair)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
 
     candidates = [candidate("A"), candidate("B")]
-    result = asyncio.run(mece.enforce_mece(candidates, CodebookConfig()))
+    result = asyncio.run(mece.enforce_mece(candidates, {}, CodebookConfig()))
     assert sorted(c.name for c in result) == ["A", "B"]
 
 
@@ -339,18 +502,16 @@ def test_enforce_mece_caps_at_max_rounds(monkeypatch):
             OverlapVerdict(code=names[0], hardest_to_separate_from=names[1])
         ])
 
-    async def fake_pair(pairs, candidate_by_name, config, *a, **kw):
-        return PairAdjudicationResult(verdicts=[
-            PairVerdict(pair_id=pairs[0].pair_id, separation_rule="", one_dimension=True)
-        ])
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, one_dimension=True)}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
-    monkeypatch.setattr(mece, "resolve_pair_adjudication", fake_pair)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
 
     config = CodebookConfig()
     assert config.mece_max_rounds == 3
     candidates = [candidate(n) for n in ["P1", "P2", "P3", "P4", "P5"]]
-    result = asyncio.run(mece.enforce_mece(candidates, config))
+    result = asyncio.run(mece.enforce_mece(candidates, {}, config))
 
     assert calls["overlap"] == 3
     assert len(result) == 5 - 3  # one merge per round, capped at 3 rounds
@@ -362,33 +523,107 @@ def test_enforce_mece_never_merges_across_valence(monkeypatch):
             OverlapVerdict(code="A", hardest_to_separate_from="B")
         ])
 
-    async def fake_pair(pairs, candidate_by_name, config, *a, **kw):
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
         raise AssertionError("pass B should never run: the pair is cross-valence")
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
-    monkeypatch.setattr(mece, "resolve_pair_adjudication", fake_pair)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
 
     candidates = [candidate("A", valence="positive"), candidate("B", valence="negative")]
-    result = asyncio.run(mece.enforce_mece(candidates, CodebookConfig()))
+    result = asyncio.run(mece.enforce_mece(candidates, {}, CodebookConfig()))
     assert sorted(c.name for c in result) == ["A", "B"]
 
 
-def test_enforce_mece_logs_each_round(monkeypatch):
+def test_enforce_mece_logs_no_pairs_reason(monkeypatch):
     async def fake_overlap(candidates, config, *a, **kw):
         return OverlapDetectionResult(verdicts=[])
 
-    async def fake_pair(pairs, candidate_by_name, config, *a, **kw):
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
         raise AssertionError("no candidate pairs, pass B should not run")
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
-    monkeypatch.setattr(mece, "resolve_pair_adjudication", fake_pair)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
 
     log = FakeLog()
-    asyncio.run(mece.enforce_mece([candidate("A"), candidate("B")], CodebookConfig(), log=log))
+    asyncio.run(mece.enforce_mece([candidate("A"), candidate("B")], {}, CodebookConfig(), log=log))
     assert len(log.calls) == 1
     assert log.calls[0]["action"] == "MECE_ROUND"
     assert log.calls[0]["round"] == 1
     assert log.calls[0]["merges"] == 0
+    assert log.calls[0]["reason"] == "no_pairs"
+
+
+def test_enforce_mece_logs_detection_failed_reason_distinctly(monkeypatch):
+    async def fake_overlap(candidates, config, *a, **kw):
+        return None
+
+    monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
+
+    log = FakeLog()
+    asyncio.run(mece.enforce_mece([candidate("A"), candidate("B")], {}, CodebookConfig(), log=log))
+    assert log.calls[0]["reason"] == "detection_failed"
+    assert log.calls[0]["merges"] == 0
+
+
+def test_enforce_mece_logs_probe_failed_reason_with_pairs_found(monkeypatch):
+    async def fake_overlap(candidates, config, *a, **kw):
+        return OverlapDetectionResult(verdicts=[
+            OverlapVerdict(code="A", hardest_to_separate_from="B")
+        ])
+
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
+        return {}
+
+    monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
+
+    log = FakeLog()
+    asyncio.run(mece.enforce_mece([candidate("A"), candidate("B")], {}, CodebookConfig(), log=log))
+    assert log.calls[0]["reason"] == "probe_failed"
+    assert log.calls[0]["pairs_found"] == 1
+    assert log.calls[0]["merges"] == 0
+
+
+def test_enforce_mece_logs_no_components_reason_with_stats(monkeypatch):
+    async def fake_overlap(candidates, config, *a, **kw):
+        return OverlapDetectionResult(verdicts=[
+            OverlapVerdict(code="A", hardest_to_separate_from="B")
+        ])
+
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.9, one_dimension=False)}
+
+    monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
+
+    log = FakeLog()
+    asyncio.run(mece.enforce_mece([candidate("A"), candidate("B")], {}, CodebookConfig(), log=log))
+    assert log.calls[0]["reason"] == "no_components"
+    assert log.calls[0]["pairs_found"] == 1
+    assert log.calls[0]["pairs_probed"] == 1
+    assert log.calls[0]["mean_accuracy"] == 0.9
+    assert log.calls[0]["merges"] == 0
+
+
+def test_enforce_mece_logs_a_merge_round_with_stats_and_no_reason(monkeypatch):
+    async def fake_overlap(candidates, config, *a, **kw):
+        return OverlapDetectionResult(verdicts=[
+            OverlapVerdict(code="A", hardest_to_separate_from="B")
+        ])
+
+    async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, one_dimension=True)}
+
+    monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
+    monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
+
+    log = FakeLog()
+    asyncio.run(mece.enforce_mece([candidate("A"), candidate("B")], {}, CodebookConfig(), log=log))
+    assert log.calls[0]["reason"] is None
+    assert log.calls[0]["merges"] == 1
+    assert log.calls[0]["mean_accuracy"] == 0.3
+    assert log.calls[0]["pairs_found"] == 1
+    assert log.calls[0]["pairs_probed"] == 1
 
 
 def test_enforce_mece_returns_candidates_unchanged_without_a_call_when_fewer_than_two(monkeypatch):
@@ -401,6 +636,6 @@ def test_enforce_mece_returns_candidates_unchanged_without_a_call_when_fewer_tha
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
 
-    result = asyncio.run(mece.enforce_mece([candidate("A")], CodebookConfig()))
+    result = asyncio.run(mece.enforce_mece([candidate("A")], {}, CodebookConfig()))
     assert [c.name for c in result] == ["A"]
     assert called is False

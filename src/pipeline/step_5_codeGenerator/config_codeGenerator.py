@@ -19,14 +19,14 @@ class CodebookConfig:
     model_umbrella_merge: str = get_step_model("codegen_umbrella_merge")  # consolidate umbrella names
     model_writer: str = get_step_model("codegen_writer")  # codebook writing from clusters
     model_mece_detect: str = get_step_model("codegen_mece_detect")  # MECE pass A: overlap detection
-    model_mece_adjudicate: str = get_step_model("codegen_mece_adjudicate")  # MECE pass B: pair adjudication
+    model_mece_probe: str = get_step_model("codegen_mece_probe")  # MECE pass B: blind assignment probe
     temperature_p8: float = 0.3
     temperature_p9: float = 0.0
     temperature_relations: float = 0.0
     temperature_umbrella_merge: float = 0.0
     temperature_writer: float = 0.3
     temperature_mece_detect: float = 0.0
-    temperature_mece_adjudicate: float = 0.0
+    temperature_mece_probe: float = 0.0
 
     # P8: Code Generation from Attributes (per-domain)
     max_tokens_code_from_attributes: int = 16000
@@ -45,12 +45,19 @@ class CodebookConfig:
 
     # MECE pass A: one cross-code call, output scales with the code count
     max_tokens_mece_detect: int = 16000
-    # MECE pass B: one cross-pair call, output scales with the candidate-pair count
-    max_tokens_mece_adjudicate: int = 16000
+    # MECE pass B: one call per candidate pair, output scales with the probe size
+    # (mece_probe_ideas_per_code per side, plus a scratchpad)
+    max_tokens_mece_probe: int = 4000
     # MECE: repeat pass A + pass B until a round merges nothing, capped here —
     # merging changes the set, so a later round can surface overlaps an earlier
     # round couldn't see yet.
     mece_max_rounds: int = 3
+    # MECE pass B: up to this many real ideas per code, pooled and shown blind
+    # for the other side to be assigned against.
+    mece_probe_ideas_per_code: int = 8
+    # MECE pass B: accuracy at or below this means the pair is not reliably
+    # codeable apart -> merge. Chance level on a two-way choice is 0.50.
+    mece_separability_threshold: float = 0.70
 
     # Embedding-based representative samples
     code_source: str = "instance_interpretation"  # Text format for embedding: idea, instance, instance_interpretation, full_abstraction_ladder

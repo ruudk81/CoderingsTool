@@ -1,24 +1,37 @@
 """Stap 5 — MECE-afdwinging over de verzameling codes: prompts + responsemodellen.
 
-Twee vragen, allebei per item — nooit een groepeervraag. Een groepeervraag
-("welke codes overlappen?") is in deze codebase eerder geprobeerd voor
-verzamelnamen (`prompts_umbrella_merge.py`'s eerste vorm) en leverde op een
-echte run niets op: 45 namen in, 45 groepen uit, want "hoort bij niets" is een
-even geldig antwoord als een echte groep. Een per-item vraag met een gedwongen
-opzoeking werkt wél — `synonym_of` in `prompts_relations.py` vond in dezelfde
-run drie echte paren.
-
 Pass A (`OverlapVerdict`) vraagt per code naar de moeilijkste buur: een
-gedwongen opzoeking, geen partitionering. Pass B (`PairVerdict`) dwingt het
-model de scheidingsregel EERST op te schrijven, vóór het oordeelt — dat
-schrijven is de forcing function; een los boolean zonder geschreven regel zou
-dezelfde vrije-nulantwoord-fout herhalen.
+gedwongen opzoeking, geen partitionering — nooit een groepeervraag. Een
+groepeervraag ("welke codes overlappen?") is in deze codebase eerder
+geprobeerd voor verzamelnamen (`prompts_umbrella_merge.py`'s eerste vorm) en
+leverde op een echte run niets op: 45 namen in, 45 groepen uit, want "hoort
+bij niets" is een even geldig antwoord als een echte groep. Een per-item vraag
+met een gedwongen opzoeking werkt wél — `synonym_of` in `prompts_relations.py`
+vond in dezelfde run drie echte paren.
+
+Pass B was ooit een geschreven scheidingsregel + een boolean (`one_dimension`).
+Dat kon niet werken: een model dat gevraagd wordt een regel te schrijven,
+schrijft er altijd één, en concludeert daarna — omdat het de regel zelf net
+heeft geschreven — dat de codes scheidbaar zijn. Op een live run kwamen er 31
+paren uit Pass A en nul samenvoegingen uit Pass B: de "regels" waren de twee
+definities herhaald, geen regel. Het genereren van een verantwoording is geen
+toets zolang de model zelf bepaalt of hij slaagt.
+
+Pass B is nu een blinde toewijzingsproef (bronspecificatie §4.8): echte
+ideeteksten van beide codes worden gepoold, geschud, en zonder herkomst aan
+het model voorgelegd; het model wijst elk idee toe aan code A of code B. De
+score tegen de bekende herkomst (Python, nooit het model zelf) is de toets —
+zie `mece.py` (`score_assignments`, `is_one_dimension`) voor de scoring en de
+drempel.
 
 Lekdiscipline: geen respondenttellingen, ideetellingen, domein, facet of
-attribuut-ids — een code wordt getoond als naam + definitie + indicatoren.
-Richting (valence) wordt WEL getoond: die is al besloten en bepaalt welke
-paren überhaupt vergelijkbaar zijn (twee codes met tegengestelde richting zijn
-door hun richting alleen al onderscheiden, nooit een samenvoegkandidaat)."""
+attribuut-ids. Pass A toont een code als naam + definitie + indicatoren.
+Richting (valence) wordt WEL getoond in Pass A: die is al besloten en bepaalt
+welke paren überhaupt vergelijkbaar zijn (twee codes met tegengestelde
+richting zijn door hun richting alleen al onderscheiden, nooit een
+samenvoegkandidaat). Pass B toont een code als naam + definitie, en toont de
+geschudde ideeteksten zonder enige aanduiding van welke kant ze vandaan
+komen — dat blijft uitsluitend in Python (`PairProbe.truth` in `mece.py`)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -139,81 +152,69 @@ Codes:
 
 
 # ---------------------------------------------------------------------------
-# Pass B — adjudicatie: per kandidaat-paar, de scheidingsregel
+# Pass B — blinde toewijzingsproef: per kandidaat-paar, echte ideeën toewijzen
 # ---------------------------------------------------------------------------
 
-class PairVerdict(BaseModel):
-    pair_id: int = Field(..., description="Which candidate pair this verdict is about")
-    separation_rule: str = Field(
-        ..., description=(
-            "The rule a coder could apply to assign any given idea to exactly "
-            "one of the two codes, never both. Write this BEFORE deciding "
-            "one_dimension — the decision follows from whether this rule is "
-            "real, not the other way around."
-        )
-    )
-    one_dimension: bool = Field(
-        ..., description=(
-            "True only if no real separation rule can be written — every rule "
-            "you can state would leave real ideas belonging under both, or "
-            "under neither more than the other. In that case the two codes "
-            "are one dimension and should merge. False if the rule you wrote "
-            "actually separates them."
-        )
-    )
+@dataclass(frozen=True)
+class ProbeIdea:
+    """Eén gepoold ideetje zoals het model het te zien krijgt: alleen een
+    volgnummer en de tekst. Welke code dit idee werkelijk levert, staat
+    nergens op dit object — dat leeft uitsluitend in `mece.PairProbe.truth`,
+    in Python, nooit in de prompt of het responsemodel."""
+    idea_ref: int
+    text: str
 
 
-class PairAdjudicationResult(BaseModel):
-    scratchpad: str = Field(default="", description="Brief reasoning before the verdicts")
-    verdicts: List[PairVerdict] = Field(
-        ..., description="Exactly one entry per candidate pair in the list"
+class IdeaAssignment(BaseModel):
+    idea_ref: int = Field(..., description="Which idea, by the number shown in the list, this is about")
+    assigned_to: str = Field(..., description="Which of the two codes this idea actually belongs to")
+
+
+class ProbeResult(BaseModel):
+    scratchpad: str = Field(default="", description="Brief reasoning before the assignments")
+    assignments: List[IdeaAssignment] = Field(
+        ..., description="Exactly one entry per idea in the list"
     )
 
 
-def make_pair_model(pairs: List[CandidatePair]) -> type:
-    """PairAdjudicationResult met `pair_id` beperkt tot bestaande kandidaat-
-    paren, zodat het model er geen kan verzinnen of overslaan."""
-    ids: Tuple[int, ...] = tuple(p.pair_id for p in _shuffled(pairs))
-    constrained_verdict = create_model(
-        "ConstrainedPairVerdict",
-        __base__=PairVerdict,
-        pair_id=(Literal[ids], Field(..., description=(
-            PairVerdict.model_fields["pair_id"].description))),
+def make_probe_model(pair: CandidatePair, ideas: List[ProbeIdea]) -> type:
+    """ProbeResult met `idea_ref` beperkt tot de getoonde ideeën en
+    `assigned_to` beperkt tot precies de twee codenamen van dit paar."""
+    idea_refs: Tuple[int, ...] = tuple(idea.idea_ref for idea in ideas)
+    code_names: Tuple[str, str] = (pair.code_a, pair.code_b)
+    constrained_assignment = create_model(
+        "ConstrainedIdeaAssignment",
+        __base__=IdeaAssignment,
+        idea_ref=(Literal[idea_refs], Field(..., description=(
+            IdeaAssignment.model_fields["idea_ref"].description))),
+        assigned_to=(Literal[code_names], Field(..., description=(
+            IdeaAssignment.model_fields["assigned_to"].description))),
     )
     return create_model(
-        "ConstrainedPairAdjudicationResult",
-        __base__=PairAdjudicationResult,
-        verdicts=(List[constrained_verdict], Field(..., description=(
-            PairAdjudicationResult.model_fields["verdicts"].description))),
+        "ConstrainedProbeResult",
+        __base__=ProbeResult,
+        assignments=(List[constrained_assignment], Field(..., description=(
+            ProbeResult.model_fields["assignments"].description))),
     )
 
 
-def _pair_block(pair: CandidatePair, candidate_by_name: Dict[str, CodeCandidate]) -> str:
-    def block(c: CodeCandidate) -> str:
-        indicators = ", ".join(c.indicators) or "—"
-        return f'  "{c.name}": {c.definition}\n    Indicators: {indicators}'
-
+def build_probe_prompt(
+    pair: CandidatePair, candidate_by_name: Dict[str, CodeCandidate], ideas: List[ProbeIdea],
+) -> str:
     a, b = candidate_by_name[pair.code_a], candidate_by_name[pair.code_b]
-    return f"[{pair.pair_id}] (both {a.valence})\n{block(a)}\n{block(b)}"
+    idea_lines = "\n".join(f'[{idea.idea_ref}] "{idea.text}"' for idea in ideas)
 
+    return f"""Below are two codes from a coding scheme, and a pooled, shuffled list of real
+survey responses that were coded under one or the other. You are not told which response
+came from which code.
 
-def build_pair_prompt(pairs: List[CandidatePair], candidate_by_name: Dict[str, CodeCandidate]) -> str:
-    inventory = "\n\n".join(_pair_block(p, candidate_by_name) for p in _shuffled(pairs))
+Codes:
+- "{a.name}": {a.definition}
+- "{b.name}": {b.definition}
 
-    return f"""Below are pairs of codes from the same coding scheme, flagged as easy to
-confuse with each other. For EVERY pair, first WRITE the rule a coder could apply to
-assign any given idea to exactly one of the two codes — never both. Only after writing
-that rule, decide:
+For EVERY response below, decide which of the two codes above it actually belongs to.
 
-- If you could state a real rule, `one_dimension` is false — the codes stay separate.
-- If no such rule exists — every rule you try leaves real ideas belonging under both,
-  or under neither more than the other — `one_dimension` is true, and the two codes
-  should merge into one.
-
-A rule that only rephrases one code's name, without pointing to something that
-distinguishes actual ideas, is not a real rule.
-
-Pairs:
-{inventory}
+Responses:
+{idea_lines}
 
 {INSTRUCTOR_HINT}"""
