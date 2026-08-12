@@ -66,20 +66,52 @@ class DiscoveredAttribute(BaseModel):
     )
 
 
+class DiscoveredAttributeDimension(BaseModel):
+    """One way in which the responses in this facet differ, with its values.
+
+    The attributes are nested inside the dimension rather than listed beside it:
+    an attribute cannot be proposed without first saying what it is a value OF.
+    """
+    dimension_name: str = Field(
+        ..., description=(
+            "The way responses differ along this dimension, in a few words. "
+            "Descriptive — never an evaluative direction"
+        )
+    )
+    dimension_description: str = Field(
+        ..., description="One sentence on what varies along this dimension"
+    )
+    attributes: List[DiscoveredAttribute] = Field(
+        ..., description="The values this dimension takes in these observations"
+    )
+
+
 class AttributeDiscoveryResult(BaseModel):
     """Discovery output for one chunk."""
     scratchpad: str = Field(
         ..., description=(
-            "Reasoning before the final attribute set: "
-            "(1) cluster the observations by shared descriptive meaning, "
-            "(2) name the candidate attributes, "
-            "(3) check each candidate is one concept and mixes no evaluation in, "
-            "(4) check each pair for a clean boundary and merge where there is none, "
-            "(5) check every candidate stays inside the facet"
+            "Reasoning before the final set: "
+            "(1) read the observations for the ways they differ from one another, "
+            "(2) name the candidate dimensions of variation, "
+            "(3) test each pair of dimensions for independence in both directions and "
+            "merge them where independence cannot be shown, "
+            "(4) check no dimension is an evaluative direction in disguise, "
+            "(5) name the values on each surviving dimension, "
+            "(6) check every candidate stays inside the facet"
         )
     )
-    attributes: List[DiscoveredAttribute] = Field(
-        ..., description="The attributes found in these observations"
+    independence_evidence: str = Field(
+        default="", description=(
+            "When more than one dimension is returned: observations from the input "
+            "showing that responses can differ on one dimension while sharing the same "
+            "value on another, in both directions. Empty for a single dimension"
+        )
+    )
+    dimensions: List[DiscoveredAttributeDimension] = Field(
+        ..., description=(
+            "The dimensions of variation found in these observations, each with its "
+            "values. As few as account for every difference the observations show"
+        )
     )
 
 
@@ -143,9 +175,32 @@ Here are the observations you need to account for:
 
 ## YOUR TASK
 
-Identify the **attributes** (level 4) present in these observations.
+Find the **dimensions of variation** in these observations — the ways in which responses
+within this facet differ from one another — and then give the values each dimension
+takes. Those values are the attributes (level 4).
 
-The question every attribute must answer for this dimension is:
+A dimension of variation is not the L1 dimension named in the taxonomy above. That one is
+fixed for the whole study; these are the axes along which the answers inside THIS facet
+differ from each other.
+
+**Look for orthogonal dimensions.** Dimensions that do not overlap, that live in a
+different semantic space from one another. The test: two observations must be able to
+differ on dimension A while sharing the same value on dimension B, and differ on B while
+sharing the same value on A. If you cannot show that in both directions using the
+observations in front of you, you have one dimension, not two.
+
+**Look for as few as possible.** Enough to account for every difference the observations
+show, and not one more. If the responses vary in only one way, return exactly one
+dimension — do not decompose one dimension into several.
+
+**A dimension of variation is DESCRIPTIVE.** It names WHAT differs between responses,
+never how positively or negatively the subject is judged. "Positive versus negative",
+"satisfied versus dissatisfied" and any rephrasing of those is not a dimension of
+variation — evaluative direction is recorded per response as valence and never becomes
+structure. If the only variation you can find here is evaluative, return the single
+descriptive dimension the responses share and let valence carry the rest.
+
+Every value you return has to answer the attribute question for this study:
 
 <attribute_diagnostic>
 {diagnostic}
@@ -154,8 +209,8 @@ The question every attribute must answer for this dimension is:
 An attribute is an answer to that question. It names a concrete, observable property —
 not a verbatim span from a response, and not the facet restated one level up.
 
-Aim for the smallest set of attributes that still gives every observation a clear home.
-Each attribute must be:
+Aim for the smallest set of values per dimension that still gives every observation a
+clear home. Each attribute must be:
 
 - **Grounded in the data** — supported by a recurring pattern across observations, not
   by a single one-off phrasing.
@@ -179,6 +234,11 @@ when the same distinction recurs.
 
 Work through your reasoning in the scratchpad field first.
 
+For EACH dimension of variation provide:
+- **dimension_name** — how responses differ along it, in a few words
+- **dimension_description** — one sentence on what varies
+- **attributes** — the values it takes, each one a full attribute
+
 For EACH attribute provide:
 - **attribute_name** — a short descriptive name
 - **attribute_definition** — one sentence naming a single observable property, with no
@@ -188,7 +248,12 @@ For EACH attribute provide:
   easily confused with
 - **example_observations** — 2-3 observations from the input above, copied exactly
 
-All attribute names, definitions, boundary tests and exclusions must be written in {language}.
+When you return more than one dimension, fill **independence_evidence** with observations
+from the input showing the two directions of independence. Leave it empty for a single
+dimension.
+
+All dimension names, attribute names, definitions, boundary tests and exclusions must be
+written in {language}.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
 
@@ -331,6 +396,17 @@ Consolidation principles:
   attributes — do not collapse them because fewer is tidier.
 - **STAY inside the facet.** A candidate that falls outside the facet is not an
   attribute to keep; leave it out rather than widening the facet to fit it.
+
+Two things are FORBIDDEN in what you return:
+
+- **FORBIDDEN: attributes that overlap conceptually, semantically or in meaning**, judged
+  in terms of the reactions and answers people gave to the survey question. Not in the
+  abstract — in terms of what respondents actually said.
+- **FORBIDDEN: any pair that fails the researcher's test.** Picture a researcher reading
+  your final set and saying: *"these two do not actually help me organise meaningfully
+  different reactions to this question — they essentially mean the same thing, or they
+  overlap so heavily in meaning that the split buys me nothing."* If a pair invites that
+  sentence, it is one attribute. Merge it.
 
 Every candidate you consume must be listed in the `source_attributes` of the attribute
 that consumes it. A candidate you do not list is left standing as it is, so list them.

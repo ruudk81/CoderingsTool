@@ -766,10 +766,27 @@ class TaxonomyClassifier:
             }
         return prepare_fn
 
-    @staticmethod
-    def _facet_discovery_parse_fn():
+    def _facet_discovery_parse_fn(self):
+        """Flatten the dimensions back to one facet list.
+
+        Discovery returns its facets nested under the dimension of variation each
+        one is a value of — that nesting is what forces the model to say what its
+        list is a list OF before making it. Downstream only needs the values, so
+        the dimension is a construction aid here and never becomes a taxonomy
+        layer. The names are logged so the grouping stays inspectable.
+        """
         def parse_fn(task: Dict, response) -> List[DiscoveredFacet]:
-            return list(response.facets) if response else []
+            if not response:
+                return []
+            facets: List[DiscoveredFacet] = []
+            for dimension in response.dimensions:
+                facets.extend(dimension.facets)
+            self._action_log.append({
+                "action": "facet_dimensions", "domain": task["domain_label"],
+                "chunk": task["chunk_idx"],
+                "dimensions": [d.dimension_name for d in response.dimensions],
+                "values_per_dimension": [len(d.facets) for d in response.dimensions]})
+            return facets
         return parse_fn
 
     @staticmethod
@@ -1688,10 +1705,20 @@ class TaxonomyClassifier:
             }
         return prepare_fn
 
-    @staticmethod
-    def _attribute_discovery_parse_fn():
+    def _attribute_discovery_parse_fn(self):
+        """Flatten the dimensions back to one attribute list — see the facet twin."""
         def parse_fn(task: Dict, response) -> List[DiscoveredAttribute]:
-            return list(response.attributes) if response else []
+            if not response:
+                return []
+            attributes: List[DiscoveredAttribute] = []
+            for dimension in response.dimensions:
+                attributes.extend(dimension.attributes)
+            self._action_log.append({
+                "action": "attribute_dimensions", "domain": task["domain_label"],
+                "facet": task["facet_name"], "chunk": task["chunk_idx"],
+                "dimensions": [d.dimension_name for d in response.dimensions],
+                "values_per_dimension": [len(d.attributes) for d in response.dimensions]})
+            return attributes
         return parse_fn
 
     @staticmethod

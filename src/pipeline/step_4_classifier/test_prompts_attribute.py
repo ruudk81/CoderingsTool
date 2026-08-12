@@ -96,8 +96,21 @@ def test_model_eist_boundary_test_en_exclusions():
         )
 
 
-def test_discovery_result_accepteert_lege_lijst():
-    assert AttributeDiscoveryResult(scratchpad="s", attributes=[]).attributes == []
+def test_discovery_result_accepteert_lege_dimensielijst():
+    assert AttributeDiscoveryResult(scratchpad="s", dimensions=[]).dimensions == []
+
+
+def test_attributen_hangen_onder_een_dimensie():
+    from pipeline.step_4_classifier.prompts_attribute import DiscoveredAttributeDimension
+    d = DiscoveredAttributeDimension(
+        dimension_name="welke eigenschap",
+        dimension_description="waar de reactie over gaat",
+        attributes=[DiscoveredAttribute(
+            attribute_name="Vriendelijk", attribute_definition="d", boundary_test="b?",
+            exclusions=["x"], example_observations=["e"])],
+    )
+    r = AttributeDiscoveryResult(scratchpad="s", dimensions=[d])
+    assert [x.attribute_name for dim in r.dimensions for x in dim.attributes] == ["Vriendelijk"]
 
 
 # =============================================================================
