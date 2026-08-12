@@ -65,8 +65,13 @@ N_RESPONSES = 300          # override with --n
 # =============================================================================
 
 def full_menu(consolidated, dimension) -> List:
-    """Discovered domains plus the two standing ones, exactly as production assembles it."""
-    standing = IdeaExtractor._resolve_standing_domains(consolidated, dimension)
+    """Discovered domains plus the two standing ones, exactly as production assembles it.
+
+    The two standing labels come from the dimension's own fallback wording (`labels`
+    is `None`, not the consolidation response), so they are identical in both arms of
+    this experiment and cannot contribute to the measured variance.
+    """
+    standing = IdeaExtractor._resolve_standing_domains(None, dimension)
     return list(consolidated.domains) + standing
 
 

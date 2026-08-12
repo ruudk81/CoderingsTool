@@ -58,6 +58,8 @@ from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     consolidate_primary_dimension_by_majority,
     build_orthogonalize_domains_prompt,
     ReformulatedDomains,
+    build_standing_labels_prompt,
+    StandingLabelsResponse,
 )
 
 # === DIMENSION DATA ===============================================================================================
@@ -805,19 +807,26 @@ class IdeaExtractor:
                     "Domain discovery produced no results from any chunk. "
                     "Check LLM connectivity, rate limits, and model availability."
                 )
-            elif len(category_results) == 1:
+
+            dimension = get_dimension(self.primary_dimension)
+            # Runs alongside consolidation: it needs only the dimension and the
+            # language, so it costs no wall-clock.
+            labels_task = asyncio.create_task(
+                self._translate_standing_labels(dimension, context_specifiers))
+
+            if len(category_results) == 1:
                 # Single chunk — use directly
                 categories_consolidated = DomainConsolidatedResponse(
                     domains=category_results[0]['response'].domains
                 )
             else:
-                categories_consolidated = await self._consolidate_domains(category_results, context_specifiers, sample_responses=sample)
+                categories_consolidated = await self._consolidate_domains(
+                    category_results, context_specifiers, sample_responses=sample)
 
             # The two standing domains join the discovered ones here, so every consumer
             # downstream — the assignment menu, the domain table, the persisted
             # metadata — sees a single list and needs no special case.
-            standing = self._resolve_standing_domains(
-                None, get_dimension(self.primary_dimension))
+            standing = self._resolve_standing_domains(await labels_task, dimension)
             categories_consolidated.domains = list(categories_consolidated.domains) + standing
 
             self.verbose_reporter.stat_line(
@@ -1275,6 +1284,35 @@ class IdeaExtractor:
         for d in domains or []:
             if d.key not in (STANDING_BARE_KEY, STANDING_OTHER_KEY):
                 d.key = d.label
+
+    async def _translate_standing_labels(self, dimension: DimensionDefinition,
+                                         context_specifiers: Dict):
+        """One small call whose only job is naming the two standing domains.
+
+        Separate from consolidation on purpose: a call that also has to partition
+        the domain space pulls the label along with it.
+        """
+        prompt = build_standing_labels_prompt(
+            language=self.language,
+            entity=context_specifiers.get("entity", ""),
+            dimension=dimension,
+        )
+        client, model = self._get_client_and_model("taxonomy")
+        try:
+            async with self.semaphore:
+                await self.tpm_bucket.wait_and_acquire(
+                    self._estimate_preprocessed_tokens(prompt))
+                await self.rate_limiter.acquire()
+                return await llm_create_async(
+                    client=client, model=model,
+                    response_model=StandingLabelsResponse,
+                    prompt=prompt, temperature=0.0,
+                    **get_reasoning_params(model, phase="idea_extraction_taxonomy"),
+                )
+        except Exception as exc:
+            self.verbose_reporter.stat_line(
+                f"  Standing labels: translation failed ({exc}) — using fallback labels")
+            return None
 
     @staticmethod
     def _resolve_standing_domains(labels, dimension: DimensionDefinition) -> List:
