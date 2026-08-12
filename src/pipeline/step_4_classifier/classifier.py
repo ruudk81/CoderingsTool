@@ -265,6 +265,13 @@ class TaxonomyClassifier:
                 f"Valid: {', '.join(self.PHASES)}."
             )
 
+        # One entry per action a phase takes, in run order. Lives on the
+        # instance rather than being threaded through every signature: the
+        # orchestrator reads as the nine phase calls it is, and the task
+        # builders stay pure because only the run methods touch this.
+        self._action_log: List[Dict] = []
+        self._last_stats: Dict = {}
+
         # Assignment confidence scores and valence (populated by the two
         # assignment phases' parse_fns)
         self._facet_confidence: Dict[str, float] = {}
@@ -313,6 +320,11 @@ class TaxonomyClassifier:
             print(f"  Facet diagnostic: {dimension_def.prompt_rules.facet_diagnostic}")
             print(f"  Attribute diagnostic: {dimension_def.prompt_rules.attribute_diagnostic}")
 
+        active_partitions = {
+            name: mapping for name, mapping in label_mappings.items()
+            if mapping.labels
+        }
+
         context = dataset_context or {}
         prompt_context = PromptContext(
             language=language,
@@ -331,16 +343,16 @@ class TaxonomyClassifier:
                     "definition": part.inclusion_definition,
                     "boundary_test": part.boundary_test,
                     "exclusions": part.exclusions,
+                    # Discovery input travels with the domain, so the task
+                    # builder needs nothing but the context to decide its shape.
+                    "observations": list(
+                        active_partitions[part.partition_name].labels),
                 }
                 for part in partition_set.partitions
+                if part.partition_name in active_partitions
             },
             drain_labels=drain_domains(extraction_metadata),
         )
-
-        active_partitions = {
-            name: mapping for name, mapping in label_mappings.items()
-            if mapping.labels
-        }
 
         return prompt_context, active_partitions
 
@@ -1494,6 +1506,369 @@ class TaxonomyClassifier:
             consolidation_log=consolidation_log,
             axis_systems=self._dump_axis_systems(),
         )
+
+    # =========================================================================
+    # SHARED PHASE PLUMBING
+    # =========================================================================
+
+    async def _dispatch(
+        self, phase: str, tasks: List[Dict], prepare_fn, parse_fn, fallback_fn,
+        verbose: bool, *, quiet: bool = True,
+    ) -> List:
+        """Run one phase's tasks through SmoothRequester and record its cost.
+
+        One place where a phase meets the requester, so a phase cannot end up
+        dispatching on a different model than the one its cost is booked
+        against, and the phase key cannot drift from the phase name.
+        """
+        self._last_stats = {}
+        if not tasks:
+            return []
+        model = self._model[phase]
+        snapshot = token_tracker.snapshot() if self.cost_tracker else None
+        requester = SmoothRequester(
+            model=model,
+            phase_key=f"step4_{phase}",
+            num_tasks=len(tasks),
+            verbose=verbose,
+            known_limits=self._limits_by_model[model],
+            has_server_headers=self._has_headers_by_model[model],
+            show_setup=False,
+            quiet=quiet,
+        )
+        results = await requester.process_all(tasks, prepare_fn, parse_fn, fallback_fn)
+        self._last_stats = requester.stats
+        if self.cost_tracker and snapshot is not None:
+            self.cost_tracker.record_phase(
+                "step_4_taxonomy_classifier", phase, snapshot,
+                token_tracker.snapshot(), model)
+        return results
+
+    def _capture(self, gate_key: str, prompt: str, prompt_type: str,
+                 metadata: Dict) -> None:
+        """Capture the first prompt of its kind, once per gate."""
+        if self._prompt_printer is None or gate_key in self._captured_gates:
+            return
+        self._prompt_printer.capture_prompt(
+            step_name="qualitative_researcher",
+            utility_name="QualitativeResearcher",
+            prompt_content=prompt,
+            prompt_type=prompt_type,
+            metadata=metadata,
+        )
+        self._captured_gates.add(gate_key)
+
+    def _consolidation_groups(self, items: List) -> List[List]:
+        """Split a candidate list into groups that each fit in one call."""
+        cap = self._consolidation_max_items_per_call
+        if len(items) <= cap:
+            return [list(items)]
+        return [list(items[i:i + cap]) for i in range(0, len(items), cap)]
+
+    # =========================================================================
+    # PHASE — FACET DISCOVERY (per domain, chunked)
+    # =========================================================================
+
+    def _build_facet_discovery_tasks(self, ctx: PromptContext) -> List[Dict]:
+        """One task per (domain, chunk).
+
+        The two standing drain domains are skipped. Step 3 defines them as
+        deliberately broad catch-alls; imposing structure on a catch-all invents
+        distinctions the responses do not carry.
+        """
+        tasks: List[Dict] = []
+        for label in sorted(ctx.domains):
+            if label in ctx.drain_labels:
+                continue
+            observations = ctx.domain(label).get("observations") or []
+            chunks = self._create_batches(observations)
+            for chunk_idx, chunk in enumerate(chunks):
+                tasks.append({
+                    "domain_label": label,
+                    "chunk_idx": chunk_idx,
+                    "total_chunks": len(chunks),
+                    "observations": chunk,
+                })
+        return tasks
+
+    def _facet_discovery_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            domain = ctx.domain(task["domain_label"])
+            prompt = build_facet_discovery_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                dimension_name=ctx.dimension_name,
+                dimension_description=ctx.dimension_description,
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                domain_boundary_test=domain["boundary_test"],
+                domain_exclusions=domain["exclusions"],
+                observations=task["observations"],
+            )
+            if task["chunk_idx"] == 0:
+                self._capture(
+                    f"facet_discovery_{task['domain_label']}", prompt,
+                    "facet_discovery",
+                    {"model": self._model["facet_discovery"],
+                     "temperature": self._temperature,
+                     "max_tokens": self._max_tokens_facet_discovery,
+                     "language": ctx.language,
+                     "domain": task["domain_label"],
+                     "total_chunks": task["total_chunks"],
+                     "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": FacetDiscoveryResult,
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens_facet_discovery,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["facet_discovery"],
+                    phase="classifier_facet_discovery"),
+            }
+        return prepare_fn
+
+    @staticmethod
+    def _facet_discovery_parse_fn():
+        def parse_fn(task: Dict, response) -> List[DiscoveredFacet]:
+            return list(response.facets) if response else []
+        return parse_fn
+
+    @staticmethod
+    def _facet_discovery_fallback_fn():
+        def fallback_fn(task: Dict, reason: str) -> List[DiscoveredFacet]:
+            return []
+        return fallback_fn
+
+    async def _run_facet_discovery(
+        self, ctx: PromptContext, verbose: bool,
+    ) -> Dict[str, List[DiscoveredFacet]]:
+        """Propose facets per domain, then collapse byte-identical re-proposals.
+
+        Every chunk rediscovers largely the same structure, so the flattened
+        yield holds exact repeats. Only those are removed here; near-duplicates
+        are a judgment and belong to consolidation, which sees each candidate
+        together with the observations that produced it.
+        """
+        if verbose:
+            print(f"\n  Facet discovery")
+        started = time.time()
+
+        tasks = self._build_facet_discovery_tasks(ctx)
+        results = await self._dispatch(
+            "facet_discovery", tasks,
+            self._facet_discovery_prepare_fn(ctx),
+            self._facet_discovery_parse_fn(),
+            self._facet_discovery_fallback_fn(),
+            verbose,
+        )
+
+        flat: Dict[str, List[DiscoveredFacet]] = {}
+        for task, result in zip(tasks, results):
+            flat.setdefault(task["domain_label"], []).extend(result or [])
+
+        raw: Dict[str, List[DiscoveredFacet]] = {}
+        for label in sorted(flat):
+            deduped = dedup_exact_facets(flat[label])
+            if len(deduped) < len(flat[label]):
+                self._action_log.append({
+                    "action": "facet_exact_dedup", "domain": label,
+                    "before": len(flat[label]), "after": len(deduped)})
+            raw[label] = deduped
+
+        if verbose:
+            s = self._last_stats
+            print(f"    {len(tasks)} tasks, {time.time() - started:.1f}s "
+                  f"({s.get('tasks_successful', 0)} ok, "
+                  f"{s.get('timeouts', 0)} timeouts, "
+                  f"{s.get('recovered', 0)} retries) → "
+                  f"{sum(len(f) for f in raw.values())} candidate facets")
+            for label in sorted(raw):
+                print(f"      {label}: {len(raw[label])}")
+        return raw
+
+    # =========================================================================
+    # PHASE — FACET CONSOLIDATION (per domain, before any idea is assigned)
+    # =========================================================================
+
+    def _build_facet_consolidation_tasks(
+        self, ctx: PromptContext, raw: Dict[str, List[DiscoveredFacet]],
+    ) -> List[Dict]:
+        """One task per domain that has candidates, split when it holds too many.
+
+        A domain whose candidates do not fit one call is consolidated in rounds:
+        the groups here are the first round, and their survivors go back in
+        together so the groups still get to see each other.
+        """
+        tasks: List[Dict] = []
+        for label in sorted(raw):
+            candidates = raw[label]
+            if not candidates:
+                continue
+            for group in self._consolidation_groups(candidates):
+                tasks.append({"domain_label": label, "candidates": group})
+        return tasks
+
+    def _facet_consolidation_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            domain = ctx.domain(task["domain_label"])
+            prompt = build_facet_consolidation_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                dimension_name=ctx.dimension_name,
+                dimension_description=ctx.dimension_description,
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                domain_boundary_test=domain["boundary_test"],
+                candidates=task["candidates"],
+            )
+            self._capture(
+                f"facet_consolidation_{task['domain_label']}", prompt,
+                "facet_consolidation",
+                {"model": self._model["facet_consolidation"],
+                 "temperature": 0.0,
+                 "max_tokens": self._max_tokens_consolidation,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "n_candidates": len(task["candidates"]),
+                 "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": FacetConsolidationResult,
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens_consolidation,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["facet_consolidation"],
+                    phase="classifier_facet_consolidation"),
+            }
+        return prepare_fn
+
+    @staticmethod
+    def _facet_consolidation_parse_fn():
+        def parse_fn(task: Dict, response) -> Optional[FacetConsolidationResult]:
+            return response if response else None
+        return parse_fn
+
+    @staticmethod
+    def _facet_consolidation_fallback_fn():
+        """On failure the domain keeps its candidates — never silently emptied."""
+        def fallback_fn(task: Dict, reason: str) -> None:
+            return None
+        return fallback_fn
+
+    @staticmethod
+    def _as_consolidated_facet(facet) -> ConsolidatedFacet:
+        """A candidate that survives untouched, in the settled type."""
+        if isinstance(facet, ConsolidatedFacet):
+            return facet
+        return ConsolidatedFacet(**facet.model_dump(),
+                                 source_facets=[facet.facet_name])
+
+    def _facet_consolidation_survivors(
+        self, task: Dict, result,
+    ) -> List[ConsolidatedFacet]:
+        """The settled facets of one group, with unclaimed candidates kept.
+
+        A candidate that appears in no `source_facets` is left standing. Dropping
+        it silently would remove a facet the model never judged — a fail-safe,
+        logged so under-claiming is visible rather than invisible.
+        """
+        label, candidates = task["domain_label"], task["candidates"]
+        if result is None or not result.facets:
+            self._action_log.append({
+                "action": "facet_consolidation_failed", "domain": label,
+                "note": "no result — candidates left as discovered",
+                "candidates": [c.facet_name for c in candidates]})
+            return [self._as_consolidated_facet(c) for c in candidates]
+
+        survivors: List[ConsolidatedFacet] = list(result.facets)
+        claimed = {self._norm_text(s)
+                   for f in survivors for s in (f.source_facets or [])}
+        returned = {self._norm_text(f.facet_name) for f in survivors}
+        for candidate in candidates:
+            key = self._norm_text(candidate.facet_name)
+            if key in claimed or key in returned:
+                continue
+            survivors.append(self._as_consolidated_facet(candidate))
+            self._action_log.append({
+                "action": "facet_kept_unclaimed", "domain": label,
+                "facet": candidate.facet_name})
+
+        self._action_log.append({
+            "action": "facet_consolidation", "domain": label,
+            "before": len(candidates), "after": len(survivors)})
+        return survivors
+
+    async def _run_facet_consolidation(
+        self, ctx: PromptContext, raw: Dict[str, List[DiscoveredFacet]],
+        verbose: bool,
+    ) -> Dict[str, List[ConsolidatedFacet]]:
+        """Settle each domain's facet inventory before a single idea is assigned.
+
+        Rounds, not one shot: a domain with more candidates than fit in a call is
+        consolidated per group, and the survivors go back in together. A domain
+        that already fits in one call is settled after one round.
+        """
+        if verbose:
+            print(f"\n  Facet consolidation")
+        started = time.time()
+
+        settled: Dict[str, List[ConsolidatedFacet]] = {}
+        pending: Dict[str, List[DiscoveredFacet]] = {
+            label: list(facets) for label, facets in raw.items() if facets
+        }
+
+        for _ in range(self._consolidation_max_rounds):
+            # One candidate is nothing to merge: no call, keep the facet.
+            for label in [l for l, c in pending.items() if len(c) == 1]:
+                settled[label] = [self._as_consolidated_facet(pending.pop(label)[0])]
+
+            tasks = self._build_facet_consolidation_tasks(ctx, pending)
+            if not tasks:
+                break
+
+            results = await self._dispatch(
+                "facet_consolidation", tasks,
+                self._facet_consolidation_prepare_fn(ctx),
+                self._facet_consolidation_parse_fn(),
+                self._facet_consolidation_fallback_fn(),
+                verbose,
+            )
+
+            groups_per_domain = Counter(t["domain_label"] for t in tasks)
+            survivors: Dict[str, List[ConsolidatedFacet]] = {}
+            for task, result in zip(tasks, results):
+                survivors.setdefault(task["domain_label"], []).extend(
+                    self._facet_consolidation_survivors(task, result))
+
+            pending = {}
+            for label, facets in survivors.items():
+                if groups_per_domain[label] == 1:
+                    settled[label] = facets
+                else:
+                    pending[label] = facets
+            if not pending:
+                break
+
+        for label, leftover in pending.items():
+            settled[label] = [self._as_consolidated_facet(f) for f in leftover]
+            self._action_log.append({
+                "action": "facet_consolidation_rounds_exhausted",
+                "domain": label, "rounds": self._consolidation_max_rounds,
+                "remaining": len(leftover)})
+
+        if verbose:
+            print(f"    {time.time() - started:.1f}s → "
+                  f"{sum(len(f) for f in settled.values())} facets")
+            for label in sorted(settled):
+                names = ", ".join(f.facet_name for f in settled[label])
+                print(f"      {label}: {len(settled[label])} — {names}")
+        return settled
 
     # =========================================================================
     # PHASE 4 (P4): PER-DOMAIN FACET ASSIGNMENT (SmoothRequester)
