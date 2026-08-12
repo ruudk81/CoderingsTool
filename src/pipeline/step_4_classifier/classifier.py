@@ -3010,6 +3010,354 @@ class TaxonomyClassifier:
                   f"{sum(len(f) for f in facets.values())} facets")
         return facets, assignments
 
+    # =========================================================================
+    # PHASE — ATTRIBUTE DISCOVERY (per facet, chunked)
+    # =========================================================================
+
+    def _build_attribute_discovery_tasks(
+        self,
+        ctx: PromptContext,
+        facets: Dict[str, List[ConsolidatedFacet]],
+        observations: Dict[Tuple[str, str], List[str]],
+    ) -> List[Dict]:
+        """One task per (facet, chunk), for every facet that holds observations.
+
+        The mirror of facet discovery one level down. The drain domains are
+        already absent here: they never got facets, so they hold nothing to
+        chunk.
+        """
+        tasks: List[Dict] = []
+        for domain_label in sorted(facets):
+            for facet in facets[domain_label]:
+                held = observations.get((domain_label, facet.facet_name)) or []
+                if not held:
+                    continue
+                chunks = self._create_batches(
+                    held,
+                    size_min=self._attribute_chunk_size_min,
+                    size_max=self._attribute_chunk_size_max,
+                    target=self._attribute_target_batches,
+                    overlap=self._attribute_chunk_overlap,
+                )
+                for chunk_idx, chunk in enumerate(chunks):
+                    tasks.append({
+                        "domain_label": domain_label,
+                        "facet_name": facet.facet_name,
+                        "facet": facet,
+                        "chunk_idx": chunk_idx,
+                        "total_chunks": len(chunks),
+                        "observations": chunk,
+                    })
+        return tasks
+
+    def _attribute_discovery_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            domain = ctx.domain(task["domain_label"])
+            facet = task["facet"]
+            prompt = build_attribute_discovery_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                dimension_name=ctx.dimension_name,
+                dimension_description=ctx.dimension_description,
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                facet_name=facet.facet_name,
+                facet_definition=facet.facet_definition,
+                facet_boundary_test=facet.boundary_test,
+                facet_exclusions=facet.exclusions,
+                observations=task["observations"],
+            )
+            if task["chunk_idx"] == 0:
+                self._capture(
+                    f"attribute_discovery_{task['domain_label']}_{task['facet_name']}",
+                    prompt, "attribute_discovery",
+                    {"model": self._model["attribute_discovery"],
+                     "temperature": self._temperature,
+                     "max_tokens": self._max_tokens_attribute_discovery,
+                     "language": ctx.language,
+                     "domain": task["domain_label"],
+                     "facet": task["facet_name"],
+                     "total_chunks": task["total_chunks"],
+                     "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": AttributeDiscoveryResult,
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens_attribute_discovery,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["attribute_discovery"],
+                    phase="classifier_attribute_discovery"),
+            }
+        return prepare_fn
+
+    @staticmethod
+    def _attribute_discovery_parse_fn():
+        def parse_fn(task: Dict, response) -> List[DiscoveredAttribute]:
+            return list(response.attributes) if response else []
+        return parse_fn
+
+    @staticmethod
+    def _attribute_discovery_fallback_fn():
+        def fallback_fn(task: Dict, reason: str) -> List[DiscoveredAttribute]:
+            return []
+        return fallback_fn
+
+    async def _run_attribute_discovery(
+        self,
+        ctx: PromptContext,
+        facets: Dict[str, List[ConsolidatedFacet]],
+        observations: Dict[Tuple[str, str], List[str]],
+        verbose: bool,
+    ) -> Dict[str, Dict[str, List[DiscoveredAttribute]]]:
+        """Propose attributes per facet, then collapse byte-identical repeats."""
+        if verbose:
+            print(f"\n  Attribute discovery")
+        started = time.time()
+
+        tasks = self._build_attribute_discovery_tasks(ctx, facets, observations)
+        results = await self._dispatch(
+            "attribute_discovery", tasks,
+            self._attribute_discovery_prepare_fn(ctx),
+            self._attribute_discovery_parse_fn(),
+            self._attribute_discovery_fallback_fn(),
+            verbose,
+        )
+
+        flat: Dict[Tuple[str, str], List[DiscoveredAttribute]] = {}
+        for task, result in zip(tasks, results):
+            flat.setdefault(
+                (task["domain_label"], task["facet_name"]), []).extend(result or [])
+
+        raw: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {}
+        for (domain_label, facet_name), attributes in sorted(flat.items()):
+            deduped = dedup_exact_attributes(attributes)
+            if len(deduped) < len(attributes):
+                self._action_log.append({
+                    "action": "attribute_exact_dedup", "domain": domain_label,
+                    "facet": facet_name,
+                    "before": len(attributes), "after": len(deduped)})
+            raw.setdefault(domain_label, {})[facet_name] = deduped
+
+        if verbose:
+            s = self._last_stats
+            total = sum(len(a) for f in raw.values() for a in f.values())
+            print(f"    {len(tasks)} tasks, {time.time() - started:.1f}s "
+                  f"({s.get('tasks_successful', 0)} ok, "
+                  f"{s.get('timeouts', 0)} timeouts) → "
+                  f"{total} candidate attributes across {len(flat)} facets")
+        return raw
+
+    # =========================================================================
+    # PHASE — ATTRIBUTE CONSOLIDATION (per facet, before any idea is assigned)
+    # =========================================================================
+
+    def _build_attribute_consolidation_tasks(
+        self,
+        ctx: PromptContext,
+        raw: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+        facets: Optional[Dict[str, List[ConsolidatedFacet]]] = None,
+    ) -> List[Dict]:
+        """One task per facet that has candidates, split when it holds too many.
+
+        `facets` supplies the facet card the prompt shows; without it the task
+        still carries the name, which is what the tests scope on.
+        """
+        by_name: Dict[Tuple[str, str], ConsolidatedFacet] = {}
+        for domain_label, items in (facets or {}).items():
+            for facet in items:
+                by_name[(domain_label, facet.facet_name)] = facet
+
+        tasks: List[Dict] = []
+        for domain_label in sorted(raw):
+            for facet_name in sorted(raw[domain_label]):
+                candidates = raw[domain_label][facet_name]
+                if not candidates:
+                    continue
+                for group in self._consolidation_groups(candidates):
+                    tasks.append({
+                        "domain_label": domain_label,
+                        "facet_name": facet_name,
+                        "facet": by_name.get((domain_label, facet_name)),
+                        "candidates": group,
+                    })
+        return tasks
+
+    def _attribute_consolidation_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            domain = ctx.domain(task["domain_label"])
+            facet = task["facet"]
+            prompt = build_attribute_consolidation_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                dimension_name=ctx.dimension_name,
+                dimension_description=ctx.dimension_description,
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                facet_name=task["facet_name"],
+                facet_definition=facet.facet_definition if facet else "",
+                candidates=task["candidates"],
+            )
+            self._capture(
+                f"attribute_consolidation_{task['domain_label']}_{task['facet_name']}",
+                prompt, "attribute_consolidation",
+                {"model": self._model["attribute_consolidation"],
+                 "temperature": 0.0,
+                 "max_tokens": self._max_tokens_consolidation,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "facet": task["facet_name"],
+                 "n_candidates": len(task["candidates"]),
+                 "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": AttributeConsolidationResult,
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens_consolidation,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["attribute_consolidation"],
+                    phase="classifier_attribute_consolidation"),
+            }
+        return prepare_fn
+
+    @staticmethod
+    def _attribute_consolidation_parse_fn():
+        def parse_fn(task: Dict, response) -> Optional[AttributeConsolidationResult]:
+            return response if response else None
+        return parse_fn
+
+    @staticmethod
+    def _attribute_consolidation_fallback_fn():
+        """On failure the facet keeps its candidates — never silently emptied."""
+        def fallback_fn(task: Dict, reason: str) -> None:
+            return None
+        return fallback_fn
+
+    @staticmethod
+    def _as_consolidated_attribute(attribute) -> ConsolidatedAttribute:
+        """A candidate that survives untouched, in the settled type."""
+        if isinstance(attribute, ConsolidatedAttribute):
+            return attribute
+        return ConsolidatedAttribute(**attribute.model_dump(),
+                                     source_attributes=[attribute.attribute_name])
+
+    def _attribute_consolidation_survivors(
+        self, task: Dict, result,
+    ) -> List[ConsolidatedAttribute]:
+        """The settled attributes of one group, with unclaimed candidates kept."""
+        candidates = task["candidates"]
+        scope = {"domain": task["domain_label"], "facet": task["facet_name"]}
+        if result is None or not result.attributes:
+            self._action_log.append({
+                "action": "attribute_consolidation_failed", **scope,
+                "note": "no result — candidates left as discovered",
+                "candidates": [c.attribute_name for c in candidates]})
+            return [self._as_consolidated_attribute(c) for c in candidates]
+
+        survivors: List[ConsolidatedAttribute] = list(result.attributes)
+        claimed = {self._norm_text(s)
+                   for a in survivors for s in (a.source_attributes or [])}
+        returned = {self._norm_text(a.attribute_name) for a in survivors}
+        for candidate in candidates:
+            key = self._norm_text(candidate.attribute_name)
+            if key in claimed or key in returned:
+                continue
+            survivors.append(self._as_consolidated_attribute(candidate))
+            self._action_log.append({
+                "action": "attribute_kept_unclaimed", **scope,
+                "attribute": candidate.attribute_name})
+
+        self._action_log.append({
+            "action": "attribute_consolidation", **scope,
+            "before": len(candidates), "after": len(survivors)})
+        return survivors
+
+    async def _run_attribute_consolidation(
+        self,
+        ctx: PromptContext,
+        raw: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+        facets: Dict[str, List[ConsolidatedFacet]],
+        verbose: bool,
+    ) -> Dict[str, Dict[str, List[ConsolidatedAttribute]]]:
+        """Settle each facet's attribute inventory before any idea is assigned.
+
+        Same round logic as the facet level: a facet whose candidates do not fit
+        one call is consolidated per group, and the survivors go back in
+        together so the groups still get to see each other.
+        """
+        if verbose:
+            print(f"\n  Attribute consolidation")
+        started = time.time()
+
+        settled: Dict[str, Dict[str, List[ConsolidatedAttribute]]] = {}
+        pending: Dict[str, Dict[str, List[DiscoveredAttribute]]] = {
+            domain_label: {f: list(a) for f, a in items.items() if a}
+            for domain_label, items in raw.items()
+        }
+
+        def _settle(domain_label, facet_name, attributes):
+            settled.setdefault(domain_label, {})[facet_name] = attributes
+
+        for _ in range(self._consolidation_max_rounds):
+            # One candidate is nothing to merge: no call, keep the attribute.
+            for domain_label in list(pending):
+                for facet_name in [f for f, a in pending[domain_label].items()
+                                   if len(a) == 1]:
+                    lone = pending[domain_label].pop(facet_name)[0]
+                    _settle(domain_label, facet_name,
+                            [self._as_consolidated_attribute(lone)])
+                if not pending[domain_label]:
+                    pending.pop(domain_label)
+
+            tasks = self._build_attribute_consolidation_tasks(ctx, pending, facets)
+            if not tasks:
+                break
+
+            results = await self._dispatch(
+                "attribute_consolidation", tasks,
+                self._attribute_consolidation_prepare_fn(ctx),
+                self._attribute_consolidation_parse_fn(),
+                self._attribute_consolidation_fallback_fn(),
+                verbose,
+            )
+
+            groups_per_facet = Counter(
+                (t["domain_label"], t["facet_name"]) for t in tasks)
+            survivors: Dict[Tuple[str, str], List[ConsolidatedAttribute]] = {}
+            for task, result in zip(tasks, results):
+                survivors.setdefault(
+                    (task["domain_label"], task["facet_name"]), []).extend(
+                        self._attribute_consolidation_survivors(task, result))
+
+            pending = {}
+            for (domain_label, facet_name), attributes in survivors.items():
+                if groups_per_facet[(domain_label, facet_name)] == 1:
+                    _settle(domain_label, facet_name, attributes)
+                else:
+                    pending.setdefault(domain_label, {})[facet_name] = attributes
+            if not pending:
+                break
+
+        for domain_label, items in pending.items():
+            for facet_name, leftover in items.items():
+                _settle(domain_label, facet_name,
+                        [self._as_consolidated_attribute(a) for a in leftover])
+                self._action_log.append({
+                    "action": "attribute_consolidation_rounds_exhausted",
+                    "domain": domain_label, "facet": facet_name,
+                    "rounds": self._consolidation_max_rounds,
+                    "remaining": len(leftover)})
+
+        if verbose:
+            total = sum(len(a) for f in settled.values() for a in f.values())
+            print(f"    {time.time() - started:.1f}s → {total} attributes")
+        return settled
+
     def _build_facet_contents_block(
         self,
         attributes: List[DiscoveredAttribute],

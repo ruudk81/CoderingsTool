@@ -176,3 +176,25 @@ def test_naslijptaak_draagt_aantallen_en_aandelen():
     rows = {naam: (n, aandeel) for naam, n, aandeel, _ in tasks[0]["rows"]}
     assert rows["f1"][0] == 2
     assert abs(rows["f1"][1] - 2 / 3) < 0.01
+
+
+# =============================================================================
+# Attribuut discovery en consolidatie
+# =============================================================================
+
+def test_attribuutdiscovery_chunkt_grote_facetten():
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["A"])
+    facets = {"A": [_consolidated("f1"), _consolidated("f2")]}
+    ideas_per_facet = {("A", "f1"): ["x"] * 300, ("A", "f2"): ["y"] * 10}
+    tasks = clf._build_attribute_discovery_tasks(ctx, facets, ideas_per_facet)
+    assert len([t for t in tasks if t["facet_name"] == "f2"]) == 1
+    assert len([t for t in tasks if t["facet_name"] == "f1"]) > 1
+
+
+def test_attribuutconsolidatie_is_een_taak_per_facet():
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["A"])
+    raw = {"A": {"f1": [_attr("a1"), _attr("a2")], "f2": [_attr("b1")]}}
+    tasks = clf._build_attribute_consolidation_tasks(ctx, raw)
+    assert {t["facet_name"] for t in tasks} == {"f1", "f2"}
