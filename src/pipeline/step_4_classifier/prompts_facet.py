@@ -552,9 +552,11 @@ class FacetRefinementResult(BaseModel):
             "Step-by-step reasoning: (1) read each facet's contents against its label "
             "and note groups that do not belong, (2) group facets by the underlying "
             "distinction each one answers, (3) set granularity by prevalence using the "
-            "shares shown, (4) route each non-fitting group to one of the four exits, "
-            "(5) check every label states a value rather than the question, "
-            "(6) assemble the final inventory"
+            "shares shown, (4) for every surviving pair, ask whether their contents can "
+            "be told apart without reading the labels, and merge the pair where they "
+            "cannot, (5) route each non-fitting group to one of the four exits, "
+            "(6) check every label states a value rather than the question, "
+            "(7) assemble the final inventory"
         )
     )
     facets: List[RefinedFacet] = Field(
@@ -687,23 +689,34 @@ response had been assigned.
 similar their labels look. Orthogonality is a guardrail against merging, never a reason
 to merge.
 
-**2. PREVALENCE SETS GRANULARITY** — within one distinction only. Use the shares shown:
-keep what is large, group what is thin, split what is large and diverse. Judge size
-relative to the siblings, never against an absolute number.
+**2. PREVALENCE SETS GRANULARITY** — within one distinction only. Each facet shows its
+share of the domain. Judge size relative to its siblings, never against an absolute
+number. The largest keep their own identity. Those far below their siblings do not
+survive on their own: group them with the sibling whose distinction they share, under a
+label that names the shared value. A facet holding a large share AND visibly diverse
+contents is too abstract: split it, do not widen it.
 
 **3. LIFT, DON'T FLATTEN.** When several thin facets share a distinction, name the
 concept they share. Do not dissolve them into a catch-all.
 
-**4. PLAIN, MEANINGFUL LABELS.** A facet name states a value, not the question it
+**4. TWO LABELS, ONE THING.** Before routing anything, read the contents of each pair
+against each other. Where you cannot tell which of two facets a response belongs to
+without reading the labels, they are not two facets: return ONE, listing both in
+`source_facets`. The labels were written before a single response had been assigned;
+what each one actually caught is the evidence that they turned out to name the same
+thing. This is the only phase that can see that, and a pair left standing here is left
+standing for good.
+
+**5. PLAIN, MEANINGFUL LABELS.** A facet name states a value, not the question it
 answers. Read the label alone: if it tells you only which question was asked, it is a
 container; if it tells you what the answer was, it is a value.
 
-**5. THE DOMAIN IS FIXED.** Every facet you return belongs to this domain. You cannot
+**6. THE DOMAIN IS FIXED.** Every facet you return belongs to this domain. You cannot
 move a facet to another domain, and you cannot create a facet that belongs to another
 domain. If a GROUP OF IDEAS belongs elsewhere, report it under `misfits` — the ideas
 move, the structure stays here.
 
-**6. FOUR EXITS FOR WHAT DOES NOT FIT.** For a group of responses sitting in a facet it
+**7. FOUR EXITS FOR WHAT DOES NOT FIT.** For a group of responses sitting in a facet it
 does not belong to:
    - the group points at ONE existing facet
        -> `misfits`, verdict "move": name the target and the EXACT response texts
@@ -718,14 +731,17 @@ does not belong to:
    Moves and splits must be expressed as EXACT response texts copied from the contents
    shown above — never as counts, paraphrases or summaries.
 
-**7. ONE SOURCE, ONE DESTINATION** — unless you route by text. Every facet in the input
+**8. ONE SOURCE, ONE DESTINATION** — unless you route by text. Every facet in the input
 must end up in exactly ONE returned facet. To divide one input facet over two returned
 facets, use action "split" for each part and list its exact texts in `instance_texts`.
 
-**8. KEEP THE VALUES THAT ARE ACTUALLY THERE.** Grouping is not discarding. If the
-contents hold four distinct values, return four facets. Collapsing the domain to a
-single facet removes a whole level of the hierarchy — do that only when the contents
-genuinely express one value.
+**9. NOTHING THE RESPONSES SAY MAY DISAPPEAR.** Grouping is not discarding: a value that
+moves under a shared label is still reported, a value sent "out" is gone. Never use
+"out", or a label that silently drops what it absorbed, to make the inventory tidier.
+But being a real value is not on its own a reason to stand alone — where responses are
+few against their siblings, their honest home is a shared label that still names what
+they say, not a facet of their own. Collapsing the domain to a single facet removes a
+whole level of the hierarchy: do that only when the contents genuinely express one value.
 </refinement_rules>
 
 {UNIVERSAL_RULES}

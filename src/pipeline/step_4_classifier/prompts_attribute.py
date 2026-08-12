@@ -544,9 +544,11 @@ class AttributeRefinementResult(BaseModel):
             "Step-by-step reasoning: (1) read each attribute's contents against its "
             "label and note groups that do not belong, (2) group attributes by the "
             "underlying distinction each one answers, (3) set granularity by prevalence "
-            "using the shares shown, (4) route each non-fitting group to one of the "
-            "four exits, (5) check every label states a value rather than the question, "
-            "(6) assemble the final inventory"
+            "using the shares shown, (4) for every surviving pair, ask whether their "
+            "contents can be told apart without reading the labels, and merge the pair "
+            "where they cannot, (5) route each non-fitting group to one of the four "
+            "exits, (6) check every label states a value rather than the question, "
+            "(7) assemble the final inventory"
         )
     )
     attributes: List[RefinedAttribute] = Field(
@@ -719,16 +721,24 @@ higher-abstraction label that still carries their meaning — not a label that m
 the question. Read the label alone: if it tells you only which question was asked, it is
 a container; if it tells you what the answer was, it is a value.
 
-**4. PLAIN, MEANINGFUL LABELS.** Name every surviving attribute in everyday language. A
+**4. TWO LABELS, ONE THING.** Before routing anything, read the contents of each pair
+against each other. Where you cannot tell which of two attributes a response belongs to
+without reading the labels, they are not two attributes: return ONE, listing both in
+`source_attributes`. The labels were written before a single response had been assigned;
+what each one actually caught is the evidence that they turned out to name the same
+thing. This is the only phase that can see that, and a pair left standing here is left
+standing for good.
+
+**5. PLAIN, MEANINGFUL LABELS.** Name every surviving attribute in everyday language. A
 layperson reading the label alone, given the survey question, should know which
 distinction is meant. No jargon, no nominalizations.
 
-**5. THE FACET IS FIXED.** Every attribute you return belongs to "{facet_name}". You
+**6. THE FACET IS FIXED.** Every attribute you return belongs to "{facet_name}". You
 cannot move an attribute to another facet, and you cannot create one that belongs to
 another facet. If a GROUP OF IDEAS belongs elsewhere, report it under `misfits` — the
 ideas move, the attribute stays here.
 
-**6. FOUR EXITS FOR WHAT DOES NOT FIT.** Read what each attribute actually contains.
+**7. FOUR EXITS FOR WHAT DOES NOT FIT.** Read what each attribute actually contains.
 Where contents do not match the label, choose per group:
    - the group points at ONE existing attribute (here or in a neighbouring facet)
        -> `misfits`, verdict "move": name the target and the EXACT response texts
@@ -744,16 +754,19 @@ Where contents do not match the label, choose per group:
    contents shown above — never as counts, paraphrases or summaries. Every decision has
    to be checkable against the data.
 
-**7. ONE SOURCE, ONE DESTINATION** — unless you route by text. Every attribute in the
+**8. ONE SOURCE, ONE DESTINATION** — unless you route by text. Every attribute in the
 input must end up in exactly ONE returned attribute. To divide one input attribute's
 contents over TWO returned attributes, use action "split" for each part and list the
 exact texts belonging to it in `instance_texts`.
 
-**8. KEEP THE VALUES THAT ARE ACTUALLY THERE.** Grouping is not discarding. If the
-contents hold two distinct values, return two attributes — merging them into one and
-sending the remainder "out" loses real answers. Collapsing a facet to a SINGLE attribute
-removes a whole level of the hierarchy: the facet name then says nothing the attribute
-does not already say. Do that only when the contents genuinely express one value.
+**9. NOTHING THE RESPONSES SAY MAY DISAPPEAR.** Grouping is not discarding: a value that
+moves under a shared label is still reported, a value sent "out" is gone. Never use
+"out", or a label that silently drops what it absorbed, to make the inventory tidier.
+But being a real value is not on its own a reason to stand alone — where responses are
+few against their siblings, their honest home is a shared label that still names what
+they say, not an attribute of their own. Collapsing a facet to a SINGLE attribute removes
+a whole level of the hierarchy: the facet name then says nothing the attribute does not
+already say. Do that only when the contents genuinely express one value.
 </refinement_rules>
 
 {UNIVERSAL_RULES}
