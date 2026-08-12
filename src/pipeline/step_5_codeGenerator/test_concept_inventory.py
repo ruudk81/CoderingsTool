@@ -1,6 +1,4 @@
 """Tests voor de conceptinventaris (stap 1 van step 5)."""
-from dataclasses import dataclass
-
 from pipeline.step_5_codeGenerator.concept_inventory import build_inventory, t_keep
 from pipeline.step_5_codeGenerator.taxonomy_input import AttributeRef, IdeaUnit
 

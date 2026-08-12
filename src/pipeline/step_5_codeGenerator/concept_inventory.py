@@ -6,7 +6,7 @@ unieke respondenten de vereniging, niet de som.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List
 
 from .taxonomy_input import AttributeRef, IdeaUnit
@@ -22,10 +22,10 @@ class Concept:
     domain: str
     facet: str
     n_iu: int
-    resp_ids: frozenset
-    resp_pos: frozenset
-    resp_neg: frozenset
-    resp_neu: frozenset
+    resp_ids: frozenset[str]
+    resp_pos: frozenset[str]
+    resp_neg: frozenset[str]
+    resp_neu: frozenset[str]
 
     @property
     def n_resp(self) -> int:
