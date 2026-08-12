@@ -191,3 +191,166 @@ For EACH attribute provide:
 All attribute names, definitions, boundary tests and exclusions must be written in {language}.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# §2 CONSOLIDATION — per facet, across chunks, before any idea is assigned
+# =============================================================================
+
+class ConsolidatedAttribute(DiscoveredAttribute):
+    """One attribute surviving consolidation, with the candidates it absorbed."""
+    source_attributes: List[str] = Field(
+        ..., description=(
+            "The attribute_name of every candidate that goes into this one. "
+            "A candidate that is kept unchanged lists its own name"
+        )
+    )
+
+
+class AttributeConsolidationResult(BaseModel):
+    """The settled attribute inventory for one facet."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Consolidation reasoning: "
+            "(1) list the unique candidates across all chunks, "
+            "(2) group the ones that overlap conceptually, "
+            "(3) name and define each consolidated attribute, "
+            "(4) for every surviving pair ask whether one response could belong "
+            "to both, and merge when it could, "
+            "(5) verify the survivors still cover everything the candidates covered, "
+            "(6) write each survivor's boundary_test and exclusions"
+        )
+    )
+    attributes: List[ConsolidatedAttribute] = Field(
+        ..., description="The complete attribute set for this facet after consolidation"
+    )
+
+
+def _build_candidate_block(candidates: List[DiscoveredAttribute]) -> str:
+    """Render the chunk yield as numbered candidates, each with its evidence."""
+    blocks = []
+    for i, candidate in enumerate(candidates, 1):
+        exclusions = "; ".join(candidate.exclusions) if candidate.exclusions else "(none)"
+        observations = "; ".join(candidate.example_observations)
+        blocks.append(
+            f"[C{i}] {candidate.attribute_name}\n"
+            f"     Definition: {candidate.attribute_definition}\n"
+            f"     Boundary test: {candidate.boundary_test}\n"
+            f"     Does not belong: {exclusions}\n"
+            f"     Observations that produced this proposal: {observations}"
+        )
+    return "\n\n".join(blocks)
+
+
+def build_attribute_consolidation_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+    domain_label: str,
+    domain_definition: str,
+    facet_name: str,
+    facet_definition: str,
+    candidates: List[DiscoveredAttribute],
+) -> str:
+    """Settle one facet's attribute inventory, across all chunk proposals."""
+    context_block = build_context_block(
+        language=language, survey_question=survey_question, sector=sector,
+        entity=entity, topic=topic, perspective=perspective, intent=intent,
+    )
+    taxonomy_block = build_taxonomy_block(
+        dimension=dimension, dimension_name=dimension_name,
+        dimension_description=dimension_description,
+    )
+    diagnostic = level_diagnostic(dimension, "attribute")
+    candidate_block = _build_candidate_block(candidates)
+
+    return f"""You are a taxonomy consolidation specialist for survey coding.
+Your task is to merge attribute proposals from several independent passes over one facet
+into a single, coherent set of attributes.
+
+{context_block}
+
+{taxonomy_block}
+
+You are working inside ONE facet. Every attribute you return belongs to it.
+
+<parents>
+Domain: {domain_label} — {domain_definition}
+Facet:  {facet_name} — {facet_definition}
+</parents>
+
+The question every attribute must answer for this dimension is:
+
+<attribute_diagnostic>
+{diagnostic}
+</attribute_diagnostic>
+
+Here are the candidate attributes. Each pass saw a different sample of the responses and
+did not see the other passes, so the same attribute may appear several times under
+different names. Each candidate carries the observations that produced it — those are
+your evidence:
+
+<candidates>
+{candidate_block}
+</candidates>
+
+## YOUR TASK
+
+Consolidate these candidates into the fewest mutually exclusive attributes needed for
+full coverage.
+
+Judge the candidates on their observations, not on their labels. Two labels that read
+differently but were produced by the same kind of observation are ONE attribute. Two
+labels that read alike but were produced by different observations are TWO.
+
+Consolidation principles:
+
+- **MERGE** candidates that overlap conceptually, are near-equivalent, or where one is
+  a subset of the other.
+- **MERGE** candidates that are two lenses on the same phenomenon — different wording
+  for one underlying property.
+- **THE BOUNDARY TEST DECIDES.** For each pair of survivors, write the boundary that
+  separates them. If you cannot state a clean boundary between an attribute and its
+  nearest neighbour, they are not two attributes — merge them.
+- **ENSURE ontological distinctness** — no two attributes may share conceptual space,
+  and none may be a subset of another.
+- **ENSURE semantic separability** — a coder must not plausibly hesitate between two
+  attributes.
+- **MAINTAIN full coverage** — the survivors must collectively cover everything the
+  candidates covered. Consolidating is not discarding.
+- **MINIMIZE the count** while preserving distinctions the observations actually show.
+  If the observations hold four distinct answers to the attribute question, return four
+  attributes — do not collapse them because fewer is tidier.
+- **STAY inside the facet.** A candidate that falls outside the facet is not an
+  attribute to keep; leave it out rather than widening the facet to fit it.
+
+Every candidate you consume must be listed in the `source_attributes` of the attribute
+that consumes it. A candidate you do not list is left standing as it is, so list them.
+
+{UNIVERSAL_RULES}
+
+## OUTPUT
+
+Work through the consolidation in the scratchpad field first.
+
+For EACH consolidated attribute provide:
+- **attribute_name** — a short descriptive name
+- **attribute_definition** — one sentence naming a single observable property, no
+  examples or enumerations
+- **boundary_test** — one yes/no question that decides membership
+- **exclusions** — what does NOT belong, naming the neighbouring attribute it is most
+  easily confused with
+- **example_observations** — 2-3 observations, copied exactly from the candidates above
+- **source_attributes** — the attribute_name of every candidate consumed into this one
+
+All attribute names, definitions, boundary tests and exclusions must be written in {language}.
+
+Begin processing now and {INSTRUCTOR_HINT}"""
