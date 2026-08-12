@@ -790,7 +790,7 @@ Consolidate the chunk-level analyses into the domains that exist ALONGSIDE these
 
 - Anything that belongs in one of the two fixed domains is already covered. Do not create a domain for it.
 - Every domain you return must name a subject area that neither fixed domain covers. If a candidate domain would mostly collect answers reporting that the respondent does not know the subject, it belongs in the "{not_known_short}" domain above — drop it rather than keeping it as its own domain.
-- The two fixed domains are broad by design and need no sharpening from you. The orthogonality requirement runs one way: the domains you return must not reach into their territory.
+- The two fixed domains are given as they are and need no sharpening from you. The orthogonality requirement runs one way: the domains you return must not reach into their territory.
 
 Return ONLY the domains you consolidated from the chunks.
 
@@ -912,7 +912,7 @@ The entity the survey is about is: {entity}
 Rules:
 - The label must name what its definition says. Do not narrow it, do not widen it, and do not invent a subject area for it.
 - Do not make the label evaluative. None of the three is about how good or bad something is, unless its definition says so in as many words.
-- Render each at exactly the breadth of its source definition: one is narrow and specific, the other broad. Neither is a judgment about quality.
+- Render each at exactly the breadth of its source definition. None of them is a judgment about quality.
 - The label: a short noun phrase in {language}, as a coder would see it in a list of domains.
 - Render the given definition in {language}. Do not narrow it, do not widen it, and do not add anything the source does not say.
 - Where one domain's definition refers to another, use the label you just gave that domain, so the two texts refer to each other by the names a coder will actually see.
