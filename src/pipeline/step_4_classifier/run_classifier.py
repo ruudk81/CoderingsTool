@@ -30,7 +30,8 @@ LIMIT_N = None     # Limit number of responses for a test run (None = use all)
 #   attribute_discovery, attribute_consolidation, attribute_assignment,
 #   attribute_refinement, valence_merge
 # An unknown name raises at construction rather than quietly running everything.
-STOP_AFTER_PHASE = "facet_consolidation"
+#STOP_AFTER_PHASE = "facet_consolidation"
+STOP_AFTER_PHASE = None
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -59,7 +60,7 @@ from models import (
 # All defaults defined in config_classifier.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="ladder",             # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
+    label_source="instance_interpretation",   # zie partition_labels.py: de abstractiesport hoort niet in het label
     label_prefix="",                   # "" or any static prefix string
     stop_after_phase=STOP_AFTER_PHASE,
 )

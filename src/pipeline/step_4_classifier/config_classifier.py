@@ -45,8 +45,13 @@ class CategoriesConfig:
     #   "idea"            — full idea text incl. template prefix
     #
     # Computed composites (assembled from stored fields by format_label()):
-    #   "ladder"              — instance → interpretation → abstraction
-    #   "idea_interpretation" — idea → interpretation
+    #   "instance_interpretation" — instance → interpretation  (production)
+    #   "ladder"                  — instance → interpretation → abstraction
+    #   "idea_interpretation"     — idea → interpretation
+    #
+    # The abstraction rung is deliberately out of the production label: it
+    # states an observation's broader significance, which is the facet's and the
+    # domain's job. See partition_labels.py for the measurement.
     label_source: str = "idea"
 
     # Optional prefix prepended to each label string before processing.
