@@ -739,31 +739,33 @@ In your scratchpad:
 
 For EACH consolidated domain provide: a label, a one-sentence inclusion definition, a boundary_test (one yes/no question that decides membership), and exclusions (what does NOT belong, naming the neighbouring domain it is most easily confused with).
 
-# Standing domains
+# The two fixed domains of this dimension
 
-Two further domains always exist alongside the ones you consolidated. Do NOT discover them from the data, do not merge them into your domains, do not drop them. Render each in the survey language with the same fields as any other domain, and set `key` exactly as given. Return both under `standing_domains`:
+This dimension always has two fixed domains. They are given, not discovered, and you do NOT return them:
 
-  - key "{STANDING_BARE_KEY}" — {bare_def}
-  - key "{STANDING_OTHER_KEY}" — {other_def}
+  - {bare_short} — {bare_def}
+  - {other_short} — {other_def}
 
-Keep these two apart: the first is {bare_short}; the second {other_short}. Their definitions must stay this broad — do not narrow them to something you saw in the data.
+Consolidate the chunk-level analyses into the domains that exist ALONGSIDE these two:
+
+- Anything that belongs in one of the two fixed domains is already covered. Do not create a domain for it.
+- Every domain you return must name a subject area that neither fixed domain covers. If a candidate domain would mostly collect answers that name no unit on the domain axis at all, it belongs in the first fixed domain — drop it rather than keeping it as its own domain.
+- The two fixed domains are broad by design and need no sharpening from you. The orthogonality requirement runs one way: the domains you return must not reach into their territory.
+
+Return ONLY the domains you consolidated from the chunks.
 
 After completing your analysis in the scratchpad, provide your consolidated taxonomy as valid JSON inside <output> tags.
 
 Begin processing now and provide your output as valid JSON following the response schema provided."""
 
 class DomainConsolidatedResponse(BaseModel):
-    """Consolidated domains after merging all chunks, plus the standing-domain labels."""
+    """Consolidated domains from all chunks — the discovered ones only.
+
+    The two standing domains are not here on purpose: they are fixed input built
+    from dimension_data.py, and a field for them is a field they can drift in.
+    """
     domains: List[DomainItem] = Field(
-        description="Fewest mutually exclusive domains needed for full coverage, consolidated from all chunks"
-    )
-    standing_domains: List[DomainItem] = Field(
-        default_factory=list,
-        description=(
-            f"Exactly two entries with key set to '{STANDING_BARE_KEY}' and "
-            f"'{STANDING_OTHER_KEY}'. These are not discovered from the data — you only "
-            "render them in the survey language, with the same fields as any other domain."
-        )
+        description="Fewest mutually exclusive domains needed for full coverage, consolidated from all chunks, excluding the two fixed domains of this dimension"
     )
 
 

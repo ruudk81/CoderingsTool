@@ -129,7 +129,7 @@ def test_set_domain_keys_accepts_no_domains():
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_consolidation_prompt_carries_this_dimensions_wording(dimension_key):
-    """De builder leest de standing domains uit de meegegeven dimensie."""
+    """De builder leest de vangnetten uit de meegegeven dimensie en zet ze als grond."""
     d = get_dimension(dimension_key)
     prompt = build_domain_consolidation_prompt(
         language="nl-NL", survey_question="Vraag?", sector="s", entity="e",
@@ -140,8 +140,15 @@ def test_consolidation_prompt_carries_this_dimensions_wording(dimension_key):
     assert d.standing_other.definition in prompt
     assert d.standing_bare.short in prompt
     assert d.prompt_rules.domain_diagnostic in prompt
-    assert f'key "{STANDING_BARE_KEY}"' in prompt
-    assert f'key "{STANDING_OTHER_KEY}"' in prompt
+    # De eenrichtingsregel: de verplichting ligt bij de ontdekte domeinen.
+    assert "must not reach into" in prompt
+    # Het model levert ze niet meer op.
+    assert "standing_domains" not in prompt
+
+
+def test_consolidation_response_has_no_slot_for_the_standing_domains():
+    """Constructie, geen instructie: er is geen veld om ze in te herschrijven."""
+    assert set(DomainConsolidatedResponse.model_fields) == {"domains"}
 
 
 # ── 4. Elke dimensie stelt de structurele toets, geen inhoudelijke ─────────
