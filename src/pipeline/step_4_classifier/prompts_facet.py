@@ -192,3 +192,176 @@ For EACH facet provide:
 All facet names, definitions, boundary tests and exclusions must be written in {language}.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# §2 CONSOLIDATION — per domain, across chunks, before any idea is assigned
+# =============================================================================
+
+class ConsolidatedFacet(DiscoveredFacet):
+    """One facet surviving consolidation, with the candidates it absorbed."""
+    source_facets: List[str] = Field(
+        ..., description=(
+            "The facet_name of every candidate that goes into this one. "
+            "A candidate that is kept unchanged lists its own name"
+        )
+    )
+
+
+class FacetConsolidationResult(BaseModel):
+    """The settled facet inventory for one domain."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Consolidation reasoning: "
+            "(1) list the unique candidates across all chunks, "
+            "(2) group the ones that overlap conceptually, "
+            "(3) name and define each consolidated facet, "
+            "(4) for every surviving pair ask whether one response could belong "
+            "to both, and merge when it could, "
+            "(5) verify the survivors still cover everything the candidates covered, "
+            "(6) write each survivor's boundary_test and exclusions"
+        )
+    )
+    facets: List[ConsolidatedFacet] = Field(
+        ..., description="The complete facet set for this domain after consolidation"
+    )
+
+
+def _build_candidate_block(candidates: List[DiscoveredFacet]) -> str:
+    """Render the chunk yield as numbered candidates, each with its evidence.
+
+    The observations that produced a proposal travel with it. That is what makes
+    this call judgeable: two candidates whose labels differ but whose observations
+    are the same thing are a merge, and no amount of staring at labels alone would
+    have shown it.
+    """
+    blocks = []
+    for i, candidate in enumerate(candidates, 1):
+        exclusions = "; ".join(candidate.exclusions) if candidate.exclusions else "(none)"
+        observations = "; ".join(candidate.example_observations)
+        blocks.append(
+            f"[C{i}] {candidate.facet_name}\n"
+            f"     Definition: {candidate.facet_definition}\n"
+            f"     Boundary test: {candidate.boundary_test}\n"
+            f"     Does not belong: {exclusions}\n"
+            f"     Observations that produced this proposal: {observations}"
+        )
+    return "\n\n".join(blocks)
+
+
+def build_facet_consolidation_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+    domain_label: str,
+    domain_definition: str,
+    domain_boundary_test: str,
+    candidates: List[DiscoveredFacet],
+) -> str:
+    """Settle one domain's facet inventory, across all chunk proposals.
+
+    Runs before assignment. Each chunk proposed facets without seeing the others,
+    so the same concept comes back under several names. This call decides which
+    of those are one facet, using the observations each proposal was built on.
+    """
+    context_block = build_context_block(
+        language=language, survey_question=survey_question, sector=sector,
+        entity=entity, topic=topic, perspective=perspective, intent=intent,
+    )
+    taxonomy_block = build_taxonomy_block(
+        dimension=dimension, dimension_name=dimension_name,
+        dimension_description=dimension_description,
+    )
+    diagnostic = level_diagnostic(dimension, "facet")
+    candidate_block = _build_candidate_block(candidates)
+
+    return f"""You are a taxonomy consolidation specialist for survey coding.
+Your task is to merge facet proposals from several independent passes over one domain
+into a single, coherent set of facets.
+
+{context_block}
+
+{taxonomy_block}
+
+You are working inside ONE domain. Every facet you return belongs to it.
+
+<domain>
+Domain: {domain_label}
+Definition: {domain_definition}
+Boundary test: {domain_boundary_test}
+</domain>
+
+The question every facet must answer for this dimension is:
+
+<facet_diagnostic>
+{diagnostic}
+</facet_diagnostic>
+
+Here are the candidate facets. Each pass saw a different sample of the responses and
+did not see the other passes, so the same facet may appear several times under
+different names. Each candidate carries the observations that produced it — those are
+your evidence:
+
+<candidates>
+{candidate_block}
+</candidates>
+
+## YOUR TASK
+
+Consolidate these candidates into the fewest mutually exclusive facets needed for full
+coverage.
+
+Judge the candidates on their observations, not on their labels. Two labels that read
+differently but were produced by the same kind of observation are ONE facet. Two labels
+that read alike but were produced by different observations are TWO.
+
+Consolidation principles:
+
+- **MERGE** candidates that overlap conceptually, are near-equivalent, or where one is
+  a subset of the other.
+- **MERGE** candidates that are two lenses on the same phenomenon — different wording
+  for one underlying distinction.
+- **THE BOUNDARY TEST DECIDES.** For each pair of survivors, write the boundary that
+  separates them. If you cannot state a clean boundary between a facet and its nearest
+  neighbour, they are not two facets — merge them.
+- **ENSURE ontological distinctness** — no two facets may share conceptual space, and
+  none may be a subset of another.
+- **ENSURE semantic distance** — a coder must not plausibly hesitate between two
+  facets. No "could go either way" situations.
+- **MAINTAIN full coverage** — the survivors must collectively cover everything the
+  candidates covered. Consolidating is not discarding.
+- **MINIMIZE the count** while preserving distinctions that the observations actually
+  show. If the observations hold four distinct answers to the facet question, return
+  four facets — do not collapse them because fewer is tidier.
+- **STAY inside the domain.** A candidate that falls outside the domain boundary is not
+  a facet to keep; leave it out rather than widening the domain to fit it.
+
+Every candidate you consume must be listed in the `source_facets` of the facet that
+consumes it. A candidate you do not list is left standing as it is, so list them.
+
+{UNIVERSAL_RULES}
+
+## OUTPUT
+
+Work through the consolidation in the scratchpad field first.
+
+For EACH consolidated facet provide:
+- **facet_name** — a short descriptive name
+- **facet_definition** — one sentence naming a single aspect, no examples or enumerations
+- **boundary_test** — one yes/no question that decides membership
+- **exclusions** — what does NOT belong, naming the neighbouring facet it is most easily
+  confused with
+- **example_observations** — 2-5 observations, copied exactly from the candidates above
+- **source_facets** — the facet_name of every candidate consumed into this one
+
+All facet names, definitions, boundary tests and exclusions must be written in {language}.
+
+Begin processing now and {INSTRUCTOR_HINT}"""
