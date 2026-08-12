@@ -115,6 +115,17 @@ nest_asyncio.apply()
 # HELPERS
 # =============================================================================
 
+def _norm(text: Optional[str]) -> str:
+    """Normalise a name or response text for matching.
+
+    Case- and padding-insensitive only — no stemming, no stopwords, nothing
+    language-specific, so this stays use-case agnostic and every match is
+    checkable by eye. Every name comparison in step 4 goes through here; two
+    normalisers would drift, and a drifted one fails silently.
+    """
+    return (text or "").strip().lower()
+
+
 def _escalated(task: Dict, rep, reason: str) -> Dict:
     """One rep on its own against the full menu — the escalation task shape.
 
@@ -166,6 +177,17 @@ class PromptContext:
         return self.domains.get(label) or {
             "label": label, "definition": "", "boundary_test": "", "exclusions": [],
         }
+
+    def is_drain(self, label: str) -> bool:
+        """Whether this is one of the two standing catch-all domains.
+
+        Matched case-insensitively, and that is not cosmetic: step 3 writes the
+        label into the metadata with its original capitalisation, while domain
+        discovery lowercases the partition name. An exact match finds neither,
+        silently, and both catch-alls get a full facet and attribute layer —
+        which is exactly what step 3 defines them to be exempt from.
+        """
+        return _norm(label) in {_norm(d) for d in self.drain_labels}
 
 
 @dataclass
@@ -692,7 +714,7 @@ class TaxonomyClassifier:
         """
         tasks: List[Dict] = []
         for label in sorted(ctx.domains):
-            if label in ctx.drain_labels:
+            if ctx.is_drain(label):
                 continue
             observations = ctx.domain(label).get("observations") or []
             chunks = self._create_batches(observations)
@@ -901,11 +923,11 @@ class TaxonomyClassifier:
             return [self._as_consolidated_facet(c) for c in candidates]
 
         survivors: List[ConsolidatedFacet] = list(result.facets)
-        claimed = {self._norm_text(s)
+        claimed = {_norm(s)
                    for f in survivors for s in (f.source_facets or [])}
-        returned = {self._norm_text(f.facet_name) for f in survivors}
+        returned = {_norm(f.facet_name) for f in survivors}
         for candidate in candidates:
-            key = self._norm_text(candidate.facet_name)
+            key = _norm(candidate.facet_name)
             if key in claimed or key in returned:
                 continue
             survivors.append(self._as_consolidated_facet(candidate))
@@ -1215,13 +1237,6 @@ class TaxonomyClassifier:
     # TEXT MATCHING
     # =========================================================================
 
-    @staticmethod
-    def _norm_text(text: Optional[str]) -> str:
-        """Normalise a response text for matching. Case- and padding-insensitive
-        only — no stemming, no stopwords, nothing language-specific, so this stays
-        use-case agnostic and every match is checkable by eye."""
-        return (text or "").strip().lower()
-
     # =========================================================================
     # PHASE — FACET REFINEMENT (per domain, after every idea is assigned)
     # =========================================================================
@@ -1370,10 +1385,10 @@ class TaxonomyClassifier:
                 continue
 
             touched.add(dom)
-            by_norm = {self._norm_text(b): b for b in before}
+            by_norm = {_norm(b): b for b in before}
 
             def _resolve(src: str) -> Optional[str]:
-                return by_norm.get(self._norm_text(src))
+                return by_norm.get(_norm(src))
 
             unmatched = sorted({
                 s for item in result.facets for s in (item.source_facets or [])
@@ -1423,9 +1438,9 @@ class TaxonomyClassifier:
                 if item.action == "split" and item.instance_texts:
                     for src in (sources or before):
                         for txt in item.instance_texts:
-                            splits[(dom, src, self._norm_text(txt))] = item.facet_name
+                            splits[(dom, src, _norm(txt))] = item.facet_name
                         split_children.setdefault(
-                            (dom, self._norm_text(src)), []).append(item.facet_name)
+                            (dom, _norm(src)), []).append(item.facet_name)
                     self._action_log.append({
                         "action": "facet_split", "domain": dom,
                         "into": item.facet_name, "sources": sources,
@@ -1435,7 +1450,7 @@ class TaxonomyClassifier:
                     for src in sources:
                         if src != item.facet_name and src not in contested:
                             remap[(dom, src)] = item.facet_name
-                            renamed_to[(dom, self._norm_text(src))] = item.facet_name
+                            renamed_to[(dom, _norm(src))] = item.facet_name
                     if item.action in ("merge", "widen") or (
                             sources and sources != [item.facet_name]):
                         self._action_log.append({
@@ -1444,10 +1459,10 @@ class TaxonomyClassifier:
 
             # Sources never claimed by any returned facet: keep them. Dropping a
             # facet silently would orphan every idea assigned to it.
-            returned = {self._norm_text(f.facet_name) for f in settled}
+            returned = {_norm(f.facet_name) for f in settled}
             for facet in group:
                 if (facet.facet_name in consumed
-                        or self._norm_text(facet.facet_name) in returned):
+                        or _norm(facet.facet_name) in returned):
                     continue
                 settled.append(facet)
                 self._action_log.append({
@@ -1459,7 +1474,7 @@ class TaxonomyClassifier:
             for m in (result.misfits or []):
                 real_from = _resolve(m.from_facet) or m.from_facet
                 for txt in (m.instance_texts or []):
-                    moves[(dom, real_from, self._norm_text(txt))] = (
+                    moves[(dom, real_from, _norm(txt))] = (
                         m.target_facet if m.verdict == "move" else None)
                 self._action_log.append({
                     "action": f"facet_misfit_{m.verdict}", "domain": dom,
@@ -1484,7 +1499,7 @@ class TaxonomyClassifier:
             assigns = assignments.get(dom, {})
             texts = labels.get(dom) or {}
             for idea_id, current in list(assigns.items()):
-                txt = self._norm_text(texts.get(idea_id, ""))
+                txt = _norm(texts.get(idea_id, ""))
 
                 key = (dom, current, txt)
                 if key in moves:
@@ -1493,7 +1508,7 @@ class TaxonomyClassifier:
                         n_out += 1          # flagged contentless; left in place
                         continue
                     if target not in home.get(dom, set()):
-                        target = renamed_to.get((dom, self._norm_text(target)), target)
+                        target = renamed_to.get((dom, _norm(target)), target)
                     if target in home.get(dom, set()):
                         assigns[idea_id] = target
                         n_moved += 1
@@ -1840,11 +1855,11 @@ class TaxonomyClassifier:
             return [self._as_consolidated_attribute(c) for c in candidates]
 
         survivors: List[ConsolidatedAttribute] = list(result.attributes)
-        claimed = {self._norm_text(s)
+        claimed = {_norm(s)
                    for a in survivors for s in (a.source_attributes or [])}
-        returned = {self._norm_text(a.attribute_name) for a in survivors}
+        returned = {_norm(a.attribute_name) for a in survivors}
         for candidate in candidates:
-            key = self._norm_text(candidate.attribute_name)
+            key = _norm(candidate.attribute_name)
             if key in claimed or key in returned:
                 continue
             survivors.append(self._as_consolidated_attribute(candidate))
@@ -2318,10 +2333,10 @@ class TaxonomyClassifier:
             # padding-insensitively. A strict equality check silently dropped
             # sources differing only in capitalisation, leaving their ideas on a
             # name no longer present in the structure.
-            by_norm = {self._norm_text(b): b for b in before}
+            by_norm = {_norm(b): b for b in before}
 
             def _resolve(src: str) -> Optional[str]:
-                return by_norm.get(self._norm_text(src))
+                return by_norm.get(_norm(src))
 
             unmatched = sorted({
                 s for item in result.attributes
@@ -2374,9 +2389,9 @@ class TaxonomyClassifier:
                 if item.action == "split" and item.instance_texts:
                     for src in (sources or before):
                         for txt in item.instance_texts:
-                            splits[(dom, fac, src, self._norm_text(txt))] = item.attribute_name
+                            splits[(dom, fac, src, _norm(txt))] = item.attribute_name
                         split_children.setdefault(
-                            self._norm_text(src), []).append(item.attribute_name)
+                            _norm(src), []).append(item.attribute_name)
                     self._action_log.append({
                         "action": "split", "domain": dom, "facet": fac,
                         "into": item.attribute_name, "sources": sources,
@@ -2389,7 +2404,7 @@ class TaxonomyClassifier:
                             # Facets refine concurrently, so a move may name a
                             # target by the name it had in the neighbour block
                             # while its own facet is renaming it. Keep the trail.
-                            renamed_to[self._norm_text(src)] = item.attribute_name
+                            renamed_to[_norm(src)] = item.attribute_name
                     if item.action in ("merge", "widen") or (
                             sources and sources != [item.attribute_name]):
                         self._action_log.append({
@@ -2398,10 +2413,10 @@ class TaxonomyClassifier:
 
             # Sources never claimed: keep them, or their ideas point at a name
             # absent from the structure.
-            returned = {self._norm_text(a.attribute_name) for a in settled}
+            returned = {_norm(a.attribute_name) for a in settled}
             for attribute in task["attributes"]:
                 if (attribute.attribute_name in consumed
-                        or self._norm_text(attribute.attribute_name) in returned):
+                        or _norm(attribute.attribute_name) in returned):
                     continue
                 settled.append(attribute)
                 self._action_log.append({
@@ -2413,7 +2428,7 @@ class TaxonomyClassifier:
 
             for m in (result.misfits or []):
                 for txt in (m.instance_texts or []):
-                    moves[(dom, fac, m.from_attribute, self._norm_text(txt))] = (
+                    moves[(dom, fac, m.from_attribute, _norm(txt))] = (
                         m.target_attribute if m.verdict == "move" else None)
                 self._action_log.append({
                     "action": f"misfit_{m.verdict}", "domain": dom, "facet": fac,
@@ -2449,7 +2464,7 @@ class TaxonomyClassifier:
         for (dom, fac), scoped in labels.items():
             for idea_id, text in scoped.items():
                 idea_home[idea_id] = (dom, fac)
-                text_of[idea_id] = self._norm_text(text)
+                text_of[idea_id] = _norm(text)
 
         n_split = n_remap = n_moved = n_out = n_unresolved = n_target_split = 0
         unresolved_targets: Counter = Counter()
@@ -2467,7 +2482,7 @@ class TaxonomyClassifier:
                     n_out += 1                  # flagged contentless; left in place
                     continue
                 if target not in home:
-                    target = renamed_to.get(self._norm_text(target), target)
+                    target = renamed_to.get(_norm(target), target)
                 if target in home and target not in ambiguous:
                     assignments[idea_id] = target
                     t_dom, t_fac = home[target]
@@ -2475,7 +2490,7 @@ class TaxonomyClassifier:
                     if t_dom != dom:
                         facet_assignments.get(dom, {}).pop(idea_id, None)
                     n_moved += 1
-                elif self._norm_text(target) in split_ambiguous:
+                elif _norm(target) in split_ambiguous:
                     n_target_split += 1   # target was divided; a child would be a guess
                     unresolved_targets[target] += 1
                 else:

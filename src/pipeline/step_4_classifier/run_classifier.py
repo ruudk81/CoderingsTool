@@ -30,7 +30,7 @@ LIMIT_N = None     # Limit number of responses for a test run (None = use all)
 #   attribute_discovery, attribute_consolidation, attribute_assignment,
 #   attribute_refinement, valence_merge
 # An unknown name raises at construction rather than quietly running everything.
-STOP_AFTER_PHASE = None
+STOP_AFTER_PHASE = "facet_consolidation"
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key

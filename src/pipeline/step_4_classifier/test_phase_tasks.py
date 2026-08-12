@@ -75,6 +75,20 @@ def test_discovery_slaat_de_staande_domeinen_over():
     assert {t["domain_label"] for t in tasks} == {"Dienstverlening"}
 
 
+def test_discovery_slaat_de_staande_domeinen_over_ondanks_andere_casing():
+    """Step 3 schrijft het label met hoofdletter in de metadata, domeindiscovery
+    maakt de partitienaam lowercase. Een exacte match vond er geen van beide, en
+    beide vangnetten kregen stil een volledige facetlaag (gezien op ASN Qd1,
+    2026-08-12)."""
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["dienstverlening", "ander onderwerp",
+                            "onbekendheid met het onderwerp"],
+                           drain_labels={"Ander onderwerp",
+                                         "Onbekendheid met het onderwerp"})
+    tasks = clf._build_facet_discovery_tasks(ctx)
+    assert {t["domain_label"] for t in tasks} == {"dienstverlening"}
+
+
 def test_discovery_chunkt_grote_domeinen():
     clf = TaxonomyClassifier(CategoriesConfig())
     ctx = _fixture_context(["A", "B"],
