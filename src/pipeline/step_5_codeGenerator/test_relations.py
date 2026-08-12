@@ -13,7 +13,7 @@ from pipeline.step_5_codeGenerator import relations
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult
-from pipeline.step_5_codeGenerator.prompts_umbrella_merge import Umbrella
+from pipeline.step_5_codeGenerator.prompts_umbrella_merge import Umbrella, UmbrellaMergeResult
 
 
 def concept(attribute_id, name):
@@ -64,6 +64,28 @@ def test_resolve_relations_raises_when_the_call_fails(monkeypatch):
     raise AssertionError("een mislukte call had een RuntimeError moeten geven")
 
 
+def test_resolve_umbrella_merge_sends_a_one_element_list_of_dicts(monkeypatch):
+    captured = {}
+
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        captured["tasks"] = tasks
+        call_params = prepare_fn(tasks[0])
+        assert "prompt" in call_params
+        assert "response_model" in call_params
+        return [UmbrellaMergeResult(scratchpad="", verdicts=[])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    umbrellas = [Umbrella(name="Bankdiensten", definition="def", member_names=("Betalen",))]
+    result = asyncio.run(relations.resolve_umbrella_merge(umbrellas, CodebookConfig()))
+
+    tasks = captured["tasks"]
+    assert isinstance(tasks, list)
+    assert len(tasks) == 1
+    assert isinstance(tasks[0], dict)
+    assert result.verdicts == []
+
+
 def test_resolve_umbrella_merge_returns_none_when_the_call_fails_instead_of_raising(monkeypatch):
     # The one contract this dispatch function is meant to break with
     # resolve_relations: a failed call must NOT hard-stop the pipeline. A missed
@@ -76,7 +98,5 @@ def test_resolve_umbrella_merge_returns_none_when_the_call_fails_instead_of_rais
     monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
 
     umbrellas = [Umbrella(name="Bankdiensten", definition="def", member_names=("Betalen",))]
-    result = asyncio.run(
-        relations.resolve_umbrella_merge(umbrellas, CodebookConfig(), "nl-NL")
-    )
+    result = asyncio.run(relations.resolve_umbrella_merge(umbrellas, CodebookConfig()))
     assert result is None

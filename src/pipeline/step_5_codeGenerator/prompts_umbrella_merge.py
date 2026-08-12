@@ -3,14 +3,27 @@
 Stap 2 (prompts_relations.py) genereert per attribuut onafhankelijk een
 verzamelnaam ("umbrella"). Niets dwingt twee gelijke betekenissen tot dezelfde
 bewoording, dus verwante namen versplinteren de pool ("Bankdiensten" /
-"Bankdiensten en aanbod"). Deze module bouwt de kleine vervolgcall die dat
-rechttrekt: één keer over de lijst van verzamelnamen, niet over de attributen.
+"Bankdiensten en aanbod").
+
+Eerste vorm van deze module vroeg het model een partitionering te maken
+("groepeer de namen die hetzelfde betekenen"). Op een echte run leverde dat
+NIETS op: elke naam als eigen groep is een even geldig antwoord op die vraag, dus
+er was geen dwang om iets samen te voegen. De vorm hieronder stelt in plaats
+daarvan een per-naam vraag — "is er een andere naam in de lijst die hetzelfde
+betekent?" — hetzelfde patroon als `synonym_of` in prompts_relations.py, dat op
+diezelfde run wél drie correcte paren vond. Een per-item vraag dwingt een
+opzoeking per item af; een groepeervraag niet.
+
+De canonieke naam per groep wordt niet meer door het model gekozen: dat is
+deterministiek in code (relations.py), gebaseerd op hoeveel attributen elke naam
+al draagt — een telling die in een prompt een lekkanaal zou zijn, maar in code
+gewoon een sorteersleutel is.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Literal, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, create_model
 
@@ -33,15 +46,23 @@ class Umbrella:
         return self.name
 
 
-class UmbrellaGroup(BaseModel):
-    canonical_name: str = Field(..., description="The name to keep for this group")
-    canonical_definition: str = Field(..., description="One sentence defining it")
-    members: List[str] = Field(..., description="The umbrella names that mean the same thing")
+class UmbrellaVerdict(BaseModel):
+    umbrella: str = Field(..., description="The umbrella name this verdict is about")
+    same_as: Optional[str] = Field(
+        None,
+        description=(
+            "Another umbrella name in the list that means the SAME concept as "
+            "this one, or null. Use only for genuine duplicates: two different "
+            "names for one concept."
+        ),
+    )
 
 
 class UmbrellaMergeResult(BaseModel):
-    scratchpad: str = Field(default="", description="Brief reasoning before the groups")
-    groups: List[UmbrellaGroup] = Field(..., description="One entry per group of equivalent names")
+    scratchpad: str = Field(default="", description="Brief reasoning before the verdicts")
+    verdicts: List[UmbrellaVerdict] = Field(
+        ..., description="Exactly one entry per umbrella name in the list"
+    )
 
 
 def umbrellas_from_relations(relations_result) -> List[Umbrella]:
@@ -61,42 +82,43 @@ def umbrellas_from_relations(relations_result) -> List[Umbrella]:
 
 
 def make_umbrella_merge_model(umbrellas) -> type:
-    """UmbrellaMergeResult met `members` beperkt tot bestaande verzamelnamen."""
+    """UmbrellaMergeResult met `umbrella` en `same_as` beperkt tot bestaande
+    verzamelnamen."""
     names: Tuple[str, ...] = tuple(u.name for u in _shuffled(umbrellas))
-    constrained_group = create_model(
-        "ConstrainedUmbrellaGroup",
-        __base__=UmbrellaGroup,
-        members=(List[Literal[names]], Field(..., description=(
-            UmbrellaGroup.model_fields["members"].description))),
+    constrained_verdict = create_model(
+        "ConstrainedUmbrellaVerdict",
+        __base__=UmbrellaVerdict,
+        umbrella=(Literal[names], Field(..., description=(
+            UmbrellaVerdict.model_fields["umbrella"].description))),
+        same_as=(Optional[Literal[names]], Field(None, description=(
+            UmbrellaVerdict.model_fields["same_as"].description))),
     )
     return create_model(
         "ConstrainedUmbrellaMergeResult",
         __base__=UmbrellaMergeResult,
-        groups=(List[constrained_group], Field(..., description=(
-            UmbrellaMergeResult.model_fields["groups"].description))),
+        verdicts=(List[constrained_verdict], Field(..., description=(
+            UmbrellaMergeResult.model_fields["verdicts"].description))),
     )
 
 
-def build_umbrella_merge_prompt(umbrellas, language: str) -> str:
+def build_umbrella_merge_prompt(umbrellas) -> str:
     inventory = "\n".join(
         f'- "{u.name}": {u.definition}\n  Topics: {", ".join(u.member_names)}'
         for u in _shuffled(umbrellas)
     )
 
     return f"""Below is a list of broader concepts, each with the topics that were placed under
-it. They were named independently of one another, so some of them are the same
+it. They were named one at a time, independently, so some of them are the same
 concept under different wording.
 
-Group the names that mean the SAME concept. For each group, choose one name to
-keep and write a one-sentence definition. Write both in {language}.
+For EVERY concept in the list, state whether another concept in the list means
+the SAME thing. If one does, name it. If none does, say null.
 
 Rules:
-- Only group names that are the same concept, not names that are merely related
-  or where one is a special case of the other.
-- A name that matches no other name forms a group of its own. Every name must
-  appear in exactly one group.
-- Judge meaning only. You are not told how often anything occurs, and the number
-  of topics under a name says nothing about whether it should be kept.
+- Same concept only — not merely related, and not one being a special case of
+  the other.
+- Every concept in the list gets exactly one entry.
+- Judge meaning only. You are not told how often anything occurs.
 
 Broader concepts:
 {inventory}

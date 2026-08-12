@@ -29,7 +29,7 @@ from pipeline.step_5_codeGenerator import run_codeGenerator
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult, tagged
-from pipeline.step_5_codeGenerator.prompts_umbrella_merge import Umbrella, UmbrellaMergeResult, umbrellas_from_relations
+from pipeline.step_5_codeGenerator.prompts_umbrella_merge import Umbrella, umbrellas_from_relations
 from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
 from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, build_idea_units
 
@@ -97,12 +97,14 @@ def group_by_umbrella(
 
 
 def format_consolidation(
-    umbrellas_before: List[Umbrella], merge_result: Optional[UmbrellaMergeResult],
+    umbrellas_before: List[Umbrella], relations_before: RelationsResult,
+    relations_after: Optional[RelationsResult],
 ) -> str:
     """Toon wat stap 2b (verzamelnamen consolideren) deed — of, bij een
-    mislukte call, dat er ongeconsolideerd is doorgegaan."""
+    mislukte call, dat er ongeconsolideerd is doorgegaan. `relations_after` is
+    het resultaat van `apply_umbrella_merge`, of None als de call mislukte."""
     lines = ["VERZAMELNAMEN OPGESCHOOND"]
-    if merge_result is None:
+    if relations_after is None:
         lines.append(
             "  Consolidatie is mislukt (2e LLM-call zonder resultaat) — "
             "doorgegaan met de ongeconsolideerde koepelnamen hieronder."
@@ -110,16 +112,18 @@ def format_consolidation(
         lines.append("")
         return "\n".join(lines)
 
+    before_by_attribute = {r.attribute: r.umbrella_name for r in relations_before.relations}
+    after_by_attribute = {r.attribute: r.umbrella_name for r in relations_after.relations}
+
     n_before = len(umbrellas_before)
-    n_after = len(merge_result.groups)
+    n_after = len({r.umbrella_name for r in relations_after.relations})
     lines.append(f"  {n_before} namen  →  {n_after} namen")
 
-    renames = [
-        (member, group.canonical_name)
-        for group in merge_result.groups
-        for member in group.members
-        if member != group.canonical_name
-    ]
+    renames = sorted({
+        (before_by_attribute[attribute], after_by_attribute[attribute])
+        for attribute in before_by_attribute
+        if before_by_attribute[attribute] != after_by_attribute[attribute]
+    })
     if renames:
         lines.append("  Samengevoegd:")
         width = max(len(old) for old, _ in renames) + 2
@@ -287,16 +291,18 @@ def main() -> None:
     async def _run():
         relations_result = await resolve_relations(concepts, config, language, verbose=True)
         umbrellas_before = umbrellas_from_relations(relations_result)
-        merge_result = await resolve_umbrella_merge(umbrellas_before, config, language, verbose=True)
+        merge_result = await resolve_umbrella_merge(umbrellas_before, config, verbose=True)
         return relations_result, umbrellas_before, merge_result
 
-    relations, umbrellas_before, merge_result = asyncio.run(_run())
-    if merge_result is not None:
-        relations = apply_umbrella_merge(relations, merge_result)
+    relations_before, umbrellas_before, merge_result = asyncio.run(_run())
+    relations_after = (
+        apply_umbrella_merge(relations_before, merge_result) if merge_result is not None else None
+    )
+    final_relations = relations_after if relations_after is not None else relations_before
 
-    print(format_consolidation(umbrellas_before, merge_result))
-    print(format_report(concepts, relations, t, n_resp_total, config.t_keep_share))
-    print(format_facet_comparison(concepts, relations))
+    print(format_consolidation(umbrellas_before, relations_before, relations_after))
+    print(format_report(concepts, final_relations, t, n_resp_total, config.t_keep_share))
+    print(format_facet_comparison(concepts, final_relations))
 
     if token_tracker.call_count > 0:
         print("\n" + token_tracker.get_summary())
