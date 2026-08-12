@@ -1385,6 +1385,37 @@ class IdeaExtractor:
         return list(new_discovered) + list(standing), rename
 
     @staticmethod
+    def _format_domain_overview_lines(final_domains: List, rename: Dict[str, str],
+                                       standing_keys: Tuple[str, str]) -> List[str]:
+        """Render the complete final domain set carried forward to step 4.
+
+        `final_domains` is discovered-then-standing, in carry-forward order —
+        this must be the full list, not just the re-described discovered ones,
+        since the owner reads this to see everything step 4 receives. `rename`
+        maps a discovered domain's original label to its final one (unchanged
+        labels map to themselves); the reverse lookup recovers the original
+        label so a relabeled domain prints `old → new` and an unchanged one
+        prints its label alone. A domain whose key is in `standing_keys` is
+        marked ` (standing)` — its label never changes here, so it always
+        prints alone. Exclusions are omitted when empty (the standing domains
+        always have none; an unconditional line would render a bare ✗).
+        """
+        reverse_rename = {new: old for old, new in rename.items()}
+        lines: List[str] = []
+        for d in final_domains:
+            if d.key in standing_keys:
+                head = f"{d.label} (standing)"
+            else:
+                old_label = reverse_rename.get(d.label, d.label)
+                head = f"{old_label} → {d.label}" if old_label != d.label else d.label
+            lines.append(f"    • {head}")
+            lines.append(f"        def: {d.definition}")
+            lines.append(f"        ✓ {d.boundary_test}")
+            if d.exclusions:
+                lines.append(f"        ✗ {', '.join(d.exclusions)}")
+        return lines
+
+    @staticmethod
     def _set_domain_keys(domains) -> None:
         """Derive `key` from `label`, except for the two standing domains.
 
@@ -1716,6 +1747,12 @@ class IdeaExtractor:
         self.verbose_reporter.stat_line(
             f"  Domain orthogonalize: re-described {len(discovered)} domains "
             f"({relabeled} relabeled, no reassignment; {len(standing)} standing untouched)")
+
+        # Overview of the final domain set carried forward to step 4 — discovered
+        # (re-described) and standing alike, since that's what the next step receives.
+        for line in self._format_domain_overview_lines(
+                new_domains, rename, (STANDING_BARE_KEY, STANDING_OTHER_KEY)):
+            self.verbose_reporter.stat_line(line)
 
     # === LEGACY: Everything below this line was the old processing loop ===
     # Kept temporarily for reference — will be removed after verification.

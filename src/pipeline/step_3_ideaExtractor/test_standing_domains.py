@@ -424,3 +424,51 @@ def test_domain_table_omits_the_dangling_exclusion_marker():
     assert not any(line.strip() == "✗" for line in lines)
     assert "✗ \n" not in table
     assert not table.rstrip().endswith("✗")
+
+
+# ── 10. Domeinoverzicht na orthogonalisatie ─────────────────────────────────
+
+def test_format_domain_overview_shows_arrow_for_a_renamed_discovered_domain():
+    """Een hernoemd ontdekt domein toont `oud label → nieuw label`."""
+    d = _mk("Duurzaamheid", "Ecologische koers")
+    rename = {"Duurzaamheid": "Ecologische koers"}
+
+    lines = IdeaExtractor._format_domain_overview_lines(
+        [d], rename, (STANDING_BARE_KEY, STANDING_OTHER_KEY))
+
+    assert lines[0] == "    • Duurzaamheid → Ecologische koers"
+    assert lines[1] == "        def: def Ecologische koers"
+    assert lines[2] == "        ✓ t?"
+
+
+def test_format_domain_overview_shows_the_label_alone_when_unchanged():
+    """Geen botsing van bewoording nodig: een ongewijzigd label staat er kaal."""
+    d = _mk("Aanbod", "Aanbod")
+    rename = {"Aanbod": "Aanbod"}
+
+    lines = IdeaExtractor._format_domain_overview_lines(
+        [d], rename, (STANDING_BARE_KEY, STANDING_OTHER_KEY))
+
+    assert lines[0] == "    • Aanbod"
+
+
+def test_format_domain_overview_marks_a_standing_domain_and_omits_its_exclusion_line():
+    """Een staand domein krijgt de markering en nooit een ✗-regel (exclusions=[])."""
+    standing = _mk(STANDING_BARE_KEY, "Kale associatie")
+
+    lines = IdeaExtractor._format_domain_overview_lines(
+        [standing], {}, (STANDING_BARE_KEY, STANDING_OTHER_KEY))
+
+    assert lines[0] == "    • Kale associatie (standing)"
+    assert not any(line.strip().startswith("✗") for line in lines)
+
+
+def test_format_domain_overview_shows_the_exclusion_line_when_present():
+    """Een ontdekt domein mét exclusions krijgt wél de ✗-regel."""
+    d = _mk("Duurzaamheid", "Duurzaamheid")
+    d.exclusions = ["Aanbod", "Prijs"]
+
+    lines = IdeaExtractor._format_domain_overview_lines(
+        [d], {"Duurzaamheid": "Duurzaamheid"}, (STANDING_BARE_KEY, STANDING_OTHER_KEY))
+
+    assert lines[-1] == "        ✗ Aanbod, Prijs"
