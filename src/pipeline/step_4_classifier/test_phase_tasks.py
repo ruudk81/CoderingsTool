@@ -151,3 +151,28 @@ def test_domein_met_een_facet_krijgt_geen_taak():
     tasks = clf._build_facet_assignment_tasks(
         ctx, {"A": [_consolidated("enig")]}, {"A": {"i1": "x"}})
     assert tasks == []
+
+
+# =============================================================================
+# Facet naslijpen
+# =============================================================================
+
+def test_naslijptaak_per_domein_met_minstens_twee_facetten():
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["A", "B"])
+    facets = {"A": [_consolidated("f1"), _consolidated("f2")], "B": [_consolidated("g1")]}
+    assignments = {"A": {"i1": "f1", "i2": "f2"}, "B": {"i3": "g1"}}
+    tasks = clf._build_facet_refinement_tasks(ctx, facets, assignments, labels={})
+    assert [t["domain_label"] for t in tasks] == ["A"]
+
+
+def test_naslijptaak_draagt_aantallen_en_aandelen():
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["A"])
+    facets = {"A": [_consolidated("f1"), _consolidated("f2")]}
+    assignments = {"A": {"i1": "f1", "i2": "f1", "i3": "f2"}}
+    labels = {"A": {"i1": "x", "i2": "y", "i3": "z"}}
+    tasks = clf._build_facet_refinement_tasks(ctx, facets, assignments, labels)
+    rows = {naam: (n, aandeel) for naam, n, aandeel, _ in tasks[0]["rows"]}
+    assert rows["f1"][0] == 2
+    assert abs(rows["f1"][1] - 2 / 3) < 0.01

@@ -2642,112 +2642,154 @@ class TaxonomyClassifier:
         use-case agnostic and every match is checkable by eye."""
         return (text or "").strip().lower()
 
-    def _p5_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for in-axis facet consolidation."""
+    # =========================================================================
+    # PHASE — FACET REFINEMENT (per domain, after every idea is assigned)
+    # =========================================================================
+
+    def _build_facet_refinement_tasks(
+        self,
+        ctx: PromptContext,
+        facets: Dict[str, List[ConsolidatedFacet]],
+        assignments: Dict[str, Dict[str, str]],
+        labels: Dict[str, Dict[str, str]],
+    ) -> List[Dict]:
+        """One task per domain that has at least two facets to judge.
+
+        The rows carry what each facet ended up holding: its count, its share of
+        the domain, and the response texts themselves. The share is what makes
+        granularity judgeable — "thin" and "large" only mean something relative
+        to the siblings, never against an absolute number.
+
+        The texts are the same ones assignment showed the model. Judging a bucket
+        on text the assigning call never saw would ask about a different object
+        than the one that was filled.
+        """
+        tasks: List[Dict] = []
+        for label in sorted(facets):
+            menu = facets[label]
+            if len(menu) < 2:
+                continue
+            assigned = assignments.get(label) or {}
+            texts = labels.get(label) or {}
+
+            held: Dict[str, List[str]] = {}
+            for idea_id, facet_name in assigned.items():
+                held.setdefault(facet_name, []).append(texts.get(idea_id, ""))
+            total = sum(len(held.get(f.facet_name, [])) for f in menu)
+
+            rows: List[Tuple[str, int, float, List[str]]] = []
+            for facet in menu:
+                mine = held.get(facet.facet_name, [])
+                distinct = Counter(t.strip() for t in mine if t.strip())
+                rows.append((
+                    facet.facet_name,
+                    len(mine),
+                    len(mine) / total if total else 0.0,
+                    [t for t, _ in distinct.most_common(self._contents_top_n)],
+                ))
+
+            tasks.append({
+                "domain_label": label,
+                "facets": list(menu),
+                "rows": rows,
+            })
+        return tasks
+
+    def _facet_refinement_prepare_fn(self, ctx: PromptContext):
         def prepare_fn(task: Dict) -> Dict:
-            prompt = build_in_axis_consolidation_prompt(
-                survey_question=prompt_context.survey_question,
-                language=prompt_context.language,
-                noun_phrase=(
-                    prompt_context.dimension_def.noun_phrase_descriptor
-                    if prompt_context.dimension_def else prompt_context.dimension_name
-                ),
-                domain_name=task['domain_name'],
-                domain_definition=task['part_context'].partition_definition,
-                axis_name=task['axis_name'],
-                axis_description=task['axis_description'],
-                facets_block=task['facets_block'],
-                neighbour_axes_block=task['neighbour_axes_block'],
+            domain = ctx.domain(task["domain_label"])
+            prompt = build_facet_refinement_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                facets_block=build_facet_contents_block(task["rows"]),
             )
-
-            gate_key = f"qr_in_axis_consolidation_{task['domain_name']}"
-            if (self._prompt_printer is not None
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type="in_axis_consolidation",
-                    metadata={
-                        "model": self._model_p5,
-                        "temperature": 0.0,
-                        "max_tokens": self._max_tokens_consolidation,
-                        "language": prompt_context.language,
-                        "domain_name": task['domain_name'],
-                        "axis_name": task['axis_name'],
-                        "n_facets": len(task['facets']),
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
+            self._capture(
+                f"facet_refinement_{task['domain_label']}", prompt,
+                "facet_refinement",
+                {"model": self._model["facet_refinement"],
+                 "temperature": 0.0,
+                 "max_tokens": self._max_tokens_consolidation,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "n_facets": len(task["facets"]),
+                 "dimension_name": ctx.dimension_name})
             return {
-                'prompt': prompt,
-                'response_model': InAxisConsolidatedResponse,
-                'temperature': 0.0,
-                'max_tokens': self._max_tokens_consolidation,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p5, phase="classifier_p5"),
+                "prompt": prompt,
+                "response_model": FacetRefinementResult,
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens_consolidation,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["facet_refinement"],
+                    phase="classifier_facet_refinement"),
             }
         return prepare_fn
 
-    def _p5_parse_fn(self):
-        """Return parse_fn closure for in-axis facet consolidation."""
-        def parse_fn(task: Dict, response) -> Optional[InAxisConsolidatedResponse]:
+    @staticmethod
+    def _facet_refinement_parse_fn():
+        def parse_fn(task: Dict, response) -> Optional[FacetRefinementResult]:
             return response if response else None
         return parse_fn
 
     @staticmethod
-    def _p5_fallback_fn():
-        """Return fallback_fn closure. On failure the axis group is left
-        exactly as discovery produced it — never silently emptied."""
+    def _facet_refinement_fallback_fn():
+        """On failure the domain is left exactly as consolidation settled it."""
         def fallback_fn(task: Dict, reason: str) -> None:
             return None
         return fallback_fn
 
-    def _apply_in_axis_results(
+    def _apply_facet_refinement(
         self,
         *,
         tasks: List[Dict],
         results: List,
-        partition_facets: Dict[str, List[DiscoveredFacet]],
-        partition_assignments: Dict[str, Dict[str, str]],
-        label_mappings: Dict[str, "PartitionLabelMapping"],
+        facets: Dict[str, List[ConsolidatedFacet]],
+        assignments: Dict[str, Dict[str, str]],
+        labels: Dict[str, Dict[str, str]],
         verbose: bool,
-    ) -> Tuple[Dict[str, Dict[str, str]], List[Dict]]:
-        """Apply every in-axis result, then remap ideas — structure first,
-        ideas second. The facet-level mirror of `_apply_in_facet_results`: splits
-        route by exact normalised response text, merges are a wholesale
-        rename, misfit moves are per-text within the domain, and a facet
-        dropped without being claimed is restored so no idea points at a
-        name absent from the structure."""
-        log: List[Dict] = []
+    ) -> Tuple[Dict[str, List[ConsolidatedFacet]], Dict[str, Dict[str, str]]]:
+        """Apply every refinement result — structure first, ideas second.
 
-        pre_facets: Dict[str, List[DiscoveredFacet]] = {
-            dom: list(facets) for dom, facets in partition_facets.items()
+        Order matters and is deliberate:
+          1. rebuild each domain's facet list, so move targets resolve against
+             the FINAL names rather than the names a concurrent call renamed
+          2. splits — route by exact normalised response text to a named child
+          3. merges — wholesale rename of a source facet
+          4. moves  — per text, within the domain; the structure does not follow,
+                      so no other idea is dragged along
+
+        The domain is fixed by the task and absent from the response schema, so
+        nothing here can move a facet out of its domain.
+        """
+        pre_facets: Dict[str, List[ConsolidatedFacet]] = {
+            dom: list(items) for dom, items in facets.items()
         }
 
-        # ---- 1. structure ------------------------------------------------
+        # ---- 1. structure ----------------------------------------------------
         remap: Dict[Tuple[str, str], str] = {}            # (dom, src) -> new name
         splits: Dict[Tuple[str, str, str], str] = {}      # (dom, src, text) -> child
         moves: Dict[Tuple[str, str, str], Optional[str]] = {}
         renamed_to: Dict[Tuple[str, str], str] = {}       # (dom, norm old) -> new
         split_children: Dict[Tuple[str, str], List[str]] = {}
-        consumed: Dict[str, Set[str]] = {}                # dom -> source facet names replaced
-        new_group_facets: Dict[str, List[DiscoveredFacet]] = {}  # dom -> new facets, task order
+        touched: Set[str] = set()
 
         for task, result in zip(tasks, results):
-            dom = task['domain_name']
-            group = task['facets']
+            dom = task["domain_label"]
+            group = task["facets"]
             before = [f.facet_name for f in group]
 
             if result is None or not result.facets:
-                log.append({"action": "facet_consolidation_failed", "domain": dom,
-                            "axis": task['axis_name'],
-                            "note": "no result — axis group left as discovered",
-                            "facets_before": before})
+                self._action_log.append({
+                    "action": "facet_refinement_failed", "domain": dom,
+                    "note": "no result — domain left as consolidation settled it",
+                    "facets_before": before})
                 continue
 
+            touched.add(dom)
             by_norm = {self._norm_text(b): b for b in before}
 
             def _resolve(src: str) -> Optional[str]:
@@ -2758,9 +2800,13 @@ class TaxonomyClassifier:
                 if _resolve(s) is None
             })
             if unmatched:
-                log.append({"action": "unknown_source_facet", "domain": dom,
-                            "axis": task['axis_name'], "sources": unmatched})
+                self._action_log.append({
+                    "action": "unknown_source_facet", "domain": dom,
+                    "sources": unmatched})
 
+            # A source claimed by several returned facets is only routable when
+            # the claimants carry instance_texts. Without that the remap would
+            # let the last writer win and move the whole bucket.
             claims: Dict[str, int] = {}
             for item in result.facets:
                 for src in (item.source_facets or []):
@@ -2773,37 +2819,38 @@ class TaxonomyClassifier:
                             if it.instance_texts for s in (it.source_facets or []))
             }
             if contested:
-                log.append({"action": "unroutable_facet_claim", "domain": dom,
-                            "axis": task['axis_name'], "sources": sorted(contested),
-                            "note": "claimed by several returned facets without "
-                                    "instance_texts — ideas left on the source"})
+                self._action_log.append({
+                    "action": "unroutable_facet_claim", "domain": dom,
+                    "sources": sorted(contested),
+                    "note": "claimed by several returned facets without "
+                            "instance_texts — ideas left on the source"})
 
-            group_new: List[DiscoveredFacet] = []
-            group_consumed: Set[str] = set()
+            settled: List[ConsolidatedFacet] = []
+            consumed: Set[str] = set()
             for item in result.facets:
-                group_new.append(DiscoveredFacet(
+                settled.append(ConsolidatedFacet(
                     facet_name=item.facet_name,
-                    facet_description=item.facet_description,
-                    inclusion_rule=item.inclusion_rule,
-                    exclusion_rule=item.exclusion_rule,
+                    facet_definition=item.facet_definition,
+                    boundary_test=item.boundary_test,
+                    exclusions=item.exclusions,
                     example_observations=item.example_observations,
-                    axis=task['axis_tag_raw'],   # fixed by scope, not by the model
+                    source_facets=item.source_facets,
                 ))
 
                 sources = [r for r in (_resolve(s) for s in (item.source_facets or []))
                            if r is not None]
-                group_consumed.update(sources)
+                consumed.update(sources)
                 if item.action == "split" and item.instance_texts:
                     for src in (sources or before):
                         for txt in item.instance_texts:
                             splits[(dom, src, self._norm_text(txt))] = item.facet_name
                         split_children.setdefault(
                             (dom, self._norm_text(src)), []).append(item.facet_name)
-                    log.append({"action": "facet_split", "domain": dom,
-                                "axis": task['axis_name'], "into": item.facet_name,
-                                "sources": sources,
-                                "n_texts": len(item.instance_texts),
-                                "texts": item.instance_texts})
+                    self._action_log.append({
+                        "action": "facet_split", "domain": dom,
+                        "into": item.facet_name, "sources": sources,
+                        "n_texts": len(item.instance_texts),
+                        "texts": item.instance_texts})
                 else:
                     for src in sources:
                         if src != item.facet_name and src not in contested:
@@ -2811,135 +2858,157 @@ class TaxonomyClassifier:
                             renamed_to[(dom, self._norm_text(src))] = item.facet_name
                     if item.action in ("merge", "widen") or (
                             sources and sources != [item.facet_name]):
-                        log.append({"action": f"facet_{item.action}", "domain": dom,
-                                    "axis": task['axis_name'],
-                                    "result": item.facet_name, "sources": sources})
+                        self._action_log.append({
+                            "action": f"facet_{item.action}", "domain": dom,
+                            "result": item.facet_name, "sources": sources})
 
-            # Sources never claimed by any returned facet: keep them — dropping
-            # a facet silently would orphan every idea assigned to it.
-            unclaimed = [f for f in group if f.facet_name not in group_consumed
-                         and self._norm_text(f.facet_name) not in {
-                             self._norm_text(n.facet_name) for n in group_new}]
-            for f in unclaimed:
-                group_new.append(f)
-                log.append({"action": "facet_kept_unclaimed", "domain": dom,
-                            "axis": task['axis_name'], "facet": f.facet_name})
+            # Sources never claimed by any returned facet: keep them. Dropping a
+            # facet silently would orphan every idea assigned to it.
+            returned = {self._norm_text(f.facet_name) for f in settled}
+            for facet in group:
+                if (facet.facet_name in consumed
+                        or self._norm_text(facet.facet_name) in returned):
+                    continue
+                settled.append(facet)
+                self._action_log.append({
+                    "action": "facet_kept_unclaimed_in_refinement",
+                    "domain": dom, "facet": facet.facet_name})
 
-            consumed.setdefault(dom, set()).update(fn.facet_name for fn in group)
-            new_group_facets.setdefault(dom, []).extend(group_new)
+            facets[dom] = settled
 
             for m in (result.misfits or []):
                 real_from = _resolve(m.from_facet) or m.from_facet
                 for txt in (m.instance_texts or []):
                     moves[(dom, real_from, self._norm_text(txt))] = (
                         m.target_facet if m.verdict == "move" else None)
-                log.append({"action": f"facet_misfit_{m.verdict}", "domain": dom,
-                            "axis": task['axis_name'], "from_facet": real_from,
-                            "target": m.target_facet,
-                            "n_texts": len(m.instance_texts or []),
-                            "texts": m.instance_texts, "reason": m.reason})
-
-        # Rebuild each touched domain's facet list: untouched facets keep their
-        # position; consolidated groups are replaced by their new facets.
-        for dom, gone in consumed.items():
-            kept = [f for f in partition_facets.get(dom, [])
-                    if f.facet_name not in gone]
-            partition_facets[dom] = kept + new_group_facets.get(dom, [])
+                self._action_log.append({
+                    "action": f"facet_misfit_{m.verdict}", "domain": dom,
+                    "from_facet": real_from, "target": m.target_facet,
+                    "n_texts": len(m.instance_texts or []),
+                    "texts": m.instance_texts, "reason": m.reason})
 
         # A source split into exactly one child was renamed, not divided.
-        split_ambiguous: Dict[Tuple[str, str], List[str]] = {}
         for key, children in split_children.items():
             uniq = sorted(set(children))
             if len(uniq) == 1:
                 renamed_to.setdefault(key, uniq[0])
-            else:
-                split_ambiguous[key] = uniq
 
         home: Dict[str, Set[str]] = {
-            dom: {f.facet_name for f in facets}
-            for dom, facets in partition_facets.items()
+            dom: {f.facet_name for f in items} for dom, items in facets.items()
         }
 
-        # ---- 2-4. ideas --------------------------------------------------
-        text_of: Dict[str, str] = {}
-        for dom in consumed:
-            mapping = label_mappings.get(dom)
-            if mapping:
-                for idea in mapping.ideas:
-                    text_of[idea.idea_id] = self._norm_text(getattr(idea, "instance", ""))
-
+        # ---- 2-4. ideas ------------------------------------------------------
         n_split = n_remap = n_moved = n_out = n_unresolved = 0
         unresolved_targets: Counter = Counter()
-        for dom in consumed:
-            assigns = partition_assignments.get(dom, {})
-            for iid, cur in list(assigns.items()):
-                txt = text_of.get(iid, "")
+        for dom in touched:
+            assigns = assignments.get(dom, {})
+            texts = labels.get(dom) or {}
+            for idea_id, current in list(assigns.items()):
+                txt = self._norm_text(texts.get(idea_id, ""))
 
-                mkey = (dom, cur, txt)
-                if mkey in moves:
-                    target = moves[mkey]
+                key = (dom, current, txt)
+                if key in moves:
+                    target = moves[key]
                     if target is None:
-                        n_out += 1
+                        n_out += 1          # flagged contentless; left in place
                         continue
                     if target not in home.get(dom, set()):
                         target = renamed_to.get((dom, self._norm_text(target)), target)
                     if target in home.get(dom, set()):
-                        assigns[iid] = target
+                        assigns[idea_id] = target
                         n_moved += 1
                     else:
                         n_unresolved += 1
                         unresolved_targets[target] += 1
                     continue
 
-                skey = (dom, cur, txt)
-                if skey in splits:
-                    assigns[iid] = splits[skey]
+                if key in splits:
+                    assigns[idea_id] = splits[key]
                     n_split += 1
                     continue
 
-                rkey = (dom, cur)
-                if rkey in remap:
-                    assigns[iid] = remap[rkey]
+                if (dom, current) in remap:
+                    assigns[idea_id] = remap[(dom, current)]
                     n_remap += 1
 
-        # ---- 5. self-check ----------------------------------------------
+        # ---- 5. self-check: no idea may point at a facet that does not exist --
         orphans: Counter = Counter()
-        for dom in consumed:
+        for dom in touched:
             names = home.get(dom, set())
-            for iid, fac in partition_assignments.get(dom, {}).items():
-                if fac and fac != "__UNASSIGNED__" and fac not in names:
-                    orphans[(dom, fac)] += 1
+            for idea_id, facet_name in assignments.get(dom, {}).items():
+                if facet_name and facet_name != "__UNASSIGNED__" and facet_name not in names:
+                    orphans[(dom, facet_name)] += 1
 
         restored = 0
-        for (dom, fac), count in orphans.items():
-            src = next((f for f in pre_facets.get(dom, [])
-                        if f.facet_name == fac), None)
-            if src is not None:
-                if all(f.facet_name != fac for f in partition_facets[dom]):
-                    partition_facets[dom].append(src)
-                home.setdefault(dom, set()).add(fac)
-                restored += 1
+        for (dom, facet_name), _count in orphans.items():
+            source = next((f for f in pre_facets.get(dom, [])
+                           if f.facet_name == facet_name), None)
+            if source is None:
+                continue
+            if all(f.facet_name != facet_name for f in facets[dom]):
+                facets[dom].append(source)
+            home.setdefault(dom, set()).add(facet_name)
+            restored += 1
         if orphans:
-            log.append({"action": "orphaned_facet_assignment",
-                        "restored_nodes": restored,
-                        "ideas_affected": sum(orphans.values()),
-                        "facets": sorted({f for (_, f) in orphans})})
+            self._action_log.append({
+                "action": "orphaned_facet_assignment", "restored_nodes": restored,
+                "ideas_affected": sum(orphans.values()),
+                "facets": sorted({f for (_, f) in orphans})})
             if verbose:
                 print(f"    SELF-CHECK: {sum(orphans.values())} ideas pointed at "
                       f"{len(orphans)} facet(s) missing from the structure — "
                       f"{restored} node(s) restored")
 
-        log.append({"action": "_facet_totals", "ideas_split": n_split,
-                    "ideas_remapped": n_remap, "ideas_moved": n_moved,
-                    "flagged_contentless_left_in_place": n_out,
-                    "moves_with_unresolvable_target": n_unresolved,
-                    "unresolved_target_names": dict(unresolved_targets.most_common(20))})
+        self._action_log.append({
+            "action": "_facet_totals", "ideas_split": n_split,
+            "ideas_remapped": n_remap, "ideas_moved": n_moved,
+            "flagged_contentless_left_in_place": n_out,
+            "moves_with_unresolvable_target": n_unresolved,
+            "unresolved_target_names": dict(unresolved_targets.most_common(20))})
 
         if verbose:
             print(f"    Ideas: {n_remap} remapped, {n_split} split, {n_moved} moved "
                   f"across facets, {n_out} flagged contentless (left in place)")
 
-        return partition_assignments, log
+        return facets, assignments
+
+    async def _run_facet_refinement(
+        self,
+        ctx: PromptContext,
+        facets: Dict[str, List[ConsolidatedFacet]],
+        assignments: Dict[str, Dict[str, str]],
+        labels: Dict[str, Dict[str, str]],
+        verbose: bool,
+    ) -> Tuple[Dict[str, List[ConsolidatedFacet]], Dict[str, Dict[str, str]]]:
+        """Judge each domain's facets against what they actually ended up holding.
+
+        The one phase that can only run after assignment: real counts and real
+        texts do not exist before it.
+        """
+        if verbose:
+            print(f"\n  Facet refinement")
+        started = time.time()
+
+        tasks = self._build_facet_refinement_tasks(ctx, facets, assignments, labels)
+        results = await self._dispatch(
+            "facet_refinement", tasks,
+            self._facet_refinement_prepare_fn(ctx),
+            self._facet_refinement_parse_fn(),
+            self._facet_refinement_fallback_fn(),
+            verbose,
+        )
+        facets, assignments = self._apply_facet_refinement(
+            tasks=tasks, results=results, facets=facets,
+            assignments=assignments, labels=labels, verbose=verbose,
+        )
+
+        if verbose:
+            s = self._last_stats
+            print(f"    {len(tasks)} tasks, {time.time() - started:.1f}s "
+                  f"({s.get('tasks_successful', 0)} ok, "
+                  f"{s.get('timeouts', 0)} timeouts) → "
+                  f"{sum(len(f) for f in facets.values())} facets")
+        return facets, assignments
 
     def _build_facet_contents_block(
         self,
