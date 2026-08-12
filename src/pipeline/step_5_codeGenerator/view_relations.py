@@ -35,6 +35,15 @@ from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, b
 
 CLEAR, SMALL = "✓ eigen code", "· te klein"
 
+# Step 4 is being rewritten in a parallel worktree; its cache is a moving target —
+# three gate runs in one session each saw a different taxonomy (182 → 141 → 189
+# attributes), which makes runs incomparable. This frozen snapshot (189 attributes,
+# 54 facets, 1236 respondents, taxonomy of 2026-08-12 18:22) exists so gate runs are
+# comparable to each other; point --cache-dir elsewhere to run against something else.
+DEFAULT_CACHE_DIR = (
+    project_root / ".superpowers" / "sdd" / "2026-08-12-step5-herbouw" / "fixture-cache"
+)
+
 
 class _CacheDirOverride:
     """Wijst run_codeGenerator's laad-helpers tijdelijk naar een andere cache_dir,
@@ -254,15 +263,15 @@ def format_facet_comparison(concepts: List[Concept], relations: RelationsResult)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--cache-dir", type=Path, default=None,
-        help="Override CacheConfig.cache_dir (default: de normale cache-map)",
+        "--cache-dir", type=Path, default=DEFAULT_CACHE_DIR,
+        help="Override CacheConfig.cache_dir (default: de bevroren fixture-cache)",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    cache_dir = args.cache_dir or CacheConfig().cache_dir
+    cache_dir = args.cache_dir
     print(f"Cache-map: {cache_dir}")
 
     token_tracker.reset()
