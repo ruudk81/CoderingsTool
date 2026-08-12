@@ -19,6 +19,7 @@ class CodebookConfig:
     model_writer: str = get_step_model("codegen_writer")  # codebook writing from clusters
     temperature_p8: float = 0.3
     temperature_p9: float = 0.0
+    temperature_relations: float = 0.0
 
     # P8: Code Generation from Attributes (per-domain)
     max_tokens_code_from_attributes: int = 16000

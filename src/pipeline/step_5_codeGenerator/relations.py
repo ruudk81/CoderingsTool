@@ -31,6 +31,7 @@ async def resolve_relations(
         return {
             "prompt": prompt,
             "response_model": model,
+            "temperature": config.temperature_relations,
             "max_tokens": config.max_tokens_relations,
             "max_retries": 2,
             "extra_kwargs": get_reasoning_params(config.model_relations, phase="codegen_relations"),

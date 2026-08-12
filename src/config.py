@@ -207,6 +207,8 @@ STEP_EFFORT = {
     # Step 5: writing and consolidating the codebook
     "codegen_p8": "medium",
     "codegen_p9": "medium",
+    "codegen_relations": "medium",  # replaces codegen_p8/p9 — same level, not "none"
+    "codegen_writer": "medium",
     # All other steps: fall back to REASONING_EFFORT
 }
 
