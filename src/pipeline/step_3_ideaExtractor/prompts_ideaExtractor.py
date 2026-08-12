@@ -807,6 +807,63 @@ class ReformulatedDomains(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# STAGE 5b: Standing-domain labels (translation only, no partitioning)
+# ═══════════════════════════════════════════════════════════════════════
+
+def build_standing_labels_prompt(
+    *,
+    language: str,
+    entity: str,
+    dimension: DimensionDefinition,
+) -> str:
+    """Name the two standing domains in the survey language. Nothing else.
+
+    Deliberately a call of its own. Asking for these labels inside the
+    consolidation call put them under a partitioning objective, and the label
+    drifted with it — a domain for "an association naming no subject area"
+    came back named as a judgment, after which every trait-without-subject
+    had to go somewhere else.
+    """
+    return f"""You are naming two fixed domains in a survey coding scheme.
+
+These two domains are not discovered from data. Their meaning is fixed and given below. Your only task is to give each one a short, natural label in {language} that faithfully names what its definition already says.
+
+<domain_a>
+{dimension.standing_bare.definition}
+In short: {dimension.standing_bare.short}
+</domain_a>
+
+<domain_b>
+{dimension.standing_other.definition}
+In short: {dimension.standing_other.short}
+</domain_b>
+
+The entity the survey is about is: {entity}
+
+Rules:
+- The label must name what its definition says. Do not narrow it, do not widen it, and do not invent a subject area for it.
+- Do not make the label evaluative. Neither domain is about how good or bad something is, unless its definition says so in as many words.
+- Both are catches for a failure mode of the coding scheme, so both are broad on purpose. A label that sounds broad is correct here.
+- A short noun phrase in {language}, as a coder would see it in a list of domains.
+
+provide your output as valid JSON following the response schema provided."""
+
+
+class StandingLabelsResponse(BaseModel):
+    """Labels for the two standing domains, in the survey language — labels only.
+
+    Definition, boundary_test and exclusions are absent by construction: they come
+    from dimension_data.py and are not the model's to write.
+    """
+    bare_label: str = Field(
+        description="Short noun phrase in the survey language naming domain_a"
+    )
+    other_label: str = Field(
+        description="Short noun phrase in the survey language naming domain_b"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # STAGE 6: Idea Extraction (dynamic model)
 # ═══════════════════════════════════════════════════════════════════════
 

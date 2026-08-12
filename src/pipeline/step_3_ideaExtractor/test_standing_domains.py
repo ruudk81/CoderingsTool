@@ -19,7 +19,9 @@ from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     STANDING_OTHER_KEY,
     DomainConsolidatedResponse,
     DomainItem,
+    StandingLabelsResponse,
     build_domain_consolidation_prompt,
+    build_standing_labels_prompt,
 )
 
 ALL_KEYS = sorted(DIMENSIONS)
@@ -207,3 +209,25 @@ def test_attributes_associations_no_longer_enumerates_affective_forms():
     d = get_dimension("ATTRIBUTES_ASSOCIATIONS")
     assert "a feeling or a general impression" not in d.standing_bare.definition
     assert "general-impression domain" not in d.standing_other.definition
+
+
+# ── 5. De vertaalcall ─────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_standing_labels_prompt_carries_both_fixed_definitions(dimension_key):
+    """De vertaalcall krijgt de canonieke tekst mee — anders vertaalt hij een gok."""
+    d = get_dimension(dimension_key)
+    prompt = build_standing_labels_prompt(language="nl-NL", entity="e", dimension=d)
+
+    assert d.standing_bare.definition in prompt
+    assert d.standing_other.definition in prompt
+    assert d.standing_bare.short in prompt
+    assert d.standing_other.short in prompt
+    assert "nl-NL" in prompt
+    assert prompt.rstrip().endswith(
+        "provide your output as valid JSON following the response schema provided.")
+
+
+def test_standing_labels_response_carries_labels_only():
+    """Alleen labels. Een definitie-veld hier zou het vangnet weer laten schuiven."""
+    assert set(StandingLabelsResponse.model_fields) == {"bare_label", "other_label"}
