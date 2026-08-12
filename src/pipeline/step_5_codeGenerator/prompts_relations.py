@@ -1,6 +1,7 @@
 """Stap 2 — relaties tussen attributen. Semantiek, geen aantallen."""
 from __future__ import annotations
 
+import hashlib
 from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, create_model
@@ -41,19 +42,25 @@ def tagged(concept) -> str:
     return f"[{concept.attribute_id}] {concept.name}"
 
 
-def _by_id(concepts):
-    """Concepts ordered by attribute_id. Both the prompt text and the response
-    model's enum must use this instead of the caller's order: `concepts` arrives
-    prevalence-sorted (build_inventory's `(-n_resp, name)`), and that order —
-    whether in prose or in a JSON schema enum — is itself a signal about how
-    often something occurs. attribute_id order is deterministic and carries no
-    prevalence information."""
-    return sorted(concepts, key=lambda c: c.attribute_id)
+def _shuffled(concepts):
+    """Concepts in a deterministic order unrelated to prevalence OR domain.
+
+    Both the prompt text and the response model's enum must use this instead of
+    the caller's order: `concepts` arrives prevalence-sorted (build_inventory's
+    `(-n_resp, name)`), and that order — whether in prose or in a JSON schema
+    enum — is itself a signal about how often something occurs. Sorting by
+    attribute_id instead fixes that, but opens a second, subtler channel:
+    identity.py mints A# sequentially PER DOMAIN, so id order still groups
+    domains into contiguous blocks — visible structure of exactly the kind this
+    step exists to stop handing the model. Sorting by a hash of the id keeps the
+    order reproducible across runs (the hash is a pure function of a stable id)
+    while carrying neither signal."""
+    return sorted(concepts, key=lambda c: hashlib.md5(c.attribute_id.encode()).hexdigest())
 
 
 def make_relations_model(concepts) -> type:
     """RelationsResult met `attribute` en `synonym_of` beperkt tot bestaande namen."""
-    names: Tuple[str, ...] = tuple(tagged(c) for c in _by_id(concepts))
+    names: Tuple[str, ...] = tuple(tagged(c) for c in _shuffled(concepts))
     constrained_relation = create_model(
         "ConstrainedAttributeRelation",
         __base__=AttributeRelation,
@@ -72,7 +79,7 @@ def make_relations_model(concepts) -> type:
 
 def build_relations_prompt(concepts, language: str) -> str:
     inventory = "\n".join(
-        f'- "{tagged(concept)}": {concept.definition}' for concept in _by_id(concepts)
+        f'- "{tagged(concept)}": {concept.definition}' for concept in _shuffled(concepts)
     )
 
     return f"""You are organising a list of observed topics from an open-ended survey.

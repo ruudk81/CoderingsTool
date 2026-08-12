@@ -3,14 +3,14 @@ import re
 
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.prompts_relations import (
-    build_relations_prompt, make_relations_model,
+    build_relations_prompt, make_relations_model, tagged,
 )
 
 
-def concept(attribute_id, name, n_resp=10):
+def concept(attribute_id, name, n_resp=10, domain="Domein"):
     resp = frozenset(f"R{i}" for i in range(n_resp))
     return Concept(attribute_id=attribute_id, name=name, definition="def",
-                   domain="Domein", facet="Facet", n_iu=n_resp,
+                   domain=domain, facet="Facet", n_iu=n_resp,
                    resp_ids=resp, resp_pos=resp,
                    resp_neg=frozenset(), resp_neu=frozenset())
 
@@ -29,13 +29,40 @@ def test_prompt_lists_every_attribute():
     assert "[A2] Service" in prompt
 
 
-def test_prompt_orders_by_attribute_id_not_by_prevalence():
+def test_prompt_order_is_not_the_prevalence_order():
     # Input arrives prevalence-sorted, as build_inventory produces it: highest
-    # n_resp first. Attribute id order disagrees with that — the prompt must
-    # follow the id, not the order it was handed.
-    concepts = [concept("A9", "Zorg", 500), concept("A1", "Prijs", 5)]
+    # n_resp first. The rendered order must not match that.
+    concepts = [concept(f"A{i}", f"Topic{i}", n_resp=100 - i) for i in range(8)]
     prompt = build_relations_prompt(concepts, "nl-NL")
-    assert prompt.index("[A1] Prijs") < prompt.index("[A9] Zorg")
+    rendered_order = sorted(concepts, key=lambda c: prompt.index(tagged(c)))
+    assert [c.attribute_id for c in rendered_order] != [c.attribute_id for c in concepts]
+
+
+def test_prompt_order_is_stable_across_calls():
+    concepts = [concept(f"A{i}", f"Topic{i}", n_resp=100 - i) for i in range(8)]
+    first = build_relations_prompt(concepts, "nl-NL")
+    second = build_relations_prompt(concepts, "nl-NL")
+    assert first == second
+
+
+def test_prompt_breaks_up_domain_contiguity():
+    # attribute_id is minted sequentially PER DOMAIN (identity.py), so ordering
+    # by id alone would place every domain's attributes in one unbroken block —
+    # reproducing the domain grouping in list position instead of in the label.
+    # This is the property the fix exists for, not an implementation detail.
+    concepts = (
+        [concept(f"A{i}", f"Een{i}", domain="Domein1") for i in range(1, 4)]
+        + [concept(f"A{i}", f"Twee{i}", domain="Domein2") for i in range(4, 7)]
+    )
+    prompt = build_relations_prompt(concepts, "nl-NL")
+    rendered_order = sorted(concepts, key=lambda c: prompt.index(tagged(c)))
+    domain_sequence = [c.domain for c in rendered_order]
+
+    runs = 1 + sum(a != b for a, b in zip(domain_sequence, domain_sequence[1:]))
+    assert runs > len(set(domain_sequence)), (
+        "id order would give exactly one run per domain — the fix must break "
+        "at least one domain's attributes into more than one run"
+    )
 
 
 def test_prompt_ends_with_the_instructor_hint():
