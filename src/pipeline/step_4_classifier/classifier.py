@@ -3565,135 +3565,153 @@ class TaxonomyClassifier:
                   f"{len(assignments)} ideas assigned")
         return assignments
 
-    def _build_facet_contents_block(
+    # =========================================================================
+    # PHASE — ATTRIBUTE REFINEMENT (per facet, after every idea is assigned)
+    # =========================================================================
+
+    def _build_attribute_refinement_tasks(
         self,
-        attributes: List[DiscoveredAttribute],
-        facet_ideas: List,
-        attribute_assignments: Dict[str, str],
-        top_n: Optional[int] = None,
-    ) -> str:
-        """Render each attribute with its real size, its share of the facet, and the
-        response texts it actually holds.
+        ctx: PromptContext,
+        attributes: Dict[str, Dict[str, List[ConsolidatedAttribute]]],
+        assignments: Dict[str, str],
+        labels: Dict[Tuple[str, str], Dict[str, str]],
+    ) -> List[Dict]:
+        """One task per facet that has at least two attributes to judge.
 
-        This is the input change the whole phase turns on: P9 was shown 2 examples
-        picked during discovery, before a single idea was assigned, so it reasoned
-        about what the label promised. Here it sees what the bucket contains.
+        Besides its own contents each task carries its neighbouring facets in
+        the same domain, with their real sizes. They are context for writing
+        boundaries against something real, and a place to name a move target —
+        never merge candidates. Without that distinction stated, the model
+        starts merging across facets, which is the failure this phase exists to
+        prevent.
         """
-        if top_n is None:
-            top_n = self._p9_contents_top_n
-        assigned = [i for i in facet_ideas if attribute_assignments.get(i.idea_id)]
-        total = len(assigned)
+        tasks: List[Dict] = []
+        for domain_label in sorted(attributes):
+            items = attributes[domain_label]
 
-        lines = []
-        for attr in attributes:
-            name = attr.attribute_name
-            mine = [i for i in assigned if attribute_assignments.get(i.idea_id) == name]
-            pct = round(100 * len(mine) / total) if total else 0
-            texts = Counter(
-                (i.instance or "").strip() for i in mine if (i.instance or "").strip()
-            )
-            shown = " · ".join(f'"{t}" x{c}' for t, c in texts.most_common(top_n))
-            more = (f" · ... {len(texts) - top_n} further distinct texts"
-                    if len(texts) > top_n else "")
-            lines.append(
-                f'- "{name}" — {len(mine)} ideas, {pct}% of this facet — '
-                f'{attr.attribute_description}'
-            )
-            lines.append(f'    actually contains: {shown}{more}' if shown
-                         else '    actually contains: (no ideas assigned)')
-        return "\n".join(lines)
+            def _held(facet_name: str) -> Dict[str, List[str]]:
+                out: Dict[str, List[str]] = {}
+                for idea_id, text in (labels.get((domain_label, facet_name)) or {}).items():
+                    name = assignments.get(idea_id)
+                    if name:
+                        out.setdefault(name, []).append(text)
+                return out
 
-    def _p8_prepare_fn(self, prompt_context: PromptContext):
-        """Return prepare_fn closure for P9 in-facet attribute consolidation."""
+            for facet_name in sorted(items):
+                menu = items[facet_name]
+                if len(menu) < 2:
+                    continue
+
+                held = _held(facet_name)
+                total = sum(len(held.get(a.attribute_name, [])) for a in menu)
+                rows: List[Tuple[str, int, float, List[str]]] = []
+                for attribute in menu:
+                    mine = held.get(attribute.attribute_name, [])
+                    distinct = Counter(t.strip() for t in mine if t.strip())
+                    rows.append((
+                        attribute.attribute_name,
+                        len(mine),
+                        len(mine) / total if total else 0.0,
+                        [t for t, _ in distinct.most_common(self._contents_top_n)],
+                    ))
+
+                neighbours = []
+                for other_name in sorted(items):
+                    if other_name == facet_name or not items[other_name]:
+                        continue
+                    other_held = _held(other_name)
+                    neighbours.append((
+                        other_name,
+                        [(a.attribute_name, len(other_held.get(a.attribute_name, [])))
+                         for a in items[other_name]],
+                    ))
+
+                tasks.append({
+                    "domain_label": domain_label,
+                    "facet_name": facet_name,
+                    "attributes": list(menu),
+                    "rows": rows,
+                    "neighbour_block": build_neighbour_block(neighbours),
+                })
+        return tasks
+
+    def _attribute_refinement_prepare_fn(self, ctx: PromptContext):
         def prepare_fn(task: Dict) -> Dict:
-            prompt = build_in_facet_consolidation_prompt(
-                survey_question=prompt_context.survey_question,
-                language=prompt_context.language,
-                dataset_context_section=prompt_context.dataset_context_section,
-                dimension_def=prompt_context.dimension_def,
-                dimension_name=prompt_context.dimension_name,
-                dimension_description=prompt_context.dimension_description,
-                domain_name=task['domain_name'],
-                domain_definition=task['part_context'].partition_definition,
-                facet_name=task['facet_name'],
-                facet_description=task['facet_description'],
-                attributes_block=task['attributes_block'],
-                neighbour_block=task['neighbour_block'],
+            domain = ctx.domain(task["domain_label"])
+            prompt = build_attribute_refinement_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                facet_name=task["facet_name"],
+                facet_definition=task["facet_definition"],
+                attributes_block=build_attribute_contents_block(task["rows"]),
+                neighbour_block=task["neighbour_block"],
             )
-
-            gate_key = f"qr_in_facet_consolidation_{task['domain_name']}"
-            if (self._prompt_printer is not None
-                    and gate_key not in self._captured_gates):
-                self._prompt_printer.capture_prompt(
-                    step_name="qualitative_researcher",
-                    utility_name="QualitativeResearcher",
-                    prompt_content=prompt,
-                    prompt_type="in_facet_consolidation",
-                    metadata={
-                        "model": self._model_p8,
-                        "temperature": 0.0,
-                        "max_tokens": self._max_tokens_consolidation,
-                        "language": prompt_context.language,
-                        "domain_name": task['domain_name'],
-                        "facet_name": task['facet_name'],
-                        "n_attributes": len(task['attributes']),
-                        "dimension_name": prompt_context.dimension_name,
-                    }
-                )
-                self._captured_gates.add(gate_key)
-
+            self._capture(
+                f"attribute_refinement_{task['domain_label']}_{task['facet_name']}",
+                prompt, "attribute_refinement",
+                {"model": self._model["attribute_refinement"],
+                 "temperature": 0.0,
+                 "max_tokens": self._max_tokens_consolidation,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "facet": task["facet_name"],
+                 "n_attributes": len(task["attributes"]),
+                 "dimension_name": ctx.dimension_name})
             return {
-                'prompt': prompt,
-                'response_model': InFacetConsolidatedResponse,
-                'temperature': 0.0,
-                'max_tokens': self._max_tokens_consolidation,
-                'max_retries': 3,
-                'extra_kwargs': get_reasoning_params(self._model_p8, phase="classifier_p8"),
+                "prompt": prompt,
+                "response_model": AttributeRefinementResult,
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens_consolidation,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["attribute_refinement"],
+                    phase="classifier_attribute_refinement"),
             }
         return prepare_fn
 
-    def _p8_parse_fn(self):
-        """Return parse_fn closure for P9 in-facet attribute consolidation."""
-        def parse_fn(task: Dict, response) -> Optional[InFacetConsolidatedResponse]:
+    @staticmethod
+    def _attribute_refinement_parse_fn():
+        def parse_fn(task: Dict, response) -> Optional[AttributeRefinementResult]:
             return response if response else None
         return parse_fn
 
     @staticmethod
-    def _p8_fallback_fn():
-        """Return fallback_fn closure for P9. On failure the facet is left exactly
-        as P8 produced it — never silently emptied."""
+    def _attribute_refinement_fallback_fn():
+        """On failure the facet is left exactly as consolidation settled it."""
         def fallback_fn(task: Dict, reason: str) -> None:
             return None
         return fallback_fn
 
-    def _apply_in_facet_results(
+    def _apply_attribute_refinement(
         self,
         *,
         tasks: List[Dict],
         results: List,
-        domain_facet_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
-        partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
-        attribute_assignments: Dict[str, str],
-        partition_assignments: Dict[str, Dict[str, str]],
+        attributes: Dict[str, Dict[str, List[ConsolidatedAttribute]]],
+        assignments: Dict[str, str],
+        facet_assignments: Dict[str, Dict[str, str]],
+        labels: Dict[Tuple[str, str], Dict[str, str]],
         verbose: bool,
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], List[Dict]]:
-        """Apply every P9 result, then remap ideas — structure first, ideas second.
+    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+        """Apply every refinement result, then remap ideas — structure first.
 
         Order matters and is deliberate:
-          1. rebuild the structure for every facet (so move targets can be resolved
-             against the FINAL names, not the names a concurrent call has renamed)
-          2. splits   — route by exact response text to a named child
-          3. merges   — wholesale rename of a source attribute
-          4. moves    — per-text, may cross a facet boundary; the structure does not
-                        follow, so no other idea is dragged along
-        Every action lands in the log with the texts it touched.
+          1. rebuild the structure for every facet, so move targets resolve
+             against the FINAL names rather than the names a concurrent call
+             has renamed
+          2. splits — route by exact response text to a named child
+          3. merges — wholesale rename of a source attribute
+          4. moves  — per text, may cross a facet boundary; the structure does
+                      not follow, so no other idea is dragged along
         """
-        log: List[Dict] = []
-
-        # keep the pre-P9 attribute objects reachable, so the self-check below can
-        # put back a node P9 dropped without ever naming it
-        pre_p7_attrs: Dict[Tuple[str, str], List[DiscoveredAttribute]] = {
-            (t['domain_name'], t['facet_name']): list(t['attributes']) for t in tasks
+        # Keep the pre-refinement attributes reachable, so the self-check below
+        # can put back a node the phase dropped without ever naming it.
+        pre_attrs: Dict[Tuple[str, str], List[ConsolidatedAttribute]] = {
+            (t["domain_label"], t["facet_name"]): list(t["attributes"]) for t in tasks
         }
 
         # ---- 1. structure ----------------------------------------------------
@@ -3701,40 +3719,45 @@ class TaxonomyClassifier:
         remap: Dict[Tuple[str, str, str], str] = {}
         splits: Dict[Tuple[str, str, str, str], str] = {}
         moves: Dict[Tuple[str, str, str, str], Optional[str]] = {}
-        renamed_to: Dict[str, str] = {}   # normalised old name -> new name, global
-        split_children: Dict[str, List[str]] = {}   # normalised old name -> child names
+        renamed_to: Dict[str, str] = {}             # normalised old name -> new, global
+        split_children: Dict[str, List[str]] = {}   # normalised old name -> children
 
         for task, result in zip(tasks, results):
-            dom, fac = task['domain_name'], task['facet_name']
-            before = [a.attribute_name for a in task['attributes']]
+            dom, fac = task["domain_label"], task["facet_name"]
+            before = [a.attribute_name for a in task["attributes"]]
 
             if result is None or not result.attributes:
-                log.append({"action": "failed", "domain": dom, "facet": fac,
-                            "note": "no result — facet left as P8 produced it",
-                            "attributes_before": before})
+                self._action_log.append({
+                    "action": "attribute_refinement_failed", "domain": dom,
+                    "facet": fac,
+                    "note": "no result — facet left as consolidation settled it",
+                    "attributes_before": before})
                 continue
 
             # Match the model's source names against the real ones case- and
             # padding-insensitively. A strict equality check silently dropped
-            # sources that differed only in capitalisation, leaving their ideas on
-            # a pre-P9 name that no longer exists in the structure.
+            # sources differing only in capitalisation, leaving their ideas on a
+            # name no longer present in the structure.
             by_norm = {self._norm_text(b): b for b in before}
 
             def _resolve(src: str) -> Optional[str]:
                 return by_norm.get(self._norm_text(src))
 
             unmatched = sorted({
-                s for item in result.attributes for s in (item.source_attributes or [])
+                s for item in result.attributes
+                for s in (item.source_attributes or [])
                 if _resolve(s) is None
             })
             if unmatched:
-                log.append({"action": "unknown_source_name", "domain": dom, "facet": fac,
-                            "sources": unmatched,
-                            "note": "named as a source but not among this facet's attributes"})
+                self._action_log.append({
+                    "action": "unknown_source_name", "domain": dom, "facet": fac,
+                    "sources": unmatched,
+                    "note": "named as a source but not among this facet's attributes"})
 
-            # A source claimed by more than one returned attribute is only routable
-            # when the claimants carry instance_texts (a split). Without that the
-            # remap would silently let the last writer win and move the whole bucket.
+            # A source claimed by more than one returned attribute is only
+            # routable when the claimants carry instance_texts (a split).
+            # Without that the remap would let the last writer win and move the
+            # whole bucket.
             claims: Dict[str, int] = {}
             for item in result.attributes:
                 for src in (item.source_attributes or []):
@@ -3747,61 +3770,81 @@ class TaxonomyClassifier:
                             if it.instance_texts for s in (it.source_attributes or []))
             }
             if contested:
-                log.append({"action": "unroutable_claim", "domain": dom, "facet": fac,
-                            "sources": sorted(contested),
-                            "note": ("claimed by several returned attributes with no "
-                                     "instance_texts — ideas left on the source")})
+                self._action_log.append({
+                    "action": "unroutable_claim", "domain": dom, "facet": fac,
+                    "sources": sorted(contested),
+                    "note": "claimed by several returned attributes with no "
+                            "instance_texts — ideas left on the source"})
 
-            new_attrs: List[DiscoveredAttribute] = []
+            settled: List[ConsolidatedAttribute] = []
+            consumed: Set[str] = set()
             for item in result.attributes:
-                new_attrs.append(DiscoveredAttribute(
+                settled.append(ConsolidatedAttribute(
                     attribute_name=item.attribute_name,
-                    attribute_description=item.attribute_description,
-                    parent_facet=fac,          # fixed by scope, not by the model
+                    attribute_definition=item.attribute_definition,
+                    boundary_test=item.boundary_test,
+                    exclusions=item.exclusions,
                     example_observations=item.example_observations,
+                    source_attributes=item.source_attributes,
                 ))
 
                 sources = [r for r in (_resolve(s) for s in (item.source_attributes or []))
                            if r is not None]
+                consumed.update(sources)
                 if item.action == "split" and item.instance_texts:
                     for src in (sources or before):
                         for txt in item.instance_texts:
                             splits[(dom, fac, src, self._norm_text(txt))] = item.attribute_name
                         split_children.setdefault(
                             self._norm_text(src), []).append(item.attribute_name)
-                    log.append({"action": "split", "domain": dom, "facet": fac,
-                                "into": item.attribute_name, "sources": sources,
-                                "n_texts": len(item.instance_texts),
-                                "texts": item.instance_texts})
+                    self._action_log.append({
+                        "action": "split", "domain": dom, "facet": fac,
+                        "into": item.attribute_name, "sources": sources,
+                        "n_texts": len(item.instance_texts),
+                        "texts": item.instance_texts})
                 else:
                     for src in sources:
                         if src != item.attribute_name and src not in contested:
                             remap[(dom, fac, src)] = item.attribute_name
-                            # Facets are consolidated concurrently, so a move may name
-                            # a target by the name it had in the neighbour block while
-                            # its own facet is renaming it. Keep the trail.
+                            # Facets refine concurrently, so a move may name a
+                            # target by the name it had in the neighbour block
+                            # while its own facet is renaming it. Keep the trail.
                             renamed_to[self._norm_text(src)] = item.attribute_name
                     if item.action in ("merge", "widen") or (
                             sources and sources != [item.attribute_name]):
-                        log.append({"action": item.action, "domain": dom, "facet": fac,
-                                    "result": item.attribute_name, "sources": sources})
+                        self._action_log.append({
+                            "action": item.action, "domain": dom, "facet": fac,
+                            "result": item.attribute_name, "sources": sources})
 
-            domain_facet_attributes[dom][fac] = new_attrs
-            partition_attributes.setdefault(dom, {})[fac] = new_attrs
+            # Sources never claimed: keep them, or their ideas point at a name
+            # absent from the structure.
+            returned = {self._norm_text(a.attribute_name) for a in settled}
+            for attribute in task["attributes"]:
+                if (attribute.attribute_name in consumed
+                        or self._norm_text(attribute.attribute_name) in returned):
+                    continue
+                settled.append(attribute)
+                self._action_log.append({
+                    "action": "attribute_kept_unclaimed_in_refinement",
+                    "domain": dom, "facet": fac,
+                    "attribute": attribute.attribute_name})
+
+            attributes.setdefault(dom, {})[fac] = settled
 
             for m in (result.misfits or []):
                 for txt in (m.instance_texts or []):
                     moves[(dom, fac, m.from_attribute, self._norm_text(txt))] = (
                         m.target_attribute if m.verdict == "move" else None)
-                log.append({"action": f"misfit_{m.verdict}", "domain": dom, "facet": fac,
-                            "from_attribute": m.from_attribute,
-                            "target": m.target_attribute,
-                            "n_texts": len(m.instance_texts or []),
-                            "texts": m.instance_texts, "reason": m.reason})
+                self._action_log.append({
+                    "action": f"misfit_{m.verdict}", "domain": dom, "facet": fac,
+                    "from_attribute": m.from_attribute,
+                    "target": m.target_attribute,
+                    "n_texts": len(m.instance_texts or []),
+                    "texts": m.instance_texts, "reason": m.reason})
 
-        # A source split into exactly ONE child was renamed, not divided — follow it.
-        # A source split into several children is genuinely ambiguous as a move target:
-        # picking a child would be a guess, so those are reported, not resolved.
+        # A source split into exactly ONE child was renamed, not divided — follow
+        # it. A source split into several children is genuinely ambiguous as a
+        # move target: picking a child would be a guess, so those are reported.
         split_ambiguous: Dict[str, List[str]] = {}
         for src, children in split_children.items():
             uniq = sorted(set(children))
@@ -3810,115 +3853,103 @@ class TaxonomyClassifier:
             else:
                 split_ambiguous[src] = uniq
 
-        # where does every surviving attribute live now?
+        # Where does every surviving attribute live now?
         home: Dict[str, Tuple[str, str]] = {}
         ambiguous: Set[str] = set()
-        for dom, facets in domain_facet_attributes.items():
-            for fac, attrs in facets.items():
+        for dom, items in attributes.items():
+            for fac, attrs in items.items():
                 for a in attrs:
                     if a.attribute_name in home and home[a.attribute_name] != (dom, fac):
                         ambiguous.add(a.attribute_name)
                     home[a.attribute_name] = (dom, fac)
 
         # ---- 2-4. ideas ------------------------------------------------------
-        idea_facet: Dict[str, Tuple[str, str]] = {}
-        for dom, assigns in partition_assignments.items():
-            for iid, fac in assigns.items():
-                idea_facet[iid] = (dom, fac)
-
-        text_of = {}
-        for task in tasks:
-            for idea in task['facet_ideas']:
-                text_of[idea.idea_id] = self._norm_text(getattr(idea, "instance", ""))
+        idea_home: Dict[str, Tuple[str, str]] = {}
+        text_of: Dict[str, str] = {}
+        for (dom, fac), scoped in labels.items():
+            for idea_id, text in scoped.items():
+                idea_home[idea_id] = (dom, fac)
+                text_of[idea_id] = self._norm_text(text)
 
         n_split = n_remap = n_moved = n_out = n_unresolved = n_target_split = 0
         unresolved_targets: Counter = Counter()
-        for iid, cur in list(attribute_assignments.items()):
-            place = idea_facet.get(iid)
+        for idea_id, current in list(assignments.items()):
+            place = idea_home.get(idea_id)
             if not place:
                 continue
             dom, fac = place
-            txt = text_of.get(iid, "")
+            txt = text_of.get(idea_id, "")
 
-            mkey = (dom, fac, cur, txt)
-            if mkey in moves:
-                target = moves[mkey]
+            key = (dom, fac, current, txt)
+            if key in moves:
+                target = moves[key]
                 if target is None:
-                    n_out += 1                      # flagged contentless; left in place
+                    n_out += 1                  # flagged contentless; left in place
                     continue
-                # The neighbour block showed pre-P9 names, and facets consolidate
-                # concurrently, so a valid target may already have been renamed by
-                # its own facet. Follow the rename before giving up.
                 if target not in home:
                     target = renamed_to.get(self._norm_text(target), target)
                 if target in home and target not in ambiguous:
-                    attribute_assignments[iid] = target
+                    assignments[idea_id] = target
                     t_dom, t_fac = home[target]
-                    partition_assignments.setdefault(t_dom, {})[iid] = t_fac
+                    facet_assignments.setdefault(t_dom, {})[idea_id] = t_fac
                     if t_dom != dom:
-                        partition_assignments.get(dom, {}).pop(iid, None)
+                        facet_assignments.get(dom, {}).pop(idea_id, None)
                     n_moved += 1
                 elif self._norm_text(target) in split_ambiguous:
-                    n_target_split += 1     # target was divided; choosing a child would guess
+                    n_target_split += 1   # target was divided; a child would be a guess
                     unresolved_targets[target] += 1
                 else:
                     n_unresolved += 1
                     unresolved_targets[target] += 1
                 continue
 
-            skey = (dom, fac, cur, txt)
-            if skey in splits:
-                attribute_assignments[iid] = splits[skey]
+            if key in splits:
+                assignments[idea_id] = splits[key]
                 n_split += 1
                 continue
 
-            rkey = (dom, fac, cur)
-            if rkey in remap:
-                attribute_assignments[iid] = remap[rkey]
+            if (dom, fac, current) in remap:
+                assignments[idea_id] = remap[(dom, fac, current)]
                 n_remap += 1
 
-        # ---- 5. self-check: no idea may point at a node that does not exist -----
-        # P9 can drop an attribute it never mentions as a source. Its ideas would
-        # then carry a name absent from the structure, and everything downstream
-        # (codebook, export) silently loses them. Restore the node instead.
+        # ---- 5. self-check: no idea may point at a node that does not exist ---
         orphans: Counter = Counter()
-        for iid, name in attribute_assignments.items():
+        for idea_id, name in assignments.items():
             if name and name not in home:
-                orphans[(idea_facet.get(iid, ("?", "?")), name)] += 1
+                orphans[(idea_home.get(idea_id, ("?", "?")), name)] += 1
 
         restored = 0
-        for (place, name), count in orphans.items():
+        for (place, name), _count in orphans.items():
             dom, fac = place
-            src = next((a for a in (pre_p7_attrs.get((dom, fac)) or [])
-                        if a.attribute_name == name), None)
-            if src is not None and dom in domain_facet_attributes:
-                # Both structures usually hold the SAME list object for this facet
-                # (assigned together in step 1), so a bare append to each would
-                # insert the node twice.
-                for attrs in (domain_facet_attributes[dom].setdefault(fac, []),
-                              partition_attributes.setdefault(dom, {}).setdefault(fac, [])):
-                    if all(a.attribute_name != name for a in attrs):
-                        attrs.append(src)
-                home[name] = (dom, fac)
-                restored += 1
+            source = next((a for a in (pre_attrs.get((dom, fac)) or [])
+                           if a.attribute_name == name), None)
+            if source is None or dom not in attributes:
+                continue
+            attrs = attributes[dom].setdefault(fac, [])
+            if all(a.attribute_name != name for a in attrs):
+                attrs.append(source)
+            home[name] = (dom, fac)
+            restored += 1
         if orphans:
-            log.append({"action": "orphaned_assignment", "restored_nodes": restored,
-                        "ideas_affected": sum(orphans.values()),
-                        "attributes": sorted({n for (_, n) in orphans}),
-                        "note": ("P9 returned no attribute claiming these, so their "
-                                 "ideas kept a name absent from the structure; the "
-                                 "node was put back to keep the two consistent")})
+            self._action_log.append({
+                "action": "orphaned_assignment", "restored_nodes": restored,
+                "ideas_affected": sum(orphans.values()),
+                "attributes": sorted({n for (_, n) in orphans}),
+                "note": ("refinement returned no attribute claiming these, so "
+                         "their ideas kept a name absent from the structure; "
+                         "the node was put back to keep the two consistent")})
             if verbose:
                 print(f"    SELF-CHECK: {sum(orphans.values())} ideas pointed at "
                       f"{len(orphans)} attribute(s) missing from the structure — "
                       f"{restored} node(s) restored")
 
-        log.append({"action": "_totals", "ideas_split": n_split, "ideas_remapped": n_remap,
-                    "ideas_moved": n_moved, "flagged_contentless_left_in_place": n_out,
-                    "moves_with_unresolvable_target": n_unresolved,
-                    "moves_whose_target_was_itself_split": n_target_split,
-                    "unresolved_target_names": dict(unresolved_targets.most_common(20)),
-                    "ambiguous_attribute_names": sorted(ambiguous)})
+        self._action_log.append({
+            "action": "_totals", "ideas_split": n_split, "ideas_remapped": n_remap,
+            "ideas_moved": n_moved, "flagged_contentless_left_in_place": n_out,
+            "moves_with_unresolvable_target": n_unresolved,
+            "moves_whose_target_was_itself_split": n_target_split,
+            "unresolved_target_names": dict(unresolved_targets.most_common(20)),
+            "ambiguous_attribute_names": sorted(ambiguous)})
 
         if verbose:
             print(f"    Ideas: {n_remap} remapped, {n_split} split, {n_moved} moved "
@@ -3928,7 +3959,54 @@ class TaxonomyClassifier:
                       f"{n_target_split} named a target that was itself split — "
                       f"both left in place (see the log)")
 
-        return attribute_assignments, partition_assignments, log
+        return assignments, facet_assignments
+
+    async def _run_attribute_refinement(
+        self,
+        ctx: PromptContext,
+        attributes: Dict[str, Dict[str, List[ConsolidatedAttribute]]],
+        assignments: Dict[str, str],
+        facet_assignments: Dict[str, Dict[str, str]],
+        facets: Dict[str, List[ConsolidatedFacet]],
+        labels: Dict[Tuple[str, str], Dict[str, str]],
+        verbose: bool,
+    ) -> Tuple[Dict[str, Dict[str, List[ConsolidatedAttribute]]], Dict[str, str],
+               Dict[str, Dict[str, str]]]:
+        """Judge each facet's attributes against what they actually hold."""
+        if verbose:
+            print(f"\n  Attribute refinement")
+        started = time.time()
+
+        definition_of = {
+            (domain_label, facet.facet_name): facet.facet_definition
+            for domain_label, items in facets.items() for facet in items
+        }
+        tasks = self._build_attribute_refinement_tasks(
+            ctx, attributes, assignments, labels)
+        for task in tasks:
+            task["facet_definition"] = definition_of.get(
+                (task["domain_label"], task["facet_name"]), "")
+
+        results = await self._dispatch(
+            "attribute_refinement", tasks,
+            self._attribute_refinement_prepare_fn(ctx),
+            self._attribute_refinement_parse_fn(),
+            self._attribute_refinement_fallback_fn(),
+            verbose,
+        )
+        assignments, facet_assignments = self._apply_attribute_refinement(
+            tasks=tasks, results=results, attributes=attributes,
+            assignments=assignments, facet_assignments=facet_assignments,
+            labels=labels, verbose=verbose,
+        )
+
+        if verbose:
+            s = self._last_stats
+            total = sum(len(a) for f in attributes.values() for a in f.values())
+            print(f"    {len(tasks)} tasks, {time.time() - started:.1f}s "
+                  f"({s.get('tasks_successful', 0)} ok, "
+                  f"{s.get('timeouts', 0)} timeouts) → {total} attributes")
+        return attributes, assignments, facet_assignments
 
     # =========================================================================
     # HELPERS

@@ -220,3 +220,27 @@ def test_facet_met_een_attribuut_krijgt_geen_taak():
     tasks = clf._build_attribute_assignment_tasks(
         ctx, {"A": {"f1": [_consolidated_attr("enig")]}}, {("A", "f1"): {"i1": "x"}})
     assert tasks == []
+
+
+# =============================================================================
+# Attribuut naslijpen
+# =============================================================================
+
+def test_naslijptaak_per_facet_met_minstens_twee_attributen():
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["A"])
+    attrs = {"A": {"f1": [_consolidated_attr("a1"), _consolidated_attr("a2")],
+                   "f2": [_consolidated_attr("b1")]}}
+    assignments = {"i1": "a1", "i2": "a2", "i3": "b1"}
+    tasks = clf._build_attribute_refinement_tasks(ctx, attrs, assignments, labels={})
+    assert [t["facet_name"] for t in tasks] == ["f1"]
+
+
+def test_naslijptaak_krijgt_de_buurfacetten_mee():
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["A"])
+    attrs = {"A": {"f1": [_consolidated_attr("a1"), _consolidated_attr("a2")],
+                   "f2": [_consolidated_attr("b1")]}}
+    tasks = clf._build_attribute_refinement_tasks(
+        ctx, attrs, {"i1": "a1", "i2": "a2", "i3": "b1"}, labels={})
+    assert "f2" in tasks[0]["neighbour_block"]
