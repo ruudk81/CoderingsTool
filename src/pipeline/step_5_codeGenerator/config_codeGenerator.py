@@ -22,6 +22,7 @@ class CodebookConfig:
     temperature_p9: float = 0.0
     temperature_relations: float = 0.0
     temperature_umbrella_merge: float = 0.0
+    temperature_writer: float = 0.3
 
     # P8: Code Generation from Attributes (per-domain)
     max_tokens_code_from_attributes: int = 16000
@@ -34,6 +35,9 @@ class CodebookConfig:
 
     # Umbrella merge: one cross-umbrella call, consolidates step 2's names before pooling
     max_tokens_umbrella_merge: int = 8000
+
+    # Writer: one cross-code call, output scales with the fixed number of codes
+    max_tokens_writer: int = 16000
 
     # Embedding-based representative samples
     code_source: str = "instance_interpretation"  # Text format for embedding: idea, instance, instance_interpretation, full_abstraction_ladder

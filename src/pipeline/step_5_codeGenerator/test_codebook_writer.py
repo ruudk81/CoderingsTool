@@ -1,0 +1,193 @@
+"""Tests voor de schrijfdispatch (codebook_writer.py) — stap 4 van step 5."""
+import asyncio
+
+from utils.smoothRequester import SmoothRequester
+
+from pipeline.step_5_codeGenerator import codebook_writer
+from pipeline.step_5_codeGenerator.concept_inventory import Concept
+from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
+from pipeline.step_5_codeGenerator.consolidator import CodeShape
+from pipeline.step_5_codeGenerator.prompts_writer import CodeText, WriterResult
+
+
+def concept(attribute_id, name, n_resp=10):
+    resp = frozenset(f"R{i}" for i in range(n_resp))
+    return Concept(attribute_id=attribute_id, name=name, definition="def",
+                   domain="Domein", facet="Facet", n_iu=n_resp,
+                   resp_ids=resp, resp_pos=resp,
+                   resp_neg=frozenset(), resp_neu=frozenset())
+
+
+def shape(key, valence, umbrella, members, n_resp=40, origin="solo"):
+    resp = frozenset(f"R{i}" for i in range(n_resp))
+    return CodeShape(key=key, members=tuple(members), valence=valence,
+                     umbrella=umbrella, resp_ids=resp, resp_pos=resp,
+                     resp_neg=frozenset(), resp_neu=frozenset(), origin=origin)
+
+
+def text(key, name="Naam", nameable=True):
+    return CodeText(key=key, code_name=name, definition="d", diagnostic_test="t",
+                    typical_indicators=["a"], boundary_note="b", nameable=nameable)
+
+
+class FakeLog:
+    def __init__(self):
+        self.calls = []
+
+    def add(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+def test_sends_a_one_element_list_of_dicts(monkeypatch):
+    captured = {}
+
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        captured["tasks"] = tasks
+        call_params = prepare_fn(tasks[0])
+        assert "prompt" in call_params
+        assert "response_model" in call_params
+        return [WriterResult(codes=[text("K1")])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "positive", "prijs", ["A1"])]
+    concepts = [concept("A1", "Prijs")]
+    codes = asyncio.run(
+        codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig())
+    )
+
+    tasks = captured["tasks"]
+    assert isinstance(tasks, list)
+    assert len(tasks) == 1
+    assert isinstance(tasks[0], dict)
+    assert codes[0].code_name == "Naam"
+
+
+def test_shape_count_and_valence_are_preserved_not_asked(monkeypatch):
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [WriterResult(codes=[text("K1"), text("K2")])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "positive", "prijs", ["A1"]),
+              shape("K2", "negative", "prijs", ["A1"])]
+    concepts = [concept("A1", "Prijs")]
+    codes = asyncio.run(
+        codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig())
+    )
+    assert len(codes) == 2
+    assert sorted(c.valence for c in codes) == ["negative", "positive"]
+
+
+def test_source_attributes_are_names_filled_in_code_not_by_the_model(monkeypatch):
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [WriterResult(codes=[text("K1")])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "positive", "prijs", ["A1", "A2"], origin="synonym")]
+    concepts = [concept("A1", "Prijs"), concept("A2", "Kosten")]
+    codes = asyncio.run(
+        codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig())
+    )
+    assert sorted(codes[0].source_attributes) == ["Kosten", "Prijs"]
+
+
+def test_a_veto_on_a_pooled_shape_drops_it_and_logs(monkeypatch):
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [WriterResult(codes=[text("K1", nameable=False)])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "neutral", "u", ["A1", "A2"], origin="pooled")]
+    concepts = [concept("A1", "Prijs"), concept("A2", "Kosten")]
+    log = FakeLog()
+    codes = asyncio.run(
+        codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig(), log=log)
+    )
+    assert codes == []
+    assert len(log.calls) == 1
+    assert log.calls[0]["action"] == "VETO"
+    assert sorted(log.calls[0]["members"]) == ["A1", "A2"]
+
+
+def test_a_veto_on_a_solo_shape_is_ignored(monkeypatch):
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [WriterResult(codes=[text("K1", nameable=False)])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "positive", "prijs", ["A1"], origin="solo")]
+    concepts = [concept("A1", "Prijs")]
+    codes = asyncio.run(
+        codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig())
+    )
+    assert len(codes) == 1
+    assert codes[0].code_name == "Naam"
+
+
+def test_a_veto_on_a_synonym_shape_is_ignored(monkeypatch):
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [WriterResult(codes=[text("K1", nameable=False)])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "positive", "prijs", ["A1", "A2"], origin="synonym")]
+    concepts = [concept("A1", "Prijs"), concept("A2", "Kosten")]
+    codes = asyncio.run(
+        codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig())
+    )
+    assert len(codes) == 1
+
+
+def test_a_missing_shape_in_the_response_still_gets_a_code(monkeypatch):
+    # The model only wrote text for K1; K2 must still surface as a code rather
+    # than silently disappearing — this is the "shapes remain valid" contract.
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [WriterResult(codes=[text("K1")])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "positive", "prijs", ["A1"]),
+              shape("K2", "negative", "service", ["A2"])]
+    concepts = [concept("A1", "Prijs"), concept("A2", "Service")]
+    codes = asyncio.run(
+        codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig())
+    )
+    assert len(codes) == 2
+    assert {c.valence for c in codes} == {"positive", "negative"}
+
+
+def test_a_total_call_failure_still_returns_a_code_per_shape(monkeypatch):
+    # "Faalt de call helemaal, dan zijn de vormen nog geldig" — the codebook must
+    # not fall just because the writer call failed outright.
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [fallback_fn(tasks[0], "boom")]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "positive", "prijs", ["A1"])]
+    concepts = [concept("A1", "Prijs")]
+    codes = asyncio.run(
+        codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig())
+    )
+    assert len(codes) == 1
+    assert codes[0].valence == "positive"
+    assert codes[0].source_attributes == ["Prijs"]
+
+
+def test_no_shapes_returns_no_codes_without_a_call(monkeypatch):
+    called = False
+
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    codes = asyncio.run(
+        codebook_writer.write_codebook([], [], "stem", "nl-NL", CodebookConfig())
+    )
+    assert codes == []
+    assert called is False
