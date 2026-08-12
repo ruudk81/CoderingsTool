@@ -775,10 +775,12 @@ class DomainConsolidatedResponse(BaseModel):
 
 def build_orthogonalize_domains_prompt(
     *, language, survey_question, sector, entity, topic, perspective, intent,
-    primary_dimension, domain_diagnostic, domains_block,
+    primary_dimension, domain_diagnostic, domains_block, standing_block,
 ) -> str:
-    """Re-describe ALL domains for maximal orthogonality (same count + same order),
-    WITHOUT reassigning any idea. Grounded in each domain's representative ideas."""
+    """Re-describe the DISCOVERED domains for maximal orthogonality (same count + same
+    order), WITHOUT reassigning any idea. Grounded in each domain's representative
+    ideas. The two standing domains are shown as fixed reference only — not part of
+    the task and not returnable."""
     return f"""You are sharpening the boundaries of an existing set of survey-coding domains so they are, taken together, as mutually exclusive (orthogonal) as possible — WITHOUT changing which ideas belong where.
 
 Language: {language}   Survey question: {survey_question}
@@ -790,6 +792,12 @@ Current domains, each with its definition, current boundary, and most representa
 
 {domains_block}
 
+These two domains are fixed and are NOT part of your task. They catch answers the domain axis cannot place, so their breadth is deliberate:
+
+{standing_block}
+
+Do not re-describe them and do not return them.
+
 ## YOUR TASK
 Re-describe ALL domains so that together they are MAXIMALLY orthogonal — each a single subject axis within the dimension, with sharp, non-overlapping boundaries.
 - Keep the SAME number of domains and return them in the SAME ORDER (do not merge, split, add, or drop — only sharpen the wording).
@@ -797,6 +805,7 @@ Re-describe ALL domains so that together they are MAXIMALLY orthogonal — each 
 - DESCRIPTIVE DOMAINS ONLY: every domain names a DESCRIPTIVE subject/aspect — never a sentiment or judgment. Even if all its ideas are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; direction (positive/negative) is captured separately by valence, never by domains. Reframe any evaluative bucket (e.g. "reputation/appreciation", "good vs bad") descriptively as the subject being judged.
 - Use the representative ideas to find each domain's true center and the real boundaries between neighbours.
 - All labels and definitions in {language}.
+- The orthogonality requirement runs one way: the two fixed domains above need no sharpening, but the domains you return must not reach into their territory.
 
 Provide your output as valid JSON following the response schema provided."""
 

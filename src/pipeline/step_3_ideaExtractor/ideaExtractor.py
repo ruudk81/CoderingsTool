@@ -1266,6 +1266,32 @@ class IdeaExtractor:
         ]
 
     @staticmethod
+    def _partition_standing(domains) -> Tuple[List, List]:
+        """Split a domain list into (discovered, standing), order preserved in each."""
+        standing_keys = (STANDING_BARE_KEY, STANDING_OTHER_KEY)
+        discovered = [d for d in domains if d.key not in standing_keys]
+        standing = [d for d in domains if d.key in standing_keys]
+        return discovered, standing
+
+    @staticmethod
+    def _merge_orthogonalized(new_discovered, discovered, standing) -> Tuple[Optional[List], Optional[Dict]]:
+        """Reassemble the domain list after a re-description of the discovered ones.
+
+        Returns (None, None) when the model did not return exactly one entry per
+        DISCOVERED domain — counting against the full list would fire on every run
+        now that the standing two are no longer returned, silently skipping the
+        whole phase.
+        """
+        if len(new_discovered) != len(discovered):
+            return None, None
+        rename = {}
+        for old, nd in zip(discovered, new_discovered):
+            nd.key = old.key          # carry identity across the rebuild...
+            rename[old.label] = nd.label
+        IdeaExtractor._set_domain_keys(new_discovered)   # ...then re-derive it
+        return list(new_discovered) + list(standing), rename
+
+    @staticmethod
     def _set_domain_keys(domains) -> None:
         """Derive `key` from `label`, except for the two standing domains.
 
@@ -1478,10 +1504,14 @@ class IdeaExtractor:
         return results
 
     async def _orthogonalize_domains(self, results: List[models.IdeasExtractedModel]) -> None:
-        """One-shot reformulation: re-describe domains for maximal orthogonality, grounded in
-        medoid exemplars. Sharpens label/definition/boundary_test/exclusions WITHOUT semantic
-        reassignment — if a label changes, ideas are deterministically renamed to follow their
-        domain slot (a rename, not a re-assignment). LLM decides; embeddings only select exemplars.
+        """One-shot reformulation: re-describe the DISCOVERED domains for maximal
+        orthogonality, grounded in medoid exemplars. Sharpens
+        label/definition/boundary_test/exclusions WITHOUT semantic reassignment — if a
+        label changes, ideas are deterministically renamed to follow their domain slot
+        (a rename, not a re-assignment). The two standing domains are shown as fixed
+        reference and are not returnable: sharpening a domain means describing it by
+        its content, and a catch for an axis failure has no content of its own to be
+        described by. LLM decides; embeddings only select exemplars.
         """
         domains = getattr(self, 'domains', None)
         if not domains:
@@ -1497,10 +1527,12 @@ class IdeaExtractor:
                 if lab in by_label and txt:
                     by_label[lab].append((idea, txt))
 
-        # medoid → representative exemplars per domain
+        discovered, standing = self._partition_standing(domains)
+
+        # medoid → representative exemplars per discovered domain
         embedder = SharedEmbedder()
         blocks = []
-        for d in domains:
+        for d in discovered:
             items = by_label.get(d.label, [])
             if items:
                 sub = await embedder.embed_texts([t for _, t in items])
@@ -1520,6 +1552,7 @@ class IdeaExtractor:
             block += f"\n    representative ideas:\n{ex}"
             blocks.append(block)
         domains_block = "\n\n".join(blocks)
+        standing_block = "\n".join(f"  {d.label}: {d.definition}" for d in standing)
 
         diag = get_dimension(self.primary_dimension).prompt_rules.domain_diagnostic
         prompt = build_orthogonalize_domains_prompt(
@@ -1527,7 +1560,7 @@ class IdeaExtractor:
             sector=gs["domain"], entity=gs["entity"], topic=gs["topic"],
             perspective=gs["perspective"], intent=gs["intent"],
             primary_dimension=self.primary_dimension, domain_diagnostic=diag,
-            domains_block=domains_block,
+            domains_block=domains_block, standing_block=standing_block,
         )
         client, model = self._get_client_and_model("taxonomy")
 
@@ -1550,35 +1583,25 @@ class IdeaExtractor:
                 prompt=prompt, temperature=0.0, **get_reasoning_params(model, phase="idea_extraction_taxonomy"),
             )
 
-        new = list(res.domains)
-        if len(new) != len(domains):
+        new_domains, rename = self._merge_orthogonalized(
+            list(res.domains), discovered, standing)
+        if new_domains is None:
             self.verbose_reporter.stat_line(
-                f"  Domain orthogonalize skipped (count mismatch: {len(new)} vs {len(domains)})")
+                f"  Domain orthogonalize skipped (count mismatch: "
+                f"{len(res.domains)} vs {len(discovered)} discovered)")
             return
 
-        # by-order remap: old label → new label (deterministic rename, NOT reassignment)
-        rename = {}
-        for old, nd in zip(domains, new):
-            nd.key = old.key          # carry identity across the rebuild...
-            rename[old.label] = nd.label
-        self._set_domain_keys(new)    # ...then re-derive it, standing keys excepted
-        self.domains = new
+        self.domains = new_domains
         for resp in results:
             for idea in (resp.response_ideas or []):
                 lab = (idea.domain or "").strip()
                 if lab in rename:
                     idea.domain = rename[lab]
 
-        relabeled = sum(1 for o, n in zip(domains, new) if o.label != n.label)
+        relabeled = sum(1 for old, new in rename.items() if old != new)
         self.verbose_reporter.stat_line(
-            f"  Domain orthogonalize: re-described {len(new)} domains ({relabeled} relabeled, no reassignment)")
-        # Overview of the final domains carried forward to step 4 (label/definition/boundary/exclusions)
-        for old, nd in zip(domains, new):
-            head = f"{old.label} → {nd.label}" if old.label != nd.label else nd.label
-            self.verbose_reporter.stat_line(f"    • {head}")
-            self.verbose_reporter.stat_line(f"        def: {nd.definition}")
-            self.verbose_reporter.stat_line(f"        ✓ {nd.boundary_test}")
-            self.verbose_reporter.stat_line(f"        ✗ {', '.join(nd.exclusions)}")
+            f"  Domain orthogonalize: re-described {len(discovered)} domains "
+            f"({relabeled} relabeled, no reassignment; {len(standing)} standing untouched)")
 
     # === LEGACY: Everything below this line was the old processing loop ===
     # Kept temporarily for reference — will be removed after verification.

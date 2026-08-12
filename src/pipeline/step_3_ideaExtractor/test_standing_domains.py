@@ -21,6 +21,7 @@ from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     DomainItem,
     StandingLabelsResponse,
     build_domain_consolidation_prompt,
+    build_orthogonalize_domains_prompt,
     build_standing_labels_prompt,
 )
 
@@ -218,3 +219,72 @@ def test_standing_labels_prompt_carries_both_fixed_definitions(dimension_key):
 def test_standing_labels_response_carries_labels_only():
     """Alleen labels. Een definitie-veld hier zou het vangnet weer laten schuiven."""
     assert set(StandingLabelsResponse.model_fields) == {"bare_label", "other_label"}
+
+
+# ── 6. Orthogonalisatie raakt de vangnetten niet ──────────────────────────
+
+def _mk(key, label):
+    return DomainItem(key=key, label=label, definition=f"def {label}",
+                      boundary_test="t?", exclusions=[])
+
+
+def test_partition_standing_splits_and_keeps_order():
+    domains = [_mk("Duurzaamheid", "Duurzaamheid"),
+               _mk(STANDING_BARE_KEY, "Kale associatie"),
+               _mk("Aanbod", "Aanbod"),
+               _mk(STANDING_OTHER_KEY, "Overig")]
+    discovered, standing = IdeaExtractor._partition_standing(domains)
+
+    assert [d.label for d in discovered] == ["Duurzaamheid", "Aanbod"]
+    assert [d.label for d in standing] == ["Kale associatie", "Overig"]
+
+
+def test_merge_orthogonalized_leaves_the_standing_two_untouched():
+    """Het vangnet mag niet herschreven terugkomen — dat is hoe de definitie versmalde."""
+    discovered = [_mk("Duurzaamheid", "Duurzaamheid")]
+    standing = [_mk(STANDING_BARE_KEY, "Kale associatie"),
+                _mk(STANDING_OTHER_KEY, "Overig")]
+    new_discovered = [_mk("", "Ecologische koers")]
+
+    merged, rename = IdeaExtractor._merge_orthogonalized(
+        new_discovered, discovered, standing)
+
+    assert [d.label for d in merged] == ["Ecologische koers", "Kale associatie", "Overig"]
+    assert [d.key for d in merged] == [
+        "Ecologische koers", STANDING_BARE_KEY, STANDING_OTHER_KEY]
+    assert merged[1].definition == "def Kale associatie"
+    assert rename == {"Duurzaamheid": "Ecologische koers"}
+
+
+def test_merge_orthogonalized_refuses_a_count_mismatch():
+    """De telcontrole vergelijkt tegen de ONTDEKTE domeinen, niet tegen het totaal.
+
+    Regressie: de guard telde tegen de volledige lijst inclusief de twee
+    vangnetten. Zodra het responsemodel er twee minder teruggeeft, slaat hij aan
+    en draait orthogonalisatie helemaal niet meer — zonder foutmelding.
+    """
+    discovered = [_mk("A", "A"), _mk("B", "B")]
+    standing = [_mk(STANDING_BARE_KEY, "Kale associatie"),
+                _mk(STANDING_OTHER_KEY, "Overig")]
+
+    assert IdeaExtractor._merge_orthogonalized([_mk("", "A2")], discovered, standing) \
+        == (None, None)
+    merged, _ = IdeaExtractor._merge_orthogonalized(
+        [_mk("", "A2"), _mk("", "B2")], discovered, standing)
+    assert merged is not None
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_orthogonalize_prompt_shows_the_standing_two_as_fixed(dimension_key):
+    """Zichtbaar zodat de andere zich ervan wegformuleren, met de eenrichtingsregel."""
+    prompt = build_orthogonalize_domains_prompt(
+        language="nl-NL", survey_question="Vraag?", sector="s", entity="e",
+        topic="t", perspective="p", intent="i", primary_dimension=dimension_key,
+        domain_diagnostic="Welk onderwerpsgebied?",
+        domains_block="  Duurzaamheid: def",
+        standing_block="  Kale associatie: vangnet-definitie",
+    )
+    assert "Kale associatie" in prompt
+    assert "vangnet-definitie" in prompt
+    assert "do not return them" in prompt
+    assert "must not reach into" in prompt
