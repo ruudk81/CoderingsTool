@@ -171,6 +171,47 @@ def format_report(
     return "\n".join(lines)
 
 
+def format_facet_comparison(concepts: List[Concept], relations: RelationsResult) -> str:
+    """Vergelijk de koepels met step 4's facetten — de laag die al bestond
+    tussen domein en attribuut. Evidence, geen aanbeveling: de gebruiker
+    beslist of de koepelvraag iets toevoegt boven de facetten."""
+    umbrellas, _, _ = group_by_umbrella(concepts, relations)
+
+    def facet_key(c: Concept) -> Tuple[str, str]:
+        return (c.domain, c.facet)
+
+    all_facets = {facet_key(c) for c in concepts}
+    lines = [
+        "FACET-VERGELIJKING (step-4-facetten vs. koepels van het model)", "",
+        f"  Facetten (step 4, met >=1 idee): {len(all_facets)}",
+        f"  Koepels (dit model): {len(umbrellas)}", "",
+        "  Koepels naar aantal facetten waaruit ze putten:",
+    ]
+    name_width = max((len(n) for n in umbrellas), default=0) + 2
+    for name, items in sorted(
+        umbrellas.items(), key=lambda kv: -len({facet_key(c) for c in kv[1]})
+    ):
+        n_facets_here = len({facet_key(c) for c in items})
+        lines.append(f"    {name:<{name_width}}{len(items):>4} leden  {n_facets_here:>3} facetten")
+    lines.append("")
+
+    facet_to_umbrellas: Dict[Tuple[str, str], Dict[str, List[Concept]]] = {}
+    for name, items in umbrellas.items():
+        for c in items:
+            facet_to_umbrellas.setdefault(facet_key(c), {}).setdefault(name, []).append(c)
+
+    split = {k: v for k, v in facet_to_umbrellas.items() if len(v) > 1}
+    lines.append(f"  Facetten gesplitst over meerdere koepels: {len(split)} van {len(all_facets)}")
+    for (domain, facet), by_umbrella in sorted(split.items(), key=lambda kv: -len(kv[1])):
+        lines.append(f"    {facet} ({domain}):")
+        for umbrella_name, members in by_umbrella.items():
+            member_names = ", ".join(c.name for c in members)
+            lines.append(f"      -> {umbrella_name}: {member_names}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -211,6 +252,7 @@ def main() -> None:
     relations = asyncio.run(resolve_relations(concepts, config, language, verbose=True))
 
     print(format_report(concepts, relations, t, n_resp_total, config.t_keep_share))
+    print(format_facet_comparison(concepts, relations))
 
     if token_tracker.call_count > 0:
         print("\n" + token_tracker.get_summary())
