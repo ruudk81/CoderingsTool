@@ -1498,7 +1498,7 @@ class IdeaExtractor:
                 exclusions=[],
             )
             for key, spec, label in (
-                (STANDING_BARE_KEY, dimension.standing_bare, bare_label),
+                (STANDING_BARE_KEY, dimension.standing_not_known, bare_label),
                 (STANDING_OTHER_KEY, dimension.standing_other, other_label),
             )
         ]

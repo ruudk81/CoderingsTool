@@ -52,11 +52,13 @@ class PromptRules:
 class StandingDomain:
     """One of the two standing drain domains, worded for this dimension.
 
-    A standing domain is a failure mode of the dimension's own domain axis — the
-    axis its `domain_diagnostic` asks about. An idea the discovered domains cannot
-    place fails in exactly one of two ways: it names nothing on the axis
-    (`standing_bare`), or it names something no discovered domain covers
-    (`standing_other`). Both are real, codeable answer types, not rejects.
+    The two standing domains are the two universal failure modes an idea can hit
+    when no discovered domain covers it: the respondent does not know the subject
+    at all (`standing_not_known`), or the respondent names a subject that no
+    discovered domain covers (`standing_other`). Both are real, codeable answer
+    types, not rejects. A response that gives no answer at all, or that states
+    there is nothing to report, belongs to the quality filter and never reaches
+    either domain.
 
     The two are always offered and never discovered, which is why they live here
     rather than in the data: a model that has to invent them sometimes will not,
@@ -104,7 +106,7 @@ class DimensionDefinition:
     prompt_rules: PromptRules
     anchor_slot: SlotDefinition
     domain_slot: SlotDefinition
-    standing_bare: StandingDomain            # idea names nothing on this dimension's domain axis
+    standing_not_known: StandingDomain       # respondent reports not knowing the subject at all
     standing_other: StandingDomain           # idea names something no discovered domain covers
     examples: Tuple[DimensionExample, ...] = ()  # Worked examples for the extraction prompt
     clarification: Tuple[str, ...] = ()      # Optional clarification notes (empty tuple = none)
@@ -201,22 +203,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing a proposed action, improvement, recommendation, or solution.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Unspecified improvement",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea calls for change or improvement, but names no target the change "
-                "should apply to. The respondent does want something to change — it simply "
-                "names nothing the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of proposing a "
+                "change to it. This is a real answer about the respondent's relation to the "
+                "subject, not a missing one. A response that gives no answer at all, or that "
+                "states there is nothing to report, belongs to the quality filter and never "
+                "reaches this domain."
             ),
-            short="a call for change with no target of its own",
+            short="reports no familiarity with the subject rather than proposing a change to it",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a target for change, but one that no domain above covers. "
                 "Use this for genuinely off-topic or idiosyncratic proposals — not for answers "
-                "that merely call for improvement without naming a target, which belong to the "
-                "unspecified-improvement domain."
+                "that report not knowing the subject at all, which belong to the not-known "
+                "domain."
             ),
             short="names a target for change that no domain above covers",
         ),
@@ -305,22 +310,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase defining or framing what the entity is, its nature, or its purpose.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Unspecified identity claim",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea asserts what the entity is in the most general terms, but names no "
-                "area of its identity the claim is about. The respondent does make an identity "
-                "claim — it simply names nothing the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of asserting what "
+                "it is. This is a real answer about the respondent's relation to the subject, "
+                "not a missing one. A response that gives no answer at all, or that states "
+                "there is nothing to report, belongs to the quality filter and never reaches "
+                "this domain."
             ),
-            short="an identity claim with no area of identity of its own",
+            short="reports not knowing the entity rather than asserting what it is",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names an area of the entity's identity, but one that no domain above "
                 "covers. Use this for genuinely off-topic or idiosyncratic content — not for "
-                "answers that merely assert what the entity is in general terms, which belong "
-                "to the unspecified-identity domain."
+                "answers that report not knowing the subject at all, which belong to the "
+                "not-known domain."
             ),
             short="names an area of identity that no domain above covers",
         ),
@@ -407,21 +415,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase identifying an actor, stakeholder, user group, or affected party.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Unplaced actor",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea names an actor or affected party, but no sphere of activity that "
-                "places them. The respondent does point at someone — it simply names nothing "
-                "the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of naming who is "
+                "involved. This is a real answer about the respondent's relation to the "
+                "subject, not a missing one. A response that gives no answer at all, or that "
+                "states there is nothing to report, belongs to the quality filter and never "
+                "reaches this domain."
             ),
-            short="an actor with no sphere of activity of its own",
+            short="reports no familiarity with the subject rather than naming who is involved",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a sphere of activity, but one that no domain above covers. "
                 "Use this for genuinely off-topic or idiosyncratic content — not for answers "
-                "that name only an actor without a sphere, which belong to the unplaced-actor "
+                "that report not knowing the subject at all, which belong to the not-known "
                 "domain."
             ),
             short="names a sphere of activity that no domain above covers",
@@ -509,22 +520,28 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase specifying the condition, context, setting, or circumstance.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Unplaced condition",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea states a condition or circumstance, but names no subject area it "
-                "applies to. The respondent does describe a condition — it simply names nothing "
-                "the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of naming when or "
+                "where it applies. This is a real answer about the respondent's relation to "
+                "the subject, not a missing one. A response that gives no answer at all, or "
+                "that states there is nothing to report, belongs to the quality filter and "
+                "never reaches this domain."
             ),
-            short="a condition with no subject area of its own",
+            short=(
+                "reports no familiarity with the subject rather than naming when or where "
+                "it applies"
+            ),
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a subject area a condition sits in, but one that no domain "
                 "above covers. Use this for genuinely off-topic or idiosyncratic content — not "
-                "for answers that state a bare condition without a subject area, which belong "
-                "to the unplaced-condition domain."
+                "for answers that report not knowing the subject at all, which belong to the "
+                "not-known domain."
             ),
             short="names a subject area that no domain above covers",
         ),
@@ -611,22 +628,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing a need, goal, motivation, value, or reason.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Unspecified motivation",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea expresses that something matters or is wanted, but names no area of "
-                "life or concern it is about. The respondent does express a motivation — it "
-                "simply names nothing the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of naming why it "
+                "matters. This is a real answer about the respondent's relation to the "
+                "subject, not a missing one. A response that gives no answer at all, or that "
+                "states there is nothing to report, belongs to the quality filter and never "
+                "reaches this domain."
             ),
-            short="a motivation with no area of concern of its own",
+            short="reports no familiarity with the subject rather than naming why it matters",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names an area of life or concern, but one that no domain above "
                 "covers. Use this for genuinely off-topic or idiosyncratic content — not for "
-                "answers that merely express that something matters, which belong to the "
-                "unspecified-motivation domain."
+                "answers that report not knowing the subject at all, which belong to the "
+                "not-known domain."
             ),
             short="names an area of concern that no domain above covers",
         ),
@@ -714,21 +734,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing an experience, perception, impression, or feeling.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Overall impression",
+        standing_not_known=StandingDomain(
+            fallback_label="Never experienced",
             definition=(
-                "The idea conveys a feeling or overall impression of the experience, but names "
-                "no part of the experience it refers to. The respondent does report an "
-                "impression — it simply names nothing the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of describing it. "
+                "This is a real answer about the respondent's relation to the subject, not a "
+                "missing one. A response that gives no answer at all, or that states there is "
+                "nothing to report, belongs to the quality filter and never reaches this "
+                "domain."
             ),
-            short="an impression with no part of the experience of its own",
+            short="reports never having had the experience rather than describing it",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a part of the experience, but one that no domain above covers. "
                 "Use this for genuinely off-topic or idiosyncratic content — not for answers "
-                "that convey only an overall impression, which belong to the overall-impression "
+                "that report not knowing the subject at all, which belong to the not-known "
                 "domain."
             ),
             short="names a part of the experience that no domain above covers",
@@ -822,22 +845,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase expressing a judgment, preference, opinion, or evaluative stance.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="General impression",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea expresses only a judgment or preference, with no aspect of the entity "
-                "it is about. The respondent does pass judgment — it simply names nothing the "
-                "other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of judging any "
+                "aspect of it. This is a real answer about the respondent's relation to the "
+                "subject, not a missing one. A response that gives no answer at all, or that "
+                "states there is nothing to report, belongs to the quality filter and never "
+                "reaches this domain."
             ),
-            short="a judgment with no aspect of its own",
+            short="reports not knowing the entity rather than judging any aspect of it",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names an aspect being judged, but one that no domain above covers. "
                 "Use this for genuinely off-topic or idiosyncratic content — not for answers "
-                "that express only a judgment without an aspect, which belong to the "
-                "general-impression domain."
+                "that report not knowing the subject at all, which belong to the not-known "
+                "domain."
             ),
             short="names an aspect that no domain above covers",
         ),
@@ -929,22 +955,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing an action, process, behavior, or functional output of the entity.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Unplaced behaviour",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea reports that something happens or works, but names no system or "
-                "process it belongs to. The respondent does report a behaviour — it simply "
-                "names nothing the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of describing what "
+                "it does. This is a real answer about the respondent's relation to the "
+                "subject, not a missing one. A response that gives no answer at all, or that "
+                "states there is nothing to report, belongs to the quality filter and never "
+                "reaches this domain."
             ),
-            short="a behaviour with no system or process of its own",
+            short="reports no familiarity with the subject rather than describing what it does",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a system or process, but one that no domain above covers. Use "
                 "this for genuinely off-topic or idiosyncratic content — not for answers that "
-                "report a bare behaviour without a system, which belong to the "
-                "unplaced-behaviour domain."
+                "report not knowing the subject at all, which belong to the not-known domain."
             ),
             short="names a system or process that no domain above covers",
         ),
@@ -1036,22 +1064,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing a quality, trait, image, association, or perceived characteristic of the entity.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Unplaced association",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea associates something with the entity, but names no subject area "
-                "of the entity the association describes. The respondent does make an "
-                "association — it simply names nothing the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of describing any "
+                "quality of it. This is a real answer about the respondent's relation to the "
+                "subject, not a missing one. A response that gives no answer at all, or that "
+                "states there is nothing to report, belongs to the quality filter and never "
+                "reaches this domain."
             ),
-            short="an association with no subject area of its own",
+            short="reports not knowing the entity rather than describing any quality of it",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a subject, but one that no domain above covers. Use this "
                 "for genuinely off-topic or idiosyncratic content — not for answers that "
-                "associate without naming a subject area, which belong to the "
-                "unplaced-association domain."
+                "report not knowing the subject at all, which belong to the not-known "
+                "domain."
             ),
             short="names a subject no domain above covers",
         ),
@@ -1143,22 +1174,25 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase describing a relationship, dependency, comparison, or influence.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Unplaced relation",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea points at a connection, dependency or trade-off, but names no sphere "
-                "it exists in. The respondent does report a relation — it simply names nothing "
-                "the other domains could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of naming a "
+                "relationship. This is a real answer about the respondent's relation to the "
+                "subject, not a missing one. A response that gives no answer at all, or that "
+                "states there is nothing to report, belongs to the quality filter and never "
+                "reaches this domain."
             ),
-            short="a relation with no sphere of its own",
+            short="reports no familiarity with the subject rather than naming a relationship",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a sphere a relationship exists in, but one that no domain above "
                 "covers. Use this for genuinely off-topic or idiosyncratic content — not for "
-                "answers that point at a bare connection without a sphere, which belong to the "
-                "unplaced-relation domain."
+                "answers that report not knowing the subject at all, which belong to the "
+                "not-known domain."
             ),
             short="names a sphere that no domain above covers",
         ),
@@ -1251,21 +1285,24 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             required=True,
             guidance="A concise phrase summarizing the general idea or statement.",
         ),
-        standing_bare=StandingDomain(
-            fallback_label="Contentless remark",
+        standing_not_known=StandingDomain(
+            fallback_label="Not known to respondent",
             definition=(
-                "The idea carries a reaction or stance, but names no subject at all. The "
-                "respondent does say something — it simply names nothing the other domains "
-                "could cover."
+                "The response reports that the respondent does not know the subject the "
+                "question is about, or has had no contact with it, instead of saying anything "
+                "about it. This is a real answer about the respondent's relation to the "
+                "subject, not a missing one. A response that gives no answer at all, or that "
+                "states there is nothing to report, belongs to the quality filter and never "
+                "reaches this domain."
             ),
-            short="a remark with no subject of its own",
+            short="reports not knowing the subject rather than saying anything about it",
         ),
         standing_other=StandingDomain(
             fallback_label="Other",
             definition=(
                 "The idea names a subject, but one that no domain above covers. Use this for "
-                "genuinely off-topic or idiosyncratic content — not for answers that carry only "
-                "a reaction without a subject, which belong to the contentless-remark domain."
+                "genuinely off-topic or idiosyncratic content — not for answers that report "
+                "not knowing the subject at all, which belong to the not-known domain."
             ),
             short="names a subject that no domain above covers",
         ),

@@ -37,7 +37,7 @@ ALL_KEYS = sorted(DIMENSIONS)
 def test_every_dimension_carries_both_standing_domains(dimension_key):
     """Een dimensie zonder standing domains laat step 3 zonder afvoerdomein draaien."""
     d = get_dimension(dimension_key)
-    for spec in (d.standing_bare, d.standing_other):
+    for spec in (d.standing_not_known, d.standing_other):
         assert isinstance(spec, StandingDomain)
         for field in ("fallback_label", "definition", "short"):
             value = getattr(spec, field)
@@ -48,15 +48,15 @@ def test_every_dimension_carries_both_standing_domains(dimension_key):
 def test_the_two_standing_domains_are_distinct(dimension_key):
     """Samengevallen definities maken de twee afvoeren ononderscheidbaar."""
     d = get_dimension(dimension_key)
-    assert d.standing_bare.definition != d.standing_other.definition
-    assert d.standing_bare.short != d.standing_other.short
+    assert d.standing_not_known.definition != d.standing_other.definition
+    assert d.standing_not_known.short != d.standing_other.short
 
 
 def test_standing_domains_are_required_fields():
     """Zonder default kan een nieuwe dimensie ze niet vergeten: TypeError bij import."""
     fields = DIMENSIONS[ALL_KEYS[0]].__dataclass_fields__
     import dataclasses
-    for name in ("standing_bare", "standing_other"):
+    for name in ("standing_not_known", "standing_other"):
         assert fields[name].default is dataclasses.MISSING
         assert fields[name].default_factory is dataclasses.MISSING
 
@@ -70,7 +70,7 @@ def test_resolve_falls_back_when_there_is_no_translation(dimension_key):
     out = IdeaExtractor._resolve_standing_domains(None, d)
 
     assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
-    assert out[0].label == d.standing_bare.fallback_label
+    assert out[0].label == d.standing_not_known.fallback_label
     assert out[1].label == d.standing_other.fallback_label
     assert all(c.boundary_test.strip() for c in out)
 
@@ -83,7 +83,7 @@ def test_resolve_takes_the_label_and_nothing_else(dimension_key):
         StandingLabelsResponse(bare_label="Kale associatie", other_label="Overig"), d)
 
     assert [c.label for c in out] == ["Kale associatie", "Overig"]
-    assert out[0].definition == d.standing_bare.definition
+    assert out[0].definition == d.standing_not_known.definition
     assert out[1].definition == d.standing_other.definition
     assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
 
@@ -106,7 +106,7 @@ def test_resolve_ignores_an_empty_translated_label(dimension_key):
     out = IdeaExtractor._resolve_standing_domains(
         StandingLabelsResponse(bare_label="   ", other_label=""), d)
 
-    assert out[0].label == d.standing_bare.fallback_label
+    assert out[0].label == d.standing_not_known.fallback_label
     assert out[1].label == d.standing_other.fallback_label
 
 
@@ -151,9 +151,9 @@ def test_consolidation_prompt_carries_this_dimensions_wording(dimension_key):
         topic="t", perspective="p", intent="i", primary_dimension=dimension_key,
         chunk_results="chunk", dimension=d,
     )
-    assert d.standing_bare.definition in prompt
+    assert d.standing_not_known.definition in prompt
     assert d.standing_other.definition in prompt
-    assert d.standing_bare.short in prompt
+    assert d.standing_not_known.short in prompt
     assert d.prompt_rules.domain_diagnostic in prompt
     # De eenrichtingsregel: de verplichting ligt bij de ontdekte domeinen.
     assert "must not reach into" in prompt
@@ -181,21 +181,6 @@ def test_orthogonalize_response_has_no_slot_for_the_standing_domains():
 # bewaakt de letter; deze tests bewaken de vorm.
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_standing_bare_states_an_axis_failure_not_a_content_type(dimension_key):
-    """De as-faalmodus, niet een opsomming van inhoudsvormen.
-
-    De vorm is: [de handeling van deze dimensie] + [maar geen eenheid op de as].
-    Wie inhoudsvormen opsomt sluit stilzwijgend uit wat er niet in staat, en die
-    ideeën worden dan in een inhoudelijk domein geperst.
-    """
-    d = get_dimension(dimension_key)
-    t = d.standing_bare.definition
-
-    assert t.rstrip().endswith("it simply names nothing the other domains could cover.")
-    assert "names no" in t or "no sphere" in t or "with no" in t
-
-
-@pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_standing_other_sends_axis_failures_back_to_the_bare_domain(dimension_key):
     """`other` is voor een genoemd onderwerp dat geen domein dekt — niet voor leegte.
 
@@ -206,16 +191,42 @@ def test_standing_other_sends_axis_failures_back_to_the_bare_domain(dimension_ke
     assert "not for" in d.standing_other.definition
 
 
-def test_attributes_associations_no_longer_enumerates_affective_forms():
-    """Regressie: de dimensie van kwaliteiten en beelden noemde er drie op.
+CORE_GUARD = ("A response that gives no answer at all, or that states there is nothing "
+              "to report, belongs to the quality filter and never reaches this domain.")
 
-    'evaluation, a feeling or a general impression' liet elke associatie die geen
-    van drieën is buiten de definitie vallen — de kale categorie-associatie het
-    duidelijkst.
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_not_known_carries_the_filter_boundary_verbatim(dimension_key):
+    """Deze zin is de grens met filtercode 97 en 98. Zonder hem loopt het vangnet vol."""
+    assert CORE_GUARD in get_dimension(dimension_key).standing_not_known.definition
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_not_known_avoids_the_category_one_magnets(dimension_key):
+    """'I don't know' is letterlijk categorie 1 van het filter — dat woord trekt het aan."""
+    t = get_dimension(dimension_key).standing_not_known.definition.lower()
+    for magnet in ("i don't know", "i do not know", "not sure", "no opinion"):
+        assert magnet not in t, f"{dimension_key}: bevat '{magnet}'"
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_not_known_describes_what_the_respondent_reports(dimension_key):
+    """Een uitspraak over het onderwerp, niet een constatering over het antwoord.
+
+    'contains no content' zou samenvallen met filtercode 98; 'reports not knowing'
+    niet.
     """
-    d = get_dimension("ATTRIBUTES_ASSOCIATIONS")
-    assert "a feeling or a general impression" not in d.standing_bare.definition
-    assert "general-impression domain" not in d.standing_other.definition
+    d = get_dimension(dimension_key).standing_not_known
+    assert "reports" in d.definition or "reports" in d.short
+    assert "contains no content" not in d.definition
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_standing_other_points_at_the_not_known_domain(dimension_key):
+    """De oude staart verwees naar het vangnet dat niet meer bestaat."""
+    t = get_dimension(dimension_key).standing_other.definition
+    assert "not-known domain" in t
+    assert "unplaced" not in t.lower()
 
 
 # ── 5. De vertaalcall ─────────────────────────────────────────────────────
@@ -226,9 +237,9 @@ def test_standing_labels_prompt_carries_both_fixed_definitions(dimension_key):
     d = get_dimension(dimension_key)
     prompt = build_standing_labels_prompt(language="nl-NL", entity="e", dimension=d)
 
-    assert d.standing_bare.definition in prompt
+    assert d.standing_not_known.definition in prompt
     assert d.standing_other.definition in prompt
-    assert d.standing_bare.short in prompt
+    assert d.standing_not_known.short in prompt
     assert d.standing_other.short in prompt
     assert "nl-NL" in prompt
     assert prompt.rstrip().endswith(

@@ -677,9 +677,9 @@ def build_domain_consolidation_prompt(
     alongside the object they are read from is one source too many.
     """
     domain_diagnostic = dimension.prompt_rules.domain_diagnostic
-    bare_def = dimension.standing_bare.definition
+    bare_def = dimension.standing_not_known.definition
     other_def = dimension.standing_other.definition
-    bare_short = dimension.standing_bare.short
+    bare_short = dimension.standing_not_known.short
     other_short = dimension.standing_other.short
     sample_block = ""
     if chunk_responses:
@@ -858,8 +858,8 @@ def build_standing_labels_prompt(
 These two domains are not discovered from data. Their meaning is fixed and given below. Your only task is to give each one a short, natural label in {language} that faithfully names what its definition already says.
 
 <domain_a>
-{dimension.standing_bare.definition}
-In short: {dimension.standing_bare.short}
+{dimension.standing_not_known.definition}
+In short: {dimension.standing_not_known.short}
 </domain_a>
 
 <domain_b>
