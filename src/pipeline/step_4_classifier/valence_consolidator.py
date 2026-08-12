@@ -183,7 +183,7 @@ class ValenceConsolidator:
         for dom, res in taxonomy_cache.partition_results.items():
             for attrs in res.attributes.values():
                 for a in attrs:
-                    desc_lookup[(dom, a.get("attribute_name"))] = a.get("attribute_description", "")
+                    desc_lookup[(dom, a.get("attribute_name"))] = a.get("attribute_definition", "")
 
         language = getattr(extraction_meta, "lang", "Dutch") or "Dutch"
         _snap = token_tracker.snapshot() if self._cost_tracker else None
@@ -279,7 +279,7 @@ class ValenceConsolidator:
                 ]
             fac_list = res.attributes.setdefault(facet, [])
             if not any(a.get("attribute_name") == new_name for a in fac_list):
-                fac_list.append({"attribute_name": new_name, "attribute_description": new_desc})
+                fac_list.append({"attribute_name": new_name, "attribute_definition": new_desc})
         return new_cache
 
     def _apply_to_growing_model(self, classified, merge_map):

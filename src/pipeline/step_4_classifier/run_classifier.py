@@ -1,13 +1,11 @@
 #%%
 
 """
-Step 4: Taxonomy Classifier runner (P1-P10)
+Step 4: Taxonomy Classifier runner.
 
-Pipeline: domain discovery → facet discovery → facet assignment →
-attribute discovery → attribute assignment → in-facet consolidation (P9) →
-valence-neutral merge (P10).
-
-Always runs the full taxonomy pipeline (P1-P10).
+Domain discovery, then per level discovery → consolidation → assignment →
+refinement, then the valence-neutral merge. Nine phases; see
+`classifier.TaxonomyClassifier`.
 """
 import sys
 import json
@@ -26,7 +24,13 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 LIMIT_N = None     # Limit number of responses for a test run (None = use all)
-STOP_AFTER_PHASE = None   # None = full pipeline; valid stops: 1, 2, 4, 6, 7 (other values run everything)
+
+# None = full pipeline. Otherwise one of the nine phase names:
+#   facet_discovery, facet_consolidation, facet_assignment, facet_refinement,
+#   attribute_discovery, attribute_consolidation, attribute_assignment,
+#   attribute_refinement, valence_merge
+# An unknown name raises at construction rather than quietly running everything.
+STOP_AFTER_PHASE = None
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -55,9 +59,9 @@ from models import (
 # All defaults defined in config_classifier.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="ladder",                         # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
-    label_prefix="",                              # "" or any static prefix string
-    debug_stop_after_phase=STOP_AFTER_PHASE,      # None = full pipeline; valid stops: 1, 2, 4, 6, 7
+    label_source="ladder",             # "idea", "instance", "interpretation", "abstraction", "ladder", "idea_interpretation"
+    label_prefix="",                   # "" or any static prefix string
+    stop_after_phase=STOP_AFTER_PHASE,
 )
 
 
@@ -202,12 +206,15 @@ def _build_taxonomy_enriched_models(encoded_text, taxonomy_cache):
 # TAXONOMY CACHING
 # =============================================================================
 
-def _write_consolidation_log(
+def _write_action_log(
     taxonomy_result: TaxonomyResult,
     filename: str,
     variable_key: str,
 ) -> None:
-    """Dump the P9 action log to exports/experiment_logs/ as JSON.
+    """Dump the step-4 action log to exports/experiment_logs/ as JSON.
+
+    Every merge, split and move with the exact texts it touched — this is what
+    makes a bad decision findable afterwards instead of invisible.
 
     Deliberately a file and not a cache field: TaxonomyResultsCache is shared
     broadly, and this log is a diagnostic side-artifact that should not widen it.
@@ -219,64 +226,17 @@ def _write_consolidation_log(
     out_dir = Path(__file__).resolve().parents[3] / "exports" / "experiment_logs"
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(filename).stem
-    path = out_dir / f"{stem}_{variable_key}_p9_log.json"
+    path = out_dir / f"{stem}_{variable_key}_step4_log.json"
     path.write_text(
         json.dumps({"dataset": filename, "variable_key": variable_key, "actions": log},
                    indent=1, ensure_ascii=False),
         encoding="utf-8",
     )
     if CONFIG.verbose:
-        totals = next((e for e in log if e.get("action") == "_totals"), {})
-        print(f"  P9 log written: {path.name} ({len(log) - 1} actions)")
-        if totals:
-            print(f"    {totals}")
-
-
-def _write_axes_log(
-    taxonomy_result: TaxonomyResult,
-    filename: str,
-    variable_key: str,
-) -> None:
-    """Dump the P1 discovered axis systems to exports/experiment_logs/ as JSON
-    (eye-checkable, per the spec's persistence section), and print one line per
-    domain. A file, not a cache field — same reasoning as the P9 log: this is a
-    diagnostic side-artifact, not part of the shared TaxonomyResultsCache.
-    """
-    systems = getattr(taxonomy_result, "axis_systems", None)
-    if not systems:
-        return
-
-    out_dir = Path(__file__).resolve().parents[3] / "exports" / "experiment_logs"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = Path(filename).stem
-    path = out_dir / f"{stem}_{variable_key}_axes.json"
-    path.write_text(
-        json.dumps({"dataset": filename, "variable_key": variable_key, "axis_systems": systems},
-                   indent=1, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    if CONFIG.verbose:
-        print(f"  P1 axes log written: {path.name} ({len(systems)} domains)")
-        for name in sorted(systems):
-            axes = systems[name].get("axes", [])
-            print(f"    {name}: {len(axes)} axes")
-
-
-def _dump_facet(facet) -> dict:
-    """Dump a DiscoveredFacet, adding the axis provenance key only when
-    actually set — a guarded add, not a blanket model_dump side effect.
-    Without this, model_dump() would write axis="" onto every facet from a
-    domain without an axis system, widening every cache dict with dead keys.
-    """
-    data = facet.model_dump()
-    if not data.get("axis"):
-        data.pop("axis", None)
-    return data
-
-
-def _dump_attribute(attribute) -> dict:
-    """Dump a DiscoveredAttribute."""
-    return attribute.model_dump()
+        totals = [e for e in log if e.get("action") in ("_facet_totals", "_totals")]
+        print(f"  Step-4 action log written: {path.name} ({len(log)} actions)")
+        for entry in totals:
+            print(f"    {entry}")
 
 
 def cache_taxonomy_results(
@@ -289,7 +249,7 @@ def cache_taxonomy_results(
     sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
 ) -> Dict[str, DomainResultModel]:
-    """Cache taxonomy results (P1-P9) for later use by codebook generation."""
+    """Cache the taxonomy for later use by codebook generation."""
     filename = FILENAME if filename is None else filename
     variable = VARIABLE if variable is None else variable
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size
@@ -313,7 +273,7 @@ def cache_taxonomy_results(
             iid: aname for iid, aname in taxonomy_result.attribute_assignments.items()
             if iid in domain_facet_ids and aname is not None
         }
-        # Raw (pre-P9) attribute assignments for this domain
+        # Raw (pre-refinement) attribute assignments for this domain
         domain_raw_attr_assigns = {
             iid: aname for iid, aname in taxonomy_result.raw_attribute_assignments.items()
             if iid in domain_facet_ids and aname is not None
@@ -340,15 +300,20 @@ def cache_taxonomy_results(
             partition_name=name,
             n_labels=taxonomy_result.partition_n_labels.get(name, 0),
             n_batches=taxonomy_result.partition_n_batches.get(name, 0),
-            facets=[_dump_facet(f) for f in taxonomy_result.partition_facets.get(name, [])],
+            facets=[f.model_dump() for f in taxonomy_result.partition_facets.get(name, [])],
             facet_assignments=facet_assigns,
             attributes={
-                facet_name: [_dump_attribute(a) for a in attrs]
+                facet_name: [a.model_dump() for a in attrs]
                 for facet_name, attrs in taxonomy_result.partition_attributes.get(name, {}).items()
             },
             attribute_assignments=domain_attr_assigns,
+            # Discovery snapshots, per level: the state before consolidation
+            # settled it. Never drop these — they are what makes a bad merge
+            # diagnosable, and what the standalone refinement replay runs on.
+            raw_facets=[f.model_dump()
+                        for f in taxonomy_result.partition_raw_facets.get(name, [])],
             raw_attributes={
-                facet_name: [_dump_attribute(a) for a in attrs]
+                facet_name: [a.model_dump() for a in attrs]
                 for facet_name, attrs in taxonomy_result.raw_partition_attributes.get(name, {}).items()
             },
             raw_attribute_assignments=domain_raw_attr_assigns,
@@ -390,13 +355,7 @@ def cache_taxonomy_results(
                   "mece_codes", "mece_codes_metadata", "taxonomy_codes"):
         cache_manager.invalidate_cache(filename, stale, variable_key)
 
-    # P9 provenance to disk, not into the shared cache model. Every merge, split and
-    # move with the exact texts it touched — this is what makes a bad decision
-    # findable afterwards instead of invisible.
-    _write_consolidation_log(taxonomy_result, filename, variable_key)
-
-    # P1a discovered axis systems, per domain, to disk (see _write_axes_log).
-    _write_axes_log(taxonomy_result, filename, variable_key)
+    _write_action_log(taxonomy_result, filename, variable_key)
 
     # Build and cache growing model (enriched facet/attribute per idea)
     if ideas_models is not None:
@@ -430,16 +389,12 @@ def save_prompts_to_json(prompt_printer):
 
     Everything the runner captured goes in. A whitelist of prompt types here
     would have to be extended by hand for every new phase, and drops what it
-    does not recognise without saying so — that is how P9 went missing.
+    does not recognise without saying so — that is how the valence merge
+    went missing.
     """
     if not prompt_printer or not prompt_printer.prompts:
         return
 
-    variable_key = generate_enhanced_variable_key(
-        selected_variables=[VARIABLE],
-        is_merged=False,
-        sample_size=SAMPLE_SIZE,
-    )
     prompts_dir = project_root / "exports" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -497,8 +452,8 @@ def _load_and_discover(extraction_metadata=None):
 
 def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                  sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
-    """Run taxonomy stages (P1-P10): facets, attributes, assignments, in-facet
-    consolidation, valence-neutral merge.
+    """Run the taxonomy: facets and attributes, each discovered, consolidated,
+    assigned and refined, then the valence-neutral merge.
 
     Dataset params default to the module-level TEST_DATA constants (so existing
     callers like run_pipeline.py are unchanged); the UI passes them explicitly.
@@ -507,7 +462,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
     global FILENAME, VARIABLE, SAMPLE_SIZE
     FILENAME, VARIABLE, SAMPLE_SIZE = filename, var_name, sample_size
     print("=" * 70)
-    print("TAXONOMY PIPELINE (P1-P10)")
+    print("TAXONOMY PIPELINE")
     print("=" * 70)
     print(f"\nDataset: {FILENAME}")
     print(f"Variable: {VARIABLE}")
@@ -529,7 +484,7 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         cache_manager = CacheManager()
         if (cache_manager.is_metadata_cache_valid(FILENAME, "taxonomy", variable_key)
                 and cache_manager.is_cache_valid(FILENAME, "taxonomy_classified", variable_key)):
-            print("Taxonomy cache valid — skipping P1-P10 (use force_recalc=True to rerun).\n")
+            print("Taxonomy cache valid — skipping step 4 (use force_recalc=True to rerun).\n")
             return None
 
     ideas_models, extraction_metadata, partition_set, label_mappings = _load_and_discover()
@@ -556,22 +511,14 @@ def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
         extraction_metadata=extraction_metadata,
     )
 
-    # P1-only debug run: no facets or assignments exist, so the normal cache save
-    # would overwrite the taxonomy cache with an empty structure and invalidate the
-    # derived step-5/6 keys. Write the diagnostic side-artifacts and stop here.
-    if CONFIG.debug_stop_after_phase == 1:
-        _write_consolidation_log(taxonomy_result, FILENAME, variable_key)
-        _write_axes_log(taxonomy_result, FILENAME, variable_key)
-        cost_tracker.finalize_step("step_4_taxonomy_classifier")
-        save_prompts_to_json(prompt_printer)
-        return partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer
-
     # Cache taxonomy results (metadata + growing model). The taxonomy is displayed
-    # once at the very end (post P9/P10), so the readout reflects the final state.
+    # once at the very end, so the readout reflects the final state.
     cache_taxonomy_results(partition_set, label_mappings, taxonomy_result, ideas_models=ideas_models)
 
-    # P10: Valence-neutral attribute merge (collapse valence-split attribute pairs)
-    if CONFIG.debug_stop_after_phase is None or CONFIG.debug_stop_after_phase >= 10:
+    # Valence-neutral attribute merge (collapse valence-split attribute pairs).
+    # Skipped on any early stop: it judges the settled attribute layer, which a
+    # partial run does not have.
+    if CONFIG.stop_after_phase is None:
         import asyncio
         from pipeline.step_4_classifier.valence_consolidator import ValenceConsolidator
         cache_manager = CacheManager()
@@ -646,7 +593,7 @@ if __name__ == "__main__":
         token_tracker.reset()
 
         # force_recalc=True: with production cache keys a valid taxonomy is
-        # already present, so a bare run would skip P1-P10 entirely.
+        # already present, so a bare run would skip step 4 entirely.
         partition_set, label_mappings, taxonomy_result, ideas_models, prompt_printer = run_taxonomy(force_recalc=True)
 
         # Print token usage
