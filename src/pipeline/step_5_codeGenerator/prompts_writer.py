@@ -11,7 +11,7 @@ niet herleid.
 from __future__ import annotations
 
 from collections import namedtuple
-from typing import List, Literal, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, create_model
 
@@ -97,8 +97,20 @@ def make_writer_model(shapes) -> type:
     )
 
 
-def build_writer_prompt(shapes, concept_by_id, dimension_diagnostic: str, language: str) -> str:
+def build_writer_prompt(
+    shapes, concept_by_id, dimension_diagnostic: str, language: str,
+    taken_names: Optional[List[str]] = None,
+) -> str:
     inventory = "\n".join(_code_block(shape, concept_by_id) for shape in _ordered(shapes))
+
+    taken_block = ""
+    if taken_names:
+        names = "\n".join(f"- {name}" for name in sorted(set(taken_names)))
+        taken_block = f"""
+
+These code names are already used elsewhere in this codebook and are OFF LIMITS —
+do not reuse any of them for a code below, even if it would otherwise fit:
+{names}"""
 
     return f"""You are writing the final codebook. The set of codes is already fixed: there are
 {len(shapes)} of them, each with its direction already decided from the data. Write the
@@ -112,13 +124,16 @@ For every code, write:
 - a boundary note against the nearest competing code in this list
 
 Two rules:
-1. A code name must not claim territory another code in this list already owns.
-   If one code covers a specific topic and another covers the broader family it
-   belongs to, name the broader one for what is left, not for the family.
+1. A code name must not claim territory another code already owns — neither
+   another code in the list below, nor one of the already-taken names listed
+   further down, if any. If one code covers a specific topic and another
+   covers the broader family it belongs to, name the broader one for what is
+   left, not for the family.
 2. If the source topics grouped under a code share nothing you can name honestly,
    set nameable to false. Do not invent an umbrella term to cover unrelated items.
 
 Codes:
 {inventory}
+{taken_block}
 
 {INSTRUCTOR_HINT}"""

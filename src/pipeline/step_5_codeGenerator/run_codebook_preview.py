@@ -33,7 +33,7 @@ from config import MISCELLANEOUS_CODE_LABELS
 from utils.llm import token_tracker
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
-from pipeline.step_5_codeGenerator.codebook_writer import write_codebook
+from pipeline.step_5_codeGenerator.codebook_writer import resolve_duplicate_names, write_codebook
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.consolidator import CodeShape, consolidate, normalize_relations
@@ -69,6 +69,17 @@ class _RoundLog:
 
     def add(self, **kwargs):
         self.rounds.append(kwargs)
+
+
+class _CollisionLog:
+    """Verzamelt `resolve_duplicate_names`'s per-botsing `log.add(...)`-aanroepen
+    voor de printregel aan het eind van de run — dezelfde duck-typed vorm als
+    `_RoundLog` hierboven."""
+    def __init__(self):
+        self.collisions: List[dict] = []
+
+    def add(self, **kwargs):
+        self.collisions.append(kwargs)
 
 
 def _taxonomy_timestamp(cache_dir: Path) -> str:
@@ -234,18 +245,33 @@ def main() -> None:
         untouched = [c for c in final_candidates if c.shape.origin != "mece_merge"]
 
         # Alleen de samengevoegde codes krijgen nieuwe tekst — ongewijzigde
-        # codes behouden hun eerder geschreven definitie/diagnostic_test.
+        # codes behouden hun eerder geschreven definitie/diagnostic_test. De
+        # herschrijving ziet de al vastliggende namen van de ongewijzigde
+        # codes (taken_names) zodat hij er niet overheen schrijft — een
+        # promptregel, geen garantie; resolve_duplicate_names hieronder is de
+        # deterministische achtervang over het volledige, herenigde boek.
+        untouched_names = [code_by_name[c.name].code_name for c in untouched]
         rewritten = await write_codebook(
-            [c.shape for c in merged], concepts, dimension_diagnostic, language, config, verbose=True,
+            [c.shape for c in merged], concepts, dimension_diagnostic, language, config,
+            taken_names=untouched_names, verbose=True,
         ) if merged else []
         final_shapes = [c.shape for c in untouched] + [c.shape for c in merged]
         final_codes = [code_by_name[c.name] for c in untouched] + rewritten
 
-        return final_shapes, overig_ids, final_codes, merge_result is None, round_log.rounds
+        collision_log = _CollisionLog()
+        final_codes = resolve_duplicate_names(final_codes, final_shapes, log=collision_log)
 
-    shapes, overig_ids, codes, merge_failed, mece_rounds = asyncio.run(_run())
+        return (final_shapes, overig_ids, final_codes, merge_result is None,
+                round_log.rounds, collision_log.collisions)
+
+    shapes, overig_ids, codes, merge_failed, mece_rounds, collisions = asyncio.run(_run())
     if merge_failed:
         print("WAARSCHUWING: consolidatiecall mislukt — doorgegaan met ongeconsolideerde namen.")
+    if collisions:
+        print(f"WAARSCHUWING: {len(collisions)} dubbele codenaam/namen deterministisch opgelost:")
+        for c in collisions:
+            print(f"  '{c['name']}' ({c['kept_n_resp']} resp.) behouden; "
+                  f"kleinere code ({c['renamed_n_resp']} resp.) hernoemd naar '{c['renamed_to']}'")
 
     total_merges = sum(r["merges"] for r in mece_rounds)
     if mece_rounds:

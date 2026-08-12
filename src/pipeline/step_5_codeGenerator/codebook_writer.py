@@ -9,9 +9,17 @@ de tekst wordt minder rijk.
 
 Lekdiscipline: deze module geeft nooit een respondenttelling, domein, facet of
 attribuut-id aan de LLM door — zie `prompts_writer.py` voor de promptbouw zelf.
+
+Een herschrijving die maar een DEEL van het codeboek ziet (bijv. alleen de
+MECE-samengevoegde codes) kan op een naam landen die een niet-herschreven code
+al draagt: `write_codebook`'s `taken_names` geeft die andere namen door zodat
+de LLM ze mijdt, en `resolve_duplicate_names` is de deterministische achtervang
+die de aanroeper ná het herschrijven over het VOLLEDIGE, herenigde codeboek
+draait — een prompt-regel wordt hier nooit vertrouwd als enige garantie.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Dict, List, Optional
 
 from config import get_reasoning_params
@@ -84,11 +92,19 @@ async def write_codebook(
     known_limits: Optional[RateLimits] = None,
     has_server_headers: Optional[bool] = None,
     verbose: bool = False,
+    taken_names: Optional[List[str]] = None,
 ) -> List[ConsolidatedCode]:
     """One call across all fixed code shapes. A `nameable: false` verdict on a
     `pooled` shape drops it (recorded in `log` as a VETO); the same verdict on
     a `solo` or `synonym` shape is ignored — those are single attributes and
-    are by definition nameable."""
+    are by definition nameable.
+
+    `taken_names` is for a re-write that only sees a SUBSET of the book (e.g.
+    the MECE-merged codes) — the names already committed for the codes NOT in
+    `shapes` this call, so the model doesn't land on one of them. This is a
+    prompt-level ask, not a guarantee; see `resolve_duplicate_names` for the
+    deterministic backstop the caller must still run over the full, reassembled
+    codebook."""
     if not shapes:
         return []
 
@@ -98,7 +114,7 @@ async def write_codebook(
         return {
             "prompt": build_writer_prompt(
                 task["shapes"], task["concept_by_id"],
-                task["dimension_diagnostic"], task["language"],
+                task["dimension_diagnostic"], task["language"], task["taken_names"],
             ),
             "response_model": make_writer_model(task["shapes"]),
             "temperature": config.temperature_writer,
@@ -125,6 +141,7 @@ async def write_codebook(
     tasks = [{
         "shapes": shapes, "concept_by_id": concept_by_id,
         "dimension_diagnostic": dimension_diagnostic, "language": language,
+        "taken_names": taken_names,
     }]
     results = await requester.process_all(tasks, prepare_fn, parse_fn, fallback_fn)
     result = results[0] if results else None
@@ -140,3 +157,58 @@ async def write_codebook(
             continue
         codes.append(_to_consolidated_code(text, shape, concept_by_id))
     return codes
+
+
+def resolve_duplicate_names(
+    codes: List[ConsolidatedCode], shapes: List[CodeShape], log=None,
+) -> List[ConsolidatedCode]:
+    """Deterministic backstop for `taken_names`: the prompt asks the model not
+    to reuse a name, but nothing here depends on it having obeyed. `codes[i]`
+    must be the text written for `shapes[i]` — the caller's positional
+    pairing (e.g. the untouched codes followed by a re-write's output, in the
+    same order the shapes were passed to `write_codebook`), not re-derived
+    here.
+
+    Within each group of codes sharing a name, the code with the most
+    respondents keeps it (ties broken by `shape.key` for a reproducible
+    result); every other code in the group is renamed to its own shape's
+    umbrella term — the constituent group name it climbed from in
+    `consolidator.py` — with a number appended only if even that is already
+    taken. Every rename is reported via `log.add(...)` (duck-typed, like
+    `write_codebook`'s own `log`), so a resolved collision is always visible,
+    never a silent rename. A codebook with no duplicate names is returned
+    unchanged."""
+    if len(codes) != len(shapes):
+        raise ValueError("codes and shapes must be positional pairs of equal length")
+
+    groups: Dict[str, List[int]] = defaultdict(list)
+    for i, code in enumerate(codes):
+        groups[code.code_name].append(i)
+    duplicate_names = sorted(name for name, indices in groups.items() if len(indices) > 1)
+    if not duplicate_names:
+        return codes
+
+    resolved = list(codes)
+    taken = {code.code_name for code in codes}
+    for name in duplicate_names:
+        winner_idx, *loser_indices = sorted(
+            groups[name], key=lambda i: (-len(shapes[i].resp_ids), shapes[i].key)
+        )
+        for loser_idx in loser_indices:
+            shape = shapes[loser_idx]
+            candidate = shape.umbrella
+            suffix = 2
+            while candidate in taken:
+                candidate = f"{shape.umbrella} ({suffix})"
+                suffix += 1
+            taken.add(candidate)
+            resolved[loser_idx] = resolved[loser_idx].model_copy(update={"code_name": candidate})
+            if log is not None:
+                log.add(
+                    action="DUPLICATE_NAME_RESOLVED",
+                    name=name,
+                    kept_n_resp=len(shapes[winner_idx].resp_ids),
+                    renamed_to=candidate,
+                    renamed_n_resp=len(shape.resp_ids),
+                )
+    return resolved

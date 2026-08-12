@@ -51,13 +51,13 @@ class CodebookConfig:
     # MECE: repeat pass A + pass B until a round merges nothing, capped here —
     # merging changes the set, so a later round can surface overlaps an earlier
     # round couldn't see yet.
-    mece_max_rounds: int = 3
+    mece_max_rounds: int = 6
     # MECE pass B: up to this many real ideas per code, pooled and shown blind
     # for the other side to be assigned against.
     mece_probe_ideas_per_code: int = 8
     # MECE pass B: accuracy at or below this means the pair is not reliably
     # codeable apart -> merge. Chance level on a two-way choice is 0.50.
-    mece_separability_threshold: float = 0.70
+    mece_separability_threshold: float = 0.90
     # MECE pass B: share of probed ideas answered "BOTH" at or above this
     # means the ideas structurally fit either code -> merge, even when the
     # pair IS separable on wording (accuracy alone would miss this: two

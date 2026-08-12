@@ -550,10 +550,10 @@ def test_enforce_mece_stops_when_no_pair_is_judged_one_dimension(monkeypatch):
 
 
 def test_enforce_mece_caps_at_max_rounds(monkeypatch):
-    # Five same-valence singletons; the fakes always pair up whichever two
+    # Eight same-valence singletons; the fakes always pair up whichever two
     # names come first in the current candidate set and merge them — an
-    # ever-available merge, so the cap (not "no more merges") is what stops
-    # the loop.
+    # ever-available merge, so the cap (not "no more merges", and not running
+    # out of candidates: 8 - 6 = 2 still mergeable) is what stops the loop.
     calls = {"overlap": 0}
 
     async def fake_overlap(candidates, config, *a, **kw):
@@ -570,12 +570,12 @@ def test_enforce_mece_caps_at_max_rounds(monkeypatch):
     monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
 
     config = CodebookConfig()
-    assert config.mece_max_rounds == 3
-    candidates = [candidate(n) for n in ["P1", "P2", "P3", "P4", "P5"]]
+    assert config.mece_max_rounds == 6
+    candidates = [candidate(n) for n in ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]]
     result = asyncio.run(mece.enforce_mece(candidates, {}, config))
 
-    assert calls["overlap"] == 3
-    assert len(result) == 5 - 3  # one merge per round, capped at 3 rounds
+    assert calls["overlap"] == 6
+    assert len(result) == 8 - 6  # one merge per round, capped at 6 rounds
 
 
 def test_enforce_mece_never_merges_across_valence(monkeypatch):

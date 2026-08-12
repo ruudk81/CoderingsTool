@@ -135,3 +135,23 @@ def test_prompt_veto_rule_is_present():
     prompt = build_writer_prompt([shape("K1", "neutral", "u", ["A1", "A2"], origin="pooled")], {}, "stem", "nl-NL")
     assert "nameable" in prompt.lower()
     assert "share nothing" in prompt.lower() or "invent an umbrella" in prompt.lower()
+
+
+def test_prompt_lists_taken_names_and_forbids_reuse():
+    shapes = [shape("K1", "positive", "prijs", ["A1"])]
+    prompt = build_writer_prompt(
+        shapes, {}, "stem", "nl-NL",
+        taken_names=["Modern en toekomstgericht", "Dienstverlening en uitvoering"],
+    )
+    assert "Modern en toekomstgericht" in prompt
+    assert "Dienstverlening en uitvoering" in prompt
+    assert "off limits" in prompt.lower() or "do not reuse" in prompt.lower()
+
+
+def test_prompt_without_taken_names_mentions_none():
+    shapes = [shape("K1", "positive", "prijs", ["A1"])]
+    prompt = build_writer_prompt(shapes, {}, "stem", "nl-NL", taken_names=None)
+    assert "off limits" not in prompt.lower()
+
+    prompt_empty = build_writer_prompt(shapes, {}, "stem", "nl-NL", taken_names=[])
+    assert "off limits" not in prompt_empty.lower()

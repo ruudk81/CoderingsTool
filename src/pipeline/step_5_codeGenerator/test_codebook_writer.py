@@ -7,6 +7,7 @@ from pipeline.step_5_codeGenerator import codebook_writer
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.consolidator import CodeShape
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from pipeline.step_5_codeGenerator.prompts_writer import CodeText, WriterResult
 
 
@@ -28,6 +29,11 @@ def shape(key, valence, umbrella, members, n_resp=40, origin="solo"):
 def text(key, name="Naam", nameable=True):
     return CodeText(key=key, code_name=name, definition="d", diagnostic_test="t",
                     typical_indicators=["a"], boundary_note="b", nameable=nameable)
+
+
+def code(name, valence="neutral"):
+    return ConsolidatedCode(code_name=name, definition="d", diagnostic_test="t",
+                            valence=valence, typical_indicators=["a"])
 
 
 class FakeLog:
@@ -191,3 +197,88 @@ def test_no_shapes_returns_no_codes_without_a_call(monkeypatch):
     )
     assert codes == []
     assert called is False
+
+
+def test_taken_names_reach_the_rewrite_prompt(monkeypatch):
+    captured = {}
+
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        call_params = prepare_fn(tasks[0])
+        captured["prompt"] = call_params["prompt"]
+        return [WriterResult(codes=[text("K1")])]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    shapes = [shape("K1", "positive", "prijs", ["A1"])]
+    concepts = [concept("A1", "Prijs")]
+    asyncio.run(codebook_writer.write_codebook(
+        shapes, concepts, "stem", "nl-NL", CodebookConfig(),
+        taken_names=["Modern en toekomstgericht"],
+    ))
+    assert "Modern en toekomstgericht" in captured["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_duplicate_names — deterministische achtervang op naamsbotsingen
+# ---------------------------------------------------------------------------
+
+def test_resolve_duplicate_names_is_a_noop_when_all_names_are_unique():
+    codes = [code("Modern en toekomstgericht"), code("Dienstverlening en uitvoering")]
+    shapes = [shape("K1", "neutral", "u1", ["A1"], n_resp=85),
+              shape("K2", "neutral", "u2", ["A2"], n_resp=74)]
+    log = FakeLog()
+
+    resolved = codebook_writer.resolve_duplicate_names(codes, shapes, log=log)
+
+    assert resolved == codes
+    assert log.calls == []
+
+
+def test_resolve_duplicate_names_repairs_a_collision():
+    # Same name, different respondent counts and different constituent umbrellas —
+    # the larger code keeps the name, the smaller one falls back to its umbrella.
+    codes = [code("Modern en toekomstgericht"), code("Modern en toekomstgericht")]
+    shapes = [shape("K1", "neutral", "innovatie", ["A1"], n_resp=85),
+              shape("K2", "neutral", "vooruitstrevendheid", ["A2"], n_resp=32)]
+    log = FakeLog()
+
+    resolved = codebook_writer.resolve_duplicate_names(codes, shapes, log=log)
+
+    names = [c.code_name for c in resolved]
+    assert names.count("Modern en toekomstgericht") == 1
+    assert names[0] == "Modern en toekomstgericht"
+    assert names[1] == "vooruitstrevendheid"
+
+    assert len(log.calls) == 1
+    entry = log.calls[0]
+    assert entry["action"] == "DUPLICATE_NAME_RESOLVED"
+    assert entry["name"] == "Modern en toekomstgericht"
+    assert entry["kept_n_resp"] == 85
+    assert entry["renamed_to"] == "vooruitstrevendheid"
+    assert entry["renamed_n_resp"] == 32
+
+
+def test_resolve_duplicate_names_appends_a_number_when_the_umbrella_is_also_taken():
+    codes = [code("Dienstverlening"), code("Dienstverlening"), code("service")]
+    shapes = [shape("K1", "neutral", "u1", ["A1"], n_resp=74),
+              shape("K2", "neutral", "service", ["A2"], n_resp=66),
+              shape("K3", "neutral", "u3", ["A3"], n_resp=10)]
+    log = FakeLog()
+
+    resolved = codebook_writer.resolve_duplicate_names(codes, shapes, log=log)
+
+    names = [c.code_name for c in resolved]
+    assert names[0] == "Dienstverlening"
+    assert names[1] == "service (2)"
+    assert names[2] == "service"
+    assert len(names) == len(set(names))
+
+
+def test_resolve_duplicate_names_rejects_mismatched_list_lengths():
+    codes = [code("Naam")]
+    shapes = [shape("K1", "neutral", "u", ["A1"]), shape("K2", "neutral", "u", ["A2"])]
+    try:
+        codebook_writer.resolve_duplicate_names(codes, shapes)
+    except ValueError:
+        return
+    raise AssertionError("een lengteverschil tussen codes en shapes had geweigerd moeten worden")
