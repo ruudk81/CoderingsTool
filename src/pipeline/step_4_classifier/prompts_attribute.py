@@ -66,26 +66,6 @@ class DiscoveredAttribute(BaseModel):
     )
 
 
-class DiscoveredAttributeDimension(BaseModel):
-    """One way in which the responses in this facet differ, with its values.
-
-    The attributes are nested inside the dimension rather than listed beside it:
-    an attribute cannot be proposed without first saying what it is a value OF.
-    """
-    dimension_name: str = Field(
-        ..., description=(
-            "The way responses differ along this dimension, in a few words. "
-            "Descriptive — never an evaluative direction"
-        )
-    )
-    dimension_description: str = Field(
-        ..., description="One sentence on what varies along this dimension"
-    )
-    attributes: List[DiscoveredAttribute] = Field(
-        ..., description="The values this dimension takes in these observations"
-    )
-
-
 class AttributeDiscoveryResult(BaseModel):
     """Discovery output for one chunk."""
     scratchpad: str = Field(
@@ -93,24 +73,16 @@ class AttributeDiscoveryResult(BaseModel):
             "Reasoning before the final set: "
             "(1) read the observations for the ways they differ from one another, "
             "(2) name the candidate dimensions, "
-            "(3) test each pair of dimensions for independence in both directions and "
-            "merge them where independence cannot be shown, "
+            "(3) test each pair for independence in both directions and merge the pair "
+            "where independence cannot be shown, "
             "(4) check no dimension is an evaluative direction in disguise, "
-            "(5) name the values on each surviving dimension, "
-            "(6) check every candidate stays inside the facet"
+            "(5) check every candidate stays inside the facet"
         )
     )
-    independence_evidence: str = Field(
-        default="", description=(
-            "When more than one dimension is returned: observations from the input "
-            "showing that responses can differ on one dimension while sharing the same "
-            "value on another, in both directions. Empty for a single dimension"
-        )
-    )
-    dimensions: List[DiscoveredAttributeDimension] = Field(
+    attributes: List[DiscoveredAttribute] = Field(
         ..., description=(
-            "The dimensions found in these observations, each with its "
-            "values. As few as account for every difference the observations show"
+            "The dimensions on which these observations differ. As few as account for "
+            "every difference the observations show"
         )
     )
 
@@ -144,14 +116,13 @@ def build_attribute_discovery_prompt(
         dimension=dimension, dimension_name=dimension_name,
         dimension_description=dimension_description,
     )
-    diagnostic = level_diagnostic(dimension, "attribute")
     observations_block = "\n".join(
         f"{i}. {obs}" for i, obs in enumerate(observations, 1)
     )
     exclusions_line = "; ".join(facet_exclusions) if facet_exclusions else "(none given)"
 
     return f"""You are a qualitative research analyst specializing in survey response analysis.
-Your task is to identify the fewest recurring attributes that fully cover a set of observations within one facet.
+Your task is to identify the dimensions on which responses within one facet differ from one another.
 
 {context_block}
 
@@ -175,53 +146,20 @@ Here are the observations you need to account for:
 
 ## YOUR TASK
 
-Find the **dimensions** in these observations — the ways in which responses
-within this facet differ from one another — and then give the values each dimension
-takes. Those values are the attributes (level 4).
+Identify the **dimensions** on which the responses in this facet differ from one another.
+Those dimensions are this facet's attributes (level 4).
 
-**Look for orthogonal dimensions.** Dimensions that do not overlap, that live in a
-different semantic space from one another. The test: two observations must be able to
-differ on dimension A while sharing the same value on dimension B, and differ on B while
-sharing the same value on A. If you cannot show that in both directions using the
-observations in front of you, you have one dimension, not two.
+**Orthogonal.** Two responses must be able to differ on one dimension while sitting the
+same way on another, and the other way round. If you cannot show that in both directions
+with the observations in front of you, the two are one dimension, not two.
 
-**Look for as few as possible.** Enough to account for every difference the observations
-show, and not one more. If the responses vary in only one way, return exactly one
-dimension — do not decompose one dimension into several.
+**As few as possible.** Enough to account for every difference the observations show, and
+not one more. If the responses differ in only one way, return exactly one dimension.
 
-**A dimension is DESCRIPTIVE.** It names WHAT differs between responses,
-never how positively or negatively the subject is judged. "Positive versus negative",
-"satisfied versus dissatisfied" and any rephrasing of those is not a dimension — evaluative direction is recorded per response as valence and never becomes
-structure. If the only variation you can find here is evaluative, return the single
-descriptive dimension the responses share and let valence carry the rest.
-
-Every value you return has to answer the attribute question for this study:
-
-<attribute_diagnostic>
-{diagnostic}
-</attribute_diagnostic>
-
-An attribute is an answer to that question. It names a concrete, observable property —
-not a verbatim span from a response, and not the facet restated one level up.
-
-Aim for the smallest set of values per dimension that still gives every observation a
-clear home. Each attribute must be:
-
-- **Grounded in the data** — supported by a recurring pattern across observations, not
-  by a single one-off phrasing.
-- **Internally coherent** — one clear underlying concept. Reject or split candidates
-  that combine different kinds of phenomena, or that mix descriptive content with
-  evaluation.
-- **Ontologically distinct** — no overlap, no subset or superset, and never two lenses
-  on the same phenomenon.
-- **Semantically separable** — a coder must clearly know which attribute applies. No
-  "could go either way" situations.
-- **Inside the facet** — strictly within the boundary stated above. A candidate that
-  belongs more naturally to a neighbouring facet is left out, not stretched to fit.
-
-Rare or one-off observations do not each earn an attribute. Group them under the
-attribute whose definition honestly covers them, and only give them their own attribute
-when the same distinction recurs.
+**Descriptive.** A dimension names something the responses are ABOUT, never how
+positively or negatively the subject is judged. "Positive versus negative", "satisfied
+versus dissatisfied" and any rephrasing of those is not a dimension — evaluative
+direction is recorded per response as valence and never becomes structure.
 
 {UNIVERSAL_RULES}
 
@@ -229,26 +167,17 @@ when the same distinction recurs.
 
 Work through your reasoning in the scratchpad field first.
 
-For EACH dimension provide:
-- **dimension_name** — how responses differ along it, in a few words
-- **dimension_description** — one sentence on what varies
-- **attributes** — the values it takes, each one a full attribute
-
-For EACH attribute provide:
-- **attribute_name** — a short descriptive name
-- **attribute_definition** — one sentence naming a single observable property, with no
-  examples or enumerations
-- **boundary_test** — one yes/no question that decides membership
-- **exclusions** — what does NOT belong, naming the neighbouring attribute it is most
+For EACH dimension provide, using the attribute fields:
+- **attribute_name** — a short descriptive name for the dimension
+- **attribute_definition** — one sentence naming what varies along it, with no examples or
+  enumerations
+- **boundary_test** — one yes/no question that decides whether a response belongs to THIS
+  dimension rather than a neighbouring one
+- **exclusions** — what does NOT belong, naming the neighbouring dimension it is most
   easily confused with
 - **example_observations** — 2-3 observations from the input above, copied exactly
 
-When you return more than one dimension, fill **independence_evidence** with observations
-from the input showing the two directions of independence. Leave it empty for a single
-dimension.
-
-All dimension names, attribute names, definitions, boundary tests and exclusions must be
-written in {language}.
+All names, definitions, boundary tests and exclusions must be written in {language}.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
 

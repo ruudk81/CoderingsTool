@@ -54,8 +54,12 @@ def _prompt():
     )
 
 
-def test_prompt_bevat_de_facetdiagnostiek():
-    assert DIM.prompt_rules.facet_diagnostic in _prompt()
+def test_discovery_stelt_de_diagnostische_vraag_niet():
+    """De opdracht is dimensies vinden. De diagnostische vraag ernaast zetten gaf
+    een tautologie: het model antwoordde in zes van de zeven domeinen dat de
+    dimensie "type <domein>" was — de vraag zelf, teruggegeven als antwoord
+    (gemeten ASN Qd1, 2026-08-12)."""
+    assert DIM.prompt_rules.facet_diagnostic not in _prompt()
 
 
 def test_prompt_bevat_de_volledige_taxonomie():
@@ -100,23 +104,8 @@ def test_model_eist_boundary_test_en_exclusions():
         )
 
 
-def test_discovery_result_accepteert_lege_dimensielijst():
-    assert FacetDiscoveryResult(scratchpad="niets gevonden", dimensions=[]).dimensions == []
-
-
-def test_facetten_hangen_onder_een_dimensie():
-    """Een facet bestaat alleen als waarde van een benoemde dimensie — dat is wat
-    voorkomt dat een facetlijst stilzwijgend twee lijsten door elkaar is."""
-    from pipeline.step_4_classifier.prompts_facet import DiscoveredDimension
-    d = DiscoveredDimension(
-        dimension_name="welk aspect van de dienstverlening",
-        dimension_description="waar de reactie over gaat",
-        facets=[DiscoveredFacet(
-            facet_name="Bejegening", facet_definition="d", boundary_test="b?",
-            exclusions=["x"], example_observations=["e"])],
-    )
-    r = FacetDiscoveryResult(scratchpad="s", dimensions=[d])
-    assert [f.facet_name for dim in r.dimensions for f in dim.facets] == ["Bejegening"]
+def test_discovery_result_accepteert_lege_facetlijst():
+    assert FacetDiscoveryResult(scratchpad="niets gevonden", facets=[]).facets == []
 
 
 # =============================================================================
