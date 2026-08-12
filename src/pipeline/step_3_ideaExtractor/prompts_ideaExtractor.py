@@ -799,8 +799,8 @@ These two domains are fixed and are NOT part of your task. They catch answers th
 Do not re-describe them and do not return them.
 
 ## YOUR TASK
-Re-describe the domains listed above (not the two fixed domains) so that together they are MAXIMALLY orthogonal — each a single subject axis within the dimension, with sharp, non-overlapping boundaries.
-- Return exactly the domains listed above, the SAME number and in the SAME ORDER (do not merge, split, add, or drop — only sharpen the wording).
+Re-describe the domains under "Current domains" above so that together they are MAXIMALLY orthogonal — each a single subject axis within the dimension, with sharp, non-overlapping boundaries.
+- Return exactly the domains under "Current domains", the SAME number and in the SAME ORDER (do not merge, split, add, or drop — only sharpen the wording).
 - For each domain provide: label, definition (one subject axis), boundary_test (a yes/no membership question), exclusions (the neighbouring domains it must not be confused with). Do NOT output a key.
 - DESCRIPTIVE DOMAINS ONLY: every domain names a DESCRIPTIVE subject/aspect — never a sentiment or judgment. Even if all its ideas are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; direction (positive/negative) is captured separately by valence, never by domains. Reframe any evaluative bucket (e.g. "reputation/appreciation", "good vs bad") descriptively as the subject being judged.
 - Use the representative ideas to find each domain's true center and the real boundaries between neighbours.
@@ -857,7 +857,7 @@ Rules:
 - Both are catches for a failure mode of the coding scheme, so both are broad on purpose. A label that sounds broad is correct here.
 - A short noun phrase in {language}, as a coder would see it in a list of domains.
 
-provide your output as valid JSON following the response schema provided."""
+Now name both domains, and provide your output as valid JSON following the response schema provided."""
 
 
 class StandingLabelsResponse(BaseModel):
