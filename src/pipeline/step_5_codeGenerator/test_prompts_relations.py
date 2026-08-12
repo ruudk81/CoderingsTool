@@ -25,8 +25,17 @@ def test_prompt_contains_no_counts():
 def test_prompt_lists_every_attribute():
     concepts = [concept("A1", "Prijs"), concept("A2", "Service")]
     prompt = build_relations_prompt(concepts, "nl-NL")
-    assert "Prijs (Domein)" in prompt
-    assert "Service (Domein)" in prompt
+    assert "[A1] Prijs" in prompt
+    assert "[A2] Service" in prompt
+
+
+def test_prompt_orders_by_attribute_id_not_by_prevalence():
+    # Input arrives prevalence-sorted, as build_inventory produces it: highest
+    # n_resp first. Attribute id order disagrees with that — the prompt must
+    # follow the id, not the order it was handed.
+    concepts = [concept("A9", "Zorg", 500), concept("A1", "Prijs", 5)]
+    prompt = build_relations_prompt(concepts, "nl-NL")
+    assert prompt.index("[A1] Prijs") < prompt.index("[A9] Zorg")
 
 
 def test_prompt_ends_with_the_instructor_hint():
@@ -38,13 +47,13 @@ def test_prompt_ends_with_the_instructor_hint():
 
 def test_response_model_constrains_to_existing_attributes():
     model = make_relations_model([concept("A1", "Prijs"), concept("A2", "Service")])
-    ok = model(relations=[{"attribute": "Prijs (Domein)", "synonym_of": None,
+    ok = model(relations=[{"attribute": "[A1] Prijs", "synonym_of": None,
                            "umbrella_name": "Kosten", "umbrella_definition": "d"}])
-    assert ok.relations[0].attribute == "Prijs (Domein)"
+    assert ok.relations[0].attribute == "[A1] Prijs"
 
     import pydantic
     try:
-        model(relations=[{"attribute": "Verzonnen (Domein)", "synonym_of": None,
+        model(relations=[{"attribute": "[A99] Verzonnen", "synonym_of": None,
                           "umbrella_name": "Kosten", "umbrella_definition": "d"}])
     except pydantic.ValidationError:
         return

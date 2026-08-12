@@ -27,7 +27,7 @@ from utils.llm import token_tracker
 from pipeline.step_5_codeGenerator import run_codeGenerator
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult, qualified
+from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult, tagged
 from pipeline.step_5_codeGenerator.relations import resolve_relations
 from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, build_idea_units
 
@@ -61,8 +61,8 @@ def load_cache(cache_dir: Path):
     return extraction_metadata, classified_ideas, taxonomy_cache
 
 
-def qualified_lookup(concepts: List[Concept]) -> Dict[str, Concept]:
-    return {qualified(c): c for c in concepts}
+def tagged_lookup(concepts: List[Concept]) -> Dict[str, Concept]:
+    return {tagged(c): c for c in concepts}
 
 
 def group_by_umbrella(
@@ -70,7 +70,7 @@ def group_by_umbrella(
 ) -> Tuple[Dict[str, List[Concept]], Dict[str, str], List[Tuple[Concept, Concept]]]:
     """Groepeer concepten per koepel en verzamel unieke synoniemparen, zoals de
     relatiecall ze teruggaf — geen aantallen zijn hierbij betrokken."""
-    lookup = qualified_lookup(concepts)
+    lookup = tagged_lookup(concepts)
     umbrellas: Dict[str, List[Concept]] = {}
     umbrella_defs: Dict[str, str] = {}
     synonym_pairs: List[Tuple[Concept, Concept]] = []
