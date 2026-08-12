@@ -483,3 +483,292 @@ do not add ideas. If no attribute fits an idea, use "A_NONE" for that idea rathe
 forcing it into the nearest one.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# §4 REFINEMENT — per facet, after every idea has been assigned
+# =============================================================================
+
+class AttributeMisfitGroup(BaseModel):
+    """A group of ideas sitting in an attribute they do not belong to."""
+    from_attribute: str = Field(
+        ..., description="The attribute currently holding these ideas"
+    )
+    instance_texts: List[str] = Field(
+        ..., description=(
+            "The exact response texts that do not belong, copied verbatim from the "
+            "contents shown. Never counts, paraphrases or summaries"
+        )
+    )
+    verdict: Literal["move", "out"] = Field(
+        ..., description=(
+            "'move' when these ideas belong to a named existing attribute; "
+            "'out' when they carry no substantive content at all"
+        )
+    )
+    target_attribute: str = Field(
+        default="",
+        description=(
+            "For verdict 'move': the attribute these ideas belong to, named exactly as "
+            "shown in this facet or in the neighbouring facets list. Empty for 'out'"
+        ),
+    )
+    reason: str = Field(
+        ..., description="One sentence: why these texts do not belong where they are"
+    )
+
+
+class RefinedAttribute(ConsolidatedAttribute):
+    """One attribute surviving refinement. Its facet is fixed by the task."""
+    action: Literal["keep", "merge", "widen", "split"] = Field(
+        ..., description=(
+            "keep = unchanged; merge = several sources into this one; "
+            "widen = same attribute, description restated to cover what it holds; "
+            "split = one source divided into named children (instance_texts required)"
+        )
+    )
+    instance_texts: List[str] = Field(
+        default_factory=list,
+        description=(
+            "For action 'split' ONLY: the exact response texts routed to this child, "
+            "copied verbatim. Required when a source attribute is divided over more "
+            "than one returned attribute. Empty otherwise"
+        ),
+    )
+
+
+class AttributeRefinementResult(BaseModel):
+    """Final attribute inventory for one facet, plus the misfits found in it."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning: (1) read each attribute's contents against its "
+            "label and note groups that do not belong, (2) group attributes by the "
+            "underlying distinction each one answers, (3) set granularity by prevalence "
+            "using the shares shown, (4) route each non-fitting group to one of the "
+            "four exits, (5) check every label states a value rather than the question, "
+            "(6) assemble the final inventory"
+        )
+    )
+    attributes: List[RefinedAttribute] = Field(
+        ..., description="The complete attribute set for this facet after refinement"
+    )
+    misfits: List[AttributeMisfitGroup] = Field(
+        default_factory=list,
+        description="Groups of ideas that do not belong to the attribute holding them",
+    )
+
+    @model_validator(mode="after")
+    def _routable(self):
+        """Reject an inventory whose ideas cannot be routed."""
+        for a in self.attributes:
+            if a.action == "split" and not a.instance_texts:
+                raise ValueError(
+                    f'attribute "{a.attribute_name}" has action "split" but no '
+                    f'instance_texts. A split must list the exact response texts '
+                    f'routed to each child, or the ideas cannot be divided.'
+                )
+
+        claimed_by: Dict[str, List[str]] = {}
+        for a in self.attributes:
+            for src in (a.source_attributes or []):
+                claimed_by.setdefault(src, []).append(a.attribute_name)
+
+        for src, claimants in claimed_by.items():
+            if len(claimants) < 2:
+                continue
+            without_texts = [a.attribute_name for a in self.attributes
+                             if src in (a.source_attributes or []) and not a.instance_texts]
+            if without_texts:
+                raise ValueError(
+                    f'source attribute "{src}" is claimed by {len(claimants)} returned '
+                    f'attributes ({", ".join(claimants)}), but {", ".join(without_texts)} '
+                    f'give no instance_texts. Either let ONE attribute take "{src}", or '
+                    f'make every claimant action "split" and list the exact response '
+                    f'texts each one takes.'
+                )
+        return self
+
+
+def build_attribute_contents_block(
+    rows: List[Tuple[str, int, float, List[str]]],
+) -> str:
+    """Render what each attribute actually holds: name, count, share, real texts.
+
+    `rows`: (attribute_name, n_ideas, share_of_facet, sample_texts).
+    """
+    blocks = []
+    for name, n_ideas, share, texts in rows:
+        contents = "\n".join(f"       - {t}" for t in texts)
+        blocks.append(
+            f"{name} — {n_ideas} responses ({round(share * 100)}% of the facet)\n"
+            f"     Contents:\n{contents}"
+        )
+    return "\n\n".join(blocks)
+
+
+def build_neighbour_block(
+    neighbours: List[Tuple[str, List[Tuple[str, int]]]],
+) -> str:
+    """Format adjacent facets as steer-clear context for refinement.
+
+    `neighbours`: [(facet_name, [(attribute_name, n_ideas), ...]), ...]
+
+    Shown so the model can write its boundaries against real neighbours instead of
+    abstract ones, and so it can name a target when a group of ideas belongs to one
+    of them. Explicitly NOT merge candidates — without that instruction the model
+    starts merging across facets, which is the failure this phase exists to prevent.
+    """
+    if not neighbours:
+        return ""
+    lines = [
+        "<neighbouring_facets>",
+        "These facets sit beside yours in the same domain. They are shown so you can "
+        "write your boundaries against real neighbours instead of abstract ones.",
+        "THEY ARE NOT MERGE CANDIDATES. You may not merge your attributes into them, "
+        "and you may not restate their attributes as your own. Their only two uses:",
+        "  (a) sharpen your own labels, so yours states what theirs does not;",
+        "  (b) name a target when a group of ideas in YOUR facet clearly belongs to one of them.",
+    ]
+    for facet_name, attrs in neighbours:
+        if not attrs:
+            continue
+        listed = ", ".join(f"{n} ({c})" for n, c in attrs)
+        lines.append(f'  Facet "{facet_name}" — attributes: {listed}')
+    lines.append("</neighbouring_facets>")
+    return "\n".join(lines)
+
+
+def build_attribute_refinement_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    domain_label: str,
+    domain_definition: str,
+    facet_name: str,
+    facet_definition: str,
+    attributes_block: str,
+    neighbour_block: str,
+) -> str:
+    """Settle one facet's attributes against what they actually ended up holding.
+
+    The eight rules are the best-tested text step 4 had, carried over from the
+    old in-facet consolidation. What is gone is the precedence ordering: that
+    existed because this one call also had to clean up the near-duplicates the
+    chunk yield left behind. Consolidation does that now, so the goals no longer
+    collide and there is nothing left to arbitrate.
+    """
+    context_block = build_context_block(
+        language=language, survey_question=survey_question, sector=sector,
+        entity=entity, topic=topic, perspective=perspective, intent=intent,
+    )
+    diagnostic = level_diagnostic(dimension, "attribute")
+    contentless = dimension.standing_not_known.short
+    neighbours = f"\n{neighbour_block}\n" if neighbour_block else ""
+
+    return f"""You are a taxonomy consolidation specialist for surveys.
+Your task is to settle the final attribute inventory of ONE facet, now that every idea has been assigned.
+
+{context_block}
+
+<parents>
+Domain: {domain_label} — {domain_definition}
+Facet:  {facet_name} — {facet_definition}
+</parents>
+
+The question every attribute answers for this dimension is:
+
+<attribute_diagnostic>
+{diagnostic}
+</attribute_diagnostic>
+
+Here are this facet's attributes, each with the number of responses actually assigned to
+it, its share of the facet, and a sample of the responses it really holds:
+
+<facet_attributes>
+{attributes_block}
+</facet_attributes>
+{neighbours}
+Judge each attribute on what it actually holds, not on how its label reads. The counts
+and the response texts above are the evidence; the labels were written before a single
+response had been assigned.
+
+<refinement_rules>
+**1. DISTINCTION FIRST.** Attributes that answer different distinctions stay apart,
+however similar their labels look. Mutually exclusive values of the SAME distinction are
+also kept apart — merging opposite poles creates an empty container. Do NOT create
+separate attributes based only on the object discussed when the same underlying value
+applies; an object is not a distinction.
+
+**2. PREVALENCE SETS GRANULARITY** — within one distinction only. Each attribute shows
+its share of this facet. Judge size relative to its siblings, never against an absolute
+number. The largest keep their own identity. Those far below their siblings are grouped,
+but only with same-distinction neighbours, into one attribute that still names the shared
+value in plain language. An attribute holding a large share AND visibly diverse contents
+is too abstract: split it, do not widen it.
+
+**3. LIFT, DON'T FLATTEN.** When grouping is needed, raise the concepts to a shared
+higher-abstraction label that still carries their meaning — not a label that merely names
+the question. Read the label alone: if it tells you only which question was asked, it is
+a container; if it tells you what the answer was, it is a value.
+
+**4. PLAIN, MEANINGFUL LABELS.** Name every surviving attribute in everyday language. A
+layperson reading the label alone, given the survey question, should know which
+distinction is meant. No jargon, no nominalizations.
+
+**5. THE FACET IS FIXED.** Every attribute you return belongs to "{facet_name}". You
+cannot move an attribute to another facet, and you cannot create one that belongs to
+another facet. If a GROUP OF IDEAS belongs elsewhere, report it under `misfits` — the
+ideas move, the attribute stays here.
+
+**6. FOUR EXITS FOR WHAT DOES NOT FIT.** Read what each attribute actually contains.
+Where contents do not match the label, choose per group:
+   - the group points at ONE existing attribute (here or in a neighbouring facet)
+       -> `misfits`, verdict "move": name the target and the EXACT response texts
+   - the group is one coherent concept that has no attribute yet
+       -> action "split": name the children and which EXACT texts go to each
+   - the group is diverse but genuinely related to this attribute
+       -> action "widen": restate the description so it honestly covers what is there
+   - the group carries NO SUBSTANTIVE CONTENT WHATSOEVER — filler, or {contentless}
+       -> `misfits`, verdict "out"
+   "Out" is not an escape hatch for "this does not fit the attributes I chose". A text
+   that names something real HAS substance: if it has no home yet, create one with
+   "split". Moves and splits must be expressed as EXACT response texts copied from the
+   contents shown above — never as counts, paraphrases or summaries. Every decision has
+   to be checkable against the data.
+
+**7. ONE SOURCE, ONE DESTINATION** — unless you route by text. Every attribute in the
+input must end up in exactly ONE returned attribute. To divide one input attribute's
+contents over TWO returned attributes, use action "split" for each part and list the
+exact texts belonging to it in `instance_texts`.
+
+**8. KEEP THE VALUES THAT ARE ACTUALLY THERE.** Grouping is not discarding. If the
+contents hold two distinct values, return two attributes — merging them into one and
+sending the remainder "out" loses real answers. Collapsing a facet to a SINGLE attribute
+removes a whole level of the hierarchy: the facet name then says nothing the attribute
+does not already say. Do that only when the contents genuinely express one value.
+</refinement_rules>
+
+{UNIVERSAL_RULES}
+
+## OUTPUT
+
+Work through your reasoning in the scratchpad field first.
+
+For EACH surviving attribute provide: action, attribute_name, attribute_definition,
+boundary_test, exclusions, example_observations (exact text from the contents),
+source_attributes, and — for "split" only — instance_texts.
+
+`action` is exactly one of: "keep" (unchanged), "merge" (several sources into this one),
+"widen" (description restated to cover what it holds), "split" (one source divided into
+named children). Every misfit group carries verdict "move" or "out".
+
+All attribute names, definitions, boundary tests and exclusions must be written in {language}.
+Copy response texts verbatim when you route them; they are matched literally.
+
+Begin processing now and {INSTRUCTOR_HINT}"""

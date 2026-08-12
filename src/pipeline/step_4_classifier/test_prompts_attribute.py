@@ -5,8 +5,13 @@ from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decis
 from pipeline.step_4_classifier.prompts_attribute import (
     AttributeConsolidationResult,
     AttributeDiscoveryResult,
+    AttributeRefinementResult,
     ConsolidatedAttribute,
     DiscoveredAttribute,
+    RefinedAttribute,
+    build_attribute_contents_block,
+    build_attribute_refinement_prompt,
+    build_neighbour_block,
     build_attribute_assignment_model,
     build_attribute_assignment_prompt,
     build_attribute_consolidation_prompt,
@@ -212,3 +217,87 @@ def test_model_accepteert_a_none():
     result = Model(assignments=[{"idea_id": "i1", "assigned_attribute_id": "A_NONE",
                                  "confidence": 0.1, "valence": "0"}])
     assert result.assignments[0].assigned_attribute_id == "A_NONE"
+
+
+# =============================================================================
+# Taak 9 — naslijpen na toewijzing
+# =============================================================================
+
+def _refined(name, action="keep", sources=None, texts=None):
+    return RefinedAttribute(
+        action=action, attribute_name=name, attribute_definition="d",
+        boundary_test="b?", exclusions=["x"], example_observations=["e"],
+        source_attributes=sources or [name], instance_texts=texts or [],
+    )
+
+
+def _naslijp_prompt(neighbour_block=""):
+    return build_attribute_refinement_prompt(
+        language="Dutch", survey_question="Waar denkt u aan?",
+        sector="finance", entity="asn_bank", topic="brand_association",
+        perspective="consumer", intent="associate", dimension=DIM,
+        domain_label="Duurzaamheid", domain_definition="Milieubeleid.",
+        facet_name="Groene uitstraling", facet_definition="Hoe groen het oogt.",
+        attributes_block=build_attribute_contents_block([("A", 5, 0.5, ["t"])]),
+        neighbour_block=neighbour_block,
+    )
+
+
+def test_contents_block_toont_aantal_aandeel_en_teksten():
+    block = build_attribute_contents_block([("Windenergie", 42, 0.21, ["windmolens"])])
+    assert "Windenergie" in block
+    assert "42" in block
+    assert "windmolens" in block
+
+
+def test_buurblok_is_geen_mergekandidaat():
+    block = build_neighbour_block([("Prijsbeleving", [("Hoge kosten", 12)])])
+    assert "Prijsbeleving" in block
+    assert "NOT MERGE CANDIDATES" in block.upper()
+
+
+def test_buurblok_is_leeg_zonder_buren():
+    assert build_neighbour_block([]) == ""
+
+
+def test_naslijpprompt_bevat_vier_acties_en_twee_verdicts():
+    prompt = _naslijp_prompt()
+    for woord in ("keep", "merge", "widen", "split", "move", "out"):
+        assert woord in prompt
+
+
+def test_naslijpprompt_bevat_geen_voorrangsregel():
+    assert "precedence" not in _naslijp_prompt().lower()
+
+
+def test_naslijpprompt_neemt_het_buurblok_op():
+    block = build_neighbour_block([("Prijsbeleving", [("Hoge kosten", 12)])])
+    assert "Prijsbeleving" in _naslijp_prompt(neighbour_block=block)
+
+
+def test_split_zonder_instance_texts_wordt_geweigerd():
+    with pytest.raises(ValidationError):
+        AttributeRefinementResult(
+            scratchpad="s", attributes=[_refined("A", action="split")], misfits=[]
+        )
+
+
+def test_bron_geclaimd_door_twee_zonder_teksten_wordt_geweigerd():
+    with pytest.raises(ValidationError):
+        AttributeRefinementResult(
+            scratchpad="s",
+            attributes=[_refined("A", sources=["X"]), _refined("B", sources=["X"])],
+            misfits=[],
+        )
+
+
+def test_bron_geclaimd_door_twee_met_teksten_mag_wel():
+    result = AttributeRefinementResult(
+        scratchpad="s",
+        attributes=[
+            _refined("A", action="split", sources=["X"], texts=["t1"]),
+            _refined("B", action="split", sources=["X"], texts=["t2"]),
+        ],
+        misfits=[],
+    )
+    assert len(result.attributes) == 2

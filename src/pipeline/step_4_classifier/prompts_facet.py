@@ -737,6 +737,10 @@ For EACH surviving facet provide: action, facet_name, facet_definition, boundary
 exclusions, example_observations (exact text from the contents), source_facets, and —
 for "split" only — instance_texts.
 
+`action` is exactly one of: "keep" (unchanged), "merge" (several sources into this one),
+"widen" (description restated to cover what it holds), "split" (one source divided into
+named children). Every misfit group carries verdict "move" or "out".
+
 All facet names, definitions, boundary tests and exclusions must be written in {language}.
 Copy response texts verbatim when you route them; they are matched literally.
 
