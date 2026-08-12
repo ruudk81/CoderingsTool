@@ -274,6 +274,15 @@ def test_naslijpprompt_zegt_dat_het_domein_vaststaat():
     assert "Duurzaamheid" in _naslijp_prompt()
 
 
+def test_naslijpprompt_gebruikt_contentless_test_voor_de_out_uitgang():
+    """De 'out'-uitgang beschrijft inhoudsloosheid via de dimensie-eigen
+    contentless_test, niet via standing_not_known.short — dat laatste zegt dat
+    de respondent het onderwerp niet kent, en dat IS inhoud."""
+    prompt = _naslijp_prompt()
+    assert DIM.prompt_rules.contentless_test in prompt
+    assert DIM.standing_not_known.short not in prompt
+
+
 def test_split_zonder_instance_texts_wordt_geweigerd():
     with pytest.raises(ValidationError):
         FacetRefinementResult(scratchpad="s", facets=[_refined("A", action="split")], misfits=[])

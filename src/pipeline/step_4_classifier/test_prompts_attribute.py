@@ -270,6 +270,14 @@ def test_naslijpprompt_bevat_geen_voorrangsregel():
     assert "precedence" not in _naslijp_prompt().lower()
 
 
+def test_naslijpprompt_gebruikt_contentless_test_voor_de_out_uitgang():
+    """Zie de gelijknamige test bij de facetprompts: 'out' gaat over
+    inhoudsloosheid, niet over onbekendheid met het onderwerp."""
+    prompt = _naslijp_prompt()
+    assert DIM.prompt_rules.contentless_test in prompt
+    assert DIM.standing_not_known.short not in prompt
+
+
 def test_naslijpprompt_neemt_het_buurblok_op():
     block = build_neighbour_block([("Prijsbeleving", [("Hoge kosten", 12)])])
     assert "Prijsbeleving" in _naslijp_prompt(neighbour_block=block)

@@ -650,10 +650,11 @@ def build_facet_refinement_prompt(
         entity=entity, topic=topic, perspective=perspective, intent=intent,
     )
     diagnostic = level_diagnostic(dimension, "facet")
-    # What "no substantive content" means depends on the dimension's own domain
-    # axis. Step 3 already words it per dimension, for the standing not-known
-    # domain; reusing that phrasing keeps the two steps saying the same thing.
-    contentless = dimension.standing_not_known.short
+    # What "no substantive content" means depends on the dimension. Step 3 words
+    # it per dimension in `contentless_test`, which is exactly this diagnostic —
+    # not `standing_not_known.short`, which says something else entirely (the
+    # respondent does not know the subject, which IS substantive).
+    contentless = dimension.prompt_rules.contentless_test
 
     return f"""You are a qualitative research analyst specializing in open-ended survey coding.
 Your task is to settle the final facet set of ONE domain, now that every response has been assigned to a facet.

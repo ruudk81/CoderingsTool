@@ -668,7 +668,9 @@ def build_attribute_refinement_prompt(
         entity=entity, topic=topic, perspective=perspective, intent=intent,
     )
     diagnostic = level_diagnostic(dimension, "attribute")
-    contentless = dimension.standing_not_known.short
+    # Step 3's per-dimension wording for "no substantive content". Not
+    # `standing_not_known.short`: not knowing the subject IS substantive.
+    contentless = dimension.prompt_rules.contentless_test
     neighbours = f"\n{neighbour_block}\n" if neighbour_block else ""
 
     return f"""You are a taxonomy consolidation specialist for surveys.
