@@ -39,6 +39,7 @@ from utils.perfModel import perf_model
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     STANDING_NOT_KNOWN_KEY,
     STANDING_OTHER_KEY,
+    NON_ANSWER_DOMAIN,
     build_context_specifier_group1_prompt,
     build_context_specifier_group2_prompt,
     build_consolidate_specifiers_group1_prompt,
@@ -1055,6 +1056,11 @@ class IdeaExtractor:
                 line += f"\n      ✗ {', '.join(c.exclusions)}"
             return line
 
+        non_answer_line = (
+            f"  • {NON_ANSWER_DOMAIN['label']} = \"{NON_ANSWER_DOMAIN['definition']}\"\n"
+            f"      ✓ {NON_ANSWER_DOMAIN['boundary_test']}"
+        )
+
         return (
             "Pick the single best-fitting domain. The ✓ test and ✗ list help you CHOOSE BETWEEN "
             "domains; they are not grounds to reject a plausibly related idea.\n"
@@ -1063,7 +1069,29 @@ class IdeaExtractor:
             "  - forcing an idea into a domain whose subject the idea never mentions.\n"
             "Each domain lists its definition, ✓ a membership test, and ✗ neighbouring domains it should not be confused with:\n"
             + "\n".join(_domain_line(c) for c in domains)
+            + "\n" + non_answer_line
         )
+
+    @staticmethod
+    def _drop_non_answer_ideas(results) -> Tuple[int, List[str]]:
+        """Remove ideas the model parked in the non-answer bucket, and report them.
+
+        They get no code and never reach the cache. The count and the texts go to the
+        verbose report: removing data silently is how a pipeline loses its audit trail.
+        """
+        label = NON_ANSWER_DOMAIN["label"]
+        dropped: List[str] = []
+        for resp in results:
+            keep = []
+            for idea in (resp.response_ideas or []):
+                if (idea.domain or "").strip() == label:
+                    dropped.append(idea.instance)
+                else:
+                    keep.append(idea)
+            if len(keep) != len(resp.response_ideas or []):
+                resp.response_ideas = keep
+                resp.idea_count = len(keep)
+        return len(dropped), dropped
 
     def _build_taxonomy_enriched_prompt(self, response: str) -> str:
         """Build taxonomy-enriched prompt for idea extraction."""
@@ -1140,9 +1168,24 @@ class IdeaExtractor:
                 )
                 extractor._captured_prompt = True
 
+            # The schema's domain enum is built from this list, so the non-answer
+            # bucket has to be in it too, or the model could never actually select
+            # it — the enum constraint would reject the only value the construction
+            # exists to offer. Added here, on a local copy, so `extractor.domains`
+            # itself (consolidation, orthogonalization, the cache) stays clean.
+            schema_domains = getattr(extractor, 'domains', None)
+            if schema_domains:
+                schema_domains = list(schema_domains) + [DomainItem(
+                    label=NON_ANSWER_DOMAIN["label"],
+                    definition=NON_ANSWER_DOMAIN["definition"],
+                    boundary_test=NON_ANSWER_DOMAIN["boundary_test"],
+                    exclusions=[],
+                    key="non_answer",
+                )]
+
             AxisExtractionModel = create_extraction_model(
                 dimension=dimension,
-                domains=getattr(extractor, 'domains', None),
+                domains=schema_domains,
             )
 
             return {
@@ -1627,6 +1670,19 @@ class IdeaExtractor:
         self.failure_log = self._smooth_requester.failure_log
         self.failed_task_ids = self._smooth_requester.failed_task_ids
         self.optimal_concurrency = self._smooth_requester.optimal_concurrency
+
+        # === Post-extraction: drop ideas parked in the non-answer bucket ===
+        # Before orthogonalization: that pass groups exemplars by domain, and a
+        # domain that exists only in the assignment menu (never in self.domains)
+        # has no slot there anyway — removing first keeps its exemplar pool clean.
+        n_dropped, dropped_texts = self._drop_non_answer_ideas(results)
+        if n_dropped:
+            self.verbose_reporter.stat_line(
+                f"  Non-answer fragments removed: {n_dropped}")
+            for t in dropped_texts[:20]:
+                self.verbose_reporter.stat_line(f"      • {t}")
+            if n_dropped > 20:
+                self.verbose_reporter.stat_line(f"      … en {n_dropped - 20} meer")
 
         # === Post-extraction: orthogonalize domain descriptions (no reassignment) ===
         if ENABLE_DOMAIN_ORTHOGONALIZE:

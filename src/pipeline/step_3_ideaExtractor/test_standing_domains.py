@@ -546,3 +546,52 @@ def test_both_prompts_ban_a_residual_boundary_not_a_subject_type():
     for prompt in (disc, cons):
         assert "defined by what it contains, never by what the other domains do not" in prompt
         assert '"character"' not in prompt
+
+
+# ── 13. De tijdelijke non-answer-bak bij de toewijzing ─────────────────────
+
+def test_domain_table_offers_the_non_answer_bucket():
+    """Zonder zichtbare bak kan het model zo'n fragment nergens kwijt."""
+    from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import NON_ANSWER_DOMAIN
+    doms = [DomainItem(key="Duurzaamheid", label="Duurzaamheid", definition="d",
+                       boundary_test="t?", exclusions=["x"])]
+    table = IdeaExtractor.build_domain_table(doms)
+    assert NON_ANSWER_DOMAIN["label"] in table
+    assert NON_ANSWER_DOMAIN["boundary_test"] in table
+
+
+def test_drop_non_answer_ideas_removes_them_and_reports_what_went():
+    """Verwijderen mag, ongemerkt verwijderen niet."""
+    from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import NON_ANSWER_DOMAIN
+    import models
+
+    def _idea(idea_id, instance, domain):
+        return models.IdeasExtractedSubmodel(
+            idea_id=str(idea_id), idea=instance, instance=instance,
+            interpretation=instance, abstraction=instance, domain=domain)
+
+    rows = [models.IdeasExtractedModel(
+        respondent_id=1, response="Eekhoorn, Niks.", response_type="text",
+        quality_filter=False, response_ideas=[
+            _idea(1, "Eekhoorn", "Merkuitingen"),
+            _idea(2, "Niks", NON_ANSWER_DOMAIN["label"]),
+        ], idea_count=2)]
+
+    dropped, texts = IdeaExtractor._drop_non_answer_ideas(rows)
+
+    assert dropped == 1
+    assert texts == ["Niks"]
+    assert [i.instance for i in rows[0].response_ideas] == ["Eekhoorn"]
+    assert rows[0].idea_count == 1
+
+
+def test_drop_non_answer_ideas_is_a_noop_without_them():
+    import models
+    rows = [models.IdeasExtractedModel(
+        respondent_id=1, response="Eekhoorn.", response_type="text",
+        quality_filter=False, response_ideas=[models.IdeasExtractedSubmodel(
+            idea_id="1", idea="Eekhoorn", instance="Eekhoorn",
+            interpretation="Eekhoorn", abstraction="Eekhoorn", domain="Merkuitingen")],
+        idea_count=1)]
+    assert IdeaExtractor._drop_non_answer_ideas(rows) == (0, [])
+    assert rows[0].idea_count == 1

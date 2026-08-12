@@ -36,6 +36,24 @@ STANDING_NOT_KNOWN_KEY = "not_known"
 STANDING_OTHER_KEY = "other"
 
 
+# Offered in the assignment menu only, never in the taxonomy. A response that is
+# nothing but a non-answer is removed by step 2; what reaches here is a fragment of
+# a response that does carry content elsewhere ("Eekhoorn, Niks."). Giving the model
+# somewhere to put it makes the fragment visible, and visible is removable — an
+# instruction not to emit it would leave nothing to count.
+NON_ANSWER_DOMAIN = {
+    "label": "Weet niet / niet van toepassing (non-answer)",
+    "definition": (
+        "The span says only that the respondent does not know, or that the question "
+        "does not apply, without saying anything about the subject."
+    ),
+    "boundary_test": (
+        "Does this span only state that there is no answer, rather than say anything "
+        "about the subject?"
+    ),
+}
+
+
 try:
     from .dimension_data import DimensionDefinition, get_dimensions_in_decision_order
 except ImportError:
