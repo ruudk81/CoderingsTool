@@ -1754,8 +1754,6 @@ class IdeaExtractor:
                 new_domains, rename, (STANDING_BARE_KEY, STANDING_OTHER_KEY)):
             self.verbose_reporter.stat_line(line)
 
-    # === LEGACY: Everything below this line was the old processing loop ===
-    # Kept temporarily for reference — will be removed after verification.
     def extract(self) -> List[models.IdeasExtractedModel]:
         """Main method to extract ideas from responses using bootstrap measurement and unified processing"""
         self._stats.start_timing()

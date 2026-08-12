@@ -1012,19 +1012,19 @@ Begin processing now and provide your output as valid JSON following the respons
 """
 
 class TaxonomyEnrichedIdeaResponse(BaseModel):
-    """Response model"""
-    instance: str = Field(
-        description="Verbatim span from response expressing this idea"
-    )
-    interpretation: str = Field(
-        description="What the respondent is really talking about — concrete meaning"
-    )
-    abstraction: str = Field(
-        description="Broader significance or theme this idea points to"
-    )
-    domain: str = Field(
-        description="Thematic domain this idea belongs to"
-    )
+    """The shape of one extracted idea — deliberately without field descriptions.
+
+    This class is never sent to a model. `create_extraction_model()` subclasses it
+    and redefines all four fields, which in Pydantic replaces them wholesale: the
+    ladder fields get the selected dimension's own instructions from
+    `prompt_rules`, and `domain` gets the discovered labels as a schema enum. Any
+    description written here would be overwritten before it ever reached a model,
+    so there is none to mistake for a live instruction.
+    """
+    instance: str
+    interpretation: str
+    abstraction: str
+    domain: str
 
 
 def create_extraction_model(
