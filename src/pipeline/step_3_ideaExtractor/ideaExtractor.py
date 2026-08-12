@@ -1480,10 +1480,11 @@ class IdeaExtractor:
 
     async def _translate_standing_labels(self, dimension: DimensionDefinition,
                                          context_specifiers: Dict):
-        """One small call whose only job is naming the two standing domains.
+        """One small call whose only job is rendering the two standing domains —
+        label, definition and boundary_test — in the survey language.
 
         Separate from consolidation on purpose: a call that also has to partition
-        the domain space pulls the label along with it.
+        the domain space pulls the wording along with it.
         """
         prompt = build_standing_labels_prompt(
             language=self.language,
@@ -1521,28 +1522,34 @@ class IdeaExtractor:
     def _resolve_standing_domains(labels, dimension: DimensionDefinition) -> List:
         """Return the two standing domains as DomainItems, built from the dimension.
 
-        Definition, boundary_test and exclusions come from dimension_data.py and are
-        never model output. A standing domain catches a failure mode of the domain
-        axis, so its breadth IS its function — a phase that re-describes domains by
-        their content will narrow it, and everything it used to catch then needs a
-        home of its own. Only the label is translated (`labels` is a
-        StandingLabelsResponse or None); a blank one falls back to the dimension's
-        own wording. Never returns fewer than two — an assignment menu without them
-        is what forced contentless answers into substantive domains.
+        `labels` is a StandingLabelsResponse or None — the rendering from
+        `_translate_standing_labels`. A standing domain catches a failure mode of
+        the domain axis, so its breadth IS its function — a phase that re-describes
+        domains by their content will narrow it, and everything it used to catch
+        then needs a home of its own. dimension_data.py stays the source of truth:
+        each of label, definition and boundary_test is taken from the rendering
+        when present, and otherwise falls back to the dimension's own English —
+        independently per field, so a blank definition never blanks the label (or
+        the reverse). `exclusions` is always `[]`. Never returns fewer than two —
+        an assignment menu without them is what forced contentless answers into
+        substantive domains.
         """
-        bare_label = (getattr(labels, "bare_label", "") or "").strip()
-        other_label = (getattr(labels, "other_label", "") or "").strip()
+        def _rendered(prefix: str, field: str, fallback: str) -> str:
+            value = (getattr(labels, f"{prefix}_{field}", "") or "").strip()
+            return value or fallback
+
         return [
             DomainItem(
                 key=key,
-                label=label or spec.fallback_label,
-                definition=spec.definition,
-                boundary_test=f"Does this idea match: {spec.short}?",
+                label=_rendered(prefix, "label", spec.fallback_label),
+                definition=_rendered(prefix, "definition", spec.definition),
+                boundary_test=_rendered(
+                    prefix, "boundary_test", f"Does this idea match: {spec.short}?"),
                 exclusions=[],
             )
-            for key, spec, label in (
-                (STANDING_NOT_KNOWN_KEY, dimension.standing_not_known, bare_label),
-                (STANDING_OTHER_KEY, dimension.standing_other, other_label),
+            for key, spec, prefix in (
+                (STANDING_NOT_KNOWN_KEY, dimension.standing_not_known, "not_known"),
+                (STANDING_OTHER_KEY, dimension.standing_other, "other"),
             )
         ]
 

@@ -854,7 +854,8 @@ class ReformulatedDomains(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# STAGE 5b: Standing-domain labels (translation only, no partitioning)
+# STAGE 5b: Standing-domain rendering (label + definition + boundary_test,
+# no partitioning)
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_standing_labels_prompt(
@@ -863,25 +864,30 @@ def build_standing_labels_prompt(
     entity: str,
     dimension: DimensionDefinition,
 ) -> str:
-    """Name the two standing domains in the survey language. Nothing else.
+    """Render the two standing domains in the survey language. Nothing else.
 
-    Deliberately a call of its own. Asking for these labels inside the
-    consolidation call put them under a partitioning objective, and the label
-    drifted with it — a domain for "an association naming no subject area"
-    came back named as a judgment, after which every trait-without-subject
-    had to go somewhere else.
+    Deliberately a call of its own. Asking for these inside the consolidation
+    call put them under a partitioning objective, and the wording drifted with
+    it — a domain for "an association naming no subject area" came back named
+    as a judgment, after which every trait-without-subject had to go somewhere
+    else.
+
+    Renders label, definition and a membership test for both catch-nets in one
+    call. That is also what lets `other`'s rendered definition cross-reference
+    `not_known` by the label a coder will actually see, instead of a name that
+    appears nowhere on the menu.
     """
-    return f"""You are naming two fixed domains in a survey coding scheme.
+    return f"""You are rendering two fixed domains of a survey coding scheme into {language}.
 
-These two domains are not discovered from data. Their meaning is fixed and given below. Your only task is to give each one a short, natural label in {language} that faithfully names what its definition already says.
+These two domains are not discovered from data. Their meaning is fixed and given below in English. Your task is to render each one — a label, its definition, and a membership test — in {language}. This is a rendering of the given text, not a reformulation: do not narrow it, widen it, or add a subject area it does not name.
 
 <domain_a>
-{dimension.standing_not_known.definition}
+Definition: {dimension.standing_not_known.definition}
 In short: {dimension.standing_not_known.short}
 </domain_a>
 
 <domain_b>
-{dimension.standing_other.definition}
+Definition: {dimension.standing_other.definition}
 In short: {dimension.standing_other.short}
 </domain_b>
 
@@ -892,21 +898,40 @@ Rules:
 - Do not make the label evaluative. Neither domain is about how good or bad something is, unless its definition says so in as many words.
 - Both are catches for a failure mode of the coding scheme, so both are broad on purpose. A label that sounds broad is correct here.
 - A short noun phrase in {language}, as a coder would see it in a list of domains.
+- Render the given definition in {language}. Do not narrow it, do not widen it, and do not add anything the source does not say.
+- Where one domain's definition refers to the other, use the label you just gave that other domain, so the two texts refer to each other by the names a coder will actually see.
+- The membership test is one yes/no question a coder can answer about a single response, phrased in {language}.
 
-Now name both domains, and provide your output as valid JSON following the response schema provided."""
+Now render both domains, and provide your output as valid JSON following the response schema provided."""
 
 
 class StandingLabelsResponse(BaseModel):
-    """Labels for the two standing domains, in the survey language — labels only.
+    """Rendering of the two standing domains in the survey language: label,
+    definition and boundary test for each, faithful to the canonical English
+    in dimension_data.py — a rendering, never a reformulation.
 
-    Definition, boundary_test and exclusions are absent by construction: they come
-    from dimension_data.py and are not the model's to write.
+    `exclusions` is absent by construction: it comes from the pipeline itself
+    (always `[]` for a standing domain), not the model. Each of the six fields
+    falls back independently in `_resolve_standing_domains` — a blank
+    definition must not blank the label, and vice versa.
     """
-    bare_label: str = Field(
-        description="Short noun phrase in the survey language naming domain_a"
+    not_known_label: str = Field(
+        description="Rendering, in the survey language, of domain_a's label — faithful to its given definition, not a reformulation"
+    )
+    not_known_definition: str = Field(
+        description="Rendering, in the survey language, of domain_a's definition — same meaning as the given English text, nothing narrowed, widened, or added"
+    )
+    not_known_boundary_test: str = Field(
+        description="One yes/no membership question for domain_a, in the survey language, that a coder can answer about a single response"
     )
     other_label: str = Field(
-        description="Short noun phrase in the survey language naming domain_b"
+        description="Rendering, in the survey language, of domain_b's label — faithful to its given definition, not a reformulation"
+    )
+    other_definition: str = Field(
+        description="Rendering, in the survey language, of domain_b's definition — same meaning as the given English text, nothing narrowed, widened, or added. Where it refers to domain_a, uses the label just given to domain_a"
+    )
+    other_boundary_test: str = Field(
+        description="One yes/no membership question for domain_b, in the survey language, that a coder can answer about a single response"
     )
 
 

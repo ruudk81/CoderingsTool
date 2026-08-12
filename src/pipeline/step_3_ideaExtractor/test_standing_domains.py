@@ -90,16 +90,29 @@ def test_resolve_falls_back_when_there_is_no_translation(dimension_key):
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_resolve_takes_the_label_and_nothing_else(dimension_key):
-    """Het label komt van de vertaling, de betekenis uit dimension_data."""
+def test_resolve_prefers_the_rendered_text_but_keeps_the_english_as_source(dimension_key):
+    """Label, definitie én lidmaatschapstoets komen uit de weergave als die er is."""
     d = get_dimension(dimension_key)
-    out = IdeaExtractor._resolve_standing_domains(
-        StandingLabelsResponse(bare_label="Kale associatie", other_label="Overig"), d)
-
-    assert [c.label for c in out] == ["Kale associatie", "Overig"]
-    assert out[0].definition == d.standing_not_known.definition
-    assert out[1].definition == d.standing_other.definition
+    rendered = StandingLabelsResponse(
+        not_known_label="Kent het merk niet", not_known_definition="NL definitie een.",
+        not_known_boundary_test="Meldt de respondent het merk niet te kennen?",
+        other_label="Overig onderwerp", other_definition="NL definitie twee.",
+        other_boundary_test="Noemt het antwoord een onderwerp dat geen domein dekt?")
+    out = IdeaExtractor._resolve_standing_domains(rendered, d)
+    assert [c.label for c in out] == ["Kent het merk niet", "Overig onderwerp"]
+    assert out[0].definition == "NL definitie een."
+    assert out[0].boundary_test == "Meldt de respondent het merk niet te kennen?"
     assert [c.key for c in out] == [STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY]
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_resolve_falls_back_to_the_dimension_on_a_blank_rendering(dimension_key):
+    """Geen weergave (call gefaald of overgeslagen): de Engelse dimensietekst."""
+    d = get_dimension(dimension_key)
+    out = IdeaExtractor._resolve_standing_domains(None, d)
+    assert out[0].definition == d.standing_not_known.definition
+    assert out[0].label == d.standing_not_known.fallback_label
+    assert out[0].boundary_test.strip()
 
 
 def test_resolve_standing_domains_have_no_exclusions():
@@ -115,13 +128,18 @@ def test_resolve_standing_domains_have_no_exclusions():
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_resolve_ignores_an_empty_translated_label(dimension_key):
-    """Een leeg of blank label mag geen naamloos domein op het menu zetten."""
+    """Een leeg of blank label mag geen naamloos domein op het menu zetten — en
+    dat mag onafhankelijk zijn van of de definitie/boundary_test wél gerenderd is."""
     d = get_dimension(dimension_key)
     out = IdeaExtractor._resolve_standing_domains(
-        StandingLabelsResponse(bare_label="   ", other_label=""), d)
+        StandingLabelsResponse(
+            not_known_label="   ", not_known_definition="d1", not_known_boundary_test="t1",
+            other_label="", other_definition="d2", other_boundary_test="t2"), d)
 
     assert out[0].label == d.standing_not_known.fallback_label
     assert out[1].label == d.standing_other.fallback_label
+    assert out[0].definition == "d1"
+    assert out[1].definition == "d2"
 
 
 # ── 2b. De normalisatie ná consolidatie ────────────────────────────────────
@@ -260,9 +278,11 @@ def test_standing_labels_prompt_carries_both_fixed_definitions(dimension_key):
         "provide your output as valid JSON following the response schema provided.")
 
 
-def test_standing_labels_response_carries_labels_only():
-    """Alleen labels. Een definitie-veld hier zou het vangnet weer laten schuiven."""
-    assert set(StandingLabelsResponse.model_fields) == {"bare_label", "other_label"}
+def test_standing_labels_response_carries_three_fields_per_net():
+    """Label, definitie én boundary_test — voor beide vangnetten."""
+    assert set(StandingLabelsResponse.model_fields) == {
+        "not_known_label", "not_known_definition", "not_known_boundary_test",
+        "other_label", "other_definition", "other_boundary_test"}
 
 
 # ── 6. Orthogonalisatie raakt de vangnetten niet ──────────────────────────
