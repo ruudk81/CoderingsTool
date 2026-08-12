@@ -15,6 +15,8 @@ class CodebookConfig:
     # LLM settings (derived from MODEL_FAMILY toggle)
     model_p8: str = get_step_model("codegen_p8")  # P8: Code Generation from Attributes
     model_p9: str = get_step_model("codegen_p9")  # P9: Codebook Consolidation
+    model_relations: str = get_step_model("codegen_relations")  # relations between attributes
+    model_writer: str = get_step_model("codegen_writer")  # codebook writing from clusters
     temperature_p8: float = 0.3
     temperature_p9: float = 0.0
 
@@ -23,6 +25,9 @@ class CodebookConfig:
 
     # P9: Codebook Consolidation (cross-domain review)
     max_tokens_codebook_consolidation: int = 16000
+
+    # Relations: one cross-attribute call, output scales with attribute count
+    max_tokens_relations: int = 16000
 
     # Embedding-based representative samples
     code_source: str = "instance_interpretation"  # Text format for embedding: idea, instance, instance_interpretation, full_abstraction_ladder

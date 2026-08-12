@@ -98,6 +98,8 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     # Step 5: Code Generator (P8-P9)
     "codegen_p8":                         ("5.6", 3),
     "codegen_p9":                         ("5.6", 3),
+    "codegen_relations":                  ("5.6", 3),   # relations between attributes
+    "codegen_writer":                     ("5.6", 3),   # codebook writing from clusters
     # Step 6: Code Assigner
     "code_assignment":                    ("5.6", 3),
 }
