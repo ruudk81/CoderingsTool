@@ -7,6 +7,10 @@ from pipeline.step_4_classifier.prompts_facet import (
     DiscoveredFacet,
     FacetConsolidationResult,
     FacetDiscoveryResult,
+    FacetRefinementResult,
+    RefinedFacet,
+    build_facet_contents_block,
+    build_facet_refinement_prompt,
     build_facet_assignment_model,
     build_facet_assignment_prompt,
     build_facet_consolidation_prompt,
@@ -228,3 +232,76 @@ def test_model_accepteert_f_none():
     result = Model(assignments=[{"idea_id": "i1", "assigned_facet_id": "F_NONE",
                                  "confidence": 0.2, "valence": "0"}])
     assert result.assignments[0].assigned_facet_id == "F_NONE"
+
+
+# =============================================================================
+# Taak 5 — naslijpen na toewijzing
+# =============================================================================
+
+def _refined(name, action="keep", sources=None, texts=None):
+    return RefinedFacet(
+        action=action, facet_name=name, facet_definition="d",
+        boundary_test="b?", exclusions=["x"], example_observations=["e"],
+        source_facets=sources or [name], instance_texts=texts or [],
+    )
+
+
+def _naslijp_prompt():
+    return build_facet_refinement_prompt(
+        language="Dutch", survey_question="Waar denkt u aan?",
+        sector="finance", entity="asn_bank", topic="brand_association",
+        perspective="consumer", intent="associate", dimension=DIM,
+        domain_label="Duurzaamheid", domain_definition="Milieubeleid.",
+        facets_block=build_facet_contents_block([("A", 10, 0.5, ["t"])]),
+    )
+
+
+def test_contents_block_toont_aantal_aandeel_en_teksten():
+    block = build_facet_contents_block([("Groene uitstraling", 120, 0.34, ["groen", "natuurlijk"])])
+    assert "Groene uitstraling" in block
+    assert "120" in block
+    assert "34" in block
+    assert "natuurlijk" in block
+
+
+def test_naslijpprompt_bevat_de_vier_acties_en_twee_verdicts():
+    prompt = _naslijp_prompt()
+    for woord in ("keep", "merge", "widen", "split", "move", "out"):
+        assert woord in prompt
+
+
+def test_naslijpprompt_zegt_dat_het_domein_vaststaat():
+    assert "Duurzaamheid" in _naslijp_prompt()
+
+
+def test_split_zonder_instance_texts_wordt_geweigerd():
+    with pytest.raises(ValidationError):
+        FacetRefinementResult(scratchpad="s", facets=[_refined("A", action="split")], misfits=[])
+
+
+def test_split_met_instance_texts_wordt_geaccepteerd():
+    result = FacetRefinementResult(
+        scratchpad="s", facets=[_refined("A", action="split", texts=["t1"])], misfits=[]
+    )
+    assert result.facets[0].instance_texts == ["t1"]
+
+
+def test_bron_geclaimd_door_twee_facetten_zonder_teksten_wordt_geweigerd():
+    with pytest.raises(ValidationError):
+        FacetRefinementResult(
+            scratchpad="s",
+            facets=[_refined("A", sources=["X"]), _refined("B", sources=["X"])],
+            misfits=[],
+        )
+
+
+def test_bron_geclaimd_door_twee_facetten_met_teksten_mag_wel():
+    result = FacetRefinementResult(
+        scratchpad="s",
+        facets=[
+            _refined("A", action="split", sources=["X"], texts=["t1"]),
+            _refined("B", action="split", sources=["X"], texts=["t2"]),
+        ],
+        misfits=[],
+    )
+    assert len(result.facets) == 2

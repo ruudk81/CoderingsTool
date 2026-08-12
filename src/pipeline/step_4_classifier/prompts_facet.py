@@ -14,9 +14,9 @@ can move a facet or an idea to another domain.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Literal, Tuple
+from typing import TYPE_CHECKING, Dict, List, Literal, Tuple
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, create_model, model_validator
 
 from .prompts_shared import (
     INSTRUCTOR_HINT,
@@ -497,5 +497,247 @@ Judge every idea independently on its own text; do not let one assignment influe
 next. Return exactly one item per idea, echoing that idea's [id]. Do not skip ideas and
 do not add ideas. If no facet fits an idea, use "F_NONE" for that idea rather than
 forcing it into the nearest one.
+
+Begin processing now and {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# §4 REFINEMENT — per domain, after every idea has been assigned
+# =============================================================================
+
+class FacetMisfitGroup(BaseModel):
+    """A group of ideas sitting in a facet they do not belong to."""
+    from_facet: str = Field(..., description="The facet currently holding them")
+    instance_texts: List[str] = Field(
+        ..., description=(
+            "The exact response texts, copied verbatim from the contents shown. "
+            "Never counts, paraphrases or summaries"
+        )
+    )
+    verdict: Literal["move", "out"] = Field(
+        ..., description=(
+            "'move' when these ideas belong to a named existing facet; "
+            "'out' when they carry no substantive content at all"
+        )
+    )
+    target_facet: str = Field(
+        default="", description="For 'move': the facet they belong to. Empty for 'out'"
+    )
+    reason: str = Field(..., description="One sentence on why they do not belong")
+
+
+class RefinedFacet(ConsolidatedFacet):
+    """One facet surviving refinement. Its domain is fixed by the task."""
+    action: Literal["keep", "merge", "widen", "split"] = Field(
+        ..., description=(
+            "keep = unchanged; merge = several sources into this one; "
+            "widen = same facet, description restated to cover what it holds; "
+            "split = one source divided into named children (instance_texts required)"
+        )
+    )
+    instance_texts: List[str] = Field(
+        default_factory=list,
+        description=(
+            "For action 'split' ONLY: the exact response texts routed to this child, "
+            "copied verbatim. Required when a source facet is divided over more than "
+            "one returned facet. Empty otherwise"
+        )
+    )
+
+
+class FacetRefinementResult(BaseModel):
+    """Final facet inventory for one domain, plus the misfits found in it."""
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning: (1) read each facet's contents against its label "
+            "and note groups that do not belong, (2) group facets by the underlying "
+            "distinction each one answers, (3) set granularity by prevalence using the "
+            "shares shown, (4) route each non-fitting group to one of the four exits, "
+            "(5) check every label states a value rather than the question, "
+            "(6) assemble the final inventory"
+        )
+    )
+    facets: List[RefinedFacet] = Field(
+        ..., description="The complete facet set for this domain after refinement"
+    )
+    misfits: List[FacetMisfitGroup] = Field(
+        default_factory=list,
+        description="Groups of ideas that do not belong where they sit",
+    )
+
+    @model_validator(mode="after")
+    def _routable(self):
+        """Reject an inventory whose ideas cannot be routed.
+
+        Enforced in the schema rather than in the prompt for the same reason the
+        domain is absent from this model: a rule the model can decline to follow
+        is not a rule. instructor surfaces these messages and retries, so the
+        model gets to correct itself instead of silently producing an answer
+        whose ideas have nowhere to go.
+        """
+        for f in self.facets:
+            if f.action == "split" and not f.instance_texts:
+                raise ValueError(
+                    f'facet "{f.facet_name}" has action "split" but no instance_texts. '
+                    f'A split must list the exact response texts routed to each child, '
+                    f'or the ideas cannot be divided.'
+                )
+
+        claimed_by: Dict[str, List[str]] = {}
+        for f in self.facets:
+            for src in (f.source_facets or []):
+                claimed_by.setdefault(src, []).append(f.facet_name)
+
+        for src, claimants in claimed_by.items():
+            if len(claimants) < 2:
+                continue
+            without_texts = [f.facet_name for f in self.facets
+                             if src in (f.source_facets or []) and not f.instance_texts]
+            if without_texts:
+                raise ValueError(
+                    f'source facet "{src}" is claimed by {len(claimants)} returned '
+                    f'facets ({", ".join(claimants)}), but {", ".join(without_texts)} '
+                    f'give no instance_texts. Either let ONE facet take "{src}", or '
+                    f'make every claimant action "split" and list the exact response '
+                    f'texts each one takes.'
+                )
+        return self
+
+
+def build_facet_contents_block(
+    rows: List[Tuple[str, int, float, List[str]]],
+) -> str:
+    """Render what each facet actually holds: name, count, share, real texts.
+
+    `rows`: (facet_name, n_ideas, share_of_domain, sample_texts).
+
+    The share is what makes granularity judgeable — "thin" and "large" only mean
+    something relative to the siblings, never against an absolute number.
+    """
+    blocks = []
+    for name, n_ideas, share, texts in rows:
+        contents = "\n".join(f"       - {t}" for t in texts)
+        blocks.append(
+            f"{name} — {n_ideas} responses ({round(share * 100)}% of the domain)\n"
+            f"     Contents:\n{contents}"
+        )
+    return "\n\n".join(blocks)
+
+
+def build_facet_refinement_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    domain_label: str,
+    domain_definition: str,
+    facets_block: str,
+) -> str:
+    """Settle one domain's facets against what they actually ended up holding.
+
+    The one phase that can only run after assignment: real counts and real texts
+    do not exist before it. The domain is fixed, so nothing here can move a facet
+    out of it — when a group of ideas belongs elsewhere, the IDEAS move and the
+    structure stays put.
+    """
+    context_block = build_context_block(
+        language=language, survey_question=survey_question, sector=sector,
+        entity=entity, topic=topic, perspective=perspective, intent=intent,
+    )
+    diagnostic = level_diagnostic(dimension, "facet")
+    # What "no substantive content" means depends on the dimension's own domain
+    # axis. Step 3 already words it per dimension, for the standing not-known
+    # domain; reusing that phrasing keeps the two steps saying the same thing.
+    contentless = dimension.standing_not_known.short
+
+    return f"""You are a qualitative research analyst specializing in open-ended survey coding.
+Your task is to settle the final facet set of ONE domain, now that every response has been assigned to a facet.
+
+{context_block}
+
+<domain>
+Domain: {domain_label} — {domain_definition}
+</domain>
+
+The question every facet answers for this dimension is:
+
+<facet_diagnostic>
+{diagnostic}
+</facet_diagnostic>
+
+Here are this domain's facets, each with the number of responses actually assigned to
+it, its share of the domain, and a sample of the responses it really holds:
+
+<facets>
+{facets_block}
+</facets>
+
+Judge each facet on what it actually holds, not on how its label reads. The counts and
+the response texts above are the evidence; the labels were written before a single
+response had been assigned.
+
+<refinement_rules>
+**1. DISTINCTION FIRST.** Facets that answer different distinctions stay apart, however
+similar their labels look. Orthogonality is a guardrail against merging, never a reason
+to merge.
+
+**2. PREVALENCE SETS GRANULARITY** — within one distinction only. Use the shares shown:
+keep what is large, group what is thin, split what is large and diverse. Judge size
+relative to the siblings, never against an absolute number.
+
+**3. LIFT, DON'T FLATTEN.** When several thin facets share a distinction, name the
+concept they share. Do not dissolve them into a catch-all.
+
+**4. PLAIN, MEANINGFUL LABELS.** A facet name states a value, not the question it
+answers. Read the label alone: if it tells you only which question was asked, it is a
+container; if it tells you what the answer was, it is a value.
+
+**5. THE DOMAIN IS FIXED.** Every facet you return belongs to this domain. You cannot
+move a facet to another domain, and you cannot create a facet that belongs to another
+domain. If a GROUP OF IDEAS belongs elsewhere, report it under `misfits` — the ideas
+move, the structure stays here.
+
+**6. FOUR EXITS FOR WHAT DOES NOT FIT.** For a group of responses sitting in a facet it
+does not belong to:
+   - the group points at ONE existing facet
+       -> `misfits`, verdict "move": name the target and the EXACT response texts
+   - the group is one coherent concept that has no facet yet
+       -> action "split": name the children and which EXACT texts go to each
+   - the group is diverse but genuinely related to this facet
+       -> action "widen": restate the description so it honestly covers what is there
+   - the group carries NO SUBSTANTIVE CONTENT WHATSOEVER — filler, or {contentless}
+       -> `misfits`, verdict "out"
+   "Out" is not an escape hatch for "this does not fit the facets I chose". A text that
+   names something real HAS substance: if it has no home yet, create one with "split".
+   Moves and splits must be expressed as EXACT response texts copied from the contents
+   shown above — never as counts, paraphrases or summaries.
+
+**7. ONE SOURCE, ONE DESTINATION** — unless you route by text. Every facet in the input
+must end up in exactly ONE returned facet. To divide one input facet over two returned
+facets, use action "split" for each part and list its exact texts in `instance_texts`.
+
+**8. KEEP THE VALUES THAT ARE ACTUALLY THERE.** Grouping is not discarding. If the
+contents hold four distinct values, return four facets. Collapsing the domain to a
+single facet removes a whole level of the hierarchy — do that only when the contents
+genuinely express one value.
+</refinement_rules>
+
+{UNIVERSAL_RULES}
+
+## OUTPUT
+
+Work through your reasoning in the scratchpad field first.
+
+For EACH surviving facet provide: action, facet_name, facet_definition, boundary_test,
+exclusions, example_observations (exact text from the contents), source_facets, and —
+for "split" only — instance_texts.
+
+All facet names, definitions, boundary tests and exclusions must be written in {language}.
+Copy response texts verbatim when you route them; they are matched literally.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
