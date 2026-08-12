@@ -1,32 +1,41 @@
 """
-Taxonomy Classifier: inductive taxonomy discovery (P1-P9).
+Taxonomy Classifier: inductive taxonomy discovery, nine phases.
 
-Pipeline. The authoritative phase numbering is `config.STEP_MODEL_TIERS` — these
-numbers have been renumbered several times, so keep this list in sync with it.
+Each level is built the way step 3 builds the domain layer — discover, settle
+the inventory, assign, then judge the result against what the buckets really
+hold:
 
-  P1.  Axis Discovery (per domain) — the analytical lenses the domain is read
-       through. Behind `axis_first_enabled`; when off, or when a domain's axis
-       system is rejected, that domain falls back to the untagged builders.
-  P2.  Facet Discovery (chunked, per domain) — dimension-specific semantics.
-       Tagged against the axis system when there is one; the untagged fallback
-       path is referred to as P3 and shares this phase's tier and phase_key.
-  P4.  Facet Assignment (per domain) — assign ideas to discovered facets.
-       Batch mode is the default (K=5, shortlisted menu); items the batch route
-       cannot place escalate to the single-item path.
-  P5.  Facet Consolidation (in-axis, per domain, AFTER assignment)
-  P6.  Attribute Discovery (per facet within domain) — concrete observables
-  P7.  Attribute Assignment (per facet) — assign ideas to attributes
-  P8.  Attribute Consolidation (in-facet, per facet, AFTER assignment) — judged
-       on real counts and real contents, with four actions: merge / split /
-       widen / move. Scope is one facet: no cross-facet or cross-domain
-       structural consolidation exists, so a structure merge can never relocate
-       an idea's facet or domain — because per-idea (domain, facet) is DERIVED
-       from where the attribute lives, that relocation would otherwise move
-       every idea in the bucket at once. When a group of ideas belongs elsewhere
-       the IDEAS move and the structure stays put.
-  P9.  Valence-neutral merge — lives in `valence_consolidator.py`.
+  facet_discovery          per (domain, chunk)   propose facets
+  facet_consolidation      per domain            settle the inventory
+  facet_assignment         per batch of ideas    fill it, with valence
+  facet_refinement         per domain            judge it on real contents
+  attribute_discovery      per (facet, chunk)    the same four, one level down
+  attribute_consolidation  per facet
+  attribute_assignment     per batch of ideas
+  attribute_refinement     per facet
+  valence_merge            see valence_consolidator.py
 
-Per-domain steps run CONCURRENTLY; P8 runs per facet after P7.
+Phases are named by function, never by number: renumbering cold-started the
+perf model and stranded config keys, twice.
+
+There is no axis anywhere in step 4. A dimension organises each of its layers
+along one axis, and that axis is what the layer's diagnostic question asks
+about — a constant of the dimension, stated in dimension_data.py, not something
+a phase discovers.
+
+Two invariants hold across every phase:
+
+  * The scope one level up is FIXED and absent from the response schema. A facet
+    cannot be moved to another domain, an attribute cannot be moved to another
+    facet. When a group of ideas belongs elsewhere, the IDEAS move (`misfits`)
+    and the structure stays put. Per-idea (domain, facet) is DERIVED from where
+    the attribute lives, so a structural relocation would drag every idea in the
+    bucket along at once.
+  * Consolidation runs BEFORE a single idea is assigned, on the observations
+    each candidate was built from; refinement runs AFTER, on real counts and
+    real response texts. They answer different questions and both are needed.
+
+Tasks within a phase run CONCURRENTLY through SmoothRequester.
 
 Usage:
     from .classifier import TaxonomyClassifier
@@ -71,92 +80,37 @@ from .taxonomy_health import drain_domains
 from .dedup import dedup_exact_attributes, dedup_exact_facets
 from utils.embedder import SharedEmbedder
 from .assignment_batching import (
-    facet_card_text, group_label_reps, make_batches,
+    attribute_card_text, facet_card_text, group_label_reps, make_batches,
     shortlist_indices, validate_batch_response,
 )
 from models import DomainSet
-from .prompts_classifier import (
-    # Axis Discovery
-    build_axis_discovery_prompt,
-    AxisSystemResponse,
-    # Facet Discovery (tagged against the axis system)
-    build_tagged_facet_discovery_prompt,
-    build_tagged_facet_discovery_model,
-    # Facet Discovery (untagged fallback)
+from .prompts_facet import (
+    DiscoveredFacet, ConsolidatedFacet, RefinedFacet,
+    FacetDiscoveryResult, FacetConsolidationResult, FacetRefinementResult,
     build_facet_discovery_prompt,
-    FacetDiscoveryResult,
-    DiscoveredFacet,
-    # Facet Assignment
-    build_facet_assignment_prompt_single,
-    FacetAssignmentResult,
-    # Facet Assignment (batch)
-    build_batch_facet_assignment_model,
-    build_facet_assignment_prompt_batch,
-    # Facet Consolidation (in-axis, post-assignment)
-    build_in_axis_consolidation_prompt,
-    InAxisConsolidatedResponse,
-    # Attribute Discovery
+    build_facet_consolidation_prompt,
+    build_facet_menu,
+    build_facet_assignment_model,
+    build_facet_assignment_prompt,
+    build_facet_contents_block,
+    build_facet_refinement_prompt,
+)
+from .prompts_attribute import (
+    DiscoveredAttribute, ConsolidatedAttribute, RefinedAttribute,
+    AttributeDiscoveryResult, AttributeConsolidationResult,
+    AttributeRefinementResult,
     build_attribute_discovery_prompt,
-    AttributeDiscoveryResult,
-    DiscoveredAttribute,
-    # Attribute Assignment
-    build_attribute_assignment_prompt_single,
-    AttributeAssignmentResult,
-    # Attribute Consolidation (in-facet, post-assignment)
-    build_in_facet_consolidation_prompt,
+    build_attribute_consolidation_prompt,
+    build_attribute_menu,
+    build_attribute_assignment_model,
+    build_attribute_assignment_prompt,
+    build_attribute_contents_block,
+    build_attribute_refinement_prompt,
     build_neighbour_block,
-    InFacetConsolidatedResponse,
 )
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
 nest_asyncio.apply()
-
-
-# =============================================================================
-# HELPERS
-# =============================================================================
-
-def sample_axis_observations(
-    labels: List[str], *, target: int = 120, cap: int = 150,
-) -> List[str]:
-    """Deterministic spread sample across a domain's ordered unique labels
-    (P1 input). Every k-th label, arithmetic stride — no randomness, so the
-    same input always yields the same sample, and the stride covers the full
-    range instead of just the labels that happen to land in the first chunk.
-
-    n <= cap: return every label (already small enough). n > cap: take
-    `target` evenly-spaced indices from 0 to n-1, then clip to `cap`.
-    """
-    n = len(labels)
-    if n <= cap:
-        return list(labels)
-
-    stride = n / target
-    seen: Set[int] = set()
-    idxs: List[int] = []
-    for i in range(target):
-        idx = min(int(i * stride), n - 1)
-        if idx not in seen:
-            seen.add(idx)
-            idxs.append(idx)
-    return [labels[i] for i in idxs[:cap]]
-
-
-def validate_and_repair_axis_system(
-    response: Optional[AxisSystemResponse],
-) -> Optional[AxisSystemResponse]:
-    """Validate a P1 response. `DiscoveredAxis` carries no sub-structure to
-    repair (axis_name, axis_description, value_range only), so the only
-    remaining check is the axis count: not 1-4 axes fails the whole response
-    (returns None) so the caller falls back to the pre-existing untagged path
-    for that domain.
-    """
-    if response is None or not response.axes:
-        return None
-    if not (1 <= len(response.axes) <= 4):
-        return None
-
-    return response
 
 
 # =============================================================================
@@ -165,50 +119,56 @@ def validate_and_repair_axis_system(
 
 @dataclass
 class PromptContext:
-    """Shared context passed to all prompt formatting methods."""
-    survey_question: str
+    """Everything a phase needs to build its prompts and scope its tasks.
+
+    Carries the domains rather than looking them up on the classifier, so every
+    `_build_<phase>_tasks` can be a pure function of its arguments — which is
+    what makes the task shape (scope, skips, chunking, counts) testable without
+    an LLM call.
+
+    `domains` maps a domain label to its four boundary fields, exactly as step 3
+    wrote them: label / definition / boundary_test / exclusions. `drain_labels`
+    holds the two standing drain domains, which get no facets at all.
+    """
     language: str
-    dataset_context_section: str
-    dimension_name: str
-    dimension_description: str
-    dimension_def: Optional[DimensionDefinition] = None
+    survey_question: str
+    sector: str = ""
+    entity: str = ""
+    topic: str = ""
+    perspective: str = ""
+    intent: str = ""
+    dimension: Optional[DimensionDefinition] = None
+    dimension_name: str = ""
+    dimension_description: str = ""
+    domains: Dict[str, Dict] = field(default_factory=dict)
+    drain_labels: Set[str] = field(default_factory=set)
 
+    def specifiers(self) -> Dict[str, str]:
+        """The five context specifiers, as every prompt builder takes them."""
+        return {
+            "sector": self.sector, "entity": self.entity, "topic": self.topic,
+            "perspective": self.perspective, "intent": self.intent,
+        }
 
-@dataclass
-class DomainContext:
-    """Partition-specific context."""
-    partition_name: str
-    partition_definition: str
-    boundary_test: str = ""
-    exclusions: List[str] = field(default_factory=list)
-
-
-@dataclass
-class DomainResult:
-    """Per-domain pipeline result (v3)."""
-    partition_name: str
-    n_labels: int
-    n_batches: int
-    facets: List[DiscoveredFacet]
-    facet_assignments: Dict[str, str]  # idea_id -> facet_name
-    attributes: Dict[str, List[DiscoveredAttribute]]  # facet_name -> attributes
-    attribute_assignments: Dict[str, str] = field(default_factory=dict)  # idea_id -> attribute_name
+    def domain(self, label: str) -> Dict:
+        """One domain's boundary fields, empty-but-present when unknown."""
+        return self.domains.get(label) or {
+            "label": label, "definition": "", "boundary_test": "", "exclusions": [],
+        }
 
 
 @dataclass
 class TaxonomyResult:
-    """Output of taxonomy stages P1-P9."""
+    """Output of the eight in-classifier phases (valence merge runs after)."""
     partition_n_labels: Dict[str, int]
     partition_n_batches: Dict[str, int]
-    partition_facets: Dict[str, List[DiscoveredFacet]]
+    partition_facets: Dict[str, List[ConsolidatedFacet]]
     partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
-    partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]]  # domain -> {facet -> [attrs]}
+    partition_attributes: Dict[str, Dict[str, List[ConsolidatedAttribute]]]  # domain -> {facet -> [attrs]}
     attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
-    # P1: discovered axis system per domain (model_dump, verbatim). Empty
-    # unless axis_first_enabled. Written to a JSON log by the runner —
-    # deliberately NOT part of the shared TaxonomyResultsCache model.
-    axis_systems: Dict[str, dict] = field(default_factory=dict)
-    # Pre-P9 snapshots (before the post-assignment consolidation round remaps)
+    # Discovery snapshots, taken before each level's consolidation settles it.
+    # The state before a merge is what makes a bad merge diagnosable afterwards.
+    partition_raw_facets: Dict[str, List[DiscoveredFacet]] = field(default_factory=dict)
     raw_partition_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]] = field(default_factory=dict)
     raw_attribute_assignments: Dict[str, str] = field(default_factory=dict)
     # Assignment confidence scores (0.0-1.0)
@@ -217,114 +177,100 @@ class TaxonomyResult:
     # Assignment valence (+, -, 0)
     facet_valence: Dict[str, str] = field(default_factory=dict)
     attribute_valence: Dict[str, str] = field(default_factory=dict)
-    # P9 provenance: one entry per action taken, so every merge/split/move is
-    # auditable after the fact. Written to a JSON file by the runner; deliberately
-    # NOT put in the shared cache model, which production also uses.
+    # One entry per action taken, so every merge/split/move is auditable after
+    # the fact. Written to a JSON file by the runner; deliberately NOT put in
+    # the shared cache model, which production also uses.
     consolidation_log: List[Dict] = field(default_factory=list)
-    # P7 overlap flags: attr_a/facet_a/attr_b/facet_b/reason/decision_rule, one
+
 
 # =============================================================================
 # MAIN PROCESSOR
 # =============================================================================
 
 class TaxonomyClassifier:
-    """
-    Taxonomy Classifier: inductive taxonomy discovery (P1-P9).
+    """Builds the facet (L3) and attribute (L4) layers of the taxonomy.
 
-    Pipeline — numbering follows config.STEP_MODEL_TIERS:
-    P1.  AXIS DISCOVERY:               Per domain, the analytical lenses; behind
-                                       axis_first_enabled, with an untagged fallback
-    P2.  FACET DISCOVERY:              Per domain, chunked with overlap (concurrent);
-                                       tagged against the axis system when there is
-                                       one, otherwise the untagged path (aka P3)
-    P4.  FACET ASSIGNMENT:             Per domain, assign ideas to facets (concurrent);
-                                       batch by default, escalating to single items
-    P5.  FACET CONSOLIDATION:          Per domain, in-axis, AFTER assignment
-    P6.  ATTRIBUTE DISCOVERY:          Per (domain, facet), discover attributes (concurrent)
-    P7.  ATTRIBUTE ASSIGNMENT:         Per facet, assign ideas to attributes (concurrent)
-    P8.  ATTRIBUTE CONSOLIDATION:      Per facet, in-facet, AFTER assignment — real
-                                       counts and real contents; merge / split /
-                                       widen / move. The facet is fixed and is not in
-                                       the schema: no cross-facet or cross-domain
-                                       structural consolidation exists, so a merge can
-                                       never relocate an idea across facets or domains.
-    P9.  VALENCE-NEUTRAL MERGE:        See valence_consolidator.py
+    Eight phases run here, four per level, in the same order step 3 uses for the
+    domain layer: discovery → consolidation → assignment → refinement. The ninth
+    phase, the valence-neutral merge, runs afterwards from the runner (see
+    `valence_consolidator.py`).
+
+    Every phase is one method with an explicit signature, plus a pure
+    `_build_<phase>_tasks` that decides the task shape. The orchestrator is the
+    sequence of those nine calls and nothing else.
     """
+
+    # Phase key → (config attribute, cost-tracker label). One table, so a phase
+    # cannot end up with a model in one register and a different one in another.
+    PHASES = (
+        "facet_discovery", "facet_consolidation", "facet_assignment",
+        "facet_refinement", "attribute_discovery", "attribute_consolidation",
+        "attribute_assignment", "attribute_refinement", "valence_merge",
+    )
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None, cost_tracker=None):
         self.cost_tracker = cost_tracker
         self._config = config
-        self._axis_first_enabled = config.axis_first_enabled
-        self._model_p1 = config.qr_model_p1
-        self._model_p2 = config.qr_model_p2
-        self._model_p4 = config.qr_model_p4
-        self._model_p5 = config.qr_model_p5
-        self._model_p6 = config.qr_model_p6
-        self._model_p7 = config.qr_model_p7
-        self._model_p8 = config.qr_model_p8
-        self._model_p9 = config.qr_model_p9
+
+        self._model: Dict[str, str] = {
+            phase: getattr(config, f"model_{phase}") for phase in self.PHASES
+        }
 
         if self.cost_tracker:
-            self.cost_tracker.set_step_models("step_4_taxonomy_classifier", {
-                "p1_axis_discovery": self._model_p1,
-                "p2_facet_discovery": self._model_p2,
-                "p4_facet_assignment": self._model_p4,
-                "p5_facet_consolidation": self._model_p5,
-                "p6_attribute_discovery": self._model_p6,
-                "p7_attribute_assignment": self._model_p7,
-                "p8_attribute_consolidation": self._model_p8,
-                "p9_valence_merge": self._model_p9,
-            })
+            self.cost_tracker.set_step_models(
+                "step_4_taxonomy_classifier", dict(self._model))
 
         self._temperature = config.qr_temperature
         self._max_tokens_facet_discovery = config.qr_max_tokens_facet_discovery
-        self._max_tokens_facet_assignment = config.qr_max_tokens_facet_assignment
         self._max_tokens_attribute_discovery = config.qr_max_tokens_attribute_discovery
         self._max_tokens_consolidation = config.qr_max_tokens_consolidation
-        self._p9_contents_top_n = config.p9_contents_top_n
+        self._max_tokens_assignment = config.qr_max_tokens_assignment
+        self._contents_top_n = config.contents_top_n
 
-        # Batch sizing — P1 (facet discovery)
+        # Chunking — facet discovery input, per domain
         self._batch_size_min = config.batch_size_min
         self._batch_size_max = config.batch_size_max
         self._target_batches = config.target_batches
         self._chunk_overlap = config.chunk_overlap
+
+        # Chunking — attribute discovery input, per facet
+        self._attribute_chunk_size_min = config.attribute_chunk_size_min
+        self._attribute_chunk_size_max = config.attribute_chunk_size_max
+        self._attribute_target_batches = config.attribute_target_batches
+        self._attribute_chunk_overlap = config.attribute_chunk_overlap
+
+        # Consolidation — how much fits in one call, and how often to round-trip
         self._consolidation_max_chunks_per_call = config.consolidation_max_chunks_per_call
         self._consolidation_max_items_per_call = config.consolidation_max_items_per_call
         self._consolidation_max_rounds = config.consolidation_max_rounds
-
-        # Batch sizing — P5 (attribute discovery)
-        self._p4_batch_size_min = config.p4_batch_size_min
-        self._p4_batch_size_max = config.p4_batch_size_max
-        self._p4_target_batches = config.p4_target_batches
-        self._p4_chunk_overlap = config.p4_chunk_overlap
 
         # Label source for observation formatting
         self._label_source = config.label_source
         self._label_prefix = config.label_prefix
 
-        # P4 facet assignment — batch mode
-        self._assign_batch_enabled = config.facet_assignment_batch_enabled
-        self._assign_batch_k = config.facet_assignment_batch_k
-        self._assign_shortlist_enabled = config.facet_assignment_shortlist_enabled
-        self._assign_shortlist_k = config.facet_assignment_shortlist_k
-        self._assign_label_dedup = config.facet_assignment_label_dedup
+        # Assignment — batching and menu shortlisting, both levels
+        self._assign_batch_k = config.assignment_batch_k
+        self._assign_shortlist_enabled = config.assignment_shortlist_enabled
+        self._assign_shortlist_k = config.assignment_shortlist_k
 
         # Prompt capture (optional)
         self._prompt_printer = prompt_printer
         self._captured_gates: Set[str] = set()
 
-        self._debug_stop_after_phase = config.debug_stop_after_phase
+        self._stop_after_phase = config.stop_after_phase
+        if (self._stop_after_phase is not None
+                and self._stop_after_phase not in self.PHASES):
+            raise ValueError(
+                f"stop_after_phase={self._stop_after_phase!r} is not a phase. "
+                f"Valid: {', '.join(self.PHASES)}."
+            )
 
-        # Assignment confidence scores and valence (populated by P4/P8 parse_fns)
+        # Assignment confidence scores and valence (populated by the two
+        # assignment phases' parse_fns)
         self._facet_confidence: Dict[str, float] = {}
         self._attribute_confidence: Dict[str, float] = {}
         self._facet_valence: Dict[str, str] = {}
         self._attribute_valence: Dict[str, str] = {}
-
-        # P1: validated axis system per domain (populated by _process_taxonomy_async
-        # when axis_first_enabled; empty otherwise). Carried on the instance because
-        # TaxonomyResult only needs the model_dump for the final return.
-        self.axis_systems: Dict[str, AxisSystemResponse] = {}
 
         # Rate limits — fetched in _initialize_async_resources(), one probe per
         # unique deployment; each phase reads the limits of its own model
@@ -344,40 +290,59 @@ class TaxonomyClassifier:
         dataset_context: Optional[Dict[str, str]] = None,
         dimension_name: str = "",
         dimension_description: str = "",
+        extraction_metadata=None,
         verbose: bool = False,
-    ):
-        """Shared setup: resolve dimension, build contexts, filter empty mappings."""
-        # Resolve dimension definition from dimension_data.py
-        dimension_def = None
-        if dimension_name:
-            dimension_def = get_dimension(dimension_name)
-            if dimension_def and verbose:
-                print(f"  Dimension: {dimension_name}")
-                print(f"  Facet diagnostic: {dimension_def.prompt_rules.facet_diagnostic}")
-                print(f"  Domain diagnostic: {dimension_def.prompt_rules.domain_diagnostic}")
-            elif not dimension_def and verbose:
-                print(f"  WARNING: No DimensionDefinition found for '{dimension_name}'")
-                print(f"  Falling back to generic taxonomy language")
+    ) -> Tuple[PromptContext, Dict[str, PartitionLabelMapping]]:
+        """Shared setup: resolve the dimension, collect the domains, drop empties.
 
-        dataset_context_section = self._build_dataset_context_section(dataset_context)
+        A dimension that cannot be resolved raises. Every prompt in step 4 asks
+        this dimension's own diagnostic question and shows its own four-level
+        taxonomy; without it there is no generic version to fall back on, and a
+        phase built around the wrong question produces plausible output that is
+        wrong all the way down.
+        """
+        dimension_def = get_dimension(dimension_name) if dimension_name else None
+        if dimension_def is None:
+            raise ValueError(
+                f"No DimensionDefinition for primary_dimension "
+                f"{dimension_name!r}. Step 4 builds every prompt around this "
+                f"dimension's diagnostics; see dimension_data.py."
+            )
+        if verbose:
+            print(f"  Dimension: {dimension_name}")
+            print(f"  Facet diagnostic: {dimension_def.prompt_rules.facet_diagnostic}")
+            print(f"  Attribute diagnostic: {dimension_def.prompt_rules.attribute_diagnostic}")
 
+        context = dataset_context or {}
         prompt_context = PromptContext(
-            survey_question=survey_question,
             language=language,
-            dataset_context_section=dataset_context_section,
+            survey_question=survey_question,
+            sector=context.get("sector", ""),
+            entity=context.get("entity", ""),
+            topic=context.get("topic", ""),
+            perspective=context.get("perspective", ""),
+            intent=context.get("intent", ""),
+            dimension=dimension_def,
             dimension_name=dimension_name,
             dimension_description=dimension_description,
-            dimension_def=dimension_def,
+            domains={
+                part.partition_name: {
+                    "label": part.partition_name,
+                    "definition": part.inclusion_definition,
+                    "boundary_test": part.boundary_test,
+                    "exclusions": part.exclusions,
+                }
+                for part in partition_set.partitions
+            },
+            drain_labels=drain_domains(extraction_metadata),
         )
-
-        partition_contexts = self._build_all_partition_contexts(partition_set)
 
         active_partitions = {
             name: mapping for name, mapping in label_mappings.items()
             if mapping.labels
         }
 
-        return prompt_context, partition_contexts, active_partitions
+        return prompt_context, active_partitions
 
     def process(
         self,
@@ -391,18 +356,20 @@ class TaxonomyClassifier:
         verbose: bool = False,
         extraction_metadata=None,
     ) -> TaxonomyResult:
-        """Run taxonomy stages: facets, attributes, assignments.
+        """Run the eight in-classifier phases: facets, attributes, assignments.
 
-        `extraction_metadata` (models.ExtractionMetadata, optional) feeds the
-        drain-domain skip (taxonomy_health.drain_domains) for axis discovery.
+        `extraction_metadata` (models.ExtractionMetadata) identifies the two
+        standing drain domains by key (taxonomy_health.drain_domains); those get
+        no facets, because step 3 defines them as deliberately broad catch-alls.
         """
         print(f"\n{'='*70}")
-        print(f"TAXONOMY DISCOVERY (5 phases)")
+        print(f"TAXONOMY DISCOVERY (8 phases)")
         print(f"{'='*70}")
 
-        prompt_context, partition_contexts, active_partitions = self._prepare_context(
+        prompt_context, active_partitions = self._prepare_context(
             label_mappings, partition_set, survey_question, language,
-            dataset_context, dimension_name, dimension_description, verbose,
+            dataset_context, dimension_name, dimension_description,
+            extraction_metadata, verbose,
         )
 
         if verbose:
@@ -411,17 +378,12 @@ class TaxonomyClassifier:
             n_partitions = len(active_partitions)
             print(f"  Processing {n_partitions} domains concurrently "
                   f"({total_labels} observations, {total_ideas} ideas)")
-            print(f"  Pipeline: facet discovery → facet assignment → "
-                  f"attribute discovery → attribute assignment → cross-facet consolidation")
+            print(f"  Per level: discovery → consolidation → assignment → refinement")
 
         async def _run():
-            await self._initialize_async_resources(
-                active_partitions, partition_contexts, prompt_context, verbose
-            )
+            await self._initialize_async_resources(verbose)
             return await self._process_taxonomy_async(
-                active_partitions, partition_contexts, prompt_context, verbose,
-                extraction_metadata=extraction_metadata,
-            )
+                active_partitions, prompt_context, verbose)
 
         return asyncio.run(_run())
 
@@ -429,24 +391,15 @@ class TaxonomyClassifier:
     # ASYNC ORCHESTRATION
     # =========================================================================
 
-    async def _initialize_async_resources(
-        self,
-        label_mappings: Dict[str, PartitionLabelMapping],
-        partition_contexts: Dict[str, DomainContext],
-        prompt_context: PromptContext,
-        verbose: bool,
-    ):
+    async def _initialize_async_resources(self, verbose: bool):
         """Fetch rate limits from API — one probe per unique deployment.
 
         Quota is per deployment, so each phase must read the limits of the
-        deployment its own model resolves to — not whatever P2 happens to run
-        on. Probes for distinct deployments run in parallel, so wall-clock cost
-        stays that of a single probe.
+        deployment its own model resolves to — not whatever the first phase
+        happens to run on. Probes for distinct deployments run in parallel, so
+        wall-clock cost stays that of a single probe.
         """
-        phase_models = [
-            self._model_p1, self._model_p2, self._model_p4, self._model_p5,
-            self._model_p6, self._model_p7, self._model_p8,
-        ]
+        phase_models = [self._model[p] for p in self.PHASES if p != "valence_merge"]
 
         def route_key(model):
             if API_PROVIDER == "azure":
@@ -482,10 +435,8 @@ class TaxonomyClassifier:
         if verbose:
             headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
             print(f"\n  [RATE LIMITING SETUP]")
-            print(f"  Models: P1={self._model_p1}, P2/P3={self._model_p2}, "
-                  f"P4={self._model_p4}, P5={self._model_p5}, "
-                  f"P6={self._model_p6}, P7={self._model_p7}, "
-                  f"P8={self._model_p8}, P9={self._model_p9}")
+            print("  Models: " + ", ".join(
+                f"{phase}={self._model[phase]}" for phase in self.PHASES))
             for key, m in representatives.items():
                 limits = self._limits_by_model[m]
                 label = key[-1] if API_PROVIDER == "azure" else m
@@ -497,10 +448,8 @@ class TaxonomyClassifier:
     async def _process_taxonomy_async(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
-        partition_contexts: Dict[str, DomainContext],
         prompt_context: PromptContext,
         verbose: bool,
-        extraction_metadata=None,
     ) -> TaxonomyResult:
         """Taxonomy stages P1-P9: facets, attributes, assignments."""
         start_time = time.time()
@@ -2078,45 +2027,6 @@ class TaxonomyClassifier:
         use-case agnostic and every match is checkable by eye."""
         return (text or "").strip().lower()
 
-    def _dump_axis_systems(self) -> Dict[str, dict]:
-        """Model-dump the discovered axis systems, verbatim, for TaxonomyResult
-        and the runner's axes log. Empty unless axis_first_enabled produced any."""
-        return {name: system.model_dump() for name, system in self.axis_systems.items()}
-
-    def _build_axis_facets_block(
-        self,
-        facets: List[DiscoveredFacet],
-        facet_ideas: Dict[tuple, List],
-        domain_name: str,
-        top_n: Optional[int] = None,
-    ) -> str:
-        """Render each facet on this axis with its real size, its share of the
-        axis, and the response texts it actually holds — the facet-level mirror
-        of `_build_facet_contents_block`."""
-        if top_n is None:
-            top_n = self._p9_contents_top_n
-        counts = {f.facet_name: facet_ideas.get((domain_name, f.facet_name), [])
-                  for f in facets}
-        total = sum(len(v) for v in counts.values())
-
-        lines = []
-        for f in facets:
-            mine = counts[f.facet_name]
-            pct = round(100 * len(mine) / total) if total else 0
-            texts = Counter(
-                (i.instance or "").strip() for i in mine if (i.instance or "").strip()
-            )
-            shown = " · ".join(f'"{t}" x{c}' for t, c in texts.most_common(top_n))
-            more = (f" · ... {len(texts) - top_n} further distinct texts"
-                    if len(texts) > top_n else "")
-            lines.append(
-                f'- "{f.facet_name}" — {len(mine)} ideas, {pct}% of this axis — '
-                f'{f.facet_description}'
-            )
-            lines.append(f'    actually contains: {shown}{more}' if shown
-                         else '    actually contains: (no ideas assigned)')
-        return "\n".join(lines)
-
     def _p5_prepare_fn(self, prompt_context: PromptContext):
         """Return prepare_fn closure for in-axis facet consolidation."""
         def prepare_fn(task: Dict) -> Dict:
@@ -2840,66 +2750,20 @@ class TaxonomyClassifier:
 
         return batches
 
-    def _group_ideas_by_facet(
+    def _group_ideas_by_domain_facet(
         self,
         label_mappings: Dict[str, PartitionLabelMapping],
-        partition_facets: Dict[str, List[DiscoveredFacet]],
         partition_assignments: Dict[str, Dict[str, str]],
-    ) -> Dict[tuple, List]:
-        """Group ideas by (domain, facet) using P4 assignments.
-
-        Returns: {(domain_name, facet_name): [idea_objects]}
-        """
-        groups: Dict[tuple, List] = {}
-
+    ) -> Dict[Tuple[str, str], List]:
+        """Group idea objects by (domain, facet), using the facet assignments."""
+        groups: Dict[Tuple[str, str], List] = {}
         for domain_name, assignments in partition_assignments.items():
             mapping = label_mappings.get(domain_name)
             if not mapping:
                 continue
-
-            # Build idea_id -> idea object lookup
-            idea_lookup = {
-                idea.idea_id: idea for idea in mapping.ideas
-            }
-
+            idea_lookup = {idea.idea_id: idea for idea in mapping.ideas}
             for idea_id, facet_name in assignments.items():
                 idea = idea_lookup.get(idea_id)
-                if idea is None:
-                    continue
-                key = (domain_name, facet_name)
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(idea)
-
+                if idea is not None:
+                    groups.setdefault((domain_name, facet_name), []).append(idea)
         return groups
-
-    def _build_all_partition_contexts(
-        self,
-        partition_set: DomainSet,
-    ) -> Dict[str, DomainContext]:
-        """Build DomainContext for each partition."""
-        contexts = {}
-        for part in partition_set.partitions:
-            contexts[part.partition_name] = DomainContext(
-                partition_name=part.partition_name,
-                partition_definition=part.inclusion_definition,
-                boundary_test=part.boundary_test,
-                exclusions=part.exclusions,
-            )
-        return contexts
-
-    @staticmethod
-    def _build_dataset_context_section(
-        dataset_context: Optional[Dict[str, str]],
-    ) -> str:
-        """Build dataset context block for prompts."""
-        if not dataset_context:
-            return ""
-        parts = []
-        for key in ["domain", "entity", "topic", "perspective", "intent"]:
-            value = dataset_context.get(key, "")
-            if value:
-                parts.append(f"{key.capitalize()}: {value}")
-        if not parts:
-            return ""
-        return "<dataset_context>\n" + "\n".join(parts) + "\n</dataset_context>"
