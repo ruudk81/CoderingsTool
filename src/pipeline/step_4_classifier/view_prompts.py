@@ -1,6 +1,10 @@
 #%%
 """
-View the prompts step 4 sent to the LLM (P1-P10).
+View the prompts step 4 sent to the LLM.
+
+Nine phases: discovery, consolidation, assignment and refinement per level,
+then the valence-neutral merge. Keys are named by function, not by number, so
+a reordering does not force a renaming here or in the perf model.
 
 Usage:
     cd src && python -m pipeline.step_4_classifier.view_prompts
@@ -16,31 +20,33 @@ from utils.promptViewer import render
 
 from test_data import TEST_DATA
 
-from pipeline.step_4_classifier.prompts_classifier import (
-    AxisSystemResponse,
-    FacetDiscoveryResult,
-    FacetAssignmentResult,
-    InAxisConsolidatedResponse,
+from pipeline.step_4_classifier.prompts_attribute import (
+    AttributeConsolidationResult,
     AttributeDiscoveryResult,
-    AttributeAssignmentResult,
-    InFacetConsolidatedResponse,
-    ValenceNeutralRenameResponse,
+    AttributeRefinementResult,
 )
+from pipeline.step_4_classifier.prompts_facet import (
+    FacetConsolidationResult,
+    FacetDiscoveryResult,
+    FacetRefinementResult,
+)
+from pipeline.step_4_classifier.prompts_valence import ValenceNeutralRenameResponse
 
 SHOW_ALL = False
 
+# Both assignment phases build their response model at call time — the menu ids
+# and the idea ids are Literals in the schema — so there is no static model to
+# render for them.
 PROMPT_MODELS = {
-    "axis_discovery": AxisSystemResponse,                          # P1
-    # P2's response model is built at call time (the domain's axis names are
-    # a Literal in the schema), so there is no static model to render here.
-    "tagged_facet_discovery": (lambda metadata: None),             # P2
-    "facet_discovery": FacetDiscoveryResult,                       # P3
-    "facet_assignment": FacetAssignmentResult,                     # P4
-    "in_axis_consolidation": InAxisConsolidatedResponse,           # P5
-    "attribute_discovery": AttributeDiscoveryResult,               # P6
-    "attribute_assignment": AttributeAssignmentResult,             # P7
-    "in_facet_consolidation": InFacetConsolidatedResponse,         # P8
-    "valence_neutral_rename": ValenceNeutralRenameResponse,        # P9
+    "facet_discovery": FacetDiscoveryResult,
+    "facet_consolidation": FacetConsolidationResult,
+    "facet_assignment": (lambda metadata: None),
+    "facet_refinement": FacetRefinementResult,
+    "attribute_discovery": AttributeDiscoveryResult,
+    "attribute_consolidation": AttributeConsolidationResult,
+    "attribute_assignment": (lambda metadata: None),
+    "attribute_refinement": AttributeRefinementResult,
+    "valence_merge": ValenceNeutralRenameResponse,
 }
 
 
