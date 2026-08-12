@@ -256,6 +256,10 @@ def main() -> None:
             print(f"  ronde {r['round']}: {r['pairs_found']} paar/paren gevonden, "
                   f"{r['pairs_probed']} bevraagd, gem. accuracy {acc}, "
                   f"{r['merges']} samenvoeging(en){reason}")
+            for p in r.get("pairs", []):
+                decision = "SAMENVOEGEN" if p["merged"] else "apart"
+                print(f"    {p['code_a']} vs {p['code_b']}: accuracy {p['accuracy']:.0%}, "
+                      f"both_rate {p['both_rate']:.0%} -> {decision}")
 
     lookup = _shape_lookup(shapes, concept_by_id)
     unmatched = [c.code_name for c in codes if _match_shape(c, lookup) is None]

@@ -17,12 +17,28 @@ paren uit Pass A en nul samenvoegingen uit Pass B: de "regels" waren de twee
 definities herhaald, geen regel. Het genereren van een verantwoording is geen
 toets zolang de model zelf bepaalt of hij slaagt.
 
-Pass B is nu een blinde toewijzingsproef (bronspecificatie §4.8): echte
-ideeteksten van beide codes worden gepoold, geschud, en zonder herkomst aan
-het model voorgelegd; het model wijst elk idee toe aan code A of code B. De
-score tegen de bekende herkomst (Python, nooit het model zelf) is de toets —
-zie `mece.py` (`score_assignments`, `is_one_dimension`) voor de scoring en de
-drempel.
+Pass B werd daarna een blinde binaire toewijzingsproef: echte ideeteksten van
+beide codes gepoold, geschud, zonder herkomst voorgelegd, en gescoord tegen de
+bekende herkomst. Ook dát mat het verkeerde: op een live run haalde het 31
+paren gemiddeld 91% accuracy — en het codeboek hield alsnog vier codes over
+duurzaamheid, vier over persoonlijk contact en vier over visuele identiteit
+over. Scheidbaarheid is geen orthogonaliteit: de proef toont ideeën uit elke
+code's EIGEN attributen, en die zijn lexicaal te onderscheiden zelfs wanneer
+beide codes dezelfde dimensie dekken. Een model dat op bewoording sorteert,
+scoort hoog zonder dat de codes een echte dimensie uiteen leggen.
+
+Pass B is nu een blinde toewijzingsproef met een DERDE keuze (bronspecificatie
+§4.8): naast code A en code B mag het model "BOTH" antwoorden — het idee past
+bij beide even goed. Twee deterministische signalen (Python, nooit een claim
+van het model zelf; zie `mece.py`'s `score_probe`): `accuracy` (onder de
+ideeën die wél op één kant vielen, het aandeel dat op de juiste kant kwam —
+vangt "kan niet uit elkaar gehouden worden") en `both_rate` (het aandeel van
+ALLE bevraagde ideeën dat BOTH kreeg — vangt "kan wel uit elkaar gehouden
+worden, maar hoort allebei écht bij beide", precies het duurzaamheidsgeval).
+Samenvoegen bij accuracy op/onder zijn drempel ÓF both_rate op/boven de zijne
+— zie `mece.py` (`score_probe`, `is_one_dimension`). De nuloptie is
+samenvoegen, niet apart houden (bronspecificatie §2.5, compressievoorkeur):
+een paar moet zijn aparte bestaansrecht bewijzen, niet andersom.
 
 Lekdiscipline: geen respondenttellingen, ideetellingen, domein, facet of
 attribuut-ids. Pass A toont een code als naam + definitie + indicatoren.
@@ -167,7 +183,13 @@ class ProbeIdea:
 
 class IdeaAssignment(BaseModel):
     idea_ref: int = Field(..., description="Which idea, by the number shown in the list, this is about")
-    assigned_to: str = Field(..., description="Which of the two codes this idea actually belongs to")
+    assigned_to: str = Field(
+        ...,
+        description=(
+            "Which of the two codes this idea belongs to, or \"BOTH\" if it genuinely "
+            "fits either equally well."
+        ),
+    )
 
 
 class ProbeResult(BaseModel):
@@ -179,15 +201,16 @@ class ProbeResult(BaseModel):
 
 def make_probe_model(pair: CandidatePair, ideas: List[ProbeIdea]) -> type:
     """ProbeResult met `idea_ref` beperkt tot de getoonde ideeën en
-    `assigned_to` beperkt tot precies de twee codenamen van dit paar."""
+    `assigned_to` beperkt tot de twee codenamen van dit paar plus "BOTH" —
+    de derde, gelijkwaardige keuze (zie moduledocstring)."""
     idea_refs: Tuple[int, ...] = tuple(idea.idea_ref for idea in ideas)
-    code_names: Tuple[str, str] = (pair.code_a, pair.code_b)
+    choices: Tuple[str, str, str] = (pair.code_a, pair.code_b, "BOTH")
     constrained_assignment = create_model(
         "ConstrainedIdeaAssignment",
         __base__=IdeaAssignment,
         idea_ref=(Literal[idea_refs], Field(..., description=(
             IdeaAssignment.model_fields["idea_ref"].description))),
-        assigned_to=(Literal[code_names], Field(..., description=(
+        assigned_to=(Literal[choices], Field(..., description=(
             IdeaAssignment.model_fields["assigned_to"].description))),
     )
     return create_model(
@@ -213,6 +236,9 @@ Codes:
 - "{b.name}": {b.definition}
 
 For EVERY response below, decide which of the two codes above it actually belongs to.
+If it genuinely fits BOTH codes equally well, answer "BOTH" — that is the correct
+answer whenever it applies, not a fallback for when you are unsure. A response that is
+merely hard to place still belongs on one side, so give it that side instead.
 
 Responses:
 {idea_lines}

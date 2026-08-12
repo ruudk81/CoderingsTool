@@ -58,6 +58,11 @@ class CodebookConfig:
     # MECE pass B: accuracy at or below this means the pair is not reliably
     # codeable apart -> merge. Chance level on a two-way choice is 0.50.
     mece_separability_threshold: float = 0.70
+    # MECE pass B: share of probed ideas answered "BOTH" at or above this
+    # means the ideas structurally fit either code -> merge, even when the
+    # pair IS separable on wording (accuracy alone would miss this: two
+    # codes can be told apart lexically while covering the same dimension).
+    mece_both_rate_threshold: float = 0.30
 
     # Embedding-based representative samples
     code_source: str = "instance_interpretation"  # Text format for embedding: idea, instance, instance_interpretation, full_abstraction_ladder

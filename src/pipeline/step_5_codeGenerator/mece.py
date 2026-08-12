@@ -3,14 +3,23 @@ die codes als VERZAMELING bekijkt in plaats van per attribuut of per vorm.
 
 De operationele toets (het hele ontwerp, bronspecificatie §4.8): twee codes
 zijn ÉÉN dimensie als een blinde toewijzingsproef op ECHTE ideeën ze niet
-betrouwbaar uit elkaar houdt. Pass A (opzoeking) levert de kandidaat-paren;
-Pass B (deze proef) meet ze. Een eerdere vorm van Pass B liet het model een
-scheidingsregel SCHRIJVEN en daarna zelf beoordelen of die regel echt was —
-dat kan niet werken, want een model dat gevraagd wordt een regel te schrijven
-schrijft er altijd één, en concludeert daarna dat de codes scheidbaar zijn
-(zie `prompts_mece.py`). Het genereren van een verantwoording is geen toets
-zolang het model zelf bepaalt of hij slaagt; de score van een blinde proef op
-data die het model niet zelf heeft geproduceerd, is dat wel.
+betrouwbaar uit elkaar houdt, ÓF als ideeën uit die proef er structureel
+allebei genuinely bij horen. Pass A (opzoeking) levert de kandidaat-paren;
+Pass B (deze proef) meet ze op twee manieren, niet één — zie `prompts_mece.py`
+voor waarom een binaire toewijzingsproef (91% gemiddelde accuracy, nul
+samenvoegingen op een live run met vier codes over duurzaamheid, vier over
+persoonlijk contact) het verkeerde meet: scheidbaarheid is geen
+orthogonaliteit. De nuloptie is hierna samenvoegen, niet apart houden
+(bronspecificatie §2.5, compressievoorkeur) — een paar houdt zich alleen apart
+als de proef dat aantoont, niet omgekeerd.
+
+Een nóg eerdere vorm van Pass B liet het model een scheidingsregel SCHRIJVEN
+en daarna zelf beoordelen of die regel echt was — dat kan niet werken, want
+een model dat gevraagd wordt een regel te schrijven schrijft er altijd één,
+en concludeert daarna dat de codes scheidbaar zijn. Het genereren van een
+verantwoording is geen toets zolang het model zelf bepaalt of hij slaagt; de
+score van een blinde proef op data die het model niet zelf heeft
+geproduceerd, is dat wel.
 
 Samenvoegen is hierna volledig deterministisch: alleen dezelfde richting
 (een positieve en een negatieve code zijn door hun richting alleen al
@@ -94,10 +103,11 @@ async def resolve_overlap_detection(
 @dataclass(frozen=True)
 class PairVerdict:
     """De uitkomst van één blinde proef: run-lokaal, nooit een LLM-
-    responsemodel. `one_dimension` volgt uit `accuracy` in Python
-    (`is_one_dimension`) — het model claimt hier niets over zichzelf."""
+    responsemodel. `one_dimension` volgt uit `accuracy` en `both_rate` in
+    Python (`is_one_dimension`) — het model claimt hier niets over zichzelf."""
     pair_id: int
     accuracy: float
+    both_rate: float
     one_dimension: bool
 
 
@@ -164,24 +174,48 @@ def build_pair_probe(
     return PairProbe(pair=pair, ideas=ideas, truth=truth)
 
 
-def score_assignments(assignments: List[IdeaAssignment], truth: Dict[int, str]) -> float:
-    """Aandeel juist — nooit het model zijn eigen claim over hoe goed het ging.
-    Een dubbele toewijzing voor eenzelfde `idea_ref` laat het laatste antwoord
-    winnen; een `idea_ref` uit `truth` zonder entry in `assignments` telt als
-    fout. Lege `truth` (kan niet via `build_pair_probe`, wel direct getest)
-    geeft 0.0, niet een deling door nul."""
+@dataclass(frozen=True)
+class ProbeScore:
+    """De twee deterministische signalen uit één blinde proef — nooit een
+    claim van het model over zichzelf, altijd berekend tegen `PairProbe.truth`
+    in Python."""
+    accuracy: float
+    both_rate: float
+
+
+def score_probe(assignments: List[IdeaAssignment], truth: Dict[int, str]) -> ProbeScore:
+    """`accuracy` — van de ideeën die het model op één kant zette (A of B,
+    dus NIET "BOTH"), het aandeel dat op de kant kwam waar het idee
+    werkelijk vandaan komt. Een idee zonder toewijzing, of met "BOTH", telt
+    niet mee in die teller: het is niet "op een kant gezet". `both_rate` —
+    het aandeel van ALLE bevraagde ideeën (heel `truth`) dat "BOTH" kreeg,
+    ongeacht welke kant dat idee werkelijk vandaan kwam. Een dubbele
+    toewijzing voor eenzelfde `idea_ref` laat het laatste antwoord winnen.
+    Lege `truth` (kan niet via `build_pair_probe`, wel direct getest) geeft
+    beide op 0.0, niet een deling door nul."""
     if not truth:
-        return 0.0
+        return ProbeScore(accuracy=0.0, both_rate=0.0)
     assigned = {a.idea_ref: a.assigned_to for a in assignments}
-    correct = sum(1 for ref, code in truth.items() if assigned.get(ref) == code)
-    return correct / len(truth)
+    sided = {ref: code for ref, code in assigned.items() if ref in truth and code != "BOTH"}
+    accuracy = (sum(1 for ref, code in sided.items() if code == truth[ref]) / len(sided)
+                if sided else 0.0)
+    both_rate = sum(1 for ref in truth if assigned.get(ref) == "BOTH") / len(truth)
+    return ProbeScore(accuracy=accuracy, both_rate=both_rate)
 
 
-def is_one_dimension(accuracy: float, threshold: float) -> bool:
-    """Op of onder de drempel is niet betrouwbaar scheidbaar -> één dimensie.
-    Kansniveau bij een binaire keuze is 0.50; de drempel (standaard 0.70) ligt
-    daarboven, dus 'geen beter dan raden' merget ruimschoots mee."""
-    return accuracy <= threshold
+def is_one_dimension(
+    accuracy: float, both_rate: float, accuracy_threshold: float, both_rate_threshold: float,
+) -> bool:
+    """Samenvoegen (`True`) wanneer scheidbaarheid ontbreekt (`accuracy` op of
+    onder zijn drempel) ÓF wanneer ideeën structureel bij beide horen
+    (`both_rate` op of boven zijn drempel) — de twee manieren waarop een paar
+    kan mislukken in "aantoonbaar apart blijven": onscheidbaar, of scheidbaar-
+    maar-beide-passen-echt. Kansniveau bij een binaire keuze (`accuracy`,
+    exclusief "BOTH") is 0.50; de standaarddrempel (0.70) ligt daarboven, dus
+    'geen beter dan raden' merget ruimschoots mee. De nuloptie is samenvoegen,
+    niet apart houden (bronspecificatie §2.5) — dit is dan ook een OF, geen
+    EN: één van de twee signalen is genoeg."""
+    return accuracy <= accuracy_threshold or both_rate >= both_rate_threshold
 
 
 async def resolve_pair_probes(
@@ -204,7 +238,8 @@ async def resolve_pair_probes(
     if not probes:
         return {}
 
-    def prepare_fn(probe: PairProbe):
+    def prepare_fn(task):
+        probe: PairProbe = task["probe"]
         return {
             "prompt": build_probe_prompt(probe.pair, candidate_by_name, probe.ideas),
             "response_model": make_probe_model(probe.pair, probe.ideas),
@@ -225,18 +260,24 @@ async def resolve_pair_probes(
         verbose=verbose, known_limits=known_limits, has_server_headers=has_server_headers,
         quiet=True,
     )
+    # SmoothRequester.process_all eist List[Dict] — een lijst objecten laat
+    # _execute_task struikelen op task.get(), en de foutafhandeling daarna
+    # nog eens, waardoor de echte oorzaak onzichtbaar wordt.
     results: List[Optional[ProbeResult]] = await requester.process_all(
-        probes, prepare_fn, parse_fn, fallback_fn
+        [{"probe": probe} for probe in probes], prepare_fn, parse_fn, fallback_fn
     )
 
     verdicts: Dict[int, PairVerdict] = {}
     for probe, result in zip(probes, results):
         if result is None:
             continue
-        accuracy = score_assignments(result.assignments, probe.truth)
+        score = score_probe(result.assignments, probe.truth)
         verdicts[probe.pair.pair_id] = PairVerdict(
-            pair_id=probe.pair.pair_id, accuracy=accuracy,
-            one_dimension=is_one_dimension(accuracy, config.mece_separability_threshold),
+            pair_id=probe.pair.pair_id, accuracy=score.accuracy, both_rate=score.both_rate,
+            one_dimension=is_one_dimension(
+                score.accuracy, score.both_rate,
+                config.mece_separability_threshold, config.mece_both_rate_threshold,
+            ),
         )
     return verdicts
 
@@ -372,19 +413,37 @@ def _mean_accuracy(verdicts: Dict[int, PairVerdict]) -> Optional[float]:
     return sum(v.accuracy for v in verdicts.values()) / len(verdicts)
 
 
+def _pair_details(
+    pair_by_id: Dict[int, CandidatePair], verdict_by_id: Dict[int, PairVerdict],
+) -> List[dict]:
+    """Eén entry per bevraagd paar, gesorteerd op `pair_id` voor een
+    reproduceerbare printvolgorde — de gegevens voor de per-paar logregel
+    (de twee codenamen, `accuracy`, `both_rate`, de samenvoegbeslissing)."""
+    return [
+        {"code_a": pair_by_id[pair_id].code_a, "code_b": pair_by_id[pair_id].code_b,
+         "accuracy": verdict.accuracy, "both_rate": verdict.both_rate,
+         "merged": verdict.one_dimension}
+        for pair_id, verdict in sorted(verdict_by_id.items())
+    ]
+
+
 def _log_round(
     log, round_num: int, *, pairs_found: int = 0, pairs_probed: int = 0,
     mean_accuracy: Optional[float] = None, merges: int = 0, reason: Optional[str] = None,
+    pairs: Optional[List[dict]] = None,
 ) -> None:
     """Elke afsluitreden is een apart veld — nooit alleen `merges=0`. Een
     call die crasht (`reason="detection_failed"` etc.) en een ronde die
     echt niets vond (`reason=None`, `pairs_probed > 0`) loggen allebei
     `merges=0`, maar zijn hierna nooit meer van elkaar te onderscheiden op
-    dat getal alleen — dat was precies het defect dat dit verving."""
+    dat getal alleen — dat was precies het defect dat dit verving. `pairs`
+    (leeg tenzij Pass B daadwerkelijk paren scoorde) draagt de per-paar
+    uitsplitsing (`_pair_details`) voor de printregel in de aanroeper."""
     if log is None:
         return
     log.add(action="MECE_ROUND", round=round_num, pairs_found=pairs_found,
-            pairs_probed=pairs_probed, mean_accuracy=mean_accuracy, merges=merges, reason=reason)
+            pairs_probed=pairs_probed, mean_accuracy=mean_accuracy, merges=merges, reason=reason,
+            pairs=pairs or [])
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +496,8 @@ async def enforce_mece(
         pair_by_id = {p.pair_id: p for p in pairs}
         components = merge_components(pair_by_id, list(verdict_by_id.values()))
         round_stats = dict(pairs_found=len(pairs), pairs_probed=len(verdict_by_id),
-                           mean_accuracy=_mean_accuracy(verdict_by_id))
+                           mean_accuracy=_mean_accuracy(verdict_by_id),
+                           pairs=_pair_details(pair_by_id, verdict_by_id))
         if not components:
             _log_round(log, round_num, **round_stats, reason="no_components")
             break

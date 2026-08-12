@@ -170,16 +170,27 @@ def test_probe_model_constrains_idea_ref_to_shown_ideas():
     raise AssertionError("een niet-getoond idea_ref had geweigerd moeten worden")
 
 
-def test_probe_model_constrains_assigned_to_to_the_pairs_two_codes():
+def test_probe_model_constrains_assigned_to_to_the_pairs_two_codes_plus_both():
     pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
     ideas = [ProbeIdea(idea_ref=1, text="a")]
     model = make_probe_model(pair, ideas)
     ok = model(assignments=[{"idea_ref": 1, "assigned_to": "Kosten"}])
     assert ok.assignments[0].assigned_to == "Kosten"
 
+    ok_both = model(assignments=[{"idea_ref": 1, "assigned_to": "BOTH"}])
+    assert ok_both.assignments[0].assigned_to == "BOTH"
+
     import pydantic
     try:
         model(assignments=[{"idea_ref": 1, "assigned_to": "Service"}])
     except pydantic.ValidationError:
         return
-    raise AssertionError("een codenaam buiten dit paar had geweigerd moeten worden")
+    raise AssertionError("een codenaam buiten dit paar (en buiten BOTH) had geweigerd moeten worden")
+
+
+def test_probe_prompt_explains_the_both_option():
+    candidate_by_name = {"Prijs": candidate("Prijs"), "Kosten": candidate("Kosten")}
+    pair = CandidatePair(pair_id=1, code_a="Prijs", code_b="Kosten")
+    prompt = build_probe_prompt(pair, candidate_by_name, [ProbeIdea(idea_ref=1, text="tekst")])
+    assert "BOTH" in prompt
+    assert "not a fallback" in prompt

@@ -91,15 +91,15 @@ def test_build_candidate_pairs_ids_are_stable_across_calls():
 
 def test_merge_components_chain_collapses_to_one_group():
     pair_by_id = {1: CandidatePair(1, "A", "B"), 2: CandidatePair(2, "B", "C")}
-    verdicts = [mece.PairVerdict(pair_id=1, accuracy=0.3, one_dimension=True),
-                mece.PairVerdict(pair_id=2, accuracy=0.3, one_dimension=True)]
+    verdicts = [mece.PairVerdict(pair_id=1, accuracy=0.3, both_rate=0.0, one_dimension=True),
+                mece.PairVerdict(pair_id=2, accuracy=0.3, both_rate=0.0, one_dimension=True)]
     components = mece.merge_components(pair_by_id, verdicts)
     assert components == [{"A", "B", "C"}]
 
 
 def test_merge_components_ignores_a_pair_judged_separate():
     pair_by_id = {1: CandidatePair(1, "A", "B")}
-    verdicts = [mece.PairVerdict(pair_id=1, accuracy=0.95, one_dimension=False)]
+    verdicts = [mece.PairVerdict(pair_id=1, accuracy=0.95, both_rate=0.0, one_dimension=False)]
     components = mece.merge_components(pair_by_id, verdicts)
     assert components == []
 
@@ -108,8 +108,8 @@ def test_merge_components_chain_order_independent():
     # Same chain, verdicts in the opposite order — the union-find result must
     # not depend on which pair was resolved first.
     pair_by_id = {1: CandidatePair(1, "A", "B"), 2: CandidatePair(2, "B", "C")}
-    verdicts = [mece.PairVerdict(pair_id=2, accuracy=0.3, one_dimension=True),
-                mece.PairVerdict(pair_id=1, accuracy=0.3, one_dimension=True)]
+    verdicts = [mece.PairVerdict(pair_id=2, accuracy=0.3, both_rate=0.0, one_dimension=True),
+                mece.PairVerdict(pair_id=1, accuracy=0.3, both_rate=0.0, one_dimension=True)]
     components = mece.merge_components(pair_by_id, verdicts)
     assert components == [{"A", "B", "C"}]
 
@@ -262,54 +262,105 @@ def test_build_pair_probe_is_deterministic_across_calls():
 
 
 # ---------------------------------------------------------------------------
-# score_assignments — deterministisch: nooit de eigen claim van het model
+# score_probe — deterministisch: nooit de eigen claim van het model
 # ---------------------------------------------------------------------------
 
-def test_score_assignments_all_correct_is_one():
+def test_score_probe_all_correct_is_accuracy_one():
     truth = {1: "A", 2: "B"}
     assignments = [IdeaAssignment(idea_ref=1, assigned_to="A"),
                    IdeaAssignment(idea_ref=2, assigned_to="B")]
-    assert mece.score_assignments(assignments, truth) == 1.0
+    score = mece.score_probe(assignments, truth)
+    assert score.accuracy == 1.0
+    assert score.both_rate == 0.0
 
 
-def test_score_assignments_all_wrong_is_zero():
+def test_score_probe_all_wrong_is_accuracy_zero():
     truth = {1: "A", 2: "B"}
     assignments = [IdeaAssignment(idea_ref=1, assigned_to="B"),
                    IdeaAssignment(idea_ref=2, assigned_to="A")]
-    assert mece.score_assignments(assignments, truth) == 0.0
+    assert mece.score_probe(assignments, truth).accuracy == 0.0
 
 
-def test_score_assignments_missing_assignment_counts_as_wrong():
+def test_score_probe_missing_assignment_is_excluded_from_accuracy():
+    # idea_ref 2 has no assignment at all: it is not "put on a side", so it
+    # does not enter the accuracy denominator (unlike a BOTH answer, which
+    # is also excluded but does count towards both_rate below).
     truth = {1: "A", 2: "B"}
     assignments = [IdeaAssignment(idea_ref=1, assigned_to="A")]
-    assert mece.score_assignments(assignments, truth) == 0.5
+    assert mece.score_probe(assignments, truth).accuracy == 1.0
 
 
-def test_score_assignments_duplicate_ref_lets_the_last_answer_win():
+def test_score_probe_duplicate_ref_lets_the_last_answer_win():
     truth = {1: "A"}
     assignments = [IdeaAssignment(idea_ref=1, assigned_to="B"),
                    IdeaAssignment(idea_ref=1, assigned_to="A")]
-    assert mece.score_assignments(assignments, truth) == 1.0
+    assert mece.score_probe(assignments, truth).accuracy == 1.0
 
 
-def test_score_assignments_empty_truth_is_zero_not_a_crash():
-    assert mece.score_assignments([], {}) == 0.0
+def test_score_probe_empty_truth_is_zero_not_a_crash():
+    score = mece.score_probe([], {})
+    assert score.accuracy == 0.0
+    assert score.both_rate == 0.0
+
+
+def test_score_probe_accuracy_excludes_both_answers():
+    # Two ideas: one correctly sided, one answered BOTH. Accuracy is over the
+    # sided idea only (1/1 = 1.0), not diluted by the BOTH answer.
+    truth = {1: "A", 2: "B"}
+    assignments = [IdeaAssignment(idea_ref=1, assigned_to="A"),
+                   IdeaAssignment(idea_ref=2, assigned_to="BOTH")]
+    score = mece.score_probe(assignments, truth)
+    assert score.accuracy == 1.0
+
+
+def test_score_probe_both_rate_counts_share_of_all_probed_ideas():
+    truth = {1: "A", 2: "B", 3: "A", 4: "B"}
+    assignments = [IdeaAssignment(idea_ref=1, assigned_to="BOTH"),
+                   IdeaAssignment(idea_ref=2, assigned_to="BOTH"),
+                   IdeaAssignment(idea_ref=3, assigned_to="A"),
+                   IdeaAssignment(idea_ref=4, assigned_to="B")]
+    score = mece.score_probe(assignments, truth)
+    assert score.both_rate == 0.5
+    assert score.accuracy == 1.0  # de twee gezijde ideeën zijn allebei juist
+
+
+def test_score_probe_all_both_gives_accuracy_zero_and_both_rate_one():
+    # No idea was ever put on a side -> the accuracy denominator is empty ->
+    # 0.0, not a crash; both_rate is 1.0.
+    truth = {1: "A", 2: "B"}
+    assignments = [IdeaAssignment(idea_ref=1, assigned_to="BOTH"),
+                   IdeaAssignment(idea_ref=2, assigned_to="BOTH")]
+    score = mece.score_probe(assignments, truth)
+    assert score.accuracy == 0.0
+    assert score.both_rate == 1.0
 
 
 # ---------------------------------------------------------------------------
-# is_one_dimension — de drempelbeslissing
+# is_one_dimension — de drempelbeslissing: OF, geen EN
 # ---------------------------------------------------------------------------
 
-def test_is_one_dimension_false_above_threshold():
-    assert mece.is_one_dimension(0.9, 0.70) is False
+def test_is_one_dimension_false_when_neither_threshold_fires():
+    assert mece.is_one_dimension(0.9, 0.10, 0.70, 0.30) is False
 
 
-def test_is_one_dimension_true_at_threshold():
-    assert mece.is_one_dimension(0.70, 0.70) is True
+def test_is_one_dimension_true_at_accuracy_threshold():
+    assert mece.is_one_dimension(0.70, 0.0, 0.70, 0.30) is True
 
 
-def test_is_one_dimension_true_below_threshold():
-    assert mece.is_one_dimension(0.4, 0.70) is True
+def test_is_one_dimension_true_when_only_accuracy_threshold_fires():
+    # Unseparable (low accuracy) but nobody said BOTH — still a merge.
+    assert mece.is_one_dimension(0.4, 0.0, 0.70, 0.30) is True
+
+
+def test_is_one_dimension_true_when_only_both_rate_threshold_fires():
+    # Perfectly separable on wording (accuracy 1.0, well above threshold) but
+    # a third of ideas genuinely fit either side — still a merge. This is
+    # the sustainability case: lexically distinguishable, same dimension.
+    assert mece.is_one_dimension(1.0, 0.30, 0.70, 0.30) is True
+
+
+def test_is_one_dimension_true_when_both_thresholds_fire_together():
+    assert mece.is_one_dimension(0.5, 0.5, 0.70, 0.30) is True
 
 
 # ---------------------------------------------------------------------------
@@ -386,9 +437,13 @@ def test_resolve_pair_probes_returns_empty_dict_when_the_call_fails(monkeypatch)
 
 
 def test_resolve_pair_probes_scores_a_perfect_response_as_separable(monkeypatch):
+    captured = {}
+
     async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        captured["tasks"] = tasks
         results = []
-        for probe in tasks:
+        for task in tasks:
+            probe = task["probe"]
             assignments = [IdeaAssignment(idea_ref=ref, assigned_to=code)
                            for ref, code in probe.truth.items()]
             results.append(ProbeResult(assignments=assignments))
@@ -404,7 +459,13 @@ def test_resolve_pair_probes_scores_a_perfect_response_as_separable(monkeypatch)
     verdicts = asyncio.run(
         mece.resolve_pair_probes(pairs, candidate_by_name, idea_units, CodebookConfig())
     )
+    # Pins the SmoothRequester.process_all contract (List[Dict]) so a bare-
+    # object task list — which crashes _execute_task on task.get(), then
+    # crashes the error handler on the same thing, hiding the real cause —
+    # cannot creep back in unnoticed.
+    assert captured["tasks"] and all(isinstance(t, dict) for t in captured["tasks"])
     assert verdicts[1].accuracy == 1.0
+    assert verdicts[1].both_rate == 0.0
     assert verdicts[1].one_dimension is False
 
 
@@ -435,7 +496,7 @@ def test_enforce_mece_merges_and_stops_when_fewer_than_two_candidates_remain(mon
 
     async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
         calls["pair"] += 1
-        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, one_dimension=True)}
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, both_rate=0.0, one_dimension=True)}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
     monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
@@ -478,7 +539,7 @@ def test_enforce_mece_stops_when_no_pair_is_judged_one_dimension(monkeypatch):
         ])
 
     async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
-        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.95, one_dimension=False)}
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.95, both_rate=0.0, one_dimension=False)}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
     monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
@@ -503,7 +564,7 @@ def test_enforce_mece_caps_at_max_rounds(monkeypatch):
         ])
 
     async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
-        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, one_dimension=True)}
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, both_rate=0.0, one_dimension=True)}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
     monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
@@ -591,7 +652,7 @@ def test_enforce_mece_logs_no_components_reason_with_stats(monkeypatch):
         ])
 
     async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
-        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.9, one_dimension=False)}
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.9, both_rate=0.0, one_dimension=False)}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
     monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
@@ -612,7 +673,7 @@ def test_enforce_mece_logs_a_merge_round_with_stats_and_no_reason(monkeypatch):
         ])
 
     async def fake_pair(pairs, candidate_by_name, idea_units_by_attribute, config, *a, **kw):
-        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, one_dimension=True)}
+        return {pairs[0].pair_id: mece.PairVerdict(pair_id=pairs[0].pair_id, accuracy=0.3, both_rate=0.0, one_dimension=True)}
 
     monkeypatch.setattr(mece, "resolve_overlap_detection", fake_overlap)
     monkeypatch.setattr(mece, "resolve_pair_probes", fake_pair)
@@ -624,6 +685,9 @@ def test_enforce_mece_logs_a_merge_round_with_stats_and_no_reason(monkeypatch):
     assert log.calls[0]["mean_accuracy"] == 0.3
     assert log.calls[0]["pairs_found"] == 1
     assert log.calls[0]["pairs_probed"] == 1
+    assert log.calls[0]["pairs"] == [
+        {"code_a": "A", "code_b": "B", "accuracy": 0.3, "both_rate": 0.0, "merged": True}
+    ]
 
 
 def test_enforce_mece_returns_candidates_unchanged_without_a_call_when_fewer_than_two(monkeypatch):
