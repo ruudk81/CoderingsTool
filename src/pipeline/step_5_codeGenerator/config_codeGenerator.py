@@ -18,11 +18,15 @@ class CodebookConfig:
     model_relations: str = get_step_model("codegen_relations")  # relations between attributes
     model_umbrella_merge: str = get_step_model("codegen_umbrella_merge")  # consolidate umbrella names
     model_writer: str = get_step_model("codegen_writer")  # codebook writing from clusters
+    model_mece_detect: str = get_step_model("codegen_mece_detect")  # MECE pass A: overlap detection
+    model_mece_adjudicate: str = get_step_model("codegen_mece_adjudicate")  # MECE pass B: pair adjudication
     temperature_p8: float = 0.3
     temperature_p9: float = 0.0
     temperature_relations: float = 0.0
     temperature_umbrella_merge: float = 0.0
     temperature_writer: float = 0.3
+    temperature_mece_detect: float = 0.0
+    temperature_mece_adjudicate: float = 0.0
 
     # P8: Code Generation from Attributes (per-domain)
     max_tokens_code_from_attributes: int = 16000
@@ -39,6 +43,15 @@ class CodebookConfig:
     # Writer: one cross-code call, output scales with the fixed number of codes
     max_tokens_writer: int = 16000
 
+    # MECE pass A: one cross-code call, output scales with the code count
+    max_tokens_mece_detect: int = 16000
+    # MECE pass B: one cross-pair call, output scales with the candidate-pair count
+    max_tokens_mece_adjudicate: int = 16000
+    # MECE: repeat pass A + pass B until a round merges nothing, capped here —
+    # merging changes the set, so a later round can surface overlaps an earlier
+    # round couldn't see yet.
+    mece_max_rounds: int = 3
+
     # Embedding-based representative samples
     code_source: str = "instance_interpretation"  # Text format for embedding: idea, instance, instance_interpretation, full_abstraction_ladder
     embedding_model: str = "text-embedding-3-large"
@@ -50,8 +63,12 @@ class CodebookConfig:
     verbose: bool = True
 
     # Prevalentiedrempel: een concept krijgt een eigen code als het door minstens
-    # dit aandeel van de respondenten wordt genoemd (1% → later eventueel 5% als
-    # het codeboek te veel fragmenteert). Let op: deze drempel en het Overig-
-    # plafond van 10% bewegen tegen elkaar in — hoger hier betekent meer Overig.
+    # dit aandeel van de respondenten wordt genoemd. Let op: deze drempel en het
+    # Overig-plafond van 10% bewegen tegen elkaar in — hoger hier betekent meer
+    # Overig. Dit regelt zeldzaamheid, niet duplicatie — MECE-afdwinging (mece.py)
+    # is het mechanisme tegen twee codes die hetzelfde concept dekken; de twee
+    # mogen niet met elkaar verward worden (2026-08-12: t_keep_share stond hier
+    # tijdelijk op 0.05 als poging om overlap via de drempel op te lossen — dat
+    # verwijderde elke negatieve code, en loste de overlap niet op).
     t_keep_share: float = 0.01
     t_keep_min_respondents: int = 3

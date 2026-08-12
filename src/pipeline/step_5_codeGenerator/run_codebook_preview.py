@@ -5,10 +5,14 @@
 Draait de hele stap-5-keten in één script en schrijft een leesbaar codeboek:
 
     taxonomy_input -> concept_inventory -> relations (2 LLM-calls) ->
-    consolidator (geen LLM) -> codebook_writer (1 LLM-call)
+    consolidator (geen LLM) -> codebook_writer (1 LLM-call) ->
+    mece (2 LLM-calls per ronde, max 3 rondes) -> codebook_writer (herschrijft
+    alleen de samengevoegde codes)
 
-Drie LLM-calls in totaal, één run. Dit is een dev-loop-runner — niet gewired
-in run_codeGenerator.py (dat is een aparte taak).
+Drie tot tien LLM-calls, afhankelijk van de codeboekgrootte en van hoeveel
+MECE-rondes iets samenvoegen (elke ronde: 1 detectiecall, plus 1 adjudicatie-
+call zodra er kandidaat-paren zijn; maximaal 3 rondes). Dit is een dev-loop-
+runner — niet gewired in run_codeGenerator.py (dat is een aparte taak).
 
     cd src && python -m pipeline.step_5_codeGenerator.run_codebook_preview
     cd src && python -m pipeline.step_5_codeGenerator.run_codebook_preview --cache-dir <pad>
@@ -32,7 +36,9 @@ from pipeline.step_5_codeGenerator.codebook_writer import write_codebook
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.consolidator import CodeShape, consolidate, normalize_relations
+from pipeline.step_5_codeGenerator.mece import enforce_mece
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from pipeline.step_5_codeGenerator.prompts_mece import CodeCandidate
 from pipeline.step_5_codeGenerator.prompts_umbrella_merge import umbrellas_from_relations
 from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
 from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, build_idea_units
@@ -51,6 +57,17 @@ CODEBOOK_OUTPUT = (
 )
 
 DIRECTION_SYMBOL = {"positive": "+", "negative": "−", "neutral": "neutraal"}
+
+
+class _RoundLog:
+    """Verzamelt `enforce_mece`'s per-ronde `log.add(...)`-aanroepen voor de
+    printregel aan het eind van de run. Geen `decision_log.py` (nog niet
+    gebouwd) — duck-typed, zoals `write_codebook`'s eigen `log`-parameter."""
+    def __init__(self):
+        self.rounds: List[dict] = []
+
+    def add(self, **kwargs):
+        self.rounds.append(kwargs)
 
 
 def _taxonomy_timestamp(cache_dir: Path) -> str:
@@ -176,7 +193,8 @@ def main() -> None:
 
     print(f"Attributen: {len(refs)} (concepten met idee: {len(concepts)})")
     print(f"T_keep = {threshold} over {n_resp_total} respondenten")
-    print("Drie LLM-calls worden uitgevoerd (relaties, consolidatie-namen, schrijven)...\n")
+    print("LLM-calls worden uitgevoerd (relaties, consolidatie-namen, schrijven, "
+          "MECE-afdwinging)...\n")
 
     async def _run():
         relations_before = await resolve_relations(concepts, config, language, verbose=True)
@@ -191,11 +209,41 @@ def main() -> None:
         codes = await write_codebook(
             shapes, concepts, dimension_diagnostic, language, config, verbose=True,
         )
-        return shapes, overig_ids, codes, merge_result is None
 
-    shapes, overig_ids, codes, merge_failed = asyncio.run(_run())
+        # MECE-afdwinging: codes als VERZAMELING bekijken, niet per vorm.
+        # `code_by_name` bewaart de volledige geschreven tekst (incl.
+        # diagnostic_test) van codes die geen enkele ronde aanraakt.
+        shape_lookup = _shape_lookup(shapes, concept_by_id)
+        code_by_name = {code.code_name: code for code in codes}
+        candidates = [
+            CodeCandidate(name=code.code_name, definition=code.definition,
+                          indicators=tuple(code.typical_indicators), valence=code.valence,
+                          shape=_match_shape(code, shape_lookup))
+            for code in codes if _match_shape(code, shape_lookup) is not None
+        ]
+        round_log = _RoundLog()
+        final_candidates = await enforce_mece(candidates, config, log=round_log, verbose=True)
+        merged = [c for c in final_candidates if c.shape.origin == "mece_merge"]
+        untouched = [c for c in final_candidates if c.shape.origin != "mece_merge"]
+
+        # Alleen de samengevoegde codes krijgen nieuwe tekst — ongewijzigde
+        # codes behouden hun eerder geschreven definitie/diagnostic_test.
+        rewritten = await write_codebook(
+            [c.shape for c in merged], concepts, dimension_diagnostic, language, config, verbose=True,
+        ) if merged else []
+        final_shapes = [c.shape for c in untouched] + [c.shape for c in merged]
+        final_codes = [code_by_name[c.name] for c in untouched] + rewritten
+
+        return final_shapes, overig_ids, final_codes, merge_result is None, round_log.rounds
+
+    shapes, overig_ids, codes, merge_failed, mece_rounds = asyncio.run(_run())
     if merge_failed:
         print("WAARSCHUWING: consolidatiecall mislukt — doorgegaan met ongeconsolideerde namen.")
+
+    total_merges = sum(r["merges"] for r in mece_rounds)
+    if mece_rounds:
+        rounds_desc = ", ".join(f"ronde {r['round']}: {r['merges']}" for r in mece_rounds)
+        print(f"MECE: {len(mece_rounds)} ronde(s), {total_merges} samenvoeging(en) totaal ({rounds_desc})")
 
     lookup = _shape_lookup(shapes, concept_by_id)
     unmatched = [c.code_name for c in codes if _match_shape(c, lookup) is None]
