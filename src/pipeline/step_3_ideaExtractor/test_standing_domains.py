@@ -24,6 +24,7 @@ from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     ReformulatedDomains,
     StandingLabelsResponse,
     build_domain_consolidation_prompt,
+    build_domain_discovery_prompt,
     build_orthogonalize_domains_prompt,
     build_standing_labels_prompt,
 )
@@ -525,3 +526,23 @@ def test_no_file_in_src_still_mentions_the_old_key():
         if p != this_file and "__pycache__" not in str(p) and pattern.search(p.read_text(encoding="utf-8"))
     ]
     assert offenders == [], f"nog aanwezig in: {offenders}"
+
+
+# ── 12. Vergaarbak-verbod toetst de grensvorm, niet het onderwerp ──────────
+
+def test_both_prompts_ban_a_residual_boundary_not_a_subject_type():
+    """De grensvorm is de toets, niet het onderwerp — anders blokkeert de regel
+    het eigenschappen-domein dat we juist willen."""
+    d = get_dimension("ATTRIBUTES_ASSOCIATIONS")
+    disc = build_domain_discovery_prompt(
+        language="nl-NL", survey_question="Vraag?", chunk_responses="x", chunk_size=10,
+        perspective="p", intent="i", sector="s", entity="e", topic="t",
+        primary_dimension="ATTRIBUTES_ASSOCIATIONS",
+        primary_dimension_description="beschrijving", dimension=d)
+    cons = build_domain_consolidation_prompt(
+        language="nl-NL", survey_question="Vraag?", sector="s", entity="e", topic="t",
+        perspective="p", intent="i", primary_dimension="ATTRIBUTES_ASSOCIATIONS",
+        chunk_results="chunk", dimension=d)
+    for prompt in (disc, cons):
+        assert "defined by what it contains, never by what the other domains do not" in prompt
+        assert '"character"' not in prompt
