@@ -117,3 +117,37 @@ def test_consolidatie_splitst_boven_de_grens_in_groepen():
     tasks = clf._build_facet_consolidation_tasks(ctx, raw)
     assert len(tasks) == 3
     assert sum(len(t["candidates"]) for t in tasks) == 5
+
+
+# =============================================================================
+# Facet toewijzing
+# =============================================================================
+
+def test_toewijzing_batcht_unieke_labels():
+    clf = TaxonomyClassifier(CategoriesConfig(assignment_batch_k=2))
+    ctx = _fixture_context(["A"])
+    facets = {"A": [_consolidated("f1"), _consolidated("f2")]}
+    labels = {"A": {"i1": "groen", "i2": "groen", "i3": "duur", "i4": "snel"}}
+    tasks = clf._build_facet_assignment_tasks(ctx, facets, labels)
+    # drie unieke labels bij K=2 → twee batches
+    assert len(tasks) == 2
+
+
+def test_identiek_label_wordt_een_rep():
+    clf = TaxonomyClassifier(CategoriesConfig(assignment_batch_k=5))
+    ctx = _fixture_context(["A"])
+    facets = {"A": [_consolidated("f1"), _consolidated("f2")]}
+    labels = {"A": {"i1": "groen", "i2": "  GROEN "}}
+    tasks = clf._build_facet_assignment_tasks(ctx, facets, labels)
+    assert len(tasks) == 1
+    assert len(tasks[0]["reps"]) == 1
+    assert sorted(tasks[0]["reps"][0].idea_ids) == ["i1", "i2"]
+
+
+def test_domein_met_een_facet_krijgt_geen_taak():
+    """Auto-assign: bij één facet is er niets te kiezen."""
+    clf = TaxonomyClassifier(CategoriesConfig())
+    ctx = _fixture_context(["A"])
+    tasks = clf._build_facet_assignment_tasks(
+        ctx, {"A": [_consolidated("enig")]}, {"A": {"i1": "x"}})
+    assert tasks == []

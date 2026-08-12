@@ -114,6 +114,19 @@ nest_asyncio.apply()
 
 
 # =============================================================================
+# HELPERS
+# =============================================================================
+
+def _escalated(task: Dict, rep, reason: str) -> Dict:
+    """One rep on its own against the full menu — the escalation task shape.
+
+    Every key of the batch task it came from is kept, so the same prepare/parse
+    pair serves both passes and the two cannot drift apart.
+    """
+    return {**task, "reps": [rep], "menu": task["full_menu"], "reason": reason}
+
+
+# =============================================================================
 # SHARED DATACLASSES
 # =============================================================================
 
@@ -1869,6 +1882,233 @@ class TaxonomyClassifier:
                 names = ", ".join(f.facet_name for f in settled[label])
                 print(f"      {label}: {len(settled[label])} — {names}")
         return settled
+
+    # =========================================================================
+    # PHASE — FACET ASSIGNMENT (ideas into the settled inventory)
+    # =========================================================================
+
+    async def _apply_shortlist(self, tasks: List[Dict], card_text) -> None:
+        """Trim each task's menu to the union of its labels' nearest cards.
+
+        Runs outside the task builder, which has to stay pure and synchronous:
+        embedding is I/O. The gate is `len(menu) > shortlist_k` per scope; below
+        that the shortlist would return the whole menu anyway.
+        """
+        if not self._assign_shortlist_enabled or not tasks:
+            return
+        by_scope: Dict[Tuple, List[Dict]] = {}
+        for task in tasks:
+            by_scope.setdefault(task["scope"], []).append(task)
+
+        embedder = SharedEmbedder()
+        for scope_tasks in by_scope.values():
+            menu = scope_tasks[0]["full_menu"]
+            if len(menu) <= self._assign_shortlist_k:
+                continue
+            cards = await embedder.embed_texts(
+                [card_text(item.model_dump()) for item in menu])
+            reps = [rep for task in scope_tasks for rep in task["reps"]]
+            vectors = await embedder.embed_texts([rep.label or " " for rep in reps])
+            offset = 0
+            for task in scope_tasks:
+                n = len(task["reps"])
+                keep = shortlist_indices(
+                    vectors[offset:offset + n], cards, self._assign_shortlist_k)
+                task["menu"] = [menu[i] for i in keep]
+                offset += n
+
+    def _build_facet_assignment_tasks(
+        self,
+        ctx: PromptContext,
+        facets: Dict[str, List[ConsolidatedFacet]],
+        labels: Dict[str, Dict[str, str]],
+    ) -> List[Dict]:
+        """One task per batch of unique labels within one domain.
+
+        Ideas carrying the same normalized label become one rep: a single call
+        decides for all of them. One call per idea would resend the whole menu
+        thousands of times, which is what this level used to cost.
+
+        A domain with fewer than two facets gets no task — there is nothing to
+        choose, so `_run_facet_assignment` assigns it without a call.
+        """
+        tasks: List[Dict] = []
+        for label in sorted(facets):
+            menu = facets[label]
+            if len(menu) < 2:
+                continue
+            reps = group_label_reps((labels.get(label) or {}).items())
+            for group in make_batches(len(reps), self._assign_batch_k):
+                tasks.append({
+                    "domain_label": label,
+                    "scope": label,
+                    "reps": [reps[i] for i in group],
+                    "menu": list(menu),
+                    "full_menu": list(menu),
+                })
+        return tasks
+
+    def _facet_assignment_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            domain = ctx.domain(task["domain_label"])
+            menu = task["menu"]
+            ideas = [(rep.idea_ids[0], rep.label) for rep in task["reps"]]
+            prompt = build_facet_assignment_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                facets=menu,
+                ideas=ideas,
+            )
+            self._capture(
+                f"facet_assignment_{task['domain_label']}", prompt,
+                "facet_assignment",
+                {"model": self._model["facet_assignment"],
+                 "temperature": self._temperature,
+                 "max_tokens": self._max_tokens_assignment,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "n_facets": len(menu),
+                 "n_ideas": len(ideas),
+                 "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": build_facet_assignment_model(
+                    [f"F{i}" for i in range(1, len(menu) + 1)],
+                    [idea_id for idea_id, _ in ideas]),
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens_assignment,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["facet_assignment"],
+                    phase="classifier_facet_assignment"),
+            }
+        return prepare_fn
+
+    def _facet_assignment_parse_fn(self, pending: Optional[List[Dict]]):
+        """Accept validated items, fan them out over the rep's instances.
+
+        `pending` collects the reps this call could not place — missing,
+        duplicated, or answered F_NONE. They run a second pass as single calls
+        against the full menu. `pending=None` IS that second pass: an item that
+        fails there is left to the __UNASSIGNED__ net rather than looping.
+        """
+        def parse_fn(task: Dict, response) -> Dict[str, str]:
+            id_to_name = {f"F{i}": f.facet_name
+                          for i, f in enumerate(task["menu"], 1)}
+            rep_by_id = {rep.idea_ids[0]: rep for rep in task["reps"]}
+            ok, escalate = validate_batch_response(
+                list(rep_by_id), response,
+                id_field="assigned_facet_id", none_id="F_NONE")
+
+            out: Dict[str, str] = {}
+            for rep_id, item in ok.items():
+                facet_name = id_to_name[item.assigned_facet_id]
+                for idea_id in rep_by_id[rep_id].idea_ids:
+                    out[idea_id] = facet_name
+                    self._facet_confidence[idea_id] = item.confidence
+                    self._facet_valence[idea_id] = item.valence
+
+            if pending is not None:
+                for rep_id, reason in escalate.items():
+                    pending.append(_escalated(task, rep_by_id[rep_id], reason))
+            return out
+        return parse_fn
+
+    @staticmethod
+    def _facet_assignment_fallback_fn(pending: Optional[List[Dict]]):
+        """A definitively failed batch escalates whole."""
+        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
+            if pending is not None:
+                for rep in task["reps"]:
+                    pending.append(_escalated(task, rep, "batch_failed"))
+            return {}
+        return fallback_fn
+
+    async def _run_facet_assignment(
+        self,
+        ctx: PromptContext,
+        facets: Dict[str, List[ConsolidatedFacet]],
+        labels: Dict[str, Dict[str, str]],
+        verbose: bool,
+    ) -> Dict[str, Dict[str, str]]:
+        """Assign every idea to a facet within its own domain, with valence."""
+        if verbose:
+            print(f"\n  Facet assignment")
+        started = time.time()
+
+        assignments: Dict[str, Dict[str, str]] = {}
+        auto_assigned: Dict[str, int] = {}
+        for label, menu in facets.items():
+            if len(menu) != 1:
+                continue
+            idea_ids = list(labels.get(label) or {})
+            assignments[label] = {iid: menu[0].facet_name for iid in idea_ids}
+            for idea_id in idea_ids:
+                self._facet_confidence[idea_id] = 1.0
+            auto_assigned[label] = len(idea_ids)
+
+        tasks = self._build_facet_assignment_tasks(ctx, facets, labels)
+        await self._apply_shortlist(tasks, facet_card_text)
+
+        pending: List[Dict] = []
+        results = await self._dispatch(
+            "facet_assignment", tasks,
+            self._facet_assignment_prepare_fn(ctx),
+            self._facet_assignment_parse_fn(pending),
+            self._facet_assignment_fallback_fn(pending),
+            verbose, quiet=False,
+        )
+        for task, result in zip(tasks, results):
+            if result:
+                assignments.setdefault(task["domain_label"], {}).update(result)
+
+        if pending:
+            escalated = await self._dispatch(
+                "facet_assignment", pending,
+                self._facet_assignment_prepare_fn(ctx),
+                self._facet_assignment_parse_fn(None),
+                self._facet_assignment_fallback_fn(None),
+                verbose,
+            )
+            for task, result in zip(pending, escalated):
+                if result:
+                    assignments.setdefault(task["domain_label"], {}).update(result)
+
+            reasons: Dict[str, Counter] = defaultdict(Counter)
+            for task in pending:
+                reasons[task["domain_label"]][task["reason"]] += 1
+            for label, counts in sorted(reasons.items()):
+                self._action_log.append({
+                    "action": "facet_assignment_escalation",
+                    "domain": label, "reasons": dict(counts)})
+
+        # The net, after both passes: an idea with no facet still needs a home
+        # in the structure, or everything downstream silently loses it.
+        for label, menu in facets.items():
+            if not menu or label in auto_assigned:
+                continue
+            expected = set(labels.get(label) or {})
+            missing = expected - set(assignments.get(label, {}))
+            if missing:
+                print(f"    WARNING: {len(missing)}/{len(expected)} ideas received "
+                      f"no facet assignment in '{label}'")
+                for idea_id in missing:
+                    assignments.setdefault(label, {})[idea_id] = "__UNASSIGNED__"
+                    self._facet_confidence[idea_id] = 0.0
+
+        if verbose:
+            n_reps = sum(len(t["reps"]) for t in tasks)
+            print(f"    {len(tasks)} calls for {n_reps} unique labels, "
+                  f"{time.time() - started:.1f}s; {len(pending)} escalated; "
+                  f"{len(auto_assigned)} domains auto-assigned")
+            for label in sorted(assignments):
+                tag = " (auto)" if label in auto_assigned else ""
+                print(f"      {label}: {len(assignments[label])}"
+                      f"/{len(labels.get(label) or {})}{tag}")
+        return assignments
 
     # =========================================================================
     # PHASE 4 (P4): PER-DOMAIN FACET ASSIGNMENT (SmoothRequester)

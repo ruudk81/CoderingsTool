@@ -11,17 +11,6 @@ from pipeline.step_4_classifier.assignment_batching import (
 )
 
 
-class FakeIdea:
-    def __init__(self, idea_id, idea):
-        self.idea_id = idea_id
-        self.idea = idea
-        self.instance = ""
-        self.interpretation = ""
-        self.abstraction = ""
-        self.facet = ""
-        self.domain = ""
-
-
 class FakeItem:
     def __init__(self, idea_id, facet_id):
         self.idea_id = idea_id
@@ -34,16 +23,14 @@ class FakeResponse:
 
 
 def test_group_label_reps_dedups_normalized_labels():
-    ideas = [FakeIdea("a", "Warm gevoel"), FakeIdea("b", " warm gevoel "),
-             FakeIdea("c", "ouderwets")]
-    reps = group_label_reps(ideas, "idea", "")
+    reps = group_label_reps([("a", "Warm gevoel"), ("b", " warm gevoel "),
+                             ("c", "ouderwets")])
     assert [r.idea_ids for r in reps] == [["a", "b"], ["c"]]
     assert reps[0].label == "Warm gevoel"  # eerste-gezien label, niet de genormaliseerde
 
 
 def test_group_label_reps_never_merges_empty_labels():
-    ideas = [FakeIdea("a", ""), FakeIdea("b", "")]
-    reps = group_label_reps(ideas, "idea", "")
+    reps = group_label_reps([("a", ""), ("b", "")])
     assert [r.idea_ids for r in reps] == [["a"], ["b"]]
 
 

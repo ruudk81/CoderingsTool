@@ -7,11 +7,9 @@ unit-tested. The LLM plumbing lives in classifier.py; the response schemas in
 prompts_facet.py and prompts_attribute.py.
 """
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
-
-from pipeline.step_4_classifier.partition_labels import format_label
 
 
 @dataclass
@@ -21,23 +19,27 @@ class LabelRep:
     idea_ids: List[str]
 
 
-def group_label_reps(ideas, label_source: str, label_prefix: str) -> List[LabelRep]:
-    """Group ideas into one rep per normalized label (first-seen order).
+def group_label_reps(items: Iterable[Tuple[str, str]]) -> List[LabelRep]:
+    """Group (idea_id, label) pairs into one rep per normalized label.
 
-    The rep keeps the first-seen original label text. Identical labels share
-    one call and thus one facet/valence/confidence — consistent with the
-    pipeline's block-move semantics for identical normalized text. Empty labels
-    never merge: there is nothing to judge them equal on.
+    First-seen order, and the rep keeps the first-seen original label text.
+    Identical labels share one call and thus one facet/valence/confidence —
+    consistent with the pipeline's block-move semantics for identical normalized
+    text. Empty labels never merge: there is nothing to judge them equal on.
+
+    Takes rendered labels rather than idea objects so the caller that builds
+    assignment tasks can be a pure function of plain data, and so both
+    assignment levels feed it the same way.
     """
     reps: List[LabelRep] = []
     by_key: Dict[str, LabelRep] = {}
-    for idea in ideas:
-        label = format_label(idea, label_source, label_prefix)
+    for idea_id, label in items:
+        label = label or ""
         key = label.strip().lower()
         if key and key in by_key:
-            by_key[key].idea_ids.append(idea.idea_id)
+            by_key[key].idea_ids.append(idea_id)
             continue
-        rep = LabelRep(label=label, idea_ids=[idea.idea_id])
+        rep = LabelRep(label=label, idea_ids=[idea_id])
         reps.append(rep)
         if key:
             by_key[key] = rep
