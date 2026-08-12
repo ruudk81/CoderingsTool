@@ -167,6 +167,18 @@ def adjusted_rand_index(a: Dict[str, str], b: Dict[str, str]) -> float:
 # REPORTING
 # =============================================================================
 
+def _not_known_pct(snap: Dict) -> float:
+    """The not-known drain share, tolerant of snapshots written before the rename.
+
+    `data/step3_stability.jsonl` is append-only history, never rewritten (those
+    rows are the measured noise floor a later run gets judged against). Rows
+    recorded before 2026-08-12 carry the field under its old name,
+    `bare_evaluation_pct`. New snapshots only ever write `not_known_pct`; this
+    fallback exists for reading history, not for writing.
+    """
+    return snap.get("not_known_pct", snap.get("bare_evaluation_pct"))
+
+
 def print_run(snapshot: Dict, nf: Dict) -> None:
     print(f"\n{'=' * 72}\nTHIS RUN  ({snapshot['recorded_at']})\n{'=' * 72}")
     print(f"respondents {snapshot['respondents']} | ideas {snapshot['ideas']} | "
@@ -181,7 +193,7 @@ def print_run(snapshot: Dict, nf: Dict) -> None:
         mark = "  <-- standing" if key in DRAIN_KEYS else ""
         print(f"  {pct:>5.1f}%  {label}{mark}")
 
-    print(f"\nnot_known {snapshot['not_known_pct']}%   "
+    print(f"\nnot_known {_not_known_pct(snapshot)}%   "
           f"other {snapshot['other_pct']}%")
     print(f"noise floor     {nf['pct']}%  "
           f"({nf['minority']} of {nf['repeated_ideas']} repeated ideas on the "
@@ -201,7 +213,7 @@ def print_comparison(history: List[Dict]) -> None:
     for snap in history:
         nf = noise_floor(snap)
         print(f"{snap['recorded_at']:<22}{snap['substantive_domains']:>7}"
-              f"{snap['ideas']:>8}{snap['not_known_pct']:>8}"
+              f"{snap['ideas']:>8}{_not_known_pct(snap):>8}"
               f"{snap['other_pct']:>8}{nf['pct']:>8}{snap['processing_errors']:>8}")
 
     print("\npartition stability between consecutive runs (Adjusted Rand Index)")

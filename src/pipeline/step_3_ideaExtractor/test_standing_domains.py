@@ -498,7 +498,7 @@ def test_format_domain_overview_shows_the_exclusion_line_when_present():
     assert lines[-1] == "        ✗ Aanbod, Prijs"
 
 
-# ── 6. De oude sleutel mag nergens achterblijven ────────────────────────────
+# ── 11. De oude sleutel mag nergens achterblijven ───────────────────────────
 
 def test_no_file_in_src_still_mentions_the_old_key():
     """Een achtergebleven oude sleutel matcht nergens meer en faalt stil.
@@ -506,14 +506,22 @@ def test_no_file_in_src_still_mentions_the_old_key():
     Bouwt de oude sleutel uit delen op: anders bevat deze testfile zelf het
     verboden woord (in deze docstring, in de vergelijking hieronder) en zou
     de test zichzelf altijd als overtreder aanwijzen.
+
+    Matcht op woordgrens, niet als kale substring: `measure_stability.py` leest
+    historische snapshotregels (`data/step3_stability.jsonl`, geschreven vóór
+    deze hernoeming) tolerant terug via het oude veld `bare_evaluation_pct` —
+    dat bestand blijft ongewijzigd en mag dus niet herschreven worden. Die
+    veldnaam is geen sleutel-gebruik en moet dit niet laten falen.
     """
+    import re
     from pathlib import Path
     old_key = "bare_" + "evaluation"
+    pattern = re.compile(r"\b" + old_key + r"\b")
     this_file = Path(__file__).resolve()
     src = this_file.parents[2]
     offenders = [
         str(p.relative_to(src))
         for p in src.rglob("*.py")
-        if p != this_file and "__pycache__" not in str(p) and old_key in p.read_text(encoding="utf-8")
+        if p != this_file and "__pycache__" not in str(p) and pattern.search(p.read_text(encoding="utf-8"))
     ]
     assert offenders == [], f"nog aanwezig in: {offenders}"

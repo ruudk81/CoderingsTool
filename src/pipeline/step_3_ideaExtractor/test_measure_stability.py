@@ -6,7 +6,12 @@ Een meetlat die zelf niet geijkt is, levert getallen op die niemand kan wegen.
 
 import math
 
-from .measure_stability import adjusted_rand_index, noise_floor
+from .measure_stability import (
+    _not_known_pct,
+    adjusted_rand_index,
+    noise_floor,
+    print_comparison,
+)
 
 
 # ── Adjusted Rand Index ────────────────────────────────────────────────────
@@ -93,3 +98,50 @@ def test_no_repeated_texts_at_all_reports_zero_not_a_crash():
     nf = noise_floor(_snap({"1": "A"}, {"1": "uniek"}))
     assert nf["repeated_ideas"] == 0
     assert nf["pct"] == 0.0
+
+
+# ── Tolerante lezing van vóór-hernoeming snapshots (bare_evaluation_pct) ────
+#
+# `data/step3_stability.jsonl` is append-only geschiedenis en wordt nooit
+# herschreven — negen rijen daarin dragen nog het veld onder de oude naam.
+# Nieuwe snapshots schrijven alleen `not_known_pct`; het lezen moet met
+# beide overweg kunnen.
+
+def _full_snap(recorded_at, not_known_field, not_known_value):
+    domains = [
+        {"key": "Duurzaamheid", "label": "Duurzaamheid"},
+        {"key": "not_known", "label": "Kale associatie"},
+        {"key": "other", "label": "Overig"},
+    ]
+    return {
+        "recorded_at": recorded_at,
+        "substantive_domains": 1,
+        "ideas": 10,
+        "other_pct": 5.0,
+        "processing_errors": 0,
+        "assignments": {"1": "Duurzaamheid", "2": "Duurzaamheid"},
+        "texts": {"1": "bank", "2": "bank"},
+        "domains": domains,
+        not_known_field: not_known_value,
+    }
+
+
+def test_not_known_pct_prefers_the_new_field_but_falls_back_to_the_old_one():
+    assert _not_known_pct({"bare_evaluation_pct": 18.3}) == 18.3
+    assert _not_known_pct({"not_known_pct": 12.5}) == 12.5
+    assert _not_known_pct({"not_known_pct": 12.5, "bare_evaluation_pct": 18.3}) == 12.5
+
+
+def test_print_comparison_reads_mixed_old_and_new_snapshots_without_raising(capsys):
+    """De regressie: print_comparison() las `snap['not_known_pct']` onvoorwaardelijk,
+    dus een vergelijking die een vóór-hernoeming rij bevat gaf een KeyError in
+    plaats van een tabel.
+    """
+    old_row = _full_snap("2026-08-01T10:00:00", "bare_evaluation_pct", 18.3)
+    new_row = _full_snap("2026-08-12T10:00:00", "not_known_pct", 12.5)
+
+    print_comparison([old_row, new_row])
+
+    out = capsys.readouterr().out
+    assert "18.3" in out
+    assert "12.5" in out
