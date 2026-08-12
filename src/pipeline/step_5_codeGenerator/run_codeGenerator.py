@@ -454,7 +454,7 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
           f"across {len(pydantic_results)} domains")
 
     # Reconstruct taxonomy data for codebook generator
-    from pipeline.step_4_classifier.prompts_classifier import DiscoveredAttribute
+    from pipeline.step_5_codeGenerator.prompts_codeGenerator import CodebookAttribute
 
     partition_assignments = {}
     partition_attributes = {}
@@ -462,14 +462,13 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
 
     for name, result in pydantic_results.items():
         partition_assignments[name] = result.facet_assignments
-        # P7-consolidated attributes carry only attribute_name + attribute_description;
-        # parent_facet (= the facet key) and example_observations are absent → default them.
+        # Consolidated attributes carry attribute_name + attribute_description;
+        # example_observations may be absent → default it.
         partition_attributes[name] = {
             facet_name: [
-                DiscoveredAttribute(
+                CodebookAttribute(
                     attribute_name=a["attribute_name"],
                     attribute_description=a.get("attribute_description", ""),
-                    parent_facet=a.get("parent_facet", facet_name),
                     example_observations=a.get("example_observations", []),
                 )
                 for a in attrs

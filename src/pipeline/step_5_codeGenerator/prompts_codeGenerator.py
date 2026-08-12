@@ -19,8 +19,6 @@ if TYPE_CHECKING:
 
 from dataclasses import dataclass, field as dc_field
 
-from pipeline.step_4_classifier.prompts_classifier import DiscoveredAttribute
-
 
 # =============================================================================
 # PROMPT TEMPLATES (text lives in prompt_templates/, separate from code)
@@ -73,13 +71,37 @@ def _valence_tag(
 
 
 # =============================================================================
+# ATTRIBUTE VIEW (step 5's own reading of the cached taxonomy)
+# =============================================================================
+
+@dataclass
+class CodebookAttribute:
+    """One attribute as the codebook generator needs it.
+
+    Deliberately step 5's own type, and deliberately a dataclass rather than a
+    Pydantic model. Step 4's response models describe what an LLM proposed and
+    are validated against a reply; this describes what step 5 read out of the
+    taxonomy cache. Borrowing step 4's `DiscoveredAttribute` for this — which is
+    what happened until 2026-08-12 — meant reconstructing a response model from
+    cache dicts and defaulting the fields it demanded but step 5 never read.
+
+    A response model belongs to one phase of one step and does not cross a step
+    boundary. What crosses is the cache contract in models.py, or a small local
+    view like this one.
+    """
+    attribute_name: str
+    attribute_description: str = ""
+    example_observations: list = dc_field(default_factory=list)
+
+
+# =============================================================================
 # ENRICHED ATTRIBUTE (attribute + representative samples)
 # =============================================================================
 
 @dataclass
 class EnrichedAttribute:
     """Attribute enriched with representative samples per valence group."""
-    attribute: DiscoveredAttribute
+    attribute: CodebookAttribute
     positive_samples: list = dc_field(default_factory=list)   # max 3 ideas
     neutral_samples: list = dc_field(default_factory=list)    # max 3 ideas
     negative_samples: list = dc_field(default_factory=list)   # max 3 ideas
@@ -126,7 +148,7 @@ def build_code_from_attributes_prompt(
     dimension_description: str,
     domain_name: str,
     domain_definition: str,
-    domain_attributes: Dict[str, Dict[str, List[DiscoveredAttribute]]],
+    domain_attributes: Dict[str, Dict[str, List[CodebookAttribute]]],
     attribute_assignments: Optional[Dict[str, str]] = None,
     enriched_attributes: Optional[Dict[str, List[EnrichedAttribute]]] = None,
     theme_count_hint: Optional[tuple] = None,
@@ -137,7 +159,7 @@ def build_code_from_attributes_prompt(
         dimension_def: DimensionDefinition for taxonomy structure lines (or None for fallback)
         domain_name: Name of the domain being processed
         domain_definition: Inclusion definition of the domain
-        domain_attributes: {domain_name: {facet_name: [DiscoveredAttribute, ...]}}
+        domain_attributes: {domain_name: {facet_name: [CodebookAttribute, ...]}}
         attribute_assignments: idea_id -> attribute_name, for frequency display
         enriched_attributes: {facet_name: [EnrichedAttribute, ...]} for representative samples
         theme_count_hint: (low, high) theme count span from UMAP + HDBSCAN clustering, or None

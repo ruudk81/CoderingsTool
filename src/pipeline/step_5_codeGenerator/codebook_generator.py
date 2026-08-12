@@ -80,7 +80,7 @@ class DomainContext:
 class TaxonomyResult:
     """Taxonomy input from step 4 — only the fields P8/P9 consume."""
     partition_assignments: Dict[str, Dict[str, str]]  # domain -> {idea_id -> facet_name}
-    partition_attributes: Dict[str, Dict[str, list]]  # domain -> {facet -> [DiscoveredAttribute]}
+    partition_attributes: Dict[str, Dict[str, list]]  # domain -> {facet -> [CodebookAttribute]}
     attribute_assignments: Dict[str, str]  # idea_id -> attribute_name
 
 
