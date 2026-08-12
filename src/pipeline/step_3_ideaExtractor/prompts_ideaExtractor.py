@@ -609,12 +609,17 @@ For EACH domain provide: a label, a one-sentence inclusion definition, a boundar
 Begin processing now and provide your output as **valid JSON** following the response schema provided."""
 
 
-class DomainItem(BaseModel):
-    """A single domain discovered from the data."""
-    key: str = Field(
-        default="",
-        description="Pipeline identifier — leave empty; the pipeline sets it equal to the label."
-    )
+class DiscoveredDomainItem(BaseModel):
+    """A single domain exactly as the model may return it — no `key` field.
+
+    `key` is a pipeline-internal identifier (see `DomainItem` below): consumers
+    match on it — step 4's `taxonomy_health.DRAIN_KEYS` skips axis discovery for
+    the two standing domains by key — and `"other"` is one of the two reserved
+    values. A field the model can write, even one whose description says "leave
+    empty", is a field a confused or adversarial output can fill with exactly
+    that value. Leaving `key` out of the schema entirely closes that off: there
+    is no slot for the model to write it into, regardless of prompt wording.
+    """
     label: str = Field(
         description="Human-readable label in {language} (1-4 words)",
     )
@@ -629,9 +634,22 @@ class DomainItem(BaseModel):
     )
 
 
+class DomainItem(DiscoveredDomainItem):
+    """The internal carrier, used once a domain is the pipeline's own.
+
+    Adds `key`, the stable identifier consumers match on. Never model-writable —
+    the three LLM-facing response models below all type their `domains` list as
+    `DiscoveredDomainItem`, which has no such field. The pipeline converts a
+    response's items into `DomainItem`s itself, right after the call returns
+    (`DomainItem(**d.model_dump())`), then derives `key` from the label via
+    `_set_domain_keys` — except for the two standing domains, whose key is fixed.
+    """
+    key: str = ""
+
+
 class DomainChunkResponse(BaseModel):
     """LLM response for single chunk domain discovery."""
-    domains: List[DomainItem] = Field(
+    domains: List[DiscoveredDomainItem] = Field(
         description="fewest mutually exclusive domains possible for full coverage from the responses"
     )
 
@@ -764,7 +782,7 @@ class DomainConsolidatedResponse(BaseModel):
     The two standing domains are not here on purpose: they are fixed input built
     from dimension_data.py, and a field for them is a field they can drift in.
     """
-    domains: List[DomainItem] = Field(
+    domains: List[DiscoveredDomainItem] = Field(
         description="Fewest mutually exclusive domains needed for full coverage, consolidated from all chunks, excluding the two fixed domains of this dimension"
     )
 
@@ -801,7 +819,7 @@ Do not re-describe them and do not return them.
 ## YOUR TASK
 Re-describe the domains under "Current domains" above so that together they are MAXIMALLY orthogonal — each a single subject axis within the dimension, with sharp, non-overlapping boundaries.
 - Return exactly the domains under "Current domains", the SAME number and in the SAME ORDER (do not merge, split, add, or drop — only sharpen the wording).
-- For each domain provide: label, definition (one subject axis), boundary_test (a yes/no membership question), exclusions (the neighbouring domains it must not be confused with). Do NOT output a key.
+- For each domain provide: label, definition (one subject axis), boundary_test (a yes/no membership question), exclusions (the neighbouring domains it must not be confused with).
 - DESCRIPTIVE DOMAINS ONLY: every domain names a DESCRIPTIVE subject/aspect — never a sentiment or judgment. Even if all its ideas are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; direction (positive/negative) is captured separately by valence, never by domains. Reframe any evaluative bucket (e.g. "reputation/appreciation", "good vs bad") descriptively as the subject being judged.
 - Use the representative ideas to find each domain's true center and the real boundaries between neighbours.
 - All labels and definitions in {language}.
@@ -812,7 +830,7 @@ Provide your output as valid JSON following the response schema provided."""
 
 class ReformulatedDomains(BaseModel):
     """Re-described domains for maximal orthogonality (same count + same order as input)."""
-    domains: List[DomainItem] = Field(
+    domains: List[DiscoveredDomainItem] = Field(
         description="Same domains, same count and order, re-described for maximal orthogonality"
     )
 

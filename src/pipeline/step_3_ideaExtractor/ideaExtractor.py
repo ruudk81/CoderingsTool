@@ -14,6 +14,7 @@ which handles rate pacing, concurrency control, workers, monitoring, and retry.
 
 # === MODULES ========================================================================================================
 import asyncio
+import contextlib
 import random
 import statistics
 import logging
@@ -185,6 +186,7 @@ class IdeaExtractor:
         self._rng = random.Random(SAMPLING_SEED)
         self._captured_domain_consolidation = False
         self._captured_domain_orthogonalize = False
+        self._captured_standing_labels = False
         # Initialize tokenizer for token estimation (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
@@ -814,20 +816,45 @@ class IdeaExtractor:
             labels_task = asyncio.create_task(
                 self._translate_standing_labels(dimension, context_specifiers))
 
-            if len(category_results) == 1:
-                # Single chunk — use directly
-                categories_consolidated = DomainConsolidatedResponse(
-                    domains=category_results[0]['response'].domains
-                )
-            else:
-                categories_consolidated = await self._consolidate_domains(
-                    category_results, context_specifiers, sample_responses=sample)
+            try:
+                if len(category_results) == 1:
+                    # Single chunk — use directly
+                    categories_consolidated = DomainConsolidatedResponse(
+                        domains=category_results[0]['response'].domains
+                    )
+                else:
+                    categories_consolidated = await self._consolidate_domains(
+                        category_results, context_specifiers, sample_responses=sample)
+            except BaseException:
+                # Consolidation failed/was cancelled — labels_task would otherwise be
+                # abandoned mid-flight, still holding a semaphore slot and TPM budget
+                # while this exception unwinds the caller.
+                labels_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await labels_task
+                raise
+
+            # The response schema carries no `key` — convert to the internal carrier
+            # (DomainItem) here, once, right after the model output is in hand.
+            discovered = [DomainItem(**d.model_dump()) for d in categories_consolidated.domains]
 
             # The two standing domains join the discovered ones here, so every consumer
             # downstream — the assignment menu, the domain table, the persisted
             # metadata — sees a single list and needs no special case.
             standing = self._resolve_standing_domains(await labels_task, dimension)
-            categories_consolidated.domains = list(categories_consolidated.domains) + standing
+
+            # Nothing guarantees a discovered label differs from a standing one — the
+            # standing labels come from a call that runs in parallel and never sees
+            # discovery's or consolidation's output. A collision would merge the two
+            # into one exemplar bucket downstream and let a same-label rename move
+            # ideas out of the standing domain, so it is the discovered label that
+            # moves, never the standing one.
+            for old_label, new_label in self._disambiguate_against_standing(discovered, standing):
+                self.verbose_reporter.stat_line(
+                    f"  Domain label collision with a standing domain: "
+                    f"renamed '{old_label}' -> '{new_label}'")
+
+            categories_consolidated.domains = discovered + standing
 
             self.verbose_reporter.stat_line(
                 f"  Domains: {[c.label for c in categories_consolidated.domains]}")
@@ -1019,6 +1046,15 @@ class IdeaExtractor:
             # discovered yet — a placeholder is enough for sizing.
             return "(domains will be discovered during extraction)"
 
+        def _domain_line(c) -> str:
+            line = f"  • {c.label} = \"{c.definition}\"\n      ✓ {c.boundary_test}"
+            # The two standing domains carry no exclusions by construction (their
+            # breadth IS their function — there is nothing to name as excluded), so
+            # the ✗ line is conditional rather than printed dangling for exactly them.
+            if c.exclusions:
+                line += f"\n      ✗ {', '.join(c.exclusions)}"
+            return line
+
         return (
             "Pick the single best-fitting domain. The ✓ test and ✗ list help you CHOOSE BETWEEN "
             "domains; they are not grounds to reject a plausibly related idea.\n"
@@ -1026,10 +1062,7 @@ class IdeaExtractor:
             "  - sending an idea to a catch-all domain that one of the others does name;\n"
             "  - forcing an idea into a domain whose subject the idea never mentions.\n"
             "Each domain lists its definition, ✓ a membership test, and ✗ neighbouring domains it should not be confused with:\n"
-            + "\n".join(
-                f"  • {c.label} = \"{c.definition}\"\n      ✓ {c.boundary_test}\n      ✗ {', '.join(c.exclusions)}"
-                for c in domains
-            )
+            + "\n".join(_domain_line(c) for c in domains)
         )
 
     def _build_taxonomy_enriched_prompt(self, response: str) -> str:
@@ -1274,6 +1307,66 @@ class IdeaExtractor:
         return discovered, standing
 
     @staticmethod
+    def _disambiguate_against_standing(discovered: List, standing: List) -> List[Tuple[str, str]]:
+        """Rename any DISCOVERED domain whose label collides with a standing one.
+
+        Nothing ties the two label spaces together: the standing labels come from
+        `_translate_standing_labels`, a call that runs in parallel with discovery
+        and consolidation and sees neither of their outputs. On a collision,
+        `_orthogonalize_domains` groups exemplars — and later renames ideas — by
+        label, so a shared label would either merge a standing domain's exemplars
+        into the discovered one's bucket (and, via the rename, empty the standing
+        domain of its ideas) or put a duplicate label on the assignment menu.
+
+        The standing label is fixed wording from `dimension_data.py` and never
+        moves — only the discovered domain is renamed, deterministically (lowest
+        free numeric suffix), so the same collision resolves the same way on a
+        rerun.
+
+        Mutates `discovered` in place. Returns the (old_label, new_label) renames
+        applied, for logging.
+        """
+        standing_labels = {d.label for d in standing}
+        taken = standing_labels | {d.label for d in discovered}
+        renames = []
+        for d in discovered:
+            if d.label in standing_labels:
+                old_label = d.label
+                n = 2
+                candidate = f"{old_label} ({n})"
+                while candidate in taken:
+                    n += 1
+                    candidate = f"{old_label} ({n})"
+                d.label = candidate
+                taken.add(candidate)
+                renames.append((old_label, candidate))
+        return renames
+
+    @staticmethod
+    def _disambiguate_and_remap(new_domains: List, rename: Dict) -> Tuple[List, Dict, List[Tuple[str, str]]]:
+        """Apply `_disambiguate_against_standing` to a post-merge domain list.
+
+        Used after `_orthogonalize_domains`' re-description: a domain re-described
+        by its content can coincidentally land on a standing label. Keeps `rename`
+        (label -> label, used to move ideas to their domain's new name) pointed at
+        the final, disambiguated label rather than the collided one, so an idea
+        being renamed toward the collision lands on the same label its domain
+        entry now has.
+
+        Returns (new_domains, rename, collisions) — `rename` is the same dict,
+        updated in place; `collisions` is the (old_label, new_label) list applied.
+        """
+        new_discovered, new_standing = IdeaExtractor._partition_standing(new_domains)
+        collisions = IdeaExtractor._disambiguate_against_standing(new_discovered, new_standing)
+        if collisions:
+            IdeaExtractor._set_domain_keys(new_discovered)  # keys must follow the final labels
+            for old_label, new_label in collisions:
+                for k, v in list(rename.items()):
+                    if v == old_label:
+                        rename[k] = new_label
+        return new_discovered + new_standing, rename, collisions
+
+    @staticmethod
     def _merge_orthogonalized(new_discovered, discovered, standing) -> Tuple[Optional[List], Optional[Dict]]:
         """Reassemble the domain list after a re-description of the discovered ones.
 
@@ -1324,6 +1417,16 @@ class IdeaExtractor:
             dimension=dimension,
         )
         client, model = self._get_client_and_model("taxonomy")
+
+        if self.prompt_printer and not self._captured_standing_labels:
+            self.prompt_printer.capture_prompt(
+                step_name="idea_extraction_domains",
+                utility_name="IdeaExtractor",
+                prompt_content=prompt,
+                prompt_type="standing_labels",
+                metadata={"model": model, "survey_question": self.var_lab, "language": self.language}
+            )
+            self._captured_standing_labels = True
         try:
             async with self.semaphore:
                 await self.tpm_bucket.wait_and_acquire(
@@ -1583,13 +1686,24 @@ class IdeaExtractor:
                 prompt=prompt, temperature=0.0, **get_reasoning_params(model, phase="idea_extraction_taxonomy"),
             )
 
+        # The response schema carries no `key` — convert to the internal carrier
+        # (DomainItem) here, once, right after the model output is in hand.
+        new_discovered_from_llm = [DomainItem(**d.model_dump()) for d in res.domains]
         new_domains, rename = self._merge_orthogonalized(
-            list(res.domains), discovered, standing)
+            new_discovered_from_llm, discovered, standing)
         if new_domains is None:
             self.verbose_reporter.stat_line(
                 f"  Domain orthogonalize skipped (count mismatch: "
                 f"{len(res.domains)} vs {len(discovered)} discovered)")
             return
+
+        # A re-described domain can coincidentally land on a standing label — fix it
+        # on the discovered side and keep `rename` pointed at the final label.
+        new_domains, rename, collisions = self._disambiguate_and_remap(new_domains, rename)
+        for old_label, new_label in collisions:
+            self.verbose_reporter.stat_line(
+                f"  Domain label collision with a standing domain: "
+                f"renamed '{old_label}' -> '{new_label}'")
 
         self.domains = new_domains
         for resp in results:

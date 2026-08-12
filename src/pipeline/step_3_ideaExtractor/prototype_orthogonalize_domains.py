@@ -152,7 +152,15 @@ async def main():
                                  **get_reasoning_params(model))
     # map by ORDER (key is no longer produced): res.domains[j] ↔ discovered_keys[j].
     # Standing keys are absent on purpose — they fall back to their old anchor below.
-    new_by_key = {discovered_keys[j]: res.domains[j] for j in range(min(len(discovered_keys), len(res.domains)))}
+    # Same refusal as production (`_merge_orthogonalized`): a count mismatch means the
+    # order-based mapping below is meaningless, so this must stop rather than quietly
+    # report agreement numbers for a mapping that never held.
+    if len(res.domains) != len(discovered_keys):
+        raise RuntimeError(
+            f"Domain orthogonalize count mismatch: {len(res.domains)} returned vs "
+            f"{len(discovered_keys)} discovered — refusing to map by position."
+        )
+    new_by_key = {discovered_keys[j]: res.domains[j] for j in range(len(discovered_keys))}
 
     # anchors: old (label+definition) vs new (label+def+boundary+excl) vs new (def only)
     old_anchors = _l2(await emb.embed_texts([f"{labels[j]}: {old_def[keys[j]]}" for j in range(len(keys))]))
