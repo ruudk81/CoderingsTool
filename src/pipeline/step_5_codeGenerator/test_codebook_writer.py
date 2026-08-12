@@ -282,3 +282,65 @@ def test_resolve_duplicate_names_rejects_mismatched_list_lengths():
     except ValueError:
         return
     raise AssertionError("een lengteverschil tussen codes en shapes had geweigerd moeten worden")
+
+
+# ---------------------------------------------------------------------------
+# find_naming_mismatches — deterministische achtervang tegen een naam die
+# zijn eigen inhoud niet beschrijft
+# ---------------------------------------------------------------------------
+
+def test_find_naming_mismatches_fires_on_the_real_example():
+    # The live-run defect: a code named for communication/visibility whose
+    # actual members are entirely a sustainability cluster — no word in the
+    # name occurs in any member's name.
+    sustainability_members = [
+        "Algemene duurzame gerichtheid", "Toezicht op investeringen",
+        "Commerciële gerichtheid", "Maatschappelijk-progressieve positionering",
+        "Veranderingsgerichtheid", "Duurzaam imago", "Relatieve duurzaamheidspositie",
+        "Geloofwaardigheid van duurzaamheid", "Ecologische focus",
+        "Concrete ecologische inzet", "Transparantie en openheid",
+    ]
+    concept_by_id = {f"A{i}": concept(f"A{i}", name, n_resp=40)
+                      for i, name in enumerate(sustainability_members)}
+    codes = [code("Communicatie en zichtbaarheid", valence="positive")]
+    shapes = [shape("K1", "positive", "communicatie", list(concept_by_id), n_resp=477)]
+
+    mismatches = codebook_writer.find_naming_mismatches(codes, shapes, concept_by_id)
+
+    assert len(mismatches) == 1
+    assert mismatches[0]["code_name"] == "Communicatie en zichtbaarheid"
+    assert mismatches[0]["n_resp"] == 477
+    assert sorted(mismatches[0]["members"]) == sorted(sustainability_members)
+
+
+def test_find_naming_mismatches_stays_silent_on_a_matching_code():
+    concept_by_id = {
+        "A1": concept("A1", "Heldere communicatie"),
+        "A2": concept("A2", "Reclamekanaal"),
+        "A3": concept("A3", "Reclame-uiting"),
+    }
+    codes = [code("Merkcommunicatie en reclame", valence="positive")]
+    shapes = [shape("K1", "positive", "communicatie", ["A1", "A2", "A3"], n_resp=66)]
+
+    mismatches = codebook_writer.find_naming_mismatches(codes, shapes, concept_by_id)
+
+    assert mismatches == []
+
+
+def test_find_naming_mismatches_skips_a_shape_with_no_resolvable_members():
+    codes = [code("Naam")]
+    shapes = [shape("K1", "neutral", "u", ["A1"])]
+
+    mismatches = codebook_writer.find_naming_mismatches(codes, shapes, {})
+
+    assert mismatches == []
+
+
+def test_find_naming_mismatches_rejects_mismatched_list_lengths():
+    codes = [code("Naam")]
+    shapes = [shape("K1", "neutral", "u", ["A1"]), shape("K2", "neutral", "u", ["A2"])]
+    try:
+        codebook_writer.find_naming_mismatches(codes, shapes, {})
+    except ValueError:
+        return
+    raise AssertionError("een lengteverschil tussen codes en shapes had geweigerd moeten worden")

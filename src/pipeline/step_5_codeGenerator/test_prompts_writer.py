@@ -64,6 +64,30 @@ def test_prompt_shows_attribute_names_not_ids():
     assert "A1" not in prompt
 
 
+def test_prompt_shows_member_definitions_not_just_names():
+    # A pooled/merged shape can carry many members; the writer must see what
+    # each one actually means, not just a bare label — otherwise it has to
+    # guess a common thread from short names alone.
+    shapes = [shape("K1", "positive", "duurzaam", ["A1", "A2"])]
+    concept_by_id = {
+        "A1": Concept(attribute_id="A1", name="Ecologische focus",
+                      definition="Aandacht voor het milieu in investeringen.",
+                      domain="Domein", facet="Facet", n_iu=10,
+                      resp_ids=frozenset({"R1"}), resp_pos=frozenset({"R1"}),
+                      resp_neg=frozenset(), resp_neu=frozenset()),
+        "A2": Concept(attribute_id="A2", name="Transparantie en openheid",
+                      definition="Open communicatie over waar het geld heen gaat.",
+                      domain="Domein", facet="Facet", n_iu=10,
+                      resp_ids=frozenset({"R2"}), resp_pos=frozenset({"R2"}),
+                      resp_neg=frozenset(), resp_neu=frozenset()),
+    }
+    prompt = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
+    assert "Ecologische focus" in prompt
+    assert "Aandacht voor het milieu in investeringen." in prompt
+    assert "Transparantie en openheid" in prompt
+    assert "Open communicatie over waar het geld heen gaat." in prompt
+
+
 def test_prompt_contains_no_respondent_counts():
     shapes = [shape("K1", "positive", "prijs", ["A1"], n_resp=312)]
     concept_by_id = {"A1": concept("A1", "Prijs", n_resp=312)}

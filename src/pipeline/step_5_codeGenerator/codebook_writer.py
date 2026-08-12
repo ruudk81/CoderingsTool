@@ -19,8 +19,9 @@ draait — een prompt-regel wordt hier nooit vertrouwd als enige garantie.
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from config import get_reasoning_params
 from utils.llm import RateLimits
@@ -212,3 +213,66 @@ def resolve_duplicate_names(
                     renamed_n_resp=len(shape.resp_ids),
                 )
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# find_naming_mismatches — deterministische achtervang tegen een naam die zijn
+# eigen inhoud niet beschrijft
+# ---------------------------------------------------------------------------
+
+_STOPWORDS = {
+    # Dutch
+    "de", "het", "een", "en", "van", "in", "op", "voor", "met", "aan", "bij",
+    "over", "tot", "als", "naar", "door", "om", "uit", "is", "zijn", "haar",
+    "hun", "wordt", "worden", "niet", "geen", "die", "dat", "dit", "deze",
+    "ook", "meer", "wel", "nog",
+    # English
+    "the", "a", "an", "and", "of", "in", "on", "for", "with", "to", "by",
+    "at", "is", "are", "as", "or", "this", "that", "these", "those", "not",
+}
+
+
+def _meaningful_words(text: str) -> Set[str]:
+    """Lowercased word tokens, minus stopwords and words too short to carry
+    meaning (2 letters or fewer) — generic linguistic filtering, not use-case
+    vocabulary."""
+    return {word for word in re.findall(r"[^\W\d_]+", text.lower())
+            if len(word) > 2 and word not in _STOPWORDS}
+
+
+def find_naming_mismatches(
+    codes: List[ConsolidatedCode], shapes: List[CodeShape], concept_by_id: Dict[str, Concept],
+) -> List[dict]:
+    """Deterministic check: does a written code name share a meaningful word
+    with the name of at least one of its own member attributes? A codebook
+    entry whose name has nothing lexically in common with what it actually
+    contains is the signature of the writer having named the wrong material —
+    a stale label, or content meant for a different code in the same batch.
+    Prompt rules have failed silently before in this codebase, so this runs
+    regardless of what the model claimed about itself.
+
+    Not an auto-correction: a false positive here (two honestly-worded terms
+    for the same thing that happen not to share a stem) costs one printed
+    line; a false negative would be a wrong code shipped silently, which is
+    what this exists to catch. `codes[i]` must be the text written for
+    `shapes[i]` — the same positional contract as `resolve_duplicate_names`.
+    A shape with no resolvable member names is skipped, not flagged: there is
+    nothing to compare the name against."""
+    if len(codes) != len(shapes):
+        raise ValueError("codes and shapes must be positional pairs of equal length")
+
+    mismatches: List[dict] = []
+    for code, shape in zip(codes, shapes):
+        code_words = _meaningful_words(code.code_name)
+        member_names = [concept_by_id[member_id].name
+                        for member_id in shape.members if member_id in concept_by_id]
+        if not code_words or not member_names:
+            continue
+        if any(code_words & _meaningful_words(name) for name in member_names):
+            continue
+        mismatches.append({
+            "code_name": code.code_name,
+            "n_resp": len(shape.resp_ids),
+            "members": member_names,
+        })
+    return mismatches

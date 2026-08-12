@@ -2,11 +2,14 @@
 
 Dit vult alleen de teksten in — naam, definitie, diagnostische test, indicatoren,
 een grensnotitie tegen de naaste buurcode, en het enige veto dat deze stap nog
-mag uitoefenen: `nameable`. De prompt toont per code alleen de attribuutNAMEN en
-de al besloten richting; respondenttellingen, domein, facet en attribuut-ids
-zijn oordeel-irrelevant en komen nergens in de prompt of het responsemodel voor.
-De richting wordt wél getoond — die is al besloten en moet gerespecteerd worden,
-niet herleid.
+mag uitoefenen: `nameable`. De prompt toont per code elk lid-attribuut als
+naam + definitie (nooit alleen een naam — een gepoolde of MECE-samengevoegde
+vorm kan tien of meer leden dragen, en een kale naamlijst geeft het model te
+weinig grond om een naam en definitie te schrijven die bij de werkelijke
+inhoud past) en de al besloten richting; respondenttellingen, domein, facet en
+attribuut-ids zijn oordeel-irrelevant en komen nergens in de prompt of het
+responsemodel voor. De richting wordt wél getoond — die is al besloten en moet
+gerespecteerd worden, niet herleid.
 """
 from __future__ import annotations
 
@@ -29,14 +32,19 @@ def _ordered(shapes) -> List[object]:
     return [entry.shape for entry in _shuffled(keyed)]
 
 
-def _topic_names(shape, concept_by_id) -> List[str]:
-    return [concept_by_id[member_id].name
-            for member_id in shape.members if member_id in concept_by_id]
+def _members(shape, concept_by_id) -> List[object]:
+    return [concept_by_id[member_id] for member_id in shape.members if member_id in concept_by_id]
 
 
 def _code_block(shape, concept_by_id) -> str:
-    topics = ", ".join(_topic_names(shape, concept_by_id)) or "—"
-    return f"[{shape.key}] direction: {shape.valence}\n  Topics: {topics}"
+    """Renders each member as its own name + definition line, not a flat name
+    list — a pooled or MECE-merged shape can carry a dozen members, and a bare
+    list of short attribute names gives the model too little to ground a name
+    and definition in what the shape actually contains."""
+    members = _members(shape, concept_by_id)
+    lines = [f"  - {m.name}: {m.definition}" for m in members]
+    body = "\n".join(lines) if lines else "  - —"
+    return f"[{shape.key}] direction: {shape.valence}\n  Members:\n{body}"
 
 
 class CodeText(BaseModel):

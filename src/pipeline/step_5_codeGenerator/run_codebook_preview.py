@@ -33,7 +33,9 @@ from config import MISCELLANEOUS_CODE_LABELS
 from utils.llm import token_tracker
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
-from pipeline.step_5_codeGenerator.codebook_writer import resolve_duplicate_names, write_codebook
+from pipeline.step_5_codeGenerator.codebook_writer import (
+    find_naming_mismatches, resolve_duplicate_names, write_codebook,
+)
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.consolidator import CodeShape, consolidate, normalize_relations
@@ -272,6 +274,14 @@ def main() -> None:
         for c in collisions:
             print(f"  '{c['name']}' ({c['kept_n_resp']} resp.) behouden; "
                   f"kleinere code ({c['renamed_n_resp']} resp.) hernoemd naar '{c['renamed_to']}'")
+
+    mismatches = find_naming_mismatches(codes, shapes, concept_by_id)
+    if mismatches:
+        print(f"WAARSCHUWING: {len(mismatches)} code(s) waarvan de naam geen woord deelt "
+              f"met een van zijn bronattributen:")
+        for m in mismatches:
+            print(f"  '{m['code_name']}' ({m['n_resp']} resp.) — leden: "
+                  f"{', '.join(m['members'])}")
 
     total_merges = sum(r["merges"] for r in mece_rounds)
     if mece_rounds:
