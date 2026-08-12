@@ -13,6 +13,7 @@ from pipeline.step_5_codeGenerator import relations
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult
+from pipeline.step_5_codeGenerator.prompts_umbrella_merge import Umbrella
 
 
 def concept(attribute_id, name):
@@ -61,3 +62,21 @@ def test_resolve_relations_raises_when_the_call_fails(monkeypatch):
     except RuntimeError:
         return
     raise AssertionError("een mislukte call had een RuntimeError moeten geven")
+
+
+def test_resolve_umbrella_merge_returns_none_when_the_call_fails_instead_of_raising(monkeypatch):
+    # The one contract this dispatch function is meant to break with
+    # resolve_relations: a failed call must NOT hard-stop the pipeline. A missed
+    # cleanup gives a finer-grained codebook, not a broken one. This pins that a
+    # refactor that copies resolve_relations's `raise RuntimeError(...)` in here
+    # would break this test.
+    async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        return [fallback_fn(tasks[0], "boom")]
+
+    monkeypatch.setattr(SmoothRequester, "process_all", fake_process_all)
+
+    umbrellas = [Umbrella(name="Bankdiensten", definition="def", member_names=("Betalen",))]
+    result = asyncio.run(
+        relations.resolve_umbrella_merge(umbrellas, CodebookConfig(), "nl-NL")
+    )
+    assert result is None

@@ -20,8 +20,12 @@ UMBRELLAS = [
 
 
 def test_prompt_contains_no_member_counts():
+    # Form-independent: the fixture's names and member names contain no digit,
+    # so ANY digit in the rendered prompt would have to be a count — "2", "(2)",
+    # "2 topics", all equally caught. A substring check for " 2 " specifically
+    # would miss "(2)".
     prompt = build_umbrella_merge_prompt(UMBRELLAS, "nl-NL")
-    assert " 2 " not in prompt and " 3 " not in prompt
+    assert not any(char.isdigit() for char in prompt)
     assert "aantal" not in prompt.lower() and "count" not in prompt.lower()
 
 
