@@ -23,7 +23,7 @@ Three questions, in order of weight:
 
   3. Where does the mass sit, and are the drains behaving?
      A large `other` means the discovered menu is missing something. A large
-     `bare_evaluation` is only healthy if those answers genuinely name no subject —
+     `not_known` is only healthy if those answers genuinely don't know the subject —
      it is the counter-metric for any change that widens the drains.
 
 Only respondents with exactly one idea are used for (1) and (2): then the domain is
@@ -57,7 +57,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 SNAPSHOT_FILE = project_root / "data" / "step3_stability.jsonl"
 
-DRAIN_KEYS = ("bare_evaluation", "other")
+DRAIN_KEYS = ("not_known", "other")
 
 
 # =============================================================================
@@ -98,7 +98,7 @@ def build_snapshot(rows, meta) -> Dict:
         "substantive_domains": sum(1 for d in (meta.domains or [])
                                    if d.get("key") not in DRAIN_KEYS),
         "shares": {l: round(100 * n / total, 1) for l, n in counts.most_common()},
-        "bare_evaluation_pct": round(drain_share("bare_evaluation"), 1),
+        "not_known_pct": round(drain_share("not_known"), 1),
         "other_pct": round(drain_share("other"), 1),
         "assignments": single,      # respondent_id -> domain label
         "texts": text_of,           # respondent_id -> response text
@@ -181,7 +181,7 @@ def print_run(snapshot: Dict, nf: Dict) -> None:
         mark = "  <-- standing" if key in DRAIN_KEYS else ""
         print(f"  {pct:>5.1f}%  {label}{mark}")
 
-    print(f"\nbare_evaluation {snapshot['bare_evaluation_pct']}%   "
+    print(f"\nnot_known {snapshot['not_known_pct']}%   "
           f"other {snapshot['other_pct']}%")
     print(f"noise floor     {nf['pct']}%  "
           f"({nf['minority']} of {nf['repeated_ideas']} repeated ideas on the "
@@ -196,12 +196,12 @@ def print_run(snapshot: Dict, nf: Dict) -> None:
 def print_comparison(history: List[Dict]) -> None:
     print(f"\n{'=' * 72}\nACROSS {len(history)} RUNS\n{'=' * 72}")
 
-    header = f"{'run':<22}{'subst':>7}{'ideas':>8}{'bare%':>8}{'other%':>8}{'noise%':>8}{'errors':>8}"
+    header = f"{'run':<22}{'subst':>7}{'ideas':>8}{'unk%':>8}{'other%':>8}{'noise%':>8}{'errors':>8}"
     print(header)
     for snap in history:
         nf = noise_floor(snap)
         print(f"{snap['recorded_at']:<22}{snap['substantive_domains']:>7}"
-              f"{snap['ideas']:>8}{snap['bare_evaluation_pct']:>8}"
+              f"{snap['ideas']:>8}{snap['not_known_pct']:>8}"
               f"{snap['other_pct']:>8}{nf['pct']:>8}{snap['processing_errors']:>8}")
 
     print("\npartition stability between consecutive runs (Adjusted Rand Index)")

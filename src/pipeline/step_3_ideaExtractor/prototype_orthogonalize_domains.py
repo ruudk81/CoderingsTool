@@ -42,7 +42,7 @@ import models
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     build_orthogonalize_domains_prompt,
     ReformulatedDomains,
-    STANDING_BARE_KEY,
+    STANDING_NOT_KNOWN_KEY,
     STANDING_OTHER_KEY,
 )
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
@@ -114,7 +114,7 @@ async def main():
         exemplars[k] = [ideas[di[r]] for r in rep]
 
     # standing domains are fixed reference only — not re-described, not returned
-    standing_keys = {STANDING_BARE_KEY, STANDING_OTHER_KEY}
+    standing_keys = {STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY}
     discovered_domains = [d for d in domains if d["key"] not in standing_keys]
     standing_domains = [d for d in domains if d["key"] in standing_keys]
     discovered_keys = [d["key"] for d in discovered_domains]

@@ -15,7 +15,7 @@ from pipeline.step_3_ideaExtractor.dimension_data import (
 )
 from pipeline.step_3_ideaExtractor.ideaExtractor import IdeaExtractor
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
-    STANDING_BARE_KEY,
+    STANDING_NOT_KNOWN_KEY,
     STANDING_OTHER_KEY,
     DiscoveredDomainItem,
     DomainChunkResponse,
@@ -82,7 +82,7 @@ def test_resolve_falls_back_when_there_is_no_translation(dimension_key):
     d = get_dimension(dimension_key)
     out = IdeaExtractor._resolve_standing_domains(None, d)
 
-    assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
+    assert [c.key for c in out] == [STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY]
     assert out[0].label == d.standing_not_known.fallback_label
     assert out[1].label == d.standing_other.fallback_label
     assert all(c.boundary_test.strip() for c in out)
@@ -98,7 +98,7 @@ def test_resolve_takes_the_label_and_nothing_else(dimension_key):
     assert [c.label for c in out] == ["Kale associatie", "Overig"]
     assert out[0].definition == d.standing_not_known.definition
     assert out[1].definition == d.standing_other.definition
-    assert [c.key for c in out] == [STANDING_BARE_KEY, STANDING_OTHER_KEY]
+    assert [c.key for c in out] == [STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY]
 
 
 def test_resolve_standing_domains_have_no_exclusions():
@@ -136,7 +136,7 @@ def test_set_domain_keys_derives_from_label_but_spares_the_standing_two():
     domains = [
         DomainItem(key="", label="Duurzaamheid",
                    definition="d", boundary_test="t", exclusions=[]),
-        DomainItem(key=STANDING_BARE_KEY, label="Algemene beoordeling",
+        DomainItem(key=STANDING_NOT_KNOWN_KEY, label="Algemene beoordeling",
                    definition="d", boundary_test="t", exclusions=[]),
         DomainItem(key=STANDING_OTHER_KEY, label="Niet-geclassificeerd onderwerp",
                    definition="d", boundary_test="t", exclusions=[]),
@@ -144,7 +144,7 @@ def test_set_domain_keys_derives_from_label_but_spares_the_standing_two():
     IdeaExtractor._set_domain_keys(domains)
 
     assert [c.key for c in domains] == [
-        "Duurzaamheid", STANDING_BARE_KEY, STANDING_OTHER_KEY]
+        "Duurzaamheid", STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY]
 
 
 def test_set_domain_keys_accepts_no_domains():
@@ -273,7 +273,7 @@ def _mk(key, label):
 
 def test_partition_standing_splits_and_keeps_order():
     domains = [_mk("Duurzaamheid", "Duurzaamheid"),
-               _mk(STANDING_BARE_KEY, "Kale associatie"),
+               _mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"),
                _mk("Aanbod", "Aanbod"),
                _mk(STANDING_OTHER_KEY, "Overig")]
     discovered, standing = IdeaExtractor._partition_standing(domains)
@@ -285,7 +285,7 @@ def test_partition_standing_splits_and_keeps_order():
 def test_merge_orthogonalized_leaves_the_standing_two_untouched():
     """Het vangnet mag niet herschreven terugkomen — dat is hoe de definitie versmalde."""
     discovered = [_mk("Duurzaamheid", "Duurzaamheid")]
-    standing = [_mk(STANDING_BARE_KEY, "Kale associatie"),
+    standing = [_mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"),
                 _mk(STANDING_OTHER_KEY, "Overig")]
     new_discovered = [_mk("", "Ecologische koers")]
 
@@ -294,7 +294,7 @@ def test_merge_orthogonalized_leaves_the_standing_two_untouched():
 
     assert [d.label for d in merged] == ["Ecologische koers", "Kale associatie", "Overig"]
     assert [d.key for d in merged] == [
-        "Ecologische koers", STANDING_BARE_KEY, STANDING_OTHER_KEY]
+        "Ecologische koers", STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY]
     assert merged[1].definition == "def Kale associatie"
     assert rename == {"Duurzaamheid": "Ecologische koers"}
 
@@ -307,7 +307,7 @@ def test_merge_orthogonalized_refuses_a_count_mismatch():
     en draait orthogonalisatie helemaal niet meer — zonder foutmelding.
     """
     discovered = [_mk("A", "A"), _mk("B", "B")]
-    standing = [_mk(STANDING_BARE_KEY, "Kale associatie"),
+    standing = [_mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"),
                 _mk(STANDING_OTHER_KEY, "Overig")]
 
     assert IdeaExtractor._merge_orthogonalized([_mk("", "A2")], discovered, standing) \
@@ -377,7 +377,7 @@ def test_disambiguate_against_standing_renames_the_discovered_one():
     domein toevallig hetzelfde label als een staand domein. De staande twee komen
     uit een aparte, parallelle vertaalcall — niets garandeert dat de labels
     verschillen."""
-    standing = [_mk(STANDING_BARE_KEY, "Overig"), _mk(STANDING_OTHER_KEY, "Kale associatie")]
+    standing = [_mk(STANDING_NOT_KNOWN_KEY, "Overig"), _mk(STANDING_OTHER_KEY, "Kale associatie")]
     discovered = [_mk("Overig", "Overig")]
 
     renames = IdeaExtractor._disambiguate_against_standing(discovered, standing)
@@ -389,7 +389,7 @@ def test_disambiguate_against_standing_renames_the_discovered_one():
 
 
 def test_disambiguate_against_standing_leaves_non_colliding_labels_alone():
-    standing = [_mk(STANDING_BARE_KEY, "Kale associatie"), _mk(STANDING_OTHER_KEY, "Overig")]
+    standing = [_mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"), _mk(STANDING_OTHER_KEY, "Overig")]
     discovered = [_mk("Duurzaamheid", "Duurzaamheid"), _mk("Aanbod", "Aanbod")]
 
     renames = IdeaExtractor._disambiguate_against_standing(discovered, standing)
@@ -403,7 +403,7 @@ def test_disambiguate_and_remap_fixes_a_relabel_that_collides_after_orthogonaliz
     opnieuw en komt toevallig op een staand label uit. Dat mag geen dubbel label op
     het toewijzingsmenu zetten, en een idee dat tegelijk naar dat label wordt
     hernoemd moet op het uiteindelijke (ontdubbelde) label uitkomen."""
-    standing = [_mk(STANDING_BARE_KEY, "Kale associatie"), _mk(STANDING_OTHER_KEY, "Overig")]
+    standing = [_mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"), _mk(STANDING_OTHER_KEY, "Overig")]
     new_discovered = [_mk("Overig", "Overig")]  # _merge_orthogonalized zette de key al
     rename = {"Duurzaamheid": "Overig"}
 
@@ -419,7 +419,7 @@ def test_disambiguate_and_remap_fixes_a_relabel_that_collides_after_orthogonaliz
 
 
 def test_disambiguate_and_remap_is_a_noop_without_a_collision():
-    standing = [_mk(STANDING_BARE_KEY, "Kale associatie"), _mk(STANDING_OTHER_KEY, "Overig")]
+    standing = [_mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"), _mk(STANDING_OTHER_KEY, "Overig")]
     new_discovered = [_mk("Duurzaamheid", "Duurzaamheid")]
     rename = {"Duurzaam": "Duurzaamheid"}
 
@@ -458,7 +458,7 @@ def test_format_domain_overview_shows_arrow_for_a_renamed_discovered_domain():
     rename = {"Duurzaamheid": "Ecologische koers"}
 
     lines = IdeaExtractor._format_domain_overview_lines(
-        [d], rename, (STANDING_BARE_KEY, STANDING_OTHER_KEY))
+        [d], rename, (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY))
 
     assert lines[0] == "    • Duurzaamheid → Ecologische koers"
     assert lines[1] == "        def: def Ecologische koers"
@@ -471,17 +471,17 @@ def test_format_domain_overview_shows_the_label_alone_when_unchanged():
     rename = {"Aanbod": "Aanbod"}
 
     lines = IdeaExtractor._format_domain_overview_lines(
-        [d], rename, (STANDING_BARE_KEY, STANDING_OTHER_KEY))
+        [d], rename, (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY))
 
     assert lines[0] == "    • Aanbod"
 
 
 def test_format_domain_overview_marks_a_standing_domain_and_omits_its_exclusion_line():
     """Een staand domein krijgt de markering en nooit een ✗-regel (exclusions=[])."""
-    standing = _mk(STANDING_BARE_KEY, "Kale associatie")
+    standing = _mk(STANDING_NOT_KNOWN_KEY, "Kale associatie")
 
     lines = IdeaExtractor._format_domain_overview_lines(
-        [standing], {}, (STANDING_BARE_KEY, STANDING_OTHER_KEY))
+        [standing], {}, (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY))
 
     assert lines[0] == "    • Kale associatie (standing)"
     assert not any(line.strip().startswith("✗") for line in lines)
@@ -493,6 +493,27 @@ def test_format_domain_overview_shows_the_exclusion_line_when_present():
     d.exclusions = ["Aanbod", "Prijs"]
 
     lines = IdeaExtractor._format_domain_overview_lines(
-        [d], {"Duurzaamheid": "Duurzaamheid"}, (STANDING_BARE_KEY, STANDING_OTHER_KEY))
+        [d], {"Duurzaamheid": "Duurzaamheid"}, (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY))
 
     assert lines[-1] == "        ✗ Aanbod, Prijs"
+
+
+# ── 6. De oude sleutel mag nergens achterblijven ────────────────────────────
+
+def test_no_file_in_src_still_mentions_the_old_key():
+    """Een achtergebleven oude sleutel matcht nergens meer en faalt stil.
+
+    Bouwt de oude sleutel uit delen op: anders bevat deze testfile zelf het
+    verboden woord (in deze docstring, in de vergelijking hieronder) en zou
+    de test zichzelf altijd als overtreder aanwijzen.
+    """
+    from pathlib import Path
+    old_key = "bare_" + "evaluation"
+    this_file = Path(__file__).resolve()
+    src = this_file.parents[2]
+    offenders = [
+        str(p.relative_to(src))
+        for p in src.rglob("*.py")
+        if p != this_file and "__pycache__" not in str(p) and old_key in p.read_text(encoding="utf-8")
+    ]
+    assert offenders == [], f"nog aanwezig in: {offenders}"

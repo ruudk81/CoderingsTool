@@ -13,7 +13,7 @@ Four things, all dataset-independent and all cheap enough to run on every build:
                         correct — so they survive into the export as n=0 rows.
                         This drops them.
 
-  drain_domains()       Labels of the standing drain domains (other, bare_evaluation),
+  drain_domains()       Labels of the standing drain domains (other, not_known),
                         identified by their metadata key rather than their (possibly
                         translated/re-described) label. Used to keep the P3/P7
                         upstream MECE reviews off the two domains that exist to
@@ -47,7 +47,7 @@ from models import TaxonomyResultsCache
 
 SENTINELS = {"__UNASSIGNED__", "(no attribute)", "(geen attribuut)"}
 
-DRAIN_KEYS = frozenset({"other", "bare_evaluation"})
+DRAIN_KEYS = frozenset({"other", "not_known"})
 
 
 # =============================================================================

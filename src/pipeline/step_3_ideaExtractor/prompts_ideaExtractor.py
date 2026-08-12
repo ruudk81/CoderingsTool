@@ -10,13 +10,13 @@ from pydantic import BaseModel, Field, field_validator
 # that axis in exactly one of two ways, and those two failures are the standing
 # domains:
 #
-#   bare_evaluation  names NOTHING on the axis, while still saying something
+#   not_known        the respondent does not know the subject on the axis at all
 #   other            names something ON the axis that no discovered domain covers
 #
 # Neither is a theme, so theme discovery reliably fails to produce them, and both
 # are real codeable answer types rather than rejects.
 #
-# They are kept apart on purpose. Merged, the axis-less answers lose their identity
+# They are kept apart on purpose. Merged, the not-knowing answers lose their identity
 # and the genuine residue can no longer be reported as unclassifiable. A third case
 # — the respondent stating there is nothing to say — is normally discovered on its
 # own, because absence IS a theme respondents state explicitly.
@@ -27,12 +27,12 @@ from pydantic import BaseModel, Field, field_validator
 # treats them as if they belonged there.
 #
 # The WORDING lives per dimension, in `dimension_data.py` (`StandingDomain`), because
-# "names nothing on the axis" reads differently when the axis is a target of change
+# "does not know the subject" reads differently when the axis is a target of change
 # than when it is a subject area. The KEYS below are fixed and internal: consumers
 # identify these two by key, never by label, since labels are rendered in the survey
 # language by the domain-consolidation call.
 
-STANDING_BARE_KEY = "bare_evaluation"
+STANDING_NOT_KNOWN_KEY = "not_known"
 STANDING_OTHER_KEY = "other"
 
 
