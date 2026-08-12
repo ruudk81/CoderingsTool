@@ -7,8 +7,11 @@ from pipeline.step_4_classifier.prompts_facet import (
     DiscoveredFacet,
     FacetConsolidationResult,
     FacetDiscoveryResult,
+    build_facet_assignment_model,
+    build_facet_assignment_prompt,
     build_facet_consolidation_prompt,
     build_facet_discovery_prompt,
+    build_facet_menu,
 )
 
 DIM = get_dimensions_in_decision_order()[0]
@@ -150,3 +153,78 @@ def test_geconsolideerd_facet_noemt_zijn_bronnen():
 
 def test_consolidatieresultaat_accepteert_lege_lijst():
     assert FacetConsolidationResult(scratchpad="s", facets=[]).facets == []
+
+
+# =============================================================================
+# Taak 4 — toewijzing
+# =============================================================================
+
+ASSIGN_CTX = dict(
+    language="Dutch", survey_question="Waar denkt u aan?",
+    sector="finance", entity="asn_bank", topic="brand_association",
+    perspective="consumer", intent="associate",
+    domain_label="Duurzaamheid",
+    domain_definition="Antwoorden over het milieubeleid van de entiteit.",
+)
+
+
+def _facetten():
+    return [ConsolidatedFacet(
+        facet_name="Groene uitstraling", facet_definition="Hoe groen het oogt.",
+        boundary_test="Gaat dit over hoe het oogt?", exclusions=["concreet beleid"],
+        example_observations=["groen"], source_facets=["Groen imago"],
+    )]
+
+
+def test_menu_nummert_en_toont_grens_en_uitsluiting():
+    menu = build_facet_menu(_facetten())
+    assert "[F1]" in menu
+    assert "Groene uitstraling" in menu
+    assert "Gaat dit over hoe het oogt?" in menu
+    assert "concreet beleid" in menu
+
+
+def test_toewijzingsprompt_bevat_menu_en_ideeen():
+    prompt = build_facet_assignment_prompt(
+        **ASSIGN_CTX, facets=_facetten(),
+        ideas=[("i1", "heel groen"), ("i2", "dure bank")],
+    )
+    assert "[F1]" in prompt
+    assert "[i1] heel groen" in prompt
+    assert "[i2] dure bank" in prompt
+    assert "F_NONE" in prompt
+
+
+def test_model_weigert_onbekend_facet_id():
+    Model = build_facet_assignment_model(["F1"], ["i1"])
+    with pytest.raises(ValidationError):
+        Model(assignments=[{"idea_id": "i1", "assigned_facet_id": "F9",
+                            "confidence": 0.9, "valence": "0"}])
+
+
+def test_model_weigert_onbekend_idea_id():
+    Model = build_facet_assignment_model(["F1"], ["i1"])
+    with pytest.raises(ValidationError):
+        Model(assignments=[{"idea_id": "i7", "assigned_facet_id": "F1",
+                            "confidence": 0.9, "valence": "0"}])
+
+
+def test_model_weigert_valence_buiten_de_drie_waarden():
+    Model = build_facet_assignment_model(["F1"], ["i1"])
+    with pytest.raises(ValidationError):
+        Model(assignments=[{"idea_id": "i1", "assigned_facet_id": "F1",
+                            "confidence": 0.9, "valence": "positief"}])
+
+
+def test_model_weigert_confidence_buiten_bereik():
+    Model = build_facet_assignment_model(["F1"], ["i1"])
+    with pytest.raises(ValidationError):
+        Model(assignments=[{"idea_id": "i1", "assigned_facet_id": "F1",
+                            "confidence": 1.5, "valence": "0"}])
+
+
+def test_model_accepteert_f_none():
+    Model = build_facet_assignment_model(["F1"], ["i1"])
+    result = Model(assignments=[{"idea_id": "i1", "assigned_facet_id": "F_NONE",
+                                 "confidence": 0.2, "valence": "0"}])
+    assert result.assignments[0].assigned_facet_id == "F_NONE"

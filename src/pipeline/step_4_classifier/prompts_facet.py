@@ -14,9 +14,9 @@ can move a facet or an idea to another domain.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Literal, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from .prompts_shared import (
     INSTRUCTOR_HINT,
@@ -363,5 +363,139 @@ For EACH consolidated facet provide:
 - **source_facets** — the facet_name of every candidate consumed into this one
 
 All facet names, definitions, boundary tests and exclusions must be written in {language}.
+
+Begin processing now and {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# §3 ASSIGNMENT — ideas into the settled inventory
+# =============================================================================
+#
+# Two things this phase deliberately does NOT carry, unlike the other three.
+# The taxonomy block and the universal rules are both about what a taxonomy may
+# contain; assignment creates nothing, it picks an id from a menu whose entries
+# already carry their definitions and boundaries. This is also the only phase
+# that runs at the volume of the dataset, so every line here is paid thousands
+# of times.
+
+
+def build_facet_menu(facets: List[ConsolidatedFacet]) -> str:
+    """Render the settled facets as a numbered menu.
+
+    The [F#] id is what the response is keyed on, so the numbering here and the
+    id list handed to `build_facet_assignment_model` must come from the same
+    list in the same order.
+    """
+    lines = []
+    for i, f in enumerate(facets, 1):
+        exclusions = "; ".join(f.exclusions) if f.exclusions else ""
+        examples = "; ".join(f.example_observations[:3])
+        block = (
+            f"[F{i}] {f.facet_name}\n"
+            f"     Description: {f.facet_definition}\n"
+            f"     Boundary: {f.boundary_test}"
+        )
+        if exclusions:
+            block += f"\n     Does not belong here: {exclusions}"
+        if examples:
+            block += f"\n     Examples: {examples}"
+        lines.append(block)
+    return "\n\n".join(lines)
+
+
+def build_facet_assignment_model(facet_ids: List[str], idea_ids: List[str]):
+    """Runtime response model for one assignment call.
+
+    Both id spaces are Literals, so a hallucinated facet id or a made-up idea id
+    is a schema violation that instructor retries, not a content error that has
+    to be caught downstream. "F_NONE" is the honest way out when nothing fits;
+    the caller escalates those rather than forcing a wrong home.
+    """
+    facet_id_literal = Literal[tuple(facet_ids + ["F_NONE"])]  # type: ignore[valid-type]
+    idea_id_literal = Literal[tuple(idea_ids)]  # type: ignore[valid-type]
+
+    item_model = create_model(
+        "FacetAssignmentItem",
+        idea_id=(idea_id_literal, Field(
+            ..., description="The [id] tag of the idea, echoed exactly")),
+        assigned_facet_id=(facet_id_literal, Field(
+            ..., description=(
+                "The facet id from the [F#] prefix. Return ONLY the id. "
+                "Use F_NONE when no facet fits this idea"))),
+        confidence=(float, Field(
+            ..., ge=0.0, le=1.0, description="Assignment confidence (0.0-1.0)")),
+        valence=(Literal["+", "-", "0"], Field(
+            default="0",
+            description=(
+                "Evaluative direction relative to the facet: "
+                "+ positive, - negative, 0 neutral"))),
+    )
+    return create_model(
+        "FacetAssignmentResult",
+        assignments=(List[item_model], Field(
+            ..., description=(
+                "Exactly one assignment per idea listed in the prompt, "
+                "no idea skipped, no idea added"))),
+    )
+
+
+def build_facet_assignment_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    domain_label: str,
+    domain_definition: str,
+    facets: List[ConsolidatedFacet],
+    ideas: List[Tuple[str, str]],
+) -> str:
+    """Assign one or more ideas to a facet, with valence.
+
+    One builder for one or many ideas: a single idea is a list of length one.
+    A separate single-idea variant would be a second prompt for one task, and
+    two prompts for one task drift apart.
+    """
+    context_block = build_context_block(
+        language=language, survey_question=survey_question, sector=sector,
+        entity=entity, topic=topic, perspective=perspective, intent=intent,
+    )
+    menu = build_facet_menu(facets)
+    ideas_block = "\n".join(f"[{idea_id}] {label}" for idea_id, label in ideas)
+
+    return f"""You are a qualitative coding assistant. Assign each survey response idea below to the facet it belongs to.
+
+{context_block}
+
+<domain>
+Domain: {domain_label} — {domain_definition}
+</domain>
+
+<facets>
+{menu}
+
+[F_NONE] None of the facets above fits the idea.
+</facets>
+
+<ideas>
+{ideas_block}
+</ideas>
+
+### VALENCE (evaluation relative to the facet)
+- "+" Positive — the idea describes the facet as met, present, or enhanced
+- "-" Negative — the idea describes the facet as failing, absent, or detracted from
+- "0" Neutral — the idea is descriptive, ambiguous, or expresses no evaluation
+
+Valence is not emotional sentiment. It is evaluative direction relative to the facet.
+
+Use each facet's Boundary line to decide the doubtful cases; that is what it is for.
+
+Judge every idea independently on its own text; do not let one assignment influence the
+next. Return exactly one item per idea, echoing that idea's [id]. Do not skip ideas and
+do not add ideas. If no facet fits an idea, use "F_NONE" for that idea rather than
+forcing it into the nearest one.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
