@@ -1,7 +1,7 @@
 """Tests voor de dimensie-specifieke standing domains.
 
 Structureel, geen LLM. Wat hier bewezen wordt is de CONSTRUCTIE: elke dimensie
-levert er twee, ze bereiken de prompt, en de keys overleven. Of de teksten goed
+levert er drie, ze bereiken de prompt, en de keys overleven. Of de teksten goed
 GEFORMULEERD zijn is niet mechanisch te toetsen — dat blijkt pas op data die een
 andere dimensie kiest.
 """
@@ -17,6 +17,7 @@ from pipeline.step_3_ideaExtractor.ideaExtractor import IdeaExtractor
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     NON_ANSWER_DOMAIN,
     STANDING_NOT_KNOWN_KEY,
+    STANDING_NO_SUBJECT_KEY,
     STANDING_OTHER_KEY,
     DiscoveredDomainItem,
     DomainChunkResponse,
@@ -36,10 +37,10 @@ ALL_KEYS = sorted(DIMENSIONS)
 # ── 1. Volledigheid ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_every_dimension_carries_both_standing_domains(dimension_key):
+def test_every_dimension_carries_all_standing_domains(dimension_key):
     """Een dimensie zonder standing domains laat step 3 zonder afvoerdomein draaien."""
     d = get_dimension(dimension_key)
-    for spec in (d.standing_not_known, d.standing_other):
+    for spec in (d.standing_not_known, d.standing_other, d.standing_no_subject):
         assert isinstance(spec, StandingDomain)
         for field in ("fallback_label", "definition", "short"):
             value = getattr(spec, field)
@@ -47,11 +48,19 @@ def test_every_dimension_carries_both_standing_domains(dimension_key):
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_the_two_standing_domains_are_distinct(dimension_key):
-    """Samengevallen definities maken de twee afvoeren ononderscheidbaar."""
+def test_the_standing_domains_are_pairwise_distinct(dimension_key):
+    """Samengevallen definities maken de afvoeren ononderscheidbaar.
+
+    De drie vangen drie verschillende faalvormen van de domeinas: het onderwerp
+    niet kennen, een onderwerp noemen dat geen domein dekt, en geen onderwerp
+    noemen. Lopen er twee in elkaar, dan verliest een van de drie zijn eigen
+    categorie.
+    """
     d = get_dimension(dimension_key)
-    assert d.standing_not_known.definition != d.standing_other.definition
-    assert d.standing_not_known.short != d.standing_other.short
+    specs = (d.standing_not_known, d.standing_other, d.standing_no_subject)
+    assert len({s.definition for s in specs}) == 3
+    assert len({s.short for s in specs}) == 3
+    assert len({s.fallback_label for s in specs}) == 3
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
@@ -71,7 +80,7 @@ def test_standing_domains_are_required_fields():
     """Zonder default kan een nieuwe dimensie ze niet vergeten: TypeError bij import."""
     fields = DIMENSIONS[ALL_KEYS[0]].__dataclass_fields__
     import dataclasses
-    for name in ("standing_not_known", "standing_other"):
+    for name in ("standing_not_known", "standing_other", "standing_no_subject"):
         assert fields[name].default is dataclasses.MISSING
         assert fields[name].default_factory is dataclasses.MISSING
 
@@ -84,9 +93,11 @@ def test_resolve_falls_back_when_there_is_no_translation(dimension_key):
     d = get_dimension(dimension_key)
     out = IdeaExtractor._resolve_standing_domains(None, d)
 
-    assert [c.key for c in out] == [STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY]
+    assert [c.key for c in out] == [
+        STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY, STANDING_NO_SUBJECT_KEY]
     assert out[0].label == d.standing_not_known.fallback_label
     assert out[1].label == d.standing_other.fallback_label
+    assert out[2].label == d.standing_no_subject.fallback_label
     assert all(c.boundary_test.strip() for c in out)
 
 
@@ -99,13 +110,17 @@ def test_resolve_prefers_the_rendered_text_but_keeps_the_english_as_source(dimen
         not_known_boundary_test="Meldt de respondent het merk niet te kennen?",
         other_label="Overig onderwerp", other_definition="NL definitie twee.",
         other_boundary_test="Noemt het antwoord een onderwerp dat geen domein dekt?",
-        non_answer_label="Geen inhoud", non_answer_definition="NL definitie drie.",
+        no_subject_label="Zonder onderwerp", no_subject_definition="NL definitie drie.",
+        no_subject_boundary_test="Noemt het antwoord geen onderwerp?",
+        non_answer_label="Geen inhoud", non_answer_definition="NL definitie vier.",
         non_answer_boundary_test="Zegt het fragment alleen dat er geen antwoord is?")
     out = IdeaExtractor._resolve_standing_domains(rendered, d)
-    assert [c.label for c in out] == ["Kent het merk niet", "Overig onderwerp"]
+    assert [c.label for c in out] == [
+        "Kent het merk niet", "Overig onderwerp", "Zonder onderwerp"]
     assert out[0].definition == "NL definitie een."
     assert out[0].boundary_test == "Meldt de respondent het merk niet te kennen?"
-    assert [c.key for c in out] == [STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY]
+    assert [c.key for c in out] == [
+        STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY, STANDING_NO_SUBJECT_KEY]
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
@@ -138,12 +153,15 @@ def test_resolve_ignores_an_empty_translated_label(dimension_key):
         MenuEntryRenderResponse(
             not_known_label="   ", not_known_definition="d1", not_known_boundary_test="t1",
             other_label="", other_definition="d2", other_boundary_test="t2",
-            non_answer_label="", non_answer_definition="d3", non_answer_boundary_test="t3"), d)
+            no_subject_label=" ", no_subject_definition="d3", no_subject_boundary_test="t3",
+            non_answer_label="", non_answer_definition="d4", non_answer_boundary_test="t4"), d)
 
     assert out[0].label == d.standing_not_known.fallback_label
     assert out[1].label == d.standing_other.fallback_label
+    assert out[2].label == d.standing_no_subject.fallback_label
     assert out[0].definition == "d1"
     assert out[1].definition == "d2"
+    assert out[2].definition == "d3"
 
 
 # ── 2b. De normalisatie ná consolidatie ────────────────────────────────────
@@ -275,8 +293,10 @@ def test_standing_labels_prompt_carries_both_fixed_definitions(dimension_key):
 
     assert d.standing_not_known.definition in prompt
     assert d.standing_other.definition in prompt
+    assert d.standing_no_subject.definition in prompt
     assert d.standing_not_known.short in prompt
     assert d.standing_other.short in prompt
+    assert d.standing_no_subject.short in prompt
     assert "nl-NL" in prompt
     assert prompt.rstrip().endswith(
         "provide your output as valid JSON following the response schema provided.")
@@ -293,10 +313,12 @@ def test_standing_labels_prompt_also_carries_the_non_answer_bucket(dimension_key
 
 
 def test_menu_entry_render_response_carries_three_fields_per_entry():
-    """Label, definitie én boundary_test — voor beide vangnetten én de non-answer-bak."""
+    """Label, definitie én boundary_test — voor alle drie de vangnetten én de
+    non-answer-bak."""
     assert set(MenuEntryRenderResponse.model_fields) == {
         "not_known_label", "not_known_definition", "not_known_boundary_test",
         "other_label", "other_definition", "other_boundary_test",
+        "no_subject_label", "no_subject_definition", "no_subject_boundary_test",
         "non_answer_label", "non_answer_definition", "non_answer_boundary_test"}
 
 
@@ -680,11 +702,31 @@ def test_drop_non_answer_ideas_can_drop_every_idea_in_a_response():
 
 def test_drain_key_literals_agree_across_the_three_definitions():
     """`prompts_ideaExtractor`, `measure_stability` en `taxonomy_health` houden
-    elk hun eigen kopie van dezelfde twee sleutels — niets anders bewaakte dat
+    elk hun eigen kopie van dezelfde drie sleutels — niets anders bewaakte dat
     een hernoeming ze alle drie raakt."""
     from pipeline.step_3_ideaExtractor.measure_stability import DRAIN_KEYS as stability_keys
     from pipeline.step_4_classifier.taxonomy_health import DRAIN_KEYS as health_keys
 
-    canonical = {STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY}
+    canonical = {STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY, STANDING_NO_SUBJECT_KEY}
     assert set(stability_keys) == canonical
     assert set(health_keys) == canonical
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_consolidation_prompt_grounds_all_three_standing_domains(dimension_key):
+    """Consolidatie moet alle drie zien, anders maakt hij er alsnog een duplicaat van.
+
+    Regressie-vorm: tot 2026-08-13 zag hij er twee, en de zin erbij zei dat
+    "answers reporting no knowledge" al gedekt waren. Dat las als dekking voor
+    alles wat leeg leek, waardoor het ontdekte geen-inhoud-domein sneuvelde en
+    de onderwerploze antwoorden over de inhoudelijke domeinen werden uitgesmeerd.
+    """
+    d = get_dimension(dimension_key)
+    prompt = build_domain_consolidation_prompt(
+        language="nl-NL", survey_question="Vraag?", sector="s", entity="e",
+        topic="t", perspective="p", intent="i", primary_dimension=dimension_key,
+        chunk_results="chunk", dimension=d,
+    )
+    for spec in (d.standing_not_known, d.standing_other, d.standing_no_subject):
+        assert spec.definition in prompt, f"{dimension_key}: {spec.fallback_label}"
+        assert spec.short in prompt

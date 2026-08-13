@@ -35,7 +35,7 @@ def test_drain_domains_warns_on_a_partial_match(capsys):
     assert found == {"Overig"}
     out = capsys.readouterr().out
     assert "WARNING" in out
-    assert "1/2" in out
+    assert "1/3" in out
     assert "Overig" in out
 
 
@@ -62,16 +62,20 @@ def test_drain_domains_is_silent_on_a_full_match(capsys):
     meta = _meta([
         {"key": "not_known", "label": "Weet niet"},
         {"key": "other", "label": "Overig"},
+        {"key": "no_subject", "label": "Zonder onderwerp"},
     ])
     drain_domains(meta)
     assert capsys.readouterr().out == ""
 
 
-def test_drain_keys_has_two_members():
+def test_drain_keys_has_three_members():
     """The warning threshold (`len(DRAIN_KEYS)`) is only meaningful if this
-    holds — pinned so a future third drain key is a deliberate change, not a
-    silent widening of what counts as a full match."""
-    assert len(DRAIN_KEYS) == 2
+    holds — pinned so a fourth drain key is a deliberate change, not a silent
+    widening of what counts as a full match. Went from two to three on
+    2026-08-13, when `no_subject` gave subject-less answers a home of their own
+    instead of spreading them over the content domains."""
+    assert len(DRAIN_KEYS) == 3
+    assert DRAIN_KEYS == frozenset({"other", "not_known", "no_subject"})
 
 
 def test_vangnetaandeel_telt_alleen_ideeen_in_een_drain():

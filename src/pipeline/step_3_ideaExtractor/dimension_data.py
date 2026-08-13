@@ -112,6 +112,7 @@ class DimensionDefinition:
     domain_slot: SlotDefinition
     standing_not_known: StandingDomain       # respondent reports not knowing the subject at all
     standing_other: StandingDomain           # idea names something no discovered domain covers
+    standing_no_subject: StandingDomain      # idea names nothing on this dimension's domain axis
     examples: Tuple[DimensionExample, ...] = ()  # Worked examples for the extraction prompt
     clarification: Tuple[str, ...] = ()      # Optional clarification notes (empty tuple = none)
 
@@ -230,6 +231,17 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             short="names a target for change that no domain above covers",
         ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Change urge without a target",
+            definition=(
+                "The response calls for something to be different, but names no target for "
+                "that change: an unattached better, more, or less. Use this only when "
+                "nothing in the response says WHAT should change. A response stating that "
+                "nothing needs to change does name a target, namely the whole, and does not "
+                "belong here."
+            ),
+            short="urges change without naming anything to change",
+        ),
         examples=(
             DimensionExample(
                 survey_context="City improvement survey (entity: City of Springfield)",
@@ -338,6 +350,15 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             short="names an area of identity that no domain above covers",
         ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Characterisation without an area of identity",
+            definition=(
+                "The response says what the subject is like in the broadest terms, but "
+                "names no area of identity it is claiming that about. Use this only when "
+                "stripping the characterisation leaves nothing said."
+            ),
+            short="characterises the subject without naming any area of its identity",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Brand identity survey (entity: Trailmark Apparel)",
@@ -443,6 +464,15 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "domain."
             ),
             short="names a sphere of activity that no domain above covers",
+        ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Actor without a sphere of activity",
+            definition=(
+                "The response refers to people or parties, but names no sphere of activity "
+                "that places them. Use this only when the response does not say what the "
+                "actor is an actor IN."
+            ),
+            short="names or judges someone without naming what they are involved in",
         ),
         examples=(
             DimensionExample(
@@ -553,6 +583,15 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             short="names a subject area that no domain above covers",
         ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Condition without a subject area",
+            definition=(
+                "The response names a when, a where, or an under-what-circumstances, but "
+                "nothing the condition holds for. Use this only when the subject of the "
+                "condition is left unsaid."
+            ),
+            short="names a circumstance without naming what it applies to",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Remote work survey (entity: TechCorp)",
@@ -658,6 +697,15 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "not-known domain."
             ),
             short="names an area of concern that no domain above covers",
+        ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Motivation without an area of concern",
+            definition=(
+                "The response conveys that something matters to the respondent, but names "
+                "no area of concern it matters within. Use this only when the response says "
+                "that they care and not what about."
+            ),
+            short="expresses caring or wanting without naming what it is about",
         ),
         examples=(
             DimensionExample(
@@ -765,6 +813,15 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "domain."
             ),
             short="names a part of the experience that no domain above covers",
+        ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Impression without a part of the experience",
+            definition=(
+                "The response reports an impression or a feeling, but names no part of the "
+                "experience that produced it. Use this only when the response is the "
+                "impression and nothing else."
+            ),
+            short="reports how it felt without naming any part of the experience",
         ),
         examples=(
             DimensionExample(
@@ -878,6 +935,16 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             short="names an aspect that no domain above covers",
         ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Judgment without an aspect",
+            definition=(
+                "The response expresses approval, disapproval or indifference, but names no "
+                "aspect it is a judgment OF. Use this only when removing the evaluative "
+                "direction leaves nothing behind. A judgment that names what is being "
+                "judged belongs to that subject's domain, however briefly it is named."
+            ),
+            short="judges the subject as a whole without naming any aspect judged",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Airline satisfaction survey (entity: SkyAir)",
@@ -987,6 +1054,15 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "report not knowing the subject at all, which belong to the not-known domain."
             ),
             short="names a system or process that no domain above covers",
+        ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Behaviour without a system or process",
+            definition=(
+                "The response reports that something functions or fails, but names no "
+                "system or process it is reporting about. Use this only when the response "
+                "does not say what the behaviour belongs to."
+            ),
+            short="says how well something works without naming what works",
         ),
         examples=(
             DimensionExample(
@@ -1099,6 +1175,17 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             short="names a subject no domain above covers",
         ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Quality without a subject",
+            definition=(
+                "The response states how the subject comes across, but names no subject "
+                "area the quality belongs to: an unattached good, fine, or neutral. Use "
+                "this only when stripping the evaluative direction leaves nothing said. A "
+                "quality that is descriptive in its own right, such as a mood, a style, or "
+                "a character trait, does name a subject and does NOT belong here."
+            ),
+            short="states a quality without naming what has it",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Brand association survey (entity: Novabank)",
@@ -1210,6 +1297,15 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
             ),
             short="names a sphere that no domain above covers",
         ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Relation without a sphere",
+            definition=(
+                "The response asserts a link, a dependency, or a comparison, but names no "
+                "sphere the relationship exists in. Use this only when the response does "
+                "not say what is related to what."
+            ),
+            short="says things are connected without naming what they are connected in",
+        ),
         examples=(
             DimensionExample(
                 survey_context="Energy policy survey (entity: National Grid)",
@@ -1320,6 +1416,15 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "not knowing the subject at all, which belong to the not-known domain."
             ),
             short="names a subject that no domain above covers",
+        ),
+        standing_no_subject=StandingDomain(
+            fallback_label="Remark without a subject",
+            definition=(
+                "The response carries a reaction or a remark, but names no subject at all. "
+                "Use this only when nothing in the response identifies what is being talked "
+                "about."
+            ),
+            short="says something without naming what it is about",
         ),
         examples=(
             DimensionExample(

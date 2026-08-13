@@ -57,7 +57,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 SNAPSHOT_FILE = project_root / "data" / "step3_stability.jsonl"
 
-DRAIN_KEYS = ("not_known", "other")
+DRAIN_KEYS = ("not_known", "other", "no_subject")
 
 
 # =============================================================================

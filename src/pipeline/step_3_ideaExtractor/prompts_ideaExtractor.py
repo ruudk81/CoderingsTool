@@ -43,6 +43,7 @@ except ImportError:
 
 STANDING_NOT_KNOWN_KEY = "not_known"
 STANDING_OTHER_KEY = "other"
+STANDING_NO_SUBJECT_KEY = "no_subject"
 
 
 # Offered in the assignment menu only, never in the taxonomy. A response that is
@@ -703,6 +704,8 @@ def build_domain_consolidation_prompt(
     other_def = dimension.standing_other.definition
     not_known_short = dimension.standing_not_known.short
     other_short = dimension.standing_other.short
+    no_subject_def = dimension.standing_no_subject.definition
+    no_subject_short = dimension.standing_no_subject.short
     sample_block = ""
     if chunk_responses:
         sample_block = f"""
@@ -759,7 +762,7 @@ Important consolidation principles:
 - ENSURE semantic distance: a coder assigning a response must not plausibly hesitate between two domains. No "could go either way" situations.
 - MAINTAIN full coverage: the consolidated domains must collectively cover all concepts present in the chunk-level analyses
 - MINIMIZE the total number of domains while preserving meaningful distinctions — aim for 4–8 domains
-- NO residual catch-all: a domain must be defined by what it contains, never by what the other domains do not. If a domain's boundary_test can only be stated as "does not belong to any of the others", it is a catch-all — split it along sharper axes or drop it. A domain that groups characteristics of the entity itself is legitimate, provided its boundary_test states positively what kind of characteristic it names. Answers reporting no knowledge of the subject are already covered by a fixed domain — do not give them a domain of their own.
+- NO residual catch-all: a domain must be defined by what it contains, never by what the other domains do not. If a domain's boundary_test can only be stated as "does not belong to any of the others", it is a catch-all — split it along sharper axes or drop it. A domain that groups characteristics of the entity itself is legitimate, provided its boundary_test states positively what kind of characteristic it names. Three fixed domains already exist and cover three failures of the domain axis: not knowing the subject, naming a subject no other domain covers, and naming no subject at all. Do not give any of those three a domain of its own.
 - DESCRIPTIVE DOMAINS ONLY: every domain names a DESCRIPTIVE subject/aspect — never a sentiment or judgment. Even if all its responses are positive or negative, the domain describes WHAT is referred to, not how good or bad it is; direction (positive/negative) is captured separately by valence, never by domains. Reframe any evaluative bucket (e.g. "reputation/appreciation", "good vs bad") descriptively as the subject being judged
 - All domains must stay strictly within the boundaries and through the lens of the primary dimension
 - Each domain definition must complete: "This domain covers responses about [single aspect]." Abstract boundary only, no examples or enumerations
@@ -779,18 +782,19 @@ In your scratchpad:
 
 For EACH consolidated domain provide: a label, a one-sentence inclusion definition, a boundary_test (one yes/no question that decides membership), and exclusions (what does NOT belong, naming the neighbouring domain it is most easily confused with).
 
-# The two fixed domains of this dimension
+# The three fixed domains of this dimension
 
-This dimension always has two fixed domains. They are given, not discovered, and you do NOT return them:
+This dimension always has three fixed domains. They catch the three ways an answer can fail the domain axis. They are given, not discovered, and you do NOT return them:
 
   - {not_known_short} — {not_known_def}
   - {other_short} — {other_def}
+  - {no_subject_short} — {no_subject_def}
 
-Consolidate the chunk-level analyses into the domains that exist ALONGSIDE these two:
+Consolidate the chunk-level analyses into the domains that exist ALONGSIDE these three:
 
-- Anything that belongs in one of the two fixed domains is already covered. Do not create a domain for it.
-- Every domain you return must name a subject area that neither fixed domain covers. If a candidate domain would mostly collect answers reporting that the respondent does not know the subject, it belongs in the "{not_known_short}" domain above — drop it rather than keeping it as its own domain.
-- The two fixed domains are given as they are and need no sharpening from you. The orthogonality requirement runs one way: the domains you return must not reach into their territory.
+- Anything that belongs in one of the three fixed domains is already covered. Do not create a domain for it.
+- Every domain you return must name a subject area that none of the three fixed domains covers. If a candidate domain would mostly collect answers reporting that the respondent does not know the subject, it belongs in the "{not_known_short}" domain above — drop it rather than keeping it as its own domain. If it would mostly collect answers that name no subject at all, it belongs in the "{no_subject_short}" domain — drop it too.
+- The three fixed domains are given as they are and need no sharpening from you. The orthogonality requirement runs one way: the domains you return must not reach into their territory.
 
 Return ONLY the domains you consolidated from the chunks.
 
@@ -886,7 +890,7 @@ def build_standing_labels_prompt(
     `not_known` by the label a coder will actually see, instead of a name
     that appears nowhere on the menu.
     """
-    return f"""You are rendering three fixed entries of a survey coding scheme into {language}: two fixed domains and one fixed entry on the per-response assignment menu.
+    return f"""You are rendering four fixed entries of a survey coding scheme into {language}: three fixed domains and one fixed entry on the per-response assignment menu.
 
 None of the three is discovered from data. Their meaning is fixed and given below in English. Your task is to render each one's label and definition in {language}, and to compose its membership test — a yes/no question a coder can answer about a single response — from the given short clause, also in {language}. This is a rendering of the given text, not a reformulation: do not narrow it, widen it, or add a subject area it does not name.
 
@@ -901,24 +905,32 @@ In short: {dimension.standing_other.short}
 </domain_b>
 
 <domain_c>
-Definition: {NON_ANSWER_DOMAIN.definition}
-In short: {NON_ANSWER_DOMAIN.short}
+Definition: {dimension.standing_no_subject.definition}
+In short: {dimension.standing_no_subject.short}
 </domain_c>
 
-domain_c is not a domain of the coding scheme — it is a temporary entry on the assignment menu that catches a contentless fragment of an otherwise substantive answer. It is never returned as a domain and never appears in the taxonomy.
+<domain_d>
+Definition: {NON_ANSWER_DOMAIN.definition}
+In short: {NON_ANSWER_DOMAIN.short}
+</domain_d>
+
+domain_a, domain_b and domain_c are three fixed domains of the coding scheme. They catch three different failures of the domain axis and must stay distinct: domain_a is about not knowing the subject, domain_b about naming a subject no other domain covers, and domain_c about naming no subject at all.
+
+domain_d is not a domain of the coding scheme — it is a temporary entry on the assignment menu that catches a contentless fragment of an otherwise substantive answer. It is never returned as a domain and never appears in the taxonomy.
 
 The entity the survey is about is: {entity}
 
 Rules:
 - The label must name what its definition says. Do not narrow it, do not widen it, and do not invent a subject area for it.
-- Do not make the label evaluative. None of the three is about how good or bad something is, unless its definition says so in as many words.
+- Do not make the label evaluative. None of the four is about how good or bad something is, unless its definition says so in as many words.
 - Render each at exactly the breadth of its source definition. None of them is a judgment about quality.
+- domain_c names the ABSENCE of a subject, not a negative opinion. Its label must not read as a verdict.
 - The label: a short noun phrase in {language}, as a coder would see it in a list of domains.
 - Render the given definition in {language}. Do not narrow it, do not widen it, and do not add anything the source does not say.
 - Where one domain's definition refers to another, use the label you just gave that domain, so the two texts refer to each other by the names a coder will actually see.
 - The membership test is one yes/no question a coder can answer about a single response, phrased in {language}.
 
-Now render all three, and provide your output as valid JSON following the response schema provided."""
+Now render all four, and provide your output as valid JSON following the response schema provided."""
 
 
 class MenuEntryRenderResponse(BaseModel):
@@ -957,14 +969,23 @@ class MenuEntryRenderResponse(BaseModel):
     other_boundary_test: str = Field(
         description="One yes/no membership question for domain_b, in the survey language, that a coder can answer about a single response"
     )
-    non_answer_label: str = Field(
-        description="Rendering, in the survey language, of domain_c's label — faithful to its given definition, not a reformulation"
+    no_subject_label: str = Field(
+        description="Rendering, in the survey language, of domain_c's label — faithful to its given definition, not a reformulation. Names the absence of a subject, never a negative verdict"
     )
-    non_answer_definition: str = Field(
+    no_subject_definition: str = Field(
         description="Rendering, in the survey language, of domain_c's definition — same meaning as the given English text, nothing narrowed, widened, or added"
     )
-    non_answer_boundary_test: str = Field(
+    no_subject_boundary_test: str = Field(
         description="One yes/no membership question for domain_c, in the survey language, that a coder can answer about a single response"
+    )
+    non_answer_label: str = Field(
+        description="Rendering, in the survey language, of domain_d's label — faithful to its given definition, not a reformulation"
+    )
+    non_answer_definition: str = Field(
+        description="Rendering, in the survey language, of domain_d's definition — same meaning as the given English text, nothing narrowed, widened, or added"
+    )
+    non_answer_boundary_test: str = Field(
+        description="One yes/no membership question for domain_d, in the survey language, that a coder can answer about a single response"
     )
 
 

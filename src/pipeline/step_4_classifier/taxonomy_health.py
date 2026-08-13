@@ -49,7 +49,7 @@ from models import TaxonomyResultsCache
 
 SENTINELS = {"__UNASSIGNED__", "(no attribute)", "(geen attribuut)"}
 
-DRAIN_KEYS = frozenset({"other", "not_known"})
+DRAIN_KEYS = frozenset({"other", "not_known", "no_subject"})
 
 
 # =============================================================================

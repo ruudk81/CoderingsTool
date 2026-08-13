@@ -38,6 +38,7 @@ from utils.perfModel import perf_model
 # === PROMPTS (builders + response models) =========================================================================
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     STANDING_NOT_KNOWN_KEY,
+    STANDING_NO_SUBJECT_KEY,
     STANDING_OTHER_KEY,
     NON_ANSWER_DOMAIN,
     build_context_specifier_group1_prompt,
@@ -1603,6 +1604,7 @@ class IdeaExtractor:
             for key, spec, prefix in (
                 (STANDING_NOT_KNOWN_KEY, dimension.standing_not_known, "not_known"),
                 (STANDING_OTHER_KEY, dimension.standing_other, "other"),
+                (STANDING_NO_SUBJECT_KEY, dimension.standing_no_subject, "no_subject"),
             )
         ]
 
