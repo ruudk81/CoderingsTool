@@ -94,6 +94,7 @@ async def write_codebook(
     has_server_headers: Optional[bool] = None,
     verbose: bool = False,
     taken_names: Optional[List[str]] = None,
+    prompt_printer=None,
 ) -> List[ConsolidatedCode]:
     """One call across all fixed code shapes. A `nameable: false` verdict on a
     `pooled` shape drops it (recorded in `log` as a VETO); the same verdict on
@@ -112,11 +113,27 @@ async def write_codebook(
     concept_by_id = {concept.attribute_id: concept for concept in concepts}
 
     def prepare_fn(task):
+        prompt = build_writer_prompt(
+            task["shapes"], task["concept_by_id"],
+            task["dimension_diagnostic"], task["language"], task["taken_names"],
+        )
+        if prompt_printer is not None:
+            prompt_printer.capture_prompt(
+                step_name="code_generator",
+                utility_name="write_codebook",
+                prompt_content=prompt,
+                prompt_type="codebook_writer",
+                metadata={
+                    "model": config.model_writer,
+                    "temperature": config.temperature_writer,
+                    "max_tokens": config.max_tokens_writer,
+                    "language": task["language"],
+                    "n_shapes": len(task["shapes"]),
+                    "shape_keys": [shape.key for shape in task["shapes"]],
+                },
+            )
         return {
-            "prompt": build_writer_prompt(
-                task["shapes"], task["concept_by_id"],
-                task["dimension_diagnostic"], task["language"], task["taken_names"],
-            ),
+            "prompt": prompt,
             "response_model": make_writer_model(task["shapes"]),
             "temperature": config.temperature_writer,
             "max_tokens": config.max_tokens_writer,

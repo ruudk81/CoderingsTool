@@ -67,6 +67,7 @@ async def resolve_overlap_detection(
     known_limits: Optional[RateLimits] = None,
     has_server_headers: Optional[bool] = None,
     verbose: bool = False,
+    prompt_printer=None,
 ) -> Optional[OverlapDetectionResult]:
     """One call across the current code set. A failed call means this round
     finds no candidates — not a hard stop for the codebook (same contract as
@@ -74,8 +75,23 @@ async def resolve_overlap_detection(
     gives a finer-grained codebook, not a broken one)."""
 
     def prepare_fn(task):
+        prompt = build_overlap_prompt(task["candidates"])
+        if prompt_printer is not None:
+            prompt_printer.capture_prompt(
+                step_name="code_generator",
+                utility_name="resolve_overlap_detection",
+                prompt_content=prompt,
+                prompt_type="mece_detect",
+                metadata={
+                    "model": config.model_mece_detect,
+                    "temperature": config.temperature_mece_detect,
+                    "max_tokens": config.max_tokens_mece_detect,
+                    "n_candidates": len(task["candidates"]),
+                    "candidate_names": [c.name for c in task["candidates"]],
+                },
+            )
         return {
-            "prompt": build_overlap_prompt(task["candidates"]),
+            "prompt": prompt,
             "response_model": make_overlap_model(task["candidates"]),
             "temperature": config.temperature_mece_detect,
             "max_tokens": config.max_tokens_mece_detect,
@@ -226,6 +242,7 @@ async def resolve_pair_probes(
     known_limits: Optional[RateLimits] = None,
     has_server_headers: Optional[bool] = None,
     verbose: bool = False,
+    prompt_printer=None,
 ) -> Dict[int, PairVerdict]:
     """Eén taak per paar (pairs zijn onafhankelijk), gebundeld in één
     SmoothRequester-batch voor concurrency. Een paar zonder materiaal
@@ -240,8 +257,25 @@ async def resolve_pair_probes(
 
     def prepare_fn(task):
         probe: PairProbe = task["probe"]
+        prompt = build_probe_prompt(probe.pair, candidate_by_name, probe.ideas)
+        if prompt_printer is not None:
+            prompt_printer.capture_prompt(
+                step_name="code_generator",
+                utility_name="resolve_pair_probes",
+                prompt_content=prompt,
+                prompt_type="mece_probe",
+                metadata={
+                    "model": config.model_mece_probe,
+                    "temperature": config.temperature_mece_probe,
+                    "max_tokens": config.max_tokens_mece_probe,
+                    "pair_id": probe.pair.pair_id,
+                    "code_a": probe.pair.code_a,
+                    "code_b": probe.pair.code_b,
+                    "idea_refs": [idea.idea_ref for idea in probe.ideas],
+                },
+            )
         return {
-            "prompt": build_probe_prompt(probe.pair, candidate_by_name, probe.ideas),
+            "prompt": prompt,
             "response_model": make_probe_model(probe.pair, probe.ideas),
             "temperature": config.temperature_mece_probe,
             "max_tokens": config.max_tokens_mece_probe,
@@ -475,6 +509,7 @@ async def enforce_mece(
     known_limits: Optional[RateLimits] = None,
     has_server_headers: Optional[bool] = None,
     verbose: bool = False,
+    prompt_printer=None,
 ) -> List[CodeCandidate]:
     """Detecteer (Pass A) + bevraag blind (Pass B), herhaald tot een ronde
     niets samenvoegt of `config.mece_max_rounds` is bereikt. Geeft de finale
@@ -489,7 +524,7 @@ async def enforce_mece(
 
     for round_num in range(1, config.mece_max_rounds + 1):
         overlap = await resolve_overlap_detection(
-            current, config, known_limits, has_server_headers, verbose
+            current, config, known_limits, has_server_headers, verbose, prompt_printer,
         )
         if overlap is None:
             _log_round(log, round_num, reason="detection_failed")
@@ -504,7 +539,7 @@ async def enforce_mece(
         candidate_by_name = {c.name: c for c in current}
         verdict_by_id = await resolve_pair_probes(
             pairs, candidate_by_name, idea_units_by_attribute, config,
-            known_limits, has_server_headers, verbose,
+            known_limits, has_server_headers, verbose, prompt_printer,
         )
         if not verdict_by_id:
             _log_round(log, round_num, pairs_found=len(pairs), reason="probe_failed")

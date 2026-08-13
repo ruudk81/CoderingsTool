@@ -26,13 +26,31 @@ async def resolve_relations(
     known_limits: Optional[RateLimits] = None,
     has_server_headers: Optional[bool] = None,
     verbose: bool = False,
+    prompt_printer=None,
 ) -> RelationsResult:
     """One call across the whole concept inventory. If it fails there is no
     grouping, so step 5 stops here — no fallback."""
 
     def prepare_fn(task):
+        prompt = build_relations_prompt(task["concepts"], task["language"])
+        if prompt_printer is not None:
+            prompt_printer.capture_prompt(
+                step_name="code_generator",
+                utility_name="resolve_relations",
+                prompt_content=prompt,
+                prompt_type="relations",
+                metadata={
+                    "model": config.model_relations,
+                    "temperature": config.temperature_relations,
+                    "max_tokens": config.max_tokens_relations,
+                    "language": task["language"],
+                    "n_concepts": len(task["concepts"]),
+                    "concept_ids": [c.attribute_id for c in task["concepts"]],
+                    "concept_names": [c.name for c in task["concepts"]],
+                },
+            )
         return {
-            "prompt": build_relations_prompt(task["concepts"], task["language"]),
+            "prompt": prompt,
             "response_model": make_relations_model(task["concepts"]),
             "temperature": config.temperature_relations,
             "max_tokens": config.max_tokens_relations,
@@ -71,6 +89,7 @@ async def resolve_umbrella_merge(
     known_limits: Optional[RateLimits] = None,
     has_server_headers: Optional[bool] = None,
     verbose: bool = False,
+    prompt_printer=None,
 ) -> Optional[UmbrellaMergeResult]:
     """One call that asks, for every umbrella name, whether another name in the
     list means the same thing — a per-item lookup, not a partitioning question
@@ -79,8 +98,23 @@ async def resolve_umbrella_merge(
     instead of raising, unlike resolve_relations."""
 
     def prepare_fn(task):
+        prompt = build_umbrella_merge_prompt(task["umbrellas"])
+        if prompt_printer is not None:
+            prompt_printer.capture_prompt(
+                step_name="code_generator",
+                utility_name="resolve_umbrella_merge",
+                prompt_content=prompt,
+                prompt_type="umbrella_merge",
+                metadata={
+                    "model": config.model_umbrella_merge,
+                    "temperature": config.temperature_umbrella_merge,
+                    "max_tokens": config.max_tokens_umbrella_merge,
+                    "n_umbrellas": len(task["umbrellas"]),
+                    "umbrella_names": [u.name for u in task["umbrellas"]],
+                },
+            )
         return {
-            "prompt": build_umbrella_merge_prompt(task["umbrellas"]),
+            "prompt": prompt,
             "response_model": make_umbrella_merge_model(task["umbrellas"]),
             "temperature": config.temperature_umbrella_merge,
             "max_tokens": config.max_tokens_umbrella_merge,

@@ -33,8 +33,10 @@ import models
 from config import MISCELLANEOUS_CODE_LABELS
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.costTracker import CostTracker
+from utils.exportNaming import export_filename
 from utils.identity import ensure_codebook_ids
 from utils.llm import token_tracker
+from utils.promptPrinter import PromptPrinter
 from utils.saveVerbose import VerboseCapture
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
@@ -68,6 +70,8 @@ from test_data import TEST_DATA
 FILENAME = TEST_DATA.filename
 VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
+
+PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 
 # =============================================================================
 # CONFIGURATION
@@ -265,10 +269,15 @@ async def _generate_codebook_async(
     language: str,
     config: CodebookConfig,
     verbose: bool,
+    prompt_printer=None,
 ) -> GeneratedCodebook:
-    relations_before = await resolve_relations(concepts, config, language, verbose=verbose)
+    relations_before = await resolve_relations(
+        concepts, config, language, verbose=verbose, prompt_printer=prompt_printer,
+    )
     umbrellas_before = umbrellas_from_relations(relations_before)
-    merge_result = await resolve_umbrella_merge(umbrellas_before, config, verbose=verbose)
+    merge_result = await resolve_umbrella_merge(
+        umbrellas_before, config, verbose=verbose, prompt_printer=prompt_printer,
+    )
     relations_final = (
         apply_umbrella_merge(relations_before, merge_result)
         if merge_result is not None else relations_before
@@ -277,6 +286,7 @@ async def _generate_codebook_async(
     shapes, overig_ids = consolidate(concepts, relation_map, threshold)
     codes = await write_codebook(
         shapes, concepts, dimension_diagnostic, language, config, verbose=verbose,
+        prompt_printer=prompt_printer,
     )
 
     # MECE-afdwinging: codes als VERZAMELING bekijken, niet per vorm.
@@ -296,6 +306,7 @@ async def _generate_codebook_async(
     round_log = _RoundLog()
     final_candidates = await enforce_mece(
         candidates, idea_units_by_attribute, config, log=round_log, verbose=verbose,
+        prompt_printer=prompt_printer,
     )
     merged = [c for c in final_candidates if c.shape.origin == "mece_merge"]
     untouched = [c for c in final_candidates if c.shape.origin != "mece_merge"]
@@ -309,7 +320,7 @@ async def _generate_codebook_async(
     untouched_names = [code_by_shape_key[c.shape.key].code_name for c in untouched]
     rewritten = await write_codebook(
         [c.shape for c in merged], concepts, dimension_diagnostic, language, config,
-        taken_names=untouched_names, verbose=verbose,
+        taken_names=untouched_names, verbose=verbose, prompt_printer=prompt_printer,
     ) if merged else []
     final_shapes = [c.shape for c in untouched] + [c.shape for c in merged]
     final_codes = [code_by_shape_key[c.shape.key] for c in untouched] + rewritten
@@ -336,12 +347,15 @@ def generate_codebook(
     language: str,
     config: CodebookConfig,
     verbose: bool = True,
+    prompt_printer=None,
 ) -> GeneratedCodebook:
     """Sync wrapper around the chain — the one orchestration entry point,
-    shared by `run_codebook()` and `run_codebook_preview.py`."""
+    shared by `run_codebook()` and `run_codebook_preview.py`. `prompt_printer`
+    is optional: None (the default, used by the preview script and every
+    test) costs nothing and captures nothing."""
     return asyncio.run(_generate_codebook_async(
         concepts, idea_units_by_attribute, threshold, dimension_diagnostic, language,
-        config, verbose,
+        config, verbose, prompt_printer,
     ))
 
 
@@ -545,6 +559,26 @@ def run_scorecard(
 
 
 # =============================================================================
+# PROMPT SAVING
+# =============================================================================
+
+def save_prompts_to_json(prompt_printer):
+    """Save captured prompts to JSON file.
+
+    Everything the runner captured goes in, unfiltered — no doctype whitelist
+    here (see run_classifier.py's save_prompts_to_json for why).
+    """
+    if not prompt_printer or not prompt_printer.prompts:
+        return
+
+    prompts_dir = project_root / "exports" / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+
+    prompt_printer.save_prompts(str(prompts_dir / export_filename(
+        FILENAME, VARIABLE, SAMPLE_SIZE, "prompts_step5", "json")))
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -643,9 +677,10 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
                                sample_size=SAMPLE_SIZE)
     snapshot_before = token_tracker.snapshot()
 
+    prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
     result = generate_codebook(
         concepts, idea_units_by_attribute, threshold, dimension_diagnostic, language,
-        CONFIG, verbose=CONFIG.verbose,
+        CONFIG, verbose=CONFIG.verbose, prompt_printer=prompt_printer,
     )
     report_codebook_build(result)
 
@@ -670,6 +705,8 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
 
     # Cache for downstream use by step 6 (code assigner)
     cache_mece_results(partition_set, pydantic_results, codes)
+
+    save_prompts_to_json(prompt_printer)
 
     return codes
 
