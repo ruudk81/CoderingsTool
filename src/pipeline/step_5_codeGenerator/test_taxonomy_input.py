@@ -1,4 +1,6 @@
 """Tests voor de step-4-ingang van step 5."""
+import pytest
+
 from pipeline.step_5_codeGenerator.taxonomy_input import (
     IdeaUnit, build_idea_units, build_attribute_refs,
 )
@@ -36,6 +38,33 @@ def test_ideas_without_attribute_id_are_skipped():
 def test_responses_without_ideas_are_skipped():
     classified = [FakeResponse("R1", None)]
     assert build_idea_units(classified) == []
+
+
+def test_a_renamed_idea_field_raises_instead_of_going_empty():
+    """Een veld dat step 4 hernoemt moet luid stuk. Leeg is een geldige waarde,
+    afwezig is een contractbreuk — zonder dit onderscheid werd een hernoemde
+    `valence` stil een neutraal idee."""
+    class IdeaWithoutValence:
+        idea_id = "R1_1"
+        attribute_id = "A1"
+        instance = "i"
+        interpretation = "t"
+
+    classified = [FakeResponse("R1", [IdeaWithoutValence()])]
+    with pytest.raises(AttributeError):
+        build_idea_units(classified)
+
+
+def test_a_renamed_attribute_name_key_raises():
+    taxonomy = {
+        "Domein A": {
+            "attributes": {
+                "Facet X": [{"attribute_id": "A1", "attribute_definition": "d"}]
+            }
+        }
+    }
+    with pytest.raises(KeyError):
+        build_attribute_refs(taxonomy)
 
 
 def test_attribute_refs_read_new_and_old_definition_field():

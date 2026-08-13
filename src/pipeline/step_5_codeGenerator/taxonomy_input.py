@@ -2,6 +2,14 @@
 
 Step 4 wordt herschreven; alles wat daar van naam of structuur verandert wordt
 hier opgevangen, zodat de rest van step 5 er niet van afweet.
+
+Opgevangen betekent niet weggedrukt. Een veld dat leeg is, is een geldige
+waarde en wordt hier tot "" gemaakt; een veld dat niet bestáát is een breuk in
+het contract met step 4 en moet gooien. Vandaar gewone attribuuttoegang in
+plaats van `getattr(..., default)`: die twee gevallen zijn niet uit elkaar te
+houden zodra je een default meegeeft, en het tweede geval werd dan stil het
+eerste — een hernoemde `valence` maakte élk idee neutraal, waarna de hele
+richtingsbepaling in `consolidator.py` verdween zonder één foutmelding.
 """
 from __future__ import annotations
 
@@ -34,17 +42,17 @@ def build_idea_units(classified: List[Any]) -> List[IdeaUnit]:
     """Vlak het step-4-groeimodel af tot idea units met respondent-id."""
     units: List[IdeaUnit] = []
     for response in classified:
-        for idea in getattr(response, "response_ideas", None) or []:
-            attribute_id = getattr(idea, "attribute_id", "") or ""
+        for idea in response.response_ideas or []:
+            attribute_id = idea.attribute_id or ""
             if not attribute_id:
                 continue
             units.append(IdeaUnit(
                 idea_id=idea.idea_id,
                 respondent_id=str(response.respondent_id),
                 attribute_id=attribute_id,
-                valence=getattr(idea, "valence", "") or "",
-                instance=getattr(idea, "instance", "") or "",
-                interpretation=getattr(idea, "interpretation", "") or "",
+                valence=idea.valence or "",
+                instance=idea.instance or "",
+                interpretation=idea.interpretation or "",
             ))
     return units
 
@@ -61,7 +69,7 @@ def build_attribute_refs(partition_results: Dict[str, Any]) -> Dict[str, Attribu
                     continue
                 refs[attribute_id] = AttributeRef(
                     attribute_id=attribute_id,
-                    name=attribute.get("attribute_name", ""),
+                    name=attribute["attribute_name"],
                     definition=(attribute.get("attribute_definition")
                                 or attribute.get("attribute_description", "")),
                     domain=domain_name,
