@@ -86,15 +86,19 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     "idea_extraction_context":            ("5.6", 3),   # specifiers + dimension discovery
     "idea_extraction_taxonomy":           ("5.6", 3),   # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": ("5.6", 3),   # main extraction + retry
-    # Step 4: Taxonomy Classifier (P1-P9)
-    "classifier_p1":                      ("5.6", 3),   # Axis Discovery
-    "classifier_p2":                      ("5.6", 3),   # Facet Discovery (met én zonder assen)
-    "classifier_p4":                      ("5.6", 3),   # Facet Assignment
-    "classifier_p5":                      ("5.6", 3),   # Facet Consolidation (in-axis)
-    "classifier_p6":                      ("5.6", 3),   # Attribute Discovery
-    "classifier_p7":                      ("5.6", 3),   # Attribute Assignment
-    "classifier_p8":                      ("5.6", 3),   # Attribute Consolidation (in-facet)
-    "classifier_p9":                      ("5.6", 3),   # Valence-neutral merge
+    # Step 4: Taxonomy Classifier — discovery, consolidation, assignment,
+    # refinement per level, then the valence merge. Named by function, not by
+    # number: a reordering should not force a rename here or in the perf model.
+    "classifier_facet_discovery":         ("5.6", 3),
+    "classifier_facet_consolidation":     ("5.6", 3),
+    "classifier_facet_assignment":        ("5.6", 3),
+    "classifier_facet_refinement":        ("5.6", 3),
+    "classifier_attribute_discovery":     ("5.6", 3),
+    "classifier_attribute_consolidation": ("5.6", 3),
+    "classifier_attribute_assignment":    ("5.6", 3),
+    "classifier_attribute_refinement":    ("5.6", 3),
+    "classifier_cross_scope_consolidation":    ("5.6", 3),
+    "classifier_valence_merge":           ("5.6", 3),
     # Step 5: Code Generator
     "codegen_relations":                  ("5.6", 3),   # relations between attributes
     "codegen_umbrella_merge":             ("5.6", 3),   # consolidate umbrella names before pooling
@@ -198,13 +202,17 @@ STEP_EFFORT = {
     # Step 3: what the dimensions and domains ARE
     "idea_extraction_context":  "medium",
     "idea_extraction_taxonomy": "medium",
-    # Step 4: discovery and consolidation of axes, facets + attributes.
-    "classifier_p1": "medium",
-    "classifier_p2": "medium",
-    "classifier_p5": "medium",
-    "classifier_p6": "medium",
-    "classifier_p8": "medium",
-    "classifier_p9": "low",
+    # Step 4: the phases that BUILD the taxonomy reason; the two assignment
+    # phases apply it and fall back to REASONING_EFFORT, which is where ~98% of
+    # the calls are.
+    "classifier_facet_discovery": "medium",
+    "classifier_facet_consolidation": "medium",
+    "classifier_facet_refinement": "medium",
+    "classifier_attribute_discovery": "medium",
+    "classifier_attribute_consolidation": "medium",
+    "classifier_attribute_refinement": "medium",
+    "classifier_cross_scope_consolidation": "medium",
+    "classifier_valence_merge": "low",
     # Step 5: writing and consolidating the codebook
     "codegen_relations": "medium",
     "codegen_umbrella_merge": "medium",
@@ -216,12 +224,14 @@ STEP_EFFORT = {
 
 STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
-    "classifier_p1": "low",
-    "classifier_p2": "low",
-    "classifier_p5": "low",
-    "classifier_p6": "low",
-    "classifier_p8": "low",
-    "classifier_p9": "low",
+    "classifier_facet_discovery": "low",
+    "classifier_facet_consolidation": "low",
+    "classifier_facet_refinement": "low",
+    "classifier_attribute_discovery": "low",
+    "classifier_attribute_consolidation": "low",
+    "classifier_attribute_refinement": "low",
+    "classifier_cross_scope_consolidation": "low",
+    "classifier_valence_merge": "low",
     # All other steps: fall back to TEXT_VERBOSITY
 }
 
@@ -286,7 +296,7 @@ def get_reasoning_params(model: str, phase: str = None) -> dict:
 
     Args:
         model: Model name, as returned by get_step_model().
-        phase: Pipeline phase key (e.g. "classifier_p1"). If provided, uses
+        phase: Pipeline phase key (e.g. "classifier_facet_discovery"). If provided, uses
                per-step effort from STEP_EFFORT and verbosity from STEP_VERBOSITY.
     """
     if not _model(model).reasoning:

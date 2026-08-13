@@ -252,7 +252,10 @@ class DomainResultModel(BaseModel):
     facet_assignments: Dict[str, str] = Field(default_factory=dict)
     attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     attribute_assignments: Dict[str, str] = Field(default_factory=dict)
-    # P6 output snapshots (before in-facet consolidation remaps in P7)
+    # Discovery snapshots, taken before the consolidation phase settles each
+    # level. Never drop these: they are what makes a diagnosis after the fact
+    # possible, and what the standalone refinement replay runs against.
+    raw_facets: List[Dict[str, Any]] = Field(default_factory=list)
     raw_attributes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     raw_attribute_assignments: Dict[str, str] = Field(default_factory=dict)
     # Legacy P9-era over-merge correction; old chains only, nothing writes these

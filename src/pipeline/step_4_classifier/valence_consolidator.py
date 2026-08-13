@@ -32,7 +32,7 @@ from models import (
     TaxonomyResultsCache,
     TaxonomyClassifiedModel,
 )
-from pipeline.step_4_classifier.prompts_classifier import (
+from pipeline.step_4_classifier.prompts_valence import (
     build_valence_neutral_rename_prompt,
     ValenceNeutralRenameResponse,
 )
@@ -147,7 +147,7 @@ class ValenceConsolidator:
 
     def __init__(self, config: CategoriesConfig, cost_tracker=None,
                  prompt_printer=None):
-        self._model = config.qr_model_p9
+        self._model = config.model_valence_merge
         self._temperature = config.qr_temperature
         self._cost_tracker = cost_tracker
         self._prompt_printer = prompt_printer
@@ -183,7 +183,7 @@ class ValenceConsolidator:
         for dom, res in taxonomy_cache.partition_results.items():
             for attrs in res.attributes.values():
                 for a in attrs:
-                    desc_lookup[(dom, a.get("attribute_name"))] = a.get("attribute_description", "")
+                    desc_lookup[(dom, a.get("attribute_name"))] = a.get("attribute_definition", "")
 
         language = getattr(extraction_meta, "lang", "Dutch") or "Dutch"
         _snap = token_tracker.snapshot() if self._cost_tracker else None
@@ -255,7 +255,7 @@ class ValenceConsolidator:
                 client, self._model, prompt,
                 response_model=ValenceNeutralRenameResponse,
                 temperature=self._temperature, max_tokens=2000,
-                **get_reasoning_params(self._model, phase="classifier_p9"),
+                **get_reasoning_params(self._model, phase="classifier_valence_merge"),
             )
             return {a.pair_id: (a.attribute_name, a.attribute_description) for a in response.attributes}
         except Exception as e:
@@ -279,7 +279,7 @@ class ValenceConsolidator:
                 ]
             fac_list = res.attributes.setdefault(facet, [])
             if not any(a.get("attribute_name") == new_name for a in fac_list):
-                fac_list.append({"attribute_name": new_name, "attribute_description": new_desc})
+                fac_list.append({"attribute_name": new_name, "attribute_definition": new_desc})
         return new_cache
 
     def _apply_to_growing_model(self, classified, merge_map):
