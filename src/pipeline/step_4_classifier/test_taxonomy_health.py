@@ -72,3 +72,27 @@ def test_drain_keys_has_two_members():
     holds — pinned so a future third drain key is a deliberate change, not a
     silent widening of what counts as a full match."""
     assert len(DRAIN_KEYS) == 2
+
+
+def test_vangnetaandeel_telt_alleen_ideeen_in_een_drain():
+    """De tegenmetriek van grover indelen: elke merge die te ver gaat duwt
+    responsen naar een catch-all."""
+    from models import DomainResultModel, DomainSet, TaxonomyResultsCache
+    from pipeline.step_4_classifier.drains import make_drain_attribute
+    from pipeline.step_4_classifier.taxonomy_health import measure
+
+    drain = make_drain_attribute("F", "Dutch")
+    tax = TaxonomyResultsCache(
+        partition_set=DomainSet(partitions=[]),
+        partition_results={"D": DomainResultModel(
+            partition_name="D", n_labels=3, n_batches=1,
+            facets=[{"facet_name": "F"}],
+            attributes={"F": [{"attribute_name": "Wachttijd"}, drain]},
+            attribute_assignments={
+                "i1": "Wachttijd", "i2": drain["attribute_name"],
+                "i3": drain["attribute_name"]},
+        )},
+    )
+    report = measure(tax)
+    assert report.n_drain_ideas == 2
+    assert round(report.drain_share) == 67

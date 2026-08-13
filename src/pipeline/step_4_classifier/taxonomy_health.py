@@ -16,10 +16,10 @@ Four things, all dataset-independent and all cheap enough to run on every build:
   drain_domains()       Labels of the standing drain domains (other, not_known),
                         identified by their metadata key rather than their (possibly
                         translated/re-described) label. Used in classifier.py to skip
-                        the two catch-all domains for P1a axis discovery, which needs
-                        a domain to be internally orthogonal — these two exist to
-                        catch everything else instead. Warns (never fails silently)
-                        when it finds fewer than the two it expects.
+                        the two catch-all domains during discovery: imposing structure
+                        on a deliberately broad catch-all invents distinctions the
+                        responses do not carry. Warns (never fails silently) when it
+                        finds fewer than the two it expects.
 
   measure()             Turns "the taxonomy feels flat" into numbers you can compare
                         across datasets. Every metric below marks a label layer that
@@ -168,23 +168,6 @@ def prune_empty_nodes(tax: TaxonomyResultsCache) -> PruneReport:
 # =============================================================================
 
 @dataclass
-class AxisPurityResult:
-    """Axis-zuiverheid over every sibling set: a domain's facets (shared
-    axis, distinct segments) or a facet's attributes (distinct positions).
-    Counting on tags alone, no LLM — see `_classify_facet_siblings` /
-    `_classify_attribute_siblings`. UNTAGGED (no member carries a tag, e.g.
-    a legacy cache or a domain outside the axis-first path) is reported
-    separately and is never a violation."""
-    pure: int = 0
-    untagged: int = 0
-    violations: List[str] = field(default_factory=list)
-
-    @property
-    def total(self) -> int:
-        return self.pure + self.untagged + len(self.violations)
-
-
-@dataclass
 class HealthReport:
     n_domains: int = 0
     n_facets: int = 0
@@ -195,11 +178,21 @@ class HealthReport:
     solo_facets: List[str] = field(default_factory=list)
     duplicate_attributes: Dict[str, List[str]] = field(default_factory=dict)
     duplicate_facets: Dict[str, List[str]] = field(default_factory=dict)
-    axis_purity: AxisPurityResult = field(default_factory=AxisPurityResult)
+    n_drain_ideas: int = 0
 
     @property
     def solo_facet_share(self) -> float:
         return 100.0 * len(self.solo_facets) / self.n_facets if self.n_facets else 0.0
+
+    @property
+    def drain_share(self) -> float:
+        """Hoeveel er in een vangnet belandde.
+
+        De tegenmetriek van grover indelen: elke merge die te ver gaat duwt
+        responsen naar een catch-all, en dat is het enige signaal dat niet
+        meebeweegt met "minder attributen is beter".
+        """
+        return 100.0 * self.n_drain_ideas / self.n_ideas if self.n_ideas else 0.0
 
     def lines(self) -> List[str]:
         out = [
@@ -211,9 +204,8 @@ class HealthReport:
             f"  lege attributen    : {len(self.empty_attributes)}",
             f"  dubbele namen      : {len(self.duplicate_attributes)} attribuut, "
             f"{len(self.duplicate_facets)} facet",
-            f"  as-zuiverheid      : {self.axis_purity.pure}/{self.axis_purity.total} sets puur, "
-            f"{self.axis_purity.untagged} untagged, "
-            f"{len(self.axis_purity.violations)} violations",
+            f"  in een vangnet     : {self.n_drain_ideas} ideeën "
+            f"({self.drain_share:.1f}% van de toegewezen ideeën)",
         ]
         for label, items in (("facet == attribuut", self.facet_equals_attribute),
                              ("lege attributen", self.empty_attributes)):
@@ -223,127 +215,7 @@ class HealthReport:
             out.append(f"    [dubbel attribuut] {name!r}: {', '.join(places)}")
         for name, places in self.duplicate_facets.items():
             out.append(f"    [dubbel facet] {name!r}: {', '.join(places)}")
-        for v in self.axis_purity.violations:
-            out.append(f"    [as-schending] {v}")
         return out
-
-
-def _norm_text(text) -> str:
-    """Normalise a tag value for distinctness comparison. Case- and
-    padding-insensitive only, mirroring `TaxonomyClassifier._norm_text`
-    (classifier.py) so this metric is exactly as lax as the enforcement it
-    audits — a case- or whitespace-variant echo from a review pass (e.g. P7
-    re-emitting a position name) must not count as a distinct value here."""
-    return (text or "").strip().lower()
-
-
-def _classify_siblings(
-    items: List[dict], tag_key: str, name_key: str
-) -> Tuple[str, List[str]]:
-    """Classify one sibling set (all items must share ONE tag value each,
-    pairwise distinct after normalisation) for axis-purity. Returns
-    (status, offending names):
-
-      "untagged"  — no member carries `tag_key` (legacy / non-axis-first)
-      "violation" — some but not all members tagged, or two members share
-                    the same (normalised) tag value; offenders are the
-                    names at fault
-      "pure"      — every member tagged, every tag value distinct
-
-    Used for attribute sibling sets (tag_key="position"). Facet sibling sets
-    are classified by `_classify_facet_siblings` instead — a domain's facets
-    do not share a single tag_key/value pair the way one facet's attributes
-    do, since P1a puts 1-4 independent axes on one domain (see there). An
-    empty `items` list is the caller's concern — this function assumes at
-    least one item.
-    """
-    tagged = [it for it in items if it.get(tag_key)]
-    if not tagged:
-        return "untagged", []
-    if len(tagged) != len(items):
-        offenders = [it.get(name_key, "?") for it in items if not it.get(tag_key)]
-        return "violation", offenders
-    values = [_norm_text(it.get(tag_key)) for it in items]
-    dupes = {v for v, c in Counter(values).items() if c > 1}
-    if dupes:
-        offenders = [it.get(name_key, "?") for it in items if _norm_text(it.get(tag_key)) in dupes]
-        return "violation", offenders
-    return "pure", []
-
-
-def _classify_axis_group(axis_facets: List[dict]) -> Tuple[str, List[str]]:
-    """Classify one (domain, axis) facet group — every member already
-    carries THIS axis tag (that is the grouping precondition in
-    `_classify_facet_siblings`). PURE requires every member to also carry a
-    non-empty segment, pairwise distinct after normalisation. A member with
-    the axis set but no segment is a violation, not "untagged" — the axis
-    tag alone is not enforceable without a segment, so reporting it as a
-    clean/untagged set would hide a broken proposal."""
-    segmentless = [f for f in axis_facets if not f.get("segment")]
-    if segmentless:
-        offenders = [f.get("facet_name", "?") for f in segmentless]
-        return "violation", offenders
-    segments = [_norm_text(f.get("segment")) for f in axis_facets]
-    dupes = {s for s, c in Counter(segments).items() if c > 1}
-    if dupes:
-        offenders = [f.get("facet_name", "?") for f in axis_facets if _norm_text(f.get("segment")) in dupes]
-        return "violation", offenders
-    return "pure", []
-
-
-def _classify_facet_siblings(facets: List[dict]) -> List[Tuple[str, str, List[str]]]:
-    """Classify a domain's facet sibling set(s) for axis-purity.
-
-    P1a discovers 1-4 axes PER DOMAIN (spec §Fasering), and P2 consolidates
-    one facet per populated (axis, segment) across ALL of them — a domain's
-    facets do not share a single axis by design. Treating "the domain's
-    facets" as one sibling set (an earlier version of this function did)
-    flags every legitimate multi-axis domain as a violation, and checks
-    segment distinctness across axes that may legitimately reuse a segment
-    name (e.g. the injected residual segment, named identically on every
-    axis that lacked one).
-
-    Facets are grouped BY AXIS first; each (domain, axis) group is its own
-    sibling set requiring pairwise-distinct segments (`_classify_axis_group`).
-    Returns one (label_suffix, status, offenders) tuple per sibling set:
-    a single ("", "untagged" | "violation", …) for a wholly-untagged or
-    mixed-tagged domain (some facets carry an axis, some do not — still one
-    violation, not decomposable into axis groups), or one
-    (" · as={axis}", …) per axis group once every facet in the domain
-    carries an axis tag.
-    """
-    tagged = [f for f in facets if f.get("axis")]
-    if not tagged:
-        return [("", "untagged", [])]
-    if len(tagged) != len(facets):
-        offenders = [f.get("facet_name", "?") for f in facets if not f.get("axis")]
-        return [("", "violation", offenders)]
-
-    by_axis: Dict[str, List[dict]] = {}
-    for f in facets:
-        by_axis.setdefault(f.get("axis"), []).append(f)
-
-    return [
-        (f" · as={axis_name}", *_classify_axis_group(axis_facets))
-        for axis_name, axis_facets in by_axis.items()
-    ]
-
-
-def _classify_attribute_siblings(attrs: List[dict]) -> Tuple[str, List[str]]:
-    """Classify a facet's attribute sibling set: PURE requires every
-    attribute tagged with a distinct (normalised) position on the facet's
-    refinement axis — a single axis per facet, so (unlike facets) no
-    per-axis grouping is needed here."""
-    return _classify_siblings(attrs, "position", "attribute_name")
-
-
-def _record_purity(report: "AxisPurityResult", label: str, status: str, offenders: List[str]) -> None:
-    if status == "pure":
-        report.pure += 1
-    elif status == "untagged":
-        report.untagged += 1
-    else:
-        report.violations.append(f"{label}: {', '.join(offenders) or '?'}")
 
 
 def measure(tax: TaxonomyResultsCache) -> HealthReport:
@@ -359,10 +231,11 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
         ideas.update(k for k, v in (dr.attribute_assignments or {}).items()
                      if v not in SENTINELS)
 
-        facets = dr.facets or []
-        if facets:
-            for suffix, status, offenders in _classify_facet_siblings(facets):
-                _record_purity(rep.axis_purity, f"domein {dname}{suffix} (facetten)", status, offenders)
+        drain_names = {a.get("attribute_name")
+                       for attrs in (dr.attributes or {}).values()
+                       for a in attrs if a.get("drain_key")}
+        rep.n_drain_ideas += sum(n for name, n in counts.items()
+                                 if name in drain_names)
 
         for fname, attrs in (dr.attributes or {}).items():
             rep.n_facets += 1
@@ -378,10 +251,6 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
                     rep.facet_equals_attribute.append(f"{dname} / {fname}")
             if len(names) == 1:
                 rep.solo_facets.append(f"{dname} / {fname} -> {names[0]}")
-
-            if attrs:
-                status, offenders = _classify_attribute_siblings(attrs)
-                _record_purity(rep.axis_purity, f"{dname} / {fname} (attributen)", status, offenders)
 
     rep.n_ideas = len(ideas)
     rep.duplicate_attributes = {k: v for k, v in attr_where.items() if len(v) > 1}
