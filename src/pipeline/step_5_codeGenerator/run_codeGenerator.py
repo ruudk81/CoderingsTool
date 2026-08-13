@@ -1,43 +1,65 @@
 #%%
 
 """
-Step 5: Code Generator runner (P8-P9)
+Step 5: Code Generator runner.
 
-Pipeline: load taxonomy from step 4 cache → generate codebook (P8-P9).
+Pipeline: load taxonomy from step 4 cache, then build the codebook:
+
+    taxonomy_input -> concept_inventory -> relations (2 LLM calls) ->
+    consolidator (deterministic: dedup, pooling, direction) -> codebook_writer
+    (1 LLM call) -> mece (2 LLM calls per round, iterating) -> codebook_writer
+    (re-write of merged codes only) -> three deterministic guards (duplicate
+    names, duplicate definitions, naming mismatch) -> Overig sweep ->
+    scorecard -> cache for step 6.
+
+`generate_codebook()` is the reusable orchestration entry point — also used
+by run_codebook_preview.py (same chain, a different cache dir, a markdown
+report instead of a cache write).
 """
 
+import asyncio
+import copy
 import sys
+from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
 
 # Add parent paths for imports
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 import models
+from config import MISCELLANEOUS_CODE_LABELS
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from utils.exportNaming import export_filename
-from utils.identity import ensure_codebook_ids
-from utils.promptPrinter import PromptPrinter
-from utils.llm import token_tracker
 from utils.costTracker import CostTracker
+from utils.identity import ensure_codebook_ids
+from utils.llm import token_tracker
 from utils.saveVerbose import VerboseCapture
 
-# Import step_5_codeGenerator components
-from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.codebook_generator import CodebookGenerator, CodebookResult
-from models import CodingResultsCache
+from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
 from pipeline.step_5_codeGenerator.codebook_verifier import (
-    build_scorecard, format_scorecard, collect_taxonomy_attributes, collect_idea_assignments,
+    build_scorecard, collect_idea_assignments, collect_taxonomy_attributes, format_scorecard,
 )
+from pipeline.step_5_codeGenerator.codebook_writer import (
+    find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names, write_codebook,
+)
+from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
+from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
+from pipeline.step_5_codeGenerator.consolidator import CodeShape, consolidate, normalize_relations
+from pipeline.step_5_codeGenerator.mece import enforce_mece
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
-from config import MISCELLANEOUS_CODE_LABELS
+from pipeline.step_5_codeGenerator.prompts_mece import CodeCandidate
+from pipeline.step_5_codeGenerator.prompts_umbrella_merge import umbrellas_from_relations
+from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
+from pipeline.step_5_codeGenerator.taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 
-# Import step_4_classifier (upstream output types)
+from models import CodingResultsCache
 from models import (
-    DomainSet, DomainResultModel, TaxonomyResultsCache,
-    TaxonomyClassifiedModel,
+    DomainResultModel, DomainSet, TaxonomyClassifiedModel, TaxonomyResultsCache,
 )
+
+FALLBACK_DIAGNOSTIC = "Do responses mainly differ in qualities, traits, images, or associations?"
 
 
 # =============================================================================
@@ -46,8 +68,6 @@ from test_data import TEST_DATA
 FILENAME = TEST_DATA.filename
 VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
-
-PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 
 # =============================================================================
 # CONFIGURATION
@@ -157,12 +177,221 @@ def load_classified_ideas(
 
 
 # =============================================================================
+# CODEBOOK GENERATION — the reusable chain
+# =============================================================================
+
+class _RoundLog:
+    """Verzamelt `enforce_mece`'s per-ronde `log.add(...)`-aanroepen voor de
+    printregel aan het eind van de run. Geen `decision_log.py` (nog niet
+    gebouwd) — duck-typed, zoals `write_codebook`'s eigen `log`-parameter."""
+    def __init__(self):
+        self.rounds: List[dict] = []
+
+    def add(self, **kwargs):
+        self.rounds.append(kwargs)
+
+
+class _CollisionLog:
+    """Verzamelt `resolve_duplicate_names`'s per-botsing `log.add(...)`-aanroepen
+    voor de printregel aan het eind van de run — dezelfde duck-typed vorm als
+    `_RoundLog` hierboven."""
+    def __init__(self):
+        self.collisions: List[dict] = []
+
+    def add(self, **kwargs):
+        self.collisions.append(kwargs)
+
+
+def _shape_lookup(
+    shapes: List[CodeShape], concept_by_id: Dict[str, Concept],
+) -> Dict[tuple, CodeShape]:
+    """Key shapes by (their source-attribute names, valence) — the same two
+    things `write_codebook` echoes back on each `ConsolidatedCode` — so a
+    returned code can be matched to the shape it came from without needing
+    write_codebook to carry shape identity through the LLM round-trip."""
+    lookup = {}
+    for shape in shapes:
+        names = frozenset(concept_by_id[m].name for m in shape.members if m in concept_by_id)
+        lookup[(names, shape.valence)] = shape
+    return lookup
+
+
+def _match_shape(
+    code: ConsolidatedCode, lookup: Dict[tuple, CodeShape],
+) -> Optional[CodeShape]:
+    return lookup.get((frozenset(code.source_attributes), code.valence))
+
+
+def _index_codes_by_shape_key(
+    codes: List[ConsolidatedCode], lookup: Dict[tuple, CodeShape],
+) -> Dict[str, ConsolidatedCode]:
+    """Maps each shape's own `.key` (unique per run, assigned once by
+    `consolidate()`) to the `ConsolidatedCode` written for it. Indexing by
+    `code_name` instead collapses the moment two different shapes are given
+    the same name: a dict comprehension keyed on name keeps only the last
+    code for that name, so every shape sharing it silently inherits ONE
+    shape's definition, including shapes whose actual members that text does
+    not describe. `.key` is never reused across shapes, so this mapping never
+    collapses regardless of what name the writer chose."""
+    indexed: Dict[str, ConsolidatedCode] = {}
+    for code in codes:
+        matched = _match_shape(code, lookup)
+        if matched is not None:
+            indexed[matched.key] = code
+    return indexed
+
+
+@dataclass
+class GeneratedCodebook:
+    """Everything one run of the chain produces, including the three
+    deterministic guards — computed once here so every caller (production,
+    the preview script) reports the same checks instead of re-deriving them."""
+    shapes: List[CodeShape]
+    overig_ids: List[str]
+    codes: List[ConsolidatedCode]
+    merge_failed: bool
+    mece_rounds: List[dict]
+    collisions: List[dict]
+    naming_mismatches: List[dict]
+    duplicate_definitions: List[dict]
+    concept_by_id: Dict[str, Concept] = field(repr=False)
+
+
+async def _generate_codebook_async(
+    concepts: List[Concept],
+    idea_units_by_attribute: Dict[str, List[IdeaUnit]],
+    threshold: int,
+    dimension_diagnostic: str,
+    language: str,
+    config: CodebookConfig,
+    verbose: bool,
+) -> GeneratedCodebook:
+    relations_before = await resolve_relations(concepts, config, language, verbose=verbose)
+    umbrellas_before = umbrellas_from_relations(relations_before)
+    merge_result = await resolve_umbrella_merge(umbrellas_before, config, verbose=verbose)
+    relations_final = (
+        apply_umbrella_merge(relations_before, merge_result)
+        if merge_result is not None else relations_before
+    )
+    relation_map = normalize_relations(relations_final, concepts)
+    shapes, overig_ids = consolidate(concepts, relation_map, threshold)
+    codes = await write_codebook(
+        shapes, concepts, dimension_diagnostic, language, config, verbose=verbose,
+    )
+
+    # MECE-afdwinging: codes als VERZAMELING bekijken, niet per vorm.
+    # `code_by_shape_key` bewaart de volledige geschreven tekst (incl.
+    # diagnostic_test) van codes die geen enkele ronde aanraakt, gekeyd op
+    # de shape zelf (nooit op de geschreven naam — die kan toevallig
+    # samenvallen tussen twee verschillende vormen).
+    concept_by_id = {c.attribute_id: c for c in concepts}
+    shape_lookup = _shape_lookup(shapes, concept_by_id)
+    code_by_shape_key = _index_codes_by_shape_key(codes, shape_lookup)
+    candidates = [
+        CodeCandidate(name=code.code_name, definition=code.definition,
+                      indicators=tuple(code.typical_indicators), valence=code.valence,
+                      shape=_match_shape(code, shape_lookup))
+        for code in codes if _match_shape(code, shape_lookup) is not None
+    ]
+    round_log = _RoundLog()
+    final_candidates = await enforce_mece(
+        candidates, idea_units_by_attribute, config, log=round_log, verbose=verbose,
+    )
+    merged = [c for c in final_candidates if c.shape.origin == "mece_merge"]
+    untouched = [c for c in final_candidates if c.shape.origin != "mece_merge"]
+
+    # Alleen de samengevoegde codes krijgen nieuwe tekst — ongewijzigde codes
+    # behouden hun eerder geschreven definitie/diagnostic_test. De
+    # herschrijving ziet de al vastliggende namen van de ongewijzigde codes
+    # (taken_names) zodat hij er niet overheen schrijft — een promptregel,
+    # geen garantie; resolve_duplicate_names hieronder is de deterministische
+    # achtervang over het volledige, herenigde codeboek.
+    untouched_names = [code_by_shape_key[c.shape.key].code_name for c in untouched]
+    rewritten = await write_codebook(
+        [c.shape for c in merged], concepts, dimension_diagnostic, language, config,
+        taken_names=untouched_names, verbose=verbose,
+    ) if merged else []
+    final_shapes = [c.shape for c in untouched] + [c.shape for c in merged]
+    final_codes = [code_by_shape_key[c.shape.key] for c in untouched] + rewritten
+
+    collision_log = _CollisionLog()
+    final_codes = resolve_duplicate_names(final_codes, final_shapes, log=collision_log)
+
+    mismatches = find_naming_mismatches(final_codes, final_shapes, concept_by_id)
+    duplicate_defs = find_duplicate_definitions(final_codes, final_shapes)
+
+    return GeneratedCodebook(
+        shapes=final_shapes, overig_ids=overig_ids, codes=final_codes,
+        merge_failed=merge_result is None, mece_rounds=round_log.rounds,
+        collisions=collision_log.collisions, naming_mismatches=mismatches,
+        duplicate_definitions=duplicate_defs, concept_by_id=concept_by_id,
+    )
+
+
+def generate_codebook(
+    concepts: List[Concept],
+    idea_units_by_attribute: Dict[str, List[IdeaUnit]],
+    threshold: int,
+    dimension_diagnostic: str,
+    language: str,
+    config: CodebookConfig,
+    verbose: bool = True,
+) -> GeneratedCodebook:
+    """Sync wrapper around the chain — the one orchestration entry point,
+    shared by `run_codebook()` and `run_codebook_preview.py`."""
+    return asyncio.run(_generate_codebook_async(
+        concepts, idea_units_by_attribute, threshold, dimension_diagnostic, language,
+        config, verbose,
+    ))
+
+
+def report_codebook_build(result: GeneratedCodebook) -> None:
+    """Print the three deterministic guards + the MECE round log — the same
+    reporting the dev preview script prints, now also surfaced by a
+    production run instead of being visible only from the dev loop."""
+    if result.merge_failed:
+        print("WAARSCHUWING: consolidatiecall mislukt — doorgegaan met ongeconsolideerde namen.")
+
+    if result.collisions:
+        print(f"WAARSCHUWING: {len(result.collisions)} dubbele codenaam/namen deterministisch opgelost:")
+        for c in result.collisions:
+            print(f"  '{c['name']}' ({c['kept_n_resp']} resp.) behouden; "
+                  f"kleinere code ({c['renamed_n_resp']} resp.) hernoemd naar '{c['renamed_to']}'")
+
+    if result.naming_mismatches:
+        print(f"WAARSCHUWING: {len(result.naming_mismatches)} code(s) waarvan de naam geen woord deelt "
+              f"met een van zijn bronattributen:")
+        for m in result.naming_mismatches:
+            print(f"  '{m['code_name']}' ({m['n_resp']} resp.) — leden: "
+                  f"{', '.join(m['members'])}")
+
+    if result.duplicate_definitions:
+        print(f"WAARSCHUWING: {len(result.duplicate_definitions)} groep(en) codes met identieke definitie:")
+        for d in result.duplicate_definitions:
+            names = ", ".join(f"'{c['code_name']}' ({c['n_resp']} resp.)" for c in d["codes"])
+            print(f"  {names}")
+
+    if result.mece_rounds:
+        total_merges = sum(r["merges"] for r in result.mece_rounds)
+        print(f"MECE: {len(result.mece_rounds)} ronde(s), {total_merges} samenvoeging(en) totaal")
+        for r in result.mece_rounds:
+            acc = f"{r['mean_accuracy']:.0%}" if r["mean_accuracy"] is not None else "—"
+            reason = f", reden einde: {r['reason']}" if r["reason"] else ""
+            print(f"  ronde {r['round']}: {r['pairs_found']} paar/paren gevonden, "
+                  f"{r['pairs_probed']} bevraagd, gem. accuracy {acc}, "
+                  f"{r['merges']} samenvoeging(en){reason}")
+            for p in r.get("pairs", []):
+                decision = "SAMENVOEGEN" if p["merged"] else "apart"
+                print(f"    {p['code_a']} vs {p['code_b']}: accuracy {p['accuracy']:.0%}, "
+                      f"both_rate {p['both_rate']:.0%} -> {decision}")
+
+
+# =============================================================================
 # RESULTS PRINTING
 # =============================================================================
 
-def print_codebook_results(codebook_result: CodebookResult):
-    """Print codebook results (P8-P9): codes with definitions and source attributes."""
-    codes = codebook_result.codes
+def print_codebook_results(codes: List[ConsolidatedCode]):
+    """Print codebook results: codes with definitions and source attributes."""
     n_pos = sum(1 for c in codes if getattr(c, 'valence', '') == 'positive')
     n_neg = sum(1 for c in codes if getattr(c, 'valence', '') == 'negative')
     n_neu = len(codes) - n_pos - n_neg
@@ -196,7 +425,7 @@ def print_codebook_results(codebook_result: CodebookResult):
 def cache_mece_results(
     partition_set: DomainSet,
     pydantic_results: Dict[str, DomainResultModel],
-    codebook_result: CodebookResult,
+    codes: List[ConsolidatedCode],
     filename: Optional[str] = None,
     variable: Optional[str] = None,
     sample_size: Optional[int] = None,
@@ -213,7 +442,7 @@ def cache_mece_results(
             sample_size=sample_size,
         )
 
-    n_codes = len(codebook_result.codes)
+    n_codes = len(codes)
     mece_cache = CodingResultsCache(
         partition_set=partition_set,
         partition_results=pydantic_results,
@@ -221,13 +450,12 @@ def cache_mece_results(
             name: r.n_labels for name, r in pydantic_results.items()
         },
         total_categories=n_codes,
-        raw_codes=[c.model_dump() for c in codebook_result.codes],
-        codebook_narrative=codebook_result.codebook_narrative,
+        raw_codes=[c.model_dump() for c in codes],
     )
 
-    # Mint K# (list order: P9 codes, then Overig) and fill any source_attribute_ids
-    # still missing (e.g. the P9-failure fallback path) — new codebooks are
-    # id-bearing on disk, not just normalized at load.
+    # Mint K# (list order: written codes, then Overig) and fill any
+    # source_attribute_ids still missing — new codebooks are id-bearing on
+    # disk, not just normalized at load.
     ensure_codebook_ids(mece_cache)
 
     cache_manager = CacheManager()
@@ -248,51 +476,20 @@ def cache_mece_results(
         print(f"ERROR: codebook NOT cached ({n_codes} codes) — downstream steps "
               f"will regenerate. See CACHE SAVE FAILED above for the cause.")
 
-    # Readable copy of the P8/P9 scratchpads next to the codebook exports —
-    # the cache field is the source of truth, this file is for eyeballs.
-    if codebook_result.codebook_narrative:
-        scratch_dir = project_root / "exports" / "codebook"
-        scratch_dir.mkdir(parents=True, exist_ok=True)
-        scratch_path = scratch_dir / export_filename(
-            filename, variable, sample_size, "kladblok", "txt")
-        scratch_path.write_text(codebook_result.codebook_narrative, encoding="utf-8")
-        print(f"P8/P9 scratchpads saved: {scratch_path}")
-
-
-# =============================================================================
-# PROMPT SAVING
-# =============================================================================
-
-def save_prompts_to_json(prompt_printer):
-    """Save captured prompts to JSON file."""
-    if not prompt_printer or not prompt_printer.prompts:
-        return
-
-    variable_key = generate_enhanced_variable_key(
-        selected_variables=[VARIABLE],
-        is_merged=False,
-        sample_size=SAMPLE_SIZE,
-    )
-    prompts_dir = project_root / "exports" / "prompts"
-    prompts_dir.mkdir(parents=True, exist_ok=True)
-
-    prompt_printer.save_prompts(str(prompts_dir / export_filename(
-        FILENAME, VARIABLE, SAMPLE_SIZE, "prompts_step5", "json")))
-
 
 # =============================================================================
 # SCORECARD
 # =============================================================================
 
 def apply_overig_sweep(
-    codebook_result: CodebookResult,
+    codes: List[ConsolidatedCode],
     pydantic_results: Dict[str, DomainResultModel],
     language: str,
 ) -> Optional[str]:
     """Route attributes no code placed into a single catch-all 'Overig' code.
 
-    Guarantees 100% attribute/idea coverage by construction. Mutates
-    codebook_result.codes. Returns the Overig code name, or None if nothing orphaned.
+    Guarantees 100% attribute/idea coverage by construction. Mutates `codes`
+    in place. Returns the Overig code name.
     """
     # Referenced = taxonomy attributes AND attributes ideas were actually assigned to
     # (the latter catches step-4 dangling assignments → guarantees 100% idea coverage).
@@ -300,7 +497,7 @@ def apply_overig_sweep(
     idea_attrs = [a for a in collect_idea_assignments(pydantic_results).values() if a]
     referenced = list(dict.fromkeys(all_attrs + idea_attrs))
     covered = set()
-    for code in codebook_result.codes:
+    for code in codes:
         covered.update(code.source_attributes or [])
     orphans = [a for a in referenced if a not in covered]
     # Always emit Overig — even with zero orphans at generation time, step 6
@@ -319,7 +516,7 @@ def apply_overig_sweep(
                         ids.append(a["attribute_id"])
 
     label = MISCELLANEOUS_CODE_LABELS.get(language, "Overig")
-    codebook_result.codes.append(ConsolidatedCode(
+    codes.append(ConsolidatedCode(
         code_name=label,
         definition="Catch-all voor antwoorden die geen specifieke code kregen "
                    "(o.a. diffuus of algemeen oordeel zonder concreet onderwerp).",
@@ -333,46 +530,18 @@ def apply_overig_sweep(
 
 
 def run_scorecard(
-    codebook_result: CodebookResult,
+    codes: List[ConsolidatedCode],
     pydantic_results: Dict[str, DomainResultModel],
-    variable_key: str,
     overig_code_name: Optional[str] = None,
 ):
-    """Build the post-P9 verification scorecard (PASS/FAIL) and print it.
+    """Build the post-generation verification scorecard (PASS/FAIL) and print it.
 
     Console only — the PASS/FAIL readout is captured in the verbose log (which is
     auto-pruned); no separate JSON file is written.
     """
-    scorecard = build_scorecard(codebook_result.codes, pydantic_results, overig_code_name)
+    scorecard = build_scorecard(codes, pydantic_results, overig_code_name)
     print("\n" + format_scorecard(scorecard))
     return scorecard
-
-
-# =============================================================================
-# HELPERS
-# =============================================================================
-
-def _extract_metadata_context(extraction_metadata):
-    """Extract survey context from extraction metadata."""
-    survey_question = ""
-    language = "Dutch"
-    dataset_context = None
-    dimension_name = ""
-    dimension_description = ""
-
-    if extraction_metadata:
-        meta = extraction_metadata
-        survey_question = getattr(meta, 'var_lab', '') or ''
-        language = getattr(meta, 'lang', 'Dutch') or 'Dutch'
-        dataset_context = {}
-        for f in ('sector', 'entity', 'topic', 'perspective', 'intent'):
-            val = getattr(meta, f, None)
-            if val:
-                dataset_context[f] = val
-        dimension_name = getattr(meta, 'primary_dimension', '') or ''
-        dimension_description = getattr(meta, 'primary_dimension_description', '') or ''
-
-    return survey_question, language, dataset_context, dimension_name, dimension_description
 
 
 # =============================================================================
@@ -384,7 +553,6 @@ def _project_corrected(corrected_taxonomy):
     the plain `attributes` / `attribute_assignments` — so the whole codebook chain
     (reconstruction, mece_codes cache, step 6) consumes corrected attributes with no
     further code change."""
-    import copy
     proj = TaxonomyResultsCache.model_validate(copy.deepcopy(corrected_taxonomy.model_dump()))
     for r in proj.partition_results.values():
         r.attributes = r.corrected_attributes
@@ -394,7 +562,7 @@ def _project_corrected(corrected_taxonomy):
 
 def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
                  sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
-    """Run codebook generation (P8-P9) from cached taxonomy results.
+    """Run codebook generation from cached taxonomy results.
 
     Dataset params default to the module-level TEST_DATA constants (so existing
     callers like run_pipeline.py are unchanged); the UI passes them explicitly.
@@ -403,7 +571,7 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
     global FILENAME, VARIABLE, SAMPLE_SIZE
     FILENAME, VARIABLE, SAMPLE_SIZE = filename, var_name, sample_size
     print("=" * 70)
-    print("CODE GENERATOR (P8-P9, loading taxonomy from cache)")
+    print("CODE GENERATOR (loading taxonomy from cache)")
     print("=" * 70)
 
     variable_key = generate_enhanced_variable_key(
@@ -415,7 +583,7 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
     if not force_recalc:
         cache_manager = CacheManager()
         if cache_manager.is_metadata_cache_valid(FILENAME, "mece_codes", variable_key):
-            print("Codebook cache valid — skipping P8-P9 (use force_recalc=True to rerun).\n")
+            print("Codebook cache valid — skipping generation (use force_recalc=True to rerun).\n")
             return None
 
     extraction_metadata = load_extraction_metadata()
@@ -453,94 +621,57 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
     print(f"  Loaded taxonomy: {n_facets} facets, {n_attrs} attributes "
           f"across {len(pydantic_results)} domains")
 
-    # Reconstruct taxonomy data for codebook generator
-    from pipeline.step_5_codeGenerator.prompts_codeGenerator import CodebookAttribute
-
-    partition_assignments = {}
-    partition_attributes = {}
-    all_attr_assignments = {}
-
-    for name, result in pydantic_results.items():
-        partition_assignments[name] = result.facet_assignments
-        # Consolidated attributes carry attribute_name + attribute_definition;
-        # example_observations may be absent → default it.
-        partition_attributes[name] = {
-            facet_name: [
-                CodebookAttribute(
-                    attribute_name=a["attribute_name"],
-                    attribute_description=a.get("attribute_definition", ""),
-                    example_observations=a.get("example_observations", []),
-                )
-                for a in attrs
-            ]
-            for facet_name, attrs in result.attributes.items()
-        }
-        all_attr_assignments.update(result.attribute_assignments)
-
-    from pipeline.step_5_codeGenerator.codebook_generator import TaxonomyResult
-    taxonomy_result = TaxonomyResult(
-        partition_assignments=partition_assignments,
-        partition_attributes=partition_attributes,
-        attribute_assignments=all_attr_assignments,
+    language = getattr(extraction_metadata, "lang", "") or "Dutch"
+    dimension_name = getattr(extraction_metadata, "primary_dimension", "") or ""
+    dimension_diagnostic = (
+        get_dimension(dimension_name).criterion if dimension_name else FALLBACK_DIAGNOSTIC
     )
 
-    survey_question, language, dataset_context, dimension_name, dimension_description = \
-        _extract_metadata_context(extraction_metadata)
+    units = build_idea_units(classified_ideas)
+    refs = build_attribute_refs(pydantic_results)
+    concepts = build_inventory(units, refs)
+    idea_units_by_attribute: Dict[str, List[IdeaUnit]] = defaultdict(list)
+    for unit in units:
+        idea_units_by_attribute[unit.attribute_id].append(unit)
+
+    n_resp_total = len(classified_ideas)
+    threshold = t_keep(n_resp_total, CONFIG)
+    print(f"  Attributes: {len(refs)} (concepts with an idea: {len(concepts)})")
+    print(f"  T_keep = {threshold} over {n_resp_total} respondents")
 
     cost_tracker = CostTracker(filename=FILENAME, var_name=VARIABLE,
                                sample_size=SAMPLE_SIZE)
+    snapshot_before = token_tracker.snapshot()
 
-    prompt_printer = PromptPrinter(
-        enabled=True,
-        print_realtime=PRINT_PROMPTS,
+    result = generate_codebook(
+        concepts, idea_units_by_attribute, threshold, dimension_diagnostic, language,
+        CONFIG, verbose=CONFIG.verbose,
     )
-    template_prefix = ""
-    if extraction_metadata and getattr(extraction_metadata, "template_prefix", None):
-        template_prefix = extraction_metadata.template_prefix
+    report_codebook_build(result)
 
-    # (domain, attribute_name) -> A# from the id-bearing loaded taxonomy, so the
-    # generator can resolve P9's domain-qualified provenance at parse time.
-    attribute_ids = {
-        (domain, a["attribute_name"]): a["attribute_id"]
-        for domain, r in pydantic_results.items()
-        for attrs in r.attributes.values()
-        for a in attrs
-        if a.get("attribute_name") and a.get("attribute_id")
-    }
-
-    generator = CodebookGenerator(CONFIG, prompt_printer=prompt_printer, cost_tracker=cost_tracker)
-    codebook_result = generator.generate(
-        taxonomy_result=taxonomy_result,
-        partition_set=partition_set,
-        survey_question=survey_question,
-        language=language,
-        dataset_context=dataset_context,
-        dimension_name=dimension_name,
-        dimension_description=dimension_description,
-        verbose=CONFIG.verbose if hasattr(CONFIG, 'verbose') else True,
-        classified_ideas=classified_ideas,
-        template_prefix=template_prefix,
-        attribute_ids=attribute_ids,
+    # One phase for the whole chain (relations + writer + MECE): every rung
+    # in STEP_MODEL currently shares one model, so a finer split buys nothing.
+    cost_tracker.record_phase(
+        "step_5_code_generator", "codebook_generation",
+        snapshot_before, token_tracker.snapshot(), model=CONFIG.model_writer,
     )
-
     cost_tracker.finalize_step("step_5_code_generator")
 
+    codes = result.codes
+
     # Overig sweep: route any unplaced attribute into a catch-all → 100% coverage
-    overig_name = apply_overig_sweep(codebook_result, pydantic_results, language)
+    overig_name = apply_overig_sweep(codes, pydantic_results, language)
 
     # Print codebook results (includes Overig if added)
-    print_codebook_results(codebook_result)
+    print_codebook_results(codes)
 
-    # Post-P9 verification scorecard (PASS/FAIL against the definition of done)
-    run_scorecard(codebook_result, pydantic_results, variable_key, overig_name)
+    # Post-generation verification scorecard (PASS/FAIL against the definition of done)
+    run_scorecard(codes, pydantic_results, overig_name)
 
     # Cache for downstream use by step 6 (code assigner)
-    cache_mece_results(partition_set, pydantic_results, codebook_result)
+    cache_mece_results(partition_set, pydantic_results, codes)
 
-    # Save prompts
-    save_prompts_to_json(prompt_printer)
-
-    return codebook_result
+    return codes
 
 
 # =============================================================================

@@ -286,7 +286,7 @@ class TaxonomyResultsCache(BaseModel):
 class CodingResultsCache(BaseModel):
     """Cache for codebook results (taxonomy + codes).
 
-    Extends TaxonomyResultsCache fields with raw_codes from P8-P9.
+    Extends TaxonomyResultsCache fields with raw_codes from step 5.
     """
     partition_set: DomainSet
     partition_results: Dict[str, DomainResultModel]
@@ -294,4 +294,4 @@ class CodingResultsCache(BaseModel):
     label_source: str = ""
     total_categories: int = 0
     raw_codes: List[Dict] = Field(default_factory=list)  # ConsolidatedCode dicts
-    codebook_narrative: str = ""  # P8/P9 scratchpads — audit trail for split/keep decisions
+    codebook_narrative: str = ""  # legacy P8/P9 scratchpad field; unused since the step-5 rebuild

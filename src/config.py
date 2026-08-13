@@ -99,9 +99,12 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     "classifier_attribute_refinement":    ("5.6", 3),
     "classifier_cross_scope_consolidation":    ("5.6", 3),
     "classifier_valence_merge":           ("5.6", 3),
-    # Step 5: Code Generator (P8-P9)
-    "codegen_p8":                         ("5.6", 3),
-    "codegen_p9":                         ("5.6", 3),
+    # Step 5: Code Generator
+    "codegen_relations":                  ("5.6", 3),   # relations between attributes
+    "codegen_umbrella_merge":             ("5.6", 3),   # consolidate umbrella names before pooling
+    "codegen_writer":                     ("5.6", 3),   # codebook writing from clusters
+    "codegen_mece_detect":                ("5.6", 3),   # MECE pass A: hardest-to-separate-from per code
+    "codegen_mece_probe":                 ("5.6", 3),   # MECE pass B: blind per-pair idea-assignment probe
     # Step 6: Code Assigner
     "code_assignment":                    ("5.6", 3),
 }
@@ -211,8 +214,11 @@ STEP_EFFORT = {
     "classifier_cross_scope_consolidation": "medium",
     "classifier_valence_merge": "low",
     # Step 5: writing and consolidating the codebook
-    "codegen_p8": "medium",
-    "codegen_p9": "medium",
+    "codegen_relations": "medium",
+    "codegen_umbrella_merge": "medium",
+    "codegen_writer": "medium",
+    "codegen_mece_detect": "medium",     # same rung as codegen_relations
+    "codegen_mece_probe": "medium",
     # All other steps: fall back to REASONING_EFFORT
 }
 
