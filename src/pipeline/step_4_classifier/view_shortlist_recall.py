@@ -29,6 +29,7 @@ from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.embedder import SharedEmbedder
 from pipeline.step_4_classifier.assignment_batching import facet_card_text
 from pipeline.step_4_classifier.partition_labels import format_label
+from pipeline.step_4_classifier.run_classifier import CONFIG
 
 RANK_BUCKETS = (1, 3, 10)
 
@@ -76,7 +77,10 @@ async def main() -> None:
         ]
         if not pairs:
             continue
-        labels = [format_label(idea_by_id[i], "ladder", "") for i, _ in pairs]
+        # Follow the production label source: a shortlist diagnostic that
+        # embeds different text than production embeds measures the wrong thing.
+        labels = [format_label(idea_by_id[i], CONFIG.label_source,
+                               CONFIG.label_prefix) for i, _ in pairs]
 
         card_emb = await embedder.embed_texts([facet_card_text(f) for f in facets])
         idea_emb = await embedder.embed_texts(labels)

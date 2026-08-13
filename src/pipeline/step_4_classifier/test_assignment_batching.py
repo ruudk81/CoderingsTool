@@ -2,23 +2,13 @@
 import numpy as np
 
 from pipeline.step_4_classifier.assignment_batching import (
+    attribute_card_text,
     facet_card_text,
     group_label_reps,
     make_batches,
     shortlist_indices,
     validate_batch_response,
 )
-
-
-class FakeIdea:
-    def __init__(self, idea_id, idea):
-        self.idea_id = idea_id
-        self.idea = idea
-        self.instance = ""
-        self.interpretation = ""
-        self.abstraction = ""
-        self.facet = ""
-        self.domain = ""
 
 
 class FakeItem:
@@ -33,22 +23,14 @@ class FakeResponse:
 
 
 def test_group_label_reps_dedups_normalized_labels():
-    ideas = [FakeIdea("a", "Warm gevoel"), FakeIdea("b", " warm gevoel "),
-             FakeIdea("c", "ouderwets")]
-    reps = group_label_reps(ideas, "idea", "", dedup=True)
+    reps = group_label_reps([("a", "Warm gevoel"), ("b", " warm gevoel "),
+                             ("c", "ouderwets")])
     assert [r.idea_ids for r in reps] == [["a", "b"], ["c"]]
     assert reps[0].label == "Warm gevoel"  # eerste-gezien label, niet de genormaliseerde
 
 
-def test_group_label_reps_without_dedup_is_one_rep_per_idea():
-    ideas = [FakeIdea("a", "x"), FakeIdea("b", "x")]
-    reps = group_label_reps(ideas, "idea", "", dedup=False)
-    assert [r.idea_ids for r in reps] == [["a"], ["b"]]
-
-
 def test_group_label_reps_never_merges_empty_labels():
-    ideas = [FakeIdea("a", ""), FakeIdea("b", "")]
-    reps = group_label_reps(ideas, "idea", "", dedup=True)
+    reps = group_label_reps([("a", ""), ("b", "")])
     assert [r.idea_ids for r in reps] == [["a"], ["b"]]
 
 
@@ -64,7 +46,7 @@ def test_shortlist_indices_unions_per_row_topk_sorted():
     assert shortlist_indices(labels, cards, 4) == [0, 1, 2, 3]
 
 
-def test_validate_batch_response_routes_ok_missing_duplicate_fnone():
+def test_validate_batch_response_routes_ok_missing_duplicate_none():
     response = FakeResponse([
         FakeItem("a", "F1"),
         FakeItem("b", "F_NONE"),
@@ -72,12 +54,40 @@ def test_validate_batch_response_routes_ok_missing_duplicate_fnone():
     ])
     ok, escalate = validate_batch_response(["a", "b", "c", "d"], response)
     assert list(ok) == ["a"] and ok["a"].assigned_facet_id == "F1"
-    assert escalate == {"b": "f_none", "c": "duplicate", "d": "missing"}
+    assert escalate == {"b": "none", "c": "duplicate", "d": "missing"}
 
 
-def test_facet_card_text_joins_menu_fields():
+def test_validate_batch_response_kent_de_none_id_van_zijn_niveau():
+    """Het attribuutniveau gebruikt A_NONE en hetzelfde id-veld heet daar anders."""
+    class FakeAttrItem:
+        def __init__(self, idea_id, attr_id):
+            self.idea_id = idea_id
+            self.assigned_attribute_id = attr_id
+
+    response = FakeResponse([FakeAttrItem("a", "A_NONE"), FakeAttrItem("b", "A1")])
+    ok, escalate = validate_batch_response(
+        ["a", "b"], response,
+        id_field="assigned_attribute_id", none_id="A_NONE",
+    )
+    assert escalate == {"a": "none"}
+    assert list(ok) == ["b"]
+
+
+def test_facet_card_text_joint_de_vier_grensvelden():
     text = facet_card_text({
-        "facet_name": "N", "facet_description": "D",
-        "inclusion_rule": "I", "example_observations": ["e1", "e2"],
+        "facet_name": "N", "facet_definition": "D",
+        "boundary_test": "B?", "exclusions": ["X"],
+        "example_observations": ["e1", "e2"],
     })
-    assert "N" in text and "D" in text and "I" in text and "e1" in text
+    for stuk in ("N", "D", "B?", "X", "e1"):
+        assert stuk in text
+
+
+def test_attribute_card_text_doet_hetzelfde_een_niveau_lager():
+    text = attribute_card_text({
+        "attribute_name": "N", "attribute_definition": "D",
+        "boundary_test": "B?", "exclusions": ["X"],
+        "example_observations": ["e1"],
+    })
+    for stuk in ("N", "D", "B?", "X", "e1"):
+        assert stuk in text
