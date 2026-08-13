@@ -84,7 +84,9 @@ from .assignment_batching import (
     shortlist_indices, validate_batch_response,
 )
 from models import DomainSet
+from .prompts_shared import build_cross_scope_model
 from .prompts_facet import (
+    build_facet_cross_scope_prompt,
     DiscoveredFacet, ConsolidatedFacet,
     FacetDiscoveryResult, FacetConsolidationResult, FacetRefinementResult,
     build_facet_discovery_prompt,
@@ -105,8 +107,7 @@ from .prompts_attribute import (
     build_attribute_contents_block,
     build_attribute_refinement_prompt,
     build_neighbour_block,
-    build_cross_scope_model,
-    build_cross_scope_prompt,
+    build_attribute_cross_scope_prompt,
 )
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
@@ -579,6 +580,11 @@ class TaxonomyClassifier:
         if _stop("facet_refinement"):
             return self._taxonomy_result(state, started, verbose)
 
+        facets, assignments = await self._run_facet_cross_scope(
+            ctx, facets, assignments, verbose)
+        state["partition_facets"] = facets
+        state["partition_assignments"] = assignments
+
         # ---- attribute level -------------------------------------------------
         # Rebuilt from the refined assignments: which ideas a facet holds only
         # settles once refinement has moved what did not belong.
@@ -660,6 +666,139 @@ class TaxonomyClassifier:
         )
 
     # =========================================================================
+    # PHASE — CROSS-SCOPE FACET CONSOLIDATION (every domain at once)
+    # =========================================================================
+
+    async def _run_facet_cross_scope(
+        self,
+        ctx: PromptContext,
+        facets: Dict[str, List[ConsolidatedFacet]],
+        assignments: Dict[str, Dict[str, str]],
+        verbose: bool,
+    ):
+        """Fold duplicate facets together across domains.
+
+        The facet twin of the attribute round, and it runs first: every domain
+        settled its own facets alone, so a domain that found many thin ones kept
+        them all because nothing was there to compare them against. Merging here
+        shrinks the number of scopes the attribute layer then works in, which is
+        where the multiplication comes from.
+        """
+        if verbose:
+            print("\n  Facet cross-scope consolidation")
+        started = time.time()
+
+        counts = Counter()
+        for dom, a in assignments.items():
+            counts.update((dom, f) for f in a.values())
+        entries = []
+        for dom in sorted(facets):
+            for facet in facets[dom]:
+                entries.append({"id": f"F{len(entries) + 1}", "domain": dom,
+                                "facet": facet, "n": counts.get((dom, facet.facet_name), 0)})
+        if len(entries) < 2:
+            return facets, assignments
+
+        lines, current = [], None
+        for e in entries:
+            if e["domain"] != current:
+                lines.append(f"\n{e['domain']}")
+                current = e["domain"]
+            lines.append(f"  [{e['id']}] {e['facet'].facet_name} — {e['n']} responses\n"
+                         f"        {e['facet'].facet_definition}")
+        task = {"entries": entries, "inventory_block": "\n".join(lines)}
+
+        def prepare_fn(t):
+            ids = [e["id"] for e in t["entries"]]
+            prompt = build_facet_cross_scope_prompt(
+                language=ctx.language, survey_question=ctx.survey_question,
+                **ctx.specifiers(), dimension=ctx.dimension,
+                dimension_name=ctx.dimension_name,
+                dimension_description=ctx.dimension_description,
+                inventory_block=t["inventory_block"])
+            self._capture("facet_cross_scope", prompt, "facet_cross_scope_consolidation",
+                          {"model": self._model["cross_scope_consolidation"],
+                           "n_facets": len(ids), "language": ctx.language})
+            return {"prompt": prompt,
+                    "response_model": build_cross_scope_model(ids, "facet"),
+                    "temperature": 0.0,
+                    "max_tokens": self._max_tokens_consolidation, "max_retries": 3,
+                    "extra_kwargs": get_reasoning_params(
+                        self._model["cross_scope_consolidation"],
+                        phase="classifier_cross_scope_consolidation")}
+
+        results = await self._dispatch(
+            "cross_scope_consolidation", [task], prepare_fn,
+            self._cross_scope_parse_fn(), self._cross_scope_fallback_fn(), verbose)
+        result = results[0] if results else None
+        by_id = {e["id"]: e for e in entries}
+        before = len(by_id)
+
+        if result is None or not result.items:
+            self._action_log.append({"action": "facet_cross_scope_failed",
+                                     "n_facets": before})
+            return facets, assignments
+
+        rename: Dict[str, str] = {}
+        home: Dict[str, str] = {}
+        settled: Dict[str, List[ConsolidatedFacet]] = {}
+        claimed: Set[str] = set()
+
+        for item in result.items:
+            sources = [i for i in (item.source_ids or []) if i in by_id]
+            if not sources:
+                continue
+            anchor = by_id.get(item.home_id) or by_id[sources[0]]
+            dom = anchor["domain"]
+            settled.setdefault(dom, []).append(ConsolidatedFacet(
+                facet_name=item.name, facet_definition=item.definition,
+                boundary_test=anchor["facet"].boundary_test,
+                exclusions=anchor["facet"].exclusions,
+                example_observations=anchor["facet"].example_observations,
+                source_facets=[by_id[i]["facet"].facet_name for i in sources]))
+            for i in sources:
+                claimed.add(i)
+                rename[i], home[i] = item.name, dom
+            if len(sources) > 1:
+                self._action_log.append({
+                    "action": "facet_cross_scope_merge", "result": item.name,
+                    "home": dom,
+                    "sources": [f"{by_id[i]['domain']} > {by_id[i]['facet'].facet_name}"
+                                for i in sources]})
+
+        for entry_id, e in by_id.items():
+            if entry_id in claimed:
+                continue
+            settled.setdefault(e["domain"], []).append(e["facet"])
+            rename[entry_id], home[entry_id] = e["facet"].facet_name, e["domain"]
+            self._action_log.append({"action": "facet_cross_scope_kept_unclaimed",
+                                     "facet": e["facet"].facet_name})
+
+        by_old = {(e["domain"], e["facet"].facet_name): i for i, e in by_id.items()}
+        n_moved = 0
+        for dom in list(assignments):
+            for idea_id, name in list(assignments[dom].items()):
+                entry_id = by_old.get((dom, name))
+                if entry_id is None:
+                    continue
+                new_dom = home[entry_id]
+                if new_dom != dom:
+                    assignments.setdefault(new_dom, {})[idea_id] = rename[entry_id]
+                    assignments[dom].pop(idea_id, None)
+                    n_moved += 1
+                else:
+                    assignments[dom][idea_id] = rename[entry_id]
+
+        after = sum(len(f) for f in settled.values())
+        self._action_log.append({"action": "_facet_cross_scope_totals",
+                                 "before": before, "after": after,
+                                 "ideas_rehoused": n_moved})
+        if verbose:
+            print(f"    {time.time() - started:.1f}s → {before} - {before - after} = "
+                  f"{after} facets, {n_moved} ideas rehoused")
+        return settled, assignments
+
+    # =========================================================================
     # PHASE — CROSS-SCOPE CONSOLIDATION (every domain and facet at once)
     # =========================================================================
 
@@ -704,7 +843,7 @@ class TaxonomyClassifier:
     def _cross_scope_prepare_fn(self, ctx: PromptContext):
         def prepare_fn(task: Dict) -> Dict:
             ids = [e["id"] for e in task["entries"]]
-            prompt = build_cross_scope_prompt(
+            prompt = build_attribute_cross_scope_prompt(
                 language=ctx.language,
                 survey_question=ctx.survey_question,
                 **ctx.specifiers(),
@@ -722,7 +861,7 @@ class TaxonomyClassifier:
                            "dimension_name": ctx.dimension_name})
             return {
                 "prompt": prompt,
-                "response_model": build_cross_scope_model(ids),
+                "response_model": build_cross_scope_model(ids, "attribute"),
                 "temperature": 0.0,
                 "max_tokens": self._max_tokens_consolidation,
                 "max_retries": 3,
@@ -778,7 +917,7 @@ class TaxonomyClassifier:
         by_id = {e["id"]: e for e in task["entries"]}
         before = len(by_id)
 
-        if result is None or not result.attributes:
+        if result is None or not result.items:
             self._action_log.append({
                 "action": "cross_scope_failed", "n_attributes": before,
                 "note": "no result — inventory left as the facets settled it"})
@@ -790,15 +929,15 @@ class TaxonomyClassifier:
         settled: Dict[str, Dict[str, List[ConsolidatedAttribute]]] = {}
         claimed: Set[str] = set()
 
-        for item in result.attributes:
+        for item in result.items:
             sources = [i for i in (item.source_ids or []) if i in by_id]
             if not sources:
                 continue
             anchor = by_id.get(item.home_id) or by_id[sources[0]]
             dom, fac = anchor["domain"], anchor["facet"]
             merged = ConsolidatedAttribute(
-                attribute_name=item.attribute_name,
-                attribute_definition=item.attribute_definition,
+                attribute_name=item.name,
+                attribute_definition=item.definition,
                 boundary_test=anchor["attribute"].boundary_test,
                 exclusions=anchor["attribute"].exclusions,
                 example_observations=anchor["attribute"].example_observations,
@@ -807,11 +946,11 @@ class TaxonomyClassifier:
             settled.setdefault(dom, {}).setdefault(fac, []).append(merged)
             for i in sources:
                 claimed.add(i)
-                rename[i] = item.attribute_name
+                rename[i] = item.name
                 home[i] = (dom, fac)
             if len(sources) > 1:
                 self._action_log.append({
-                    "action": "cross_scope_merge", "result": item.attribute_name,
+                    "action": "cross_scope_merge", "result": item.name,
                     "home": f"{dom} > {fac}",
                     "sources": [f"{by_id[i]['domain']} > {by_id[i]['facet']} > "
                                 f"{by_id[i]['attribute'].attribute_name}" for i in sources]})
@@ -2085,7 +2224,7 @@ class TaxonomyClassifier:
         """The settled attributes of one group, with unclaimed candidates kept."""
         candidates = task["candidates"]
         scope = {"domain": task["domain_label"], "facet": task["facet_name"]}
-        if result is None or not result.attributes:
+        if result is None or not result.items:
             self._action_log.append({
                 "action": "attribute_consolidation_failed", **scope,
                 "note": "no result — candidates left as discovered",
@@ -2559,7 +2698,7 @@ class TaxonomyClassifier:
             dom, fac = task["domain_label"], task["facet_name"]
             before = [a.attribute_name for a in task["attributes"]]
 
-            if result is None or not result.attributes:
+            if result is None or not result.items:
                 self._action_log.append({
                     "action": "attribute_refinement_failed", "domain": dom,
                     "facet": fac,

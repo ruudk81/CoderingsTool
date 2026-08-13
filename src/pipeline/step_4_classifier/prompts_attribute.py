@@ -828,39 +828,7 @@ Begin processing now and {INSTRUCTOR_HINT}"""
 # than free text that has to be matched back.
 
 
-def build_cross_scope_model(attribute_ids: List[str]):
-    """Runtime response model: merged attributes over a fixed id space."""
-    id_literal = Literal[tuple(attribute_ids)]  # type: ignore[valid-type]
-
-    item = create_model(
-        "MergedAttribute",
-        attribute_name=(str, Field(
-            ..., description="Short descriptive name for the merged attribute")),
-        attribute_definition=(str, Field(
-            ..., description="One sentence naming the single observable property")),
-        source_ids=(List[id_literal], Field(
-            ..., description=(
-                "Every input id that folds into this attribute, including its own. "
-                "An attribute kept unchanged lists exactly one id"))),
-        home_id=(id_literal, Field(
-            ..., description=(
-                "The id whose domain and facet this attribute keeps. Must be one of "
-                "the source_ids. Pick the home where most of these responses sit"))),
-    )
-    return create_model(
-        "CrossScopeResult",
-        scratchpad=(str, Field(
-            ..., description=(
-                "Reasoning: (1) group the attributes that mean the same thing across "
-                "facets and domains, (2) for each group pick the home where most of "
-                "its responses already sit, (3) check every id appears exactly once")
-        )),
-        attributes=(List[item], Field(
-            ..., description="The merged inventory. Every input id appears exactly once")),
-    )
-
-
-def build_cross_scope_prompt(
+def build_attribute_cross_scope_prompt(
     *,
     language: str,
     survey_question: str,

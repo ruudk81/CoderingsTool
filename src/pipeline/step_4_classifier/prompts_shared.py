@@ -31,7 +31,9 @@ OF before it makes the list.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Literal
+
+from pydantic import Field, create_model
 
 if TYPE_CHECKING:
     from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
@@ -195,3 +197,41 @@ L3 — Facet: {_extract_definition(rules.facet_instruction)}
 L4 — Attribute: {_extract_definition(rules.attribute_instruction)}
      Key idea: {_extract_key_idea(rules.attribute_instruction)}
 </taxonomy_structure>"""
+
+
+# =============================================================================
+# Cross-scope consolidation — the one phase that sees more than one scope
+# =============================================================================
+
+def build_cross_scope_model(item_ids: List[str], noun: str):
+    """Runtime response model for a cross-scope merge over a fixed id space.
+
+    Works on ids, never on names: the model returns groups of input ids plus the
+    id whose scope the survivor keeps. That makes relocation a choice among the
+    inputs instead of free text that has to be matched back, and it makes a
+    dropped id detectable rather than silent.
+    """
+    id_literal = Literal[tuple(item_ids)]  # type: ignore[valid-type]
+
+    item = create_model(
+        f"Merged{noun.capitalize()}",
+        name=(str, Field(..., description=f"Short descriptive name for the merged {noun}")),
+        definition=(str, Field(..., description="One sentence naming the single aspect")),
+        source_ids=(List[id_literal], Field(
+            ..., description=(
+                f"Every input id that folds into this {noun}, including its own. "
+                f"A {noun} kept unchanged lists exactly one id"))),
+        home_id=(id_literal, Field(
+            ..., description=(
+                "The id whose scope this one keeps. Must be one of the source_ids. "
+                "Pick the scope where most of these responses already sit"))),
+    )
+    return create_model(
+        "CrossScopeResult",
+        scratchpad=(str, Field(..., description=(
+            f"Reasoning: (1) group the {noun}s that mean the same thing across scopes, "
+            f"(2) for each group pick the scope where most of its responses sit, "
+            f"(3) check every id appears exactly once"))),
+        items=(List[item], Field(
+            ..., description="The merged inventory. Every input id appears exactly once")),
+    )

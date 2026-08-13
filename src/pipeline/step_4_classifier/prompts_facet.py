@@ -786,3 +786,102 @@ All facet names, definitions, boundary tests and exclusions must be written in {
 Copy response texts verbatim when you route them; they are matched literally.
 
 Begin processing now and {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# §5 CROSS-SCOPE CONSOLIDATION — every domain at once
+# =============================================================================
+
+def build_facet_cross_scope_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+    inventory_block: str,
+) -> str:
+    """Deduplicate the facet inventory across every domain at once."""
+    context_block = build_context_block(
+        language=language, survey_question=survey_question, sector=sector,
+        entity=entity, topic=topic, perspective=perspective, intent=intent,
+    )
+    taxonomy_block = build_taxonomy_block(
+        dimension=dimension, dimension_name=dimension_name,
+        dimension_description=dimension_description,
+    )
+
+    return f"""You are a taxonomy consolidation specialist for survey coding.
+Your task is to remove duplication from a finished facet inventory, across every domain at
+once.
+
+{context_block}
+
+{taxonomy_block}
+
+Here is the complete inventory. Each facet carries its id, the domain it sits in, and how
+many responses it holds:
+
+<inventory>
+{inventory_block}
+</inventory>
+
+## YOUR TASK
+
+Every domain settled its own facets without seeing any other domain. The same distinction
+therefore survives in several places under different names, and a domain that found many
+thin facets kept them all because nothing else was there to compare them against.
+
+Govern the grouping by these rules, in this order of precedence.
+
+**1. DIMENSION FIRST — orthogonality is the guardrail.**
+Facets on DIFFERENT dimensions are orthogonal: never merge them, however similar the
+labels look. Mutually exclusive values or poles of the SAME dimension are also kept apart.
+Do NOT keep two facets apart merely because they sit in different domains — the domain is
+where they were found, not what they mean.
+
+**2. PREVALENCE SETS GRANULARITY — within one dimension only.**
+A well-supported facet keeps its own identity. Several thin, same-dimension facets are
+GROUPED into one that still names the shared value in plain language. Prevalence decides
+how finely to split WITHIN a dimension; it never licenses merging ACROSS dimensions.
+
+**3. LIFT, DON'T FLATTEN.**
+When grouping, raise the concepts to a shared higher-abstraction label that still carries
+their meaning. FORBIDDEN: an empty container that only names the dimension it sorts on.
+REQUIRED: a stateable value a reader can picture.
+
+**4. PLAIN, MEANINGFUL LABELS.** Everyday language, no jargon, no dimension-names.
+
+**5. EVERY ID EXACTLY ONCE.** Nothing may be dropped and nothing listed twice — an id you
+leave out loses its responses.
+
+**6. THE HOME FOLLOWS THE RESPONSES.** Each merged facet keeps the domain of the id you
+name as `home_id`. Pick the home where most of its responses already sit.
+
+**Precedence when rules conflict: 1 (orthogonality) > 2 (prevalence grouping) > 4 (label
+clarity).**
+
+Two things are FORBIDDEN in what you return:
+
+- **FORBIDDEN: facets that overlap conceptually, semantically or in meaning**, judged in
+  terms of the reactions and answers people gave to the survey question.
+- **FORBIDDEN: any pair that fails the researcher's test.** Picture a researcher reading
+  your final inventory and saying: *"these two do not actually help me organise
+  meaningfully different reactions to this question — they essentially mean the same
+  thing."* If a pair invites that sentence, it is one facet.
+
+{UNIVERSAL_RULES}
+
+## OUTPUT
+
+For EACH returned facet: name, definition, source_ids (every id that folds in, including
+its own), and home_id (one of its own source_ids).
+
+All names and definitions must be written in {language}.
+
+Begin processing now and {INSTRUCTOR_HINT}"""
