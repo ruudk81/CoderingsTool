@@ -1,4 +1,4 @@
-"""Tests voor de codeboek-reassemblage in run_codebook_preview.py — het
+"""Tests voor de codeboek-reassemblage in run_codeGenerator.py — het
 samenvoegen van geschreven tekst terug op de vorm waar hij bij hoort, na de
 MECE-ronde.
 
@@ -12,7 +12,7 @@ eigen leden die tekst niet beschrijven. `_index_codes_by_shape_key` keyt in
 plaats daarvan op `shape.key` (uniek per run, nooit hergebruikt), dus een
 naamcollision kan de mapping niet meer laten instorten.
 """
-from pipeline.step_5_codeGenerator import run_codebook_preview as rcp
+from pipeline.step_5_codeGenerator import run_codeGenerator as rcg
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.consolidator import CodeShape
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
@@ -46,9 +46,9 @@ def test_index_codes_by_shape_key_keeps_two_same_named_codes_distinct():
     code_b = ConsolidatedCode(code_name="Stijl en merkbeleving", definition="def over A2",
                               diagnostic_test="t", valence="positive",
                               typical_indicators=["y"], source_attributes=["Natuurlijke uitstraling"])
-    lookup = rcp._shape_lookup([shape_a, shape_b], concept_by_id)
+    lookup = rcg._shape_lookup([shape_a, shape_b], concept_by_id)
 
-    indexed = rcp._index_codes_by_shape_key([code_a, code_b], lookup)
+    indexed = rcg._index_codes_by_shape_key([code_a, code_b], lookup)
 
     assert indexed[shape_a.key].definition == "def over A1"
     assert indexed[shape_b.key].definition == "def over A2"
@@ -73,9 +73,9 @@ def test_index_codes_by_shape_key_is_unaffected_by_a_name_collision_among_others
                               valence="positive", typical_indicators=["y"], source_attributes=["N2"])
     code_c = ConsolidatedCode(code_name="Uniek", definition="def C", diagnostic_test="t",
                               valence="neutral", typical_indicators=["z"], source_attributes=["N3"])
-    lookup = rcp._shape_lookup([shape_a, shape_b, shape_c], concept_by_id)
+    lookup = rcg._shape_lookup([shape_a, shape_b, shape_c], concept_by_id)
 
-    indexed = rcp._index_codes_by_shape_key([code_a, code_b, code_c], lookup)
+    indexed = rcg._index_codes_by_shape_key([code_a, code_b, code_c], lookup)
 
     assert indexed[shape_c.key].definition == "def C"
     assert indexed[shape_a.key].definition == "def A"

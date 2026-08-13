@@ -2,7 +2,10 @@
 
 """Bouw een volledig codeboek van begin tot eind — buiten de productiepijplijn om.
 
-Draait de hele stap-5-keten in één script en schrijft een leesbaar codeboek:
+Dunne wrapper rond `run_codeGenerator.generate_codebook()` (dezelfde keten
+als de productierunner), gericht op een eigen cache-map en een leesbaar
+codeboek in plaats van een cache-write. Draait de hele stap-5-keten in één
+script:
 
     taxonomy_input -> concept_inventory -> relations (2 LLM-calls) ->
     consolidator (geen LLM) -> codebook_writer (1 LLM-call) ->
@@ -11,20 +14,18 @@ Draait de hele stap-5-keten in één script en schrijft een leesbaar codeboek:
 
 Drie tot tien LLM-calls, afhankelijk van de codeboekgrootte en van hoeveel
 MECE-rondes iets samenvoegen (elke ronde: 1 detectiecall, plus 1 adjudicatie-
-call zodra er kandidaat-paren zijn; maximaal 3 rondes). Dit is een dev-loop-
-runner — niet gewired in run_codeGenerator.py (dat is een aparte taak).
+call zodra er kandidaat-paren zijn; maximaal 3 rondes).
 
     cd src && python -m pipeline.step_5_codeGenerator.run_codebook_preview
     cd src && python -m pipeline.step_5_codeGenerator.run_codebook_preview --cache-dir <pad>
 """
 
 import argparse
-import asyncio
 import sqlite3
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Tuple
+from typing import Dict, List
 
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
@@ -33,17 +34,12 @@ from config import MISCELLANEOUS_CODE_LABELS
 from utils.llm import token_tracker
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
-from pipeline.step_5_codeGenerator.codebook_writer import (
-    find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names, write_codebook,
-)
-from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
+from pipeline.step_5_codeGenerator.concept_inventory import build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.consolidator import CodeShape, consolidate, normalize_relations
-from pipeline.step_5_codeGenerator.mece import enforce_mece
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
-from pipeline.step_5_codeGenerator.prompts_mece import CodeCandidate
-from pipeline.step_5_codeGenerator.prompts_umbrella_merge import umbrellas_from_relations
-from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
+from pipeline.step_5_codeGenerator.run_codeGenerator import (
+    FALLBACK_DIAGNOSTIC, _match_shape, _shape_lookup, generate_codebook, report_codebook_build,
+)
 from pipeline.step_5_codeGenerator.taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from pipeline.step_5_codeGenerator.view_relations import load_cache
 
@@ -62,28 +58,6 @@ CODEBOOK_OUTPUT = (
 DIRECTION_SYMBOL = {"positive": "+", "negative": "−", "neutral": "neutraal"}
 
 
-class _RoundLog:
-    """Verzamelt `enforce_mece`'s per-ronde `log.add(...)`-aanroepen voor de
-    printregel aan het eind van de run. Geen `decision_log.py` (nog niet
-    gebouwd) — duck-typed, zoals `write_codebook`'s eigen `log`-parameter."""
-    def __init__(self):
-        self.rounds: List[dict] = []
-
-    def add(self, **kwargs):
-        self.rounds.append(kwargs)
-
-
-class _CollisionLog:
-    """Verzamelt `resolve_duplicate_names`'s per-botsing `log.add(...)`-aanroepen
-    voor de printregel aan het eind van de run — dezelfde duck-typed vorm als
-    `_RoundLog` hierboven."""
-    def __init__(self):
-        self.collisions: List[dict] = []
-
-    def add(self, **kwargs):
-        self.collisions.append(kwargs)
-
-
 def _taxonomy_timestamp(cache_dir: Path) -> str:
     db_path = cache_dir / "cache.db"
     if not db_path.exists():
@@ -99,60 +73,26 @@ def _taxonomy_timestamp(cache_dir: Path) -> str:
     return row[0] if row else "onbekend"
 
 
-def _shape_lookup(
-    shapes: List[CodeShape], concept_by_id: Dict[str, Concept],
-) -> Dict[Tuple[FrozenSet[str], str], CodeShape]:
-    """Key shapes by (their source-attribute names, valence) — the same two
-    things `write_codebook` echoes back on each `ConsolidatedCode` — so a
-    returned code can be matched to the shape it came from without needing
-    write_codebook to carry shape identity through the LLM round-trip."""
-    lookup = {}
-    for shape in shapes:
-        names = frozenset(concept_by_id[m].name for m in shape.members if m in concept_by_id)
-        lookup[(names, shape.valence)] = shape
-    return lookup
-
-
-def _match_shape(
-    code: ConsolidatedCode, lookup: Dict[Tuple[FrozenSet[str], str], CodeShape],
-) -> Optional[CodeShape]:
-    return lookup.get((frozenset(code.source_attributes), code.valence))
-
-
-def _index_codes_by_shape_key(
-    codes: List[ConsolidatedCode], lookup: Dict[Tuple[FrozenSet[str], str], CodeShape],
-) -> Dict[str, ConsolidatedCode]:
-    """Maps each shape's own `.key` (unique per run, assigned once by
-    `consolidate()`) to the `ConsolidatedCode` written for it. Indexing by
-    `code_name` instead — as a prior version of this script did — collapses
-    the moment two different shapes are given the same name: a dict
-    comprehension keyed on name keeps only the last code for that name, so
-    every shape sharing it silently inherits ONE shape's definition,
-    including shapes whose actual members that text does not describe. `.key`
-    is never reused across shapes, so this mapping never collapses regardless
-    of what name the writer chose."""
-    indexed: Dict[str, ConsolidatedCode] = {}
-    for code in codes:
-        matched = _match_shape(code, lookup)
-        if matched is not None:
-            indexed[matched.key] = code
-    return indexed
-
-
 def build_markdown(
     codes: List[ConsolidatedCode],
-    shapes: List[CodeShape],
-    concept_by_id: Dict[str, Concept],
+    shapes,
+    concept_by_id,
     overig_ids: List[str],
     header: dict,
 ) -> str:
     lookup = _shape_lookup(shapes, concept_by_id)
     rows = []
+    unmatched = []
     for code in codes:
         shape = _match_shape(code, lookup)
+        if shape is None:
+            unmatched.append(code.code_name)
         n_resp = len(shape.resp_ids) if shape is not None else 0
         rows.append((n_resp, code.code_name, DIRECTION_SYMBOL.get(code.valence, code.valence),
                      code.definition, ", ".join(code.source_attributes)))
+    if unmatched:
+        print(f"WAARSCHUWING: {len(unmatched)} code(s) niet aan hun vorm gekoppeld "
+              f"voor het respondentenaantal: {unmatched}")
 
     overig_names = [concept_by_id[i].name for i in overig_ids if i in concept_by_id]
     overig_resp_ids = set()
@@ -212,8 +152,7 @@ def main() -> None:
     dimension_name = getattr(extraction_metadata, "primary_dimension", "") or ""
     survey_question = getattr(extraction_metadata, "var_lab", "") or ""
     dimension_diagnostic = (
-        get_dimension(dimension_name).criterion if dimension_name
-        else "Do responses mainly differ in qualities, traits, images, or associations?"
+        get_dimension(dimension_name).criterion if dimension_name else FALLBACK_DIAGNOSTIC
     )
 
     units = build_idea_units(classified_ideas)
@@ -234,103 +173,11 @@ def main() -> None:
     print("LLM-calls worden uitgevoerd (relaties, consolidatie-namen, schrijven, "
           "MECE-afdwinging)...\n")
 
-    async def _run():
-        relations_before = await resolve_relations(concepts, config, language, verbose=True)
-        umbrellas_before = umbrellas_from_relations(relations_before)
-        merge_result = await resolve_umbrella_merge(umbrellas_before, config, verbose=True)
-        relations_final = (
-            apply_umbrella_merge(relations_before, merge_result)
-            if merge_result is not None else relations_before
-        )
-        relation_map = normalize_relations(relations_final, concepts)
-        shapes, overig_ids = consolidate(concepts, relation_map, threshold)
-        codes = await write_codebook(
-            shapes, concepts, dimension_diagnostic, language, config, verbose=True,
-        )
-
-        # MECE-afdwinging: codes als VERZAMELING bekijken, niet per vorm.
-        # `code_by_shape_key` bewaart de volledige geschreven tekst (incl.
-        # diagnostic_test) van codes die geen enkele ronde aanraakt, gekeyd op
-        # de shape zelf (nooit op de geschreven naam — die kan toevallig
-        # samenvallen tussen twee verschillende vormen).
-        shape_lookup = _shape_lookup(shapes, concept_by_id)
-        code_by_shape_key = _index_codes_by_shape_key(codes, shape_lookup)
-        candidates = [
-            CodeCandidate(name=code.code_name, definition=code.definition,
-                          indicators=tuple(code.typical_indicators), valence=code.valence,
-                          shape=_match_shape(code, shape_lookup))
-            for code in codes if _match_shape(code, shape_lookup) is not None
-        ]
-        round_log = _RoundLog()
-        final_candidates = await enforce_mece(
-            candidates, idea_units_by_attribute, config, log=round_log, verbose=True,
-        )
-        merged = [c for c in final_candidates if c.shape.origin == "mece_merge"]
-        untouched = [c for c in final_candidates if c.shape.origin != "mece_merge"]
-
-        # Alleen de samengevoegde codes krijgen nieuwe tekst — ongewijzigde
-        # codes behouden hun eerder geschreven definitie/diagnostic_test. De
-        # herschrijving ziet de al vastliggende namen van de ongewijzigde
-        # codes (taken_names) zodat hij er niet overheen schrijft — een
-        # promptregel, geen garantie; resolve_duplicate_names hieronder is de
-        # deterministische achtervang over het volledige, herenigde boek.
-        untouched_names = [code_by_shape_key[c.shape.key].code_name for c in untouched]
-        rewritten = await write_codebook(
-            [c.shape for c in merged], concepts, dimension_diagnostic, language, config,
-            taken_names=untouched_names, verbose=True,
-        ) if merged else []
-        final_shapes = [c.shape for c in untouched] + [c.shape for c in merged]
-        final_codes = [code_by_shape_key[c.shape.key] for c in untouched] + rewritten
-
-        collision_log = _CollisionLog()
-        final_codes = resolve_duplicate_names(final_codes, final_shapes, log=collision_log)
-
-        return (final_shapes, overig_ids, final_codes, merge_result is None,
-                round_log.rounds, collision_log.collisions)
-
-    shapes, overig_ids, codes, merge_failed, mece_rounds, collisions = asyncio.run(_run())
-    if merge_failed:
-        print("WAARSCHUWING: consolidatiecall mislukt — doorgegaan met ongeconsolideerde namen.")
-    if collisions:
-        print(f"WAARSCHUWING: {len(collisions)} dubbele codenaam/namen deterministisch opgelost:")
-        for c in collisions:
-            print(f"  '{c['name']}' ({c['kept_n_resp']} resp.) behouden; "
-                  f"kleinere code ({c['renamed_n_resp']} resp.) hernoemd naar '{c['renamed_to']}'")
-
-    mismatches = find_naming_mismatches(codes, shapes, concept_by_id)
-    if mismatches:
-        print(f"WAARSCHUWING: {len(mismatches)} code(s) waarvan de naam geen woord deelt "
-              f"met een van zijn bronattributen:")
-        for m in mismatches:
-            print(f"  '{m['code_name']}' ({m['n_resp']} resp.) — leden: "
-                  f"{', '.join(m['members'])}")
-
-    duplicate_defs = find_duplicate_definitions(codes, shapes)
-    if duplicate_defs:
-        print(f"WAARSCHUWING: {len(duplicate_defs)} groep(en) codes met identieke definitie:")
-        for d in duplicate_defs:
-            names = ", ".join(f"'{c['code_name']}' ({c['n_resp']} resp.)" for c in d["codes"])
-            print(f"  {names}")
-
-    total_merges = sum(r["merges"] for r in mece_rounds)
-    if mece_rounds:
-        print(f"MECE: {len(mece_rounds)} ronde(s), {total_merges} samenvoeging(en) totaal")
-        for r in mece_rounds:
-            acc = f"{r['mean_accuracy']:.0%}" if r["mean_accuracy"] is not None else "—"
-            reason = f", reden einde: {r['reason']}" if r["reason"] else ""
-            print(f"  ronde {r['round']}: {r['pairs_found']} paar/paren gevonden, "
-                  f"{r['pairs_probed']} bevraagd, gem. accuracy {acc}, "
-                  f"{r['merges']} samenvoeging(en){reason}")
-            for p in r.get("pairs", []):
-                decision = "SAMENVOEGEN" if p["merged"] else "apart"
-                print(f"    {p['code_a']} vs {p['code_b']}: accuracy {p['accuracy']:.0%}, "
-                      f"both_rate {p['both_rate']:.0%} -> {decision}")
-
-    lookup = _shape_lookup(shapes, concept_by_id)
-    unmatched = [c.code_name for c in codes if _match_shape(c, lookup) is None]
-    if unmatched:
-        print(f"WAARSCHUWING: {len(unmatched)} code(s) niet aan hun vorm gekoppeld "
-              f"voor het respondentenaantal: {unmatched}")
+    result = generate_codebook(
+        concepts, idea_units_by_attribute, threshold, dimension_diagnostic, language,
+        config, verbose=True,
+    )
+    report_codebook_build(result)
 
     header = {
         "survey_question": survey_question,
@@ -342,11 +189,14 @@ def main() -> None:
         "n_resp_total": n_resp_total,
         "language": language,
     }
-    markdown, overig_n_resp, overig_share = build_markdown(codes, shapes, concept_by_id, overig_ids, header)
+    markdown, overig_n_resp, overig_share = build_markdown(
+        result.codes, result.shapes, concept_by_id, result.overig_ids, header,
+    )
     CODEBOOK_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     CODEBOOK_OUTPUT.write_text(markdown, encoding="utf-8")
     print(f"\nCodeboek geschreven: {CODEBOOK_OUTPUT}")
 
+    codes = result.codes
     n_pos = sum(1 for c in codes if c.valence == "positive")
     n_neg = sum(1 for c in codes if c.valence == "negative")
     n_neu = len(codes) - n_pos - n_neg

@@ -398,12 +398,29 @@ def merge_candidates(
 
 def apply_merges(candidates: List[CodeCandidate], components: List[Set[str]]) -> List[CodeCandidate]:
     """Vervangt elke component door één samengevoegde kandidaat; codes die in
-    geen enkele component zitten blijven ongewijzigd (zelfde object)."""
+    geen enkele component zitten blijven ongewijzigd (zelfde object).
+
+    `candidate_by_name` is onvermijdelijk naam-gekeyd: de componenten komen uit
+    Pass A/B, die allebei in het naam-domein van het model werken (een prompt
+    kan een code alleen bij de naam noemen die het model te zien kreeg — er is
+    geen `shape.key` dat het model kent om mee te disambigueren). Deelt twee
+    kandidaten toevallig een naam, dan is de opzoeking zelf al dubbelzinnig, en
+    valt hier niets aan te repareren. Wat wél te repareren is: welke van de
+    twee bij een samenvoeging hoorde mag niet ook zijn naamgenoot meesleuren.
+    `untouched` filterde vroeger op naam (`c.name not in merged_names`) — als
+    twee kandidaten dezelfde naam droegen en er ÉÉN daarvan werd samengevoegd,
+    verdwenen ALLEBEI uit `untouched` terwijl alleen degene die de dict-opzoeking
+    daadwerkelijk opleverde is samengevoegd. De ander — een compleet andere
+    vorm die toevallig dezelfde naam draagt — werd dan stilzwijgend uit het
+    codeboek verwijderd, erger dan een foute samenvoeging. `consumed_keys`
+    volgt daarom welk fysiek object (`shape.key`, uniek per vorm) de opzoeking
+    echt gebruikte, dus een naamgenoot die niet zelf is opgezocht blijft
+    behouden."""
     candidate_by_name = {c.name: c for c in candidates}
-    merged_names: Set[str] = set().union(*components) if components else set()
     merged = [merge_candidates(group, candidate_by_name, key=f"MECE{i}")
               for i, group in enumerate(components, start=1)]
-    untouched = [c for c in candidates if c.name not in merged_names]
+    consumed_keys = {candidate_by_name[name].shape.key for group in components for name in group}
+    untouched = [c for c in candidates if c.shape.key not in consumed_keys]
     return merged + untouched
 
 
