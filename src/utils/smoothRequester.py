@@ -901,9 +901,23 @@ class SmoothRequester:
             self.avg_tokens = self._pred.avg_tokens
         self.tiktoken_offset_learner = TiktokenOffsetLearner(default_offset=self._pred.tiktoken_offset)
 
-        # Dispatch delay: stagger heavy tasks to avoid server batch congestion
-        p50_estimate = self._pred.p50_latency_s or DEFAULT_TIMEOUT_SECONDS / 5
-        self._dispatch_delay = max(0.0, (p50_estimate - DISPATCH_DELAY_P50_THRESHOLD) / DISPATCH_DELAY_SPREAD_FACTOR)
+        # Dispatch delay: stagger the initial burst so a wall of heavy requests
+        # does not arrive at the server at once.
+        #
+        # Only when THIS phase has shown itself to be heavy. Without its own
+        # history the token expectation is pooled across every phase of the
+        # model — an average over calls of 1.5k and 5.5k tokens — and a light
+        # phase then inherits a heavy phase's caution. Measured 2026-08-13: a
+        # renamed phase key left `step4_assignment` without history, the pool
+        # put p50 at 7.9s instead of 2.8s, and a phase running at 8% of its
+        # token budget was throttled for six minutes.
+        self._dispatch_delay = 0.0
+        if (self._pred.origins.get("avg_tokens") == "phase"
+                and self._pred.p50_latency_s):
+            self._dispatch_delay = max(
+                0.0,
+                (self._pred.p50_latency_s - DISPATCH_DELAY_P50_THRESHOLD)
+                / DISPATCH_DELAY_SPREAD_FACTOR)
 
         # Latency tracker — timeout strategy depends on whether we have a calibrated
         # concurrency ceiling. Without one, the phase is unconstrained (no rate or
@@ -1284,6 +1298,27 @@ class SmoothRequester:
 
     # === WORKER ===============================================================
 
+    def _stagger_target(self, seq: int) -> Optional[float]:
+        """When dispatch number `seq` may start, or None to go now.
+
+        Staggering exists for ONE thing: stop the first wave of heavy requests
+        from arriving at the server as a single wall. That wave is over once
+        every worker holds a task — after that, new calls are paced by
+        completions, and how many run at once is the rate limiter's and the
+        concurrency controller's business.
+
+        So the delay applies only while the pipeline fills. It used to apply to
+        every dispatch in the phase, which made the counter a permanent
+        throughput cap of `1/delay` that knew nothing about RPM or TPM.
+        Measured 2026-08-13 on 1451 assignment tasks: 4.2 dispatches per second
+        for six minutes, 330 workers idle, 8% of the token budget in use.
+        """
+        if self._dispatch_delay <= 0 or seq <= 0:
+            return None
+        if seq >= max(self.optimal_concurrency, 1):
+            return None
+        return self._dispatch_start + (seq * self._dispatch_delay)
+
     async def _worker(self, queue, results, timed_out, prepare_fn, parse_fn, fallback_fn):
         """Generic worker: pull task, execute, handle outcomes."""
         while True:
@@ -1300,8 +1335,8 @@ class SmoothRequester:
                     async with self._dispatch_lock:
                         seq = self._dispatch_seq
                         self._dispatch_seq += 1
-                    if seq > 0:
-                        target_time = self._dispatch_start + (seq * self._dispatch_delay)
+                    target_time = self._stagger_target(seq)
+                    if target_time is not None:
                         now = time.perf_counter()
                         if target_time > now:
                             await asyncio.sleep(target_time - now)
@@ -1607,9 +1642,11 @@ class SmoothRequester:
             print(f"- System: {'A (header-aware)' if self._has_server_headers else 'B (client-side)'}")
             print(f"- Rate limit concurrency: {self._rate_limit_concurrency} | Server concurrency: {self._server_concurrency}")
             if self._dispatch_delay > 0:
-                spread = self._dispatch_delay * (num_tasks - 1)
+                filling = max(min(self.optimal_concurrency, num_tasks) - 1, 0)
+                spread = self._dispatch_delay * filling
                 p50_src = self._pred.origins.get("p50_latency_s", "default")
-                print(f"- Dispatch delay ({p50_src}): {self._dispatch_delay:.2f}s/task → {spread:.1f}s spread over {num_tasks} tasks")
+                print(f"- Dispatch delay ({p50_src}): {self._dispatch_delay:.2f}s/task "
+                      f"→ {spread:.1f}s to fill {filling + 1} slots, then unthrottled")
             print(f"- Processing {num_tasks:,} tasks")
 
         if not self._quiet:
