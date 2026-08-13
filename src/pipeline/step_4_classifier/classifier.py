@@ -468,27 +468,31 @@ class TaxonomyClassifier:
         for model in phase_models:
             representatives.setdefault(route_key(model), model)
 
-        async def probe(model: str):
-            return await llm_fetch_rate_limits(model)
+        if verbose:
+            print(f"  Fetching rate limits from API "
+                  f"({len(representatives)} deployment(s))...")
 
-        results = await asyncio.gather(
-            *(probe(m) for m in representatives.values()),
-            return_exceptions=True)
+        # `fetch_rate_limits` already returns (RateLimits, has_headers), so the
+        # probe result is unpacked, never wrapped again.
+        probes = await asyncio.gather(
+            *(llm_fetch_rate_limits(m) for m in representatives.values()))
+        by_route = dict(zip(representatives.keys(), probes))
 
-        headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
-        by_key: Dict[Tuple, Tuple[RateLimits, bool]] = {}
-        for key, result in zip(representatives, results):
-            if isinstance(result, Exception) or result is None:
-                by_key[key] = (RateLimits(FALLBACK_TPM, FALLBACK_RPM), False)
-            else:
-                by_key[key] = (result, True)
-
-        for model in phase_models:
-            limits, has_headers = by_key[route_key(model)]
+        for model in set(phase_models):
+            limits, has_headers = by_route[route_key(model)]
+            if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+                if verbose:
+                    print(f"  WARNING: {model}: using fallback rate limits "
+                          f"(TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+                limits = RateLimits(
+                    tokens_per_minute=FALLBACK_TPM,
+                    requests_per_minute=FALLBACK_RPM,
+                )
             self._limits_by_model[model] = limits
             self._has_headers_by_model[model] = has_headers
 
         if verbose:
+            headroom = DEFAULT_PROCESSING_CONFIG.rate_limit_headroom
             print("\n  [RATE LIMITING SETUP]")
             print("  Models: " + ", ".join(
                 f"{phase}={self._model[phase]}" for phase in self.PHASES))

@@ -219,3 +219,51 @@ def test_facetkaarten_dragen_hun_attributen_niet_mee():
 def test_elke_fasenaam_is_een_geldig_stoppunt():
     for phase in TaxonomyClassifier.PHASES:
         _clf(stop_after_phase=phase)
+
+
+# =============================================================================
+# RATE LIMITS
+# =============================================================================
+
+def test_rate_limits_worden_uitgepakt_niet_opnieuw_ingepakt(monkeypatch):
+    """`fetch_rate_limits` geeft al (RateLimits, has_headers) terug. Die nog een
+    keer in een tuple wikkelen gaf een AttributeError op de eerste printregel —
+    ná de setup en dus midden in een betaalde run.
+    """
+    import asyncio
+
+    import pipeline.step_4_classifier.classifier as mod
+    from utils.llm import RateLimits
+
+    async def fake_fetch(model):
+        return RateLimits(tokens_per_minute=1000, requests_per_minute=10), True
+
+    monkeypatch.setattr(mod, "llm_fetch_rate_limits", fake_fetch)
+    clf = _clf()
+    asyncio.run(clf._initialize_async_resources(verbose=True))
+
+    for phase in TaxonomyClassifier.PHASES:
+        if phase == "valence_merge":
+            continue
+        limits = clf._limits_by_model[clf._model[phase]]
+        assert limits.tokens_per_minute == 1000
+        assert clf._has_headers_by_model[clf._model[phase]] is True
+
+
+def test_nul_limieten_vallen_terug_op_de_fallback(monkeypatch):
+    """Een deployment die geen limieten teruggeeft mag niet op nul draaien."""
+    import asyncio
+
+    import pipeline.step_4_classifier.classifier as mod
+    from config import FALLBACK_TPM
+    from utils.llm import RateLimits
+
+    async def fake_fetch(model):
+        return RateLimits(tokens_per_minute=0, requests_per_minute=0), False
+
+    monkeypatch.setattr(mod, "llm_fetch_rate_limits", fake_fetch)
+    clf = _clf()
+    asyncio.run(clf._initialize_async_resources(verbose=False))
+
+    limits = clf._limits_by_model[clf._model["discovery"]]
+    assert limits.tokens_per_minute == FALLBACK_TPM
