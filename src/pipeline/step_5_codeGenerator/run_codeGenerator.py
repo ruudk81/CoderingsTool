@@ -462,13 +462,13 @@ def run_codebook(filename: str = FILENAME, var_name: str = VARIABLE,
 
     for name, result in pydantic_results.items():
         partition_assignments[name] = result.facet_assignments
-        # Consolidated attributes carry attribute_name + attribute_description;
+        # Consolidated attributes carry attribute_name + attribute_definition;
         # example_observations may be absent → default it.
         partition_attributes[name] = {
             facet_name: [
                 CodebookAttribute(
                     attribute_name=a["attribute_name"],
-                    attribute_description=a.get("attribute_description", ""),
+                    attribute_description=a.get("attribute_definition", ""),
                     example_observations=a.get("example_observations", []),
                 )
                 for a in attrs
