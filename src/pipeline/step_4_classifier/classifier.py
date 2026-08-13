@@ -2224,7 +2224,7 @@ class TaxonomyClassifier:
         """The settled attributes of one group, with unclaimed candidates kept."""
         candidates = task["candidates"]
         scope = {"domain": task["domain_label"], "facet": task["facet_name"]}
-        if result is None or not result.items:
+        if result is None or not result.attributes:
             self._action_log.append({
                 "action": "attribute_consolidation_failed", **scope,
                 "note": "no result — candidates left as discovered",
@@ -2698,7 +2698,7 @@ class TaxonomyClassifier:
             dom, fac = task["domain_label"], task["facet_name"]
             before = [a.attribute_name for a in task["attributes"]]
 
-            if result is None or not result.items:
+            if result is None or not result.attributes:
                 self._action_log.append({
                     "action": "attribute_refinement_failed", "domain": dom,
                     "facet": fac,
