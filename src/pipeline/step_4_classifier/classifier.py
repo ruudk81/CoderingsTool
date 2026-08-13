@@ -133,6 +133,41 @@ def attribute_dicts(
             for facet in nested}
 
 
+def count_structure(structure: Dict[str, List[Dict[str, Any]]]) -> Dict[str, int]:
+    """Facetten en attributen, met de vangnetten apart geteld.
+
+    Elke fase print via deze telling, want een fase die de vangnetten meetelt
+    naast een fase die dat niet doet leest als groei die er niet is. Op
+    2026-08-13 leek cross-domein daardoor 93 attributen in en 120 uit te doen,
+    terwijl het er 93 in en 88 uit waren — de rest waren de catch-alls die
+    diezelfde fase weer aanhaakt.
+    """
+    facets = drain_facets = attributes = drain_attributes = 0
+    for cards in structure.values():
+        for facet in cards:
+            if is_drain_item(facet):
+                drain_facets += 1
+            else:
+                facets += 1
+            for attribute in facet.get("attributes") or []:
+                if is_drain_item(attribute):
+                    drain_attributes += 1
+                else:
+                    attributes += 1
+    return {"facets": facets, "drain_facets": drain_facets,
+            "attributes": attributes, "drain_attributes": drain_attributes}
+
+
+def format_counts(structure: Dict[str, List[Dict[str, Any]]]) -> str:
+    """Eén regel die zegt wat er staat, zonder de vangnetten te verstoppen."""
+    c = count_structure(structure)
+    line = f"{c['facets']} facets, {c['attributes']} attributes"
+    if c["drain_facets"] or c["drain_attributes"]:
+        line += (f" (+{c['drain_facets']} catch-all facets, "
+                 f"{c['drain_attributes']} catch-all attributes)")
+    return line
+
+
 def derive_facet_assignments(
     attribute_assignments: Dict[str, str],
     structure: Dict[str, List[Dict[str, Any]]],
@@ -1078,11 +1113,7 @@ class TaxonomyClassifier:
                      for label, facets in settled.items()}
 
         if verbose:
-            n_facets = sum(len(f) for f in structure.values())
-            n_attrs = sum(len(f.get("attributes") or [])
-                          for v in structure.values() for f in v)
-            print(f"    {time.time() - started:.1f}s → "
-                  f"{n_facets} facets, {n_attrs} attributes")
+            print(f"    {time.time() - started:.1f}s → {format_counts(structure)}")
             for label in sorted(structure):
                 names = ", ".join(f["facet_name"] for f in structure[label])
                 print(f"      {label}: {len(structure[label])} — {names}")
@@ -1546,11 +1577,8 @@ class TaxonomyClassifier:
             assignments=assignments, labels=labels)
 
         if verbose:
-            n_attrs = sum(len(f.get("attributes") or [])
-                          for v in structure.values() for f in v)
-            n_facets = sum(len(v) for v in structure.values())
             print(f"    {len(tasks)} domains, {time.time() - started:.1f}s → "
-                  f"{n_facets} facets, {n_attrs} attributes")
+                  f"{format_counts(structure)}")
         return structure, assignments
 
     # =========================================================================
@@ -1718,9 +1746,9 @@ class TaxonomyClassifier:
             out[idea_id] = target
 
         if verbose:
-            n_attrs = sum(len(f.get("attributes") or [])
-                          for v in new_structure.values() for f in v)
-            print(f"    {len(entries)} attributes in, {n_attrs} out "
+            after = count_structure(new_structure)["attributes"]
+            print(f"    {len(entries)} attributes in, {after} out "
                   f"({merges} merged, {moved} ideas moved), "
                   f"{time.time() - started:.1f}s")
+            print(f"    → {format_counts(new_structure)}")
         return new_structure, out

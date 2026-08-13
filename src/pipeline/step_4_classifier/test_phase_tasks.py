@@ -267,3 +267,26 @@ def test_nul_limieten_vallen_terug_op_de_fallback(monkeypatch):
 
     limits = clf._limits_by_model[clf._model["discovery"]]
     assert limits.tokens_per_minute == FALLBACK_TPM
+
+
+# =============================================================================
+# TELLEN
+# =============================================================================
+
+def test_telling_scheidt_vangnetten_van_echte_items():
+    """Een fase die de vangnetten meetelt naast een fase die dat niet doet
+    leest als groei die er niet is."""
+    from pipeline.step_4_classifier.classifier import count_structure, format_counts
+    clf = _clf()
+    structure = clf._add_drains(
+        _ctx({"d": []}), _structure({"d": [_facet("f1", "a1", "a2")]}))
+    c = count_structure(structure)
+    assert c == {"facets": 1, "drain_facets": 1,
+                 "attributes": 2, "drain_attributes": 2}
+    assert format_counts(structure) == (
+        "1 facets, 2 attributes (+1 catch-all facets, 2 catch-all attributes)")
+
+
+def test_telling_zonder_vangnetten_noemt_ze_niet():
+    from pipeline.step_4_classifier.classifier import format_counts
+    assert format_counts(_structure({"d": [_facet("f", "a")]})) == "1 facets, 1 attributes"

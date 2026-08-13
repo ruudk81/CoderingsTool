@@ -71,6 +71,18 @@ These three rules hold at every level of the taxonomy and for every decision you
    category names, or rules of thumb from other studies, other sectors, or from general
    knowledge about surveys of this kind. The observations, definitions and boundaries in
    this prompt are the whole evidence base.
+
+4. NEVER CREATE A LEFTOVER CATEGORY.
+   Every item you return is defined by what its responses have IN COMMON, never by what
+   they lack. Do not return an item whose real definition is "the ones that fit nowhere
+   else" — names like "Other", "Various", "Miscellaneous", "Remaining" are the signature,
+   and so is a definition that describes the item by exclusion.
+   If a group of responses shares nothing statable, it does not become a category: leave
+   those responses out of your grouping and let them fall through. A residual bucket is
+   provided for them elsewhere, and one you invent here would compete with it.
+   This is not a ban on abstraction. "Overall judgment" is a real, statable thing — those
+   responses have something in common, namely that they judge without naming a subject.
+   The test is whether you can say what the members ARE without using the word "other".
 </universal_rules>"""
 
 

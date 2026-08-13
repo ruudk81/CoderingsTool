@@ -68,3 +68,20 @@ def test_cross_scope_model_dwingt_de_id_ruimte_af():
     assert set(fields) == {"scratchpad", "items"}
     item = fields["items"].annotation.__args__[0]
     assert set(item.model_fields) == {"name", "definition", "source_ids", "home_id"}
+
+
+def test_universele_regels_verbieden_een_zelfverzonnen_restcategorie():
+    """Het model maakte acht attributen die letterlijk 'Overig' heetten, naast
+    de vangnetten die de code al aanbiedt (gemeten 2026-08-13)."""
+    tekst = UNIVERSAL_RULES
+    assert "NEVER CREATE A LEFTOVER CATEGORY" in tekst
+    assert '"Other"' in tekst
+
+
+def test_het_verbod_botst_niet_met_de_restcategorie_voor_kale_oordelen():
+    """Regel 2 stuurt kale oordelen juist naar een enkele residual — dat is
+    gedefinieerd door wat ze zijn, niet door wat ze missen."""
+    tekst = UNIVERSAL_RULES
+    assert "residual overall-judgment item" in tekst
+    assert "Overall judgment" in tekst
+    assert "not a ban on abstraction" in tekst.lower()
