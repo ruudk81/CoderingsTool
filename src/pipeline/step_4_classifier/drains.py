@@ -73,6 +73,17 @@ def _wording(language: str) -> Dict[str, str]:
 # CONSTRUCTIE
 # =============================================================================
 
+def _drain_attribute(name: str, definition: str) -> Dict[str, Any]:
+    """De vorm van een vangnet-attribuut, op één plek."""
+    return {
+        "attribute_name": name,
+        "attribute_definition": definition,
+        "example_observations": [],
+        "is_drain": True,
+        "drain_key": DRAIN_ATTRIBUTE_KEY,
+    }
+
+
 def make_drain_attribute(facet_name: str, language: str) -> Dict[str, Any]:
     """Het `other`-attribuut onder één facet.
 
@@ -80,13 +91,8 @@ def make_drain_attribute(facet_name: str, language: str) -> Dict[str, Any]:
     onleesbaar en step 5 moet ze uit elkaar kunnen houden.
     """
     words = _wording(language)
-    return {
-        "attribute_name": f"{words['other']} — {facet_name}",
-        "attribute_definition": words["attribute_definition"],
-        "example_observations": [],
-        "is_drain": True,
-        "drain_key": DRAIN_ATTRIBUTE_KEY,
-    }
+    return _drain_attribute(f"{words['other']} — {facet_name}",
+                            words["attribute_definition"])
 
 
 def make_drain_facet(domain_label: str, language: str) -> Dict[str, Any]:
@@ -94,15 +100,20 @@ def make_drain_facet(domain_label: str, language: str) -> Dict[str, Any]:
 
     Zonder dat attribuut zou het domein-vangnet zelf een gat zijn: toewijzing
     kiest een attribuut, dus een facet zonder attributen is onbereikbaar.
+
+    Facet en attribuut delen naam en definitie, en dat is geen slordigheid: het
+    ís één bak. De structuur dwingt hem op twee niveaus uit te drukken, en dan
+    is hetzelfde tweemaal zeggen eerlijker dan een verzonnen onderscheid —
+    "Overig — Overig — <domein>" beloofde een verfijning die er niet is.
     """
     words = _wording(language)
-    facet_name = f"{words['other']} — {domain_label}"
+    name = f"{words['other']} — {domain_label}"
     return {
-        "facet_name": facet_name,
+        "facet_name": name,
         "facet_definition": words["facet_definition"],
         "is_drain": True,
         "drain_key": DRAIN_FACET_KEY,
-        "attributes": [make_drain_attribute(facet_name, language)],
+        "attributes": [_drain_attribute(name, words["facet_definition"])],
     }
 
 

@@ -1,6 +1,4 @@
 """Tests voor de twee deterministische other-vangnetten (step 4)."""
-import pytest
-
 from pipeline.step_4_classifier.drains import (
     DRAIN_ATTRIBUTE_KEY,
     DRAIN_FACET_KEY,
@@ -123,3 +121,13 @@ def test_opruimen_muteert_de_invoer_niet():
     before = len(facets["D"])
     strip_empty_drains(facets, attributes, {"i1": "A"})
     assert len(facets["D"]) == before
+
+
+def test_drainfacet_en_zijn_attribuut_delen_naam_en_definitie():
+    """Het is een bak, geen twee. Een verzonnen onderscheid ("Overig — Overig
+    — <domein>") beloofde een verfijning die er niet is."""
+    facet = make_drain_facet("dienstverlening", "Dutch")
+    attribuut = facet["attributes"][0]
+    assert attribuut["attribute_name"] == facet["facet_name"]
+    assert attribuut["attribute_definition"] == facet["facet_definition"]
+    assert facet["facet_name"].count("Overig") == 1
