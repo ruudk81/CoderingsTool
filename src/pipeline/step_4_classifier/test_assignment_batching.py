@@ -1,4 +1,4 @@
-"""Tests for the pure batch-assignment helpers (step 4, P4 batch mode)."""
+"""Tests for the pure batch-assignment helpers (step 4, both assignment levels)."""
 import numpy as np
 
 from pipeline.step_4_classifier.assignment_batching import (
