@@ -276,3 +276,50 @@ def find_naming_mismatches(
             "members": member_names,
         })
     return mismatches
+
+
+# ---------------------------------------------------------------------------
+# find_duplicate_definitions — deterministische achtervang tegen twee codes
+# met dezelfde definitie
+# ---------------------------------------------------------------------------
+
+def _normalized_definition(definition: str) -> str:
+    """Lowercased, whitespace-collapsed comparison key — catches a definition
+    that is identical apart from capitalization or incidental whitespace,
+    without attempting full fuzzy matching."""
+    return re.sub(r"\s+", " ", definition.strip().lower())
+
+
+def find_duplicate_definitions(
+    codes: List[ConsolidatedCode], shapes: List[CodeShape],
+) -> List[dict]:
+    """Deterministic check: do two different codes in the assembled codebook
+    carry the same definition? Two codes cannot both be coded against with
+    the same definition — a coder has no way to choose between them, so the
+    codebook is unusable at those entries. This is not hypothetical: on a
+    real run, a code's definition was a byte-for-byte copy of a different
+    code's text, describing that other code's members and not its own.
+    Whether the writer itself produced the duplicate text or an assembly step
+    attached the wrong shape's text, nothing downstream noticed — this check
+    exists to always notice. `codes[i]` must be the text for `shapes[i]`, the
+    same positional contract as `resolve_duplicate_names` and
+    `find_naming_mismatches`."""
+    if len(codes) != len(shapes):
+        raise ValueError("codes and shapes must be positional pairs of equal length")
+
+    groups: Dict[str, List[int]] = defaultdict(list)
+    for i, code in enumerate(codes):
+        groups[_normalized_definition(code.definition)].append(i)
+
+    duplicates: List[dict] = []
+    for indices in groups.values():
+        if len(indices) < 2:
+            continue
+        duplicates.append({
+            "definition": codes[indices[0]].definition,
+            "codes": [
+                {"code_name": codes[i].code_name, "n_resp": len(shapes[i].resp_ids)}
+                for i in indices
+            ],
+        })
+    return duplicates

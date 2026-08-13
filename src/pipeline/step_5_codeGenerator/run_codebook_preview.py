@@ -34,7 +34,7 @@ from utils.llm import token_tracker
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
 from pipeline.step_5_codeGenerator.codebook_writer import (
-    find_naming_mismatches, resolve_duplicate_names, write_codebook,
+    find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names, write_codebook,
 )
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
@@ -117,6 +117,26 @@ def _match_shape(
     code: ConsolidatedCode, lookup: Dict[Tuple[FrozenSet[str], str], CodeShape],
 ) -> Optional[CodeShape]:
     return lookup.get((frozenset(code.source_attributes), code.valence))
+
+
+def _index_codes_by_shape_key(
+    codes: List[ConsolidatedCode], lookup: Dict[Tuple[FrozenSet[str], str], CodeShape],
+) -> Dict[str, ConsolidatedCode]:
+    """Maps each shape's own `.key` (unique per run, assigned once by
+    `consolidate()`) to the `ConsolidatedCode` written for it. Indexing by
+    `code_name` instead — as a prior version of this script did — collapses
+    the moment two different shapes are given the same name: a dict
+    comprehension keyed on name keeps only the last code for that name, so
+    every shape sharing it silently inherits ONE shape's definition,
+    including shapes whose actual members that text does not describe. `.key`
+    is never reused across shapes, so this mapping never collapses regardless
+    of what name the writer chose."""
+    indexed: Dict[str, ConsolidatedCode] = {}
+    for code in codes:
+        matched = _match_shape(code, lookup)
+        if matched is not None:
+            indexed[matched.key] = code
+    return indexed
 
 
 def build_markdown(
@@ -229,10 +249,12 @@ def main() -> None:
         )
 
         # MECE-afdwinging: codes als VERZAMELING bekijken, niet per vorm.
-        # `code_by_name` bewaart de volledige geschreven tekst (incl.
-        # diagnostic_test) van codes die geen enkele ronde aanraakt.
+        # `code_by_shape_key` bewaart de volledige geschreven tekst (incl.
+        # diagnostic_test) van codes die geen enkele ronde aanraakt, gekeyd op
+        # de shape zelf (nooit op de geschreven naam — die kan toevallig
+        # samenvallen tussen twee verschillende vormen).
         shape_lookup = _shape_lookup(shapes, concept_by_id)
-        code_by_name = {code.code_name: code for code in codes}
+        code_by_shape_key = _index_codes_by_shape_key(codes, shape_lookup)
         candidates = [
             CodeCandidate(name=code.code_name, definition=code.definition,
                           indicators=tuple(code.typical_indicators), valence=code.valence,
@@ -252,13 +274,13 @@ def main() -> None:
         # codes (taken_names) zodat hij er niet overheen schrijft — een
         # promptregel, geen garantie; resolve_duplicate_names hieronder is de
         # deterministische achtervang over het volledige, herenigde boek.
-        untouched_names = [code_by_name[c.name].code_name for c in untouched]
+        untouched_names = [code_by_shape_key[c.shape.key].code_name for c in untouched]
         rewritten = await write_codebook(
             [c.shape for c in merged], concepts, dimension_diagnostic, language, config,
             taken_names=untouched_names, verbose=True,
         ) if merged else []
         final_shapes = [c.shape for c in untouched] + [c.shape for c in merged]
-        final_codes = [code_by_name[c.name] for c in untouched] + rewritten
+        final_codes = [code_by_shape_key[c.shape.key] for c in untouched] + rewritten
 
         collision_log = _CollisionLog()
         final_codes = resolve_duplicate_names(final_codes, final_shapes, log=collision_log)
@@ -282,6 +304,13 @@ def main() -> None:
         for m in mismatches:
             print(f"  '{m['code_name']}' ({m['n_resp']} resp.) — leden: "
                   f"{', '.join(m['members'])}")
+
+    duplicate_defs = find_duplicate_definitions(codes, shapes)
+    if duplicate_defs:
+        print(f"WAARSCHUWING: {len(duplicate_defs)} groep(en) codes met identieke definitie:")
+        for d in duplicate_defs:
+            names = ", ".join(f"'{c['code_name']}' ({c['n_resp']} resp.)" for c in d["codes"])
+            print(f"  {names}")
 
     total_merges = sum(r["merges"] for r in mece_rounds)
     if mece_rounds:

@@ -344,3 +344,68 @@ def test_find_naming_mismatches_rejects_mismatched_list_lengths():
     except ValueError:
         return
     raise AssertionError("een lengteverschil tussen codes en shapes had geweigerd moeten worden")
+
+
+# ---------------------------------------------------------------------------
+# find_duplicate_definitions — deterministische achtervang tegen twee codes
+# met dezelfde definitie
+# ---------------------------------------------------------------------------
+
+def _code_with_definition(name, definition, valence="neutral"):
+    return ConsolidatedCode(code_name=name, definition=definition, diagnostic_test="t",
+                            valence=valence, typical_indicators=["a"])
+
+
+def test_find_duplicate_definitions_fires_on_a_duplicate():
+    # The live-run defect: two codes over entirely different members, one
+    # showing the other's definition verbatim.
+    shared = ("ASN Bank krijgt een positieve waardering wanneer de uitstraling "
+              "als natuurlijk, eigentijds, verzorgd, nuchter, alternatief of "
+              "rustgevend wordt beleefd.")
+    codes = [
+        _code_with_definition("Stijl en merkbeleving", shared, valence="positive"),
+        _code_with_definition("Merkuitstraling en stijl", shared, valence="positive"),
+    ]
+    shapes = [shape("K1", "positive", "u1", ["A1"], n_resp=94),
+              shape("K2", "positive", "u2", ["A2"], n_resp=33)]
+
+    duplicates = codebook_writer.find_duplicate_definitions(codes, shapes)
+
+    assert len(duplicates) == 1
+    names = {c["code_name"]: c["n_resp"] for c in duplicates[0]["codes"]}
+    assert names == {"Stijl en merkbeleving": 94, "Merkuitstraling en stijl": 33}
+
+
+def test_find_duplicate_definitions_catches_whitespace_and_case_only_differences():
+    codes = [
+        _code_with_definition("Code A", "ASN Bank is betrouwbaar."),
+        _code_with_definition("Code B", "  asn bank  is   betrouwbaar.  "),
+    ]
+    shapes = [shape("K1", "neutral", "u1", ["A1"]), shape("K2", "neutral", "u2", ["A2"])]
+
+    duplicates = codebook_writer.find_duplicate_definitions(codes, shapes)
+
+    assert len(duplicates) == 1
+
+
+def test_find_duplicate_definitions_stays_silent_when_all_definitions_differ():
+    codes = [
+        _code_with_definition("Code A", "ASN Bank is betrouwbaar."),
+        _code_with_definition("Code B", "ASN Bank is duurzaam."),
+        _code_with_definition("Code C", "ASN Bank is vriendelijk."),
+    ]
+    shapes = [shape("K1", "neutral", "u1", ["A1"]),
+              shape("K2", "neutral", "u2", ["A2"]),
+              shape("K3", "neutral", "u3", ["A3"])]
+
+    assert codebook_writer.find_duplicate_definitions(codes, shapes) == []
+
+
+def test_find_duplicate_definitions_rejects_mismatched_list_lengths():
+    codes = [code("Naam")]
+    shapes = [shape("K1", "neutral", "u", ["A1"]), shape("K2", "neutral", "u", ["A2"])]
+    try:
+        codebook_writer.find_duplicate_definitions(codes, shapes)
+    except ValueError:
+        return
+    raise AssertionError("een lengteverschil tussen codes en shapes had geweigerd moeten worden")
