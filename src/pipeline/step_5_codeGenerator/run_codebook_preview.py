@@ -47,13 +47,9 @@ from pipeline.step_5_codeGenerator.view_relations import load_cache
 # gate runs (which pin a frozen fixture for comparability across runs), this
 # runner's whole point is to show the user a codebook from the LATEST
 # taxonomy — a moving target here is the intended behaviour, not a hazard.
-WORKTREE_CACHE_DIR = (
-    project_root / ".claude" / "worktrees" / "step4-herschrijven" / "data" / "cache"
-)
+DEFAULT_CACHE_DIR = project_root / "data" / "cache"
 
-CODEBOOK_OUTPUT = (
-    project_root / ".superpowers" / "sdd" / "2026-08-12-step5-herbouw" / "codebook.md"
-)
+CODEBOOK_OUTPUT = project_root / "exports" / "codebook" / "codebook_preview.md"
 
 DIRECTION_SYMBOL = {"positive": "+", "negative": "−", "neutral": "neutraal"}
 
@@ -130,7 +126,7 @@ def build_markdown(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cache-dir", type=Path, default=WORKTREE_CACHE_DIR)
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     return parser.parse_args()
 
 

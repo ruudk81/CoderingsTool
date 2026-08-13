@@ -35,14 +35,10 @@ from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, b
 
 CLEAR, SMALL = "✓ eigen code", "· te klein"
 
-# Step 4 is being rewritten in a parallel worktree; its cache is a moving target —
-# three gate runs in one session each saw a different taxonomy (182 → 141 → 189
-# attributes), which makes runs incomparable. This frozen snapshot (189 attributes,
-# 54 facets, 1236 respondents, taxonomy of 2026-08-12 18:22) exists so gate runs are
-# comparable to each other; point --cache-dir elsewhere to run against something else.
-DEFAULT_CACHE_DIR = (
-    project_root / ".superpowers" / "sdd" / "2026-08-12-step5-herbouw" / "fixture-cache"
-)
+# De gewone cache. Werk je aan step 5 terwijl step 4 nog beweegt, wijs --cache-dir
+# dan naar een bevroren kopie: drie poortruns in één sessie zagen elk een andere
+# taxonomie (182 → 141 → 189 attributen), en dan meet je twee wijzigingen tegelijk.
+DEFAULT_CACHE_DIR = project_root / "data" / "cache"
 
 
 class _CacheDirOverride:
@@ -264,7 +260,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--cache-dir", type=Path, default=DEFAULT_CACHE_DIR,
-        help="Override CacheConfig.cache_dir (default: de bevroren fixture-cache)",
+        help="Override CacheConfig.cache_dir (default: data/cache)",
     )
     return parser.parse_args()
 
