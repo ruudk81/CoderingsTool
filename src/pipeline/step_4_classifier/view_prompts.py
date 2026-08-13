@@ -2,9 +2,9 @@
 """
 View the prompts step 4 sent to the LLM.
 
-Nine phases: discovery, consolidation, assignment and refinement per level,
-then the valence-neutral merge. Keys are named by function, not by number, so
-a reordering does not force a renaming here or in the perf model.
+Six phases: discovery, chunk consolidation, assignment, refinement,
+cross-domain, then the valence-neutral merge. Keys are named by function, not by
+number, so a reordering does not force a renaming here or in the perf model.
 
 Usage:
     cd src && python -m pipeline.step_4_classifier.view_prompts
@@ -20,32 +20,23 @@ from utils.promptViewer import render
 
 from test_data import TEST_DATA
 
-from pipeline.step_4_classifier.prompts_attribute import (
-    AttributeConsolidationResult,
-    AttributeDiscoveryResult,
-    AttributeRefinementResult,
+from pipeline.step_4_classifier.prompts_discovery import (
+    ConsolidationResult,
+    DiscoveryResult,
 )
-from pipeline.step_4_classifier.prompts_facet import (
-    FacetConsolidationResult,
-    FacetDiscoveryResult,
-    FacetRefinementResult,
-)
+from pipeline.step_4_classifier.prompts_refinement import RefinementResult
 from pipeline.step_4_classifier.prompts_valence import ValenceNeutralRenameResponse
 
 SHOW_ALL = False
 
-# Both assignment phases build their response model at call time — the menu ids
-# and the idea ids are Literals in the schema — so there is no static model to
-# render for them.
+# Assignment and cross-domain build their response model at call time — the menu
+# ids are Literals in the schema — so there is no static model to render.
 PROMPT_MODELS = {
-    "facet_discovery": FacetDiscoveryResult,
-    "facet_consolidation": FacetConsolidationResult,
-    "facet_assignment": (lambda metadata: None),
-    "facet_refinement": FacetRefinementResult,
-    "attribute_discovery": AttributeDiscoveryResult,
-    "attribute_consolidation": AttributeConsolidationResult,
-    "attribute_assignment": (lambda metadata: None),
-    "attribute_refinement": AttributeRefinementResult,
+    "discovery": DiscoveryResult,
+    "chunk_consolidation": ConsolidationResult,
+    "assignment": (lambda metadata: None),
+    "refinement": RefinementResult,
+    "cross_domain": (lambda metadata: None),
     "valence_merge": ValenceNeutralRenameResponse,
 }
 

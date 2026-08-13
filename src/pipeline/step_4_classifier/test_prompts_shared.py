@@ -42,19 +42,11 @@ def test_taxonomy_block_noemt_l1_de_dimensie_en_niet_de_lens():
     assert "L1 — Dimension" in block
 
 
-def test_level_diagnostic_heeft_alleen_de_uitstervende_lezers():
-    """De dimensie-opdracht vervalt, maar pas als zijn twee lezers weggaan.
-
-    `prompts_facet.py` en `prompts_attribute.py` roepen hem nog aan; ze
-    verdwijnen samen met de tweelaagse opzet. Deze test bewaakt dat er
-    ondertussen geen dérde lezer bij komt — de nieuwe prompts vragen naar
-    facetten en attributen zelf.
-    """
-    import pathlib
-    here = pathlib.Path(__file__).parent
-    lezers = {p.name for p in here.glob("*.py")
-              if "level_diagnostic" in p.read_text() and p.name != "test_prompts_shared.py"}
-    assert lezers == {"prompts_shared.py", "prompts_facet.py", "prompts_attribute.py"}
+def test_level_diagnostic_bestaat_niet_meer():
+    """De dimensie-opdracht is weg met de tweelaagse opzet: discovery vraagt
+    naar facetten en attributen zelf, niet naar de as waarop ze verschillen."""
+    import pipeline.step_4_classifier.prompts_shared as ps
+    assert not hasattr(ps, "level_diagnostic")
 
 
 def test_universele_regels_dekken_de_drie_afspraken():

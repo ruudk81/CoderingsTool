@@ -100,25 +100,6 @@ def _extract_key_idea(instruction: str) -> str:
     return instruction[idx + len(marker):].strip().rstrip(".")
 
 
-def level_diagnostic(dimension: "DimensionDefinition", level: str) -> str:
-    """The question every item at `level` has to answer, for this dimension.
-
-    Only `prompts_facet.py` and `prompts_attribute.py` still call this, and both
-    disappear when the six-phase classifier lands. The new prompts ask for
-    facets and attributes in those words rather than for the axis they vary on,
-    so nothing that replaces them needs a diagnostic.
-    """
-    rules = dimension.prompt_rules
-    if level == "facet":
-        return rules.facet_diagnostic
-    if level == "attribute":
-        return rules.attribute_diagnostic
-    raise ValueError(
-        f"level must be 'facet' or 'attribute', got {level!r}. "
-        f"The domain level belongs to step 3."
-    )
-
-
 # =============================================================================
 # Block 1 — context
 # =============================================================================

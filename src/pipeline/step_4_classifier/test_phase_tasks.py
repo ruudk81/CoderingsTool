@@ -1,260 +1,221 @@
-"""Taakopbouwtests voor de step-4-fasen — geen LLM-calls.
+"""Tests voor de taakvormen van de zes fasen (step 4).
 
-Wat er in bedrading fout gaat is de vorm van de taken: een domein dat wel of
-niet meedoet, een chunk die niet gesplitst wordt, een batch die te groot is,
-een niveau dat een taak krijgt terwijl er niets te kiezen valt. Dat is precies
-wat hier getoetst wordt, en het is toetsbaar omdat elke `_build_<fase>_tasks`
-een pure functie van zijn argumenten is.
+De `_build_<fase>_tasks` zijn pure functies van hun argumenten, dus scope,
+overslaan, chunking en tellingen zijn te controleren zonder een LLM-call.
 """
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
-from pipeline.step_4_classifier.classifier import PromptContext, TaxonomyClassifier
-from pipeline.step_4_classifier.config_classifier import CategoriesConfig
-from pipeline.step_4_classifier.prompts_attribute import (
-    ConsolidatedAttribute, DiscoveredAttribute,
+from pipeline.step_4_classifier.classifier import (
+    PromptContext, TaxonomyClassifier, attribute_dicts, derive_facet_assignments,
+    facet_dicts,
 )
-from pipeline.step_4_classifier.prompts_facet import ConsolidatedFacet, DiscoveredFacet
+from pipeline.step_4_classifier.config_classifier import CategoriesConfig
+from pipeline.step_4_classifier.drains import is_drain_item
+from pipeline.step_4_classifier.prompts_discovery import (
+    DiscoveredAttribute, DiscoveredFacet,
+)
 
 DIM = get_dimensions_in_decision_order()[0]
 
 
-def _facet(name):
-    return DiscoveredFacet(
-        facet_name=name, facet_definition="d", boundary_test="b?",
-        exclusions=["x"], example_observations=["e"],
-    )
+def _clf(**overrides):
+    return TaxonomyClassifier(CategoriesConfig(**overrides))
 
 
-def _consolidated(name):
-    return ConsolidatedFacet(
-        facet_name=name, facet_definition="d", boundary_test="b?",
-        exclusions=["x"], example_observations=["e"], source_facets=[name],
-    )
-
-
-def _attr(name):
-    return DiscoveredAttribute(
-        attribute_name=name, attribute_definition="d", boundary_test="b?",
-        exclusions=["x"], example_observations=["e"],
-    )
-
-
-def _consolidated_attr(name):
-    return ConsolidatedAttribute(
-        attribute_name=name, attribute_definition="d", boundary_test="b?",
-        exclusions=["x"], example_observations=["e"], source_attributes=[name],
-    )
-
-
-def _fixture_context(domains, drain_labels=frozenset(), observations=None):
-    """Minimale PromptContext: taal, vraag, de vijf specifiers, de dimensie,
-    en per domein label/definitie/boundary_test/exclusions."""
-    observations = observations or {}
+def _ctx(domains, drains=()):
     return PromptContext(
-        language="Dutch", survey_question="Waar denkt u aan?",
-        sector="finance", entity="e", topic="t",
-        perspective="consumer", intent="associate",
-        dimension=DIM,
-        domains={d: {"label": d, "definition": "def", "boundary_test": "b?",
-                     "exclusions": [], "observations": observations.get(d, [])}
-                 for d in domains},
-        drain_labels=set(drain_labels),
+        language="Dutch", survey_question="?",
+        dimension=DIM, dimension_name=DIM.key,
+        dimension_description=DIM.dimension_description,
+        domains={
+            name: {"label": name, "definition": "d", "boundary_test": "",
+                   "exclusions": [], "observations": obs}
+            for name, obs in domains.items()},
+        drain_labels=set(drains),
     )
 
 
-# =============================================================================
-# Facet discovery en consolidatie
-# =============================================================================
-
-def test_discovery_slaat_de_staande_domeinen_over():
-    """De twee staande domeinen krijgen geen facetten: step 3 definieert ze als
-    brede vangnetten, en daar hoor je geen structuur in aan te brengen."""
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["Dienstverlening", "Overig", "Niet bekend"],
-                           drain_labels={"Overig", "Niet bekend"})
-    tasks = clf._build_facet_discovery_tasks(ctx)
-    assert {t["domain_label"] for t in tasks} == {"Dienstverlening"}
+def _facet(name, *attrs):
+    return DiscoveredFacet(
+        facet_name=name, facet_definition="d",
+        attributes=[DiscoveredAttribute(
+            attribute_name=a, attribute_definition="d",
+            example_observations=["e"]) for a in attrs])
 
 
-def test_discovery_slaat_de_staande_domeinen_over_ondanks_andere_casing():
-    """Step 3 schrijft het label met hoofdletter in de metadata, domeindiscovery
-    maakt de partitienaam lowercase. Een exacte match vond er geen van beide, en
-    beide vangnetten kregen stil een volledige facetlaag (gezien op ASN Qd1,
-    2026-08-12)."""
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["dienstverlening", "ander onderwerp",
-                            "onbekendheid met het onderwerp"],
-                           drain_labels={"Ander onderwerp",
-                                         "Onbekendheid met het onderwerp"})
-    tasks = clf._build_facet_discovery_tasks(ctx)
-    assert {t["domain_label"] for t in tasks} == {"dienstverlening"}
-
-
-def test_discovery_chunkt_grote_domeinen():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A", "B"],
-                           observations={"A": [f"a{i}" for i in range(600)],
-                                         "B": ["b1", "b2"]})
-    tasks = clf._build_facet_discovery_tasks(ctx)
-    assert len([t for t in tasks if t["domain_label"] == "B"]) == 1
-    assert len([t for t in tasks if t["domain_label"] == "A"]) > 1
-
-
-def test_consolidatie_is_een_taak_per_domein():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A", "B"])
-    raw = {"A": [_facet("a1"), _facet("a2")], "B": [_facet("b1")]}
-    tasks = clf._build_facet_consolidation_tasks(ctx, raw)
-    assert {t["domain_label"] for t in tasks} == {"A", "B"}
-
-
-def test_consolidatie_krijgt_alle_kandidaten_van_zijn_domein():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A"])
-    raw = {"A": [_facet("a1"), _facet("a2"), _facet("a3")]}
-    tasks = clf._build_facet_consolidation_tasks(ctx, raw)
-    assert len(tasks[0]["candidates"]) == 3
-
-
-def test_domein_zonder_kandidaten_krijgt_geen_consolidatietaak():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A", "B"])
-    tasks = clf._build_facet_consolidation_tasks(ctx, {"A": [_facet("a1")], "B": []})
-    assert [t["domain_label"] for t in tasks] == ["A"]
-
-
-def test_consolidatie_splitst_boven_de_grens_in_groepen():
-    """Meer kandidaten dan in één call passen worden in rondes geconsolideerd;
-    de eerste ronde is meerdere taken voor hetzelfde domein."""
-    clf = TaxonomyClassifier(CategoriesConfig(consolidation_max_items_per_call=2))
-    ctx = _fixture_context(["A"])
-    raw = {"A": [_facet(f"a{i}") for i in range(5)]}
-    tasks = clf._build_facet_consolidation_tasks(ctx, raw)
-    assert len(tasks) == 3
-    assert sum(len(t["candidates"]) for t in tasks) == 5
+def _structure(facets_per_domain):
+    return {d: [f.model_dump() for f in facets]
+            for d, facets in facets_per_domain.items()}
 
 
 # =============================================================================
-# Facet toewijzing
+# DISCOVERY
 # =============================================================================
 
-def test_toewijzing_batcht_unieke_labels():
-    clf = TaxonomyClassifier(CategoriesConfig(assignment_batch_k=2))
-    ctx = _fixture_context(["A"])
-    facets = {"A": [_consolidated("f1"), _consolidated("f2")]}
-    labels = {"A": {"i1": "groen", "i2": "groen", "i3": "duur", "i4": "snel"}}
-    tasks = clf._build_facet_assignment_tasks(ctx, facets, labels)
-    # drie unieke labels bij K=2 → twee batches
-    assert len(tasks) == 2
+def test_discovery_slaat_de_vangnetdomeinen_over():
+    """Step 3 definieert ze als bewust brede vangnetten; er structuur op leggen
+    verzint onderscheid dat de antwoorden niet dragen."""
+    ctx = _ctx({"inhoud": ["a"], "Overig": ["b"]}, drains=["overig"])
+    tasks = _clf()._build_discovery_tasks(ctx)
+    assert {t["domain_label"] for t in tasks} == {"inhoud"}
 
 
-def test_identiek_label_wordt_een_rep():
-    clf = TaxonomyClassifier(CategoriesConfig(assignment_batch_k=5))
-    ctx = _fixture_context(["A"])
-    facets = {"A": [_consolidated("f1"), _consolidated("f2")]}
-    labels = {"A": {"i1": "groen", "i2": "  GROEN "}}
-    tasks = clf._build_facet_assignment_tasks(ctx, facets, labels)
+def test_vangnet_match_is_hoofdletterongevoelig():
+    """Step 3 schrijft het label met hoofdletter, domeindiscovery maakt de
+    partitienaam lowercase. Een exacte match vond geen van beide, stil."""
+    ctx = _ctx({"Overig": ["b"]}, drains=["overig"])
+    assert ctx.is_drain("Overig") is True
+    assert _clf()._build_discovery_tasks(ctx) == []
+
+
+def test_kleine_scope_krijgt_een_chunk():
+    tasks = _clf()._build_discovery_tasks(_ctx({"d": ["a", "b", "c"]}))
     assert len(tasks) == 1
-    assert len(tasks[0]["reps"]) == 1
-    assert sorted(tasks[0]["reps"][0].idea_ids) == ["i1", "i2"]
+    assert tasks[0]["total_chunks"] == 1
 
 
-def test_domein_met_een_facet_krijgt_geen_taak():
-    """Auto-assign: bij één facet is er niets te kiezen."""
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A"])
-    tasks = clf._build_facet_assignment_tasks(
-        ctx, {"A": [_consolidated("enig")]}, {"A": {"i1": "x"}})
-    assert tasks == []
-
-
-# =============================================================================
-# Facet naslijpen
-# =============================================================================
-
-def test_naslijptaak_per_domein_met_minstens_twee_facetten():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A", "B"])
-    facets = {"A": [_consolidated("f1"), _consolidated("f2")], "B": [_consolidated("g1")]}
-    assignments = {"A": {"i1": "f1", "i2": "f2"}, "B": {"i3": "g1"}}
-    tasks = clf._build_facet_refinement_tasks(ctx, facets, assignments, labels={})
-    assert [t["domain_label"] for t in tasks] == ["A"]
-
-
-def test_naslijptaak_draagt_aantallen_en_aandelen():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A"])
-    facets = {"A": [_consolidated("f1"), _consolidated("f2")]}
-    assignments = {"A": {"i1": "f1", "i2": "f1", "i3": "f2"}}
-    labels = {"A": {"i1": "x", "i2": "y", "i3": "z"}}
-    tasks = clf._build_facet_refinement_tasks(ctx, facets, assignments, labels)
-    rows = {naam: (n, aandeel) for naam, n, aandeel, _ in tasks[0]["rows"]}
-    assert rows["f1"][0] == 2
-    assert abs(rows["f1"][1] - 2 / 3) < 0.01
+def test_grote_scope_wordt_gechunkt_met_overlap():
+    ctx = _ctx({"d": [f"obs{i}" for i in range(500)]})
+    tasks = _clf()._build_discovery_tasks(ctx)
+    assert len(tasks) > 1
+    assert all(t["total_chunks"] == len(tasks) for t in tasks)
+    gezien = {o for t in tasks for o in t["observations"]}
+    assert gezien == set(ctx.domain("d")["observations"])
 
 
 # =============================================================================
-# Attribuut discovery en consolidatie
+# CONSOLIDATIEGROEPEN
 # =============================================================================
 
-def test_attribuutdiscovery_chunkt_grote_facetten():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A"])
-    facets = {"A": [_consolidated("f1"), _consolidated("f2")]}
-    ideas_per_facet = {("A", "f1"): ["x"] * 300, ("A", "f2"): ["y"] * 10}
-    tasks = clf._build_attribute_discovery_tasks(ctx, facets, ideas_per_facet)
-    assert len([t for t in tasks if t["facet_name"] == "f2"]) == 1
-    assert len([t for t in tasks if t["facet_name"] == "f1"]) > 1
+def test_groepen_tellen_attributen_niet_facetten():
+    """Dertig facetten valt onder de cap terwijl er vijfhonderd attributen
+    onder kunnen hangen, en daar bezwijkt het oordeel."""
+    clf = _clf(consolidation_max_items_per_call=10)
+    kandidaten = [_facet(f"f{i}", *[f"a{j}" for j in range(6)]) for i in range(4)]
+    groepen = clf._consolidation_groups(kandidaten)
+    assert len(groepen) == 4
+    assert all(len(g) == 1 for g in groepen)
 
 
-def test_attribuutconsolidatie_is_een_taak_per_facet():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A"])
-    raw = {"A": {"f1": [_attr("a1"), _attr("a2")], "f2": [_attr("b1")]}}
-    tasks = clf._build_attribute_consolidation_tasks(ctx, raw)
-    assert {t["facet_name"] for t in tasks} == {"f1", "f2"}
+def test_alles_in_een_groep_wanneer_het_past():
+    clf = _clf(consolidation_max_items_per_call=150)
+    groepen = clf._consolidation_groups([_facet(f"f{i}", "a") for i in range(30)])
+    assert len(groepen) == 1
+
+
+def test_facet_reist_nooit_los_van_zijn_attributen():
+    clf = _clf(consolidation_max_items_per_call=2)
+    groot = _facet("groot", *[f"a{j}" for j in range(9)])
+    groepen = clf._consolidation_groups([groot])
+    assert len(groepen) == 1
+    assert len(groepen[0][0].attributes) == 9
+
+
+def test_kandidaten_worden_op_naam_gesorteerd_voor_het_groeperen():
+    """Bijna-identieke namen komen naast elkaar te staan, zodat ze meestal in
+    dezelfde groep vallen in plaats van elkaar een ronde lang mis te lopen.
+
+    Meestal, niet altijd: een greedy vulling kan de groepsgrens nog steeds
+    precies tussen twee buren leggen. Dat is aanvaard — de volgende ronde zet
+    de overlevenden alsnog bij elkaar.
+    """
+    clf = _clf(consolidation_max_items_per_call=2)
+    kandidaten = [_facet("Snelheid van afhandeling", "a"),
+                  _facet("Bejegening", "b"), _facet("Snelheid", "c")]
+    volgorde = [f.facet_name.lower()
+                for g in clf._consolidation_groups(kandidaten) for f in g]
+    assert volgorde == sorted(volgorde)
 
 
 # =============================================================================
-# Attribuut toewijzing
+# TOEWIJZING
 # =============================================================================
 
-def test_attribuuttoewijzing_batcht_binnen_het_facet():
-    clf = TaxonomyClassifier(CategoriesConfig(assignment_batch_k=2))
-    ctx = _fixture_context(["A"])
-    attrs = {"A": {"f1": [_consolidated_attr("a1"), _consolidated_attr("a2")]}}
-    ideas = {("A", "f1"): {"i1": "x", "i2": "y", "i3": "z"}}
-    tasks = clf._build_attribute_assignment_tasks(ctx, attrs, ideas)
+def test_een_taak_per_uniek_label():
+    """Identieke tekst deelt een oordeel; dat is geen batch."""
+    structure = _structure({"d": [_facet("f", "a1", "a2")]})
+    tasks = _clf()._build_assignment_tasks(
+        _ctx({"d": []}), structure,
+        {"d": {"i1": "zelfde", "i2": "zelfde", "i3": "ander"}})
     assert len(tasks) == 2
-    assert all(t["facet_name"] == "f1" for t in tasks)
+    assert sorted(len(t["rep"].idea_ids) for t in tasks) == [1, 2]
 
 
-def test_facet_met_een_attribuut_krijgt_geen_taak():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A"])
-    tasks = clf._build_attribute_assignment_tasks(
-        ctx, {"A": {"f1": [_consolidated_attr("enig")]}}, {("A", "f1"): {"i1": "x"}})
+def test_menu_van_een_krijgt_geen_taak():
+    structure = _structure({"d": [_facet("f", "enige")]})
+    tasks = _clf()._build_assignment_tasks(
+        _ctx({"d": []}), structure, {"d": {"i1": "x"}})
     assert tasks == []
 
 
+def test_menu_is_domeinbreed_en_per_facet_gegroepeerd():
+    structure = _structure({"d": [_facet("f1", "a1"), _facet("f2", "a2")]})
+    tasks = _clf()._build_assignment_tasks(
+        _ctx({"d": []}), structure, {"d": {"i1": "x"}})
+    id_map = tasks[0]["id_map"]
+    assert {v["facet_name"] for v in id_map.values()} == {"f1", "f2"}
+
+
 # =============================================================================
-# Attribuut naslijpen
+# VANGNETTEN AANHAKEN
 # =============================================================================
 
-def test_naslijptaak_per_facet_met_minstens_twee_attributen():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A"])
-    attrs = {"A": {"f1": [_consolidated_attr("a1"), _consolidated_attr("a2")],
-                   "f2": [_consolidated_attr("b1")]}}
-    assignments = {"i1": "a1", "i2": "a2", "i3": "b1"}
-    tasks = clf._build_attribute_refinement_tasks(ctx, attrs, assignments, labels={})
-    assert [t["facet_name"] for t in tasks] == ["f1"]
+def test_elk_facet_krijgt_een_other_en_elk_domein_een_other_facet():
+    clf = _clf()
+    structure = clf._add_drains(
+        _ctx({"d": []}), _structure({"d": [_facet("f1", "a1"), _facet("f2", "a2")]}))
+    drain_facets = [f for f in structure["d"] if is_drain_item(f)]
+    assert len(drain_facets) == 1
+    for facet in structure["d"]:
+        assert any(is_drain_item(a) for a in facet["attributes"]), facet["facet_name"]
 
 
-def test_naslijptaak_krijgt_de_buurfacetten_mee():
-    clf = TaxonomyClassifier(CategoriesConfig())
-    ctx = _fixture_context(["A"])
-    attrs = {"A": {"f1": [_consolidated_attr("a1"), _consolidated_attr("a2")],
-                   "f2": [_consolidated_attr("b1")]}}
-    tasks = clf._build_attribute_refinement_tasks(
-        ctx, attrs, {"i1": "a1", "i2": "a2", "i3": "b1"}, labels={})
-    assert "f2" in tasks[0]["neighbour_block"]
+def test_vangnetten_komen_na_consolidatie_niet_ervoor():
+    """Consolidatie beoordeelt wat de passes voorstelden; een bak die per
+    constructie bestaat is geen voorstel."""
+    clf = _clf()
+    voor = _structure({"d": [_facet("f1", "a1")]})
+    na = clf._add_drains(_ctx({"d": []}), voor)
+    assert len(voor["d"][0]["attributes"]) == 1
+    assert len(na["d"][0]["attributes"]) == 2
+
+
+# =============================================================================
+# FACETTOEWIJZING IS AFGELEID
+# =============================================================================
+
+def test_facettoewijzing_volgt_waar_het_attribuut_leeft():
+    """Een bron. Twee los bepaalde toewijzingen konden een idee in facet F
+    zetten en in een attribuut dat onder G hangt."""
+    structure = _structure({"d": [_facet("f1", "a1"), _facet("f2", "a2")]})
+    assert derive_facet_assignments({"i1": "a2"}, structure) == {"d": {"i1": "f2"}}
+
+
+def test_onbekend_attribuut_levert_geen_facet_op():
+    structure = _structure({"d": [_facet("f1", "a1")]})
+    assert derive_facet_assignments({"i1": "verzonnen"}, structure) == {}
+
+
+def test_facettoewijzing_matcht_hoofdletterongevoelig():
+    structure = _structure({"d": [_facet("f1", "Wachttijd")]})
+    assert derive_facet_assignments({"i1": "wachttijd"}, structure) == {"d": {"i1": "f1"}}
+
+
+# =============================================================================
+# UITPAKKEN NAAR DE TWEE CACHEREGISTERS
+# =============================================================================
+
+def test_facetkaarten_dragen_hun_attributen_niet_mee():
+    """De cache houdt facetten en attributen in twee registers; de nesting die
+    de structuur door de run draagt wordt aan het eind uitgepakt."""
+    nested = _structure({"d": [_facet("f", "a1", "a2")]})["d"]
+    assert "attributes" not in facet_dicts(nested)[0]
+    assert [a["attribute_name"] for a in attribute_dicts(nested)["f"]] == ["a1", "a2"]
+
+
+# =============================================================================
+# STOPPUNTEN
+# =============================================================================
+
+def test_elke_fasenaam_is_een_geldig_stoppunt():
+    for phase in TaxonomyClassifier.PHASES:
+        _clf(stop_after_phase=phase)

@@ -89,16 +89,12 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     # Step 4: Taxonomy Classifier — discovery, consolidation, assignment,
     # refinement per level, then the valence merge. Named by function, not by
     # number: a reordering should not force a rename here or in the perf model.
-    "classifier_facet_discovery":         ("5.6", 3),
-    "classifier_facet_consolidation":     ("5.6", 3),
-    "classifier_facet_assignment":        ("5.6", 3),
-    "classifier_facet_refinement":        ("5.6", 3),
-    "classifier_attribute_discovery":     ("5.6", 3),
-    "classifier_attribute_consolidation": ("5.6", 3),
-    "classifier_attribute_assignment":    ("5.6", 3),
-    "classifier_attribute_refinement":    ("5.6", 3),
-    "classifier_cross_scope_consolidation":    ("5.6", 3),
-    "classifier_valence_merge":           ("5.6", 3),
+    "classifier_discovery":            ("5.6", 3),
+    "classifier_chunk_consolidation":  ("5.6", 3),
+    "classifier_assignment":           ("5.6", 3),
+    "classifier_refinement":           ("5.6", 3),
+    "classifier_cross_domain":         ("5.6", 3),
+    "classifier_valence_merge":        ("5.6", 3),
     # Step 5: Code Generator
     "codegen_relations":                  ("5.6", 3),   # relations between attributes
     "codegen_umbrella_merge":             ("5.6", 3),   # consolidate umbrella names before pooling
@@ -205,13 +201,10 @@ STEP_EFFORT = {
     # Step 4: the phases that BUILD the taxonomy reason; the two assignment
     # phases apply it and fall back to REASONING_EFFORT, which is where ~98% of
     # the calls are.
-    "classifier_facet_discovery": "medium",
-    "classifier_facet_consolidation": "medium",
-    "classifier_facet_refinement": "medium",
-    "classifier_attribute_discovery": "medium",
-    "classifier_attribute_consolidation": "medium",
-    "classifier_attribute_refinement": "medium",
-    "classifier_cross_scope_consolidation": "medium",
+    "classifier_discovery": "medium",
+    "classifier_chunk_consolidation": "medium",
+    "classifier_refinement": "medium",
+    "classifier_cross_domain": "medium",
     "classifier_valence_merge": "low",
     # Step 5: writing and consolidating the codebook
     "codegen_relations": "medium",
@@ -224,13 +217,10 @@ STEP_EFFORT = {
 
 STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
-    "classifier_facet_discovery": "low",
-    "classifier_facet_consolidation": "low",
-    "classifier_facet_refinement": "low",
-    "classifier_attribute_discovery": "low",
-    "classifier_attribute_consolidation": "low",
-    "classifier_attribute_refinement": "low",
-    "classifier_cross_scope_consolidation": "low",
+    "classifier_discovery": "low",
+    "classifier_chunk_consolidation": "low",
+    "classifier_refinement": "low",
+    "classifier_cross_domain": "low",
     "classifier_valence_merge": "low",
     # All other steps: fall back to TEXT_VERBOSITY
 }
@@ -296,7 +286,7 @@ def get_reasoning_params(model: str, phase: str = None) -> dict:
 
     Args:
         model: Model name, as returned by get_step_model().
-        phase: Pipeline phase key (e.g. "classifier_facet_discovery"). If provided, uses
+        phase: Pipeline phase key (e.g. "classifier_discovery"). If provided, uses
                per-step effort from STEP_EFFORT and verbosity from STEP_VERBOSITY.
     """
     if not _model(model).reasoning:

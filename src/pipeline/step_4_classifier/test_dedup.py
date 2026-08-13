@@ -1,26 +1,23 @@
 """Tests for exact-dedup of chunk discovery output (step 4)."""
 from pipeline.step_4_classifier.dedup import dedup_exact_attributes, dedup_exact_facets
-from pipeline.step_4_classifier.prompts_attribute import DiscoveredAttribute
-from pipeline.step_4_classifier.prompts_facet import DiscoveredFacet
-
-
-def make_facet(name, examples=None):
-    return DiscoveredFacet(
-        facet_name=name,
-        facet_definition="d",
-        boundary_test="b?",
-        exclusions=["x"],
-        example_observations=examples if examples is not None else ["e1"],
-    )
+from pipeline.step_4_classifier.prompts_discovery import (
+    DiscoveredAttribute, DiscoveredFacet,
+)
 
 
 def make_attribute(name, examples=None):
     return DiscoveredAttribute(
         attribute_name=name,
         attribute_definition="d",
-        boundary_test="b?",
-        exclusions=["x"],
         example_observations=examples if examples is not None else ["e1"],
+    )
+
+
+def make_facet(name, attributes=None):
+    return DiscoveredFacet(
+        facet_name=name,
+        facet_definition="d",
+        attributes=attributes if attributes is not None else [make_attribute("a")],
     )
 
 
@@ -40,20 +37,31 @@ def test_does_not_merge_near_duplicates():
     assert len(result) == 2
 
 
-def test_unions_examples_preserving_order():
+def test_merged_facet_pools_its_attributes():
+    """Twee chunks die hetzelfde facet noemen zagen er niet hetzelfde in."""
     result = dedup_exact_facets([
-        make_facet("X", examples=["a", "b"]),
-        make_facet("X", examples=["b", "c"]),
+        make_facet("X", [make_attribute("Wachttijd")]),
+        make_facet("X", [make_attribute("Doorlooptijd")]),
     ])
-    assert result[0].example_observations == ["a", "b", "c"]
+    assert [a.attribute_name for a in result[0].attributes] == [
+        "Wachttijd", "Doorlooptijd"]
+
+
+def test_pooled_attributes_are_deduped_one_level_down():
+    result = dedup_exact_facets([
+        make_facet("X", [make_attribute("Wachttijd", ["a"])]),
+        make_facet("X", [make_attribute("wachttijd", ["b"])]),
+    ])
+    assert len(result[0].attributes) == 1
+    assert result[0].attributes[0].example_observations == ["a", "b"]
 
 
 def test_first_seen_order_and_input_untouched():
-    first = make_facet("B")
-    inputs = [first, make_facet("A"), make_facet("B", examples=["extra"])]
+    first = make_facet("B", [make_attribute("a", ["e1"])])
+    inputs = [first, make_facet("A"), make_facet("B", [make_attribute("extra")])]
     result = dedup_exact_facets(inputs)
     assert [f.facet_name for f in result] == ["B", "A"]
-    assert first.example_observations == ["e1"]  # input niet gemuteerd
+    assert [a.attribute_name for a in first.attributes] == ["a"]
 
 
 def test_attribute_dedup_merges_and_unions_examples():

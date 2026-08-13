@@ -301,20 +301,22 @@ def cache_taxonomy_results(
             partition_name=name,
             n_labels=taxonomy_result.partition_n_labels.get(name, 0),
             n_batches=taxonomy_result.partition_n_batches.get(name, 0),
-            facets=[f.model_dump() for f in taxonomy_result.partition_facets.get(name, [])],
+            # Already plain dicts: the classifier converts each phase's
+            # response at its own boundary, so the catch-alls it builds itself
+            # are the same kind of thing as everything a model proposed.
+            facets=list(taxonomy_result.partition_facets.get(name, [])),
             facet_assignments=facet_assigns,
             attributes={
-                facet_name: [a.model_dump() for a in attrs]
+                facet_name: list(attrs)
                 for facet_name, attrs in taxonomy_result.partition_attributes.get(name, {}).items()
             },
             attribute_assignments=domain_attr_assigns,
-            # Discovery snapshots, per level: the state before consolidation
-            # settled it. Never drop these — they are what makes a bad merge
-            # diagnosable, and what the standalone refinement replay runs on.
-            raw_facets=[f.model_dump()
-                        for f in taxonomy_result.partition_raw_facets.get(name, [])],
+            # Discovery snapshot: the state before consolidation settled the
+            # inventory. Never drop these — they are what makes a bad merge
+            # diagnosable after the fact.
+            raw_facets=list(taxonomy_result.partition_raw_facets.get(name, [])),
             raw_attributes={
-                facet_name: [a.model_dump() for a in attrs]
+                facet_name: list(attrs)
                 for facet_name, attrs in taxonomy_result.raw_partition_attributes.get(name, {}).items()
             },
             raw_attribute_assignments=domain_raw_attr_assigns,
