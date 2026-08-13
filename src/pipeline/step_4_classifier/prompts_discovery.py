@@ -20,7 +20,7 @@ niveaus betekenen voor de dimensie waaronder deze run draait.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -91,8 +91,58 @@ class DiscoveryResult(BaseModel):
             "The facets found in these observations, each with its attributes"))
 
 
+class ConsolidatedAttribute(DiscoveredAttribute):
+    """Een attribuut ná consolidatie, dat zegt wat erin is opgegaan."""
+    source_attributes: List[str] = Field(
+        ..., description=(
+            "Every candidate attribute name that folded into this one, "
+            "including its own if it survived unchanged"))
+
+
+class ConsolidatedFacet(DiscoveredFacet):
+    """Een facet ná consolidatie, dat zegt wat erin is opgegaan."""
+    source_facets: List[str] = Field(
+        ..., description=(
+            "Every candidate facet name that folded into this one, including "
+            "its own if it survived unchanged"))
+    attributes: List[ConsolidatedAttribute] = Field(
+        ..., description=(
+            "The consolidated attributes of this facet, pooled from every "
+            "candidate that folded into it"))
+
+
+class ConsolidationResult(BaseModel):
+    """Wat één consolidatiecall per domein teruggeeft.
+
+    De twee `source_*`-velden zijn geen boekhouding maar een vangnet. Zonder
+    hen ziet een kandidaat die is samengevoegd er precies zo uit als een
+    kandidaat die is vergeten: allebei staan ze niet in het antwoord. Mét hen
+    blijft wat niemand claimt staan (`kept_unclaimed`) in plaats van stil te
+    verdwijnen — en bij consolidatie in rondes telt dat dubbel, want wat in
+    ronde 1 wegvalt komt nooit meer terug.
+
+    `raw_facets` bewaart daarnaast de stand vóór de merge, maar dat dient een
+    ander doel: diagnose achteraf, niet detectie tijdens de run.
+    """
+    scratchpad: str = Field(
+        ..., description=(
+            "Step-by-step reasoning before the final output: "
+            "(1) scan the candidate facets from all passes, "
+            "(2) group the ones that mean the same thing, "
+            "(3) apply the same-question test to every pair, "
+            "(4) let prevalence set the granularity within one question, "
+            "(5) verify the domain boundary, "
+            "(6) for each surviving facet, pool and consolidate the attributes "
+            "of everything that folded into it, "
+            "(7) check that every candidate is accounted for, then output"))
+    facets: List[ConsolidatedFacet] = Field(
+        ..., description=(
+            "The fewest mutually exclusive facets that cover the domain, each "
+            "with its consolidated attributes"))
+
+
 # =============================================================================
-# PROMPT
+# PROMPT — DISCOVERY
 # =============================================================================
 
 def _exclusion_lines(domain_label: str, boundary_test: str,
@@ -250,6 +300,222 @@ Return a JSON object with these fields:
     - `example_observations`: 2-3 observations from the input, using the exact observation text
 
 All names, definitions and examples must be written in {language}.
+
+{UNIVERSAL_RULES}
+
+{INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# PROMPT — CHUNK CONSOLIDATION
+# =============================================================================
+
+def build_candidate_block(
+    candidates: List[DiscoveredFacet],
+    recurrence: Dict[str, int],
+    n_passes: int,
+) -> str:
+    """De kandidaten van alle chunks, elk met zijn attributen en zijn dekking.
+
+    Consolidatie draait vóór er één idee is toegewezen, dus er zijn geen
+    aantallen. Wat er wél is: in hoeveel onafhankelijke chunks een facet is
+    voorgesteld. Een begrip dat in vijf van vijf passes terugkomt is beter
+    onderbouwd dan een dat één keer opdook, en dat is zichtbaar te maken zonder
+    één toewijzing.
+
+    `dedup_exact_facets` klapt byte-identieke namen ervóór samen, dus de telling
+    moet apart worden meegedragen — anders verdwijnt precies dit signaal.
+    """
+    blocks = []
+    for i, facet in enumerate(candidates, 1):
+        seen = recurrence.get(facet.facet_name, 1)
+        lines = [f"[{i}] {facet.facet_name} — Proposed in {seen} of "
+                 f"{n_passes} independent passes",
+                 f"    Definition: {facet.facet_definition}"]
+        if facet.attributes:
+            lines.append("    Attributes proposed inside it:")
+            for attribute in facet.attributes:
+                example = (attribute.example_observations or [""])[0]
+                lines.append(
+                    f"      - {attribute.attribute_name}: "
+                    f"{attribute.attribute_definition}")
+                if example:
+                    lines.append(f"        e.g. \"{example}\"")
+        else:
+            lines.append("    Attributes proposed inside it: (none)")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def build_chunk_consolidation_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+    domain_label: str,
+    domain_definition: str,
+    domain_exclusions: Optional[List[str]],
+    candidate_block: str,
+) -> str:
+    """Alle chunk-opbrengsten van één domein tot één geneste inventaris.
+
+    Dit is de zwaarste fase van de stap. Elke chunk zag maar een deel van het
+    domein en stelde onafhankelijk voor, dus hetzelfde begrip komt onder
+    meerdere namen terug — op twee niveaus tegelijk. Facetten die samengaan
+    brengen hun attributen mee, en die moeten daarna onderling opnieuw langs
+    dezelfde meetlat.
+    """
+    rules = dimension.prompt_rules
+    facet_definition = _extract_definition(rules.facet_instruction)
+    attribute_definition = _extract_definition(rules.attribute_instruction)
+    exclusion_hint = (
+        "\n".join(f"- {x}" for x in domain_exclusions)
+        if domain_exclusions else "- (no neighbouring domains were named)")
+
+    return f"""You are a taxonomy consolidation specialist for surveys.
+Your task is to merge the facets proposed by several independent passes over one domain
+into a single minimal set, and to do the same for the attributes those facets hold.
+
+Each pass saw only part of the domain and proposed on its own, so the same concept comes
+back under different names — at both levels at once. That is what you are resolving.
+
+# What a facet is
+
+{facet_definition}
+
+# What an attribute is
+
+{attribute_definition}
+
+{build_context_block(
+    language=language, survey_question=survey_question, sector=sector,
+    entity=entity, topic=topic, perspective=perspective, intent=intent)}
+
+{build_taxonomy_block(
+    dimension=dimension, dimension_name=dimension_name,
+    dimension_description=dimension_description)}
+
+You are working within this domain, and only within it:
+
+<taxonomy_domain>
+{domain_label} — {domain_definition}
+</taxonomy_domain>
+
+Here are the candidates from all passes over this domain. Each shows how many independent
+passes proposed it, and the attributes that were proposed inside it:
+
+<candidates>
+{candidate_block}
+</candidates>
+
+# Consolidation Rules
+
+Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping
+by these rules, in this order.
+
+**1. UNDERLYING QUESTION FIRST (orthogonality — the guardrail).**
+For each concept, work out which underlying question it answers about the responses.
+- Concepts answering DIFFERENT questions are orthogonal: never merge them into one facet.
+- Mutually exclusive ANSWERS to the SAME question are also kept apart; merging opposite
+  answers creates a container that says nothing.
+- Do not create separate facets based only on the object being discussed when the same
+  underlying answer applies. An object is not a question.
+
+**2. PREVALENCE SETS GRANULARITY (within one question only).**
+- A concept that many passes proposed keeps its own facet — never dissolve a
+  well-supported one.
+- Several thinly supported concepts answering the same question are GROUPED into one facet
+  that still names what they share in plain language.
+Prevalence decides how finely to split WITHIN one question; it never licenses merging
+ACROSS questions.
+
+**3. LIFT, DON'T FLATTEN.**
+When grouping is needed, raise the concepts to a shared higher-level label that still
+carries their meaning — not a label that merely names the question.
+FORBIDDEN: a container that only names the question it sits on. The reader learns what was
+asked, not what was said.
+REQUIRED: a label that states the answer itself.
+Test: read the label alone. If it tells you only which question was asked, it is a
+container; if it tells you what the respondents expressed, it is an answer.
+
+**4. PLAIN, MEANINGFUL LABELS.**
+Name every surviving facet and attribute in everyday language. Test: reading the label
+alone, and knowing the survey question, a layperson knows which distinction is meant. No
+jargon, no nominalisations.
+
+**Precedence when rules conflict:** 1 (orthogonality) > 2 (prevalence grouping) > 4 (label
+clarity).
+
+# Step-by-Step Analysis Process
+
+Work through these steps in the `scratchpad` field before writing your final output.
+
+**Step 1 — Scan the candidates**
+Read every candidate facet from every pass. Note recurring concepts, near-duplicates, and
+obvious repeats under different names.
+
+**Step 2 — Group overlapping facets**
+Group the facets that describe the same or overlapping concept across passes.
+
+**Step 3 — Apply the same-question test**
+For each pair of candidate groups, ask: do these answer the SAME underlying question, or
+different ones? Different questions, or opposite answers to one question, stay separate.
+Same question and same meaning: group.
+
+**Step 4 — Let prevalence set the granularity**
+Within one question, a well-supported concept keeps its own facet; several thinly supported
+ones are grouped under a single plainly named facet. Never group across questions.
+
+**Step 5 — Verify the domain boundary**
+Every surviving facet must belong to {domain_label} and not to a neighbouring domain:
+{exclusion_hint}
+
+**Step 6 — Consolidate the attributes inside each surviving facet**
+This is the step the two levels meet. For each facet you kept, POOL the attributes of every
+candidate that folded into it. That pool now holds duplicates and near-duplicates from
+different passes, so put it through the same four rules one level down:
+- Attributes answering different questions about the facet stay apart.
+- Attributes that restate each other in different words become one.
+- A well-supported attribute keeps its own place; thin ones that share a meaning group.
+Then check the result against its facet: every attribute must sit inside the facet it hangs
+under. If one does not, move it to the facet where it belongs, or drop it if no facet fits.
+A facet left holding a single attribute means the facet and the attribute are the same
+concept — keep it at the level where it belongs and do not state it twice.
+
+**Step 7 — Account for every candidate**
+Confirm you have the minimal set of facets that covers the domain, each holding the minimal
+set of attributes that covers what it contains.
+Then check coverage: every candidate facet you were given must appear in the `source_facets`
+of exactly one surviving facet, and every attribute proposed inside those candidates must
+appear in the `source_attributes` of exactly one surviving attribute. A candidate you
+deliberately dropped is not exempt — fold it into whichever survivor absorbs its meaning.
+Merging and forgetting look identical in the output unless you list what went where.
+
+# Output
+
+Return a JSON object with these fields:
+- `scratchpad`: your reasoning for steps 1-7
+- `facets`: an array, one entry per surviving facet, each with:
+  - `facet_name`: a short descriptive name in {language} (2-5 words)
+  - `facet_definition`: what the facet captures, in {language} (1-2 sentences)
+  - `source_facets`: the names of every candidate facet that folded into this one,
+    exactly as they were given to you. A facet that survived unchanged lists just itself.
+  - `attributes`: an array, one entry per surviving attribute in that facet, each with:
+    - `attribute_name`: a short descriptive name in {language} (2-5 words)
+    - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
+    - `example_observations`: 2-3 observations carried over from the candidates, exact text
+    - `source_attributes`: the names of every candidate attribute that folded into this one,
+      exactly as they were given to you. One that survived unchanged lists just itself.
+
+Names and definitions must be written in {language}. The two `source_*` fields are the
+exception: they repeat the candidate names verbatim, whatever language those were in.
 
 {UNIVERSAL_RULES}
 
