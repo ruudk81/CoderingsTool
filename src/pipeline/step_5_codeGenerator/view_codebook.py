@@ -1,6 +1,6 @@
 #%%
 """
-View codebook results (P8-P9): codes with definitions, indicators, source attributes.
+View codebook results: codes with definitions, indicators, source attributes.
 
 Loads from cached MECE results (step "mece_codes").
 
@@ -29,7 +29,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 def main():
     print("=" * 80)
-    print("CODEBOOK VIEWER (P8-P9)")
+    print("CODEBOOK VIEWER")
     print("=" * 80)
     print(f"Variable:     {VAR_NAME}")
     print(f"Sample size:  {SAMPLE_SIZE}")

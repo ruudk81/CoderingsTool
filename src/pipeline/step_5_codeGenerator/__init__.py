@@ -1,8 +1,8 @@
 """
-Step 5: Code Generator — Codebook Generation Pipeline (P8-P9)
+Step 5: Code Generator — Codebook Generation Pipeline
 
-Generates codebook from taxonomy attributes (P8) and consolidates
-into a parsimonious MECE codebook (P9).
+taxonomy_input -> concept_inventory -> relations -> consolidator ->
+codebook_writer -> mece -> codebook_writer (re-write of merged codes).
 
 Usage:
     cd src && python -m pipeline.step_5_codeGenerator.run_codeGenerator

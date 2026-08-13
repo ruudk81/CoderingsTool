@@ -95,9 +95,7 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     "classifier_p7":                      ("5.6", 3),   # Attribute Assignment
     "classifier_p8":                      ("5.6", 3),   # Attribute Consolidation (in-facet)
     "classifier_p9":                      ("5.6", 3),   # Valence-neutral merge
-    # Step 5: Code Generator (P8-P9)
-    "codegen_p8":                         ("5.6", 3),
-    "codegen_p9":                         ("5.6", 3),
+    # Step 5: Code Generator
     "codegen_relations":                  ("5.6", 3),   # relations between attributes
     "codegen_umbrella_merge":             ("5.6", 3),   # consolidate umbrella names before pooling
     "codegen_writer":                     ("5.6", 3),   # codebook writing from clusters
@@ -208,9 +206,7 @@ STEP_EFFORT = {
     "classifier_p8": "medium",
     "classifier_p9": "low",
     # Step 5: writing and consolidating the codebook
-    "codegen_p8": "medium",
-    "codegen_p9": "medium",
-    "codegen_relations": "medium",  # replaces codegen_p8/p9 — same level, not "none"
+    "codegen_relations": "medium",
     "codegen_umbrella_merge": "medium",
     "codegen_writer": "medium",
     "codegen_mece_detect": "medium",     # same rung as codegen_relations

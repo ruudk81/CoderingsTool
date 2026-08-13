@@ -1,9 +1,10 @@
 """
-Codebook verification layer (post-P9).
+Codebook verification layer (post-generation).
 
-Pure Python, deterministic. Runs after P9 (and the Overig sweep) against the
-consolidated codebook and the step-4 taxonomy. Does NOT touch generation logic —
-it only reports, so a run can be judged against a hard definition of done.
+Pure Python, deterministic. Runs after the codebook is written (and the Overig
+sweep) against the consolidated codebook and the step-4 taxonomy. Does NOT touch
+generation logic — it only reports, so a run can be judged against a hard
+definition of done.
 
 Definition of done (PASS):
   - idea coverage = 100%        (every answer lands in a code)
@@ -28,7 +29,7 @@ Also reported (warnings, do NOT block PASS):
     likely have been split. Opposing ideas in attributes that a counter-valence
     code ALSO sources are not counted: they flow to that partner in step 6, so
     a valence-split pair does not flag itself.
-  - overlap classes: benign valence split / P9-review / taxonomy-level.
+  - overlap classes: benign valence split / partial overlap / taxonomy-level.
   - mini codes: a code whose expected idea volume (the matching pole of its
     source attributes) stays below the population floor — the parsimony
     counterweight to under-split, so over-differentiation is as visible as
@@ -43,7 +44,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-# Prevalence gate (must match codebook_generator's floor(log) example gate).
+# Prevalence gate for the advisory checks below (under-split, mini codes).
 # No % share requirement — population-scaled absolute floor only.
 
 
@@ -112,7 +113,7 @@ class CodebookScorecard(BaseModel):
     # Overlap (Mutual Exclusivity)
     overlap_attributes: List[AttributeOverlap] = Field(default_factory=list)
     taxonomy_level_pairs: List[CodePair] = Field(default_factory=list)
-    p9_review_pairs: List[CodePair] = Field(default_factory=list)
+    partial_overlap_pairs: List[CodePair] = Field(default_factory=list)
 
     # Valence quality (warning, does not block PASS)
     under_split_codes: List[UnderSplitCode] = Field(default_factory=list)
@@ -315,7 +316,7 @@ def build_scorecard(
             benign_valence_split=len(set(valences)) > 1,
         ))
 
-    # --- Code-pair overlap (taxonomy-level vs P9-review) ---
+    # --- Code-pair overlap (taxonomy-level vs partial overlap) ---
     # Same key space: ids keep same-named attributes in different domains
     # distinct — name-sets would falsely collide them.
     code_sources = []  # (code_name, valence, set(source keys ∩ taxonomy))
@@ -418,7 +419,7 @@ def build_scorecard(
         unknown_source_names=unknown,
         overlap_attributes=overlaps,
         taxonomy_level_pairs=taxonomy_pairs,
-        p9_review_pairs=review_pairs,
+        partial_overlap_pairs=review_pairs,
         under_split_codes=under_split,
         mini_codes=mini_codes,
     )
@@ -480,10 +481,10 @@ def format_scorecard(sc: CodebookScorecard) -> str:
         for m in sc.mini_codes:
             lines.append(f"      - \"{m.code_name}\" [{m.valence}]  (~{m.expected_ideas} ideas)")
 
-    if sc.p9_review_pairs:
-        lines.append(f"\n  ◦ P9-REVIEW OVERLAP — same-valence partial overlap "
-                     f"({len(sc.p9_review_pairs)}):")
-        for p in sc.p9_review_pairs:
+    if sc.partial_overlap_pairs:
+        lines.append(f"\n  ◦ PARTIAL OVERLAP — same-valence partial overlap "
+                     f"({len(sc.partial_overlap_pairs)}):")
+        for p in sc.partial_overlap_pairs:
             lines.append(f"      - \"{p.code_a}\" / \"{p.code_b}\"  ←  {', '.join(p.shared_attributes)}")
 
     lines.append("=" * 80)
