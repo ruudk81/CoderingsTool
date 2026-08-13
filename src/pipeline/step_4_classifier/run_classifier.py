@@ -3,8 +3,9 @@
 """
 Step 4: Taxonomy Classifier runner.
 
-Domain discovery, then per level discovery → consolidation → assignment →
-refinement, then the valence-neutral merge. Nine phases; see
+Domain discovery, then discovery → chunk consolidation → assignment →
+refinement → cross-domain, and the valence-neutral merge last. Six phases;
+facets and attributes are built together, not as two stacked layers. See
 `classifier.TaxonomyClassifier`.
 """
 import sys
@@ -455,8 +456,9 @@ def _load_and_discover(extraction_metadata=None):
 
 def run_taxonomy(filename: str = FILENAME, var_name: str = VARIABLE,
                  sample_size: Optional[int] = SAMPLE_SIZE, force_recalc: bool = False):
-    """Run the taxonomy: facets and attributes, each discovered, consolidated,
-    assigned and refined, then the valence-neutral merge.
+    """Run the taxonomy: facets and attributes discovered and consolidated
+    together, assigned in one pass, refined per domain, folded across domains,
+    then the valence-neutral merge.
 
     Dataset params default to the module-level TEST_DATA constants (so existing
     callers like run_pipeline.py are unchanged); the UI passes them explicitly.
