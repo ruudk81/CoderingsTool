@@ -1,12 +1,11 @@
 """Tests voor de gedeelde promptbouwstenen (step 4)."""
-import pytest
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.prompts_shared import (
     INSTRUCTOR_HINT,
     UNIVERSAL_RULES,
     build_context_block,
+    build_cross_scope_model,
     build_taxonomy_block,
-    level_diagnostic,
 )
 
 DIM = get_dimensions_in_decision_order()[0]
@@ -32,14 +31,30 @@ def test_taxonomy_block_bevat_alle_vier_niveaus():
         assert marker in block
 
 
-def test_level_diagnostic_kiest_de_juiste_vraag():
-    assert level_diagnostic(DIM, "facet") == DIM.prompt_rules.facet_diagnostic
-    assert level_diagnostic(DIM, "attribute") == DIM.prompt_rules.attribute_diagnostic
+def test_taxonomy_block_noemt_l1_de_dimensie_en_niet_de_lens():
+    """De lens-benaming kwam uit de herbouw en gaat er weer uit: de prompts
+    heten hier weer bij het niveau dat `dimension_data` zelf hanteert."""
+    block = build_taxonomy_block(
+        dimension=DIM, dimension_name=DIM.key,
+        dimension_description=DIM.dimension_description,
+    )
+    assert "Lens" not in block
+    assert "L1 — Dimension" in block
 
 
-def test_level_diagnostic_weigert_onbekend_niveau():
-    with pytest.raises(ValueError):
-        level_diagnostic(DIM, "domain")
+def test_level_diagnostic_heeft_alleen_de_uitstervende_lezers():
+    """De dimensie-opdracht vervalt, maar pas als zijn twee lezers weggaan.
+
+    `prompts_facet.py` en `prompts_attribute.py` roepen hem nog aan; ze
+    verdwijnen samen met de tweelaagse opzet. Deze test bewaakt dat er
+    ondertussen geen dérde lezer bij komt — de nieuwe prompts vragen naar
+    facetten en attributen zelf.
+    """
+    import pathlib
+    here = pathlib.Path(__file__).parent
+    lezers = {p.name for p in here.glob("*.py")
+              if "level_diagnostic" in p.read_text() and p.name != "test_prompts_shared.py"}
+    assert lezers == {"prompts_shared.py", "prompts_facet.py", "prompts_attribute.py"}
 
 
 def test_universele_regels_dekken_de_drie_afspraken():
@@ -53,3 +68,11 @@ def test_instructor_hint_is_de_exacte_zin():
     assert INSTRUCTOR_HINT == (
         "provide your output as valid JSON following the response schema provided"
     )
+
+
+def test_cross_scope_model_dwingt_de_id_ruimte_af():
+    model = build_cross_scope_model(["A1", "A2"], "attribute")
+    fields = model.model_fields
+    assert set(fields) == {"scratchpad", "items"}
+    item = fields["items"].annotation.__args__[0]
+    assert set(item.model_fields) == {"name", "definition", "source_ids", "home_id"}

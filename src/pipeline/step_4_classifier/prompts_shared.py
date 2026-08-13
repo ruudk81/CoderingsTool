@@ -4,30 +4,24 @@ Every step-4 prompt is assembled from the same four blocks, in this order:
 
   1. context            build_context_block()
   2. the taxonomy       build_taxonomy_block()
-  3. the task           the caller writes this, using level_diagnostic()
+  3. the task           the caller writes this
   4. rules + output     the caller writes this, ending on UNIVERSAL_RULES
                         and INSTRUCTOR_HINT
 
 The shape is taken from step 3, which builds the domain layer (L2) the same
-way. The one thing step 4 adds is that the level being worked on varies, so
-the diagnostic question has to be selected rather than fixed: step 3 always
-asks `domain_diagnostic`, step 4 asks `facet_diagnostic` or
-`attribute_diagnostic` depending on which layer the phase is building.
+way.
 
-## Two things called a dimension, and why only one of them is
+## One thing called a dimension
 
-L1 is the **lens**: the one perspective the whole study reads every response
-through, fixed in `dimension_data.py` and named in the taxonomy block. The code
-still calls it `dimension_name`, because that is what `ExtractionMetadata`
-carries across the step boundary — but no prompt calls it that, or the word
-would mean two things on one page.
+L1 is the **dimension**: the one kind of information the whole study reads every
+response as, fixed in `dimension_data.py` and named in the taxonomy block. The
+prompts call it that, `ExtractionMetadata` carries it across the step boundary
+under `dimension_name`, and nothing else in step 4 uses the word.
 
-The **dimensions** the prompts ask for are the ways responses inside one scope
-differ from each other: discovery finds them per domain and per facet, and the
-facets respectively attributes are the values they take. They are a construction
-aid, not a taxonomy level — the parse flattens them away and the cache never
-sees them. Their whole job is to force the model to say what its list is a list
-OF before it makes the list.
+The prompts do not ask a model to *find* dimensions. Discovery asks for facets
+and the attributes they hold, in those words — the levels the taxonomy actually
+has. `dimension_data.py` supplies what each of those levels means for the
+dimension at hand, and that is the only place the wording per level comes from.
 """
 from __future__ import annotations
 
@@ -109,12 +103,10 @@ def _extract_key_idea(instruction: str) -> str:
 def level_diagnostic(dimension: "DimensionDefinition", level: str) -> str:
     """The question every item at `level` has to answer, for this dimension.
 
-    `dimension_data.py` carries one diagnostic per level: `domain_diagnostic`,
-    `facet_diagnostic`, `attribute_diagnostic`. Step 3 uses the first; step 4
-    uses the other two. Passing an unknown level is a programming error, not
-    something to paper over with a fallback — a phase that silently builds its
-    prompt around the wrong question produces plausible output that is wrong
-    all the way down.
+    Only `prompts_facet.py` and `prompts_attribute.py` still call this, and both
+    disappear when the six-phase classifier lands. The new prompts ask for
+    facets and attributes in those words rather than for the axis they vary on,
+    so nothing that replaces them needs a diagnostic.
     """
     rules = dimension.prompt_rules
     if level == "facet":
@@ -183,9 +175,9 @@ def build_taxonomy_block(
 The taxonomy has four levels. All four are given so you can see where your own task
 sits, and so you do not return something that belongs one level up or one level down.
 
-L1 — Lens: {dimension_name}
-     The lens the whole study looks through. Fixed for every response, every
-     domain and every level below.
+L1 — Dimension: {dimension_name}
+     The kind of information every response in this study is read as. Fixed for
+     every response, every domain and every level below.
      {dimension_description}
 
 L2 — Domain: {_extract_definition(rules.domain_instruction)}
