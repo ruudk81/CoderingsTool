@@ -784,3 +784,46 @@ def test_niemand_hardcodeert_nog_een_deelverzameling():
         if p.name != Path(__file__).name and verboden in p.read_text(encoding="utf-8")
     ]
     assert overtreders == [], f"los paar in: {overtreders}"
+
+
+# ── 16. Inhoud versus plaatsing: de vier vaste ingangen ────────────────────
+
+def test_non_answer_gaat_over_leegte_niet_over_onderwerploosheid():
+    """De vier ingangen beantwoorden twee verschillende vragen. non_answer:
+    is er iets gezegd? De drie staande domeinen: waar hoort het gezegde?
+
+    Tot 2026-08-14 stond non_answer in plaatsingstermen ("without naming the
+    subject") en noemde het bovendien 'does not know' — daarmee botste het met
+    zowel no_subject als not_known, en belandden losse getallen in het
+    geen-onderwerp-domein in plaats van weggegooid te worden.
+    """
+    t = NON_ANSWER_DOMAIN.definition
+    assert "carries no statement at all" in t
+    assert "does not know the subject is also a real answer" in t
+    assert "no-subject domain instead" in t
+
+
+def test_non_answer_is_niet_per_dimensie():
+    """Een restje van het splitsen is een artefact van het splitsen, niet van
+    de dimensie. Wat wel per dimensie verschilt staat in standing_no_subject."""
+    from pipeline.step_3_ideaExtractor import prompts_ideaExtractor as mod
+    assert isinstance(mod.NON_ANSWER_DOMAIN, StandingDomain)
+    assert not hasattr(DIMENSIONS[ALL_KEYS[0]], "non_answer")
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_no_subject_wijst_leegte_terug_naar_de_non_answer_ingang(dimension_key):
+    """De andere kant van dezelfde grens, in elke dimensie."""
+    t = get_dimension(dimension_key).standing_no_subject.definition
+    assert "communicates nothing at all" in t
+    assert "no-content entry" in t
+
+
+@pytest.mark.parametrize("dimension_key", ALL_KEYS)
+def test_de_vier_vaste_ingangen_verwijzen_naar_elkaar_zonder_overlap(dimension_key):
+    """Elk van de vier moet zeggen wat het NIET is, of ze lopen vol elkaar."""
+    d = get_dimension(dimension_key)
+    assert "not for" in d.standing_other.definition
+    assert "not-known domain" in d.standing_other.definition
+    assert "no-content entry" in d.standing_no_subject.definition
+    assert "quality filter" in d.standing_not_known.definition

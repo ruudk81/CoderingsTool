@@ -239,7 +239,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "you can name a target, however briefly it was named, the response belongs "
                 "to that target's domain instead. Note the trap: a response saying nothing "
                 "needs to change DOES name a target, namely the whole, and belongs to a "
-                "domain of its own, not here."
+                "domain of its own, not here. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="urges change without naming anything to change",
         ),
@@ -359,7 +362,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "name an area, however briefly it was named, the response belongs to that "
                 "area's domain instead. A characterisation in a single word is still a "
                 "characterisation of something: only put it here when even you cannot say "
-                "of what."
+                "of what. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="characterises the subject without naming any area of its identity",
         ),
@@ -476,7 +482,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "parties belong to. If there is no answer at all, it belongs here. If you "
                 "can name a sphere, however briefly it was named, the response belongs to "
                 "that sphere's domain instead. A bare reference to people is not "
-                "automatically empty: it belongs here only when nothing places them."
+                "automatically empty: it belongs here only when nothing places them. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="names or judges someone without naming what they are involved in",
         ),
@@ -596,7 +605,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "there is no answer at all, it belongs here. If you can name a subject, "
                 "however briefly it was named, the response belongs to that subject's "
                 "domain instead. A condition stated in a few words still has a subject when "
-                "you can say what it holds for."
+                "you can say what it holds for. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="names a circumstance without naming what it applies to",
         ),
@@ -713,7 +725,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "wanting is about. If there is no answer at all, it belongs here. If you "
                 "can name an area, however briefly it was named, the response belongs to "
                 "that area's domain instead. Note the trap: a named concern expressed in "
-                "one word is still a named concern."
+                "one word is still a named concern. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="expresses caring or wanting without naming what it is about",
         ),
@@ -831,7 +846,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "nothing is left, it belongs here: an unattached good, fine, or neutral. If "
                 "a nameable part of the experience is left — something you could answer the "
                 "question WHICH part with, other than good or bad — the response belongs to "
-                "that part's domain instead, however briefly it was named."
+                "that part's domain instead, however briefly it was named. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="reports how it felt without naming any part of the experience",
         ),
@@ -954,7 +972,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "nothing is left, it belongs here: an unattached good, fine, or neutral. If "
                 "a nameable aspect is left — something you could answer the question WHICH "
                 "aspect with, other than good or bad — the response belongs to that "
-                "aspect's domain instead, however briefly it was named."
+                "aspect's domain instead, however briefly it was named. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="judges the subject as a whole without naming any aspect judged",
         ),
@@ -1075,7 +1096,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "fails. If there is no answer at all, it belongs here. If you can name one, "
                 "however briefly it was named, the response belongs to that system's domain "
                 "instead. Saying that something works is not empty when you can say what "
-                "works."
+                "works. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="says how well something works without naming what works",
         ),
@@ -1199,7 +1223,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "quality with, other than good or bad — it names a subject and belongs to "
                 "that subject's domain instead. Note the trap: a mood, a style, a character "
                 "trait or any other statable property survives this test even when it is "
-                "expressed in a single word, and does NOT belong here."
+                "expressed in a single word, and does NOT belong here. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="states a quality without naming what has it",
         ),
@@ -1320,7 +1347,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Ask what this response names as the sphere the link or comparison exists "
                 "in. If there is no answer at all, it belongs here. If you can name what is "
                 "related to what, however briefly it was named, the response belongs to "
-                "that sphere's domain instead."
+                "that sphere's domain instead. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="says things are connected without naming what they are connected in",
         ),
@@ -1441,7 +1471,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
                 "Ask what this response names as its subject. If there is no answer at all, "
                 "it belongs here. If you can name a subject, however briefly it was named, "
                 "the response belongs to that subject's domain instead. A remark of one or "
-                "two words still has a subject when you can say what it is about."
+                "two words still has a subject when you can say what it is about. "
+                "A fragment that communicates nothing at all — a number, a stray token, a "
+                "leftover from splitting — is not a reaction and does not belong here "
+                "either; that is the no-content entry on the assignment menu."
             ),
             short="says something without naming what it is about",
         ),

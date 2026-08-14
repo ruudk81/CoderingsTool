@@ -65,13 +65,28 @@ STANDING_KEYS = (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY,
 # used when the translation call is skipped or fails, `short` builds the fallback
 # boundary_test. Rendered into the survey language by `build_standing_labels_prompt`
 # alongside the two standing domains, in `_resolve_non_answer_domain`.
+# The only menu entry that is about CONTENT rather than placement: did the
+# fragment say anything at all? The three standing domains all answer a
+# different question — where does what was said belong. Keeping those two
+# questions apart is what stops a leftover token from being read as a verdict.
+#
+# Not per dimension, and it does not need to be: a fragment left over from
+# splitting is an artefact of the splitting, not of the dimension. What IS
+# dimension-specific — what counts as naming a subject — lives in
+# `standing_no_subject`, eleven times.
 NON_ANSWER_DOMAIN = StandingDomain(
-    fallback_label="No answer / not applicable",
+    fallback_label="No content",
     definition=(
-        "The span says only that the respondent does not know, or that the question "
-        "does not apply, without saying anything about the subject."
+        "The fragment carries no statement at all. This is what splitting a "
+        "response sometimes leaves behind: a number, a stray word, punctuation, "
+        "a false start. Nothing was communicated — not a subject, and not a "
+        "reaction either. A fragment that DOES communicate something, such as "
+        "approval, a feeling or a reaction, is a real answer even when it names "
+        "no subject, and belongs to the no-subject domain instead. A fragment "
+        "reporting that the respondent does not know the subject is also a real "
+        "answer and belongs to the not-known domain."
     ),
-    short="says only that there is no answer, without naming the subject",
+    short="carries no statement at all — a leftover from splitting, not an answer",
 )
 
 
