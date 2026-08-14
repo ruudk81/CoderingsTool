@@ -234,11 +234,12 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Change urge without a target",
             definition=(
-                "The response calls for something to be different, but names no target for "
-                "that change: an unattached better, more, or less. Use this only when "
-                "nothing in the response says WHAT should change. A response stating that "
-                "nothing needs to change does name a target, namely the whole, and does not "
-                "belong here."
+                "Ask what this response names as the thing to be changed. If there is no "
+                "answer at all, it belongs here: an unattached better, more, or less. If "
+                "you can name a target, however briefly it was named, the response belongs "
+                "to that target's domain instead. Note the trap: a response saying nothing "
+                "needs to change DOES name a target, namely the whole, and belongs to a "
+                "domain of its own, not here."
             ),
             short="urges change without naming anything to change",
         ),
@@ -353,9 +354,12 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Characterisation without an area of identity",
             definition=(
-                "The response says what the subject is like in the broadest terms, but "
-                "names no area of identity it is claiming that about. Use this only when "
-                "stripping the characterisation leaves nothing said."
+                "Ask what this response names as the area of identity it is claiming "
+                "something about. If there is no answer at all, it belongs here. If you can "
+                "name an area, however briefly it was named, the response belongs to that "
+                "area's domain instead. A characterisation in a single word is still a "
+                "characterisation of something: only put it here when even you cannot say "
+                "of what."
             ),
             short="characterises the subject without naming any area of its identity",
         ),
@@ -468,9 +472,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Actor without a sphere of activity",
             definition=(
-                "The response refers to people or parties, but names no sphere of activity "
-                "that places them. Use this only when the response does not say what the "
-                "actor is an actor IN."
+                "Ask what this response names as the sphere of activity the people or "
+                "parties belong to. If there is no answer at all, it belongs here. If you "
+                "can name a sphere, however briefly it was named, the response belongs to "
+                "that sphere's domain instead. A bare reference to people is not "
+                "automatically empty: it belongs here only when nothing places them."
             ),
             short="names or judges someone without naming what they are involved in",
         ),
@@ -586,9 +592,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Condition without a subject area",
             definition=(
-                "The response names a when, a where, or an under-what-circumstances, but "
-                "nothing the condition holds for. Use this only when the subject of the "
-                "condition is left unsaid."
+                "Ask what this response names as the thing the circumstance applies to. If "
+                "there is no answer at all, it belongs here. If you can name a subject, "
+                "however briefly it was named, the response belongs to that subject's "
+                "domain instead. A condition stated in a few words still has a subject when "
+                "you can say what it holds for."
             ),
             short="names a circumstance without naming what it applies to",
         ),
@@ -701,9 +709,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Motivation without an area of concern",
             definition=(
-                "The response conveys that something matters to the respondent, but names "
-                "no area of concern it matters within. Use this only when the response says "
-                "that they care and not what about."
+                "Ask what this response names as the area of concern that the caring or "
+                "wanting is about. If there is no answer at all, it belongs here. If you "
+                "can name an area, however briefly it was named, the response belongs to "
+                "that area's domain instead. Note the trap: a named concern expressed in "
+                "one word is still a named concern."
             ),
             short="expresses caring or wanting without naming what it is about",
         ),
@@ -817,9 +827,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Impression without a part of the experience",
             definition=(
-                "The response reports an impression or a feeling, but names no part of the "
-                "experience that produced it. Use this only when the response is the "
-                "impression and nothing else."
+                "Take the evaluative direction out of the response and see what is left. If "
+                "nothing is left, it belongs here: an unattached good, fine, or neutral. If "
+                "a nameable part of the experience is left — something you could answer the "
+                "question WHICH part with, other than good or bad — the response belongs to "
+                "that part's domain instead, however briefly it was named."
             ),
             short="reports how it felt without naming any part of the experience",
         ),
@@ -938,10 +950,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Judgment without an aspect",
             definition=(
-                "The response expresses approval, disapproval or indifference, but names no "
-                "aspect it is a judgment OF. Use this only when removing the evaluative "
-                "direction leaves nothing behind. A judgment that names what is being "
-                "judged belongs to that subject's domain, however briefly it is named."
+                "Take the evaluative direction out of the response and see what is left. If "
+                "nothing is left, it belongs here: an unattached good, fine, or neutral. If "
+                "a nameable aspect is left — something you could answer the question WHICH "
+                "aspect with, other than good or bad — the response belongs to that "
+                "aspect's domain instead, however briefly it was named."
             ),
             short="judges the subject as a whole without naming any aspect judged",
         ),
@@ -1058,9 +1071,11 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Behaviour without a system or process",
             definition=(
-                "The response reports that something functions or fails, but names no "
-                "system or process it is reporting about. Use this only when the response "
-                "does not say what the behaviour belongs to."
+                "Ask what this response names as the system or process that functions or "
+                "fails. If there is no answer at all, it belongs here. If you can name one, "
+                "however briefly it was named, the response belongs to that system's domain "
+                "instead. Saying that something works is not empty when you can say what "
+                "works."
             ),
             short="says how well something works without naming what works",
         ),
@@ -1178,11 +1193,13 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Quality without a subject",
             definition=(
-                "The response states how the subject comes across, but names no subject "
-                "area the quality belongs to: an unattached good, fine, or neutral. Use "
-                "this only when stripping the evaluative direction leaves nothing said. A "
-                "quality that is descriptive in its own right, such as a mood, a style, or "
-                "a character trait, does name a subject and does NOT belong here."
+                "Take the evaluative direction out of the response and see what is left. If "
+                "nothing is left, it belongs here: an unattached good, fine, or neutral. If "
+                "a nameable quality is left — something you could answer the question WHICH "
+                "quality with, other than good or bad — it names a subject and belongs to "
+                "that subject's domain instead. Note the trap: a mood, a style, a character "
+                "trait or any other statable property survives this test even when it is "
+                "expressed in a single word, and does NOT belong here."
             ),
             short="states a quality without naming what has it",
         ),
@@ -1300,9 +1317,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Relation without a sphere",
             definition=(
-                "The response asserts a link, a dependency, or a comparison, but names no "
-                "sphere the relationship exists in. Use this only when the response does "
-                "not say what is related to what."
+                "Ask what this response names as the sphere the link or comparison exists "
+                "in. If there is no answer at all, it belongs here. If you can name what is "
+                "related to what, however briefly it was named, the response belongs to "
+                "that sphere's domain instead."
             ),
             short="says things are connected without naming what they are connected in",
         ),
@@ -1420,9 +1438,10 @@ DIMENSIONS: Dict[str, DimensionDefinition] = {
         standing_no_subject=StandingDomain(
             fallback_label="Remark without a subject",
             definition=(
-                "The response carries a reaction or a remark, but names no subject at all. "
-                "Use this only when nothing in the response identifies what is being talked "
-                "about."
+                "Ask what this response names as its subject. If there is no answer at all, "
+                "it belongs here. If you can name a subject, however briefly it was named, "
+                "the response belongs to that subject's domain instead. A remark of one or "
+                "two words still has a subject when you can say what it is about."
             ),
             short="says something without naming what it is about",
         ),
