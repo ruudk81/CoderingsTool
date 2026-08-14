@@ -45,6 +45,13 @@ STANDING_NOT_KNOWN_KEY = "not_known"
 STANDING_OTHER_KEY = "other"
 STANDING_NO_SUBJECT_KEY = "no_subject"
 
+# Elke plek die "is dit een vangnet?" vraagt leest DEZE tuple. Losse paren
+# hebben het twee keer verkeerd gedaan: bij de hernoeming van 2026-08-12 en
+# opnieuw op 2026-08-13, toen no_subject erbij kwam en _set_domain_keys hem
+# niet kende — het domein kreeg zijn label als key en step 4 zag geen vangnet.
+STANDING_KEYS = (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY,
+                 STANDING_NO_SUBJECT_KEY)
+
 
 # Offered in the assignment menu only, never in the taxonomy. A response that is
 # nothing but a non-answer is removed by step 2; what reaches here is a fragment of

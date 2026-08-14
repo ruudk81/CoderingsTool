@@ -37,6 +37,7 @@ from utils.perfModel import perf_model
 
 # === PROMPTS (builders + response models) =========================================================================
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
+    STANDING_KEYS,
     STANDING_NOT_KNOWN_KEY,
     STANDING_NO_SUBJECT_KEY,
     STANDING_OTHER_KEY,
@@ -1398,9 +1399,8 @@ class IdeaExtractor:
     @staticmethod
     def _partition_standing(domains) -> Tuple[List, List]:
         """Split a domain list into (discovered, standing), order preserved in each."""
-        standing_keys = (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY)
-        discovered = [d for d in domains if d.key not in standing_keys]
-        standing = [d for d in domains if d.key in standing_keys]
+        discovered = [d for d in domains if d.key not in STANDING_KEYS]
+        standing = [d for d in domains if d.key in STANDING_KEYS]
         return discovered, standing
 
     @staticmethod
@@ -1483,7 +1483,7 @@ class IdeaExtractor:
 
     @staticmethod
     def _format_domain_overview_lines(final_domains: List, rename: Dict[str, str],
-                                       standing_keys: Tuple[str, str]) -> List[str]:
+                                       standing_keys: Tuple[str, ...]) -> List[str]:
         """Render the complete final domain set carried forward to step 4.
 
         `final_domains` is discovered-then-standing, in carry-forward order —
@@ -1529,7 +1529,7 @@ class IdeaExtractor:
         cache (fixed 2026-08-09; the same loss was fixed once before in 6404da8e).
         """
         for d in domains or []:
-            if d.key not in (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY):
+            if d.key not in STANDING_KEYS:
                 d.key = d.label
 
     async def _translate_standing_labels(self, dimension: DimensionDefinition,
@@ -1870,7 +1870,7 @@ class IdeaExtractor:
         # Overview of the final domain set carried forward to step 4 — discovered
         # (re-described) and standing alike, since that's what the next step receives.
         for line in self._format_domain_overview_lines(
-                new_domains, rename, (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY)):
+                new_domains, rename, STANDING_KEYS):
             self.verbose_reporter.stat_line(line)
 
     def extract(self) -> List[models.IdeasExtractedModel]:

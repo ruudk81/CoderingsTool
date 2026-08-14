@@ -730,3 +730,57 @@ def test_consolidation_prompt_grounds_all_three_standing_domains(dimension_key):
     for spec in (d.standing_not_known, d.standing_other, d.standing_no_subject):
         assert spec.definition in prompt, f"{dimension_key}: {spec.fallback_label}"
         assert spec.short in prompt
+
+
+# ── 15. Eén bron voor "is dit een vangnet?" ────────────────────────────────
+
+def test_standing_keys_bevat_alle_drie():
+    from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import STANDING_KEYS
+    assert set(STANDING_KEYS) == {
+        STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY, STANDING_NO_SUBJECT_KEY}
+
+
+def test_set_domain_keys_spaart_alle_drie_de_staande_domeinen():
+    """Regressie 2026-08-13: `no_subject` kwam erbij maar `_set_domain_keys`
+    kende er twee, dus het derde vangnet kreeg zijn label als key. Step 4's
+    drain_domains() zag het daardoor niet en gaf het een volledige facetlaag —
+    precies waar een vangnet van gevrijwaard hoort te zijn."""
+    domains = [
+        DomainItem(key="", label="Duurzaamheid", definition="d",
+                   boundary_test="t", exclusions=[]),
+        DomainItem(key=STANDING_NOT_KNOWN_KEY, label="Onbekend",
+                   definition="d", boundary_test="t", exclusions=[]),
+        DomainItem(key=STANDING_OTHER_KEY, label="Ander onderwerp",
+                   definition="d", boundary_test="t", exclusions=[]),
+        DomainItem(key=STANDING_NO_SUBJECT_KEY, label="Geen genoemd onderwerp",
+                   definition="d", boundary_test="t", exclusions=[]),
+    ]
+    IdeaExtractor._set_domain_keys(domains)
+
+    assert [d.key for d in domains] == [
+        "Duurzaamheid", STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY,
+        STANDING_NO_SUBJECT_KEY]
+
+
+def test_partition_standing_herkent_alle_drie():
+    domains = [_mk("Duurzaamheid", "Duurzaamheid"),
+               _mk(STANDING_NOT_KNOWN_KEY, "Onbekend"),
+               _mk(STANDING_NO_SUBJECT_KEY, "Geen genoemd onderwerp"),
+               _mk(STANDING_OTHER_KEY, "Ander onderwerp")]
+    discovered, standing = IdeaExtractor._partition_standing(domains)
+
+    assert [d.label for d in discovered] == ["Duurzaamheid"]
+    assert len(standing) == 3
+
+
+def test_niemand_hardcodeert_nog_een_deelverzameling():
+    """De vorige twee bugs ontstonden allebei doordat een tweede plek zijn eigen
+    lijstje bijhield. Deze test faalt zodra er weer een los paar verschijnt."""
+    from pathlib import Path
+    here = Path(__file__).parent
+    verboden = "STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY)"
+    overtreders = [
+        p.name for p in here.glob("*.py")
+        if p.name != Path(__file__).name and verboden in p.read_text(encoding="utf-8")
+    ]
+    assert overtreders == [], f"los paar in: {overtreders}"
