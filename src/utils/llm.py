@@ -261,11 +261,60 @@ def extract_rate_limits_from_response(response) -> RateLimits:
     )
 
 
+# The quota probe's fallback route. Pinned deliberately: this api-version is
+# only ever used to read `x-ratelimit-*` headers, never to do work, so it must
+# not drift with whatever the Responses API is doing. Microsoft is retiring the
+# classic route eventually — when it goes, the probe returns zeros and the
+# caller falls back to measured capacity instead.
+AZURE_CLASSIC_PROBE_API_VERSION = "2024-10-21"
+CLASSIC_PROBE_TIMEOUT_S = 30.0
+
+
+async def _probe_azure_classic(endpoint: str, api_key: str, deployment: str) -> RateLimits:
+    """Read a deployment's quota over the pre-v1 Azure route.
+
+    Azure serves the Responses API on `/openai/v1/`, and that route does not
+    return `x-ratelimit-*` — Microsoft tracks it as a known issue on the
+    Responses API, where the headers come back as -1/0 or not at all. The
+    classic deployment route still reports them in full.
+
+    Probing a different route than the real calls use is safe here because
+    quota hangs on the DEPLOYMENT, not the route: the classic response labels
+    its numbers `x-ratelimit-key: <deployment>`, the same deployment the v1
+    calls consume. Two doors, one meter.
+
+    Returns zeros on any failure — the caller decides what to do without them.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=CLASSIC_PROBE_TIMEOUT_S) as client:
+            response = await client.post(
+                f"{endpoint.rstrip('/')}/openai/deployments/{deployment}"
+                f"/chat/completions?api-version={AZURE_CLASSIC_PROBE_API_VERSION}",
+                json={"messages": [{"role": "user", "content": "Hi"}],
+                      "max_completion_tokens": 1},
+                headers={"api-key": api_key, "Content-Type": "application/json"},
+            )
+        return extract_rate_limits_from_response(response)
+    except Exception:
+        return RateLimits(tokens_per_minute=0, requests_per_minute=0)
+
+
 async def fetch_rate_limits(model: str) -> tuple:
     """Probe API for rate limits and header availability.
 
-    Makes a minimal API call ("Hi") and extracts rate limits from
-    response headers. Also checks for openai-processing-ms header.
+    Makes a minimal API call ("Hi") and extracts rate limits from response
+    headers. Also checks for the openai-processing-ms header, which decides
+    which concurrency controller runs.
+
+    On Azure the quota headers are read in two attempts: the route the real
+    calls use, and — when that returns nothing usable — the classic deployment
+    route, which still reports them (see `_probe_azure_classic`). The first
+    attempt stays first on purpose: if Azure starts returning them on v1 again,
+    the second probe simply stops firing.
+
+    `has_server_headers` is NOT subject to that second attempt. It reports
+    whether the route the pipeline actually calls returns per-request timing,
+    and the classic route says nothing about that.
 
     Args:
         model: Model name (OpenAI) or deployment name (Azure)
@@ -275,8 +324,6 @@ async def fetch_rate_limits(model: str) -> tuple:
     """
     if API_PROVIDER == "azure":
         # Quota is per deployment, so probe the deployment this model resolves to.
-        # Same route as the real calls, or the headers would describe an endpoint
-        # the pipeline no longer uses.
         endpoint, api_key, deployment = get_azure_route(model)
         client = AsyncOpenAI(
             api_key=api_key,
@@ -286,16 +333,19 @@ async def fetch_rate_limits(model: str) -> tuple:
             model=deployment,
             input="Hi",
         )
-    else:
-        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-        response = await client.responses.with_raw_response.create(
-            model=model,
-            input="Hi",
-        )
+        rate_limits = extract_rate_limits_from_response(response)
+        has_headers = 'openai-processing-ms' in response.headers
+        if rate_limits.tokens_per_minute == 0 or rate_limits.requests_per_minute == 0:
+            rate_limits = await _probe_azure_classic(endpoint, api_key, deployment)
+        return rate_limits, has_headers
 
-    rate_limits = extract_rate_limits_from_response(response)
-    has_headers = 'openai-processing-ms' in response.headers
-    return rate_limits, has_headers
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    response = await client.responses.with_raw_response.create(
+        model=model,
+        input="Hi",
+    )
+    return (extract_rate_limits_from_response(response),
+            'openai-processing-ms' in response.headers)
 
 
 @dataclass
