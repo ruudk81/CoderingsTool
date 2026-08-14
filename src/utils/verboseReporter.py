@@ -5,6 +5,12 @@ import random
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 import io
+from contextlib import contextmanager
+
+from utils.reportBlocks import (
+    MARK_DRAIN, MARK_DROPPED, MARK_PLACED, MARK_WARN,
+    Group, Metric, render_block, render_flow,
+)
 
 # Fix Windows console encoding for Unicode characters (emojis)
 if sys.platform == 'win32':
@@ -60,6 +66,14 @@ class VerboseReporter:
         self.log_level = log_level
         self._logging_handler = None
         self._original_handlers = {}
+        # Rows buffered by an open group(); None when no group is open. See the
+        # block vocabulary below for why buffering is required and where it must
+        # never be used.
+        self._open_group = None
+        # Groups buffered by an open block(); None when no block is open. The
+        # widths are settled over a whole block, so nothing can be printed
+        # before it closes.
+        self._open_block = None
         
         if capture_logging:
             self._setup_logging_capture()
@@ -145,14 +159,14 @@ class VerboseReporter:
         self._output(f"\n{emoji} {title.upper()}")
         self._output("=" * (len(title) + 4))
     
-    def step_start(self, step_name: str, emoji: str = "[START]") -> None:
+    def step_start(self, step_name: str, emoji: str = "🔄") -> None:
         """Start timing a processing step."""
         if not self.enabled:
             return
         self._output(f"\n{emoji} {step_name}")
         self.start_time = time.time()
     
-    def step_complete(self, message: str = "", emoji: str = "[DONE]") -> None:
+    def step_complete(self, message: str = "", emoji: str = "✅") -> None:
         """Complete a step with timing info."""
         if not self.enabled:
             return
@@ -160,8 +174,100 @@ class VerboseReporter:
         timing = f" ({elapsed:.1f}s)" if elapsed > 0.1 else ""
         self._output(f"{emoji} {message}{timing}")
     
+    # =====================================================================
+    # BLOCK VOCABULARY — the caller says WHAT, the renderer decides HOW
+    # =====================================================================
+    #
+    # `stat_line` below is the older, free-text path: the caller assembles its
+    # own string, so nothing can be aligned across lines and a change of look
+    # means editing every call site. These three take records instead.
+    #
+    # Buffering is the point and also the constraint: a group's column widths
+    # cannot be chosen until its last row is known, so nothing appears until
+    # the group closes. That is fine for a summary, which is assembled after
+    # the work is done, and unacceptable for progress. **Never wrap progress
+    # output in a group** — that path stays unbuffered, exactly as it is now.
+
+    def flow(self, *parts) -> None:
+        """`1236 responsen → 2210 fragmenten → 2203 ideeën`. Alternating count, noun."""
+        if not self.enabled:
+            return
+        self._output(render_flow(parts))
+
+    def metric(self, label: str, value: int, of: Optional[int] = None,
+               examples: Optional[List[str]] = None) -> None:
+        """One measured row. Belongs inside a group; outside one it stands alone."""
+        if not self.enabled:
+            return
+        row = Metric(label=label, value=value, of=of, examples=list(examples or []))
+        if self._open_group is not None:
+            self._open_group.rows.append(row)
+            return
+        self._emit([Group(title="", rows=[row])])
+
+    @contextmanager
+    def group(self, title: str, marker: str = "",
+              value: Optional[int] = None, of: Optional[int] = None):
+        """A titled set of metrics. Inside a block it shares that block's columns.
+
+        Nesting is refused rather than silently flattened: two open groups would
+        make the inner one's column widths depend on where it happened to be
+        opened, which is the layout-by-accident this vocabulary exists to remove.
+        """
+        if not self.enabled:
+            yield
+            return
+        if self._open_group is not None:
+            raise RuntimeError(
+                "verbose group already open — groups do not nest; close the "
+                f"outer one before opening {title!r}")
+        total = Metric(label=title, value=value, of=of) if value is not None else None
+        self._open_group = Group(title=title, marker=marker, total=total)
+        try:
+            yield
+        finally:
+            group, self._open_group = self._open_group, None
+            if self._open_block is not None:
+                self._open_block.append(group)
+            else:
+                self._emit([group])
+
+    @contextmanager
+    def block(self, title: str = ""):
+        """Hold several groups so they share ONE set of column widths.
+
+        This is the unit that makes a report scannable: per-group widths align
+        each group against itself and against nothing else, so the eye cannot
+        run down a column. Everything inside is buffered until the block closes.
+
+        **Never wrap progress output in a block.** Buffering is what makes
+        alignment possible and it is also what would swallow a long run's live
+        output; progress goes through the unbuffered path, exactly as now.
+        """
+        if not self.enabled:
+            yield
+            return
+        if self._open_block is not None:
+            raise RuntimeError("verbose block already open — blocks do not nest")
+        self._open_block = []
+        if title:
+            self._output(f"\n{title.upper()}")
+        try:
+            yield
+        finally:
+            groups, self._open_block = self._open_block, None
+            self._emit(groups)
+
+    def _emit(self, groups) -> None:
+        for line in render_block(groups):
+            self._output(line)
+
     def stat_line(self, message: str, bullet: str = "-", indent: int = 0) -> None:
-        """Print a statistics line with bullet point and optional indentation."""
+        """Print a statistics line with bullet point and optional indentation.
+
+        The free-text path. Prefer `metric()` / `group()` for anything that is a
+        number: those can be aligned and restyled in one place, this cannot.
+        """
         if not self.enabled:
             return
         indent_str = "  " * indent  # 2 spaces per indent level
