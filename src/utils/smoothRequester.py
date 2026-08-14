@@ -944,6 +944,9 @@ class SmoothRequester:
         self.tpm_bucket = None
         self.semaphore = None
         self.optimal_concurrency = 0
+        # Set for real in _probe_and_setup; pessimistic until then so a caller
+        # that skips the probe cannot accidentally get the unclamped path.
+        self._limits_are_known = True
         self.current_arrival_rate = None
         self.rate_limits = RateLimits(FALLBACK_TPM, FALLBACK_RPM)
 
@@ -1029,7 +1032,12 @@ class SmoothRequester:
             # Probe call
             limits, has_server_headers = await self._fetch_rate_limits()
 
-        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+        # Whether the numbers below are the API's or ours. A guessed limit still
+        # has to pace the token bucket — something must — but it must not be
+        # treated as a ceiling on capacity we have actually measured.
+        self._limits_are_known = (limits.tokens_per_minute > 0
+                                  and limits.requests_per_minute > 0)
+        if not self._limits_are_known:
             limits = RateLimits(FALLBACK_TPM, FALLBACK_RPM)
         self.rate_limits = limits
         self._has_server_headers = has_server_headers
@@ -1083,8 +1091,19 @@ class SmoothRequester:
         else:
             self._server_concurrency = COLD_START_CAP
 
-        # Effective = min(rate, server, tasks)
-        effective = min(self._rate_limit_concurrency, self._server_concurrency, num_tasks)
+        # Effective = min(rate, server, tasks) — but only when the rate limits
+        # are the API's own. A guessed limit is not evidence, and clamping
+        # measured capacity against it throws away the one number here that was
+        # actually observed. Measured 2026-08-14: with the quota headers gone,
+        # FALLBACK_RPM=100 produced rate_concurrency=3 against a server
+        # concurrency of 267, and a phase that ran in 41s took fourteen minutes.
+        # Without a known ceiling the 429 handling is what protects us, and that
+        # is what it is for.
+        if self._limits_are_known:
+            effective = min(self._rate_limit_concurrency,
+                            self._server_concurrency, num_tasks)
+        else:
+            effective = min(self._server_concurrency, num_tasks)
         effective = max(effective, 2)
 
         self.semaphore = ConcurrencyGate(effective)

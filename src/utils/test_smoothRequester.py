@@ -131,3 +131,75 @@ def test_groeiende_concurrency_spreidt_de_nieuwe_slots():
         assert r._stagger_target(250) is None
         r.optimal_concurrency = 330
         assert r._stagger_target(250) is not None
+
+
+# =============================================================================
+# Een onbekende limiet klemt de gemeten capaciteit niet af
+# =============================================================================
+
+def _setup(monkeypatch, *, probe_limits, num_tasks=1236, knee=267):
+    """Een requester die _probe_and_setup heeft doorlopen, zonder netwerk."""
+    pred = Prediction()
+    pred.p50_latency_s = 2.4
+    pred.avg_tokens = 1500
+    pred.expected_input_tokens, pred.expected_output_tokens = 1200, 300
+    pred.concurrency = knee
+    pred.origins = {"avg_tokens": "phase", "p50_latency_s": "curve"}
+
+    import utils.smoothRequester as mod
+    monkeypatch.setattr(mod.perf_model, "predict", lambda model, phase: pred)
+
+    async def fake_fetch(model):
+        return probe_limits, False
+
+    monkeypatch.setattr(mod, "llm_fetch_rate_limits", fake_fetch)
+    r = mod.SmoothRequester(
+        model="gpt-5.6-luna", phase_key="step3_idea_extraction",
+        num_tasks=num_tasks, verbose=False, show_setup=False, quiet=True)
+    import asyncio
+    asyncio.run(r._probe_and_setup(num_tasks))
+    return r
+
+
+def test_echte_limieten_klemmen_wel():
+    """Met een limiet van de API zelf is min(rate, server, tasks) juist goed."""
+    with pytest.MonkeyPatch.context() as mp:
+        r = _setup(mp, probe_limits=RateLimits(7_000_000, 7_000))
+        assert r._limits_are_known is True
+        assert r.optimal_concurrency == min(
+            r._rate_limit_concurrency, r._server_concurrency, 1236)
+
+
+def test_onbekende_limiet_klemt_de_gemeten_knie_niet_af():
+    """Een geraden limiet is geen bewijs. Gemeten 2026-08-14: de quota-headers
+    vielen weg, FALLBACK_RPM=100 gaf rate_concurrency=3 tegen een gemeten
+    server_concurrency van 267, en een fase van 41 seconden duurde veertien
+    minuten."""
+    with pytest.MonkeyPatch.context() as mp:
+        r = _setup(mp, probe_limits=RateLimits(0, 0), knee=267)
+        assert r._limits_are_known is False
+        assert r._rate_limit_concurrency < 10       # de geraden limiet is krap
+        assert r.optimal_concurrency == 267         # en telt niet mee
+
+
+def test_onbekende_limiet_blijft_begrensd_door_het_aantal_taken():
+    with pytest.MonkeyPatch.context() as mp:
+        r = _setup(mp, probe_limits=RateLimits(0, 0), knee=267, num_tasks=12)
+        assert r.optimal_concurrency == 12
+
+
+def test_zonder_gemeten_knie_valt_het_terug_op_de_koude_bovengrens():
+    """Geen limieten én geen historie: dan is de koude bovengrens het enige
+    getal dat er is — nog steeds beter dan een verzonnen RPM."""
+    import utils.smoothRequester as mod
+    with pytest.MonkeyPatch.context() as mp:
+        r = _setup(mp, probe_limits=RateLimits(0, 0), knee=None)
+        assert r.optimal_concurrency == min(mod.COLD_START_CAP, 1236)
+
+
+def test_de_tokenbucket_gebruikt_de_terugval_wel():
+    """Iets moet de bucket voeden; alleen de concurrency-conclusie vervalt."""
+    with pytest.MonkeyPatch.context() as mp:
+        from config import FALLBACK_TPM
+        r = _setup(mp, probe_limits=RateLimits(0, 0))
+        assert r.rate_limits.tokens_per_minute == FALLBACK_TPM
