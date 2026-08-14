@@ -16,6 +16,7 @@ from pipeline.step_3_ideaExtractor.dimension_data import (
 from pipeline.step_3_ideaExtractor.ideaExtractor import IdeaExtractor
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
     NON_ANSWER_DOMAIN,
+    STANDING_KEYS,
     STANDING_NOT_KNOWN_KEY,
     STANDING_NO_SUBJECT_KEY,
     STANDING_OTHER_KEY,
@@ -518,9 +519,7 @@ def test_format_domain_overview_shows_arrow_for_a_renamed_discovered_domain():
     lines = IdeaExtractor._format_domain_overview_lines(
         [d], rename, (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY))
 
-    assert lines[0] == "    • Duurzaamheid → Ecologische koers"
-    assert lines[1] == "        def: def Ecologische koers"
-    assert lines[2] == "        ✓ t?"
+    assert lines == ["    • Duurzaamheid → Ecologische koers"]
 
 
 def test_format_domain_overview_shows_the_label_alone_when_unchanged():
@@ -545,15 +544,17 @@ def test_format_domain_overview_marks_a_standing_domain_and_omits_its_exclusion_
     assert not any(line.strip().startswith("✗") for line in lines)
 
 
-def test_format_domain_overview_shows_the_exclusion_line_when_present():
-    """Een ontdekt domein mét exclusions krijgt wél de ✗-regel."""
+def test_format_domain_overview_toont_geen_promptteksten():
+    """Definitie, boundary_test en exclusions staan al in de promptexport. Vier
+    regels per domein — sinds 2026-08-14 een ervan vijf regels lang — begroeven
+    het enige waar dit overzicht voor is: zien wat er hernoemd is."""
     d = _mk("Duurzaamheid", "Duurzaamheid")
     d.exclusions = ["Aanbod", "Prijs"]
 
     lines = IdeaExtractor._format_domain_overview_lines(
-        [d], {"Duurzaamheid": "Duurzaamheid"}, (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY))
+        [d], {"Duurzaamheid": "Duurzaamheid"}, STANDING_KEYS)
 
-    assert lines[-1] == "        ✗ Aanbod, Prijs"
+    assert lines == ["    • Duurzaamheid"]
 
 
 # ── 11. De oude sleutel mag nergens achterblijven ───────────────────────────

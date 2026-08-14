@@ -19,7 +19,7 @@ import random
 import statistics
 import logging
 from typing import Dict, List, Optional, Tuple
-from collections import deque
+from collections import Counter, deque
 
 import nest_asyncio
 from aiolimiter import AsyncLimiter
@@ -34,6 +34,7 @@ from config import DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROC
 from pipeline.step_3_ideaExtractor.config_ideaExtractor import IdeaExtractionConfig, DEFAULT_IDEA_EXTRACTION_CONFIG
 from utils.llm import create_client, llm_create_async, RateLimits, fetch_rate_limits, token_tracker
 from utils.perfModel import perf_model
+from utils.reportBlocks import MARK_DRAIN, MARK_DROPPED, MARK_PLACED
 
 # === PROMPTS (builders + response models) =========================================================================
 from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
@@ -1493,9 +1494,13 @@ class IdeaExtractor:
         labels map to themselves); the reverse lookup recovers the original
         label so a relabeled domain prints `old → new` and an unchanged one
         prints its label alone. A domain whose key is in `standing_keys` is
-        marked ` (standing)` — its label never changes here, so it always
-        prints alone. Exclusions are omitted when empty (the standing domains
-        always have none; an unconditional line would render a bare ✗).
+        marked ` (standing)`, since its label never changes here.
+
+        Labels only. The definitions, boundary tests and exclusions used to be
+        dumped here too — four lines per domain, and since 2026-08-14 one of
+        them five lines long. That is prompt text, and it is already written to
+        the prompt export; in a report it buries the one thing this overview is
+        for, which is seeing at a glance what orthogonalization renamed.
         """
         reverse_rename = {new: old for old, new in rename.items()}
         lines: List[str] = []
@@ -1506,10 +1511,6 @@ class IdeaExtractor:
                 old_label = reverse_rename.get(d.label, d.label)
                 head = f"{old_label} → {d.label}" if old_label != d.label else d.label
             lines.append(f"    • {head}")
-            lines.append(f"        def: {d.definition}")
-            lines.append(f"        ✓ {d.boundary_test}")
-            if d.exclusions:
-                lines.append(f"        ✗ {', '.join(d.exclusions)}")
         return lines
 
     @staticmethod
@@ -1739,13 +1740,6 @@ class IdeaExtractor:
         # has no slot there anyway — removing first keeps its exemplar pool clean.
         n_dropped, dropped_texts = self._drop_non_answer_ideas(
             results, self._non_answer_domain().label)
-        if n_dropped:
-            self.verbose_reporter.stat_line(
-                f"  Non-answer fragments removed: {n_dropped}")
-            for t in dropped_texts[:20]:
-                self.verbose_reporter.stat_line(f"      • {t}")
-            if n_dropped > 20:
-                self.verbose_reporter.stat_line(f"      … and {n_dropped - 20} more")
 
         # === Post-extraction: orthogonalize domain descriptions (no reassignment) ===
         if ENABLE_DOMAIN_ORTHOGONALIZE:
@@ -1754,7 +1748,51 @@ class IdeaExtractor:
             except Exception as e:
                 self.verbose_reporter.stat_line(f"  Domain orthogonalize skipped ({type(e).__name__}: {e})")
 
+        # Reported last on purpose: the labels are only final once
+        # orthogonalization has had its say, and this block names them.
+        self._report_noise(results, n_dropped, dropped_texts)
         return results
+
+    def _report_noise(self, results: List[models.IdeasExtractedModel],
+                      n_dropped: int, dropped_texts: List[str]) -> None:
+        """What came off the cable, and where the rest ended up.
+
+        Three things happen to a response and the log used to show one of them.
+        Splitting makes fragments; the non-answer filter drops the empty ones;
+        the rest is placed, either in a substantive domain or in one of the
+        three catch-nets. Without the fragment count the split is invisible, and
+        without the catch-net shares there is no way to see that a quarter of
+        what people said ended up in a bucket rather than a category.
+
+        The catch-net share is the counter-metric for every change upstream: it
+        only ever moves the wrong way when a domain gets too narrow or a
+        definition too greedy.
+        """
+        counts = Counter(
+            (idea.domain or "").strip()
+            for r in results for idea in (r.response_ideas or []))
+        placed_total = sum(counts.values())
+        fragments = placed_total + n_dropped
+
+        standing = [d for d in (self.domains or []) if d.key in STANDING_KEYS]
+        discovered = [d for d in (self.domains or []) if d.key not in STANDING_KEYS]
+        drained = sum(counts.get(d.label, 0) for d in standing)
+
+        vr = self.verbose_reporter
+        with vr.block("ruis van de kabel"):
+            vr.flow(len(results), "responsen", fragments, "fragmenten",
+                    placed_total, "ideeën")
+            with vr.group("weggegooid", MARK_DROPPED, n_dropped, of=fragments):
+                if n_dropped:
+                    vr.metric("zonder inhoud", n_dropped, of=fragments,
+                              examples=dropped_texts)
+            with vr.group("vangnetten", MARK_DRAIN, drained, of=placed_total):
+                for d in standing:
+                    vr.metric(d.label, counts.get(d.label, 0), of=placed_total)
+            with vr.group("geplaatst", MARK_PLACED,
+                          placed_total - drained, of=placed_total):
+                for d in discovered:
+                    vr.metric(d.label, counts.get(d.label, 0), of=placed_total)
 
     async def _orthogonalize_domains(self, results: List[models.IdeasExtractedModel]) -> None:
         """One-shot reformulation: re-describe the DISCOVERED domains for maximal
@@ -1931,13 +1969,17 @@ class IdeaExtractor:
                         'ideas': valid_ideas
                     })
 
-        self.verbose_reporter.stat_line(f"Total responses processed: {len(self._results)}")
-        self.verbose_reporter.stat_line(f"Total ideas extracted: {idea_count}")
-        self.verbose_reporter.stat_line(f"Unique ideas identified: {len(unique_ideas)}")
-        if multi_idea_responses > 0:
-            single_idea_responses = len([r for r in self._results if r.response_ideas and len(r.response_ideas) == 1])
-            self.verbose_reporter.stat_line(f"Single idea responses: {single_idea_responses} ({single_idea_responses/len(self._results)*100:.1f}%)")
-            self.verbose_reporter.stat_line(f"Multiple idea responses: {multi_idea_responses} ({multi_idea_responses/len(self._results)*100:.1f}%)")
+        n_resp = len(self._results)
+        single_idea = len([r for r in self._results
+                           if r.response_ideas and len(r.response_ideas) == 1])
+        with self.verbose_reporter.block():
+            with self.verbose_reporter.group("extractie"):
+                self.verbose_reporter.metric("responsen", n_resp)
+                self.verbose_reporter.metric("ideeën", idea_count)
+                self.verbose_reporter.metric("unieke ideeën", len(unique_ideas), of=idea_count)
+                if multi_idea_responses > 0:
+                    self.verbose_reporter.metric("één idee", single_idea, of=n_resp)
+                    self.verbose_reporter.metric("meerdere ideeën", multi_idea_responses, of=n_resp)
 
         single_idea_responses = len([r for r in self._results if r.response_ideas and len(r.response_ideas) == 1]) if multi_idea_responses > 0 else 0
         self.stats = {
