@@ -30,7 +30,7 @@ from utils.llm import token_tracker
 # PIPELINE CONFIGURATION
 # =============================================================================
 
-RUN_UNTIL_STEP = 4           
+RUN_UNTIL_STEP = 3 
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 
