@@ -681,3 +681,240 @@ Names, definitions, questions and the decision summary are written in {language}
 {UNIVERSAL_RULES}
 
 {INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# PROMPT — ATTRIBUTE CONSOLIDATION
+# =============================================================================
+
+
+class SettledAttribute(DiscoveredAttribute):
+    """An attribute after consolidation, stating what folded into it."""
+    source_attribute_ids: List[str] = Field(
+        ..., description=(
+            "The bracketed ids of every candidate attribute that folded into "
+            "this one, e.g. ['A2', 'A7']. One that survived unchanged lists "
+            "just its own id"))
+
+
+class AttributeConsolidationResult(BaseModel):
+    """What one attribute-consolidation call per facet returns.
+
+    Same safety net as one level up: without `source_attribute_ids` a merged
+    candidate is indistinguishable from a forgotten one, since neither appears
+    in the answer.
+    """
+    decision_summary: List[str] = Field(
+        ..., description=(
+            "One short line per consolidation decision that took judgement, "
+            "each stating what was done and why. Only the calls a reader would "
+            "want to check"))
+    attributes: List[SettledAttribute] = Field(
+        ..., description=(
+            "The fewest mutually exclusive attributes that cover what this "
+            "facet holds"))
+
+
+def build_attribute_candidate_index(
+    attributes: List[DiscoveredAttribute],
+) -> Dict[str, DiscoveredAttribute]:
+    """`A1`, `A2`, … for the pool of one facet.
+
+    Flat, because one call is one facet: there is no second level for the id to
+    disambiguate. The facet-level ids of the previous phase do not survive into
+    this one — what arrives here is a pool, not a nesting.
+    """
+    return {f"A{i}": attribute for i, attribute in enumerate(attributes, 1)}
+
+
+def build_attribute_candidate_block(
+    attributes: List[DiscoveredAttribute],
+    recurrence: Dict[str, int],
+    n_passes: int,
+) -> str:
+    """The pooled attributes of one facet, each with its reach and examples.
+
+    Shown in full, unlike in the facet call: this is the material being
+    consolidated, not evidence about something else. Three examples, because
+    the output spec asks the model to carry examples over and it can only pass
+    on what it is shown.
+    """
+    lines = []
+    for attribute_id, attribute in build_attribute_candidate_index(attributes).items():
+        times = recurrence.get(attribute.attribute_name, 1)
+        lines.append(
+            f"[{attribute_id}] {attribute.attribute_name} "
+            f"[{times}/{n_passes} passes]: {attribute.attribute_definition}")
+        for example in [e for e in attribute.example_observations
+                        if e][:_EXAMPLES_SHOWN]:
+            lines.append(f"    e.g. \"{example}\"")
+    return "\n".join(lines)
+
+
+def build_attribute_consolidation_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+    domain_label: str,
+    domain_definition: str,
+    facet_name: str,
+    facet_definition: str,
+    facet_question: str,
+    candidate_block: str,
+) -> str:
+    """The pooled attributes of one settled facet, folded into one minimal set.
+
+    Its own call, with its own scope. As step 6 of the combined prompt this
+    judgement ran on a pool of dozens while the model's attention was on the
+    facet decision above it — measured on 2026-08-15: six of eight recorded
+    decisions were about facets while the attribute side had to take
+    seventy-four candidates down to twenty-six.
+    """
+    return f"""You are a taxonomy consolidation specialist for surveys.
+Your task is to fold the attributes proposed for ONE facet into a single minimal set.
+
+Several independent passes over this domain proposed these attributes, and the facets they
+sat under have since been consolidated into the one below. The pool therefore holds
+duplicates and near-duplicates of the same concept under different names. That is what you
+are resolving.
+
+{build_context_block(
+    language=language, survey_question=survey_question, sector=sector,
+    entity=entity, topic=topic, perspective=perspective, intent=intent)}
+
+{build_taxonomy_block(
+    dimension=dimension, dimension_name=dimension_name,
+    dimension_description=dimension_description)}
+
+You are working inside this facet, and only inside it:
+
+<taxonomy_facet>
+Domain: {domain_label} — {domain_definition}
+Facet: {facet_name} — {facet_definition}
+The question this facet answers: {facet_question}
+</taxonomy_facet>
+
+Here are the attributes proposed for it, each with how many independent passes proposed it
+under that exact name:
+
+<candidates>
+{candidate_block}
+</candidates>
+
+# Consolidation Rules
+
+Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping
+by these rules, in this order.
+
+**1. DIFFERENT QUESTIONS STAY APART (the guardrail).**
+Every attribute here answers the facet's question in its own way. Two that answer DIFFERENT
+questions about the facet are orthogonal and never merge. Distinct ANSWERS to the same
+question stay apart when merging them would erase what tells them apart. Evaluative
+direction is not an answer — see the universal rules below.
+
+**2. PREVALENCE SETS GRANULARITY (within one question only).**
+Every candidate carries how many passes proposed it UNDER THAT EXACT NAME. Support for a
+concept is therefore the sum over the group you form, never the number on one candidate:
+several passes that each worded the same concept differently arrive as several candidates
+carrying one pass each. A well-supported group keeps its own attribute, unless it
+demonstrably draws the same distinction as another survivor. Thinly supported concepts that
+share a meaning are grouped under one plainly named attribute.
+
+**3. NO HIERARCHY UNDER ONE FACET.**
+No attribute may be a broader category, a subtype, a component or a concrete instance of
+another. A general item and a specific one that sits inside it are one level too many: keep
+the level a coder can apply and fold the other into it. Left standing, the same response can
+honestly be coded under both.
+
+**4. LIFT, DON'T FLATTEN.**
+When grouping is needed, raise the concepts to a shared label that still carries their
+meaning — not a label that merely names the question. Read the label alone: if it tells you
+only which question was asked, it is a container; if it tells you what the respondents
+expressed, it is an answer.
+
+**5. PLAIN, MEANINGFUL LABELS.**
+Name every surviving attribute in everyday language. Reading the label alone, and knowing
+the survey question, a layperson knows which distinction is meant.
+
+**When these conflict, decide in this order:** 1 (different questions) > 2 (prevalence) >
+3 (no hierarchy) > 4 (lifting) > 5 (label clarity) > fewest attributes. Never merge distinct
+concepts, and never introduce an umbrella, merely to bring the count down. A smaller
+inventory that has lost a distinction is not a better one.
+
+MERGE TEST — run it on any two attributes before you fold them together:
+1. Would the same observation be coded under both? If not, they are not duplicates.
+2. Does the difference between them give an analysis anything? If it does, keep it.
+3. Can you state what they share as a thing in its own right, without listing them?
+4. After merging, does every example still have one obvious place?
+Merge only on four times yes. Never merge to reach a count — not of attributes, not of examples.
+
+NEVER DROP. You see one facet, so you cannot judge where something would belong instead.
+An attribute that does not seem to fit this facet stays in your output as it is; say so in
+your decision summary and leave it. A later phase sees every facet of the domain at once and
+can move it.
+
+If this facet ends up holding a single attribute, that is a signal worth recording: usually
+the facet and the attribute are then the same concept stated twice. Note it in your decision
+summary. Do not act on it here — the facet is not yours to change.
+
+# Step-by-Step Analysis Process
+
+Work through these steps before writing your final output. What you return is the decisions,
+not the working.
+
+**Step 1 — Scan the pool**
+Read every candidate. Note recurring concepts, near-duplicates, and obvious repeats under
+different names.
+
+**Step 2 — Group what means the same**
+Group the candidates that restate each other in different words.
+
+**Step 3 — Apply the same-question test**
+For each group, work out which question about the facet it answers. Same question and same
+meaning: group. Different questions: separate. Distinct answers to one question: separate
+only when merging them would erase what tells them apart.
+
+**Step 4 — Let prevalence set the granularity**
+Add up the passes across each group you formed; the counts are per exact name, so any single
+candidate understates a concept that came back reworded.
+
+**Step 5 — Check for hierarchy**
+No survivor may sit inside another. Where one does, fold it into the level a coder can apply.
+
+**Step 6 — Account for every candidate**
+Check coverage on the bracketed ids, never on names: every candidate attribute id must
+appear in the `source_attribute_ids` of at least one surviving attribute. Two candidates can
+carry the same name, so a name says nothing about which one you meant. A candidate you
+folded away is not exempt — list it under whichever survivor absorbs its meaning. Merging and
+forgetting look identical in the output unless you list what went where.
+
+# Output
+
+Return a JSON object with these fields:
+- `decision_summary`: one short line per decision that took judgement, in {language} —
+  what you did and why. Not a reasoning trace, and not a line per candidate: only the
+  calls a reader would want to check.
+- `attributes`: an array, one entry per surviving attribute, each with:
+  - `attribute_name`: a short descriptive name in {language} (at most 5 words)
+  - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
+  - `example_observations`: 1-3 observations carried over from the candidates that folded
+    into this attribute, copied exactly as shown. Give what is there: an attribute that
+    carries one example gives one. NEVER merge attributes that mean different things in
+    order to reach a higher count — the count follows the taxonomy, never the other way round
+  - `source_attribute_ids`: the bracketed ids of every candidate attribute that folded into
+    this one, e.g. ["A2", "A7"]. One that survived unchanged lists just its own id.
+
+Names, definitions and the decision summary are written in {language}. The
+`source_attribute_ids` field carries ids, not names, and is copied exactly as bracketed above.
+
+{UNIVERSAL_RULES}
+
+{INSTRUCTOR_HINT}"""
