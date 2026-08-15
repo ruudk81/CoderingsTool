@@ -1,4 +1,11 @@
-"""Tests voor de chunk-consolidatieprompt (step 4)."""
+"""Tests for the consolidation prompts of step 4.
+
+Covers both prompts in the module: the legacy combined one, which settles facets
+and their attributes in a single call, and the facet prompt that replaces its
+facet half. The last section guards the wording the split ruled on, in both
+directions — the attribute prompt of a later task legitimately carries the old
+wording, so a copy-paste there must not silently undo a decision.
+"""
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.prompts_discovery import (
     DiscoveredAttribute,
@@ -476,9 +483,12 @@ def test_a_consolidated_facet_states_its_question_and_its_sources():
 
 def test_the_facet_prompt_names_every_field_of_its_model():
     prompt = build_facet_consolidation_prompt(**_facet_kwargs())
-    for field in ("decision_summary", "facets", "facet_name",
+    for field in ("decision_summary", "facet_name",
                   "facet_definition", "facet_question", "source_facet_ids"):
         assert field in prompt
+    # The bare word sits in the opening prose too, so it would pass whatever the
+    # output section said. The backticked form is the field.
+    assert "`facets`:" in prompt
 
 
 def test_the_facet_prompt_asks_for_no_attribute_field():
@@ -488,9 +498,10 @@ def test_the_facet_prompt_asks_for_no_attribute_field():
 
 def test_the_facet_prompt_carries_the_merge_test():
     """Facet merging had no test at all while the merge test sat under the
-    attribute step."""
+    attribute step. Asserted on the facet-level phrasing: the bare heading would
+    also pass on a merge test that still spoke about attributes."""
     prompt = build_facet_consolidation_prompt(**_facet_kwargs())
-    assert "MERGE TEST" in prompt
+    assert "run it on any two facets" in prompt
 
 
 def test_the_facet_prompt_does_not_ask_for_a_placement_check():
@@ -507,6 +518,74 @@ def test_the_facet_prompt_ends_on_the_universal_rules_and_the_hint():
 
 
 def test_the_facet_prompt_asks_coverage_on_ids():
+    """`source_facet_ids` is asserted by the field test above; what is specific
+    here is that coverage is checked on the ids and not on the names."""
     prompt = build_facet_consolidation_prompt(**_facet_kwargs())
-    assert "source_facet_ids" in prompt
     assert "never on names" in prompt
+
+
+# =============================================================================
+# WHAT THE SPLIT RULED
+#
+# These guard decisions, not implementation details. Each ruling is asserted in
+# both directions: gone from the facet prompt, still present in the legacy one.
+# The attribute prompt of a later task will legitimately carry the original
+# wording, so without the negative twin a copy-paste could quietly restore text
+# that was ruled out here and every test would still pass.
+# =============================================================================
+
+def test_ruling_the_facet_rules_do_not_point_at_an_attribute_step():
+    """Rule 2 ended on `The same reasoning governs the attributes in step 6`.
+    This prompt has no attribute step, and its step 6 is the coverage step — so
+    the pointer resolved to something real and wrong."""
+    pointer = "The same reasoning governs the attributes in step 6"
+    assert pointer not in build_facet_consolidation_prompt(**_facet_kwargs())
+    assert pointer in build_chunk_consolidation_prompt(**_kwargs())
+
+
+def test_ruling_the_merge_test_asks_about_attributes_not_examples():
+    """The facet candidate block renders attribute names and no examples, so
+    item 4 asked about material the call cannot see."""
+    facet = build_facet_consolidation_prompt(**_facet_kwargs())
+    legacy = build_chunk_consolidation_prompt(**_kwargs())
+    assert "does every attribute named under them still have" in facet
+    assert "does every example still have" not in facet
+    assert "does every example still have" in legacy
+
+
+def test_ruling_the_merge_test_closes_on_the_two_levels_it_has():
+    """`not of items, not of examples` was vague where the prompt has two
+    concrete levels, and named material it does not render."""
+    facet = build_facet_consolidation_prompt(**_facet_kwargs())
+    legacy = build_chunk_consolidation_prompt(**_kwargs())
+    assert "not of facets, not of attributes." in facet
+    assert "not of items, not of examples." not in facet
+    assert "not of items, not of examples." in legacy
+
+
+def test_ruling_rule_four_does_not_ask_for_attribute_names():
+    """This call returns no attributes: `SettledFacet` has no such field. Asking
+    for attribute names invites output the model cannot deliver."""
+    facet = build_facet_consolidation_prompt(**_facet_kwargs())
+    legacy = build_chunk_consolidation_prompt(**_kwargs())
+    assert "Name every surviving facet in everyday language" in facet
+    assert "Name every surviving facet and attribute" not in facet
+    assert "Name every surviving facet and attribute" in legacy
+
+
+def test_ruling_the_precedence_minimises_facets_not_items():
+    """Same vagueness as the merge-test closing line, one screen above it."""
+    facet = build_facet_consolidation_prompt(**_facet_kwargs())
+    legacy = build_chunk_consolidation_prompt(**_kwargs())
+    assert "6. Fewest facets —" in facet
+    assert "6. Fewest items —" not in facet
+    assert "6. Fewest items —" in legacy
+
+
+def test_ruling_the_facet_prompt_never_mentions_examples_in_its_own_body():
+    """The two surviving hits are rule 3 of UNIVERSAL_RULES, `NO BORROWED
+    EXAMPLES` — a prohibition on importing outside material, which is the
+    opposite failure mode and is shared by every step-4 prompt."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    body = prompt[:prompt.index("<universal_rules>")]
+    assert "example" not in body.lower()

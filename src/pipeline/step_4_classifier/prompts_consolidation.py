@@ -594,7 +594,7 @@ Test: read the label alone. If it tells you only which question was asked, it is
 container; if it tells you what the respondents expressed, it is an answer.
 
 **4. PLAIN, MEANINGFUL LABELS.**
-Name every surviving facet and attribute in everyday language. Test: reading the label
+Name every surviving facet in everyday language. Test: reading the label
 alone, and knowing the survey question, a layperson knows which distinction is meant. A
 short, ordinary noun phrase is what you want — no jargon, no policy register, no long
 derived constructions.
@@ -605,7 +605,7 @@ derived constructions.
 3. Prevalence (rule 2) — how finely to split within one question.
 4. Lifting (rule 3) — a group is named by what it says, never by what it asks.
 5. Label clarity (rule 4).
-6. Fewest items — and only once everything above holds. Never merge distinct concepts, and
+6. Fewest facets — and only once everything above holds. Never merge distinct concepts, and
    never introduce an umbrella, merely to bring the count down. A smaller inventory that
    has lost a distinction is not a better one.
 
