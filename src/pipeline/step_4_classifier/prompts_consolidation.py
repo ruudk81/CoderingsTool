@@ -582,7 +582,7 @@ carrying one pass each.
 - Several thinly supported concepts answering the same question are GROUPED into one facet
   that still names what they share in plain language.
 Prevalence decides how finely to split WITHIN one question; it never licenses merging
-ACROSS questions. The same reasoning governs the attributes in step 6, on their own counts.
+ACROSS questions.
 
 **3. LIFT, DON'T FLATTEN.**
 When grouping is needed, raise the concepts to a shared higher-level label that still
@@ -625,7 +625,7 @@ MERGE TEST — run it on any two facets before you fold them together:
 1. Would the same observation be coded under both? If not, they are not duplicates.
 2. Does the difference between them give an analysis anything? If it does, keep it.
 3. Can you state what they share as a thing in its own right, without listing them?
-4. After merging, does every example still have one obvious place?
+4. After merging, does every attribute named under them still have one obvious place?
 Merge only on four times yes. Never merge to reach a count — not of items, not of examples.
 
 **Step 3 — Apply the same-question test**
