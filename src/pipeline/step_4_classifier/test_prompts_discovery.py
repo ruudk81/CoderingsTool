@@ -1,4 +1,6 @@
 """Tests voor de gecombineerde discovery-prompt (step 4)."""
+from types import SimpleNamespace
+
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.prompts_discovery import (
     DiscoveredAttribute,
@@ -93,11 +95,14 @@ def test_prompt_eindigt_op_de_instructor_zin():
 # WAT ER NIET IN MAG
 # =============================================================================
 
-def test_prompt_kent_geen_lens_en_geen_dimensie_opdracht():
+def test_prompt_kent_geen_dimensie_opdracht():
+    """De prompt vraagt naar facetten en attributen, nooit naar de dimensies of
+    assen waarop antwoorden verschillen. Let op: 'orthogonaal' mag wél — dat gaat
+    over de verhouding tussen facetten onderling, niet over het zoeken van assen."""
     prompt = build_discovery_prompt(**_kwargs())
     assert "Lens" not in prompt
-    assert "orthogonal" not in prompt.lower()
     assert "dimensions on which" not in prompt.lower()
+    assert "identify the dimensions" not in prompt.lower()
 
 
 def test_prompt_bevat_geen_drempelgetallen():
@@ -105,6 +110,56 @@ def test_prompt_bevat_geen_drempelgetallen():
     afgelezen en valt onder hetzelfde verbod als een use-case-voorbeeld."""
     prompt = build_discovery_prompt(**_kwargs())
     assert "%" not in prompt
+
+
+def _skelet_prompt():
+    """De prompt met élk dynamisch slot op een sentinel — ook de dimensie.
+
+    Wat er dan nog aan woorden in staat is het statische instructieskelet: de
+    tekst die voor iedere dataset én iedere dimensie ongewijzigd wordt verstuurd.
+    De builder raakt van een dimensie alleen `prompt_rules` aan, dus een stub
+    volstaat en is eerlijker dan een echte dimensie — die smokkelt haar eigen
+    vocabulaire mee de meting in.
+    """
+    rules = SimpleNamespace(
+        domain_instruction="Definition: DOMAINRULE\nKey idea: DOMAINIDEA",
+        facet_instruction="Definition: FACETRULE\nKey idea: FACETIDEA",
+        attribute_instruction="Definition: ATTRIBUTERULE\nKey idea: ATTRIBUTEIDEA",
+    )
+    return build_discovery_prompt(**_kwargs(
+        language="LANGUAGE", survey_question="QUESTION",
+        sector="SECTOR", entity="ENTITY", topic="TOPIC",
+        perspective="PERSPECTIVE", intent="INTENT",
+        dimension=SimpleNamespace(prompt_rules=rules),
+        dimension_name="DIMENSION", dimension_description="DIMENSIONDESCRIPTION",
+        domain_label="DOMAIN", domain_definition="DEFINITION",
+        domain_boundary_test="", domain_exclusions=None,
+        observations=["OBSERVATION"]))
+
+
+def test_skelet_leent_geen_vocabulaire_van_dataset_of_dimensie():
+    """Tripwire voor het lekpad uit CLAUDE.md: een diagnose op één dataset die
+    als vuistregel in de prompt belandt en daar blijft staan.
+
+    Vangt twee soorten lek in één meting. Onderwerpwoorden ('sustainability')
+    horen bij één klant; dimensiewoorden ('association') horen bij één van de
+    tien dimensies, terwijl deze prompt ze allemaal bedient.
+
+    Geen bewijs van agnosticisme — een grendel op wat deze repo daadwerkelijk
+    heeft gecodeerd. Komt er een nieuw voorbeeld in, breid de lijst dan uit in
+    plaats van hem te laten verwateren.
+    """
+    ontleend = [
+        # onderwerp van één dataset
+        "sustainab", "green", "environmental", "social responsibility",
+        "climate", "bank", "financial", "insurance", "mortgage",
+        "festival", "supermarket",
+        # vocabulaire van één dimensie
+        "association", "motivation", "barrier", "prescriptive",
+    ]
+    prompt = _skelet_prompt().lower()
+    gevonden = [w for w in ontleend if w in prompt]
+    assert not gevonden, f"geleend vocabulaire in het statische skelet: {gevonden}"
 
 
 # =============================================================================

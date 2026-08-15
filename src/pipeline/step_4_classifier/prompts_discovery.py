@@ -1,22 +1,23 @@
-"""Discovery: facetten en de attributen die ze bevatten, in één beurt.
+"""Discovery: facets and the attributes they hold, in a single pass.
 
-De twee lagen werden hiervoor apart uitgevraagd — eerst facetten per domein,
-dan attributen per facet. Dat kostte een call per facet per chunk, en het gaf
-de attribuutlaag een scope die al vastlag voordat er één idee was toegewezen.
+The two levels used to be asked separately — facets per domain first, then
+attributes per facet. That cost one call per facet per chunk, and it gave the
+attribute layer a scope that was already fixed before a single idea had been
+assigned.
 
-Hier vraagt één call per (domein, chunk) allebei tegelijk: welke facetten zitten
-er in deze observaties, en welke attributen zitten er in elk facet. Een model
-dat beide niveaus in één blik ziet kan een attribuut niet in het verkeerde facet
-hangen, want het bepaalt ze samen.
+Here one call per (domain, chunk) asks for both at once: which facets these
+observations contain, and which attributes sit inside each facet. A model that
+sees both levels in one view cannot hang an attribute under the wrong facet,
+because it determines them together.
 
-Het instructieskelet komt uit de opzet van vóór de herbouw: genummerde
-scratchpad-stappen, "the fewest that provide full coverage", en een expliciete
-distinctheidstoets per paar. Nieuw is stap 6, die per overgebleven facet de
-attributen benoemt.
+The instruction skeleton comes from the pre-rebuild design: numbered scratchpad
+steps, "the fewest that provide full coverage", and an explicit pairwise
+distinctness test. Step 6 is new — it names the attributes inside each surviving
+facet.
 
-Er wordt **niet** naar dimensies of assen gevraagd. De prompt vraagt naar
-facetten en attributen in die woorden; `dimension_data.py` levert wat die
-niveaus betekenen voor de dimensie waaronder deze run draait.
+Dimensions and axes are **not** asked for. The prompt asks for facets and
+attributes in those words; `dimension_data.py` supplies what those levels mean
+for the dimension this run operates under.
 """
 from __future__ import annotations
 
@@ -41,12 +42,12 @@ if TYPE_CHECKING:
 # RESPONSE MODEL
 # =============================================================================
 #
-# Elk veld hieronder wordt in de prompt bij naam genoemd, en de prompt vraagt
-# geen veld dat hier niet staat. Twee registers die uit elkaar lopen leveren of
-# een verwarde prompt of een antwoord dat we niet kunnen gebruiken.
+# Every field below is named in the prompt, and the prompt asks for no field
+# that is absent here. Two registers drifting apart yield either a confused
+# prompt or an answer we cannot use.
 
 class DiscoveredAttribute(BaseModel):
-    """Een attribuut (L4), zoals één chunk het voorstelt."""
+    """One attribute (L4), as a single chunk proposes it."""
     attribute_name: str = Field(
         ..., description=(
             "Short descriptive name for the attribute, in the survey language "
@@ -62,7 +63,7 @@ class DiscoveredAttribute(BaseModel):
 
 
 class DiscoveredFacet(BaseModel):
-    """Een facet (L3) mét de attributen die eronder vallen."""
+    """One facet (L3), together with the attributes that fall under it."""
     facet_name: str = Field(
         ..., description=(
             "Short descriptive name for the facet, in the survey language "
@@ -78,7 +79,7 @@ class DiscoveredFacet(BaseModel):
 
 
 class DiscoveryResult(BaseModel):
-    """Wat één (domein, chunk)-call teruggeeft."""
+    """What one (domain, chunk) call returns."""
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before the final output: "
@@ -96,7 +97,7 @@ class DiscoveryResult(BaseModel):
 
 
 class ConsolidatedAttribute(DiscoveredAttribute):
-    """Een attribuut ná consolidatie, dat zegt wat erin is opgegaan."""
+    """An attribute after consolidation, stating what folded into it."""
     source_attributes: List[str] = Field(
         ..., description=(
             "Every candidate attribute name that folded into this one, "
@@ -104,7 +105,7 @@ class ConsolidatedAttribute(DiscoveredAttribute):
 
 
 class ConsolidatedFacet(DiscoveredFacet):
-    """Een facet ná consolidatie, dat zegt wat erin is opgegaan."""
+    """A facet after consolidation, stating what folded into it."""
     source_facets: List[str] = Field(
         ..., description=(
             "Every candidate facet name that folded into this one, including "
@@ -116,17 +117,17 @@ class ConsolidatedFacet(DiscoveredFacet):
 
 
 class ConsolidationResult(BaseModel):
-    """Wat één consolidatiecall per domein teruggeeft.
+    """What one consolidation call per domain returns.
 
-    De twee `source_*`-velden zijn geen boekhouding maar een vangnet. Zonder
-    hen ziet een kandidaat die is samengevoegd er precies zo uit als een
-    kandidaat die is vergeten: allebei staan ze niet in het antwoord. Mét hen
-    blijft wat niemand claimt staan (`kept_unclaimed`) in plaats van stil te
-    verdwijnen — en bij consolidatie in rondes telt dat dubbel, want wat in
-    ronde 1 wegvalt komt nooit meer terug.
+    The two `source_*` fields are not bookkeeping but a safety net. Without
+    them a candidate that was merged looks exactly like a candidate that was
+    forgotten: neither appears in the answer. With them, whatever nobody claims
+    stays (`kept_unclaimed`) instead of vanishing silently — and when
+    consolidation runs in rounds that counts double, because what drops out in
+    round 1 never comes back.
 
-    `raw_facets` bewaart daarnaast de stand vóór de merge, maar dat dient een
-    ander doel: diagnose achteraf, niet detectie tijdens de run.
+    `raw_facets` also preserves the state before the merge, but that serves a
+    different purpose: diagnosis afterwards, not detection during the run.
     """
     scratchpad: str = Field(
         ..., description=(
@@ -151,7 +152,7 @@ class ConsolidationResult(BaseModel):
 
 def _exclusion_lines(domain_label: str, boundary_test: str,
                      exclusions: Optional[List[str]]) -> str:
-    """De domeingrens, of niets wanneer step 3 er geen heeft meegegeven."""
+    """The domain boundary, or nothing when step 3 supplied none."""
     lines = []
     if boundary_test:
         lines.append(f"Boundary test: {boundary_test}")
@@ -182,7 +183,7 @@ def build_discovery_prompt(
     domain_exclusions: Optional[List[str]],
     observations: List[str],
 ) -> str:
-    """Facetten én hun attributen, uit één chunk observaties binnen één domein."""
+    """Facets and their attributes, from one chunk of observations in one domain."""
     rules = dimension.prompt_rules
     facet_definition = _extract_definition(rules.facet_instruction)
     attribute_definition = _extract_definition(rules.attribute_instruction)
@@ -197,10 +198,14 @@ def build_discovery_prompt(
         "\n".join(f"- {x}" for x in domain_exclusions)
         if domain_exclusions else "- (no neighbouring domains were named)")
 
-    return f"""You are a qualitative research analyst specializing in survey response analysis.
-Your task is to identify the fewest recurring facets that provide full coverage of a set of
-observations within one domain, and for each facet the fewest attributes that provide full
-coverage of what that facet holds.
+    return f"""You are a qualitative research analyst specializing in survey response analysis. 
+Your task is to identify the fewest recurring facets that provide full coverage of a set of observations within one domain, and for each facet the fewest attributes that provide full coverage of what that facet holds.
+
+# Taxonomy Structure
+
+{build_taxonomy_block(
+    dimension=dimension, dimension_name=dimension_name,
+    dimension_description=dimension_description)}
 
 You do both levels in one pass, because they constrain each other: a facet is only a good
 facet if the attributes under it are genuinely the same kind of thing.
@@ -229,13 +234,97 @@ An attribute must:
 - Be internally coherent and ontologically distinct from its siblings
 - Add unique conceptual value — no attribute that restates another in different words
 
+{UNIVERSAL_RULES}
+
+# Conceptual Orthogonality and Coding Multiplicity
+
+Facets and attributes must be mutually exclusive at the level of meaning, not at the level of observations.
+
+## Requirements for Facets
+
+Facets must be conceptually orthogonal:
+
+- Each facet must represent a different analytical lens or type of quality
+- No facet may restate, contain, specialize, or operationalize another facet
+- Two facets may both apply to the same observation only when they capture genuinely different aspects of it
+- A coder must be able to state a different analytical question for each facet
+
+Two facets asking "what subject is this about?" and "through what action is it enacted?"
+are distinct lenses and may coexist, even when every observation under both speaks about
+the same subject matter. What separates them is the question, not the vocabulary.
+
+## Requirements for Attributes
+
+Attributes within a facet must be atomic and conceptually mutually exclusive:
+
+- No attribute may be a synonym of another attribute
+- No attribute may be a parent, subtype, component, combination, or concrete example of another attribute under the same facet
+- All sibling attributes must describe the same kind of property and sit at the same level of abstraction
+- The same atomic meaning must fit only one attribute within a facet
+- An observation may receive multiple attributes when it explicitly contains multiple atomic meanings
+
+Do not create a combined attribute when its meaning consists entirely of two existing attributes. 
+
+If your inventory already holds attributes A and B, do not add a third meaning "A and B
+together": an observation carrying both meanings receives both attributes.
+
+## Abstraction-Level Test
+
+For every pair of candidate facets and every pair of sibling attributes, test:
+
+1. Is A a broader category that includes B?
+2. Is A a subtype, component, manifestation, or implementation of B?
+3. Is A a combination of B and another category?
+4. Could the same single atomic meaning fit both A and B?
+5. Do A and B answer the same analytical question?
+
+If the answer to any of questions 1–4 is yes, the pair is not mutually exclusive and must be redrawn, merged, split, or one item must be removed.
+
+If the answer to question 5 is no, the concepts may belong in different facets, provided each facet represents a coherent and independently analyzable lens.
+
+## Content Versus Coding Modifiers
+
+Only substantive content belongs in the facet and attribute taxonomy.
+
+Do not create content facets or attributes for:
+- valence
+- intensity or degree
+- comparative strength
+- certainty or doubt
+- authenticity or credibility
+
+Treat these as separate coding modifiers unless they are explicitly part of the domain definition. Test a candidate by stripping the qualifier from it: if what remains is a subject already named elsewhere in your inventory, the qualifier was a hedge, a comparison or a doubt about that subject — not a subject of its own.
+
+## Orientation Versus Implementation
+
+Do not infer a concrete practice from a general adjective or orientation.
+
+- A word naming a general disposition or quality describes an attributed orientation, not a practice, unless the observation also states a concrete action
+- Create an implementation attribute only when the observation explicitly names an activity, a policy or mechanism, an operational practice, a resource commitment, a monitoring process, or a form of support
+
+A thematic orientation and a concrete implementation may be coded together when an observation explicitly expresses both. They belong to different facets because one captures what the observation is about and the other captures how it is enacted.
+
+## Priority of Requirements
+
+Apply the following priority order:
+
+1. Domain validity
+2. Conceptual coherence
+3. Conceptual mutual exclusivity
+4. Consistent level of abstraction
+5. Evidence from recurring observations
+6. Full coverage of recurring, domain-relevant meanings
+7. Minimization of the number of facets and attributes
+
+"Use the fewest facets and attributes" applies only after all higher-priority requirements have been satisfied. Never merge distinct concepts or introduce an overlapping umbrella category merely to reduce the number of items or increase coverage.
+
+Full coverage refers to recurring, domain-relevant meanings, not necessarily to every individual observation. An observation may remain uncategorized when it is outside the domain, insufficiently specific, non-recurring, or contains only a coding modifier.
+
+# Your Task
+
 {build_context_block(
     language=language, survey_question=survey_question, sector=sector,
     entity=entity, topic=topic, perspective=perspective, intent=intent)}
-
-{build_taxonomy_block(
-    dimension=dimension, dimension_name=dimension_name,
-    dimension_description=dimension_description)}
 
 You are working within this domain, and only within it:
 
@@ -249,30 +338,34 @@ Here are the observations you need to analyze:
 {observations_block}
 </observations>
 
-# Instructions
+
+# Process
 
 Work through these steps in the `scratchpad` field before writing your final output.
 
 **Step 1: Cluster the observations**
-Group observations that share descriptive meaning. Identify what recurs. Focus on the kind
-of quality, characteristic, practice or property being described — not on whether it is
-being praised or criticised.
+Group observations that share descriptive meaning. Identify what recurs. Focus on the kind of quality, characteristic, practice or property being described — not on whether it is being praised or criticised.
 
 **Step 2: Name candidate facets**
-From your clusters, name candidate facets. For each one note the name, the underlying
-concept it captures, and which observations support it.
-A facet names a recurring kind of meaning, not a single concrete observation.
+From your clusters, name candidate facets. For each one note the name, the underlying concept it captures, and which observations support it. A facet names a recurring kind of meaning, not a single concrete observation.
 
 **Step 3: Verify internal coherence**
-For each candidate facet, check that it captures one clear concept. Reject or split any
-candidate that combines different kinds of phenomena, mixes description with evaluation,
-or is so broad that a coder could not apply it.
+For each candidate facet, check that it captures one clear concept. Reject or split any candidate that combines different kinds of phenomena, mixes description with evaluation, or is so broad that a coder could not apply it.
 
-**Step 4: Verify distinctness**
-Check every pair of candidate facets. They must be ontologically distinct — neither is a
-subset of the other, and they do not overlap in conceptual space — and semantically
-separable, so a coder always knows which one applies. If a pair fails, either merge them
-into one broader facet or redraw the boundary between them.
+**Step 4: Verify conceptual orthogonality**
+Check every pair of candidate facets and every pair of sibling attributes.
+
+Facets and attributes must be mutually exclusive at the level of meaning:
+- they must not be synonyms
+- neither may contain or specialize the other
+- neither may be a component, combination, manifestation, or implementation of the other
+- the same atomic meaning must not fit both
+
+Observations themselves do not need to be mutually exclusive. One observation may receive multiple codes when it contains multiple distinct meanings.
+
+For each retained facet, state the unique analytical question it answers. For each pair of sibling attributes, verify that both answer that same facet question while naming different, atomic properties at the same level of abstraction.
+
+If a pair fails, merge, split, relocate, redraw, or remove one of the items. Do not solve overlap by adding a broader umbrella category.
 
 **Step 5: Verify the domain boundary**
 Every retained facet must fall strictly inside {domain_label}. Drop anything that belongs
@@ -280,16 +373,14 @@ more naturally to a neighbouring domain, including:
 {exclusion_hint}
 
 **Step 6: Name the attributes inside each facet**
-For each facet that survived, look again at the observations you assigned to it and name
-the attributes it holds — the specific properties those observations point at. Apply the
-same two tests one level down: each attribute captures one property, and no two attributes
-under the same facet overlap or restate each other.
-If a facet turns out to hold only one attribute, that is a sign the facet and the attribute
-are the same thing. Decide which level the concept really belongs to and keep it there.
+For each facet that survived, look again at the observations you assigned to it and name the attributes it holds — the specific properties those observations point at. Apply the same two tests one level down: each attribute captures one property, and no two attributes under the same facet overlap or restate each other.
+
+If a facet turns out to hold only one attribute, that is a sign the facet and the attribute are the same thing. Decide which level the concept really belongs to and keep it there.
 
 **Step 7: Prepare the final output**
-Keep only what passed every check. Use the fewest facets that cover the observations, and
-under each the fewest attributes that cover what it holds.
+Keep only what passed every check. Use the fewest facets that cover the observations, and under each the fewest attributes that cover what it holds.
+
+Before finalizing, perform a last parent–child, whole–part, generic–specific, and orientation–implementation overlap check. Do not return the taxonomy if any such relationship remains between sibling attributes or between facets.
 
 # Output
 
@@ -305,8 +396,6 @@ Return a JSON object with these fields:
 
 All names, definitions and examples must be written in {language}.
 
-{UNIVERSAL_RULES}
-
 {INSTRUCTOR_HINT}"""
 
 
@@ -319,16 +408,15 @@ def build_candidate_block(
     recurrence: Dict[str, int],
     n_passes: int,
 ) -> str:
-    """De kandidaten van alle chunks, elk met zijn attributen en zijn dekking.
+    """The candidates from every chunk, each with its attributes and its reach.
 
-    Consolidatie draait vóór er één idee is toegewezen, dus er zijn geen
-    aantallen. Wat er wél is: in hoeveel onafhankelijke chunks een facet is
-    voorgesteld. Een begrip dat in vijf van vijf passes terugkomt is beter
-    onderbouwd dan een dat één keer opdook, en dat is zichtbaar te maken zonder
-    één toewijzing.
+    Consolidation runs before a single idea has been assigned, so there are no
+    counts. What there is: how many independent chunks proposed a given facet.
+    A concept that returns in five passes out of five is better supported than
+    one that surfaced once, and that can be made visible without any assignment.
 
-    `dedup_exact_facets` klapt byte-identieke namen ervóór samen, dus de telling
-    moet apart worden meegedragen — anders verdwijnt precies dit signaal.
+    `dedup_exact_facets` collapses byte-identical names beforehand, so the count
+    has to be carried separately — otherwise this exact signal disappears.
     """
     blocks = []
     for i, facet in enumerate(candidates, 1):
@@ -368,13 +456,13 @@ def build_chunk_consolidation_prompt(
     domain_exclusions: Optional[List[str]],
     candidate_block: str,
 ) -> str:
-    """Alle chunk-opbrengsten van één domein tot één geneste inventaris.
+    """Every chunk's yield for one domain, folded into one nested inventory.
 
-    Dit is de zwaarste fase van de stap. Elke chunk zag maar een deel van het
-    domein en stelde onafhankelijk voor, dus hetzelfde begrip komt onder
-    meerdere namen terug — op twee niveaus tegelijk. Facetten die samengaan
-    brengen hun attributen mee, en die moeten daarna onderling opnieuw langs
-    dezelfde meetlat.
+    This is the heaviest phase of the step. Each chunk saw only part of the
+    domain and proposed on its own, so the same concept comes back under
+    several names — at two levels at once. Facets that merge bring their
+    attributes with them, and those must then be measured against each other by
+    the same yardstick.
     """
     rules = dimension.prompt_rules
     facet_definition = _extract_definition(rules.facet_instruction)
