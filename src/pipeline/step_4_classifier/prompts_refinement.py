@@ -403,7 +403,8 @@ each such group into one.
 - For each group, pick the `home_id`: the id whose domain and facet the survivor keeps.
   Choose the scope where most of these responses already sit.
 - The survivor's responses are all the responses of its group. They move to the home scope,
-  and that is intended — this is the only step where structure is allowed to relocate.
+  and that is intended — this is the only step where structure is allowed to relocate
+  across domains.
 - Most attributes belong to no group. An attribute that stays exactly where it is returns as
   a group of one, listing only its own id.
 
