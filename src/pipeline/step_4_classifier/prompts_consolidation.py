@@ -105,8 +105,11 @@ def build_facet_candidate_block(
 
     The attributes are listed by NAME ONLY. They are here so the model can
     judge whether what sits under a facet is one kind of thing — the test that
-    makes a facet a good facet. Rendering them in full, with definitions and
-    examples, is what turned this call into two jobs at once.
+    makes a facet a good facet. Names are enough for that, and no more than that
+    is wanted: it was rendering attributes in full, with their definitions and
+    examples, that gave the predecessor of this call enough material to settle
+    the attributes as well, and so made it do two jobs at once. Settling them is
+    the next call's work, on the pool this one hands it.
     """
     blocks = []
     for facet_id, pool in build_facet_candidate_index(pools).items():

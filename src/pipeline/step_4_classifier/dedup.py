@@ -11,8 +11,12 @@ their attributes, and two proposals of "Wachttijd" inside it become one
 attribute holding the union of their examples.
 
 Everything that takes a judgment stays out of here. Near-duplicate names are for
-the consolidation phase, which sees each candidate together with how many passes
-proposed it and can tell a rewording from a real distinction.
+the two consolidation phases, each of which sees its candidates together with
+how many passes proposed them and can tell a rewording from a real distinction.
+They divide the work by scope, and so does this module: the facet phase compares
+every facet of one domain, so `dedup_exact_facets` runs over a domain's whole
+raw yield before it; the attribute phase compares the pool of one settled facet,
+so `dedup_exact_attributes` runs over each pool as the facet phase assembles it.
 """
 from typing import Dict, List
 
