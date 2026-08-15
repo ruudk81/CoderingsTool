@@ -11,7 +11,10 @@ Two things differ from the previous design:
 an attribute may move to another facet within its domain. The domain stays the
 same, and `facet_assignments` follows where the attribute lives, so such a move
 relabels exactly the ideas it concerns. Per facet that was impossible — there
-only the ideas could move, never the placement.
+only the ideas could move, never the placement. That makes this the only phase
+left that can check placement at all: attribute consolidation settles one facet
+per call and is told never to drop, so a misplaced attribute arrives here
+untouched.
 
 **The split clause has been rewritten.** It read: *"an attribute holding a large
 share AND visibly diverse contents is too abstract: SPLIT it, do not widen it"*.
@@ -254,8 +257,12 @@ knowing the survey question, a layperson knows which distinction is meant.
 Every attribute you return belongs to "{domain_label}". You cannot move one to another
 domain or invent one that belongs elsewhere.
 Within this domain you MAY move an attribute to a different facet by naming that facet in
-`facet_name`. Do so when the attribute plainly answers a different question than the facet
-it currently sits under. Its responses move with it — that is intended.
+`facet_name`. Check for every attribute that it sits under the facet it belongs to. The
+phase that settled these attributes saw one facet at a time and could not compare it with
+the others, so an attribute that answers a different question than the facet it hangs under
+arrives here unmoved; you are the first phase to see every facet of this domain at once.
+MOVE such an attribute to the facet where it belongs. Its responses move with it — that is
+intended.
 If a GROUP OF RESPONSES belongs to a different attribute, that is a misfit, not a move: the
 responses move and the attribute stays.
 

@@ -138,6 +138,25 @@ def test_an_attribute_may_change_facet_within_the_domain():
     assert "facet_name" in RefinedAttribute.model_fields
 
 
+def test_the_refinement_prompt_asks_whether_each_attribute_sits_right():
+    """Consolidation used to check this while it held every facet of the
+    domain. It now settles one facet per call, so the check moved to the phase
+    that still sees them all."""
+    prompt = build_refinement_prompt(**_kwargs())
+    assert "sits under the facet it belongs to" in prompt
+    assert "saw one facet at a time" in prompt
+
+
+def test_the_placement_check_lives_in_the_facet_rule():
+    """A placement check parked outside the rule that grants the facet move is
+    a sentence without a mechanism, so pin it to rule 5."""
+    prompt = build_refinement_prompt(**_kwargs())
+    rule_five = prompt[
+        prompt.index("**5. THE DOMAIN IS FIXED"):prompt.index("**6. FIVE EXITS")]
+    assert "sits under the facet it belongs to" in rule_five
+    assert "saw one facet at a time" in rule_five
+
+
 def test_prompt_names_every_field_the_models_know():
     prompt = build_refinement_prompt(**_kwargs())
     for veld in ("scratchpad", "attributes", "misfits", "action", "facet_name",
