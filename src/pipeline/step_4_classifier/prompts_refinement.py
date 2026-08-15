@@ -61,11 +61,13 @@ class RefinedAttribute(BaseModel):
             "shown in this domain. Naming a different one than the input had "
             "moves the attribute, and its responses move with it"))
     attribute_name: str = Field(
-        ..., description="Short descriptive name for the attribute (2-5 words)")
+        ..., description=(
+            "Short descriptive name for the attribute, in the survey language "
+            "(at most 5 words)"))
     attribute_definition: str = Field(
         ..., description=(
             "What this attribute captures — one concrete, observable property, "
-            "in 1-2 sentences"))
+            "in 1-2 sentences, in the survey language"))
     example_observations: List[str] = Field(
         ..., description=(
             "2-3 representative response texts, copied exactly from the "

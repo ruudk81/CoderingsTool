@@ -51,7 +51,12 @@ class CategoriesConfig:
     #   "ladder"                  — instance → interpretation → abstraction
     #   "idea_interpretation"     — idea → interpretation
     #   "instance_interpretation" — instance → interpretation
-    label_source: str = "idea"
+    #
+    # Production runs on "instance_interpretation": the abstraction rung is the
+    # step-3 model's own generalisation, and feeding it back as the observation
+    # makes step 4 name facets after that generalisation instead of after what
+    # respondents said.
+    label_source: str = "instance_interpretation"
 
     # Optional prefix prepended to each label string before processing.
     label_prefix: str = ""
@@ -131,10 +136,3 @@ class CategoriesConfig:
     # for every value that was not a stop point, and that cost a full run to
     # discover.
     stop_after_phase: Optional[str] = None
-
-
-# =============================================================================
-# PRESETS
-# =============================================================================
-
-DEFAULT_CONFIG = CategoriesConfig()

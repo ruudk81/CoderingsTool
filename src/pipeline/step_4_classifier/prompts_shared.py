@@ -50,7 +50,7 @@ INSTRUCTOR_HINT = (
 # =============================================================================
 
 UNIVERSAL_RULES = """<universal_rules>
-These three rules hold at every level of the taxonomy and for every decision you make here.
+These four rules hold at every level of the taxonomy and for every decision you make here.
 
 1. DESCRIPTIVE, NEVER EVALUATIVE.
    Every name and definition you return states WHAT is being referred to, never how good
@@ -200,8 +200,11 @@ def build_cross_scope_model(item_ids: List[str], noun: str):
 
     item = create_model(
         f"Merged{noun.capitalize()}",
-        name=(str, Field(..., description=f"Short descriptive name for the merged {noun}")),
-        definition=(str, Field(..., description="One sentence naming the single aspect")),
+        name=(str, Field(..., description=(
+            f"Short descriptive name for the merged {noun}, in the survey "
+            f"language (at most 5 words)"))),
+        definition=(str, Field(..., description=(
+            "One sentence naming the single aspect, in the survey language"))),
         source_ids=(List[id_literal], Field(
             ..., description=(
                 f"Every input id that folds into this {noun}, including its own. "

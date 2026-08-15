@@ -48,11 +48,13 @@ if TYPE_CHECKING:
 class DiscoveredAttribute(BaseModel):
     """Een attribuut (L4), zoals één chunk het voorstelt."""
     attribute_name: str = Field(
-        ..., description="Short descriptive name for the attribute (2-5 words)")
+        ..., description=(
+            "Short descriptive name for the attribute, in the survey language "
+            "(at most 5 words)"))
     attribute_definition: str = Field(
         ..., description=(
             "What this attribute captures — one concrete, observable property, "
-            "in 1-2 sentences"))
+            "in 1-2 sentences, in the survey language"))
     example_observations: List[str] = Field(
         ..., description=(
             "2-3 representative observations from the input, using the exact "
@@ -62,11 +64,13 @@ class DiscoveredAttribute(BaseModel):
 class DiscoveredFacet(BaseModel):
     """Een facet (L3) mét de attributen die eronder vallen."""
     facet_name: str = Field(
-        ..., description="Short descriptive name for the facet (2-5 words)")
+        ..., description=(
+            "Short descriptive name for the facet, in the survey language "
+            "(at most 5 words)"))
     facet_definition: str = Field(
         ..., description=(
             "What this facet captures — one clear underlying concept, in 1-2 "
-            "sentences"))
+            "sentences, in the survey language"))
     attributes: List[DiscoveredAttribute] = Field(
         ..., description=(
             "The attributes that fall under this facet. The fewest that cover "
@@ -292,10 +296,10 @@ under each the fewest attributes that cover what it holds.
 Return a JSON object with these fields:
 - `scratchpad`: your reasoning for steps 1-7
 - `facets`: an array, one entry per facet, each with:
-  - `facet_name`: a short descriptive name in {language} (2-5 words)
+  - `facet_name`: a short descriptive name in {language} (at most 5 words)
   - `facet_definition`: what the facet captures, in {language} (1-2 sentences)
   - `attributes`: an array, one entry per attribute inside that facet, each with:
-    - `attribute_name`: a short descriptive name in {language} (2-5 words)
+    - `attribute_name`: a short descriptive name in {language} (at most 5 words)
     - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
     - `example_observations`: 2-3 observations from the input, using the exact observation text
 
@@ -503,12 +507,12 @@ Merging and forgetting look identical in the output unless you list what went wh
 Return a JSON object with these fields:
 - `scratchpad`: your reasoning for steps 1-7
 - `facets`: an array, one entry per surviving facet, each with:
-  - `facet_name`: a short descriptive name in {language} (2-5 words)
+  - `facet_name`: a short descriptive name in {language} (at most 5 words)
   - `facet_definition`: what the facet captures, in {language} (1-2 sentences)
   - `source_facets`: the names of every candidate facet that folded into this one,
     exactly as they were given to you. A facet that survived unchanged lists just itself.
   - `attributes`: an array, one entry per surviving attribute in that facet, each with:
-    - `attribute_name`: a short descriptive name in {language} (2-5 words)
+    - `attribute_name`: a short descriptive name in {language} (at most 5 words)
     - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
     - `example_observations`: 2-3 observations carried over from the candidates, exact text
     - `source_attributes`: the names of every candidate attribute that folded into this one,

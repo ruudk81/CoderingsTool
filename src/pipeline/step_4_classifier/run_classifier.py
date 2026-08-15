@@ -61,8 +61,6 @@ from models import (
 # All defaults defined in config_classifier.py.
 # Override individual params here only for one-off experiments.
 CONFIG = CategoriesConfig(
-    label_source="instance_interpretation",   # zie partition_labels.py: de abstractiesport hoort niet in het label
-    label_prefix="",                   # "" or any static prefix string
     stop_after_phase=STOP_AFTER_PHASE,
 )
 
