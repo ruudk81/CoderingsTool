@@ -21,7 +21,7 @@ for the dimension this run operates under.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -417,6 +417,33 @@ All names, definitions and examples must be written in {language}.
 _EXAMPLES_SHOWN = 3
 
 
+def build_candidate_index(
+    candidates: List[DiscoveredFacet],
+) -> Tuple[Dict[str, DiscoveredFacet],
+           Dict[str, Tuple[str, DiscoveredAttribute]]]:
+    """Stable ids for the candidates of one consolidation call.
+
+    `F1`, and `F1-A1` for the first attribute inside it. Positional and
+    therefore deterministic for a given task, which is all that is needed: the
+    ids exist for the length of one call and are never stored.
+
+    Provenance used to come back as names, and names are not unique. The same
+    attribute name can sit under two different candidate facets — the review
+    that prompted this found two such pairs in one domain — so a claim on a
+    name was ambiguous, and a list of two identical strings is something a JSON
+    layer may quietly collapse to one. Cross-domain consolidation already works
+    on `[A#]` ids for exactly this reason; this brings the phase in line.
+    """
+    facets: Dict[str, DiscoveredFacet] = {}
+    attributes: Dict[str, Tuple[str, DiscoveredAttribute]] = {}
+    for i, facet in enumerate(candidates, 1):
+        facet_id = f"F{i}"
+        facets[facet_id] = facet
+        for j, attribute in enumerate(facet.attributes, 1):
+            attributes[f"{facet_id}-A{j}"] = (facet_id, attribute)
+    return facets, attributes
+
+
 def build_candidate_block(
     candidates: List[DiscoveredFacet],
     recurrence: Dict[str, int],
@@ -443,18 +470,24 @@ def build_candidate_block(
     support for the concept would mislead on exactly the wrong candidates.
     Summing over a group is the model's job, and the prompt asks for it.
     """
+    facets, attributes = build_candidate_index(candidates)
+    by_facet: Dict[str, List[Tuple[str, DiscoveredAttribute]]] = {}
+    for attribute_id, (facet_id, attribute) in attributes.items():
+        by_facet.setdefault(facet_id, []).append((attribute_id, attribute))
+
     blocks = []
-    for i, facet in enumerate(candidates, 1):
+    for facet_id, facet in facets.items():
         seen = recurrence.get(facet.facet_name, 1)
-        lines = [f"[{i}] {facet.facet_name} — proposed under this exact name in "
-                 f"{seen} of {n_passes} independent passes",
+        lines = [f"[{facet_id}] {facet.facet_name} — proposed under this exact "
+                 f"name in {seen} of {n_passes} independent passes",
                  f"    Definition: {facet.facet_definition}"]
-        if facet.attributes:
+        held = by_facet.get(facet_id) or []
+        if held:
             lines.append("    Attributes proposed inside it:")
-            for attribute in facet.attributes:
+            for attribute_id, attribute in held:
                 times = attribute_recurrence.get(attribute.attribute_name, 1)
                 lines.append(
-                    f"      - {attribute.attribute_name} "
+                    f"      [{attribute_id}] {attribute.attribute_name} "
                     f"[{times}/{n_passes} passes]: "
                     f"{attribute.attribute_definition}")
                 examples = [e for e in attribute.example_observations

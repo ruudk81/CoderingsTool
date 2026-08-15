@@ -154,3 +154,50 @@ def test_prune_does_run_once_assignments_exist():
     assert dr.facets == []
     assert "Ecologie" not in dr.attributes
     assert [n for _, _, n in report.attributes] == ["Milieugerichtheid"]
+
+
+def test_drain_share_is_also_reported_per_domain():
+    """The aggregate averages the counter-metric away. Measured 2026-08-14: 7.6%
+    overall while one domain sat at 44.9% — a drain holding half a domain becomes
+    one enormous residual code in step 5, and the run-wide number hid it."""
+    from pipeline.step_4_classifier.drains import make_drain_attribute
+    from pipeline.step_4_classifier.taxonomy_health import measure
+
+    drain = make_drain_attribute("F", "Dutch")
+    dn = drain["attribute_name"]
+
+    def _domain(name, assignments):
+        return DomainResultModel(
+            partition_name=name, n_labels=len(assignments), n_batches=1,
+            facets=[{"facet_name": "F"}],
+            attributes={"F": [{"attribute_name": "Echt"}, drain]},
+            attribute_assignments=assignments)
+
+    tax = TaxonomyResultsCache(
+        partition_set=DomainSet(partitions=[]),
+        partition_results={
+            # 3 of 4 in the drain
+            "vies": _domain("vies", {"a": dn, "b": dn, "c": dn, "d": "Echt"}),
+            # 0 of 4
+            "schoon": _domain("schoon", {"e": "Echt", "f": "Echt",
+                                         "g": "Echt", "h": "Echt"}),
+        })
+    rep = measure(tax)
+
+    assert round(rep.drain_share) == 38          # het middelende totaal
+    per = rep.drain_share_by_domain
+    assert [d for d, *_ in per] == ["vies", "schoon"]   # slechtste eerst
+    assert round(per[0][1]) == 75 and per[0][2:] == (3, 4)
+    assert per[1][1] == 0.0
+    assert any("75.0%" in l and "vies" in l for l in rep.lines())
+
+
+def test_a_domain_without_assigned_ideas_is_left_out():
+    """A share over zero ideas is not a measurement."""
+    from pipeline.step_4_classifier.taxonomy_health import measure
+    tax = TaxonomyResultsCache(
+        partition_set=DomainSet(partitions=[]),
+        partition_results={"leeg": DomainResultModel(
+            partition_name="leeg", n_labels=0, n_batches=1,
+            facets=[], attributes={}, attribute_assignments={})})
+    assert measure(tax).drain_share_by_domain == []

@@ -257,7 +257,7 @@ class ValenceConsolidator:
                 temperature=self._temperature, max_tokens=2000,
                 **get_reasoning_params(self._model, phase="classifier_valence_merge"),
             )
-            return {a.pair_id: (a.attribute_name, a.attribute_description) for a in response.attributes}
+            return {a.pair_id: (a.attribute_name, a.attribute_definition) for a in response.attributes}
         except Exception as e:
             print(f"    P10 rename LLM call failed ({e}); using deterministic fallback names")
             return {}

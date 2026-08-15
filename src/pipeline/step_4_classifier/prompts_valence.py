@@ -26,7 +26,7 @@ class ValenceNeutralAttribute(BaseModel):
             "language (at most 5 words)"
         ),
     )
-    attribute_description: str = Field(
+    attribute_definition: str = Field(
         ...,
         description=(
             "A 1-2 sentence valence-neutral description, in the survey language"

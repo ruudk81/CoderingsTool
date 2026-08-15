@@ -6,7 +6,7 @@ from pipeline.step_4_classifier.classifier import TaxonomyClassifier
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 
 
-def test_elke_fase_heeft_een_modelsleutel():
+def test_every_phase_has_a_model_key():
     """PHASES and the config attributes are one table, not two registers that
     can drift apart."""
     config = CategoriesConfig()

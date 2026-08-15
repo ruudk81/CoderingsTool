@@ -191,6 +191,8 @@ class HealthReport:
     duplicate_attributes: Dict[str, List[str]] = field(default_factory=dict)
     duplicate_facets: Dict[str, List[str]] = field(default_factory=dict)
     n_drain_ideas: int = 0
+    drain_ideas_by_domain: Dict[str, int] = field(default_factory=dict)
+    ideas_by_domain: Dict[str, int] = field(default_factory=dict)
 
     @property
     def solo_facet_share(self) -> float:
@@ -198,13 +200,32 @@ class HealthReport:
 
     @property
     def drain_share(self) -> float:
-        """How much ended up in a catch-all.
+        """How much ended up in a catch-all, over the whole run.
 
         The counter-metric to coarser grouping: every merge that goes too far
         pushes responses into a catch-all, and that is the only signal that does
         not move along with "fewer attributes is better".
+
+        Read `drain_share_by_domain` alongside it. This number averages, and on
+        2026-08-14 that hid the finding: 7.6% overall, while one domain sat at
+        44.9% and another at 25.4% and the rest between 0.3% and 1.6%. A drain
+        holding half a domain becomes one enormous residual code in step 5.
         """
         return 100.0 * self.n_drain_ideas / self.n_ideas if self.n_ideas else 0.0
+
+    @property
+    def drain_share_by_domain(self) -> List[tuple]:
+        """(domain, share, n_drain, n_ideas) per domain, worst first.
+
+        Domains without assigned ideas are left out: a share over zero ideas is
+        not a measurement.
+        """
+        rows = [
+            (d, 100.0 * self.drain_ideas_by_domain.get(d, 0) / n,
+             self.drain_ideas_by_domain.get(d, 0), n)
+            for d, n in self.ideas_by_domain.items() if n
+        ]
+        return sorted(rows, key=lambda r: -r[1])
 
     def lines(self) -> List[str]:
         out = [
@@ -219,6 +240,10 @@ class HealthReport:
             f"  in een vangnet     : {self.n_drain_ideas} ideeën "
             f"({self.drain_share:.1f}% van de toegewezen ideeën)",
         ]
+        # Per domein erbij, slechtste eerst. Het totaal middelt: op 2026-08-14
+        # zag 7,6% er gezond uit terwijl één domein op 44,9% stond.
+        for dname, share, n_drain, n_ideas in self.drain_share_by_domain:
+            out.append(f"       {share:5.1f}%  {n_drain:>4d}/{n_ideas:<5d} {dname}")
         for label, items in (("facet == attribuut", self.facet_equals_attribute),
                              ("lege attributen", self.empty_attributes)):
             for it in items:
@@ -246,8 +271,10 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
         drain_names = {a.get("attribute_name")
                        for attrs in (dr.attributes or {}).values()
                        for a in attrs if a.get("drain_key")}
-        rep.n_drain_ideas += sum(n for name, n in counts.items()
-                                 if name in drain_names)
+        drained = sum(n for name, n in counts.items() if name in drain_names)
+        rep.n_drain_ideas += drained
+        rep.drain_ideas_by_domain[dname] = drained
+        rep.ideas_by_domain[dname] = sum(counts.values())
 
         for fname, attrs in (dr.attributes or {}).items():
             rep.n_facets += 1
