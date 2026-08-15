@@ -24,14 +24,19 @@ VARIABLE = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-LIMIT_N = None     # Limit number of responses for a test run (None = use all)
 
-# None = full pipeline. Otherwise one of the nine phase names:
-#   facet_discovery, facet_consolidation, facet_assignment, facet_refinement,
-#   attribute_discovery, attribute_consolidation, attribute_assignment,
-#   attribute_refinement, valence_merge
+# How many RESPONSES to keep for a test run — a count, or None for all. This is
+# not where you stop after a phase; that is STOP_AFTER_PHASE below.
+LIMIT_N = None
+
+# None = all six phases. Otherwise one of TaxonomyClassifier.PHASES, which is the
+# only place the names live:
+#   discovery, chunk_consolidation, assignment, refinement, cross_domain,
+#   valence_merge
 # An unknown name raises at construction rather than quietly running everything.
-#STOP_AFTER_PHASE = "facet_consolidation"
+#
+# WARNING: a phase stop still writes its partial taxonomy to the cache, over the
+# complete one that was there. Copy data/cache before an early-stop run.
 STOP_AFTER_PHASE = None
 
 import models
@@ -366,14 +371,15 @@ def cache_taxonomy_results(
         cache_manager.save_to_cache(enriched, filename, "taxonomy_classified", variable_key)
         print(f"Growing model cached: {len(enriched)} enriched responses")
 
-    total_facets = sum(
-        len(taxonomy_result.partition_facets.get(name, []))
-        for name in taxonomy_result.partition_facets
-    )
+    # Counted off what was SAVED, not off the result object that went in. Those
+    # two differ whenever prune_empty_nodes drops something, and the old line read
+    # the pre-prune object: a run that pruned its way down to nothing still
+    # reported "55 facets, 179 attributes cached".
+    total_facets = sum(len(dr.facets) for dr in taxonomy_cache.partition_results.values())
     total_attrs = sum(
         len(attrs)
-        for facet_attrs in taxonomy_result.partition_attributes.values()
-        for attrs in facet_attrs.values()
+        for dr in taxonomy_cache.partition_results.values()
+        for attrs in dr.attributes.values()
     )
     print(f"Taxonomy results cached "
           f"({total_facets} facets, {total_attrs} attributes across "
