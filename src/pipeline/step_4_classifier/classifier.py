@@ -83,7 +83,7 @@ from .assignment_batching import group_label_reps
 from models import DomainSet
 from .prompts_shared import build_cross_scope_model
 from .prompts_discovery import (
-    ConsolidationResult, DiscoveredFacet, DiscoveryResult,
+    ConsolidationResult, DiscoveredAttribute, DiscoveredFacet, DiscoveryResult,
     build_candidate_block, build_chunk_consolidation_prompt,
     build_discovery_prompt,
 )
@@ -1009,10 +1009,22 @@ class TaxonomyClassifier:
     ) -> List[DiscoveredFacet]:
         """The settled facets of one group, with unclaimed candidates kept.
 
-        A candidate that appears in no `source_facets` is left standing. Merging
-        and forgetting look identical in the output, so without this a facet the
-        model never judged would vanish — and in a multi-round consolidation it
-        would never come back.
+        A candidate that appears in no `source_*` list is left standing, at BOTH
+        levels. Merging and forgetting look identical in the output, so without
+        this a candidate the model never judged would vanish — and in a
+        multi-round consolidation it would never come back.
+
+        The two levels need separate nets. A facet that folded into a survivor
+        counts as claimed, so its attributes are covered by nothing: the model
+        can absorb the container and drop its contents while the facet-level
+        check still reports full coverage. Those orphans land on whichever
+        survivor absorbed their facet.
+
+        Attribute names are unique within a facet, not within a domain, so the
+        attribute check matches names domain-wide: two candidate facets holding
+        the same attribute name collapse into one claim. That can miss a rescue,
+        never invent a duplicate — the error falls on the safe side. Source ids
+        are what would fix it properly.
         """
         label, candidates = task["domain_label"], task["candidates"]
         if result is None or not result.facets:
@@ -1022,29 +1034,130 @@ class TaxonomyClassifier:
                 "candidates": [c.facet_name for c in candidates]})
             return list(candidates)
 
+        # Rebuilt one level down as well: the response models carry `source_*`,
+        # the structure does not. Converting explicitly keeps that boundary
+        # visible instead of leaving it to what model_dump happens to drop.
         survivors: List[DiscoveredFacet] = [
-            DiscoveredFacet(facet_name=f.facet_name,
-                            facet_definition=f.facet_definition,
-                            attributes=list(f.attributes))
+            DiscoveredFacet(
+                facet_name=f.facet_name,
+                facet_definition=f.facet_definition,
+                attributes=[
+                    DiscoveredAttribute(
+                        attribute_name=a.attribute_name,
+                        attribute_definition=a.attribute_definition,
+                        example_observations=list(a.example_observations))
+                    for a in f.attributes])
             for f in result.facets
         ]
+        by_name = {_norm(s.facet_name): s for s in survivors}
+        home: Dict[str, DiscoveredFacet] = {}
+        for facet, survivor in zip(result.facets, survivors):
+            for source in (facet.source_facets or []):
+                home.setdefault(_norm(source), survivor)
+
+        self._log_unknown_sources(label, result, candidates)
+
+        # ---- facet level ----------------------------------------------------
         claimed = {_norm(s) for f in result.facets for s in (f.source_facets or [])}
         returned = {_norm(f.facet_name) for f in survivors}
+        kept_whole: Set[str] = set()
         for candidate in candidates:
             key = _norm(candidate.facet_name)
             if key in claimed or key in returned:
                 continue
             survivors.append(candidate)
+            kept_whole.add(key)
             self._action_log.append({
                 "action": "facet_kept_unclaimed", "domain": label,
                 "facet": candidate.facet_name})
 
+        # ---- attribute level ------------------------------------------------
+        # A facet kept whole above brings its attributes with it; rescuing them
+        # again would list them twice.
+        claimed_attrs = {_norm(s) for f in result.facets
+                         for a in f.attributes for s in (a.source_attributes or [])}
+        returned_attrs = {_norm(a.attribute_name)
+                          for f in result.facets for a in f.attributes}
+        rescued = 0
+        for candidate in candidates:
+            facet_key = _norm(candidate.facet_name)
+            if facet_key in kept_whole:
+                continue
+            landing = home.get(facet_key) or by_name.get(facet_key)
+            for attribute in candidate.attributes:
+                key = _norm(attribute.attribute_name)
+                if key in claimed_attrs or key in returned_attrs:
+                    continue
+                if landing is None:
+                    self._action_log.append({
+                        "action": "attribute_dropped_unroutable", "domain": label,
+                        "facet": candidate.facet_name,
+                        "attribute": attribute.attribute_name,
+                        "note": "source facet claimed by no survivor"})
+                    continue
+                landing.attributes.append(attribute)
+                claimed_attrs.add(key)
+                rescued += 1
+                self._action_log.append({
+                    "action": "attribute_kept_unclaimed", "domain": label,
+                    "facet": candidate.facet_name,
+                    "attribute": attribute.attribute_name,
+                    "landed_on": landing.facet_name})
+
+        self._log_consolidation_provenance(label, result)
         self._action_log.append({
             "action": "chunk_consolidation", "domain": label,
             "facets_before": len(candidates), "facets_after": len(survivors),
             "attributes_before": sum(len(c.attributes) for c in candidates),
-            "attributes_after": sum(len(s.attributes) for s in survivors)})
+            "attributes_after": sum(len(s.attributes) for s in survivors),
+            "attributes_rescued": rescued})
         return survivors
+
+    def _log_unknown_sources(
+        self, label: str, result, candidates: List[DiscoveredFacet],
+    ) -> None:
+        """Sources the model named that were never among its candidates.
+
+        Refinement already reports this; consolidation did not, so a source name
+        the model invented — or garbled — was indistinguishable from one it
+        matched. An invented name claims nothing, which silently turns the
+        candidate it was meant to cover into an unclaimed one.
+        """
+        known_facets = {_norm(c.facet_name) for c in candidates}
+        known_attrs = {_norm(a.attribute_name)
+                       for c in candidates for a in c.attributes}
+        facets = sorted({s for f in result.facets
+                         for s in (f.source_facets or [])
+                         if _norm(s) not in known_facets})
+        attributes = sorted({s for f in result.facets for a in f.attributes
+                             for s in (a.source_attributes or [])
+                             if _norm(s) not in known_attrs})
+        if not facets and not attributes:
+            return
+        self._action_log.append({
+            "action": "unknown_source_name", "domain": label,
+            "facets": facets, "attributes": attributes,
+            "note": "named as a source but not among this domain's candidates"})
+
+    def _log_consolidation_provenance(self, label: str, result) -> None:
+        """Which candidate went where, at both levels.
+
+        The `source_*` fields cost the model real effort and then die with the
+        phase: survivors are rebuilt as plain structure, which has no room for
+        them. Without this record the action log states that forty facets became
+        twelve, but not which one absorbed which — and that is exactly what is
+        needed to tell a changed rule from a changed run.
+        """
+        self._action_log.append({
+            "action": "consolidation_provenance", "domain": label,
+            "facets": [
+                {"facet": f.facet_name,
+                 "source_facets": list(f.source_facets or []),
+                 "attributes": [
+                     {"attribute": a.attribute_name,
+                      "source_attributes": list(a.source_attributes or [])}
+                     for a in f.attributes]}
+                for f in result.facets]})
 
     async def _run_chunk_consolidation(
         self, ctx: PromptContext, raw: Dict[str, List[DiscoveredFacet]],

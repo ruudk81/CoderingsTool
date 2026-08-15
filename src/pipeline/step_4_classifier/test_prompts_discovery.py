@@ -36,7 +36,7 @@ def _kwargs(**overrides):
 # HET RESPONSEMODEL
 # =============================================================================
 
-def test_resultaat_is_scratchpad_plus_facetten():
+def test_the_result_is_scratchpad_plus_facets():
     assert set(DiscoveryResult.model_fields) == {"scratchpad", "facets"}
 
 

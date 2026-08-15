@@ -11,6 +11,7 @@ from pipeline.step_4_classifier.classifier import (
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.drains import is_drain_item
 from pipeline.step_4_classifier.prompts_discovery import (
+    ConsolidatedAttribute, ConsolidatedFacet, ConsolidationResult,
     DiscoveredAttribute, DiscoveredFacet,
 )
 
@@ -51,7 +52,7 @@ def _structure(facets_per_domain):
 # DISCOVERY
 # =============================================================================
 
-def test_discovery_slaat_de_vangnetdomeinen_over():
+def test_discovery_skips_the_catch_all_domains():
     """Step 3 defines them as deliberately broad catch-alls; imposing structure
     on them invents distinctions the responses do not carry."""
     ctx = _ctx({"inhoud": ["a"], "Overig": ["b"]}, drains=["overig"])
@@ -59,7 +60,7 @@ def test_discovery_slaat_de_vangnetdomeinen_over():
     assert {t["domain_label"] for t in tasks} == {"inhoud"}
 
 
-def test_vangnet_match_is_hoofdletterongevoelig():
+def test_catch_all_matching_is_case_insensitive():
     """Step 3 writes the label capitalised, domain discovery lowercases the
     partition name. An exact match found neither, silently."""
     ctx = _ctx({"Overig": ["b"]}, drains=["overig"])
@@ -67,7 +68,7 @@ def test_vangnet_match_is_hoofdletterongevoelig():
     assert _clf()._build_discovery_tasks(ctx) == []
 
 
-def test_kleine_scope_krijgt_een_chunk():
+def test_a_small_scope_gets_one_chunk():
     tasks = _clf()._build_discovery_tasks(_ctx({"d": ["a", "b", "c"]}))
     assert len(tasks) == 1
     assert tasks[0]["total_chunks"] == 1
@@ -86,7 +87,7 @@ def test_a_large_scope_is_chunked_with_overlap():
 # CONSOLIDATIEGROEPEN
 # =============================================================================
 
-def test_groepen_tellen_attributen_niet_facetten():
+def test_groups_count_attributes_not_facets():
     """Thirty facets falls under the cap while five hundred attributes can hang
     beneath them, and that is where the judgement gives way."""
     clf = _clf(consolidation_max_items_per_call=10)
@@ -127,6 +128,127 @@ def test_candidates_are_sorted_by_name_before_grouping():
 
 
 # =============================================================================
+# CONSOLIDATIE-OVERLEVENDEN
+# =============================================================================
+
+def _survivor(name, *attrs, sources=(), attr_sources=None):
+    """One returned facet, with what it claims at both levels."""
+    attr_sources = attr_sources or {}
+    return ConsolidatedFacet(
+        facet_name=name, facet_definition="d",
+        source_facets=list(sources) or [name],
+        attributes=[ConsolidatedAttribute(
+            attribute_name=a, attribute_definition="d",
+            example_observations=["e"],
+            source_attributes=list(attr_sources.get(a, [a]))) for a in attrs])
+
+
+def _survivors(clf, candidates, facets):
+    task = {"domain_label": "d", "candidates": candidates}
+    return clf._consolidation_survivors(task, ConsolidationResult(
+        scratchpad="", facets=facets))
+
+
+def _actions(clf, action):
+    return [e for e in clf._action_log if e["action"] == action]
+
+
+def test_an_unclaimed_facet_stays():
+    """Merging and forgetting look identical in the output; without the net a
+    facet the model never judged would vanish for good."""
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Bejegening", "toon")]
+    overlevenden = _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid"])])
+    assert {f.facet_name for f in overlevenden} == {"Snelheid", "Bejegening"}
+    assert _actions(clf, "facet_kept_unclaimed")[0]["facet"] == "Bejegening"
+
+
+def test_an_attribute_under_a_claimed_facet_stays():
+    """The facet-level net reports full coverage here: the model absorbed the
+    container and dropped its contents, and only an attribute-level check sees
+    that."""
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd", "doorlooptijd")]
+    overlevenden = _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid"])])
+    assert len(overlevenden) == 1
+    assert [a.attribute_name for a in overlevenden[0].attributes] == [
+        "wachttijd", "doorlooptijd"]
+    gered = _actions(clf, "attribute_kept_unclaimed")[0]
+    assert gered["attribute"] == "doorlooptijd"
+    assert gered["landed_on"] == "Snelheid"
+
+
+def test_a_rescued_attribute_lands_on_the_survivor_that_absorbed_its_facet():
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Tempo", "doorlooptijd")]
+    overlevenden = _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid", "Tempo"])])
+    assert len(overlevenden) == 1
+    assert _actions(clf, "attribute_kept_unclaimed")[0]["landed_on"] == "Snelheid"
+
+
+def test_a_wholly_kept_facet_brings_its_attributes_once():
+    """Rescuing them again would list them twice."""
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Bejegening", "toon")]
+    overlevenden = _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid"])])
+    namen = [a.attribute_name for f in overlevenden for a in f.attributes]
+    assert namen.count("toon") == 1
+    assert not _actions(clf, "attribute_kept_unclaimed")
+
+
+def test_a_relocated_attribute_counts_as_claimed():
+    """Step 6 may move an attribute to the facet where it belongs; the claim is
+    domain-wide, so that is not a loss."""
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Bejegening", "toon")]
+    overlevenden = _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid"]),
+        _survivor("Bejegening", "toon", sources=["Bejegening"])])
+    assert not _actions(clf, "attribute_kept_unclaimed")
+    assert sum(len(f.attributes) for f in overlevenden) == 2
+
+
+def test_an_invented_source_name_is_reported():
+    """An invented source claims nothing, which silently turns the candidate it
+    was meant to cover into an unclaimed one."""
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd")]
+    _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid", "Vlotheid"])])
+    assert _actions(clf, "unknown_source_name")[0]["facets"] == ["Vlotheid"]
+
+
+def test_provenance_pins_both_levels():
+    """Survivors are rebuilt as plain structure, so `source_*` dies with the
+    phase unless the action log keeps it."""
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Tempo", "doorlooptijd")]
+    _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid", "Tempo"],
+                  attr_sources={"wachttijd": ["wachttijd", "doorlooptijd"]})])
+    entry = _actions(clf, "consolidation_provenance")[0]["facets"][0]
+    assert entry["source_facets"] == ["Snelheid", "Tempo"]
+    assert entry["attributes"][0]["source_attributes"] == [
+        "wachttijd", "doorlooptijd"]
+
+
+def test_the_structure_carries_no_source_fields():
+    """The response model describes what an LLM proposed; the structure is a
+    different thing and must not inherit its bookkeeping."""
+    clf = _clf()
+    overlevenden = _survivors(clf, [_facet("Snelheid", "wachttijd")], [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid"])])
+    kaart = overlevenden[0].model_dump()
+    assert "source_facets" not in kaart
+    assert set(kaart["attributes"][0]) == {
+        "attribute_name", "attribute_definition", "example_observations"}
+
+
+# =============================================================================
 # TOEWIJZING
 # =============================================================================
 
@@ -147,7 +269,7 @@ def test_a_menu_of_one_gets_no_task():
     assert tasks == []
 
 
-def test_menu_is_domeinbreed_en_per_facet_gegroepeerd():
+def test_the_menu_is_domain_wide_and_grouped_per_facet():
     structure = _structure({"d": [_facet("f1", "a1"), _facet("f2", "a2")]})
     tasks = _clf()._build_assignment_tasks(
         _ctx({"d": []}), structure, {"d": {"i1": "x"}})
@@ -169,7 +291,7 @@ def test_every_facet_gets_an_other_and_every_domain_an_other_facet():
         assert any(is_drain_item(a) for a in facet["attributes"]), facet["facet_name"]
 
 
-def test_vangnetten_komen_na_consolidatie_niet_ervoor():
+def test_catch_alls_arrive_after_consolidation_not_before():
     """Consolidation judges what the passes proposed; a bucket that exists by
     construction is not a proposal."""
     clf = _clf()
@@ -216,7 +338,7 @@ def test_facet_cards_do_not_carry_their_attributes():
 # STOPPUNTEN
 # =============================================================================
 
-def test_elke_fasenaam_is_een_geldig_stoppunt():
+def test_every_phase_name_is_a_valid_stop_point():
     for phase in TaxonomyClassifier.PHASES:
         _clf(stop_after_phase=phase)
 
@@ -273,7 +395,7 @@ def test_nul_limieten_vallen_terug_op_de_fallback(monkeypatch):
 # TELLEN
 # =============================================================================
 
-def test_telling_scheidt_vangnetten_van_echte_items():
+def test_the_count_separates_catch_alls_from_real_items():
     """A phase that counts the catch-alls next to a phase that does not reads as
     growth that is not there."""
     from pipeline.step_4_classifier.classifier import count_structure, format_counts
@@ -287,6 +409,6 @@ def test_telling_scheidt_vangnetten_van_echte_items():
         "1 facets, 2 attributes (+1 catch-all facets, 2 catch-all attributes)")
 
 
-def test_telling_zonder_vangnetten_noemt_ze_niet():
+def test_a_count_without_catch_alls_does_not_mention_them():
     from pipeline.step_4_classifier.classifier import format_counts
     assert format_counts(_structure({"d": [_facet("f", "a")]})) == "1 facets, 1 attributes"

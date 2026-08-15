@@ -56,20 +56,20 @@ def _kwargs(**overrides):
 # HET KANDIDATENBLOK
 # =============================================================================
 
-def test_kandidatenblok_toont_chunk_prevalentie_per_facet():
+def test_the_candidate_block_shows_chunk_prevalence_per_facet():
     block = build_candidate_block(CANDIDATES, RECURRENCE, 6)
     assert "Proposed in 4 of 6 independent passes" in block
     assert "Proposed in 1 of 6 independent passes" in block
 
 
-def test_kandidatenblok_toont_de_attributen_genest():
+def test_the_candidate_block_shows_the_attributes_nested():
     block = build_candidate_block(CANDIDATES, RECURRENCE, 6)
     assert "Wachttijd" in block
     assert "Doorlooptijd" in block
     assert block.index("Snelheid") < block.index("Wachttijd")
 
 
-def test_kandidaat_zonder_telling_valt_terug_op_een_pas():
+def test_a_candidate_without_a_count_falls_back_to_one_pass():
     block = build_candidate_block([_facet("Nieuw", "A")], {}, 6)
     assert "Proposed in 1 of 6 independent passes" in block
 
@@ -83,21 +83,21 @@ def test_a_candidate_without_attributes_does_not_break_the_block():
 # PROMPT ↔ MODEL SLUITEN AAN
 # =============================================================================
 
-def test_resultaat_is_scratchpad_plus_facetten():
+def test_the_result_is_scratchpad_plus_facets():
     assert set(ConsolidationResult.model_fields) == {"scratchpad", "facets"}
 
 
-def test_geconsolideerd_facet_zegt_wat_erin_is_opgegaan():
+def test_a_consolidated_facet_states_what_folded_into_it():
     """Without this field a merged candidate looks identical to a forgotten one:
     neither appears in the answer."""
     assert "source_facets" in ConsolidatedFacet.model_fields
 
 
-def test_geconsolideerd_attribuut_zegt_hetzelfde_een_niveau_lager():
+def test_a_consolidated_attribute_says_the_same_one_level_down():
     assert "source_attributes" in ConsolidatedAttribute.model_fields
 
 
-def test_geconsolideerd_facet_draagt_geconsolideerde_attributen():
+def test_a_consolidated_facet_carries_consolidated_attributes():
     item = ConsolidatedFacet(
         facet_name="Snelheid", facet_definition="…", source_facets=["Snelheid"],
         attributes=[ConsolidatedAttribute(
@@ -130,14 +130,14 @@ def test_prompt_eindigt_op_de_instructor_zin():
 # DE VIER REGELS EN HUN PRECEDENTIE
 # =============================================================================
 
-def test_prompt_draagt_de_vier_groeperingsregels():
+def test_the_prompt_carries_the_four_grouping_rules():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     for regel in ("UNDERLYING QUESTION FIRST", "PREVALENCE SETS GRANULARITY",
                   "LIFT, DON'T FLATTEN", "PLAIN, MEANINGFUL LABELS"):
         assert regel in prompt, regel
 
 
-def test_prompt_noemt_de_precedentie_expliciet():
+def test_the_prompt_states_the_precedence_explicitly():
     """Zonder rangorde vechten de regels; met rangorde wint orthogonaliteit."""
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     assert "Precedence when rules conflict" in prompt
@@ -182,10 +182,10 @@ def test_prompt_kent_geen_lens():
     assert "Lens" not in build_chunk_consolidation_prompt(**_kwargs())
 
 
-def test_prompt_draagt_de_universele_regels():
+def test_the_prompt_carries_the_universal_rules():
     assert "<universal_rules>" in build_chunk_consolidation_prompt(**_kwargs())
 
 
-def test_prompt_zonder_uitsluitingen_blijft_geldig():
+def test_a_prompt_without_exclusions_stays_valid():
     prompt = build_chunk_consolidation_prompt(**_kwargs(domain_exclusions=[]))
     assert prompt.rstrip().endswith(INSTRUCTOR_HINT)
