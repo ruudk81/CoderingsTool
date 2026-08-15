@@ -8,9 +8,15 @@ from pipeline.step_4_classifier.prompts_consolidation import (
     ConsolidatedAttribute,
     ConsolidatedFacet,
     ConsolidationResult,
+    FacetConsolidationResult,
+    FacetPool,
+    SettledFacet,
     build_candidate_block,
     build_candidate_index,
     build_chunk_consolidation_prompt,
+    build_facet_candidate_block,
+    build_facet_candidate_index,
+    build_facet_consolidation_prompt,
 )
 from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
 
@@ -372,3 +378,135 @@ def test_disposition_action_and_outcome_stay_apart():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     assert "different KINDS of statement" in prompt
     assert "Do not infer one from another either" in prompt
+
+
+def _pool(name, *attr_names, question=""):
+    return FacetPool(
+        facet_name=name,
+        facet_definition=f"Wat {name} vastlegt.",
+        facet_question=question,
+        attributes=[DiscoveredAttribute(
+            attribute_name=a,
+            attribute_definition=f"De eigenschap {a}.",
+            example_observations=[f"observatie over {a}"],
+        ) for a in attr_names],
+    )
+
+
+POOLS = [
+    _pool("Snelheid", "Wachttijd", "Doorlooptijd"),
+    _pool("Snelheid van afhandeling", "Wachttijd"),
+    _pool("Bejegening", "Vriendelijkheid"),
+]
+
+
+def _facet_kwargs(**overrides):
+    base = dict(
+        language="Dutch",
+        survey_question="Waar denkt u aan?",
+        sector="finance", entity="asn_bank", topic="brand_association",
+        perspective="consumer", intent="associate",
+        dimension=DIM,
+        dimension_name=DIM.key,
+        dimension_description=DIM.dimension_description,
+        domain_label="dienstverlening",
+        domain_definition="Alles wat de organisatie aanbiedt en levert.",
+        domain_exclusions=["prijs en kosten"],
+        candidate_block=build_facet_candidate_block(POOLS, RECURRENCE, 6),
+    )
+    base.update(overrides)
+    return base
+
+
+# =============================================================================
+# THE FACET PHASE
+# =============================================================================
+
+def test_facet_ids_are_positional_and_stable():
+    index = build_facet_candidate_index(POOLS)
+    assert list(index) == ["F1", "F2", "F3"]
+    assert index["F2"].facet_name == "Snelheid van afhandeling"
+
+
+def test_the_facet_block_shows_prevalence_per_facet():
+    block = build_facet_candidate_block(POOLS, RECURRENCE, 6)
+    assert "proposed under this exact name in 4 of 6 independent passes" in block
+    assert "proposed under this exact name in 1 of 6 independent passes" in block
+
+
+def test_the_facet_block_names_the_attributes_as_evidence():
+    """A facet is only a good facet if what sits under it is one kind of thing.
+    The names are shown for that judgement — they are not what this call
+    returns."""
+    block = build_facet_candidate_block(POOLS, RECURRENCE, 6)
+    assert "Wachttijd" in block
+    assert "Doorlooptijd" in block
+
+
+def test_the_facet_block_leaves_out_definitions_and_examples():
+    """Evidence, not material to consolidate: rendering each attribute in full
+    is what made this call carry two jobs at once."""
+    block = build_facet_candidate_block(POOLS, RECURRENCE, 6)
+    assert "De eigenschap Wachttijd" not in block
+    assert "observatie over Wachttijd" not in block
+
+
+def test_a_pool_carries_its_question_once_a_round_has_set_one():
+    block = build_facet_candidate_block(
+        [_pool("Snelheid", "Wachttijd", question="Hoe snel ging het?")],
+        RECURRENCE, 6)
+    assert "Hoe snel ging het?" in block
+
+
+def test_the_facet_result_is_a_decision_summary_plus_facets():
+    assert set(FacetConsolidationResult.model_fields) == {
+        "decision_summary", "facets"}
+
+
+def test_a_consolidated_facet_carries_no_attributes():
+    """The whole point of the split: this call decides the inventory, not what
+    hangs under it."""
+    assert "attributes" not in SettledFacet.model_fields
+
+
+def test_a_consolidated_facet_states_its_question_and_its_sources():
+    assert "facet_question" in SettledFacet.model_fields
+    assert "source_facet_ids" in SettledFacet.model_fields
+
+
+def test_the_facet_prompt_names_every_field_of_its_model():
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    for field in ("decision_summary", "facets", "facet_name",
+                  "facet_definition", "facet_question", "source_facet_ids"):
+        assert field in prompt
+
+
+def test_the_facet_prompt_asks_for_no_attribute_field():
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "source_attribute_ids" not in prompt
+
+
+def test_the_facet_prompt_carries_the_merge_test():
+    """Facet merging had no test at all while the merge test sat under the
+    attribute step."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "MERGE TEST" in prompt
+
+
+def test_the_facet_prompt_does_not_ask_for_a_placement_check():
+    """Placement moved to refinement, which is domain-scoped and can move an
+    attribute between facets."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "must sit inside the facet" not in prompt
+
+
+def test_the_facet_prompt_ends_on_the_universal_rules_and_the_hint():
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert prompt.rstrip().endswith(INSTRUCTOR_HINT)
+    assert "DESCRIPTIVE, NEVER EVALUATIVE" in prompt
+
+
+def test_the_facet_prompt_asks_coverage_on_ids():
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "source_facet_ids" in prompt
+    assert "never on names" in prompt
