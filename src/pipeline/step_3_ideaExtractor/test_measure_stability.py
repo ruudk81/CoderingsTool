@@ -1,7 +1,7 @@
-"""Tests voor de meetfuncties van measure_stability.py — geen cache, geen LLM.
+"""Tests for the measuring functions of measure_stability.py — no cache, no LLM.
 
-De ARI is met de hand geschreven en draagt de conclusie over partitiestabiliteit.
-Een meetlat die zelf niet geijkt is, levert getallen op die niemand kan wegen.
+The ARI is hand-written and carries the conclusion about partition stability. A
+yardstick that is not itself calibrated yields numbers nobody can weigh.
 """
 
 import math
@@ -73,7 +73,8 @@ def test_noise_floor_counts_only_the_minority_side():
 
 
 def test_texts_occurring_once_are_not_measurable():
-    """Zonder herhaling is er geen ijkpunt — die tellen niet mee in de noemer."""
+    """Without repetition there is no reference point — those do not count in
+    the denominator."""
     snap = _snap(
         {"1": "A", "2": "B", "3": "A", "4": "A"},
         {"1": "uniek", "2": "ook uniek", "3": "bank", "4": "bank"},
@@ -103,8 +104,8 @@ def test_no_repeated_texts_at_all_reports_zero_not_a_crash():
 # ── Tolerante lezing van vóór-hernoeming snapshots (bare_evaluation_pct) ────
 #
 # `data/step3_stability.jsonl` is append-only geschiedenis en wordt nooit
-# herschreven — negen rijen daarin dragen nog het veld onder de oude naam.
-# Nieuwe snapshots schrijven alleen `not_known_pct`; het lezen moet met
+# rewritten — nine rows in it still carry the field under the old name.
+# New snapshots write only `not_known_pct`; the reading has to cope with
 # beide overweg kunnen.
 
 def _full_snap(recorded_at, not_known_field, not_known_value):
@@ -133,9 +134,9 @@ def test_not_known_pct_prefers_the_new_field_but_falls_back_to_the_old_one():
 
 
 def test_print_comparison_reads_mixed_old_and_new_snapshots_without_raising(capsys):
-    """De regressie: print_comparison() las `snap['not_known_pct']` onvoorwaardelijk,
-    dus een vergelijking die een vóór-hernoeming rij bevat gaf een KeyError in
-    plaats van een tabel.
+    """The regression: print_comparison() read `snap['not_known_pct']`
+    unconditionally, so a comparison containing a pre-rename row gave a KeyError
+    instead of a table.
     """
     old_row = _full_snap("2026-08-01T10:00:00", "bare_evaluation_pct", 18.3)
     new_row = _full_snap("2026-08-12T10:00:00", "not_known_pct", 12.5)

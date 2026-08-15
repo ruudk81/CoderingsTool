@@ -13,7 +13,7 @@ from pipeline.step_4_classifier.drains import (
 # CONSTRUCTIE
 # =============================================================================
 
-def test_drain_attribuut_draagt_sleutel_vlag_naam_en_definitie():
+def test_a_drain_attribute_carries_key_flag_name_and_definition():
     item = make_drain_attribute("Bereikbaarheid", "Dutch")
     assert item["drain_key"] == DRAIN_ATTRIBUTE_KEY
     assert item["is_drain"] is True
@@ -21,7 +21,7 @@ def test_drain_attribuut_draagt_sleutel_vlag_naam_en_definitie():
     assert item["attribute_definition"].strip()
 
 
-def test_drain_facet_draagt_sleutel_vlag_naam_en_definitie():
+def test_a_drain_facet_carries_key_flag_name_and_definition():
     item = make_drain_facet("Dienstverlening", "Dutch")
     assert item["drain_key"] == DRAIN_FACET_KEY
     assert item["is_drain"] is True
@@ -29,7 +29,7 @@ def test_drain_facet_draagt_sleutel_vlag_naam_en_definitie():
     assert item["facet_definition"].strip()
 
 
-def test_drain_facet_brengt_zijn_eigen_attribuut_mee():
+def test_a_drain_facet_brings_its_own_attribute():
     """An idea that fits no facet must still get an attribute — otherwise the
     domain catch-all is itself a hole."""
     item = make_drain_facet("Dienstverlening", "Dutch")
@@ -45,7 +45,7 @@ def test_name_follows_the_survey_language_with_english_fallback():
     assert onbekend == en
 
 
-def test_de_twee_sleutels_verschillen():
+def test_the_two_keys_differ():
     assert DRAIN_ATTRIBUTE_KEY != DRAIN_FACET_KEY
 
 
@@ -53,7 +53,7 @@ def test_de_twee_sleutels_verschillen():
 # HERKENNING
 # =============================================================================
 
-def test_gewoon_item_is_geen_drain():
+def test_an_ordinary_item_is_not_a_drain():
     assert is_drain_item({"attribute_name": "Wachttijd"}) is False
 
 
@@ -123,7 +123,7 @@ def test_cleanup_does_not_mutate_the_input():
     assert len(facets["D"]) == before
 
 
-def test_drainfacet_en_zijn_attribuut_delen_naam_en_definitie():
+def test_a_drain_facet_and_its_attribute_share_name_and_definition():
     """It is one bucket, not two. An invented distinction (a doubly-residual
     name) promised a refinement that is not there."""
     facet = make_drain_facet("dienstverlening", "Dutch")

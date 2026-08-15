@@ -14,7 +14,7 @@ def test_elke_fase_heeft_een_modelsleutel():
         assert hasattr(config, f"model_{phase}"), phase
 
 
-def test_geen_modelsleutel_zonder_fase():
+def test_no_model_key_without_a_phase():
     config = CategoriesConfig()
     model_attrs = {a[len("model_"):] for a in vars(CategoriesConfig)
                    if a.startswith("model_")}
@@ -51,13 +51,13 @@ def test_batch_en_shortlistknoppen_zijn_weg():
         assert verdwenen not in attrs, verdwenen
 
 
-def test_stopfase_neemt_een_naam():
+def test_the_stop_phase_takes_a_name():
     config = CategoriesConfig()
     assert config.stop_after_phase is None
     TaxonomyClassifier(CategoriesConfig(stop_after_phase="discovery"))
 
 
-def test_onbekende_stopfase_is_een_valueerror():
+def test_an_unknown_stop_phase_is_a_valueerror():
     """The numeric predecessor ran the full pipeline for every value that was
     not a stop point, and that cost a full run to discover."""
     with pytest.raises(ValueError):

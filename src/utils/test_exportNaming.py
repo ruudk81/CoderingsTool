@@ -1,9 +1,9 @@
-"""Tests voor de canonieke exportnaam.
+"""Tests for the canonical export name.
 
-De fixtures zijn synthetisch (M000000-reeks, zie saveVerbose.py en concatOpenEnds.py).
-Wat hier getest wordt is het formaat, niet een dataset: de parser kent de vorm
-`M<nummer> <omschrijving>`, niet welk onderzoek erachter zit. Gebruik daarom nooit
-een echte bestandsnaam als fixture.
+The fixtures are synthetic (M000000 series, see saveVerbose.py and
+concatOpenEnds.py). What is tested here is the format, not a dataset: the parser
+knows the shape `M<number> <description>`, not which study sits behind it. So
+never use a real file name as a fixture.
 """
 
 import pytest
@@ -82,7 +82,7 @@ def test_longest_doctype_wins():
 
 
 def test_longest_dataset_wins():
-    """De langere datasetnaam begint met de kortere; die mag niet winnen."""
+    """The longer dataset name starts with the shorter one; that must not win."""
     naam = export_filename(
         "M000002 Associatiemonitor Merk X tabellenbestand vergelijkend met Qd1.sav",
         "Qd1", 4586, "codeboek", "sav")
@@ -114,7 +114,7 @@ def test_legacy_names_do_not_parse():
 
 
 def test_sample_must_be_a_number_or_full():
-    """Anders leest een restant als een analyse met een verzonnen steekproef."""
+    """Otherwise a leftover reads as an analysis with an invented sample."""
     assert parse_export_filename("d_Q1_2500 v1_codeboek.xlsx", ["d.sav"]) is None
     assert parse_export_filename("d_Q1_kladversie_codeboek.xlsx", ["d.sav"]) is None
     assert parse_export_filename("d_Q1_2500_codeboek.xlsx", ["d.sav"]).sample == "2500"

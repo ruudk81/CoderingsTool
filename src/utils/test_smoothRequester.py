@@ -1,9 +1,8 @@
-"""Tests voor de dispatch-spreiding van SmoothRequester.
+"""Tests for SmoothRequester's dispatch spread.
 
-De spreiding bestaat om één ding te voorkomen: dat de eerste golf zware
-requests als één muur bij de server aankomt. Twee dingen gingen daarin mis en
-worden hier vastgelegd — hij stond aan op een geleende schatting, en hij stopte
-nooit.
+The spread exists to prevent one thing: the first wave of heavy requests arriving
+at the server as a single wall. Two things went wrong there and are pinned here —
+it was switched on by a borrowed estimate, and it never stopped.
 """
 import pytest
 
@@ -17,7 +16,7 @@ from utils.smoothRequester import (
 
 
 def _requester(monkeypatch, *, p50, origin, num_tasks=1451):
-    """Een requester met een voorgeschreven warm start, zonder netwerk."""
+    """A requester with a prescribed warm start, without a network."""
     pred = Prediction()
     pred.p50_latency_s = p50
     pred.avg_tokens = 1500
@@ -39,10 +38,10 @@ def _requester(monkeypatch, *, p50, origin, num_tasks=1451):
 # FIX 2 — niet spreiden op een geleende schatting
 # =============================================================================
 
-def test_geen_spreiding_wanneer_de_schatting_uit_de_pool_komt():
-    """Zonder eigen historie is de tokenschatting een gemiddelde over fasen die
-    1,5k en 5,5k tokens doen. Een lichte fase erft dan de voorzichtigheid van
-    een zware — dat kostte op 2026-08-13 zes minuten op 8% tokenbudget."""
+def test_no_spread_when_the_estimate_comes_from_the_pool():
+    """Without its own history the token estimate is an average over phases doing
+    1.5k and 5.5k tokens. A light phase then inherits a heavy one's caution — that
+    cost six minutes on 8% of the token budget on 2026-08-13."""
     def check(monkeypatch):
         r = _requester(monkeypatch, p50=7.85, origin="pool")
         assert r._dispatch_delay == 0.0
@@ -50,22 +49,22 @@ def test_geen_spreiding_wanneer_de_schatting_uit_de_pool_komt():
         check(mp)
 
 
-def test_wel_spreiding_wanneer_de_fase_zichzelf_zwaar_heeft_getoond():
+def test_spread_when_the_phase_has_shown_itself_heavy():
     with pytest.MonkeyPatch.context() as mp:
         r = _requester(mp, p50=17.0, origin="phase")
         verwacht = (17.0 - DISPATCH_DELAY_P50_THRESHOLD) / DISPATCH_DELAY_SPREAD_FACTOR
         assert r._dispatch_delay == pytest.approx(verwacht)
 
 
-def test_lichte_fase_met_eigen_historie_spreidt_niet():
+def test_a_light_phase_with_its_own_history_does_not_spread():
     """Onder de drempel is er niets te ontzien."""
     with pytest.MonkeyPatch.context() as mp:
         r = _requester(mp, p50=2.8, origin="phase")
         assert r._dispatch_delay == 0.0
 
 
-def test_zonder_p50_geen_spreiding():
-    """Een koude fase gokt niet dat ze zwaar is."""
+def test_without_a_p50_there_is_no_spread():
+    """A cold phase does not guess that it is heavy."""
     with pytest.MonkeyPatch.context() as mp:
         r = _requester(mp, p50=None, origin="phase")
         assert r._dispatch_delay == 0.0
@@ -75,7 +74,7 @@ def test_zonder_p50_geen_spreiding():
 # FIX 1 — spreiden stopt zodra de pijplijn vol is
 # =============================================================================
 
-def test_spreiding_geldt_tijdens_het_vullen():
+def test_the_spread_applies_while_filling():
     with pytest.MonkeyPatch.context() as mp:
         r = _requester(mp, p50=17.0, origin="phase")
         r.optimal_concurrency = 200
@@ -84,9 +83,9 @@ def test_spreiding_geldt_tijdens_het_vullen():
         assert r._stagger_target(199) == pytest.approx(1000.0 + 199 * r._dispatch_delay)
 
 
-def test_spreiding_stopt_zodra_de_pijplijn_vol_is():
-    """De teller liep door over de hele fase en werd daarmee een permanent
-    doorvoerplafond van 1/delay, dat niets van RPM of TPM weet."""
+def test_the_spread_stops_once_the_pipeline_is_full():
+    """The counter ran on across the whole phase and thereby became a permanent
+    throughput ceiling of 1/delay, which knows nothing of RPM or TPM."""
     with pytest.MonkeyPatch.context() as mp:
         r = _requester(mp, p50=17.0, origin="phase")
         r.optimal_concurrency = 200
@@ -95,7 +94,7 @@ def test_spreiding_stopt_zodra_de_pijplijn_vol_is():
         assert r._stagger_target(1450) is None
 
 
-def test_eerste_dispatch_wacht_nooit():
+def test_the_first_dispatch_never_waits():
     with pytest.MonkeyPatch.context() as mp:
         r = _requester(mp, p50=17.0, origin="phase")
         r.optimal_concurrency = 200
@@ -112,8 +111,8 @@ def test_zonder_vertraging_wacht_niemand():
 
 
 def test_concurrency_nul_blokkeert_niet():
-    """optimal_concurrency staat op 0 tot _probe_and_setup draait; een
-    deling-door-nul of een eeuwige wachtrij is daar geen acceptabele uitkomst."""
+    """optimal_concurrency is 0 until _probe_and_setup runs; a division by zero
+    or an eternal queue is not an acceptable outcome there."""
     with pytest.MonkeyPatch.context() as mp:
         r = _requester(mp, p50=17.0, origin="phase")
         r.optimal_concurrency = 0
@@ -121,9 +120,9 @@ def test_concurrency_nul_blokkeert_niet():
         assert r._stagger_target(1) is None
 
 
-def test_groeiende_concurrency_spreidt_de_nieuwe_slots():
-    """Workers komen erbij als de regelaar de concurrency verhoogt; die nieuwe
-    golf is een echte golf en mag gespreid worden."""
+def test_growing_concurrency_spreads_the_new_slots():
+    """Workers are added when the controller raises concurrency; that new wave is
+    a real wave and may be spread."""
     with pytest.MonkeyPatch.context() as mp:
         r = _requester(mp, p50=17.0, origin="phase")
         r._dispatch_start = 1000.0
@@ -134,7 +133,7 @@ def test_groeiende_concurrency_spreidt_de_nieuwe_slots():
 
 
 # =============================================================================
-# Een onbekende limiet klemt de gemeten capaciteit niet af
+# An unknown limit does not clamp the measured capacity
 # =============================================================================
 
 def _setup(monkeypatch, *, probe_limits, num_tasks=1236, knee=267):
@@ -162,7 +161,7 @@ def _setup(monkeypatch, *, probe_limits, num_tasks=1236, knee=267):
 
 
 def test_echte_limieten_klemmen_wel():
-    """Met een limiet van de API zelf is min(rate, server, tasks) juist goed."""
+    """With a limit from the API itself, min(rate, server, tasks) is exactly right."""
     with pytest.MonkeyPatch.context() as mp:
         r = _setup(mp, probe_limits=RateLimits(7_000_000, 7_000))
         assert r._limits_are_known is True
@@ -170,11 +169,10 @@ def test_echte_limieten_klemmen_wel():
             r._rate_limit_concurrency, r._server_concurrency, 1236)
 
 
-def test_onbekende_limiet_klemt_de_gemeten_knie_niet_af():
-    """Een geraden limiet is geen bewijs. Gemeten 2026-08-14: de quota-headers
-    vielen weg, FALLBACK_RPM=100 gaf rate_concurrency=3 tegen een gemeten
-    server_concurrency van 267, en een fase van 41 seconden duurde veertien
-    minuten."""
+def test_an_unknown_limit_does_not_clamp_the_measured_knee():
+    """A guessed limit is not evidence. Measured 2026-08-14: the quota headers
+    dropped out, FALLBACK_RPM=100 gave rate_concurrency=3 against a measured
+    server_concurrency of 267, and a phase of 41 seconds took fourteen minutes."""
     with pytest.MonkeyPatch.context() as mp:
         r = _setup(mp, probe_limits=RateLimits(0, 0), knee=267)
         assert r._limits_are_known is False
@@ -182,23 +180,23 @@ def test_onbekende_limiet_klemt_de_gemeten_knie_niet_af():
         assert r.optimal_concurrency == 267         # en telt niet mee
 
 
-def test_onbekende_limiet_blijft_begrensd_door_het_aantal_taken():
+def test_an_unknown_limit_stays_bounded_by_the_task_count():
     with pytest.MonkeyPatch.context() as mp:
         r = _setup(mp, probe_limits=RateLimits(0, 0), knee=267, num_tasks=12)
         assert r.optimal_concurrency == 12
 
 
-def test_zonder_gemeten_knie_valt_het_terug_op_de_koude_bovengrens():
-    """Geen limieten én geen historie: dan is de koude bovengrens het enige
-    getal dat er is — nog steeds beter dan een verzonnen RPM."""
+def test_without_a_measured_knee_it_falls_back_to_the_cold_ceiling():
+    """No limits and no history: then the cold ceiling is the only number there
+    is — still better than an invented RPM."""
     import utils.smoothRequester as mod
     with pytest.MonkeyPatch.context() as mp:
         r = _setup(mp, probe_limits=RateLimits(0, 0), knee=None)
         assert r.optimal_concurrency == min(mod.COLD_START_CAP, 1236)
 
 
-def test_de_tokenbucket_gebruikt_de_terugval_wel():
-    """Iets moet de bucket voeden; alleen de concurrency-conclusie vervalt."""
+def test_the_token_bucket_does_use_the_fallback():
+    """Something has to feed the bucket; only the concurrency conclusion lapses."""
     with pytest.MonkeyPatch.context() as mp:
         from config import FALLBACK_TPM
         r = _setup(mp, probe_limits=RateLimits(0, 0))

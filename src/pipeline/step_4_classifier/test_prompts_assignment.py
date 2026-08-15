@@ -51,12 +51,12 @@ def test_menu_groups_attributes_under_their_facet():
     assert block.index("Snelheid") < block.index("Wachttijd") < block.index("Bejegening")
 
 
-def test_ids_lopen_door_over_facetten_heen():
+def test_ids_run_on_across_facets():
     _, id_map = build_assignment_menu(_inventaris())
     assert list(id_map) == ["A1", "A2", "A3", "A4", "A5"]
 
 
-def test_id_map_wijst_naar_facet_en_attribuut():
+def test_the_id_map_points_at_facet_and_attribute():
     _, id_map = build_assignment_menu(_inventaris())
     assert id_map["A1"]["facet_name"] == "Snelheid"
     assert id_map["A1"]["attribute_name"] == "Wachttijd"
@@ -68,7 +68,7 @@ def test_menu_holds_an_other_per_facet_and_the_domain_other():
     assert len(drains) == 3
 
 
-def test_facet_zonder_attributen_valt_uit_het_menu():
+def test_a_facet_without_attributes_drops_out_of_the_menu():
     """A facet without attributes is unreachable — assignment picks an
     attribute, so such a facet would be a dead line in the menu."""
     _, id_map = build_assignment_menu(
@@ -143,7 +143,7 @@ def test_prompt_explains_when_the_catch_all_is_the_right_choice():
     assert "last resort" in prompt.lower()
 
 
-def test_menu_markeert_vangnetten_op_drain_key_niet_op_naam():
+def test_the_menu_marks_catch_alls_by_drain_key_not_by_name():
     """The name is in the survey language; the marker comes from drain_key."""
     block, _ = build_assignment_menu(_inventaris())
     gemarkeerd = [r for r in block.splitlines() if "[CATCH-ALL]" in r]
@@ -161,7 +161,7 @@ def test_prompt_does_not_name_the_catch_all():
         assert naam not in prompt, naam
 
 
-def test_prompt_zet_valence_neer_als_richting_niet_sentiment():
+def test_the_prompt_frames_valence_as_direction_not_sentiment():
     prompt = build_assignment_prompt(**_kwargs())
     assert "not emotional sentiment" in prompt
 

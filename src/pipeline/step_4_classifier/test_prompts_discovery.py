@@ -40,12 +40,12 @@ def test_the_result_is_scratchpad_plus_facets():
     assert set(DiscoveryResult.model_fields) == {"scratchpad", "facets"}
 
 
-def test_facet_draagt_zijn_attributen():
+def test_a_facet_carries_its_attributes():
     assert set(DiscoveredFacet.model_fields) == {
         "facet_name", "facet_definition", "attributes"}
 
 
-def test_attribuut_heet_definition_niet_description():
+def test_the_attribute_field_is_definition_not_description():
     """Step 5 reads `attribute_definition` from the taxonomy cache;
     `*_description` was the old name and a rename broke step 5 silently."""
     assert set(DiscoveredAttribute.model_fields) == {
@@ -164,7 +164,7 @@ def test_skeleton_borrows_no_vocabulary_from_dataset_or_dimension():
 # WAT ER WEL IN MOET
 # =============================================================================
 
-def test_prompt_toont_de_observaties_genummerd():
+def test_the_prompt_shows_the_observations_numbered():
     prompt = build_discovery_prompt(**_kwargs())
     assert "1. snelle afhandeling" in prompt
     assert "3. vriendelijk personeel" in prompt
@@ -177,7 +177,7 @@ def test_prompt_zet_de_domeingrens_neer():
     assert "prijs en kosten" in prompt
 
 
-def test_prompt_zonder_uitsluitingen_blijft_geldig():
+def test_a_prompt_without_exclusions_stays_valid():
     prompt = build_discovery_prompt(**_kwargs(
         domain_exclusions=[], domain_boundary_test=""))
     assert "dienstverlening" in prompt
@@ -188,7 +188,7 @@ def test_prompt_asks_for_the_survey_language():
     assert build_discovery_prompt(**_kwargs()).count("Dutch") >= 2
 
 
-def test_prompt_draagt_de_universele_regels():
+def test_the_prompt_carries_the_universal_rules():
     prompt = build_discovery_prompt(**_kwargs())
     assert "<universal_rules>" in prompt
 

@@ -55,9 +55,9 @@ def test_sample_size_zero_is_not_full():
 
 
 def test_find_latest_log_is_exact(tmp_path):
-    """Regressie: de oude glob `{base}_{varkey}_*step{N}_*.txt` slokte het
-    samplesize-segment op, waardoor een log van sample 500 werd gevonden
-    terwijl 4586 was gevraagd."""
+    """Regression: the old glob `{base}_{varkey}_*step{N}_*.txt` swallowed the
+    sample-size segment, so a log for sample 500 was found while 4586 had been
+    asked for."""
     (tmp_path / "dataset_Qd1_500_log_step7.txt").write_text("verkeerde sample")
     doel = tmp_path / "dataset_Qd1_4586_log_step7.txt"
     doel.write_text("juiste sample")
@@ -75,7 +75,7 @@ def test_find_latest_log_returns_none_when_absent(tmp_path):
 
 
 def test_capture_overwrites_on_rerun(tmp_path):
-    """Een tweede run van dezelfde stap vervangt het log, plakt er niet achter."""
+    """A second run of the same step replaces the log, it does not append."""
     for tekst in ("eerste run", "tweede run"):
         with VerboseCapture("dataset.sav", "Q1", 100, 2, output_dir=tmp_path):
             print(tekst)

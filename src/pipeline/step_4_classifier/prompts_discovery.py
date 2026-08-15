@@ -106,6 +106,10 @@ class ConsolidatedAttribute(DiscoveredAttribute):
 
 class ConsolidatedFacet(DiscoveredFacet):
     """A facet after consolidation, stating what folded into it."""
+    facet_question: str = Field(
+        ..., description=(
+            "The one question this facet answers about the responses, phrased "
+            "as a question, in the survey language"))
     source_facets: List[str] = Field(
         ..., description=(
             "Every candidate facet name that folded into this one, including "
@@ -134,7 +138,7 @@ class ConsolidationResult(BaseModel):
             "Step-by-step reasoning before the final output: "
             "(1) scan the candidate facets from all passes, "
             "(2) group the ones that mean the same thing, "
-            "(3) apply the same-question test to every pair, "
+            "(3) state the question each group answers and compare them, "
             "(4) let prevalence set the granularity within one question, "
             "(5) verify the domain boundary, "
             "(6) for each surviving facet, pool and consolidate the attributes "
@@ -515,18 +519,22 @@ by these rules, in this order.
 **1. UNDERLYING QUESTION FIRST (orthogonality — the guardrail).**
 For each concept, work out which underlying question it answers about the responses.
 - Concepts answering DIFFERENT questions are orthogonal: never merge them into one facet.
-- Mutually exclusive ANSWERS to the SAME question are also kept apart; merging opposite
-  answers creates a container that says nothing.
+- Distinct ANSWERS to the SAME question stay apart when merging them would erase what
+  tells them apart. Merge only when what the group shares can itself be stated as an
+  answer. Evaluative direction is not an answer — see the universal rules below.
 - Do not create separate facets based only on the object being discussed when the same
   underlying answer applies. An object is not a question.
 
 **2. PREVALENCE SETS GRANULARITY (within one question only).**
-- A concept that many passes proposed keeps its own facet — never dissolve a
-  well-supported one.
+Every candidate carries how many passes proposed it UNDER THAT EXACT NAME. Support for a
+concept is therefore the sum over the group you form, never the number on one candidate:
+five passes that each worded the same concept differently arrive as five candidates
+carrying one pass each.
+- A concept whose group is well supported keeps its own facet — never dissolve it.
 - Several thinly supported concepts answering the same question are GROUPED into one facet
   that still names what they share in plain language.
 Prevalence decides how finely to split WITHIN one question; it never licenses merging
-ACROSS questions.
+ACROSS questions. The same reasoning governs the attributes in step 6, on their own counts.
 
 **3. LIFT, DON'T FLATTEN.**
 When grouping is needed, raise the concepts to a shared higher-level label that still
@@ -539,11 +547,19 @@ container; if it tells you what the respondents expressed, it is an answer.
 
 **4. PLAIN, MEANINGFUL LABELS.**
 Name every surviving facet and attribute in everyday language. Test: reading the label
-alone, and knowing the survey question, a layperson knows which distinction is meant. No
-jargon, no nominalisations.
+alone, and knowing the survey question, a layperson knows which distinction is meant. A
+short, ordinary noun phrase is what you want — no jargon, no policy register, no long
+derived constructions.
 
-**Precedence when rules conflict:** 1 (orthogonality) > 2 (prevalence grouping) > 4 (label
-clarity).
+**When these conflict, decide in this order:**
+1. Domain validity — the facet belongs to this domain and not to a neighbouring one.
+2. Orthogonality (rule 1) — concepts answering different questions never merge.
+3. Prevalence (rule 2) — how finely to split within one question.
+4. Lifting (rule 3) — a group is named by what it says, never by what it asks.
+5. Label clarity (rule 4).
+6. Fewest items — and only once everything above holds. Never merge distinct concepts, and
+   never introduce an umbrella, merely to bring the count down. A smaller inventory that
+   has lost a distinction is not a better one.
 
 # Step-by-Step Analysis Process
 
@@ -557,13 +573,18 @@ obvious repeats under different names.
 Group the facets that describe the same or overlapping concept across passes.
 
 **Step 3 — Apply the same-question test**
-For each pair of candidate groups, ask: do these answer the SAME underlying question, or
-different ones? Different questions, or opposite answers to one question, stay separate.
-Same question and same meaning: group.
+For each group, WRITE DOWN the one question it answers about the responses, phrased as a
+question. That sentence is what you return in `facet_question`, and it is what makes this
+test checkable rather than a matter of feel: two groups that turn out to state the same
+question are one facet, and two that state different questions never merge.
+Same question and same meaning: group. Different questions: separate. Distinct answers to
+one question: separate only when merging them would erase what tells them apart.
 
 **Step 4 — Let prevalence set the granularity**
-Within one question, a well-supported concept keeps its own facet; several thinly supported
-ones are grouped under a single plainly named facet. Never group across questions.
+Add up the passes across each group you formed; the counts are per exact name, so any
+single candidate understates a concept that came back reworded. Within one question, a
+well-supported group keeps its own facet; several thinly supported ones are grouped under a
+single plainly named facet. Never group across questions.
 
 **Step 5 — Verify the domain boundary**
 Every surviving facet must belong to {domain_label} and not to a neighbouring domain:
@@ -597,6 +618,8 @@ Return a JSON object with these fields:
 - `facets`: an array, one entry per surviving facet, each with:
   - `facet_name`: a short descriptive name in {language} (at most 5 words)
   - `facet_definition`: what the facet captures, in {language} (1-2 sentences)
+  - `facet_question`: the one question this facet answers about the responses, in
+    {language}, phrased as a question. No two surviving facets may state the same one.
   - `source_facets`: the names of every candidate facet that folded into this one,
     exactly as they were given to you. A facet that survived unchanged lists just itself.
   - `attributes`: an array, one entry per surviving attribute in that facet, each with:

@@ -1,8 +1,8 @@
-"""Tests voor de zeven die bepalen wát er als spelfout wordt aangeboden.
+"""Tests for the sieves that decide WHAT is offered as a spelling error.
 
-Het zijn pure functies over losse woorden, dus ze zijn te testen zonder
-Hunspell, spaCy of een LLM. Dat is precies de bedoeling: dit is de laag waar
-elke datacorruptie in deze stap vandaan kwam.
+They are pure functions over single words, so they can be tested without
+Hunspell, spaCy or an LLM. That is exactly the point: this is the layer every
+data corruption in this step came from.
 """
 
 import pytest
@@ -11,7 +11,7 @@ from pipeline.step_1_preProcessor.spellChecker import SpellChecker
 
 
 @pytest.mark.parametrize("token, verwacht", [
-    # Letters met een cijfer ertussen: de respondent typte een letter verkeerd.
+    # Letters with a digit among them: the respondent mistyped a letter.
     ("2eet", True),
     ("N8ks", True),
     ("Go4ed", True),
@@ -32,7 +32,7 @@ def test_is_checkable(token, verwacht):
 
 
 @pytest.mark.parametrize("word, verwacht", [
-    # Een cijfer staat voor een letter die we niet kunnen zien. De klinker- en
+    # A digit stands for a letter we cannot see. The vowel and
     # medeklinkertoets kunnen daarover niets concluderen, dus zwijgen ze.
     ("N8ks", False),
     ("Go4ed", False),
@@ -64,11 +64,11 @@ def test_deaccent(tekst, verwacht):
 
 
 @pytest.mark.parametrize("woord, suggesties, verwacht", [
-    # Alleen een accent verschil: dit is een typefout, geen naam.
+    # An accent difference only: this is a typo, not a name.
     ("oke", ["oké", "koe", "ode"], True),
     ("ideeel", ["ideëel"], True),
-    # Hunspell biedt soms alleen een andere kapitalisatie aan. Dat is geen
-    # accentfout, en een merknaam mag daar zijn bescherming niet door verliezen.
+    # Hunspell sometimes offers only a different capitalisation. That is not an
+    # accent error, and a brand name must not lose its protection over it.
     ("sns", ["SNS", "sos"], False),
     ("asn", ["ASN", "aan"], False),
     # Een echt ander woord laat de bescherming staan.

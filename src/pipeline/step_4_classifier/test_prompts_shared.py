@@ -11,7 +11,7 @@ from pipeline.step_4_classifier.prompts_shared import (
 DIM = get_dimensions_in_decision_order()[0]
 
 
-def test_context_block_bevat_alle_zeven_velden():
+def test_the_context_block_holds_all_seven_fields():
     block = build_context_block(
         language="Dutch", survey_question="Waar denkt u aan?",
         sector="finance", entity="asn_bank", topic="brand_association",
@@ -22,7 +22,7 @@ def test_context_block_bevat_alle_zeven_velden():
         assert value in block
 
 
-def test_taxonomy_block_bevat_alle_vier_niveaus():
+def test_the_taxonomy_block_holds_all_four_levels():
     block = build_taxonomy_block(
         dimension=DIM, dimension_name=DIM.key,
         dimension_description=DIM.dimension_description,
@@ -49,20 +49,20 @@ def test_level_diagnostic_no_longer_exists():
     assert not hasattr(ps, "level_diagnostic")
 
 
-def test_universele_regels_dekken_de_drie_afspraken():
+def test_the_universal_rules_cover_the_agreements():
     tekst = UNIVERSAL_RULES.lower()
     assert "descriptive" in tekst
     assert "valence" in tekst
     assert "evaluative direction" in tekst
 
 
-def test_instructor_hint_is_de_exacte_zin():
+def test_the_instructor_hint_is_the_exact_sentence():
     assert INSTRUCTOR_HINT == (
         "provide your output as valid JSON following the response schema provided"
     )
 
 
-def test_cross_scope_model_dwingt_de_id_ruimte_af():
+def test_the_cross_scope_model_enforces_the_id_space():
     model = build_cross_scope_model(["A1", "A2"], "attribute")
     fields = model.model_fields
     assert set(fields) == {"scratchpad", "items"}
@@ -70,7 +70,7 @@ def test_cross_scope_model_dwingt_de_id_ruimte_af():
     assert set(item.model_fields) == {"name", "definition", "source_ids", "home_id"}
 
 
-def test_universele_regels_verbieden_een_zelfverzonnen_restcategorie():
+def test_the_universal_rules_forbid_a_self_invented_residual():
     """The model made eight attributes literally named 'Overig', alongside the
     catch-alls the code already offers (measured 2026-08-13)."""
     tekst = UNIVERSAL_RULES

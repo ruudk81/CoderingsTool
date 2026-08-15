@@ -1,8 +1,8 @@
-"""Tests voor de opmaak van verbose-rapportblokken.
+"""Tests for the layout of verbose report blocks.
 
-Deze tests bestaan doordat de renderer puur is. Aan een string die de aanroeper
-zelf in elkaar zette valt niets te toetsen; aan `render_block()` gegeven
-dezelfde records valt alles te toetsen.
+These tests exist because the renderer is pure. There is nothing to test about a
+string the caller assembled itself; given the same records, `render_block()` can
+be tested completely.
 """
 import pytest
 
@@ -31,21 +31,21 @@ def _blok():
 
 
 def _zichtbaar(lijn):
-    """Kolompositie zoals je hem ziet, niet zoals Python hem indexeert.
+    """Column position as you see it, not as Python indexes it.
 
-    Een emoji is één teken voor `len()` en ~twee cellen op het scherm; toetsen
-    op een string-index zou dus juist de regels met een marker fout beoordelen.
+    An emoji is one character to `len()` and ~two cells on screen; testing on a
+    string index would therefore misjudge exactly the lines carrying a marker.
     """
     return _width(lijn)
 
 
 # =============================================================================
-# UITLIJNING — de reden dat dit een eigen module is
+# ALIGNMENT — the reason this is a module of its own
 # =============================================================================
 
-def test_het_hele_blok_deelt_een_kolom():
-    """Per groep uitlijnen lijnt elke groep tegen zichzelf uit en tegen niets
-    anders; dan kan het oog geen kolom volgen, en dat was het hele doel."""
+def test_the_whole_block_shares_one_column():
+    """Aligning per group aligns each group against itself and nothing else; the
+    eye then cannot follow a column, and that was the whole point."""
     assert render_block(_blok()) == [
         "    \U0001f9f9  weggegooid                    7   0,3%",
         "        zonder inhoud                 7   0,3%",
@@ -56,15 +56,15 @@ def test_het_hele_blok_deelt_een_kolom():
     ]
 
 
-def test_elke_regel_zet_zijn_percentage_op_dezelfde_cel():
-    """De toets die telt: zichtbare breedte, niet string-index."""
+def test_every_line_puts_its_percentage_on_the_same_cell():
+    """The test that counts: visible width, not string index."""
     einden = {_zichtbaar(l[:l.index("%") + 1]) for l in render_block(_blok())}
     assert len(einden) == 1, f"percentages eindigen op {einden}"
 
 
-def test_de_groepskop_telt_mee_voor_de_kolombreedte():
-    """Regressie: measure() keek alleen naar rijen. Een kop van 10,5% tegen
-    rijen van 6,3% duwde de kop uit de kolom die de rijen hadden gekozen."""
+def test_the_group_header_counts_towards_the_column_width():
+    """Regression: measure() looked only at rows. A header of 10.5% against rows
+    of 6.3% pushed the header out of the column the rows had chosen."""
     w = measure([Group("g", [Metric("r", 1, of=1000)],
                        total=Metric("g", 500, of=1000))])
     assert w.share == len("50,0%")
@@ -75,7 +75,7 @@ def test_de_groepskop_telt_mee_voor_de_kolombreedte():
 # MARKERS EN BREEDTE
 # =============================================================================
 
-def test_emoji_telt_als_twee_cellen():
+def test_an_emoji_counts_as_two_cells():
     """`len()` is hier fout: 🕳️ is twee codepoints en beslaat ~twee cellen, dus
     padding uit len() zou juist die regel scheeftrekken."""
     assert _width(MARK_DRAIN) == 2
@@ -83,10 +83,10 @@ def test_emoji_telt_als_twee_cellen():
     assert _width("abc") == 3
 
 
-def test_marker_verschuift_de_getalkolom_niet():
-    """De kop draagt een marker en staat een niveau hoger dan zijn rijen; de
-    getallen moeten toch op dezelfde cel eindigen. Zichtbare breedte, want een
-    string-index telt de emoji als één teken en het scherm als twee."""
+def test_a_marker_does_not_shift_the_number_column():
+    """The header carries a marker and sits one level above its rows; the numbers
+    must still end on the same cell. Visible width, because a string index counts
+    the emoji as one character and the screen as two."""
     for lijnen in (
         render_block([Group("t", [Metric("r", 1, of=10)],
                             marker=MARK_DROPPED, total=Metric("t", 1, of=10))]),
@@ -107,24 +107,24 @@ def test_percentage_gebruikt_een_decimale_komma():
     assert "33.3" not in lijnen[1]
 
 
-def test_zonder_noemer_geen_percentage():
+def test_without_a_denominator_no_percentage():
     lijnen = render_block([Group("g", [Metric("r", 7)])])
     assert "%" not in lijnen[1]
 
 
-def test_voorbeelden_worden_afgekapt_met_een_telling():
+def test_examples_are_truncated_with_a_count():
     lijnen = render_block([Group("g", [
         Metric("r", 9, of=9, examples=[f"v{i}" for i in range(9)])])])
     assert "(+3)" in lijnen[1]
     assert "v6" not in lijnen[1]
 
 
-def test_voorbeelden_gescheiden_door_een_punt():
+def test_examples_separated_by_a_dot():
     lijnen = render_block([Group("g", [Metric("r", 2, of=2, examples=["a", "b"])])])
     assert "a · b" in lijnen[1]
 
 
-def test_geen_regel_eindigt_op_spaties():
+def test_no_line_ends_on_whitespace():
     for lijn in render_block(_blok()):
         assert lijn == lijn.rstrip()
 
@@ -133,8 +133,8 @@ def test_geen_regel_eindigt_op_spaties():
 # FLOW
 # =============================================================================
 
-def test_flow_toont_de_tussenstap():
-    """Splitsen en filteren zijn één beweging; alleen begin en eind tonen
-    verbergt dat er iets gebeurde."""
+def test_a_flow_shows_the_intermediate_step():
+    """Splitting and filtering are one movement; showing only start and end hides
+    that anything happened."""
     assert render_flow([1236, "responsen", 2210, "fragmenten", 2203, "ideeën"]).strip() \
         == "1236 responsen  →  2210 fragmenten  →  2203 ideeën"

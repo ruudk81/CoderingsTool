@@ -242,7 +242,7 @@ def collect(root: Path) -> tuple[list[Analysis], list[Entry]]:
     analyses = sorted(per_key.values(), key=lambda a: a.mtime, reverse=True)
     # Only the export leftovers go through the attach step: it matches on old
     # file names, and a cache file has none by definition.
-    restanten = _hecht_restanten_aan_analyses(restanten, analyses, stems)
+    restanten = _attach_leftovers_to_analyses(restanten, analyses, stems)
     return analyses, restanten + cache_restanten
 
 
@@ -312,7 +312,7 @@ def _verzamel_cache(root: Path, per_key: dict[AnalysisKey, Analysis]) -> list[En
     return restanten
 
 
-def _hecht_restanten_aan_analyses(
+def _attach_leftovers_to_analyses(
     restanten: list[Entry],
     analyses: list[Analysis],
     stems: set[str],

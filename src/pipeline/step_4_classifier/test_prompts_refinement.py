@@ -74,7 +74,7 @@ def test_inhoudsblok_kapt_op_top_n():
     assert "snel geholpen" not in block
 
 
-def test_leeg_attribuut_wordt_zo_benoemd():
+def test_an_empty_attribute_is_named_as_such():
     block = build_contents_block(FACETS, {}, {}, {}, 5)
     assert "nothing was assigned to it" in block
 
@@ -83,25 +83,25 @@ def test_leeg_attribuut_wordt_zo_benoemd():
 # DE HERSCHREVEN SPLITSCLAUSULE
 # =============================================================================
 
-def test_oude_splitsclausule_is_weg():
+def test_the_old_split_clause_is_gone():
     """'a large share AND visibly diverse contents is too abstract: split it'
     vuurde voortdurend zodra discovery items bewust breed maakte."""
     prompt = build_refinement_prompt(**_kwargs())
     assert "too abstract" not in prompt
 
 
-def test_nieuwe_splitsclausule_eist_twee_onderscheiden_antwoorden():
+def test_the_new_split_clause_requires_two_distinct_answers():
     prompt = build_refinement_prompt(**_kwargs())
     assert "two distinct ANSWERS to the same question" in prompt
 
 
-def test_widen_is_de_standaard_bij_twijfel():
+def test_widen_is_the_default_on_doubt():
     prompt = build_refinement_prompt(**_kwargs())
     assert "Otherwise WIDEN" in prompt
     assert "prefer widen" in prompt
 
 
-def test_breed_is_op_zichzelf_geen_probleem():
+def test_broad_is_not_a_problem_in_itself():
     prompt = build_refinement_prompt(**_kwargs())
     assert "not by itself a problem" in prompt
 
@@ -110,7 +110,7 @@ def test_breed_is_op_zichzelf_geen_probleem():
 # DE VIJF UITGANGEN
 # =============================================================================
 
-def test_alle_vijf_uitgangen_staan_in_de_prompt():
+def test_all_five_exits_are_in_the_prompt():
     prompt = build_refinement_prompt(**_kwargs())
     for uitgang in ("merge", "widen", "split", "move", "out"):
         assert f'"{uitgang}"' in prompt, uitgang
@@ -184,12 +184,12 @@ def test_cross_domain_requires_every_id_exactly_once():
 # ALGEMEEN
 # =============================================================================
 
-def test_beide_prompts_eindigen_op_de_instructor_zin():
+def test_both_prompts_end_on_the_instructor_sentence():
     assert build_refinement_prompt(**_kwargs()).rstrip().endswith(INSTRUCTOR_HINT)
     assert build_cross_domain_prompt(**_xkwargs()).rstrip().endswith(INSTRUCTOR_HINT)
 
 
-def test_beide_prompts_dragen_de_universele_regels():
+def test_both_prompts_carry_the_universal_rules():
     assert "<universal_rules>" in build_refinement_prompt(**_kwargs())
     assert "<universal_rules>" in build_cross_domain_prompt(**_xkwargs())
 

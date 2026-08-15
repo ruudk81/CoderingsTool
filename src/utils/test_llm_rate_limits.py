@@ -1,9 +1,9 @@
-"""Tests voor het uitlezen van het quotum (geen netwerk).
+"""Tests for reading the quota (no network).
 
-Azure serveert de Responses API op `/openai/v1/`, en die route geeft geen
-`x-ratelimit-*` terug — Microsoft houdt dat bij als known issue. De klassieke
-deployment-route rapporteert ze nog wel, voor hetzelfde quotum. Wat hier
-vastligt is dat de tweede poging alleen vuurt als de eerste niets oplevert.
+Azure serves the Responses API on `/openai/v1/`, and that route returns no
+`x-ratelimit-*` — Microsoft tracks this as a known issue. The classic deployment
+route still reports them, for the same quota. What is pinned here is that the
+second attempt only fires when the first yields nothing.
 """
 import asyncio
 
@@ -25,7 +25,7 @@ V1_ZONDER_QUOTUM = {"apim-request-id": "x", "x-ms-region": "Sweden Central"}
 
 
 def _patch(monkeypatch, v1_headers, classic_limits, calls):
-    """Vervangt de v1-call en de klassieke probe; telt wie er aangeroepen wordt."""
+    """Replaces the v1 call and the classic probe; counts who gets called."""
     class _Raw:
         async def create(self, **kw):
             calls.append("v1")
@@ -69,7 +69,7 @@ def test_aanwezige_headers_worden_gelezen():
 # DE TWEEDE POGING
 # =============================================================================
 
-def test_v1_levert_quotum_dan_geen_tweede_poging(monkeypatch):
+def test_v1_yields_quota_then_no_second_attempt(monkeypatch):
     """Repareert Azure de headers op v1, dan stopt de tweede probe vanzelf."""
     calls = []
     _patch(monkeypatch, V1_MET_QUOTUM, RateLimits(1, 1), calls)
@@ -79,7 +79,7 @@ def test_v1_levert_quotum_dan_geen_tweede_poging(monkeypatch):
     assert has_headers is True
 
 
-def test_v1_zonder_quotum_valt_terug_op_de_klassieke_route(monkeypatch):
+def test_v1_without_quota_falls_back_to_the_classic_route(monkeypatch):
     calls = []
     _patch(monkeypatch, V1_ZONDER_QUOTUM, RateLimits(7_000_000, 7_000), calls)
     limits, has_headers = asyncio.run(llm.fetch_rate_limits("gpt-5.6-luna"))
@@ -88,10 +88,10 @@ def test_v1_zonder_quotum_valt_terug_op_de_klassieke_route(monkeypatch):
     assert limits.requests_per_minute == 7_000
 
 
-def test_has_server_headers_blijft_van_de_echte_route(monkeypatch):
-    """De klassieke route zegt niets over per-request timing op v1. Zou die
-    vlag meeliften, dan koos de requester de header-aware controller voor een
-    route die geen headers stuurt."""
+def test_has_server_headers_stays_from_the_real_route(monkeypatch):
+    """The classic route says nothing about per-request timing on v1. If that
+    flag hitched a ride, the requester would pick the header-aware controller for
+    a route that sends no headers."""
     calls = []
     _patch(monkeypatch, V1_ZONDER_QUOTUM, RateLimits(7_000_000, 7_000), calls)
     _, has_headers = asyncio.run(llm.fetch_rate_limits("gpt-5.6-luna"))
@@ -99,8 +99,8 @@ def test_has_server_headers_blijft_van_de_echte_route(monkeypatch):
 
 
 def test_beide_routes_leeg_geeft_nul_terug(monkeypatch):
-    """Geen verzonnen getal hier — de aanroeper beslist wat er zonder quotum
-    gebeurt, en die kiest de gemeten capaciteit."""
+    """No invented number here — the caller decides what happens without a quota,
+    and it picks the measured capacity."""
     calls = []
     _patch(monkeypatch, V1_ZONDER_QUOTUM, RateLimits(0, 0), calls)
     limits, _ = asyncio.run(llm.fetch_rate_limits("gpt-5.6-luna"))
@@ -108,9 +108,8 @@ def test_beide_routes_leeg_geeft_nul_terug(monkeypatch):
     assert limits.tokens_per_minute == 0
 
 
-def test_half_quotum_telt_als_geen_quotum(monkeypatch):
-    """Alleen tokens en geen requests is niet bruikbaar: de requester deelt
-    door allebei."""
+def test_a_half_quota_counts_as_no_quota(monkeypatch):
+    """Tokens only and no requests is unusable: the requester divides by both."""
     calls = []
     _patch(monkeypatch, {"x-ratelimit-limit-tokens": "7000000"},
            RateLimits(7_000_000, 7_000), calls)
@@ -124,8 +123,8 @@ def test_half_quotum_telt_als_geen_quotum(monkeypatch):
 # =============================================================================
 
 def test_klassieke_probe_slikt_een_fout_en_geeft_nul(monkeypatch):
-    """Die route verdwijnt ooit. Als dat gebeurt mag de run niet omvallen op
-    het ophalen van een getal dat we ook kunnen missen."""
+    """That route will disappear one day. When it does, the run must not fall
+    over fetching a number we can also do without."""
     class _Boom:
         async def __aenter__(self):
             return self
@@ -143,6 +142,6 @@ def test_klassieke_probe_slikt_een_fout_en_geeft_nul(monkeypatch):
 
 
 def test_klassieke_probe_pint_zijn_api_version():
-    """Deze route wordt alleen gebruikt om headers te lezen, nooit om werk te
-    doen — hij mag niet meebewegen met wat de Responses API doet."""
+    """This route is used only to read headers, never to do work — it must not
+    move along with whatever the Responses API does."""
     assert llm.AZURE_CLASSIC_PROBE_API_VERSION == "2024-10-21"

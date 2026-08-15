@@ -11,7 +11,7 @@ from utils.exportNaming import export_filename
 
 
 # =============================================================================
-# Opzet: een tmp-repo met een minimale cache-database
+# Setup: a tmp repo with a minimal cache database
 # =============================================================================
 
 def _repo(tmp_path, datasets=("data.sav",)):
@@ -25,8 +25,8 @@ def _repo(tmp_path, datasets=("data.sav",)):
     con.execute("CREATE TABLE cache_metadata "
                 "(filename TEXT, variable_key TEXT, status TEXT, cache_path TEXT)")
     for d in datasets:
-        # cache_path wijst bewust naar een bestand dat niet bestaat: deze rij is
-        # er alleen om de dataset bekend te maken, niet om een pickle te claimen.
+        # cache_path deliberately points at a file that does not exist: this row
+        # is only here to make the dataset known, not to claim a pickle.
         con.execute("INSERT INTO cache_metadata VALUES (?, ?, 'valid', ?)",
                     (d, "Q1_100", str(cache / f"000_seed_{d}.pkl")))
     con.commit()
@@ -98,7 +98,7 @@ def test_bestanden_groeperen_per_analyse(tmp_path):
     assert all(len(a.entries) == 3 for a in analyses)
 
 
-def test_analyse_is_zo_oud_als_haar_nieuwste_bestand(tmp_path):
+def test_an_analysis_is_as_old_as_its_newest_file(tmp_path):
     root = _repo(tmp_path)
     nu = time.time()
     _bestand(root, "verbose_logs", "data.sav", "Q1", 100, "log_step4", mtime=nu - 60 * 86400)
@@ -133,8 +133,8 @@ def test_onbeheerde_mappen_blijven_buiten_beeld(tmp_path):
 # Plafond
 # =============================================================================
 
-def test_zonder_plafond_verhuist_er_niets(tmp_path):
-    """De opgeleverde stand: het gereedschap rapporteert maar kan niets."""
+def test_without_a_cap_nothing_moves(tmp_path):
+    """The delivered state: the tool reports but can do nothing."""
     root = _repo(tmp_path)
     nu = time.time()
     for i in range(5):
@@ -144,7 +144,7 @@ def test_zonder_plafond_verhuist_er_niets(tmp_path):
     assert retention.select_analyses_for_removal(analyses, now=nu) == []
 
 
-def test_plafond_houdt_de_n_nieuwste(tmp_path, monkeypatch):
+def test_the_cap_keeps_the_n_newest(tmp_path, monkeypatch):
     monkeypatch.setattr(retention, "MAX_ANALYSES", 2)
     root = _repo(tmp_path)
     nu = time.time()
@@ -156,8 +156,8 @@ def test_plafond_houdt_de_n_nieuwste(tmp_path, monkeypatch):
     assert [a.key.sample for a in weg] == ["102", "103"]
 
 
-def test_verse_analyse_blijft_ook_voorbij_het_plafond(tmp_path, monkeypatch):
-    """Het venster wint van het plafond, ook als dat het plafond overschrijdt."""
+def test_a_fresh_analysis_stays_even_beyond_the_cap(tmp_path, monkeypatch):
+    """The window beats the cap, even when that exceeds the cap."""
     monkeypatch.setattr(retention, "MAX_ANALYSES", 1)
     root = _repo(tmp_path)
     nu = time.time()
@@ -170,7 +170,7 @@ def test_verse_analyse_blijft_ook_voorbij_het_plafond(tmp_path, monkeypatch):
     assert [a.key.sample for a in weg] == ["300"]
 
 
-def test_nieuwste_analyse_overleeft_een_plafond_van_nul(tmp_path, monkeypatch):
+def test_the_newest_analysis_survives_a_cap_of_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(retention, "MAX_ANALYSES", 0)
     root = _repo(tmp_path)
     nu = time.time()
@@ -182,8 +182,8 @@ def test_nieuwste_analyse_overleeft_een_plafond_van_nul(tmp_path, monkeypatch):
     assert [a.key.sample for a in weg] == ["200"]
 
 
-def test_een_analyse_verhuist_in_zijn_geheel(tmp_path, monkeypatch):
-    """Geen halve analyse: de kosten mogen niet blijven als het logboek weggaat."""
+def test_an_analysis_moves_as_a_whole(tmp_path, monkeypatch):
+    """No half analysis: the costs must not stay when the log goes."""
     monkeypatch.setattr(retention, "MAX_ANALYSES", 1)
     root = _repo(tmp_path)
     nu = time.time()
@@ -205,7 +205,7 @@ def test_een_analyse_verhuist_in_zijn_geheel(tmp_path, monkeypatch):
 # Restanten
 # =============================================================================
 
-def test_oud_restant_verhuist_vers_restant_blijft(tmp_path, monkeypatch):
+def test_an_old_leftover_moves_a_fresh_one_stays(tmp_path, monkeypatch):
     monkeypatch.setattr(retention, "MAX_ANALYSES", 10)
     root = _repo(tmp_path)
     nu = time.time()
@@ -222,11 +222,11 @@ def test_oud_restant_verhuist_vers_restant_blijft(tmp_path, monkeypatch):
     assert [e.path.name for e in weg] == [oud.name]
 
 
-def test_oude_naam_hecht_zich_aan_zijn_analyse(tmp_path, monkeypatch):
-    """Een logboek met de oude naam hoort bij de analyse, niet bij de restanten.
+def test_an_old_name_attaches_to_its_analysis(tmp_path, monkeypatch):
+    """A log under the old name belongs to the analysis, not to the leftovers.
 
-    Zonder deze regel wordt zo'n bestand alleen door zijn eigen leeftijd
-    beschermd en verdwijnt het binnen een week, terwijl zijn analyse blijft.
+    Without this rule such a file is protected only by its own age and disappears
+    within a week, while its analysis stays.
     """
     monkeypatch.setattr(retention, "MAX_ANALYSES", 10)
     root = _repo(tmp_path)
@@ -242,8 +242,8 @@ def test_oude_naam_hecht_zich_aan_zijn_analyse(tmp_path, monkeypatch):
     assert retention.select_orphans_for_removal(restanten, now=nu) == []
 
 
-def test_dubbelzinnige_oude_naam_blijft_restant(tmp_path, monkeypatch):
-    """Twee steekproeven op dezelfde vraag: de naam zegt niet welke. Niet gokken."""
+def test_an_ambiguous_old_name_stays_a_leftover(tmp_path, monkeypatch):
+    """Two samples on the same question: the name does not say which. Do not guess."""
     monkeypatch.setattr(retention, "MAX_ANALYSES", 10)
     root = _repo(tmp_path)
     nu = time.time()
@@ -283,7 +283,7 @@ def test_ontbrekende_cache_stopt_de_run(tmp_path):
 # =============================================================================
 
 def test_bak_krijgt_respijt_binnen_dezelfde_run(tmp_path, monkeypatch):
-    """Wat in deze run naar de bak gaat, mag er niet meteen uit gewist worden."""
+    """What goes to the bin in this run must not be erased from it immediately."""
     monkeypatch.setattr(retention, "MAX_ANALYSES", 1)
     monkeypatch.setattr(retention, "TRASH_MAX_MB", 0)
     root = _repo(tmp_path)
@@ -297,7 +297,7 @@ def test_bak_krijgt_respijt_binnen_dezelfde_run(tmp_path, monkeypatch):
     assert sum(1 for p in bak.rglob("*") if p.is_file()) == 3
 
 
-def test_bak_boven_zijn_plafond_gaat_definitief_weg(tmp_path, monkeypatch):
+def test_a_bin_over_its_cap_goes_for_good(tmp_path, monkeypatch):
     monkeypatch.setattr(retention, "TRASH_MAX_MB", 1)
     root = _repo(tmp_path)
     nu = time.time()
@@ -346,8 +346,8 @@ def test_pad_buiten_exports_stopt_de_run(tmp_path):
 # data/cache — hetzelfde analyse-begrip, een eigen plafond
 # =============================================================================
 
-def test_cache_en_exports_vormen_samen_een_analyse(tmp_path):
-    """Een cachebestand hoort bij dezelfde analyse als de exports ervan."""
+def test_cache_and_exports_together_form_one_analysis(tmp_path):
+    """A cache file belongs to the same analysis as its exports."""
     root = _repo(tmp_path)
     nu = time.time()
     _analyse(root, "data.sav", "Q1", 100, nu - 30 * 86400)
@@ -362,8 +362,8 @@ def test_cache_en_exports_vormen_samen_een_analyse(tmp_path):
     assert restanten == []
 
 
-def test_cache_zonder_exports_is_een_eigen_analyse(tmp_path):
-    """Zijn de exports al opgeruimd, dan blijft de cache een analyse op zichzelf."""
+def test_a_cache_without_exports_is_an_analysis_of_its_own(tmp_path):
+    """If the exports are already cleaned up, the cache stays an analysis on its own."""
     root = _repo(tmp_path)
     nu = time.time()
     _cache_bestand(root, "data.sav", "Q1_500", "004_extracted_ideas_data_Q1_500",
@@ -376,8 +376,8 @@ def test_cache_zonder_exports_is_een_eigen_analyse(tmp_path):
     assert restanten == []
 
 
-def test_onbereikbare_pickle_is_een_restant(tmp_path):
-    """Een 'invalid'-rij betekent dat geen codepad het bestand nog kan lezen."""
+def test_an_unreachable_pickle_is_a_leftover(tmp_path):
+    """An 'invalid' row means no code path can read the file any more."""
     root = _repo(tmp_path)
     nu = time.time()
     dood = _cache_bestand(root, "data.sav", "Q1_100", "006_mece_codes_metadata_oud",
@@ -389,7 +389,7 @@ def test_onbereikbare_pickle_is_een_restant(tmp_path):
     assert analyses == []
 
 
-def test_pickle_zonder_db_rij_is_een_restant(tmp_path):
+def test_a_pickle_without_a_db_row_is_a_leftover(tmp_path):
     root = _repo(tmp_path)
     nu = time.time()
     vreemd = _cache_bestand(root, "data.sav", "Q1_100", "007_taxonomy_codes_onbekend",
@@ -400,8 +400,8 @@ def test_pickle_zonder_db_rij_is_een_restant(tmp_path):
     assert [e.path for e in restanten] == [vreemd]
 
 
-def test_cache_heeft_een_eigen_ruimer_plafond(tmp_path, monkeypatch):
-    """Exports voorbij hun plafond gaan weg; de cache van dezelfde analyse blijft."""
+def test_the_cache_has_its_own_wider_cap(tmp_path, monkeypatch):
+    """Exports beyond their cap go; the cache of the same analysis stays."""
     monkeypatch.setattr(retention, "MAX_ANALYSES", 1)
     monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", 2)
     root = _repo(tmp_path)
@@ -419,8 +419,8 @@ def test_cache_heeft_een_eigen_ruimer_plafond(tmp_path, monkeypatch):
         "exports van de oudste analyse moesten wél weg"
 
 
-def test_cache_voorbij_zijn_plafond_verhuist_en_wordt_ongeldig(tmp_path, monkeypatch):
-    """Het bestand gaat naar data_cache/ in de bak, de db-rij gaat op invalid."""
+def test_cache_beyond_its_cap_moves_and_is_invalidated(tmp_path, monkeypatch):
+    """The file goes to data_cache/ in the bin, the db row goes to invalid."""
     monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", 1)
     root = _repo(tmp_path)
     nu = time.time()
@@ -439,7 +439,7 @@ def test_cache_voorbij_zijn_plafond_verhuist_en_wordt_ongeldig(tmp_path, monkeyp
     assert status == "invalid"
 
 
-def test_verse_cache_blijft_ook_voorbij_het_plafond(tmp_path, monkeypatch):
+def test_a_fresh_cache_stays_even_beyond_the_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", 1)
     root = _repo(tmp_path)
     nu = time.time()
@@ -451,8 +451,8 @@ def test_verse_cache_blijft_ook_voorbij_het_plafond(tmp_path, monkeypatch):
     assert vers.exists()
 
 
-def test_analyse_zonder_exports_kost_geen_exportplek(tmp_path, monkeypatch):
-    """Een cache-only analyse mag geen plek van MAX_ANALYSES opsouperen."""
+def test_an_analysis_without_exports_costs_no_export_slot(tmp_path, monkeypatch):
+    """A cache-only analysis must not eat up a MAX_ANALYSES slot."""
     monkeypatch.setattr(retention, "MAX_ANALYSES", 2)
     root = _repo(tmp_path)
     nu = time.time()
