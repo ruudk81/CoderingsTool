@@ -86,17 +86,17 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     "idea_extraction_context":            ("5.6", 3),   # specifiers + dimension discovery
     "idea_extraction_taxonomy":           ("5.6", 3),   # domain discovery + consolidation
     "idea_extraction_abstraction_ladder": ("5.6", 3),   # main extraction + retry
-    # Step 4: Taxonomy Classifier — discovery, consolidation, assignment,
-    # refinement per level, then the valence merge. Named by function, not by
-    # number: a reordering should not force a rename here or in the perf model.
-    "classifier_discovery":            ("5.6", 3),
-    "classifier_chunk_consolidation":  ("5.4", 5),
+    # Step 4: Taxonomy Classifier — discovery, consolidation per level,
+    # assignment, refinement, cross-domain, then the valence merge. Named by
+    # function, not by number: a reordering should not force a rename here or
+    # in the perf model.
+    "classifier_discovery":               ("5.6", 3),
     "classifier_facet_consolidation":     ("5.4", 5),
     "classifier_attribute_consolidation": ("5.4", 5),
-    "classifier_assignment":           ("5.6", 3),
-    "classifier_refinement":           ("5.6", 3),
-    "classifier_cross_domain":         ("5.6", 3),
-    "classifier_valence_merge":        ("5.6", 3),
+    "classifier_assignment":              ("5.6", 3),
+    "classifier_refinement":              ("5.6", 3),
+    "classifier_cross_domain":            ("5.6", 3),
+    "classifier_valence_merge":           ("5.6", 3),
     # Step 5: Code Generator
     "codegen_relations":                  ("5.6", 3),   # relations between attributes
     "codegen_umbrella_merge":             ("5.6", 3),   # consolidate umbrella names before pooling
@@ -204,7 +204,6 @@ STEP_EFFORT = {
     # phases apply it and fall back to REASONING_EFFORT, which is where ~98% of
     # the calls are.
     "classifier_discovery": "medium",
-    "classifier_chunk_consolidation": "medium",
     "classifier_facet_consolidation": "medium",
     "classifier_attribute_consolidation": "medium",
     "classifier_refinement": "medium",
@@ -222,7 +221,6 @@ STEP_EFFORT = {
 STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
     "classifier_discovery": "low",
-    "classifier_chunk_consolidation": "low",
     "classifier_facet_consolidation": "low",
     "classifier_attribute_consolidation": "low",
     "classifier_refinement": "low",

@@ -72,7 +72,7 @@ def test_renamed_effort_phase_is_caught(monkeypatch):
 
 def test_effort_the_api_rejects_is_caught(monkeypatch):
     """Without this the value survives import and 400s on a live call, mid-run."""
-    monkeypatch.setitem(STEP_EFFORT, "classifier_p2", "minimal")
+    monkeypatch.setitem(STEP_EFFORT, "classifier_facet_consolidation", "minimal")
     with pytest.raises(RuntimeError, match="rejected by the API"):
         _validate()
 
@@ -88,18 +88,19 @@ def test_reasoning_params_carry_the_per_phase_effort():
     literal here the test passes even when the phase resolves to something else
     entirely, which is precisely how the 2026-08-08 misroute stayed invisible.
     """
-    judgement = get_reasoning_params(get_step_model("classifier_p2"), phase="classifier_p2")
+    phase = "classifier_facet_consolidation"
+    judgement = get_reasoning_params(get_step_model(phase), phase=phase)
     bulk = get_reasoning_params(get_step_model("code_assignment"), phase="code_assignment")
 
-    assert judgement["reasoning"]["effort"] == STEP_EFFORT["classifier_p2"]
+    assert judgement["reasoning"]["effort"] == STEP_EFFORT[phase]
     assert bulk["reasoning"]["effort"] == REASONING_EFFORT
     # Nested shape — both providers are on the Responses API since 2026-08-01.
     assert set(judgement) == {"reasoning", "text"}
-    assert judgement["text"]["verbosity"] == get_step_verbosity("classifier_p2")
+    assert judgement["text"]["verbosity"] == get_step_verbosity(phase)
 
 
 def test_chat_models_get_no_reasoning_params():
-    assert get_reasoning_params("gpt-4.1", phase="classifier_p2") == {}
+    assert get_reasoning_params("gpt-4.1", phase="classifier_facet_consolidation") == {}
 
 
 @pytest.mark.parametrize("phase", sorted(STEP_EFFORT))

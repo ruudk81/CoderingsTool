@@ -1,12 +1,14 @@
 """Configuration for the Taxonomy Classifier.
 
-Six phases, named by function:
+Seven phases, named by function:
 
-  discovery → chunk_consolidation → assignment → refinement → cross_domain
+  discovery → facet_consolidation → attribute_consolidation → assignment →
+  refinement → cross_domain
   then: valence_merge, from the runner
 
-Facets and attributes are found and settled together, so there is one chunking
-register and one consolidation register rather than two of each.
+Facets and attributes are FOUND together in one discovery call and SETTLED
+apart, one call per level: so there is one chunking register and two
+consolidation registers, each with its own cap.
 
 Consolidation settles the inventory BEFORE a single idea is assigned, on what
 the passes proposed. Refinement runs AFTER assignment, on real counts and real
@@ -66,7 +68,6 @@ class CategoriesConfig:
     # ==========================================================================
 
     model_discovery: str = get_step_model("classifier_discovery")
-    model_chunk_consolidation: str = get_step_model("classifier_chunk_consolidation")
     model_facet_consolidation: str = get_step_model("classifier_facet_consolidation")
     model_attribute_consolidation: str = get_step_model("classifier_attribute_consolidation")
     model_assignment: str = get_step_model("classifier_assignment")
@@ -106,15 +107,13 @@ class CategoriesConfig:
     chunk_overlap: float = 0.2     # overlap fraction between adjacent chunks
 
     # ==========================================================================
-    # CONSOLIDATION
+    # CONSOLIDATION - two phases, two scopes, two caps
     # ==========================================================================
 
-    # Counted in ATTRIBUTES, not facets: thirty facets sits well under this cap
-    # while five hundred attributes can hang below them, and the volume is where
-    # the judgment gives way. A domain over the cap is consolidated in rounds —
-    # round one on what the chunks proposed, round two on the survivors of round
-    # one, and so on until it fits in a single group.
-    consolidation_max_items_per_call: int = 150
+    # A scope over its cap is consolidated in rounds — round one on what the
+    # chunks proposed, round two on the survivors of round one, and so on until
+    # it fits in a single group. One budget, since both phases round the same
+    # way and a phase that runs out says so in the action log.
     consolidation_max_rounds: int = 5
 
     # The facet call renders attribute names only, so what bounds it is the

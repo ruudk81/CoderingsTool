@@ -1,22 +1,17 @@
 """Tests for the consolidation prompts of step 4.
 
-Covers all three prompts in the module: the legacy combined one, which settles
-facets and their attributes in a single call, and the facet and attribute
-prompts that between them replace it. Two sections guard the wording each half
-of the split ruled on, and they assert in both directions — the other two
-prompts legitimately carry wording one of them ruled out, so a copy-paste
-between them must not silently undo a decision.
+Covers both prompts in the module: the facet call, which settles which facets a
+domain has, and the attribute call, which settles the pool inside one of them.
+Two sections guard the wording each half of the split ruled on. Their negative
+assertions used to be paired against the combined prompt that both replaced;
+that prompt is gone, so each pair is now anchored on the replacement wording in
+the same prompt — a bare `not in` passes vacuously the moment the literal is
+mistyped.
 """
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
-from pipeline.step_4_classifier.prompts_discovery import (
-    DiscoveredAttribute,
-    DiscoveredFacet,
-)
+from pipeline.step_4_classifier.prompts_discovery import DiscoveredAttribute
 from pipeline.step_4_classifier.prompts_consolidation import (
     AttributeConsolidationResult,
-    ConsolidatedAttribute,
-    ConsolidatedFacet,
-    ConsolidationResult,
     FacetConsolidationResult,
     FacetPool,
     SettledAttribute,
@@ -24,9 +19,6 @@ from pipeline.step_4_classifier.prompts_consolidation import (
     build_attribute_candidate_block,
     build_attribute_candidate_index,
     build_attribute_consolidation_prompt,
-    build_candidate_block,
-    build_candidate_index,
-    build_chunk_consolidation_prompt,
     build_facet_candidate_block,
     build_facet_candidate_index,
     build_facet_consolidation_prompt,
@@ -35,362 +27,7 @@ from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
 
 DIM = get_dimensions_in_decision_order()[0]
 
-
-def _facet(name, *attr_names):
-    return DiscoveredFacet(
-        facet_name=name,
-        facet_definition=f"Wat {name} vastlegt.",
-        attributes=[DiscoveredAttribute(
-            attribute_name=a,
-            attribute_definition=f"De eigenschap {a}.",
-            example_observations=[f"observatie over {a}"],
-        ) for a in attr_names],
-    )
-
-
-CANDIDATES = [
-    _facet("Snelheid", "Wachttijd", "Doorlooptijd"),
-    _facet("Snelheid van afhandeling", "Wachttijd"),
-    _facet("Bejegening", "Vriendelijkheid"),
-]
 RECURRENCE = {"Snelheid": 4, "Snelheid van afhandeling": 1, "Bejegening": 5}
-ATTR_RECURRENCE = {"Wachttijd": 5, "Doorlooptijd": 1, "Vriendelijkheid": 3}
-
-
-def _kwargs(**overrides):
-    base = dict(
-        language="Dutch",
-        survey_question="Waar denkt u aan?",
-        sector="finance", entity="asn_bank", topic="brand_association",
-        perspective="consumer", intent="associate",
-        dimension=DIM,
-        dimension_name=DIM.key,
-        dimension_description=DIM.dimension_description,
-        domain_label="dienstverlening",
-        domain_definition="Alles wat de organisatie aanbiedt en levert.",
-        domain_exclusions=["prijs en kosten"],
-        candidate_block=build_candidate_block(
-            CANDIDATES, RECURRENCE, ATTR_RECURRENCE, 6),
-    )
-    base.update(overrides)
-    return base
-
-
-# =============================================================================
-# HET KANDIDATENBLOK
-# =============================================================================
-
-def test_the_candidate_block_shows_chunk_prevalence_per_facet():
-    block = build_candidate_block(CANDIDATES, RECURRENCE, ATTR_RECURRENCE, 6)
-    assert "proposed under this exact name in 4 of 6 independent passes" in block
-    assert "proposed under this exact name in 1 of 6 independent passes" in block
-
-
-def test_the_count_says_it_is_per_exact_name():
-    """A concept five passes proposed under five wordings arrives as five
-    candidates of one pass each — exactly the case this phase resolves. A label
-    promising support for the concept would mislead on the wrong candidates."""
-    block = build_candidate_block(CANDIDATES, RECURRENCE, ATTR_RECURRENCE, 6)
-    assert "under this exact name" in block
-
-
-def test_the_candidate_block_shows_prevalence_per_attribute_too():
-    """Step 6 asks which attributes are well supported; until this count existed
-    that judgement had no data behind it."""
-    block = build_candidate_block(CANDIDATES, RECURRENCE, ATTR_RECURRENCE, 6)
-    assert "Wachttijd [5/6 passes]" in block
-    assert "Doorlooptijd [1/6 passes]" in block
-
-
-def test_the_candidate_block_shows_the_attributes_nested():
-    block = build_candidate_block(CANDIDATES, RECURRENCE, ATTR_RECURRENCE, 6)
-    assert "Wachttijd" in block
-    assert "Doorlooptijd" in block
-    assert block.index("Snelheid") < block.index("Wachttijd")
-
-
-def test_a_candidate_without_a_count_falls_back_to_one_pass():
-    block = build_candidate_block([_facet("Nieuw", "A")], {}, {}, 6)
-    assert "proposed under this exact name in 1 of 6 independent passes" in block
-    assert "A [1/6 passes]" in block
-
-
-def test_a_candidate_without_attributes_does_not_break_the_block():
-    block = build_candidate_block([_facet("Leeg")], {"Leeg": 2}, {}, 3)
-    assert "Leeg" in block
-
-
-# =============================================================================
-# PROMPT ↔ MODEL SLUITEN AAN
-# =============================================================================
-
-def test_the_result_is_a_decision_summary_plus_facets():
-    """A free-form scratchpad on a phase that already reasons internally gives
-    long, uneven output in which the result is the smaller part."""
-    assert set(ConsolidationResult.model_fields) == {
-        "decision_summary", "facets"}
-
-
-def test_a_consolidated_facet_states_what_folded_into_it():
-    """Without this field a merged candidate looks identical to a forgotten one:
-    neither appears in the answer."""
-    assert "source_facet_ids" in ConsolidatedFacet.model_fields
-
-
-def test_a_consolidated_attribute_says_the_same_one_level_down():
-    assert "source_attribute_ids" in ConsolidatedAttribute.model_fields
-
-
-def test_a_consolidated_facet_carries_consolidated_attributes():
-    item = ConsolidatedFacet(
-        facet_name="Snelheid", facet_definition="…", source_facet_ids=["F1"],
-        facet_question="Hoe snel gaat het?",
-        attributes=[ConsolidatedAttribute(
-            attribute_name="Wachttijd", attribute_definition="…",
-            example_observations=["x"], source_attribute_ids=["F1-A1"])])
-    assert item.attributes[0].source_attribute_ids == ["F1-A1"]
-
-
-def test_prompt_explains_that_coverage_is_checked():
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "source_facet_ids" in prompt
-    assert "source_attribute_ids" in prompt
-    assert "at least one surviving" in prompt
-
-
-def test_a_divided_candidate_may_be_claimed_by_several_survivors():
-    """Step 6 lets an attribute move to the facet where it belongs, so a
-    candidate facet whose contents divide cannot honestly be pinned to one
-    survivor. `exactly one` made the model claim an absorption that never
-    happened."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "exactly one surviving" not in prompt
-    assert "listed by every survivor that took part" in prompt
-
-
-def test_examples_are_one_to_three_and_never_a_reason_to_merge():
-    """Every candidate attribute usually carries a single example. Demanding
-    two or three left merging semantically distinct attributes as the cheapest
-    way to comply."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "1-3 observations carried over" in prompt
-    assert "NEVER merge attributes that mean" in prompt
-    assert "2-3 observations" not in prompt
-
-
-def test_the_candidate_block_shows_more_than_one_example():
-    """Consolidation can only carry over what it is shown."""
-    rich = DiscoveredFacet(
-        facet_name="Snelheid", facet_definition="…",
-        attributes=[DiscoveredAttribute(
-            attribute_name="Wachttijd", attribute_definition="…",
-            example_observations=["lang wachten", "traag", "duurt eeuwen"])])
-    block = build_candidate_block([rich], {}, {}, 4)
-    for text in ("lang wachten", "traag", "duurt eeuwen"):
-        assert f'e.g. "{text}"' in block
-
-
-def test_prompt_names_every_field_the_model_knows():
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    for veld in ("decision_summary", "facets", "facet_name", "facet_definition",
-                 "facet_question", "source_facet_ids", "attributes",
-                 "attribute_name", "attribute_definition",
-                 "example_observations", "source_attribute_ids"):
-        assert veld in prompt, veld
-
-
-def test_prompt_eindigt_op_de_instructor_zin():
-    assert build_chunk_consolidation_prompt(
-        **_kwargs()).rstrip().endswith(INSTRUCTOR_HINT)
-
-
-# =============================================================================
-# DE VIER REGELS EN HUN PRECEDENTIE
-# =============================================================================
-
-def test_the_prompt_carries_the_four_grouping_rules():
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    for regel in ("UNDERLYING QUESTION FIRST", "PREVALENCE SETS GRANULARITY",
-                  "LIFT, DON'T FLATTEN", "PLAIN, MEANINGFUL LABELS"):
-        assert regel in prompt, regel
-
-
-def test_the_prompt_states_the_precedence_explicitly():
-    """Without a precedence the rules fight; with one, orthogonality wins."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "When these conflict, decide in this order" in prompt
-
-
-def test_the_precedence_covers_every_rule():
-    """It read `1 > 2 > 4` while four numbered rules stood above it, so LIFT,
-    DON'T FLATTEN had no place in the ordering at all."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    order = prompt[prompt.index("When these conflict"):
-                   prompt.index("# Step-by-Step")]
-    for rule in ("Orthogonality", "Prevalence", "Lifting", "Label clarity"):
-        assert rule in order, rule
-
-
-def test_minimisation_comes_last_in_the_ordering():
-    """This is the phase licensed to merge, so the brake belongs here: a smaller
-    inventory that has lost a distinction is not a better one."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    order = prompt[prompt.index("When these conflict"):
-                   prompt.index("# Step-by-Step")]
-    assert order.index("Orthogonality") < order.index("Fewest items")
-    assert "Never merge distinct concepts" in order
-
-
-def test_the_facet_question_must_be_written_down():
-    """Rule 1 asks whether two candidates answer the same question. Unless the
-    question is stated, that test is a matter of feel and not checkable."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "facet_question" in prompt
-    assert "No two surviving facets may state the same one." in prompt
-
-
-def test_labels_are_not_asked_to_avoid_nominalisations():
-    """Nearly every usable Dutch or German taxonomy label is a nominalisation,
-    so the rule could not be satisfied in the languages this runs on."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "nominalisation" not in prompt.lower()
-    assert "ordinary noun phrase" in prompt
-
-
-def test_rule_one_does_not_call_opposite_answers_a_reason_to_split():
-    """`Mutually exclusive` and `opposite` are not the same thing, and the
-    universal rules forbid splitting one concept by evaluative direction — in
-    this same prompt."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "opposite answers" not in prompt
-    assert "erase what" in prompt
-
-
-def test_rule_one_does_not_use_the_word_dimension():
-    """L1 is called Dimension in the taxonomy block. If rule 1 also uses the word
-    for 'the axis along which a concept varies', it means two things on one page
-    — which is exactly what the lens naming was once meant to solve."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    regels = prompt[prompt.index("# Consolidation Rules"):
-                    prompt.index("# Step-by-Step")]
-    assert "dimension" not in regels.lower()
-    assert "underlying question" in regels.lower()
-
-
-# =============================================================================
-# DE GENESTE STAP
-# =============================================================================
-
-def test_prompt_says_what_happens_to_attributes_on_a_facet_merge():
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "pool" in prompt.lower()
-
-
-def test_prompt_also_consolidates_within_a_facet():
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    stappen = prompt[prompt.index("# Step-by-Step"):]
-    assert "attribute" in stappen.lower()
-
-
-# =============================================================================
-# WAT ER NIET IN MAG
-# =============================================================================
-
-def test_prompt_bevat_geen_drempelgetallen():
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "%" not in prompt
-
-
-def test_prompt_kent_geen_lens():
-    assert "Lens" not in build_chunk_consolidation_prompt(**_kwargs())
-
-
-def test_the_prompt_carries_the_universal_rules():
-    assert "<universal_rules>" in build_chunk_consolidation_prompt(**_kwargs())
-
-
-def test_a_prompt_without_exclusions_stays_valid():
-    prompt = build_chunk_consolidation_prompt(**_kwargs(domain_exclusions=[]))
-    assert prompt.rstrip().endswith(INSTRUCTOR_HINT)
-
-
-# =============================================================================
-# WAT DE REVIEW VAN 2026-08-15 OPLOSTE
-# =============================================================================
-
-def test_the_candidate_block_hands_out_ids():
-    """Names are not unique: the same attribute name can sit under two candidate
-    facets, and a list of two identical strings is something a JSON layer may
-    quietly collapse to one."""
-    block = build_candidate_block(CANDIDATES, RECURRENCE, ATTR_RECURRENCE, 6)
-    assert "[F1] Snelheid" in block
-    assert "[F1-A1] Wachttijd" in block
-    assert "[F3-A1] Vriendelijkheid" in block
-
-
-def test_the_index_is_stable_for_a_given_task():
-    facets, attributes = build_candidate_index(CANDIDATES)
-    assert list(facets) == ["F1", "F2", "F3"]
-    assert attributes["F1-A2"][0] == "F1"
-    assert attributes["F1-A2"][1].attribute_name == "Doorlooptijd"
-
-
-def test_coverage_is_checked_on_ids_not_names():
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "never on names" in prompt
-
-
-def test_prevalence_is_not_an_absolute_veto():
-    """Two concepts can both be well supported and still be one concept said
-    twice; `never dissolve` made support outrank deduplication."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "unless it demonstrably" in prompt
-    assert "never a reason to keep a duplicate" in prompt
-
-
-def test_the_facet_question_is_tested_against_being_a_subject():
-    """Sorting by what the material is ABOUT belongs one level up, and produces
-    facets that overlap wherever a response touches two topics."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "answered by naming a subject" in prompt
-
-
-def test_a_merge_test_is_given():
-    """`Minimal` on its own is not measurable, and the phase licensed to merge
-    needs a test it can apply."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "MERGE TEST" in prompt
-    assert "Would the same observation be coded under both?" in prompt
-
-
-def test_nesting_between_sibling_attributes_is_forbidden():
-    """A general item and a specific one inside it let the same response be
-    coded twice, honestly."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "subtype, a component or a concrete instance" in prompt
-
-
-def test_a_lone_attribute_is_a_warning_not_a_verdict():
-    """A real lens can hold one attribute in this material and several in the
-    next batch."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "is a WARNING, not a verdict" in prompt
-
-
-def test_the_definitions_are_not_rendered_twice():
-    """They already stand as L3 and L4 in the taxonomy block; the same sentence
-    twice within a few hundred words is not an anchor."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "# What a facet is" not in prompt
-    assert prompt.count("L3 — Facet:") == 1
-
-
-def test_disposition_action_and_outcome_stay_apart():
-    """A broad facet can otherwise treat an outcome as if it were an act. The
-    discovery prompt draws this line; the phase that actually merges did not."""
-    prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "different KINDS of statement" in prompt
-    assert "Do not infer one from another either" in prompt
 
 
 def _pool(name, *attr_names, question=""):
@@ -528,64 +165,175 @@ def test_the_facet_prompt_asks_coverage_on_ids():
     here is that coverage is checked on the ids and not on the names."""
     prompt = build_facet_consolidation_prompt(**_facet_kwargs())
     assert "never on names" in prompt
+    assert "at least one surviving" in prompt
+
+
+def test_a_facet_without_a_count_falls_back_to_one_pass():
+    """A survivor of round one carries no recurrence of its own, and a facet
+    rendered without a count would read as one the passes never proposed."""
+    block = build_facet_candidate_block([_pool("Nieuw", "A")], {}, 6)
+    assert "proposed under this exact name in 1 of 6 independent passes" in block
+
+
+def test_a_facet_without_attributes_does_not_break_the_block():
+    """Not hypothetical: a survivor claimed by a second survivor hands its pool
+    to the first and re-enters round two holding nothing."""
+    block = build_facet_candidate_block([_pool("Leeg")], {"Leeg": 2}, 3)
+    assert "Leeg" in block
+
+
+def test_the_facet_prompt_carries_its_four_grouping_rules():
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    for rule in ("UNDERLYING QUESTION FIRST", "PREVALENCE SETS GRANULARITY",
+                 "LIFT, DON'T FLATTEN", "PLAIN, MEANINGFUL LABELS"):
+        assert rule in prompt, rule
+
+
+def test_the_facet_precedence_covers_every_rule_and_ends_on_the_count():
+    """Without a precedence the rules fight; with one, orthogonality wins. It
+    once read `1 > 2 > 4` while four numbered rules stood above it, so LIFT,
+    DON'T FLATTEN had no place in the ordering at all.
+
+    Minimisation comes last because this is the phase licensed to merge: a
+    smaller inventory that has lost a distinction is not a better one.
+    """
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    order = prompt[prompt.index("When these conflict"):
+                   prompt.index("# Step-by-Step")]
+    for rule in ("Orthogonality", "Prevalence", "Lifting", "Label clarity"):
+        assert rule in order, rule
+    assert order.index("Orthogonality") < order.index("Fewest facets")
+    assert "Never merge distinct concepts" in order
+
+
+def test_the_facet_question_must_be_written_down():
+    """Rule 1 asks whether two candidates answer the same question. Unless the
+    question is stated, that test is a matter of feel and not checkable."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "No two surviving facets may state the same one." in prompt
+
+
+def test_the_facet_question_is_tested_against_being_a_subject():
+    """Sorting by what the material is ABOUT belongs one level up, and produces
+    facets that overlap wherever a response touches two topics."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "answered by naming a subject" in prompt
+
+
+def test_facet_labels_are_not_asked_to_avoid_nominalisations():
+    """Nearly every usable Dutch or German taxonomy label is a nominalisation,
+    so the rule could not be satisfied in the languages this runs on."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "nominalisation" not in prompt.lower()
+    assert "ordinary noun phrase" in prompt
+
+
+def test_rule_one_does_not_call_opposite_answers_a_reason_to_split():
+    """`Mutually exclusive` and `opposite` are not the same thing, and the
+    universal rules forbid splitting one concept by evaluative direction — in
+    this same prompt."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "opposite answers" not in prompt
+    assert "erase what" in prompt
+
+
+def test_rule_one_does_not_use_the_word_dimension():
+    """L1 is called Dimension in the taxonomy block. If rule 1 also uses the
+    word for 'the axis along which a concept varies', it means two things on one
+    page — which is exactly what the lens naming was once meant to solve."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    rules = prompt[prompt.index("# Consolidation Rules"):
+                   prompt.index("# Step-by-Step")]
+    assert "dimension" not in rules.lower()
+    assert "underlying question" in rules.lower()
+
+
+def test_prevalence_is_not_an_absolute_veto():
+    """Two concepts can both be well supported and still be one concept said
+    twice; `never dissolve` made support outrank deduplication."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "unless it demonstrably" in prompt
+    assert "never a reason to keep a duplicate" in prompt
+
+
+def test_the_facet_prompt_separates_disposition_action_and_outcome():
+    """A broad facet can otherwise treat an outcome as if it were an act. The
+    discovery prompt draws this line; the phase that merges must hold it."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "different KINDS of statement" in prompt
+    assert "Do not infer one from another either" in prompt
+
+
+def test_the_facet_definitions_are_not_rendered_twice():
+    """They already stand as L3 and L4 in the taxonomy block; the same sentence
+    twice within a few hundred words is not an anchor."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "# What a facet is" not in prompt
+    assert prompt.count("L3 — Facet:") == 1
+
+
+def test_the_facet_prompt_carries_no_threshold_numbers_and_no_lens():
+    """A percentage invites arithmetic where the phase needs judgement, and
+    `lens` is a name the taxonomy no longer uses."""
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "%" not in prompt
+    assert "Lens" not in prompt
+
+
+def test_a_facet_prompt_without_exclusions_stays_valid():
+    prompt = build_facet_consolidation_prompt(**_facet_kwargs(domain_exclusions=[]))
+    assert prompt.rstrip().endswith(INSTRUCTOR_HINT)
 
 
 # =============================================================================
 # WHAT THE SPLIT RULED
 #
-# These guard decisions, not implementation details. Each ruling is asserted in
-# both directions: gone from the facet prompt, still present in the legacy one.
-# The attribute prompt of a later task will legitimately carry the original
-# wording, so without the negative twin a copy-paste could quietly restore text
-# that was ruled out here and every test would still pass.
+# These guard decisions, not implementation details. Each ruling names the
+# wording that was removed AND the wording that replaced it, in one prompt. The
+# positive half is what keeps the negative half honest: on its own, `not in`
+# starts passing the moment the literal is mistyped. The combined prompt these
+# were once paired against no longer exists, so where a ruling was a pure
+# removal the anchor is the surviving sentence it was removed from.
 # =============================================================================
 
 def test_ruling_the_facet_rules_do_not_point_at_an_attribute_step():
     """Rule 2 ended on `The same reasoning governs the attributes in step 6`.
     This prompt has no attribute step, and its step 6 is the coverage step — so
     the pointer resolved to something real and wrong."""
-    pointer = "The same reasoning governs the attributes in step 6"
-    assert pointer not in build_facet_consolidation_prompt(**_facet_kwargs())
-    assert pointer in build_chunk_consolidation_prompt(**_kwargs())
+    facet = build_facet_consolidation_prompt(**_facet_kwargs())
+    assert "The same reasoning governs the attributes in step 6" not in facet
+    assert "PREVALENCE SETS GRANULARITY" in facet
 
 
 def test_ruling_the_merge_test_asks_about_attributes_not_examples():
     """The facet candidate block renders attribute names and no examples, so
     item 4 asked about material the call cannot see."""
     facet = build_facet_consolidation_prompt(**_facet_kwargs())
-    legacy = build_chunk_consolidation_prompt(**_kwargs())
     assert "does every attribute named under them still have" in facet
     assert "does every example still have" not in facet
-    assert "does every example still have" in legacy
 
 
 def test_ruling_the_merge_test_closes_on_the_two_levels_it_has():
     """`not of items, not of examples` was vague where the prompt has two
     concrete levels, and named material it does not render."""
     facet = build_facet_consolidation_prompt(**_facet_kwargs())
-    legacy = build_chunk_consolidation_prompt(**_kwargs())
     assert "not of facets, not of attributes." in facet
     assert "not of items, not of examples." not in facet
-    assert "not of items, not of examples." in legacy
 
 
 def test_ruling_rule_four_does_not_ask_for_attribute_names():
     """This call returns no attributes: `SettledFacet` has no such field. Asking
     for attribute names invites output the model cannot deliver."""
     facet = build_facet_consolidation_prompt(**_facet_kwargs())
-    legacy = build_chunk_consolidation_prompt(**_kwargs())
     assert "Name every surviving facet in everyday language" in facet
     assert "Name every surviving facet and attribute" not in facet
-    assert "Name every surviving facet and attribute" in legacy
 
 
 def test_ruling_the_precedence_minimises_facets_not_items():
     """Same vagueness as the merge-test closing line, one screen above it."""
     facet = build_facet_consolidation_prompt(**_facet_kwargs())
-    legacy = build_chunk_consolidation_prompt(**_kwargs())
     assert "6. Fewest facets —" in facet
     assert "6. Fewest items —" not in facet
-    assert "6. Fewest items —" in legacy
 
 
 def test_ruling_the_facet_prompt_never_mentions_examples_in_its_own_body():
@@ -736,6 +484,22 @@ def test_the_attribute_prompt_carries_no_threshold_numbers():
     assert "%" not in prompt
 
 
+def test_the_attribute_prompt_asks_coverage_on_ids():
+    prompt = build_attribute_consolidation_prompt(**_attribute_kwargs())
+    assert "never on names" in prompt
+    assert "at least one surviving" in prompt
+
+
+def test_examples_are_one_to_three_and_never_a_reason_to_merge():
+    """Every candidate attribute usually carries a single example. Demanding
+    two or three left merging semantically distinct attributes as the cheapest
+    way to comply."""
+    prompt = build_attribute_consolidation_prompt(**_attribute_kwargs())
+    assert "1-3 observations carried over" in prompt
+    assert "NEVER merge attributes that mean" in prompt
+    assert "2-3 observations" not in prompt
+
+
 def test_the_attribute_prompt_ends_on_the_universal_rules_and_the_hint():
     prompt = build_attribute_consolidation_prompt(**_attribute_kwargs())
     assert prompt.rstrip().endswith(INSTRUCTOR_HINT)
@@ -745,81 +509,72 @@ def test_the_attribute_prompt_ends_on_the_universal_rules_and_the_hint():
 # =============================================================================
 # WHAT THE ATTRIBUTE SPLIT RULED
 #
-# Same technique as the facet section above: every ruling is asserted in both
-# directions, using one identical string literal. A bare `not in` passes
-# vacuously the moment the literal is mistyped; the positive twin on the prompt
-# that still carries the wording is what makes the pair catch its own typo.
+# Same technique as the facet section above: every ruling names the wording that
+# went and the wording that replaced it, so a mistyped literal cannot make the
+# negative half pass on its own.
 #
 # Note the polarity is the reverse of the facet section on one point: this call
 # DOES render definitions and examples per candidate, so wording about examples
-# belongs here and was only wrong one level up.
+# belongs here and was only wrong one level up. That pair still has its twin —
+# the facet prompt is the one that must not mention them.
 # =============================================================================
 
 def test_ruling_the_attribute_prompt_runs_no_placement_check():
     """The old step 6 could move an attribute to another facet or drop it. One
-    facet in view can do neither, so the whole clause goes."""
-    clause = "or drop it if no facet fits"
+    facet in view can do neither, so the whole clause goes — and what replaced
+    it is the flat prohibition on losing anything."""
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    assert clause not in attribute
-    assert clause in build_chunk_consolidation_prompt(**_kwargs())
+    assert "or drop it if no facet fits" not in attribute
+    assert "never drop" in attribute.lower()
 
 
 def test_ruling_the_attribute_prompt_checks_no_domain_boundary():
     """A facet-scoped call has no neighbouring domains in view: it is not given
-    the exclusions, and the facet's domain was settled two phases ago."""
-    clause = "and not to a neighbouring domain"
+    the exclusions, and the facet's domain was settled two phases ago. What it
+    is given instead is the one facet it works inside."""
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    assert clause not in attribute
-    assert clause in build_chunk_consolidation_prompt(**_kwargs())
+    assert "and not to a neighbouring domain" not in attribute
+    assert "prijs en kosten" not in attribute
+    assert "Hoe snel ging het?" in attribute
 
 
 def test_ruling_the_merge_test_runs_on_attributes_not_on_items():
     """`Any two items` was right where the prompt merged at two levels. Here
     there is one level, and naming it is what makes the test applicable."""
-    vague = "run it on any two items"
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
     assert "run it on any two attributes" in attribute
-    assert vague not in attribute
-    assert vague in build_chunk_consolidation_prompt(**_kwargs())
+    assert "run it on any two items" not in attribute
 
 
 def test_ruling_the_merge_test_closes_on_the_levels_this_call_has():
     """`Not of items` is vague for the same reason. The counts this call can be
     tempted to chase are attributes and the examples carried under them."""
-    vague = "not of items, not of examples."
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
     assert "not of attributes, not of examples." in attribute
-    assert vague not in attribute
-    assert vague in build_chunk_consolidation_prompt(**_kwargs())
+    assert "not of items, not of examples." not in attribute
 
 
 def test_ruling_the_precedence_minimises_attributes_not_items():
     """Same vagueness, one screen above the merge test."""
-    vague = "Fewest items"
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
     assert "fewest attributes" in attribute
-    assert vague not in attribute
-    assert vague in build_chunk_consolidation_prompt(**_kwargs())
+    assert "Fewest items" not in attribute
 
 
 def test_ruling_rule_five_asks_for_attribute_names_only():
     """This call returns no facets, so naming them is output it cannot deliver
     — the mirror image of the ruling on the facet prompt."""
-    both = "Name every surviving facet and attribute"
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
     assert "Name every surviving attribute in everyday language" in attribute
-    assert both not in attribute
-    assert both in build_chunk_consolidation_prompt(**_kwargs())
+    assert "Name every surviving facet and attribute" not in attribute
 
 
 def test_ruling_the_lone_attribute_note_is_recorded_not_acted_on():
     """The old wording let the call collapse a facet into its single attribute.
     The facet is settled before this call and is not in its output model."""
-    acting = "Collapse it only when you can say plainly"
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
     assert "the facet is not yours to change" in attribute
-    assert acting not in attribute
-    assert acting in build_chunk_consolidation_prompt(**_kwargs())
+    assert "Collapse it only when you can say plainly" not in attribute
 
 
 def test_ruling_the_attribute_prompt_may_speak_of_examples():
@@ -836,7 +591,6 @@ def test_ruling_the_attribute_prompt_may_speak_of_examples():
 def test_ruling_the_attribute_prompt_points_at_no_step_of_another_prompt():
     """Rule 2 of the combined prompt ended on a pointer into its own step 6.
     Copied here it would name a step this prompt does not have."""
-    pointer = "The same reasoning governs the attributes in step 6"
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    assert pointer not in attribute
-    assert pointer in build_chunk_consolidation_prompt(**_kwargs())
+    assert "The same reasoning governs the attributes in step 6" not in attribute
+    assert "PREVALENCE SETS GRANULARITY" in attribute

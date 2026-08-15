@@ -1,14 +1,16 @@
-"""Taxonomy Classifier: inductive taxonomy discovery, six phases.
+"""Taxonomy Classifier: inductive taxonomy discovery, seven phases.
 
-Facets (L3) and attributes (L4) are built together rather than as two stacked
-layers:
+Facets (L3) and attributes (L4) are FOUND together rather than as two stacked
+layers, and SETTLED apart — one call per level, so each merge judgement is made
+with everything it compares in view and nothing else:
 
-  discovery           per (domain, chunk)   facets WITH their attributes
-  chunk_consolidation per domain            settle the nested inventory
-  assignment          per unique label      one attribute; the facet follows
-  refinement          per domain            judge it on real contents
-  cross_domain        everything at once    fold duplicates across domains
-  valence_merge       see valence_consolidator.py
+  discovery               per (domain, chunk)  facets WITH their attributes
+  facet_consolidation     per domain           settle the facets, pool the rest
+  attribute_consolidation per settled facet    settle that facet's pool
+  assignment              per unique label     one attribute; the facet follows
+  refinement              per domain           judge it on real contents
+  cross_domain            everything at once   fold duplicates across domains
+  valence_merge           see valence_consolidator.py
 
 Phases are named by function, never by number: renumbering cold-started the
 perf model and stranded config keys, twice.
@@ -52,7 +54,7 @@ Usage:
 import asyncio
 import re
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -88,12 +90,9 @@ from .prompts_discovery import (
     build_discovery_prompt,
 )
 from .prompts_consolidation import (
-    AttributeConsolidationResult, ConsolidationResult,
-    FacetConsolidationResult, FacetPool,
+    AttributeConsolidationResult, FacetConsolidationResult, FacetPool,
     build_attribute_candidate_block, build_attribute_candidate_index,
-    build_attribute_consolidation_prompt,
-    build_candidate_block, build_candidate_index,
-    build_chunk_consolidation_prompt, build_facet_candidate_block,
+    build_attribute_consolidation_prompt, build_facet_candidate_block,
     build_facet_candidate_index, build_facet_consolidation_prompt,
 )
 from .prompts_assignment import (
@@ -314,7 +313,7 @@ class TaxonomyResult:
 class TaxonomyClassifier:
     """Builds the facet (L3) and attribute (L4) layers of the taxonomy.
 
-    Five phases run here; the sixth, the valence-neutral merge, runs afterwards
+    Six phases run here; the seventh, the valence-neutral merge, runs afterwards
     from the runner (see `valence_consolidator.py`).
 
     Every phase is one method with an explicit signature, plus a pure
@@ -325,8 +324,7 @@ class TaxonomyClassifier:
     # Phase key → (config attribute, cost-tracker label). One table, so a phase
     # cannot end up with a model in one register and a different one in another.
     PHASES = (
-        "discovery", "chunk_consolidation",
-        "facet_consolidation", "attribute_consolidation",
+        "discovery", "facet_consolidation", "attribute_consolidation",
         "assignment", "refinement", "cross_domain", "valence_merge",
     )
 
@@ -355,7 +353,6 @@ class TaxonomyClassifier:
         self._chunk_overlap = config.chunk_overlap
 
         # Consolidation — how much fits in one call, and how often to round-trip
-        self._consolidation_max_items_per_call = config.consolidation_max_items_per_call
         self._consolidation_max_rounds = config.consolidation_max_rounds
         self._facet_consolidation_max_facets_per_call = (
             config.facet_consolidation_max_facets_per_call)
@@ -581,8 +578,9 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool,
     ) -> TaxonomyResult:
-        """The five phases, in order. Each one logs its own lines and its own
-        cost; this method only decides what runs and what feeds what.
+        """The six phases that run here, in order. Each one logs its own lines
+        and its own cost; this method only decides what runs and what feeds
+        what. The seventh, the valence merge, runs from the runner.
 
         `stop_after_phase` returns the state as it stands after that phase. A
         partial return is a real result, not an empty one — the phases that did
@@ -639,9 +637,14 @@ class TaxonomyClassifier:
         if _stop("discovery"):
             return self._taxonomy_result(state, raw_nested, {}, started, verbose)
 
-        structure = await self._run_chunk_consolidation(ctx, raw, verbose)
+        settled = await self._run_facet_consolidation(ctx, raw, verbose)
+        if _stop("facet_consolidation"):
+            structure = self._assemble_structure(settled, {})
+            return self._taxonomy_result(state, structure, {}, started, verbose)
+
+        structure = await self._run_attribute_consolidation(ctx, settled, verbose)
         structure = self._add_drains(ctx, structure)
-        if _stop("chunk_consolidation"):
+        if _stop("attribute_consolidation"):
             return self._taxonomy_result(state, structure, {}, started, verbose)
 
         assignments = await self._run_assignment(ctx, structure, labels, verbose)
@@ -949,392 +952,6 @@ class TaxonomyClassifier:
                 inner = sum(len(f.attributes) for f in raw[label])
                 print(f"      {label}: {len(raw[label])} facets, {inner} attributes")
         return raw
-
-    # =========================================================================
-    # PHASE — CHUNK CONSOLIDATION (per domain, before any idea is assigned)
-    # =========================================================================
-
-    def _consolidation_groups(
-        self, candidates: List[DiscoveredFacet],
-    ) -> List[List[DiscoveredFacet]]:
-        """Split a domain's candidates into groups that each fit in one call.
-
-        Counted in ATTRIBUTES, not facets: thirty facets sits well under the cap
-        while five hundred attributes can hang below them, and the volume is
-        where the judgment gives way. A facet never travels without its
-        attributes, so one that exceeds the cap on its own gets a group anyway —
-        splitting it from its contents would break the nesting the whole phase
-        is about.
-
-        Sorted by normalised name first, so near-identical proposals sit next
-        to each other and usually land in the same group instead of missing each
-        other for a round. Usually, not always: a greedy fill can still put the
-        boundary between two neighbours. That is accepted — the next round puts
-        the survivors together anyway.
-        """
-        cap = self._consolidation_max_items_per_call
-        ordered = sorted(candidates, key=lambda f: _norm(f.facet_name))
-
-        groups: List[List[DiscoveredFacet]] = []
-        current: List[DiscoveredFacet] = []
-        size = 0
-        for facet in ordered:
-            n = max(len(facet.attributes), 1)
-            if current and size + n > cap:
-                groups.append(current)
-                current, size = [], 0
-            current.append(facet)
-            size += n
-        if current:
-            groups.append(current)
-        return groups or [[]]
-
-    def _build_chunk_consolidation_tasks(
-        self, ctx: PromptContext, pending: Dict[str, List[DiscoveredFacet]],
-    ) -> List[Dict]:
-        """One task per domain that has candidates, split when it holds too many.
-
-        A domain whose candidates do not fit one call is consolidated in rounds:
-        the groups here are one round, and their survivors go back in together
-        so the groups still get to see each other.
-        """
-        tasks: List[Dict] = []
-        for label in sorted(pending):
-            candidates = pending[label]
-            if not candidates:
-                continue
-            for group in self._consolidation_groups(candidates):
-                if not group:
-                    continue
-                tasks.append({
-                    "domain_label": label, "candidates": group,
-                    "recurrence": self._recurrence.get(label) or {},
-                    "attribute_recurrence": self._attr_recurrence.get(label) or {},
-                    "n_passes": self._passes.get(label, 0)})
-        return tasks
-
-    def _chunk_consolidation_prepare_fn(self, ctx: PromptContext):
-        def prepare_fn(task: Dict) -> Dict:
-            domain = ctx.domain(task["domain_label"])
-            prompt = build_chunk_consolidation_prompt(
-                language=ctx.language,
-                survey_question=ctx.survey_question,
-                **ctx.specifiers(),
-                dimension=ctx.dimension,
-                dimension_name=ctx.dimension_name,
-                dimension_description=ctx.dimension_description,
-                domain_label=domain["label"],
-                domain_definition=domain["definition"],
-                domain_exclusions=domain["exclusions"],
-                candidate_block=build_candidate_block(
-                    task["candidates"], task["recurrence"],
-                    task["attribute_recurrence"], task["n_passes"]),
-            )
-            self._capture(
-                f"chunk_consolidation_{task['domain_label']}", prompt,
-                "chunk_consolidation",
-                {"model": self._model["chunk_consolidation"],
-                 "temperature": 0.0,
-                 "max_tokens": self._max_tokens_consolidation,
-                 "language": ctx.language,
-                 "domain": task["domain_label"],
-                 "n_candidates": len(task["candidates"]),
-                 "dimension_name": ctx.dimension_name})
-            return {
-                "prompt": prompt,
-                "response_model": ConsolidationResult,
-                "temperature": 0.0,
-                "max_tokens": self._max_tokens_consolidation,
-                "max_retries": 3,
-                "extra_kwargs": get_reasoning_params(
-                    self._model["chunk_consolidation"],
-                    phase="classifier_chunk_consolidation"),
-            }
-        return prepare_fn
-
-    @staticmethod
-    def _chunk_consolidation_parse_fn():
-        def parse_fn(task: Dict, response):
-            return response if response else None
-        return parse_fn
-
-    @staticmethod
-    def _chunk_consolidation_fallback_fn():
-        """On failure the domain keeps its candidates — never silently emptied."""
-        def fallback_fn(task: Dict, reason: str) -> None:
-            return None
-        return fallback_fn
-
-    def _consolidation_survivors(
-        self, task: Dict, result,
-    ) -> List[DiscoveredFacet]:
-        """The settled facets of one group, with unclaimed candidates kept.
-
-        A candidate that appears in no `source_*` list is left standing, at BOTH
-        levels. Merging and forgetting look identical in the output, so without
-        this a candidate the model never judged would vanish — and in a
-        multi-round consolidation it would never come back.
-
-        The two levels need separate nets. A facet that folded into a survivor
-        counts as claimed, so its attributes are covered by nothing: the model
-        can absorb the container and drop its contents while the facet-level
-        check still reports full coverage. Those orphans land on whichever
-        survivor absorbed their facet.
-
-        Claims are matched on the ids the candidate block handed out (`F1`,
-        `F1-A2`), not on names. Names are not unique — the same attribute name
-        under two candidate facets used to collapse into one claim, so rescuing
-        one silently counted for both. A name fallback stays for the case where
-        a survivor kept a candidate's name without listing its id.
-        """
-        label, candidates = task["domain_label"], task["candidates"]
-        if result is None or not result.facets:
-            self._action_log.append({
-                "action": "consolidation_failed", "domain": label,
-                "note": "no result — candidates left as discovered",
-                "candidates": [c.facet_name for c in candidates]})
-            return list(candidates)
-
-        # Rebuilt one level down as well: the response models carry `source_*`,
-        # the structure does not. Converting explicitly keeps that boundary
-        # visible instead of leaving it to what model_dump happens to drop.
-        survivors: List[DiscoveredFacet] = [
-            DiscoveredFacet(
-                facet_name=f.facet_name,
-                facet_definition=f.facet_definition,
-                attributes=[
-                    DiscoveredAttribute(
-                        attribute_name=a.attribute_name,
-                        attribute_definition=a.attribute_definition,
-                        example_observations=list(a.example_observations))
-                    for a in f.attributes])
-            for f in result.facets
-        ]
-        cand_facets, cand_attributes = build_candidate_index(candidates)
-        by_name = {_norm(s.facet_name): s for s in survivors}
-        home: Dict[str, DiscoveredFacet] = {}
-        divided: Dict[str, List[str]] = {}
-        for facet, survivor in zip(result.facets, survivors):
-            for source in (facet.source_facet_ids or []):
-                divided.setdefault(source.strip(), []).append(facet.facet_name)
-                home.setdefault(source.strip(), survivor)
-        # A candidate whose attributes belong under different survivors is
-        # listed by each of them, and that is the honest record — forcing it
-        # onto one would claim an absorption that did not happen. It does leave
-        # its orphans, if any, with an arbitrary landing spot: first claimant.
-        for source, claimants in divided.items():
-            if len(claimants) > 1:
-                self._action_log.append({
-                    "action": "divided_source_facet", "domain": label,
-                    "source": source, "claimants": claimants,
-                    "note": "split across survivors; orphans land on the first"})
-
-        self._log_unknown_sources(label, result, cand_facets, cand_attributes)
-
-        # ---- facet level ----------------------------------------------------
-        # The name fallback catches a survivor that kept a candidate's name
-        # without citing its id. It only applies to a name that identifies one
-        # candidate: where two candidates share it, the name says nothing about
-        # which was meant, and letting it count would undo what the ids fixed.
-        facet_names = Counter(_norm(f.facet_name) for f in cand_facets.values())
-        attribute_names = Counter(
-            _norm(a.attribute_name) for _, a in cand_attributes.values())
-
-        claimed = {s.strip() for f in result.facets
-                   for s in (f.source_facet_ids or [])}
-        returned = {_norm(f.facet_name) for f in survivors}
-        kept_whole: Set[str] = set()
-        for facet_id, candidate in cand_facets.items():
-            name = _norm(candidate.facet_name)
-            if facet_id in claimed or (
-                    facet_names[name] == 1 and name in returned):
-                continue
-            survivors.append(candidate)
-            kept_whole.add(facet_id)
-            self._action_log.append({
-                "action": "facet_kept_unclaimed", "domain": label,
-                "facet": candidate.facet_name, "id": facet_id})
-
-        # ---- attribute level ------------------------------------------------
-        # A facet kept whole above brings its attributes with it; rescuing them
-        # again would list them twice.
-        claimed_attrs = {s.strip() for f in result.facets
-                         for a in f.attributes for s in (a.source_attribute_ids or [])}
-        returned_attrs = {_norm(a.attribute_name)
-                          for f in result.facets for a in f.attributes}
-        rescued = 0
-        for attribute_id, (facet_id, attribute) in cand_attributes.items():
-            if facet_id in kept_whole:
-                continue
-            if attribute_id in claimed_attrs:
-                continue
-            name = _norm(attribute.attribute_name)
-            if attribute_names[name] == 1 and name in returned_attrs:
-                continue
-            candidate = cand_facets[facet_id]
-            landing = home.get(facet_id) or by_name.get(_norm(candidate.facet_name))
-            if landing is None:
-                self._action_log.append({
-                    "action": "attribute_dropped_unroutable", "domain": label,
-                    "facet": candidate.facet_name,
-                    "attribute": attribute.attribute_name, "id": attribute_id,
-                    "note": "source facet claimed by no survivor"})
-                continue
-            landing.attributes.append(attribute)
-            rescued += 1
-            self._action_log.append({
-                "action": "attribute_kept_unclaimed", "domain": label,
-                "facet": candidate.facet_name,
-                "attribute": attribute.attribute_name, "id": attribute_id,
-                "landed_on": landing.facet_name})
-
-        self._log_consolidation_provenance(label, result)
-        self._action_log.append({
-            "action": "chunk_consolidation", "domain": label,
-            "facets_before": len(candidates), "facets_after": len(survivors),
-            "attributes_before": sum(len(c.attributes) for c in candidates),
-            "attributes_after": sum(len(s.attributes) for s in survivors),
-            "attributes_rescued": rescued})
-        return survivors
-
-    def _log_unknown_sources(
-        self, label: str, result,
-        cand_facets: Dict[str, DiscoveredFacet],
-        cand_attributes: Dict[str, Any],
-    ) -> None:
-        """Source ids the model cited that were never handed out.
-
-        Refinement already reports this; consolidation did not, so an id the
-        model invented — or garbled — was indistinguishable from one it matched.
-        An invented id claims nothing, which silently turns the candidate it was
-        meant to cover into an unclaimed one. On ids this is a clean check: the
-        set was handed out in this very prompt.
-        """
-        facets = sorted({s.strip() for f in result.facets
-                         for s in (f.source_facet_ids or [])
-                         if s.strip() not in cand_facets})
-        attributes = sorted({s.strip() for f in result.facets for a in f.attributes
-                             for s in (a.source_attribute_ids or [])
-                             if s.strip() not in cand_attributes})
-        if not facets and not attributes:
-            return
-        self._action_log.append({
-            "action": "unknown_source_id", "domain": label,
-            "facets": facets, "attributes": attributes,
-            "note": "cited as a source but never handed out for this call"})
-
-    def _log_consolidation_provenance(self, label: str, result) -> None:
-        """Which candidate went where, at both levels, and on what question.
-
-        `facet_question` exists to make rule 1 checkable: two survivors that
-        state the same question answer the same question, which is the one thing
-        rule 1 forbids. Written down it is comparable; left implicit it was a
-        matter of feel. A collision is logged, not repaired — merging on it here
-        would override a judgement the model made with the candidates in view.
-
-        The `source_*` fields cost the model real effort and then die with the
-        phase: survivors are rebuilt as plain structure, which has no room for
-        them. Without this record the action log states that forty facets became
-        twelve, but not which one absorbed which — and that is exactly what is
-        needed to tell a changed rule from a changed run.
-        """
-        stated: Dict[str, str] = {}
-        for facet in result.facets:
-            key = _norm(facet.facet_question)
-            if key and key in stated:
-                self._action_log.append({
-                    "action": "duplicate_facet_question", "domain": label,
-                    "facets": [stated[key], facet.facet_name],
-                    "question": facet.facet_question,
-                    "note": "two survivors answer the same question — rule 1"})
-            elif key:
-                stated[key] = facet.facet_name
-
-        self._action_log.append({
-            "action": "consolidation_provenance", "domain": label,
-            "facets": [
-                {"facet": f.facet_name,
-                 "facet_question": f.facet_question,
-                 "source_facet_ids": list(f.source_facet_ids or []),
-                 "attributes": [
-                     {"attribute": a.attribute_name,
-                      "source_attribute_ids": list(a.source_attribute_ids or [])}
-                     for a in f.attributes]}
-                for f in result.facets],
-            "decisions": list(result.decision_summary or [])})
-
-    async def _run_chunk_consolidation(
-        self, ctx: PromptContext, raw: Dict[str, List[DiscoveredFacet]],
-        verbose: bool,
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """Settle each domain's nested inventory before a single idea is assigned.
-
-        Rounds, not one shot: round one consolidates what the chunks proposed,
-        round two consolidates the survivors of round one, and so on until a
-        domain fits in a single group. A domain that already fitted is settled
-        after its first round.
-        """
-        if verbose:
-            print("\n  Chunk consolidation")
-        started = time.time()
-
-        settled: Dict[str, List[DiscoveredFacet]] = {}
-        pending: Dict[str, List[DiscoveredFacet]] = {
-            label: list(facets) for label, facets in raw.items() if facets
-        }
-
-        for round_no in range(1, self._consolidation_max_rounds + 1):
-            # One candidate is nothing to merge: no call, keep the facet.
-            for label in [l for l, c in pending.items() if len(c) == 1]:
-                settled[label] = [pending.pop(label)[0]]
-
-            tasks = self._build_chunk_consolidation_tasks(ctx, pending)
-            if not tasks:
-                break
-
-            groups_per_domain = Counter(t["domain_label"] for t in tasks)
-            if verbose and any(n > 1 for n in groups_per_domain.values()):
-                busy = {d: n for d, n in groups_per_domain.items() if n > 1}
-                print(f"    round {round_no}: {busy} groups")
-
-            results = await self._dispatch(
-                "chunk_consolidation", tasks,
-                self._chunk_consolidation_prepare_fn(ctx),
-                self._chunk_consolidation_parse_fn(),
-                self._chunk_consolidation_fallback_fn(),
-                verbose,
-            )
-
-            survivors: Dict[str, List[DiscoveredFacet]] = {}
-            for task, result in zip(tasks, results):
-                survivors.setdefault(task["domain_label"], []).extend(
-                    self._consolidation_survivors(task, result))
-
-            pending = {}
-            for label, facets in survivors.items():
-                if groups_per_domain[label] == 1:
-                    settled[label] = facets
-                else:
-                    pending[label] = facets
-            if not pending:
-                break
-
-        for label, leftover in pending.items():
-            settled[label] = leftover
-            self._action_log.append({
-                "action": "consolidation_rounds_exhausted",
-                "domain": label, "rounds": self._consolidation_max_rounds,
-                "remaining": len(leftover)})
-
-        structure = {label: [f.model_dump() for f in facets]
-                     for label, facets in settled.items()}
-
-        if verbose:
-            print(f"    {time.time() - started:.1f}s → {format_counts(structure)}")
-            for label in sorted(structure):
-                names = ", ".join(f["facet_name"] for f in structure[label])
-                print(f"      {label}: {len(structure[label])} — {names}")
-        return structure
 
     # =========================================================================
     # PHASE — FACET CONSOLIDATION (per domain, before any attribute is settled)

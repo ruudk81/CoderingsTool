@@ -3,10 +3,10 @@
 """
 Step 4: Taxonomy Classifier runner.
 
-Domain discovery, then discovery → chunk consolidation → assignment →
-refinement → cross-domain, and the valence-neutral merge last. Six phases;
-facets and attributes are built together, not as two stacked layers. See
-`classifier.TaxonomyClassifier`.
+Domain discovery, then discovery → facet consolidation → attribute
+consolidation → assignment → refinement → cross-domain, and the valence-neutral
+merge last. Seven phases; facets and attributes are found together and settled
+apart, one call per level. See `classifier.TaxonomyClassifier`.
 """
 import sys
 import json
@@ -29,15 +29,15 @@ PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 # not where you stop after a phase; that is STOP_AFTER_PHASE below.
 LIMIT_N = None
 
-# None = all six phases. Otherwise one of TaxonomyClassifier.PHASES, which is the
-# only place the names live:
-#   discovery, chunk_consolidation, assignment, refinement, cross_domain,
-#   valence_merge
+# None = all seven phases. Otherwise one of TaxonomyClassifier.PHASES, which is
+# the only place the names live:
+#   discovery, facet_consolidation, attribute_consolidation, assignment,
+#   refinement, cross_domain, valence_merge
 # An unknown name raises at construction rather than quietly running everything.
 #
 # WARNING: a phase stop still writes its partial taxonomy to the cache, over the
 # complete one that was there. Copy data/cache before an early-stop run.
-STOP_AFTER_PHASE = "chunk_consolidation"
+STOP_AFTER_PHASE = None
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key

@@ -2,9 +2,10 @@
 """
 View the prompts step 4 sent to the LLM.
 
-Six phases: discovery, chunk consolidation, assignment, refinement,
-cross-domain, then the valence-neutral merge. Keys are named by function, not by
-number, so a reordering does not force a renaming here or in the perf model.
+Seven phases: discovery, facet consolidation, attribute consolidation,
+assignment, refinement, cross-domain, then the valence-neutral merge. Keys are
+named by function, not by number, so a reordering does not force a renaming here
+or in the perf model.
 
 Usage:
     cd src && python -m pipeline.step_4_classifier.view_prompts
@@ -24,7 +25,7 @@ from pipeline.step_4_classifier.prompts_discovery import (
     DiscoveryResult,
 )
 from pipeline.step_4_classifier.prompts_consolidation import (
-    ConsolidationResult,
+    AttributeConsolidationResult, FacetConsolidationResult,
 )
 from pipeline.step_4_classifier.prompts_refinement import RefinementResult
 from pipeline.step_4_classifier.prompts_valence import ValenceNeutralRenameResponse
@@ -35,7 +36,8 @@ SHOW_ALL = False
 # ids are Literals in the schema — so there is no static model to render.
 PROMPT_MODELS = {
     "discovery": DiscoveryResult,
-    "chunk_consolidation": ConsolidationResult,
+    "facet_consolidation": FacetConsolidationResult,
+    "attribute_consolidation": AttributeConsolidationResult,
     "assignment": (lambda metadata: None),
     "refinement": RefinementResult,
     "cross_domain": (lambda metadata: None),
