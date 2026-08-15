@@ -11,8 +11,10 @@ from pipeline.step_4_classifier.classifier import (
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.drains import is_drain_item
 from pipeline.step_4_classifier.prompts_discovery import (
-    ConsolidatedAttribute, ConsolidatedFacet, ConsolidationResult,
     DiscoveredAttribute, DiscoveredFacet,
+)
+from pipeline.step_4_classifier.prompts_consolidation import (
+    ConsolidatedAttribute, ConsolidatedFacet, ConsolidationResult,
 )
 
 DIM = get_dimensions_in_decision_order()[0]

@@ -84,9 +84,12 @@ from .assignment_batching import group_label_reps
 from models import DomainSet
 from .prompts_shared import build_cross_scope_model
 from .prompts_discovery import (
-    ConsolidationResult, DiscoveredAttribute, DiscoveredFacet, DiscoveryResult,
-    build_candidate_block, build_candidate_index,
-    build_chunk_consolidation_prompt, build_discovery_prompt,
+    DiscoveredAttribute, DiscoveredFacet, DiscoveryResult,
+    build_discovery_prompt,
+)
+from .prompts_consolidation import (
+    ConsolidationResult, build_candidate_block, build_candidate_index,
+    build_chunk_consolidation_prompt,
 )
 from .prompts_assignment import (
     build_assignment_menu, build_assignment_model, build_assignment_prompt,

@@ -21,8 +21,10 @@ from utils.promptViewer import render
 from test_data import TEST_DATA
 
 from pipeline.step_4_classifier.prompts_discovery import (
-    ConsolidationResult,
     DiscoveryResult,
+)
+from pipeline.step_4_classifier.prompts_consolidation import (
+    ConsolidationResult,
 )
 from pipeline.step_4_classifier.prompts_refinement import RefinementResult
 from pipeline.step_4_classifier.prompts_valence import ValenceNeutralRenameResponse

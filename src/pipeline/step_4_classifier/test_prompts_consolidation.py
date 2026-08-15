@@ -1,11 +1,13 @@
 """Tests voor de chunk-consolidatieprompt (step 4)."""
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.prompts_discovery import (
+    DiscoveredAttribute,
+    DiscoveredFacet,
+)
+from pipeline.step_4_classifier.prompts_consolidation import (
     ConsolidatedAttribute,
     ConsolidatedFacet,
     ConsolidationResult,
-    DiscoveredAttribute,
-    DiscoveredFacet,
     build_candidate_block,
     build_candidate_index,
     build_chunk_consolidation_prompt,
