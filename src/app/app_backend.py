@@ -425,9 +425,9 @@ def run_step(step: int, spec: DatasetSpec, force_recalc: bool = False) -> str:
                     f"{spec.filename}:{spec.variable_key} — runner schreef mogelijk "
                     "naar de verkeerde dataset-key.")
 
-    # Opruimen op het moment dat er daadwerkelijk bestanden bij zijn gekomen.
-    # Dit is het tweede haakje naast het opstarthaakje in app.py: een app die
-    # dagenlang openstaat zou anders alleen bij een herstart opruimen.
+    # Clean up at the moment files have actually been added. This is the second
+    # hook alongside the startup hook in app.py: an app left open for days would
+    # otherwise only clean up on a restart.
     melding = run_retention(f"na stap {step}")
     if melding.startswith("opruimen mislukt"):
         summary += f" ⚠️ {melding}"
@@ -436,11 +436,11 @@ def run_step(step: int, spec: DatasetSpec, force_recalc: bool = False) -> str:
 
 
 def run_retention(aanleiding: str) -> str:
-    """Ruim exports/ op; geeft één regel terug voor de UI.
+    """Clean up exports/; returns a single line for the UI.
 
-    Fouten worden niet verzwegen — ze komen terug als tekst en staan in
-    exports/retention.log. Met alle plafonds op None verplaatst dit niets; het
-    rapporteert alleen.
+    Errors are not swallowed — they come back as text and are written to
+    exports/retention.log. With every cap on None this moves nothing; it only
+    reports.
     """
     from utils import retention
     return retention.opruimen(PROJECT_ROOT, aanleiding)
@@ -673,7 +673,7 @@ def step_costs(spec: DatasetSpec, step: int) -> Optional[Dict[str, Any]]:
 
 
 def find_verbose_log(spec: DatasetSpec, step: int) -> Optional[str]:
-    """De opgeslagen console-uitvoer van een stap, of None."""
+    """The stored console output of a step, or None."""
     path = VerboseCapture.find_latest_log(
         spec.filename, spec.var_name, spec.sample_size, step)
     return VerboseCapture.load_log_content(path) if path else None

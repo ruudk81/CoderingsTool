@@ -1,39 +1,39 @@
-"""De twee other-vangnetten van step 4, deterministisch gebouwd.
+"""The two other-catch-alls of step 4, built deterministically.
 
-Toewijzing kiest per label één attribuut uit een domeinbreed menu. Twee dingen
-kunnen dan misgaan: het idee hoort bij een facet maar bij geen van zijn
-attributen, of het hoort bij het domein maar bij geen van zijn facetten. Voor
-allebei staat er een uitgang in het menu — een `other`-attribuut onder elk
-facet, en een `other`-facet onder elk domein met zijn eigen `other`-attribuut.
+Assignment picks one attribute per label from a domain-wide menu. Two things can
+go wrong there: the idea belongs to a facet but to none of its attributes, or it
+belongs to the domain but to none of its facets. The menu has an exit for both —
+an `other` attribute under every facet, and an `other` facet under every domain
+with an `other` attribute of its own.
 
-Daarmee is er altijd een geldig antwoord en verdwijnt `__UNASSIGNED__`: een idee
-dat nergens paste kreeg een naam die niet in de structuur stond, en alles
-stroomafwaarts moest daar een uitzondering voor maken.
+That guarantees a valid answer always exists and `__UNASSIGNED__` disappears: an
+idea that fitted nowhere used to get a name that was not in the structure, and
+everything downstream had to make an exception for it.
 
-**Deterministisch, niet ontdekt.** Ze worden door deze module gebouwd en nooit
-door een model voorgesteld. Step 3 leerde dat al met zijn twee vangnetdomeinen:
-een model dat de restcategorie zelf moet bedenken doet dat soms niet, en de
-antwoorden worden dan een inhoudelijke categorie in geduwd.
+**Deterministic, not discovered.** They are built by this module and never
+proposed by a model. Step 3 already learned that with its two catch-all domains:
+a model asked to invent the residual category sometimes does not, and the
+responses then get pushed into a substantive category instead.
 
-**Herkenning loopt op de sleutel, nooit op de naam.** De naam staat in de
-enquêtetaal en mag door naslijpen herschreven worden; `drain_key` niet. Dat is
-dezelfde afspraak als bij step 3, waar `other` en `not_known` de sleutels zijn
-en het label vertaald is.
+**Recognition runs on the key, never on the name.** The name is in the survey
+language and may be rewritten by refinement; `drain_key` may not. Same agreement
+as in step 3, where `other` and `not_known` are the keys and the label is
+translated.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-# Stabiel over runs, talen en hernoemingen heen. Wie een vangnet wil herkennen
-# leest deze sleutel; wie op de naam matcht heeft het bij de eerste vertaling
-# mis.
+# Stable across runs, languages and renames. Whoever wants to recognise a
+# catch-all reads this key; whoever matches on the name has it wrong at the first
+# translation.
 DRAIN_ATTRIBUTE_KEY = "other_in_facet"
 DRAIN_FACET_KEY = "other_in_domain"
 
 
-# Alleen de restwoorden, per taal. Dit is opmaak, geen use-case-inhoud: het zegt
-# niets over het onderwerp van de enquête. Onbekende taal valt terug op Engels,
-# zichtbaar fout in plaats van stil leeg.
+# Just the residual wording, per language. This is format, not use-case content:
+# it says nothing about the subject of the survey. An unknown language falls back
+# to English — visibly wrong rather than silently empty.
 _WORDING: Dict[str, Dict[str, str]] = {
     "english": {
         "other": "Other",
@@ -74,7 +74,7 @@ def _wording(language: str) -> Dict[str, str]:
 # =============================================================================
 
 def _drain_attribute(name: str, definition: str) -> Dict[str, Any]:
-    """De vorm van een vangnet-attribuut, op één plek."""
+    """The shape of a catch-all attribute, in one place."""
     return {
         "attribute_name": name,
         "attribute_definition": definition,
@@ -85,10 +85,10 @@ def _drain_attribute(name: str, definition: str) -> Dict[str, Any]:
 
 
 def make_drain_attribute(facet_name: str, language: str) -> Dict[str, Any]:
-    """Het `other`-attribuut onder één facet.
+    """The `other` attribute under one facet.
 
-    De naam draagt het facet, want een codeboek met tien kale "Overig"-codes is
-    onleesbaar en step 5 moet ze uit elkaar kunnen houden.
+    The name carries the facet, because a codebook with ten bare residual codes
+    is unreadable and step 5 has to be able to tell them apart.
     """
     words = _wording(language)
     return _drain_attribute(f"{words['other']} — {facet_name}",
@@ -96,15 +96,15 @@ def make_drain_attribute(facet_name: str, language: str) -> Dict[str, Any]:
 
 
 def make_drain_facet(domain_label: str, language: str) -> Dict[str, Any]:
-    """Het `other`-facet onder één domein, mét zijn eigen `other`-attribuut.
+    """The `other` facet under one domain, with an `other` attribute of its own.
 
-    Zonder dat attribuut zou het domein-vangnet zelf een gat zijn: toewijzing
-    kiest een attribuut, dus een facet zonder attributen is onbereikbaar.
+    Without that attribute the domain catch-all would itself be a hole:
+    assignment picks an attribute, so a facet without attributes is unreachable.
 
-    Facet en attribuut delen naam en definitie, en dat is geen slordigheid: het
-    ís één bak. De structuur dwingt hem op twee niveaus uit te drukken, en dan
-    is hetzelfde tweemaal zeggen eerlijker dan een verzonnen onderscheid —
-    "Overig — Overig — <domein>" beloofde een verfijning die er niet is.
+    Facet and attribute share name and definition, and that is not sloppiness:
+    it IS one bucket. The structure forces it to be expressed at two levels, and
+    then saying the same thing twice is more honest than an invented distinction
+    — a doubly-residual name promised a refinement that is not there.
     """
     words = _wording(language)
     name = f"{words['other']} — {domain_label}"
@@ -137,13 +137,13 @@ def strip_empty_drains(
 ) -> Tuple[Dict[str, List[Dict[str, Any]]],
            Dict[str, Dict[str, List[Dict[str, Any]]]],
            Dict[str, str]]:
-    """Haal de vangnetten weg die niets hebben opgevangen.
+    """Remove the catch-alls that caught nothing.
 
-    Een vangnet is een aanbod, geen categorie: bleef het leeg, dan hoort het
-    niet in de opgeleverde taxonomie. Wat wél gevuld raakte blijft staan — dat
-    is een echte bevinding over de dekking.
+    A catch-all is an offer, not a category: if it stayed empty it does not
+    belong in the delivered taxonomy. Whatever did fill up stays — that is a real
+    finding about coverage.
 
-    Muteert de invoer niet; de aanroeper houdt zijn eigen stand.
+    Does not mutate the input; the caller keeps its own state.
     """
     used = set(attribute_assignments.values())
 
@@ -164,7 +164,7 @@ def strip_empty_drains(
             if not is_drain_item(facet):
                 kept.append(dict(facet))
                 continue
-            # Een vangnetfacet overleeft alleen zolang het nog attributen heeft.
+            # A catch-all facet survives only while it still holds attributes.
             if out_attributes.get(domain, {}).get(facet.get("facet_name")):
                 survivor = dict(facet)
                 survivor["attributes"] = [

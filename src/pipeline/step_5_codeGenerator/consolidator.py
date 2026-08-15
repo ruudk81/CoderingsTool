@@ -1,12 +1,12 @@
-"""Stap 3 — samenvoegen en richting bepalen. Tellen en vergelijken, geen LLM.
+"""Step 3 — merging and settling direction. Counting and comparing, no LLM.
 
-Prevalentie bepaalt OF iets samenvoegt; semantiek bepaalt alleen WAARHEEN. Een
-concept voegt niet samen omdat het op iets anders lijkt — het voegt samen omdat
-het te klein is om op zichzelf te staan.
+Prevalence decides WHETHER something merges; semantics only decides WHERE TO. A
+concept does not merge because it resembles something else — it merges because it
+is too small to stand on its own.
 
-Volgorde: ontdubbelen (synoniemen, ongeacht grootte) -> klimmen (per koepel, en
-zo nodig één niveau hoger naar het taxonomiedomein) -> richting (per resulterende
-vorm, op basis van de samengevoegde respondentverzamelingen).
+Order: deduplicate (synonyms, regardless of size) -> climb (per umbrella, and one
+level higher to the taxonomy domain when needed) -> direction (per resulting
+shape, based on the merged respondent sets).
 """
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ class RelationMap:
 
 @dataclass(frozen=True)
 class CodeShape:
-    """Eén uitkomst van het consolideren: hoeveel codes, welke leden, welke
-    richting. `key` is een run-lokale volgordesleutel, geen codeboek-id."""
+    """One outcome of consolidation: how many codes, which members, which
+    direction. `key` is a run-local ordering key, not a codebook id."""
     key: str
     members: Tuple[str, ...]
     valence: str
@@ -42,8 +42,8 @@ class CodeShape:
 
 @dataclass(frozen=True)
 class _Unit:
-    """Eén of meer attributen die samen als één geheel klimmen: een los concept,
-    een ontdubbelde synoniemgroep, of een gepoolde groep."""
+    """One or more attributes that climb together as a whole: a single concept, a
+    deduplicated synonym group, or a pooled group."""
     ids: Tuple[str, ...]
     umbrella: str
     domain: str
@@ -58,9 +58,9 @@ class _Unit:
 
 
 def normalize_relations(result, concepts: List[Concept]) -> RelationMap:
-    """Vertaalt `RelationsResult`'s gekwalificeerde namen (`tagged()`-formaat)
-    terug naar attribuut-ids. Een `synonym_of` die niet in de lijst staat wordt
-    genegeerd; kettingen (A->B->C) worden hier niet ontward, dat doet `consolidate`."""
+    """Translates `RelationsResult`'s qualified names (`tagged()` format) back
+    into attribute ids. A `synonym_of` not present in the list is ignored; chains
+    (A->B->C) are not untangled here, `consolidate` does that."""
     id_by_tag = {tagged(concept): concept.attribute_id for concept in concepts}
     umbrella: Dict[str, str] = {}
     synonym_of: Dict[str, str] = {}
@@ -77,8 +77,8 @@ def normalize_relations(result, concepts: List[Concept]) -> RelationMap:
 
 
 def _synonym_groups(concepts: List[Concept], synonym_of: Dict[str, str]) -> List[List[Concept]]:
-    """Samenhangende componenten over `synonym_of`: een keten A->B->C wordt één
-    groep ongeacht de volgorde waarin de paren zijn opgegeven."""
+    """Connected components over `synonym_of`: a chain A->B->C becomes one group
+    regardless of the order in which the pairs were given."""
     parent: Dict[str, str] = {concept.attribute_id: concept.attribute_id for concept in concepts}
 
     def find(node: str) -> str:
@@ -105,10 +105,10 @@ def _synonym_groups(concepts: List[Concept], synonym_of: Dict[str, str]) -> List
 
 
 def _build_units(concepts: List[Concept], relations: RelationMap) -> List[_Unit]:
-    """Ontdubbelt synoniemgroepen tot units met de vereniging van hun
-    respondentverzamelingen. De koepel komt van de meest prevalente naam in de
-    groep — bij een synoniempaar wijzen beide leden doorgaans naar dezelfde
-    koepel, maar bij afwijking wint het meest prevalente lid."""
+    """Deduplicates synonym groups into units carrying the union of their
+    respondent sets. The umbrella comes from the most prevalent name in the group
+    — in a synonym pair both members usually point at the same umbrella, but on a
+    disagreement the most prevalent member wins."""
     units = []
     for group in _synonym_groups(concepts, relations.synonym_of):
         representative = min(group, key=lambda c: (-c.n_resp, c.attribute_id))
@@ -148,10 +148,11 @@ def _group_leftovers(units: List[_Unit], key) -> Tuple[List[str], Dict[str, List
 
 
 def _climb(units: List[_Unit], threshold: int) -> Tuple[List[_Unit], List[str]]:
-    """Leden boven de drempel staan op zichzelf en klimmen niet. De rest wordt
-    per koepel gepoold; haalt die pool de drempel niet, dan wordt één niveau
-    hoger geprobeerd — het taxonomiedomein, de enige bredere groepering die een
-    Concept nog draagt. Haalt ook dat niet, dan is er geen niveau meer: Overig."""
+    """Members above the threshold stand on their own and do not climb. The rest
+    is pooled per umbrella; if that pool does not clear the threshold, one level
+    higher is tried — the taxonomy domain, the only broader grouping a Concept
+    still carries. If that does not clear it either, there is no level left:
+    residual."""
     kept: List[_Unit] = []
     short: List[_Unit] = []
     for unit in units:
@@ -182,10 +183,10 @@ def _climb(units: List[_Unit], threshold: int) -> Tuple[List[_Unit], List[str]]:
 def _directions(
     resp_pos: frozenset[str], resp_neg: frozenset[str], resp_neu: frozenset[str], threshold: int
 ) -> List[Tuple[str, frozenset[str], frozenset[str], frozenset[str]]]:
-    """Eén vorm wordt er twee (of drie) zodra beide polen de drempel apart
-    halen; een enkele pool over de drempel geeft één gerichte vorm die de héle
-    groep draagt (er is geen tweede vorm om de rest in te vangen); haalt geen
-    enkele pool de drempel, dan blijft het één neutrale vorm over de hele groep."""
+    """One shape becomes two (or three) as soon as both poles clear the threshold
+    separately; a single pole over the threshold gives one directed shape carrying
+    the WHOLE group (there is no second shape to catch the rest); if no pole
+    clears it, one neutral shape covers the whole group."""
     p, g, u = len(resp_pos), len(resp_neg), len(resp_neu)
     if p >= threshold and g >= threshold:
         if u >= threshold:
@@ -213,8 +214,8 @@ def _directions(
 def consolidate(
     concepts: List[Concept], relations: RelationMap, threshold: int, log: Optional[object] = None
 ) -> Tuple[List[CodeShape], List[str]]:
-    """Ontdubbelen -> klimmen -> richting. `log` is gereserveerd voor het
-    beslislog (een volgende stap); deze functie vult het nog niet."""
+    """Deduplicate -> climb -> direction. `log` is reserved for the decision log
+    (a later step); this function does not fill it yet."""
     units = _build_units(concepts, relations)
     kept, overig = _climb(units, threshold)
 

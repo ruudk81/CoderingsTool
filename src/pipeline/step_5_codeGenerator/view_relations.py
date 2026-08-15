@@ -1,15 +1,15 @@
 #%%
 
-"""Toon de groepering uit stap 2 — de poort voor de rest van de herbouw.
+"""Show the grouping from step 2 — the gate for the rest of the rebuild.
 
-Draait op de bestaande step-4-cache: twee LLM-calls (relaties + verzamelnaam-
-consolidatie), geen volledige pijplijnrun.
+Runs on the existing step-4 cache: two LLM calls (relations + umbrella-name
+consolidation), not a full pipeline run.
 
     cd src && python -m pipeline.step_5_codeGenerator.view_relations
-    cd src && python -m pipeline.step_5_codeGenerator.view_relations --cache-dir <pad>
+    cd src && python -m pipeline.step_5_codeGenerator.view_relations --cache-dir <path>
 
-Dit is een STOP-taak: na dit overzicht wordt niets uit taak 5 en verder gebouwd
-tot de gebruiker de groepering heeft gezien en goedgekeurd.
+This is a STOP task: after this overview nothing from task 5 onwards is built
+until the user has seen and approved the grouping.
 """
 
 import argparse
@@ -35,15 +35,16 @@ from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, b
 
 CLEAR, SMALL = "✓ eigen code", "· te klein"
 
-# De gewone cache. Werk je aan step 5 terwijl step 4 nog beweegt, wijs --cache-dir
-# dan naar een bevroren kopie: drie poortruns in één sessie zagen elk een andere
-# taxonomie (182 → 141 → 189 attributen), en dan meet je twee wijzigingen tegelijk.
+# The ordinary cache. If you work on step 5 while step 4 is still moving, point
+# --cache-dir at a frozen copy: three gate runs in one session each saw a
+# different taxonomy (182 -> 141 -> 189 attributes), and then you are measuring
+# two changes at once.
 DEFAULT_CACHE_DIR = project_root / "data" / "cache"
 
 
 class _CacheDirOverride:
-    """Wijst run_codeGenerator's laad-helpers tijdelijk naar een andere cache_dir,
-    zonder de default in config.py aan te raken."""
+    """Points run_codeGenerator's loading helpers at a different cache_dir for
+    the duration, without touching the default in config.py."""
 
     def __init__(self, cache_dir: Path):
         self._config = CacheConfig(cache_dir=cache_dir)
@@ -75,8 +76,8 @@ def tagged_lookup(concepts: List[Concept]) -> Dict[str, Concept]:
 def group_by_umbrella(
     concepts: List[Concept], relations: RelationsResult,
 ) -> Tuple[Dict[str, List[Concept]], Dict[str, str], List[Tuple[Concept, Concept]]]:
-    """Groepeer concepten per koepel en verzamel unieke synoniemparen, zoals de
-    relatiecall ze teruggaf — geen aantallen zijn hierbij betrokken."""
+    """Group concepts per umbrella and collect unique synonym pairs, as the
+    relations call returned them — no counts are involved here."""
     lookup = tagged_lookup(concepts)
     umbrellas: Dict[str, List[Concept]] = {}
     umbrella_defs: Dict[str, str] = {}
@@ -105,9 +106,9 @@ def format_consolidation(
     umbrellas_before: List[Umbrella], relations_before: RelationsResult,
     relations_after: Optional[RelationsResult],
 ) -> str:
-    """Toon wat stap 2b (verzamelnamen consolideren) deed — of, bij een
-    mislukte call, dat er ongeconsolideerd is doorgegaan. `relations_after` is
-    het resultaat van `apply_umbrella_merge`, of None als de call mislukte."""
+    """Show what step 2b (consolidating umbrella names) did — or, on a failed
+    call, that it continued unconsolidated. `relations_after` is the result of
+    `apply_umbrella_merge`, or None when the call failed."""
     lines = ["VERZAMELNAMEN OPGESCHOOND"]
     if relations_after is None:
         lines.append(
@@ -216,9 +217,9 @@ def format_report(
 
 
 def format_facet_comparison(concepts: List[Concept], relations: RelationsResult) -> str:
-    """Vergelijk de koepels met step 4's facetten — de laag die al bestond
-    tussen domein en attribuut. Evidence, geen aanbeveling: de gebruiker
-    beslist of de koepelvraag iets toevoegt boven de facetten."""
+    """Compare the umbrellas with step 4's facets — the layer that already
+    existed between domain and attribute. Evidence, not a recommendation: the
+    user decides whether the umbrella question adds anything over the facets."""
     umbrellas, _, _ = group_by_umbrella(concepts, relations)
 
     def facet_key(c: Concept) -> Tuple[str, str]:

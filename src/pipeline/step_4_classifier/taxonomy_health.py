@@ -198,11 +198,11 @@ class HealthReport:
 
     @property
     def drain_share(self) -> float:
-        """Hoeveel er in een vangnet belandde.
+        """How much ended up in a catch-all.
 
-        De tegenmetriek van grover indelen: elke merge die te ver gaat duwt
-        responsen naar een catch-all, en dat is het enige signaal dat niet
-        meebeweegt met "minder attributen is beter".
+        The counter-metric to coarser grouping: every merge that goes too far
+        pushes responses into a catch-all, and that is the only signal that does
+        not move along with "fewer attributes is better".
         """
         return 100.0 * self.n_drain_ideas / self.n_ideas if self.n_ideas else 0.0
 

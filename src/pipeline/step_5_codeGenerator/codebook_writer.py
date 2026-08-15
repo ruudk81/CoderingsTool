@@ -1,21 +1,21 @@
-"""Stap 4 — dispatch van de schrijfcall.
+"""Step 4 — dispatch of the writing call.
 
-De vorm (hoeveel codes, welke leden, welke richting) is al vast; deze module
-vult alleen de teksten in en past het ene toegestane veto toe: `nameable: false`
-op een gepoolde vorm laat die vorm vervallen. Faalt de call, of ontbreekt een
-vorm in het antwoord, dan krijgt die vorm een deterministische invulling in
-plaats van dat het codeboek een code verliest — de vormen blijven geldig, alleen
-de tekst wordt minder rijk.
+The shape (how many codes, which members, which direction) is already fixed; this
+module only fills in the texts and applies the one permitted veto: `nameable:
+false` on a pooled shape drops that shape. If the call fails, or a shape is
+missing from the answer, that shape gets a deterministic filling rather than the
+codebook losing a code — the shapes stay valid, only the text gets less rich.
 
-Lekdiscipline: deze module geeft nooit een respondenttelling, domein, facet of
-attribuut-id aan de LLM door — zie `prompts_writer.py` voor de promptbouw zelf.
+Leak discipline: this module never passes a respondent count, domain, facet or
+attribute id to the LLM — see `prompts_writer.py` for the prompt construction
+itself.
 
-Een herschrijving die maar een DEEL van het codeboek ziet (bijv. alleen de
-MECE-samengevoegde codes) kan op een naam landen die een niet-herschreven code
-al draagt: `write_codebook`'s `taken_names` geeft die andere namen door zodat
-de LLM ze mijdt, en `resolve_duplicate_names` is de deterministische achtervang
-die de aanroeper ná het herschrijven over het VOLLEDIGE, herenigde codeboek
-draait — een prompt-regel wordt hier nooit vertrouwd als enige garantie.
+A rewrite that sees only PART of the codebook (e.g. only the MECE-merged codes)
+can land on a name a non-rewritten code already carries: `write_codebook`'s
+`taken_names` passes those other names along so the LLM avoids them, and
+`resolve_duplicate_names` is the deterministic backstop the caller runs over the
+COMPLETE, reunited codebook after rewriting — a prompt rule is never trusted here
+as the only guarantee.
 """
 from __future__ import annotations
 
@@ -233,7 +233,7 @@ def resolve_duplicate_names(
 
 
 # ---------------------------------------------------------------------------
-# find_naming_mismatches — deterministische achtervang tegen een naam die zijn
+# find_naming_mismatches — deterministic backstop against a name that no longer
 # eigen inhoud niet beschrijft
 # ---------------------------------------------------------------------------
 

@@ -1,23 +1,23 @@
-"""Meet hoe reproduceerbaar stadium 2 zijn groepering maakt. Read-only.
+"""Measure how reproducibly stage 2 produces its grouping. Read-only.
 
-Draait `resolve_relations` een aantal keer op dezelfde invoer en rapporteert vier
-dingen die nergens in de keten zelf geteld worden:
+Runs `resolve_relations` a number of times on the same input and reports four
+things that are counted nowhere in the chain itself:
 
-  volledigheid   beantwoordt het model élk getoond attribuut (het `.get`-gat:
-                 een vergeten attribuut krijgt in `_climb` stil zijn domein als
-                 koepel, en dat is stroomafwaarts niet te onderscheiden van een
-                 echte koepel)
-  synoniemen     welke paren het vindt, en of ze over runs heen terugkomen
-  vangnetten     of het drains aan elkaar knoopt — `_build_units` voegt
-                 synoniemen onvoorwaardelijk en onomkeerbaar samen, dus een
-                 fusie tussen twee restbakken is niet meer te repareren
-  ARI            hoe sterk de koepelindeling zelf over twee runs verschilt
+  completeness   does the model answer for EVERY attribute shown (the `.get`
+                 hole: a forgotten attribute silently gets its domain as its
+                 umbrella in `_climb`, and downstream that is indistinguishable
+                 from a real umbrella)
+  synonyms       which pairs it finds, and whether they recur across runs
+  catch-alls     whether it ties drains together — `_build_units` merges
+                 synonyms unconditionally and irreversibly, so a fusion between
+                 two residual buckets cannot be repaired
+  ARI            how far the umbrella partition itself differs across two runs
 
-Basislijn op ASN (99 attributen / 92 concepten, 2026-08-14): 92/92 volledig,
-0 synoniemen, 0 drainfusies, 20 vs 28 koepels, ARI 0,648, en 0 van 92
-attributen kreeg twee keer dezelfde koepelnaam — bij `temperature=0.0`.
+Baseline on ASN (99 attributes / 92 concepts, 2026-08-14): 92/92 complete,
+0 synonyms, 0 drain fusions, 20 vs 28 umbrellas, ARI 0.648, and 0 of 92
+attributes got the same umbrella name twice — at `temperature=0.0`.
 
-Kosten: één LLM-call per run. Schrijft niets naar de cache.
+Cost: one LLM call per run. Writes nothing to the cache.
 
     python -m pipeline.step_5_codeGenerator.measure_grouping_stability [runs]
 """
@@ -40,8 +40,8 @@ from .taxonomy_input import build_attribute_refs, build_idea_units
 
 
 def drain_ids(partition_results) -> Set[str]:
-    """Attribuut-ids van de vangnetten, structureel via `is_drain` — nooit op
-    naam: die staat in de enquêtetaal en mag door step 4 herschreven worden."""
+    """Attribute ids of the catch-alls, structurally via `is_drain` — never by
+    name: that is in the survey language and step 4 may rewrite it."""
     ids = set()
     for domain in partition_results.values():
         attributes = domain["attributes"] if isinstance(domain, dict) else domain.attributes
@@ -70,8 +70,8 @@ def umbrella_map(result, concepts) -> Dict[str, str]:
 
 
 def adjusted_rand(a: Dict[str, str], b: Dict[str, str]) -> float:
-    """ARI over twee indelingen van dezelfde ids, via paartelling. Handmatig,
-    zodat dit geen sklearn-afhankelijkheid in de pijplijn trekt."""
+    """ARI over two partitions of the same ids, via pair counting. Done by hand,
+    so this pulls no sklearn dependency into the pipeline."""
     ids = sorted(set(a) & set(b))
     if len(ids) < 2:
         return float("nan")

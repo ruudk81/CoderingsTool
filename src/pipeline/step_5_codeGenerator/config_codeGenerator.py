@@ -58,13 +58,13 @@ class CodebookConfig:
     # Output
     verbose: bool = True
 
-    # Prevalentiedrempel: een concept krijgt een eigen code als het door minstens
-    # dit aandeel van de respondenten wordt genoemd. Let op: deze drempel en het
-    # Overig-plafond van 10% bewegen tegen elkaar in — hoger hier betekent meer
-    # Overig. Dit regelt zeldzaamheid, niet duplicatie — MECE-afdwinging (mece.py)
-    # is het mechanisme tegen twee codes die hetzelfde concept dekken; de twee
-    # mogen niet met elkaar verward worden (2026-08-12: t_keep_share stond hier
-    # tijdelijk op 0.05 als poging om overlap via de drempel op te lossen — dat
-    # verwijderde elke negatieve code, en loste de overlap niet op).
+    # Prevalence threshold: a concept gets a code of its own when at least this
+    # share of respondents mentions it. Note: this threshold and the 10% residual
+    # ceiling pull against each other — higher here means more residual. This
+    # governs rarity, not duplication — MECE enforcement (mece.py) is the
+    # mechanism against two codes covering the same concept; the two must not be
+    # confused (2026-08-12: t_keep_share sat at 0.05 here for a while as an
+    # attempt to solve overlap through the threshold — that removed every
+    # negative code, and did not solve the overlap).
     t_keep_share: float = 0.01
     t_keep_min_respondents: int = 3

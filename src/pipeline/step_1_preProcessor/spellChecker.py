@@ -407,35 +407,35 @@ class SpellChecker:
     
     @staticmethod
     def deaccent(text: str) -> str:
-        """De tekst zonder accenten en zonder hoofdletters.
+        """The text without accents and without capitals.
 
-        Dient één doel: vaststellen of twee woorden alleen door een accent van
-        elkaar verschillen.
+        Serves one purpose: establishing whether two words differ by an accent
+        alone.
         """
         return "".join(c for c in unicodedata.normalize("NFD", text.lower())
                        if not unicodedata.combining(c))
 
     @staticmethod
     def _is_diacritic_variant(word: str, suggestion: str) -> bool:
-        """Verschilt suggestion van word uitsluitend door een accent?
+        """Does suggestion differ from word by an accent alone?
 
-        `s.lower() != word.lower()` sluit uit dat een kapitalisatieverschil
-        meetelt: op "sns" biedt Hunspell soms "SNS" aan, en zonder deze toets
-        zou een merknaam zijn bescherming verliezen op grond van een
-        hoofdletter, niet van een accent.
+        `s.lower() != word.lower()` rules out a capitalisation difference
+        counting: on a lowercase acronym Hunspell sometimes offers the uppercase
+        form, and without this test a brand name would lose its protection on the
+        grounds of a capital rather than an accent.
         """
         return (suggestion.lower() != word.lower()
                 and SpellChecker.deaccent(suggestion) == SpellChecker.deaccent(word))
 
     @staticmethod
     def is_checkable(text: str) -> bool:
-        """Kan dit token een verkeerd gespeld woord zijn?
+        """Can this token be a misspelled word?
 
-        Ruimer dan `is_alpha`, en precies één klasse ruimer: letters met een
-        cijfer ertussen ("2eet", "Go4ed"). Dat is een typefout waarvan Hunspell
-        het antwoord kent. Tokens met een leesteken blijven buiten beeld —
-        "zzp-ers" en "i.o." zijn correct zoals ze staan, en binnenhalen zou ze
-        aan een model aanbieden dat verplicht is iets te veranderen.
+        Wider than `is_alpha`, and wider by exactly one class: letters with a
+        digit among them ("2eet", "Go4ed"). That is a typo Hunspell knows the
+        answer to. Tokens with punctuation stay out of view — forms like
+        "zzp-ers" and "i.o." are correct as they stand, and pulling them in would
+        offer them to a model obliged to change something.
         """
         return text.isalnum() and any(c.isalpha() for c in text)
 
@@ -451,10 +451,10 @@ class SpellChecker:
         """
         w = word.lower()
         if any(c.isdigit() for c in w):
-            # Een cijfer staat voor een letter die we niet kunnen zien: "N8ks"
-            # is "Niks". De klinkertoets zou hier "geen klinker" concluderen op
-            # grond van een teken dat juist de klinker vervangt. Alleen de
-            # hamerslag-toets bewijst dan nog iets.
+            # A digit stands for a letter we cannot see: "N8ks" is "Niks". The
+            # vowel test would conclude "no vowel" here on the strength of a
+            # character that is replacing the vowel. Only the repeated-character
+            # test still proves anything.
             return bool(_REPEATED_CHARS.search(w))
         return (not any(c in WORD_VOWELS for c in w)
                 or bool(_REPEATED_CHARS.search(w))
@@ -847,10 +847,10 @@ class SpellChecker:
             print(f"  • Task creation completed in {task_creation_time:.1f}s using regex search (fallback)")
          
         repeated_char_pattern = re.compile(rf'^(.)\1{{{self.config.repeated_char_threshold-1},}}$')
-        # Eén woord zonder enige suggestie is de slechtst denkbare taak: het model
-        # krijgt een los token en niets om het naar te corrigeren. Het patroon moet
-        # meebewegen met is_checkable, anders glipt precies dat geval erdoor —
-        # "24u" en "café" matchten [A-Za-z]+ niet en omzeilden deze zeef.
+        # One word without any suggestion is the worst task imaginable: the model
+        # gets a bare token and nothing to correct it towards. The pattern has to
+        # move with is_checkable, or exactly that case slips through — "24u" and
+        # "café" did not match [A-Za-z]+ and bypassed this sieve.
         single_word_pattern = re.compile(r'^[^\W_]+$')
         filtered_tasks = [
             task for task in tasks
@@ -992,12 +992,11 @@ Suggested corrections: {task['suggestions']}
         return fallback_fn
 
     async def _diacritic_typos(self, words: set) -> set:
-        """Welke van deze woorden verschillen alleen door een accent van een
-        woordenboekwoord?
+        """Which of these words differ from a dictionary word by an accent only?
 
-        Zulke woorden zijn typefouten, nooit merknamen — dat geldt in elke taal
-        met accenten en hoeft niet per dataset gekalibreerd te worden. Ze moeten
-        dus door het vocabulairefilter heen kunnen, hoe vaak ze ook voorkomen.
+        Such words are typos, never brand names — that holds in every language
+        with accents and needs no per-dataset calibration. So they must be able
+        to pass through the vocabulary filter, however often they occur.
         """
         if not words:
             return set()
@@ -1318,10 +1317,10 @@ Suggested corrections: {task['suggestions']}
             word for word, indices in response_count_per_word.items()
             if len(indices) >= vocab_threshold}
 
-        # Een woord dat alleen door een accent van een woordenboekwoord verschilt
-        # is een typefout, geen naam. Zonder deze uitzondering beschermt de
-        # frequentiedrempel juist de fout: "oke" haalt de drempel en blijft staan,
-        # terwijl Hunspell "oké" als eerste suggestie geeft.
+        # A word differing from a dictionary word by an accent alone is a typo,
+        # not a name. Without this exception the frequency threshold protects the
+        # error instead: "oke" clears the threshold and stays, while Hunspell
+        # offers "oké" as its first suggestion.
         accent_typos = await self._diacritic_typos(dataset_vocabulary)
         if accent_typos:
             dataset_vocabulary -= accent_typos

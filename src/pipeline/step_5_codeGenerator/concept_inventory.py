@@ -1,7 +1,7 @@
-"""Stap 1 — de empirische inventaris. Tellen, verder niets.
+"""Step 1 — the empirical inventory. Counting, nothing else.
 
-Respondentverzamelingen in plaats van aantallen: bij samenvoegen is het aantal
-unieke respondenten de vereniging, niet de som.
+Respondent sets rather than counts: on a merge the number of unique respondents
+is the union, not the sum.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class Concept:
 
 
 def t_keep(n_resp_total: int, config) -> int:
-    """De drempel waarboven iets een eigen code mag zijn."""
+    """The threshold above which something may be a code of its own."""
     return max(config.t_keep_min_respondents,
                round(config.t_keep_share * n_resp_total))
 

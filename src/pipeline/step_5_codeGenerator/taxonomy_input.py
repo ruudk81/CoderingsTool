@@ -1,15 +1,15 @@
-"""De enige plek die step 4's vorm kent.
+"""The only place that knows step 4's shape.
 
-Step 4 wordt herschreven; alles wat daar van naam of structuur verandert wordt
-hier opgevangen, zodat de rest van step 5 er niet van afweet.
+Step 4 is being rewritten; everything that changes name or structure there is
+absorbed here, so the rest of step 5 knows nothing about it.
 
-Opgevangen betekent niet weggedrukt. Een veld dat leeg is, is een geldige
-waarde en wordt hier tot "" gemaakt; een veld dat niet bestáát is een breuk in
-het contract met step 4 en moet gooien. Vandaar gewone attribuuttoegang in
-plaats van `getattr(..., default)`: die twee gevallen zijn niet uit elkaar te
-houden zodra je een default meegeeft, en het tweede geval werd dan stil het
-eerste — een hernoemde `valence` maakte élk idee neutraal, waarna de hele
-richtingsbepaling in `consolidator.py` verdween zonder één foutmelding.
+Absorbed does not mean suppressed. A field that is empty is a valid value and is
+turned into "" here; a field that does not EXIST is a break in the contract with
+step 4 and must throw. Hence plain attribute access rather than
+`getattr(..., default)`: those two cases become indistinguishable the moment you
+supply a default, and the second then silently became the first — a renamed
+`valence` made every idea neutral, after which the whole direction assignment in
+`consolidator.py` disappeared without a single error.
 """
 from __future__ import annotations
 

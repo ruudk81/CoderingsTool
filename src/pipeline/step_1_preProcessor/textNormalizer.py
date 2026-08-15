@@ -38,12 +38,12 @@ class TextNormalizer:
             self.verbose_reporter.stat_line(f"Custom symbols: '{self.config.custom_symbols}'", indent=1)
 
     def unescape_entities(self, text: str) -> str:
-        """HTML-entiteiten uit het bronbestand terugbrengen naar tekens.
+        """Turn HTML entities from the source file back into characters.
 
-        SPSS-exports bevatten soms `&quot;` of `&#304;` in plaats van het teken
-        zelf. Onvertaald is dat geen woord, dus de speller ziet het niet en het
-        bereikt step 3 als inhoud. Ontsleutelen zet zo'n token terug in het
-        bereik van de gewone correctie.
+        SPSS exports sometimes hold `&quot;` or `&#304;` instead of the character
+        itself. Untranslated that is not a word, so the speller does not see it
+        and it reaches step 3 as content. Unescaping puts such a token back
+        within reach of ordinary correction.
         """
         return html.unescape(text)
 

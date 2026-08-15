@@ -1,23 +1,22 @@
 #%%
 
-"""Bouw een volledig codeboek van begin tot eind — buiten de productiepijplijn om.
+"""Build a complete codebook end to end — outside the production pipeline.
 
-Dunne wrapper rond `run_codeGenerator.generate_codebook()` (dezelfde keten
-als de productierunner), gericht op een eigen cache-map en een leesbaar
-codeboek in plaats van een cache-write. Draait de hele stap-5-keten in één
-script:
+Thin wrapper around `run_codeGenerator.generate_codebook()` (the same chain as
+the production runner), aimed at a cache directory of its own and a readable
+codebook rather than a cache write. Runs the whole step-5 chain in one script:
 
-    taxonomy_input -> concept_inventory -> relations (2 LLM-calls) ->
-    consolidator (geen LLM) -> codebook_writer (1 LLM-call) ->
-    mece (2 LLM-calls per ronde, max 3 rondes) -> codebook_writer (herschrijft
-    alleen de samengevoegde codes)
+    taxonomy_input -> concept_inventory -> relations (2 LLM calls) ->
+    consolidator (no LLM) -> codebook_writer (1 LLM call) ->
+    mece (2 LLM calls per round, max 3 rounds) -> codebook_writer (rewrites the
+    merged codes only)
 
-Drie tot tien LLM-calls, afhankelijk van de codeboekgrootte en van hoeveel
-MECE-rondes iets samenvoegen (elke ronde: 1 detectiecall, plus 1 adjudicatie-
-call zodra er kandidaat-paren zijn; maximaal 3 rondes).
+Three to ten LLM calls, depending on codebook size and on how many MECE rounds
+merge anything (per round: 1 detection call, plus 1 adjudication call as soon as
+there are candidate pairs; at most 3 rounds).
 
     cd src && python -m pipeline.step_5_codeGenerator.run_codebook_preview
-    cd src && python -m pipeline.step_5_codeGenerator.run_codebook_preview --cache-dir <pad>
+    cd src && python -m pipeline.step_5_codeGenerator.run_codebook_preview --cache-dir <path>
 """
 
 import argparse

@@ -50,17 +50,17 @@ def get_cache_manager() -> CacheManager:
 
 @st.cache_resource
 def _retentie_bij_opstarten() -> None:
-    """Ruim exports/ op zodra de app start.
+    """Clean up exports/ as soon as the app starts.
 
-    @st.cache_resource draait dit exact één keer per serverproces — Streamlit
-    voert het script bij elke klik opnieuw uit, dus zonder die decorator zou
-    het bij elke interactie afgaan. Streamlit kent geen "app sluit"-moment
-    binnen het script; opstarten is het enige haakje dat werkt ongeacht hoe je
-    de app start, en het kan niet overgeslagen worden door een harde kill.
+    @st.cache_resource runs this exactly once per server process — Streamlit
+    re-executes the script on every click, so without that decorator it would
+    fire on every interaction. Streamlit has no "app closes" moment inside the
+    script; startup is the only hook that works regardless of how the app is
+    launched, and it cannot be skipped by a hard kill.
 
-    Faalt het, dan moet je dat weten: de melding komt in de terminal én in
-    exports/retention.log. Dat is de les van de vorige opruimer, die
-    maandenlang stilletjes een ImportError slikte.
+    If it fails, you need to know: the message goes to the terminal AND to
+    exports/retention.log. That is the lesson of the previous cleaner, which
+    silently swallowed an ImportError for months.
     """
     melding = be.run_retention("opstarten")
     if melding.startswith("opruimen mislukt"):

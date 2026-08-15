@@ -134,13 +134,13 @@ def attribute_dicts(
 
 
 def count_structure(structure: Dict[str, List[Dict[str, Any]]]) -> Dict[str, int]:
-    """Facetten en attributen, met de vangnetten apart geteld.
+    """Facets and attributes, with the catch-alls counted separately.
 
-    Elke fase print via deze telling, want een fase die de vangnetten meetelt
-    naast een fase die dat niet doet leest als groei die er niet is. Op
-    2026-08-13 leek cross-domein daardoor 93 attributen in en 120 uit te doen,
-    terwijl het er 93 in en 88 uit waren — de rest waren de catch-alls die
-    diezelfde fase weer aanhaakt.
+    Every phase prints through this count, because a phase that counts the
+    catch-alls next to a phase that does not reads as growth that is not there.
+    On 2026-08-13 cross-domain therefore appeared to take 93 attributes in and
+    put 120 out, while it was 93 in and 88 out — the rest were the catch-alls
+    that same phase reattaches.
     """
     facets = drain_facets = attributes = drain_attributes = 0
     for cards in structure.values():

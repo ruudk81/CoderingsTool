@@ -185,9 +185,9 @@ def load_classified_ideas(
 # =============================================================================
 
 class _RoundLog:
-    """Verzamelt `enforce_mece`'s per-ronde `log.add(...)`-aanroepen voor de
-    printregel aan het eind van de run. Geen `decision_log.py` (nog niet
-    gebouwd) — duck-typed, zoals `write_codebook`'s eigen `log`-parameter."""
+    """Collects `enforce_mece`'s per-round `log.add(...)` calls for the print
+    line at the end of the run. No `decision_log.py` (not built yet) —
+    duck-typed, like `write_codebook`'s own `log` parameter."""
     def __init__(self):
         self.rounds: List[dict] = []
 
@@ -196,9 +196,9 @@ class _RoundLog:
 
 
 class _CollisionLog:
-    """Verzamelt `resolve_duplicate_names`'s per-botsing `log.add(...)`-aanroepen
-    voor de printregel aan het eind van de run — dezelfde duck-typed vorm als
-    `_RoundLog` hierboven."""
+    """Collects `resolve_duplicate_names`'s per-collision `log.add(...)` calls
+    for the print line at the end of the run — the same duck-typed shape as
+    `_RoundLog` above."""
     def __init__(self):
         self.collisions: List[dict] = []
 
@@ -289,11 +289,11 @@ async def _generate_codebook_async(
         prompt_printer=prompt_printer,
     )
 
-    # MECE-afdwinging: codes als VERZAMELING bekijken, niet per vorm.
-    # `code_by_shape_key` bewaart de volledige geschreven tekst (incl.
-    # diagnostic_test) van codes die geen enkele ronde aanraakt, gekeyd op
-    # de shape zelf (nooit op de geschreven naam — die kan toevallig
-    # samenvallen tussen twee verschillende vormen).
+    # MECE enforcement: looking at codes as a SET, not per shape.
+    # `code_by_shape_key` keeps the full written text (including
+    # diagnostic_test) of codes no round touches, keyed on the shape itself
+    # (never on the written name — that can coincide between two different
+    # shapes).
     concept_by_id = {c.attribute_id: c for c in concepts}
     shape_lookup = _shape_lookup(shapes, concept_by_id)
     code_by_shape_key = _index_codes_by_shape_key(codes, shape_lookup)
@@ -311,12 +311,12 @@ async def _generate_codebook_async(
     merged = [c for c in final_candidates if c.shape.origin == "mece_merge"]
     untouched = [c for c in final_candidates if c.shape.origin != "mece_merge"]
 
-    # Alleen de samengevoegde codes krijgen nieuwe tekst — ongewijzigde codes
-    # behouden hun eerder geschreven definitie/diagnostic_test. De
-    # herschrijving ziet de al vastliggende namen van de ongewijzigde codes
-    # (taken_names) zodat hij er niet overheen schrijft — een promptregel,
-    # geen garantie; resolve_duplicate_names hieronder is de deterministische
-    # achtervang over het volledige, herenigde codeboek.
+    # Only the merged codes get new text — unchanged codes keep their
+    # previously written definition/diagnostic_test. The rewrite sees the
+    # already-fixed names of the unchanged codes (taken_names) so it does not
+    # write over them — a prompt rule, not a guarantee;
+    # resolve_duplicate_names below is the deterministic backstop over the
+    # complete, reunited codebook.
     untouched_names = [code_by_shape_key[c.shape.key].code_name for c in untouched]
     rewritten = await write_codebook(
         [c.shape for c in merged], concepts, dimension_diagnostic, language, config,
