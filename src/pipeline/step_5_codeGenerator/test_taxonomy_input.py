@@ -1,4 +1,4 @@
-"""Tests voor de step-4-ingang van step 5."""
+"""Tests for step 5's step-4 entry point."""
 import pytest
 
 from pipeline.step_5_codeGenerator.taxonomy_input import (

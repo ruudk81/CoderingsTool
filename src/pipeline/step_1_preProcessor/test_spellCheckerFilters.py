@@ -18,11 +18,11 @@ from pipeline.step_1_preProcessor.spellChecker import SpellChecker
     # Gewone woorden blijven vanzelfsprekend door.
     ("eekhoorn", True),
     ("café", True),
-    # Alleen cijfers: geen woord, niets te corrigeren.
+    # Digits only: not a word, nothing to correct.
     ("60", False),
     ("110", False),
-    # Leestekens erin: samenstellingen en afkortingen die correct zijn zoals ze
-    # staan. Die willen we hier juist niet binnenhalen.
+    # Punctuation inside: compounds and abbreviations that are correct as they
+    # stand. Those are exactly what we do not want to pull in here.
     ("zzp-ers", False),
     ("i.o.", False),
     ("n.v.t.", False),
@@ -37,7 +37,7 @@ def test_is_checkable(token, verwacht):
     ("N8ks", False),
     ("Go4ed", False),
     ("2eet", False),
-    # Zonder cijfer verandert er niets aan het oordeel.
+    # Without a digit the verdict does not change.
     ("Xxx", True),
     ("Jsisjdkdjd", True),
     ("Fvvvb", True),
@@ -55,7 +55,7 @@ def test_is_unrepairable(word, verwacht):
     ("georiënteerd", "georienteerd"),
     ("één", "een"),
     ("Café", "cafe"),
-    # Zonder accent verandert alleen de kapitalisatie.
+    # Without an accent only the capitalisation changes.
     ("Eekhoorn", "eekhoorn"),
     ("asn", "asn"),
 ])

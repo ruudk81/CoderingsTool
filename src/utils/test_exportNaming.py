@@ -44,7 +44,7 @@ def test_sample_size_forms():
 
 
 def test_datasets_sharing_a_long_prefix_stay_distinct():
-    """Zonder afkapping kunnen deze twee elkaars bestand niet overschrijven."""
+    """Without truncation these two cannot overwrite each other's file."""
     kort = export_filename(
         "M000002 Associatiemonitor Merk X tabellenbestand.sav",
         "Qd1", 500, "codering", "xlsx")
@@ -74,7 +74,7 @@ def test_roundtrip_for_every_doctype(doctype):
 
 
 def test_longest_doctype_wins():
-    """'taxonomie_fijn' mag niet als 'taxonomie' gelezen worden."""
+    """'taxonomie_fijn' must not be read as 'taxonomie'."""
     naam = export_filename("d.sav", "Q1", 100, "taxonomie_fijn", "sav")
     uit = parse_export_filename(naam, ["d.sav"])
     assert uit.doctype == "taxonomie_fijn"
@@ -103,7 +103,7 @@ def test_underscores_in_variable_name_survive():
 
 
 def test_legacy_names_do_not_parse():
-    """Oude namen mogen niet per ongeluk als canoniek gelezen worden."""
+    """Old names must not accidentally read as canonical."""
     for oud in (
         "step3_Q20_Q20_1000.json",
         "M000001_Merkonderzoek_Voorbeeldklant_Q20_1000_step7_20260801_064213.txt",

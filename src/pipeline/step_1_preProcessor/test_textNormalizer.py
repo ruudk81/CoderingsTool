@@ -24,7 +24,7 @@ def test_a_numeric_entity_becomes_a_character(normalizer):
 
 
 def test_losse_ampersand_blijft_staan(normalizer):
-    # Geen geldige entiteit, dus niets te ontsleutelen.
+    # Not a valid entity, so nothing to unescape.
     assert normalizer.normalize_response("A&O, prima winkel") == "A&O, prima winkel"
 
 

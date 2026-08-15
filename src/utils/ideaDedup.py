@@ -27,8 +27,9 @@ THRESHOLD
 
 SCOPE
     Instance text only. Deduplicating on the abstraction rung collapses paraphrases in
-    long answers, but on short answers it merges away real distinctions (it put
-    "claimt een groene bank te zijn" with "duurzaam"). Out of scope here.
+    long answers, but on short answers it merges away real distinctions — a specific
+    claim about the entity ends up together with the bare adjective behind it. Out of
+    scope here.
 """
 from __future__ import annotations
 

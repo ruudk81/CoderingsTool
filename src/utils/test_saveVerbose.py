@@ -27,8 +27,8 @@ def test_no_sample_size_becomes_full():
 
 
 def test_long_names_stay_distinct():
-    """Zonder afkapping blijven twee datasets met een gelijk begin
-    onderscheiden. Mét afkapping op 50 tekens zouden ze elkaar overschrijven."""
+    """Without truncation two datasets sharing a prefix stay distinct. With
+    truncation at 50 characters they would overwrite each other."""
     lang = build_log_filename(
         "M000002 Associatiemonitor Merk X tabellenbestand vergelijkend met Qd1.sav",
         "Qd1", 4586, 4)
@@ -50,7 +50,7 @@ def test_sample_size_as_string_full():
 
 
 def test_sample_size_zero_is_not_full():
-    """0 is een getal, geen ontbrekende waarde."""
+    """0 is a number, not a missing value."""
     assert build_log_filename("dataset.sav", "Qd1", 0, 3) == "dataset_Qd1_0_log_step3.txt"
 
 

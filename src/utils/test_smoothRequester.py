@@ -35,7 +35,7 @@ def _requester(monkeypatch, *, p50, origin, num_tasks=1451):
 
 
 # =============================================================================
-# FIX 2 — niet spreiden op een geleende schatting
+# FIX 2 — do not spread on a borrowed estimate
 # =============================================================================
 
 def test_no_spread_when_the_estimate_comes_from_the_pool():
@@ -137,7 +137,7 @@ def test_growing_concurrency_spreads_the_new_slots():
 # =============================================================================
 
 def _setup(monkeypatch, *, probe_limits, num_tasks=1236, knee=267):
-    """Een requester die _probe_and_setup heeft doorlopen, zonder netwerk."""
+    """A requester that has been through _probe_and_setup, without a network."""
     pred = Prediction()
     pred.p50_latency_s = 2.4
     pred.avg_tokens = 1500

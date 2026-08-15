@@ -1,4 +1,4 @@
-"""Tests voor samenvoegen en richting (stap 3 van step 5)."""
+"""Tests for merging and direction (step 3 of step 5)."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.consolidator import consolidate
 

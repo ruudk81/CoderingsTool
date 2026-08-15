@@ -22,21 +22,21 @@ def test_identical_partitions_score_one():
 
 
 def test_renaming_every_domain_changes_nothing():
-    """De kern: labels verschillen per run, groeperingen zijn wat telt."""
+    """The core: labels differ per run, groupings are what count."""
     a = {"1": "Merkuitingen", "2": "Merkuitingen", "3": "Klantbediening"}
     b = {"1": "Merkcommunicatie", "2": "Merkcommunicatie", "3": "Klantinteractie"}
     assert adjusted_rand_index(a, b) == 1.0
 
 
 def test_crossed_partitions_score_at_or_below_chance():
-    """Geen enkel paar dat in beide runs samen zit."""
+    """No pair sits together in both runs."""
     a = {"1": "x", "2": "x", "3": "y", "4": "y"}
     b = {"1": "p", "2": "q", "3": "p", "4": "q"}
     assert adjusted_rand_index(a, b) < 0
 
 
 def test_a_merge_scores_between_chance_and_one():
-    """Run B voegt twee domeinen van run A samen: deels eens, niet volledig."""
+    """Run B merges two domains from run A: partly in agreement, not fully."""
     a = {"1": "x", "2": "x", "3": "y", "4": "y", "5": "z", "6": "z"}
     b = {"1": "p", "2": "p", "3": "q", "4": "q", "5": "q", "6": "q"}
     ari = adjusted_rand_index(a, b)
@@ -103,7 +103,7 @@ def test_no_repeated_texts_at_all_reports_zero_not_a_crash():
 
 # ── Tolerante lezing van vóór-hernoeming snapshots (bare_evaluation_pct) ────
 #
-# `data/step3_stability.jsonl` is append-only geschiedenis en wordt nooit
+# `data/step3_stability.jsonl` is append-only history and is never
 # rewritten — nine rows in it still carry the field under the old name.
 # New snapshots write only `not_known_pct`; the reading has to cope with
 # beide overweg kunnen.

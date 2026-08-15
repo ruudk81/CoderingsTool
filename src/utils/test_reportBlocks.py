@@ -76,8 +76,8 @@ def test_the_group_header_counts_towards_the_column_width():
 # =============================================================================
 
 def test_an_emoji_counts_as_two_cells():
-    """`len()` is hier fout: 🕳️ is twee codepoints en beslaat ~twee cellen, dus
-    padding uit len() zou juist die regel scheeftrekken."""
+    """`len()` is wrong here: 🕳️ is two codepoints and occupies ~two cells, so
+    padding from len() would skew exactly that line."""
     assert _width(MARK_DRAIN) == 2
     assert _width(MARK_DROPPED) == 2
     assert _width("abc") == 3

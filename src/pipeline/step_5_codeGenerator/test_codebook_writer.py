@@ -285,8 +285,8 @@ def test_resolve_duplicate_names_rejects_mismatched_list_lengths():
 
 
 # ---------------------------------------------------------------------------
-# find_naming_mismatches — deterministische achtervang tegen een naam die
-# zijn eigen inhoud niet beschrijft
+# find_naming_mismatches — deterministic backstop against a name that does not
+# describe its own contents
 # ---------------------------------------------------------------------------
 
 def test_find_naming_mismatches_fires_on_the_real_example():

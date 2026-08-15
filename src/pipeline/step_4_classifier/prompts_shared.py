@@ -1,6 +1,7 @@
 """Shared building blocks for the step-4 prompts.
 
-Every step-4 prompt is assembled from the same four blocks, in this order:
+Every step-4 prompt that NAMES something is assembled from the same four blocks,
+in this order:
 
   1. context            build_context_block()
   2. the taxonomy       build_taxonomy_block()
@@ -10,6 +11,10 @@ Every step-4 prompt is assembled from the same four blocks, in this order:
 
 The shape is taken from step 3, which builds the domain layer (L2) the same
 way.
+
+Assignment is the exception, and deliberately so: it picks an id from a menu and
+invents no name, so the naming rules have no work to do there and the taxonomy
+block would only be noise. It carries the context block and INSTRUCTOR_HINT only.
 
 ## One thing called a dimension
 

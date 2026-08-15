@@ -39,7 +39,7 @@ class AttributeRef:
 
 
 def build_idea_units(classified: List[Any]) -> List[IdeaUnit]:
-    """Vlak het step-4-groeimodel af tot idea units met respondent-id."""
+    """Flatten the step-4 growing model into idea units with a respondent id."""
     units: List[IdeaUnit] = []
     for response in classified:
         for idea in response.response_ideas or []:

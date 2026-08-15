@@ -1,4 +1,4 @@
-"""Tests voor het opruimen per analyse."""
+"""Tests for the per-analysis cleanup."""
 
 import os
 import sqlite3
@@ -15,7 +15,7 @@ from utils.exportNaming import export_filename
 # =============================================================================
 
 def _repo(tmp_path, datasets=("data.sav",)):
-    """Een projectmap met data/, data/cache/cache.db en exports/."""
+    """A project directory with data/, data/cache/cache.db and exports/."""
     (tmp_path / "data").mkdir()
     for d in datasets:
         (tmp_path / "data" / d).write_bytes(b"")
@@ -34,9 +34,9 @@ def _repo(tmp_path, datasets=("data.sav",)):
     return tmp_path
 
 
-def _cache_bestand(root, dataset, variable_key, naam, mtime=None,
+def _cache_file(root, dataset, variable_key, naam, mtime=None,
                    status="valid", in_db=True, grootte=10):
-    """Eén pickle in data/cache/, met of zonder geldige db-rij."""
+    """One pickle in data/cache/, with or without a valid db row."""
     cache = root / "data" / "cache"
     p = cache / f"{naam}.pkl"
     p.write_bytes(b"x" * grootte)
@@ -71,8 +71,8 @@ def _analyse(root, dataset, var, sample, mtime):
 
 
 @pytest.fixture(autouse=True)
-def _standaard_instellingen(monkeypatch):
-    """Elke test begint met de opgeleverde stand: alle plafonds uit."""
+def _default_settings(monkeypatch):
+    """Every test starts from the delivered state: every cap off."""
     monkeypatch.setattr(retention, "RETENTION_ENABLED", True)
     monkeypatch.setattr(retention, "MAX_ANALYSES", None)
     monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", None)
@@ -258,8 +258,8 @@ def test_an_ambiguous_old_name_stays_a_leftover(tmp_path, monkeypatch):
     assert [e.path for e in restanten] == [oud]
 
 
-def test_lege_datasetlijst_stopt_de_run(tmp_path):
-    """Zonder datasets lijkt elk bestand een restant — dan liever stoppen."""
+def test_an_empty_dataset_list_stops_the_run(tmp_path):
+    """Without datasets every file looks like a leftover — better to stop."""
     root = _repo(tmp_path)
     (root / "data" / "data.sav").unlink()
     con = sqlite3.connect(root / "data" / "cache" / "cache.db")
@@ -351,7 +351,7 @@ def test_cache_and_exports_together_form_one_analysis(tmp_path):
     root = _repo(tmp_path)
     nu = time.time()
     _analyse(root, "data.sav", "Q1", 100, nu - 30 * 86400)
-    _cache_bestand(root, "data.sav", "Q1_100", "004_extracted_ideas_data_Q1_100",
+    _cache_file(root, "data.sav", "Q1_100", "004_extracted_ideas_data_Q1_100",
                    mtime=nu - 30 * 86400)
 
     analyses, restanten = retention.collect(root)
@@ -366,7 +366,7 @@ def test_a_cache_without_exports_is_an_analysis_of_its_own(tmp_path):
     """If the exports are already cleaned up, the cache stays an analysis on its own."""
     root = _repo(tmp_path)
     nu = time.time()
-    _cache_bestand(root, "data.sav", "Q1_500", "004_extracted_ideas_data_Q1_500",
+    _cache_file(root, "data.sav", "Q1_500", "004_extracted_ideas_data_Q1_500",
                    mtime=nu - 30 * 86400)
 
     analyses, restanten = retention.collect(root)
@@ -380,7 +380,7 @@ def test_an_unreachable_pickle_is_a_leftover(tmp_path):
     """An 'invalid' row means no code path can read the file any more."""
     root = _repo(tmp_path)
     nu = time.time()
-    dood = _cache_bestand(root, "data.sav", "Q1_100", "006_mece_codes_metadata_oud",
+    dood = _cache_file(root, "data.sav", "Q1_100", "006_mece_codes_metadata_oud",
                           mtime=nu - 30 * 86400, status="invalid")
 
     analyses, restanten = retention.collect(root)
@@ -392,7 +392,7 @@ def test_an_unreachable_pickle_is_a_leftover(tmp_path):
 def test_a_pickle_without_a_db_row_is_a_leftover(tmp_path):
     root = _repo(tmp_path)
     nu = time.time()
-    vreemd = _cache_bestand(root, "data.sav", "Q1_100", "007_taxonomy_codes_onbekend",
+    vreemd = _cache_file(root, "data.sav", "Q1_100", "007_taxonomy_codes_onbekend",
                             mtime=nu - 30 * 86400, in_db=False)
 
     _, restanten = retention.collect(root)
@@ -408,7 +408,7 @@ def test_the_cache_has_its_own_wider_cap(tmp_path, monkeypatch):
     nu = time.time()
     for sample, dagen in ((100, 30), (500, 60)):
         _analyse(root, "data.sav", "Q1", sample, nu - dagen * 86400)
-        _cache_bestand(root, "data.sav", f"Q1_{sample}", f"004_ideas_{sample}",
+        _cache_file(root, "data.sav", f"Q1_{sample}", f"004_ideas_{sample}",
                        mtime=nu - dagen * 86400)
 
     retention.run(root, apply=True, now=nu)
@@ -424,8 +424,8 @@ def test_cache_beyond_its_cap_moves_and_is_invalidated(tmp_path, monkeypatch):
     monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", 1)
     root = _repo(tmp_path)
     nu = time.time()
-    _cache_bestand(root, "data.sav", "Q1_100", "004_ideas_100", mtime=nu - 30 * 86400)
-    oud = _cache_bestand(root, "data.sav", "Q1_500", "004_ideas_500", mtime=nu - 60 * 86400)
+    _cache_file(root, "data.sav", "Q1_100", "004_ideas_100", mtime=nu - 30 * 86400)
+    oud = _cache_file(root, "data.sav", "Q1_500", "004_ideas_500", mtime=nu - 60 * 86400)
 
     retention.run(root, apply=True, now=nu)
 
@@ -443,8 +443,8 @@ def test_a_fresh_cache_stays_even_beyond_the_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(retention, "CACHE_MAX_ANALYSES", 1)
     root = _repo(tmp_path)
     nu = time.time()
-    _cache_bestand(root, "data.sav", "Q1_100", "004_ideas_100", mtime=nu - 1 * 86400)
-    vers = _cache_bestand(root, "data.sav", "Q1_500", "004_ideas_500", mtime=nu - 2 * 86400)
+    _cache_file(root, "data.sav", "Q1_100", "004_ideas_100", mtime=nu - 1 * 86400)
+    vers = _cache_file(root, "data.sav", "Q1_500", "004_ideas_500", mtime=nu - 2 * 86400)
 
     retention.run(root, apply=True, now=nu)
 
@@ -457,7 +457,7 @@ def test_an_analysis_without_exports_costs_no_export_slot(tmp_path, monkeypatch)
     root = _repo(tmp_path)
     nu = time.time()
     # nieuwste: alleen cache. Daarna twee analyses mét exports.
-    _cache_bestand(root, "data.sav", "Q1_900", "004_ideas_900", mtime=nu - 10 * 86400)
+    _cache_file(root, "data.sav", "Q1_900", "004_ideas_900", mtime=nu - 10 * 86400)
     for sample, dagen in ((100, 30), (500, 60)):
         _analyse(root, "data.sav", "Q1", sample, nu - dagen * 86400)
 
