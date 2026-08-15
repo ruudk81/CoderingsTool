@@ -326,6 +326,24 @@ def test_a_candidate_claimed_by_two_survivors_pools_into_the_first():
                for e in clf._action_log)
 
 
+def test_one_survivor_citing_an_id_twice_is_not_a_split():
+    """A repeat inside one citation list claims the candidate once. Counted as
+    two claimants it reported a split that never happened, in the very log line
+    the first run is meant to be judged on."""
+    clf = _clf()
+    task = {"domain_label": "d", "candidates": [_pool("Snelheid", "Wachttijd")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(facet_name="A", facet_definition="…",
+                             facet_question="?",
+                             source_facet_ids=["F1", "F1"])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    assert [a.attribute_name for a in survivors[0].attributes] == ["Wachttijd"]
+    assert not any(e["action"] == "divided_source_facet"
+                   for e in clf._action_log)
+
+
 def test_a_name_fallback_hands_over_the_attributes_it_covers():
     """The unique-name branch treats the candidate as absorbed, so it must move
     the pool too. `source_facet_ids` is the only channel to the next phase: what
@@ -772,7 +790,7 @@ def test_a_second_round_writes_back_to_the_right_facet():
 
 
 # =============================================================================
-# TOEWIJZING
+# ASSIGNMENT
 # =============================================================================
 
 def test_een_taak_per_uniek_label():
@@ -825,7 +843,7 @@ def test_catch_alls_arrive_after_consolidation_not_before():
 
 
 # =============================================================================
-# FACETTOEWIJZING IS AFGELEID
+# FACET ASSIGNMENT IS DERIVED
 # =============================================================================
 
 def test_facet_assignment_follows_where_the_attribute_lives():

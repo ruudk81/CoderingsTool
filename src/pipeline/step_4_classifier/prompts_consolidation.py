@@ -410,7 +410,13 @@ def build_attribute_consolidation_prompt(
     facet decision above it — measured on 2026-08-15: six of eight recorded
     decisions were about facets while the attribute side had to take
     seventy-four candidates down to twenty-six.
+
+    The facet's question is omitted when there is none: a facet settled without
+    a call keeps the raw candidate, which carries no question, and a rendered
+    label with nothing behind it reads as a question the facet failed to state.
     """
+    question_line = (f"\nThe question this facet answers: {facet_question}"
+                     if facet_question else "")
     return f"""You are a taxonomy consolidation specialist for surveys.
 Your task is to fold the attributes proposed for ONE facet into a single minimal set.
 
@@ -431,8 +437,7 @@ You are working inside this facet, and only inside it:
 
 <taxonomy_facet>
 Domain: {domain_label} — {domain_definition}
-Facet: {facet_name} — {facet_definition}
-The question this facet answers: {facet_question}
+Facet: {facet_name} — {facet_definition}{question_line}
 </taxonomy_facet>
 
 Here are the attributes proposed for it, each with how many independent passes proposed it

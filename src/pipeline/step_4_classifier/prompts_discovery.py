@@ -58,9 +58,9 @@ class DiscoveredAttribute(BaseModel):
             "in 1-2 sentences, in the survey language"))
     example_observations: List[str] = Field(
         ..., description=(
-            "1-3 representative observations, each copied exactly as the line "
-            "shows it but WITHOUT its leading number. Give what this attribute "
-            "actually has; never invent, pad or borrow one"))
+            "1-3 representative observations, each copied exactly as shown, "
+            "WITHOUT any leading number. Give what this attribute actually "
+            "has; never invent, pad or borrow one"))
 
 
 class DiscoveredFacet(BaseModel):

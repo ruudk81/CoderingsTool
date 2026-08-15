@@ -444,6 +444,16 @@ def test_the_attribute_prompt_states_the_facet_it_works_inside():
     assert "Hoe snel ging het?" in prompt
 
 
+def test_the_attribute_prompt_omits_the_question_when_the_facet_has_none():
+    """A facet settled without a call keeps the raw candidate, which carries no
+    question. Rendering the label anyway left a bare `The question this facet
+    answers:` above a rule that leans on it."""
+    prompt = build_attribute_consolidation_prompt(
+        **_attribute_kwargs(facet_question=""))
+    assert "The question this facet answers" not in prompt
+    assert "Facet: Snelheid — Wat Snelheid vastlegt.\n</taxonomy_facet>" in prompt
+
+
 def test_the_attribute_prompt_names_every_field_of_its_model():
     prompt = build_attribute_consolidation_prompt(**_attribute_kwargs())
     for field in ("decision_summary", "attributes", "attribute_name",

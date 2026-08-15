@@ -978,7 +978,7 @@ class TaxonomyClassifier:
         groups: List[List[FacetPool]] = []
         for i in range(0, len(ordered), cap):
             groups.append(ordered[i:i + cap])
-        return groups or [[]]
+        return groups
 
     def _build_facet_consolidation_tasks(
         self, ctx: PromptContext, pending: Dict[str, List[FacetPool]],
@@ -990,8 +990,6 @@ class TaxonomyClassifier:
             if not candidates:
                 continue
             for group in self._facet_consolidation_groups(candidates):
-                if not group:
-                    continue
                 tasks.append({
                     "domain_label": label, "candidates": group,
                     "recurrence": self._recurrence.get(label) or {},
@@ -1079,8 +1077,11 @@ class TaxonomyClassifier:
         claimed_by: Dict[str, List[str]] = {}
         for facet in result.facets:
             pooled: List[DiscoveredAttribute] = []
-            for source in (facet.source_facet_ids or []):
-                source = source.strip()
+            # A survivor citing the same id twice claims it once: without the
+            # dedup that repeat reads as two claimants and reports a split that
+            # never happened.
+            for source in dict.fromkeys(
+                    s.strip() for s in (facet.source_facet_ids or [])):
                 claimed_by.setdefault(source, []).append(facet.facet_name)
                 candidate = cand_facets.get(source)
                 if candidate is None or source in taken:
@@ -1290,7 +1291,7 @@ class TaxonomyClassifier:
         """
         cap = self._attribute_consolidation_max_attributes_per_call
         ordered = sorted(attributes, key=lambda a: _norm(a.attribute_name))
-        return [ordered[i:i + cap] for i in range(0, len(ordered), cap)] or [[]]
+        return [ordered[i:i + cap] for i in range(0, len(ordered), cap)]
 
     def _build_attribute_consolidation_tasks(
         self, ctx: PromptContext, settled: Dict[str, List[FacetPool]],
@@ -1315,8 +1316,6 @@ class TaxonomyClassifier:
                 if len(pool.attributes) < 2:
                     continue
                 for group in self._attribute_consolidation_groups(pool.attributes):
-                    if not group:
-                        continue
                     tasks.append({
                         "domain_label": label, "facet_index": index,
                         "facet": pool, "candidates": group,
@@ -2037,7 +2036,7 @@ class TaxonomyClassifier:
         return structure, assignments
 
     # =========================================================================
-    # PHASE — CROSS-DOMAIN (every domain at once, the one relocation step)
+    # PHASE — CROSS-DOMAIN (every domain at once, relocates across domains)
     # =========================================================================
 
     async def _run_cross_domain(
@@ -2050,9 +2049,10 @@ class TaxonomyClassifier:
         """Fold duplicate attributes together across domains.
 
         Every domain settled on its own, so the same concept survives in several
-        places and no scope-bound phase can see it. This one may relocate
-        structure, and it is the only one: it works on ids, and the survivor
-        inherits the domain and facet of its `home_id`.
+        places and no scope-bound phase can see it. This is the only phase that
+        may relocate structure across a domain boundary — refinement's rule 5
+        moves an attribute between facets, but never out of its domain. It works
+        on ids, and the survivor inherits the domain and facet of its `home_id`.
         """
         if verbose:
             print("\n  Cross-domain consolidation")
