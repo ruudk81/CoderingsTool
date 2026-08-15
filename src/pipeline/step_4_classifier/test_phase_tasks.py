@@ -3,6 +3,8 @@
 The `_build_<phase>_tasks` are pure functions of their arguments, so scope,
 skipping, chunking and counts can be checked without an LLM call.
 """
+import asyncio
+
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.classifier import (
     PromptContext, TaxonomyClassifier, _strip_enumeration, attribute_dicts,
@@ -15,6 +17,7 @@ from pipeline.step_4_classifier.prompts_discovery import (
 )
 from pipeline.step_4_classifier.prompts_consolidation import (
     ConsolidatedAttribute, ConsolidatedFacet, ConsolidationResult,
+    FacetConsolidationResult, FacetPool, SettledFacet,
 )
 
 DIM = get_dimensions_in_decision_order()[0]
@@ -43,6 +46,18 @@ def _facet(name, *attrs):
         attributes=[DiscoveredAttribute(
             attribute_name=a, attribute_definition="d",
             example_observations=["e"]) for a in attrs])
+
+
+def _pool(name, *attr_names, question=""):
+    return FacetPool(
+        facet_name=name,
+        facet_definition=f"Wat {name} vastlegt.",
+        facet_question=question,
+        attributes=[DiscoveredAttribute(
+            attribute_name=a,
+            attribute_definition=f"De eigenschap {a}.",
+            example_observations=[f"observatie over {a}"],
+        ) for a in attr_names])
 
 
 def _structure(facets_per_domain):
@@ -349,6 +364,272 @@ def test_a_candidate_split_across_survivors_is_reported():
     melding = _actions(clf, "divided_source_facet")[0]
     assert melding["source"] == "F1"
     assert melding["claimants"] == ["Ecologie", "Samenleving"]
+
+
+# =============================================================================
+# FACET CONSOLIDATION
+# =============================================================================
+
+def test_a_facet_group_is_capped_on_facets_not_attributes():
+    """The facet call renders attribute names only, so its prompt no longer
+    grows with the attribute count. Facets are what it judges."""
+    clf = _clf(facet_consolidation_max_facets_per_call=2)
+    pools = [_pool(f"F{i}", *[f"a{j}" for j in range(40)]) for i in range(5)]
+    groups = clf._facet_consolidation_groups(pools)
+    assert [len(g) for g in groups] == [2, 2, 1]
+
+
+def test_a_survivor_pools_the_attributes_of_what_it_claimed():
+    """The facet phase does not consolidate attributes; it accumulates them, so
+    the next phase sees the union."""
+    clf = _clf()
+    task = {"domain_label": "d",
+            "candidates": [_pool("Snelheid", "Wachttijd"),
+                           _pool("Snelheid van afhandeling", "Doorlooptijd")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(
+            facet_name="Snelheid", facet_definition="…",
+            facet_question="Hoe snel?", source_facet_ids=["F1", "F2"])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    assert len(survivors) == 1
+    names = [a.attribute_name for a in survivors[0].attributes]
+    assert names == ["Wachttijd", "Doorlooptijd"]
+
+
+def test_a_pooled_attribute_proposed_twice_is_collapsed_once():
+    clf = _clf()
+    task = {"domain_label": "d",
+            "candidates": [_pool("Snelheid", "Wachttijd"),
+                           _pool("Snelheid van afhandeling", "Wachttijd")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(
+            facet_name="Snelheid", facet_definition="…",
+            facet_question="Hoe snel?", source_facet_ids=["F1", "F2"])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    assert [a.attribute_name for a in survivors[0].attributes] == ["Wachttijd"]
+
+
+def test_an_unclaimed_facet_is_kept_whole():
+    """Merging and forgetting look identical in the answer: both are absent."""
+    clf = _clf()
+    task = {"domain_label": "d",
+            "candidates": [_pool("Snelheid", "Wachttijd"),
+                           _pool("Bejegening", "Vriendelijkheid")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(
+            facet_name="Snelheid", facet_definition="…",
+            facet_question="Hoe snel?", source_facet_ids=["F1"])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    assert sorted(s.facet_name for s in survivors) == ["Bejegening", "Snelheid"]
+    assert any(e["action"] == "facet_kept_unclaimed"
+               for e in clf._action_log)
+
+
+def test_a_name_fallback_only_counts_when_the_name_is_unique():
+    """Two candidates sharing a name say nothing about which was meant; letting
+    the name count would undo what the ids fixed."""
+    clf = _clf()
+    task = {"domain_label": "d",
+            "candidates": [_pool("Snelheid", "Wachttijd"),
+                           _pool("Snelheid", "Doorlooptijd")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(
+            facet_name="Snelheid", facet_definition="…",
+            facet_question="Hoe snel?", source_facet_ids=[])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    assert len(survivors) == 3
+
+
+def test_two_survivors_stating_one_question_are_still_reported():
+    """Rule 1 made visible. Logged, never repaired: merging here would overrule
+    a judgement the model made with every candidate in view."""
+    clf = _clf()
+    task = {"domain_label": "d",
+            "candidates": [_pool("A", "x"), _pool("B", "y")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[
+            SettledFacet(facet_name="A", facet_definition="…",
+                         facet_question="Hoe snel?", source_facet_ids=["F1"]),
+            SettledFacet(facet_name="B", facet_definition="…",
+                         facet_question="Hoe snel?", source_facet_ids=["F2"])])
+    clf._facet_consolidation_survivors(task, result)
+    assert _actions(clf, "duplicate_facet_question")
+
+
+def test_a_cited_id_that_was_never_handed_out_is_logged():
+    clf = _clf()
+    task = {"domain_label": "d", "candidates": [_pool("Snelheid", "Wachttijd")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(
+            facet_name="Snelheid", facet_definition="…",
+            facet_question="Hoe snel?", source_facet_ids=["F1", "F9"])])
+    clf._facet_consolidation_survivors(task, result)
+    entry = next(e for e in clf._action_log
+                 if e["action"] == "unknown_source_id")
+    assert entry["facets"] == ["F9"]
+
+
+def test_a_candidate_claimed_by_two_survivors_pools_into_the_first():
+    """Pooling into both would let the same attribute survive under two facets.
+    First claimant wins, and the split is logged."""
+    clf = _clf()
+    task = {"domain_label": "d", "candidates": [_pool("Snelheid", "Wachttijd")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[
+            SettledFacet(facet_name="A", facet_definition="…",
+                         facet_question="?", source_facet_ids=["F1"]),
+            SettledFacet(facet_name="B", facet_definition="…",
+                         facet_question="?", source_facet_ids=["F1"])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    by_name = {s.facet_name: s for s in survivors}
+    assert [a.attribute_name for a in by_name["A"].attributes] == ["Wachttijd"]
+    assert by_name["B"].attributes == []
+    assert any(e["action"] == "divided_source_facet"
+               for e in clf._action_log)
+
+
+def test_a_name_fallback_hands_over_the_attributes_it_covers():
+    """The unique-name branch treats the candidate as absorbed, so it must move
+    the pool too. `source_facet_ids` is the only channel to the next phase: what
+    is not pooled here is not lost from a log, it is lost from the taxonomy."""
+    clf = _clf()
+    task = {"domain_label": "d",
+            "candidates": [_pool("Snelheid", "Wachttijd"),
+                           _pool("Bejegening", "Vriendelijkheid")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(
+            facet_name="Snelheid", facet_definition="…",
+            facet_question="Hoe snel?", source_facet_ids=[])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    by_name = {s.facet_name: s for s in survivors}
+    assert [a.attribute_name for a in by_name["Snelheid"].attributes] == [
+        "Wachttijd"]
+    assert [a.attribute_name for a in by_name["Bejegening"].attributes] == [
+        "Vriendelijkheid"]
+    assert _actions(clf, "facet_claimed_by_name")[0]["id"] == "F1"
+
+
+def test_an_invented_id_does_not_cost_the_candidate_its_attributes():
+    """A garbled id claims nothing, but the name still identifies one candidate.
+    Reporting the id and dropping the pool would be the worse half of both."""
+    clf = _clf()
+    task = {"domain_label": "d", "candidates": [_pool("Snelheid", "Wachttijd")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(
+            facet_name="Snelheid", facet_definition="…",
+            facet_question="Hoe snel?", source_facet_ids=["F9"])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    assert len(survivors) == 1
+    assert [a.attribute_name for a in survivors[0].attributes] == ["Wachttijd"]
+    assert _actions(clf, "unknown_source_id")[0]["facets"] == ["F9"]
+
+
+def test_a_name_fallback_does_not_pool_a_repeat_twice():
+    clf = _clf()
+    task = {"domain_label": "d",
+            "candidates": [_pool("Snelheid", "Wachttijd"),
+                           _pool("Tempo", "Wachttijd")],
+            "recurrence": {}, "n_passes": 3}
+    result = FacetConsolidationResult(
+        decision_summary=[],
+        facets=[SettledFacet(
+            facet_name="Tempo", facet_definition="…",
+            facet_question="Hoe snel?", source_facet_ids=["F1"])])
+    survivors = clf._facet_consolidation_survivors(task, result)
+    assert [a.attribute_name for a in survivors[0].attributes] == ["Wachttijd"]
+
+
+# =============================================================================
+# FACET CONSOLIDATION — THE ROUNDS
+# =============================================================================
+
+def _stub_dispatch(clf, answer):
+    """Replace the LLM round-trip with a canned answer per task.
+
+    Returns the list of task batches it was handed, one entry per round, so a
+    test can assert that a round happened — or that it did not.
+    """
+    rounds = []
+
+    async def dispatch(phase, tasks, prepare_fn, parse_fn, fallback_fn,
+                       verbose, **kwargs):
+        rounds.append(tasks)
+        return [answer(task) for task in tasks]
+
+    clf._dispatch = dispatch
+    return rounds
+
+
+def _settle(name, *sources):
+    return SettledFacet(facet_name=name, facet_definition="…",
+                        facet_question=f"Wat zegt dit over {name}?",
+                        source_facet_ids=list(sources))
+
+
+def test_a_domain_that_fits_one_group_is_settled_after_one_round():
+    clf = _clf()
+    rounds = _stub_dispatch(clf, lambda task: FacetConsolidationResult(
+        decision_summary=[], facets=[_settle("Snelheid", "F1", "F2")]))
+    raw = {"d": [_facet("Snelheid", "Wachttijd"),
+                 _facet("Tempo", "Doorlooptijd")]}
+    settled = asyncio.run(
+        clf._run_facet_consolidation(_ctx({"d": []}), raw, verbose=False))
+    assert len(rounds) == 1
+    assert [p.facet_name for p in settled["d"]] == ["Snelheid"]
+    assert [a.attribute_name for a in settled["d"][0].attributes] == [
+        "Wachttijd", "Doorlooptijd"]
+
+
+def test_a_single_candidate_domain_never_reaches_the_model():
+    """One candidate is nothing to merge, and a call would invite the model to
+    invent a distinction to justify itself."""
+    clf = _clf()
+    rounds = _stub_dispatch(clf, lambda task: None)
+    raw = {"d": [_facet("Snelheid", "Wachttijd")]}
+    settled = asyncio.run(
+        clf._run_facet_consolidation(_ctx({"d": []}), raw, verbose=False))
+    assert rounds == []
+    assert [p.facet_name for p in settled["d"]] == ["Snelheid"]
+    assert [a.attribute_name for a in settled["d"][0].attributes] == [
+        "Wachttijd"]
+
+
+def test_a_domain_that_never_converges_is_reported_not_dropped():
+    """Rounds are capped, and the cap is the one place where survivors could
+    quietly fall off the end. They are kept, and the ceiling is logged."""
+    clf = _clf(facet_consolidation_max_facets_per_call=1,
+               consolidation_max_rounds=2)
+    rounds = _stub_dispatch(clf, lambda task: FacetConsolidationResult(
+        decision_summary=[],
+        facets=[_settle(task["candidates"][0].facet_name, "F1")]))
+    raw = {"d": [_facet("Snelheid", "Wachttijd"),
+                 _facet("Tempo", "Doorlooptijd")]}
+    settled = asyncio.run(
+        clf._run_facet_consolidation(_ctx({"d": []}), raw, verbose=False))
+    assert len(rounds) == 2
+    assert sorted(p.facet_name for p in settled["d"]) == ["Snelheid", "Tempo"]
+    assert sorted(a.attribute_name
+                  for p in settled["d"] for a in p.attributes) == [
+        "Doorlooptijd", "Wachttijd"]
+    assert _actions(clf, "consolidation_rounds_exhausted")[0]["remaining"] == 2
 
 
 # =============================================================================

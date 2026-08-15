@@ -91,6 +91,8 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     # number: a reordering should not force a rename here or in the perf model.
     "classifier_discovery":            ("5.6", 3),
     "classifier_chunk_consolidation":  ("5.4", 5),
+    "classifier_facet_consolidation":     ("5.4", 5),
+    "classifier_attribute_consolidation": ("5.4", 5),
     "classifier_assignment":           ("5.6", 3),
     "classifier_refinement":           ("5.6", 3),
     "classifier_cross_domain":         ("5.6", 3),
@@ -203,6 +205,8 @@ STEP_EFFORT = {
     # the calls are.
     "classifier_discovery": "medium",
     "classifier_chunk_consolidation": "medium",
+    "classifier_facet_consolidation": "medium",
+    "classifier_attribute_consolidation": "medium",
     "classifier_refinement": "medium",
     "classifier_cross_domain": "medium",
     "classifier_valence_merge": "medium",
@@ -219,6 +223,8 @@ STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
     "classifier_discovery": "low",
     "classifier_chunk_consolidation": "low",
+    "classifier_facet_consolidation": "low",
+    "classifier_attribute_consolidation": "low",
     "classifier_refinement": "low",
     "classifier_cross_domain": "low",
     "classifier_valence_merge": "low",

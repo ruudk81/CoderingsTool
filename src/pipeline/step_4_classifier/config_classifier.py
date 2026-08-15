@@ -67,6 +67,8 @@ class CategoriesConfig:
 
     model_discovery: str = get_step_model("classifier_discovery")
     model_chunk_consolidation: str = get_step_model("classifier_chunk_consolidation")
+    model_facet_consolidation: str = get_step_model("classifier_facet_consolidation")
+    model_attribute_consolidation: str = get_step_model("classifier_attribute_consolidation")
     model_assignment: str = get_step_model("classifier_assignment")
     model_refinement: str = get_step_model("classifier_refinement")
     model_cross_domain: str = get_step_model("classifier_cross_domain")
@@ -114,6 +116,14 @@ class CategoriesConfig:
     # one, and so on until it fits in a single group.
     consolidation_max_items_per_call: int = 150
     consolidation_max_rounds: int = 5
+
+    # The facet call renders attribute names only, so what bounds it is the
+    # number of facets being compared, not the volume hanging under them.
+    facet_consolidation_max_facets_per_call: int = 40
+
+    # The attribute call is one facet's pool. Measured 2026-08-15: the largest
+    # pool in a real domain was twenty-six, so this rarely rounds.
+    attribute_consolidation_max_attributes_per_call: int = 60
 
     # ==========================================================================
     # REFINEMENT

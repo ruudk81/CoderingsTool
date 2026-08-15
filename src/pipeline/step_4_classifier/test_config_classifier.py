@@ -32,6 +32,8 @@ def test_consolidatiegrenzen_zijn_aanwezig():
     config = CategoriesConfig()
     assert config.consolidation_max_items_per_call > 0
     assert config.consolidation_max_rounds > 0
+    assert config.facet_consolidation_max_facets_per_call > 0
+    assert config.attribute_consolidation_max_attributes_per_call > 0
 
 
 def test_chunking_has_one_register_not_two():
