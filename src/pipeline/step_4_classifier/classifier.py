@@ -88,7 +88,10 @@ from .prompts_discovery import (
     build_discovery_prompt,
 )
 from .prompts_consolidation import (
-    ConsolidationResult, FacetConsolidationResult, FacetPool,
+    AttributeConsolidationResult, ConsolidationResult,
+    FacetConsolidationResult, FacetPool,
+    build_attribute_candidate_block, build_attribute_candidate_index,
+    build_attribute_consolidation_prompt,
     build_candidate_block, build_candidate_index,
     build_chunk_consolidation_prompt, build_facet_candidate_block,
     build_facet_candidate_index, build_facet_consolidation_prompt,
@@ -1651,6 +1654,308 @@ class TaxonomyClassifier:
                 names = ", ".join(p.facet_name for p in settled[label])
                 print(f"      {label}: {len(settled[label])} — {names}")
         return settled
+
+    # =========================================================================
+    # PHASE — ATTRIBUTE CONSOLIDATION (per settled facet, one call each)
+    # =========================================================================
+
+    def _attribute_consolidation_groups(
+        self, attributes: List[DiscoveredAttribute],
+    ) -> List[List[DiscoveredAttribute]]:
+        """Split one facet's pool into groups that fit in one call.
+
+        Counted in attributes, which is all this call holds. A facet whose pool
+        fits — the normal case — gets one group and no rounds.
+
+        Sorted by normalised name first, so near-identical proposals sit next
+        to each other and usually land in the same group instead of missing
+        each other for a round.
+        """
+        cap = self._attribute_consolidation_max_attributes_per_call
+        ordered = sorted(attributes, key=lambda a: _norm(a.attribute_name))
+        return [ordered[i:i + cap] for i in range(0, len(ordered), cap)] or [[]]
+
+    def _build_attribute_consolidation_tasks(
+        self, ctx: PromptContext, settled: Dict[str, List[FacetPool]],
+    ) -> List[Dict]:
+        """One task per (domain, facet) that has something to merge.
+
+        A facet holding one attribute is skipped: there is nothing to fold. It
+        is absent from the consolidated map afterwards, which is how the
+        assembler knows to keep the pool as it stands.
+
+        `facet_index` is the pool's position in the list this call was handed.
+        In round one that list is `settled` and the index is the result key; from
+        round two it is the shrunken `pending`, and the runner translates it back
+        through `origin`. Either way the key is a position, never a name: two
+        facets in one domain can carry the same name — the facet phase keeps
+        both when the name is ambiguous — so a name-keyed result would hand one
+        card the other's attributes.
+        """
+        tasks: List[Dict] = []
+        for label in sorted(settled):
+            for index, pool in enumerate(settled[label]):
+                if len(pool.attributes) < 2:
+                    continue
+                for group in self._attribute_consolidation_groups(pool.attributes):
+                    if not group:
+                        continue
+                    tasks.append({
+                        "domain_label": label, "facet_index": index,
+                        "facet": pool, "candidates": group,
+                        "recurrence": self._attr_recurrence.get(label) or {},
+                        "n_passes": self._passes.get(label, 0)})
+        return tasks
+
+    def _attribute_consolidation_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            domain = ctx.domain(task["domain_label"])
+            facet = task["facet"]
+            prompt = build_attribute_consolidation_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                dimension_name=ctx.dimension_name,
+                dimension_description=ctx.dimension_description,
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                facet_name=facet.facet_name,
+                facet_definition=facet.facet_definition,
+                facet_question=facet.facet_question,
+                candidate_block=build_attribute_candidate_block(
+                    task["candidates"], task["recurrence"], task["n_passes"]),
+            )
+            self._capture(
+                f"attribute_consolidation_{task['domain_label']}", prompt,
+                "attribute_consolidation",
+                {"model": self._model["attribute_consolidation"],
+                 "temperature": 0.0,
+                 "max_tokens": self._max_tokens_consolidation,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "facet": facet.facet_name,
+                 "n_candidates": len(task["candidates"]),
+                 "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": AttributeConsolidationResult,
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens_consolidation,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["attribute_consolidation"],
+                    phase="classifier_attribute_consolidation"),
+            }
+        return prepare_fn
+
+    @staticmethod
+    def _attribute_consolidation_parse_fn():
+        def parse_fn(task: Dict, response):
+            return response if response else None
+        return parse_fn
+
+    @staticmethod
+    def _attribute_consolidation_fallback_fn():
+        """On failure the facet keeps its pool — never silently emptied."""
+        def fallback_fn(task: Dict, reason: str) -> None:
+            return None
+        return fallback_fn
+
+    def _attribute_consolidation_survivors(
+        self, task: Dict, result,
+    ) -> List[DiscoveredAttribute]:
+        """The settled attributes of one facet, with unclaimed candidates kept.
+
+        Simpler than the facet net one level up, and structurally so: one call
+        is one facet, so an unclaimed candidate has exactly one place to land.
+        Its predecessor had to work out which survivor had absorbed the
+        candidate's facet, and could fail to find one at all.
+
+        The prompt tells the model never to drop an attribute. This is what
+        makes that true when it does anyway, or when the call never returns.
+        """
+        candidates = task["candidates"]
+        label, facet = task["domain_label"], task["facet"]
+        if result is None or not result.attributes:
+            self._action_log.append({
+                "action": "attribute_consolidation_failed", "domain": label,
+                "facet": facet.facet_name, "note": "kept every candidate"})
+            return list(candidates)
+
+        index = build_attribute_candidate_index(candidates)
+        claimed = {s.strip() for a in result.attributes
+                   for s in (a.source_attribute_ids or [])}
+        unknown = sorted(s for s in claimed if s not in index)
+        if unknown:
+            self._action_log.append({
+                "action": "unknown_source_id", "domain": label,
+                "facet": facet.facet_name, "attributes": unknown,
+                "note": "cited as a source but never handed out for this call"})
+
+        survivors: List[DiscoveredAttribute] = [
+            DiscoveredAttribute(
+                attribute_name=a.attribute_name,
+                attribute_definition=a.attribute_definition,
+                example_observations=list(a.example_observations))
+            for a in result.attributes]
+
+        # The name fallback catches a survivor that kept a candidate's name
+        # without citing its id. It only applies to a name that identifies one
+        # candidate: where two candidates share it, the name says nothing about
+        # which was meant, and letting it count would undo what the ids fixed.
+        names = Counter(_norm(a.attribute_name) for a in index.values())
+        returned = {_norm(a.attribute_name) for a in result.attributes}
+        for attribute_id, candidate in index.items():
+            name = _norm(candidate.attribute_name)
+            if attribute_id in claimed or (
+                    names[name] == 1 and name in returned):
+                continue
+            survivors.append(candidate)
+            self._action_log.append({
+                "action": "attribute_kept_unclaimed", "domain": label,
+                "facet": facet.facet_name,
+                "attribute": candidate.attribute_name, "id": attribute_id})
+
+        self._action_log.append({
+            "action": "attribute_provenance", "domain": label,
+            "facet": facet.facet_name,
+            "attributes": [
+                {"attribute": a.attribute_name,
+                 "source_attribute_ids": list(a.source_attribute_ids or [])}
+                for a in result.attributes],
+            "decisions": list(result.decision_summary or [])})
+        self._action_log.append({
+            "action": "attribute_consolidation", "domain": label,
+            "facet": facet.facet_name,
+            "attributes_before": len(candidates),
+            "attributes_after": len(survivors)})
+        return survivors
+
+    @staticmethod
+    def _assemble_structure(
+        settled: Dict[str, List[FacetPool]],
+        consolidated: Dict[Tuple[str, int], List[DiscoveredAttribute]],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """The two phases folded back into the nested dicts the step carries.
+
+        Keyed on the facet's position in its domain, not on its name: a domain
+        can hold two facets with the same name, and a name-keyed lookup gives
+        both of them whichever result was stored last — losing the attributes
+        of the other.
+
+        A facet with no entry held one attribute and was skipped — that is the
+        only way to reach here without one. A failed call does produce an entry:
+        the survivor net returns the whole pool.
+        """
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for label, pools in settled.items():
+            cards = []
+            for index, pool in enumerate(pools):
+                attributes = consolidated.get((label, index), pool.attributes)
+                cards.append({
+                    "facet_name": pool.facet_name,
+                    "facet_definition": pool.facet_definition,
+                    "facet_question": pool.facet_question,
+                    "attributes": [a.model_dump() for a in attributes]})
+            out[label] = cards
+        return out
+
+    async def _run_attribute_consolidation(
+        self, ctx: PromptContext, settled: Dict[str, List[FacetPool]],
+        verbose: bool,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Fold each settled facet's pool into its minimal set, one call each.
+
+        Every facet is judged with all of its own attributes in view and none of
+        anyone else's — the condition a merge judgement needs, and the one this
+        work could not have as step six of the facet call.
+
+        Rounds only where a single facet's pool exceeds the cap, which is rare:
+        the pool of one facet is a fraction of a domain's.
+        """
+        if verbose:
+            print("\n  Attribute consolidation")
+        started = time.time()
+
+        consolidated: Dict[Tuple[str, int], List[DiscoveredAttribute]] = {}
+        pending: Dict[str, List[FacetPool]] = dict(settled)
+        # Where each pending pool sits in `settled`, since `pending` shrinks
+        # between rounds while the result keys must keep pointing at the
+        # original positions. Positions, not names: a domain can hold two
+        # facets called the same thing.
+        origin: Dict[str, List[Tuple[str, int]]] = {
+            label: [(label, i) for i in range(len(pools))]
+            for label, pools in settled.items()}
+
+        for round_no in range(1, self._consolidation_max_rounds + 1):
+            tasks = self._build_attribute_consolidation_tasks(ctx, pending)
+            if not tasks:
+                # Nothing needs a call, so nothing is left in flight.
+                pending = {}
+                break
+
+            groups_per_facet = Counter(
+                origin[t["domain_label"]][t["facet_index"]] for t in tasks)
+            if verbose and any(n > 1 for n in groups_per_facet.values()):
+                busy = {f"{d} › {settled[d][i].facet_name}": n
+                        for (d, i), n in groups_per_facet.items() if n > 1}
+                print(f"    round {round_no}: {busy} groups")
+
+            results = await self._dispatch(
+                "attribute_consolidation", tasks,
+                self._attribute_consolidation_prepare_fn(ctx),
+                self._attribute_consolidation_parse_fn(),
+                self._attribute_consolidation_fallback_fn(),
+                verbose,
+            )
+
+            merged: Dict[Tuple[str, int], List[DiscoveredAttribute]] = {}
+            for task, result in zip(tasks, results):
+                key = origin[task["domain_label"]][task["facet_index"]]
+                merged.setdefault(key, []).extend(
+                    self._attribute_consolidation_survivors(task, result))
+
+            consolidated.update(merged)
+            # A facet split over several groups is not settled yet: its groups
+            # never saw each other. Put the survivors back in as one pool, and
+            # carry its position along so the next round writes the same key.
+            cap = self._attribute_consolidation_max_attributes_per_call
+            again: Dict[str, List[FacetPool]] = {}
+            again_origin: Dict[str, List[Tuple[str, int]]] = {}
+            for label, pools in pending.items():
+                for index, pool in enumerate(pools):
+                    key = origin[label][index]
+                    kept = merged.get(key)
+                    if kept is None or len(kept) <= cap:
+                        continue
+                    again.setdefault(label, []).append(FacetPool(
+                        facet_name=pool.facet_name,
+                        facet_definition=pool.facet_definition,
+                        facet_question=pool.facet_question,
+                        attributes=kept))
+                    again_origin.setdefault(label, []).append(key)
+            pending, origin = again, again_origin
+            if not pending:
+                break
+
+        # A facet still pending here never got a call that brought it under the
+        # cap. Its survivors are in `consolidated` and nothing is lost, but a
+        # phase that ran out of rounds must say so — the facet half logs this,
+        # and a diagnostic that exists on one side of the split only is what
+        # misleads the next reader.
+        for label, pools in pending.items():
+            for pool in pools:
+                self._action_log.append({
+                    "action": "consolidation_rounds_exhausted",
+                    "domain": label, "facet": pool.facet_name,
+                    "rounds": self._consolidation_max_rounds,
+                    "remaining": len(pool.attributes)})
+
+        structure = self._assemble_structure(settled, consolidated)
+        if verbose:
+            print(f"    {time.time() - started:.1f}s → {format_counts(structure)}")
+        return structure
 
     # =========================================================================
     # PHASE — ASSIGNMENT (one attribute per unique label; the facet follows)

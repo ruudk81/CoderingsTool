@@ -16,8 +16,9 @@ from pipeline.step_4_classifier.prompts_discovery import (
     DiscoveredAttribute, DiscoveredFacet,
 )
 from pipeline.step_4_classifier.prompts_consolidation import (
-    ConsolidatedAttribute, ConsolidatedFacet, ConsolidationResult,
-    FacetConsolidationResult, FacetPool, SettledFacet,
+    AttributeConsolidationResult, ConsolidatedAttribute, ConsolidatedFacet,
+    ConsolidationResult, FacetConsolidationResult, FacetPool, SettledAttribute,
+    SettledFacet,
 )
 
 DIM = get_dimensions_in_decision_order()[0]
@@ -630,6 +631,264 @@ def test_a_domain_that_never_converges_is_reported_not_dropped():
                   for p in settled["d"] for a in p.attributes) == [
         "Doorlooptijd", "Wachttijd"]
     assert _actions(clf, "consolidation_rounds_exhausted")[0]["remaining"] == 2
+
+
+# =============================================================================
+# ATTRIBUTE CONSOLIDATION
+# =============================================================================
+
+def test_one_task_per_facet_across_every_domain():
+    """The scope of an attribute call is one facet: that is the split."""
+    clf = _clf()
+    settled = {"d1": [_pool("A", "x", "x2"), _pool("B", "y", "y2")],
+               "d2": [_pool("C", "z", "z2")]}
+    tasks = clf._build_attribute_consolidation_tasks(_ctx({}), settled)
+    assert len(tasks) == 3
+    assert {(t["domain_label"], t["facet"].facet_name) for t in tasks} == {
+        ("d1", "A"), ("d1", "B"), ("d2", "C")}
+
+
+def test_a_facet_with_one_attribute_needs_no_call():
+    """Nothing to merge. Paired with the two-attribute case, so a helper that
+    stopped producing attributes could not make the skip pass vacuously."""
+    clf = _clf()
+    tasks = clf._build_attribute_consolidation_tasks(
+        _ctx({}), {"d": [_pool("A", "x")]})
+    assert tasks == []
+    tasks = clf._build_attribute_consolidation_tasks(
+        _ctx({}), {"d": [_pool("A", "x", "y")]})
+    assert [t["facet"].facet_name for t in tasks] == ["A"]
+
+
+def test_an_unclaimed_attribute_is_kept():
+    clf = _clf()
+    task = {"domain_label": "d", "facet": _pool("A", "x", "y"),
+            "candidates": _pool("A", "x", "y").attributes,
+            "recurrence": {}, "n_passes": 3}
+    result = AttributeConsolidationResult(
+        decision_summary=[],
+        attributes=[SettledAttribute(
+            attribute_name="x", attribute_definition="…",
+            example_observations=["o"], source_attribute_ids=["A1"])])
+    kept = clf._attribute_consolidation_survivors(task, result)
+    assert sorted(a.attribute_name for a in kept) == ["x", "y"]
+    assert any(e["action"] == "attribute_kept_unclaimed"
+               for e in clf._action_log)
+
+
+def test_a_failed_attribute_call_keeps_the_whole_pool():
+    clf = _clf()
+    pool = _pool("A", "x", "y")
+    task = {"domain_label": "d", "facet": pool, "candidates": pool.attributes,
+            "recurrence": {}, "n_passes": 3}
+    kept = clf._attribute_consolidation_survivors(task, None)
+    assert len(kept) == 2
+
+
+def test_a_cited_attribute_id_that_was_never_handed_out_is_logged():
+    """An invented id claims nothing, so the candidate it was meant to cover
+    falls through to the unclaimed net rather than disappearing."""
+    clf = _clf()
+    pool = _pool("A", "x", "y")
+    task = {"domain_label": "d", "facet": pool, "candidates": pool.attributes,
+            "recurrence": {}, "n_passes": 3}
+    result = AttributeConsolidationResult(
+        decision_summary=[],
+        attributes=[SettledAttribute(
+            attribute_name="Snelheid", attribute_definition="…",
+            example_observations=["o"], source_attribute_ids=["A1", "A9"])])
+    kept = clf._attribute_consolidation_survivors(task, result)
+    assert _actions(clf, "unknown_source_id")[0]["attributes"] == ["A9"]
+    assert sorted(a.attribute_name for a in kept) == ["Snelheid", "y"]
+
+
+def test_the_structure_keeps_the_facet_question():
+    """Step 5 reads it, and it is what makes rule 1 checkable afterwards."""
+    clf = _clf()
+    structure = clf._assemble_structure(
+        {"d": [_pool("A", "x", question="Hoe snel?")]},
+        {("d", 0): [_pool("A", "x").attributes[0]]})
+    assert structure["d"][0]["facet_question"] == "Hoe snel?"
+    assert structure["d"][0]["attributes"][0]["attribute_name"] == "x"
+
+
+def test_a_facet_with_no_entry_keeps_its_own_pool():
+    """The skip and the fallback both leave a facet out of the consolidated map.
+    Both must come out of the assembler holding what they went in with."""
+    clf = _clf()
+    structure = clf._assemble_structure(
+        {"d": [_pool("A", "x"), _pool("B", "p", "q")]},
+        {("d", 1): _pool("B", "p").attributes})
+    by_name = {card["facet_name"]: card for card in structure["d"]}
+    assert [a["attribute_name"] for a in by_name["A"]["attributes"]] == ["x"]
+    assert [a["attribute_name"] for a in by_name["B"]["attributes"]] == ["p"]
+
+
+def test_a_result_lands_on_the_facet_it_came_from():
+    """Two cards of the same name must not read each other's entry."""
+    clf = _clf()
+    structure = clf._assemble_structure(
+        {"d": [_pool("Snelheid", "solo"), _pool("Snelheid", "x", "y")]},
+        {("d", 1): _pool("Snelheid", "x").attributes})
+    assert [c["facet_name"] for c in structure["d"]] == ["Snelheid", "Snelheid"]
+    assert [_attribute_names(structure, index=i) for i in (0, 1)] == [
+        ["solo"], ["x"]]
+
+
+# =============================================================================
+# ATTRIBUTE CONSOLIDATION — THE ROUNDS
+# =============================================================================
+
+def _settle_attribute(candidate, *sources):
+    return SettledAttribute(
+        attribute_name=candidate.attribute_name,
+        attribute_definition=candidate.attribute_definition,
+        example_observations=list(candidate.example_observations),
+        source_attribute_ids=list(sources))
+
+
+def _fold_into_first(task):
+    """A stub answer that folds a whole group into its first candidate.
+
+    Every id is cited, because an uncited candidate is kept by the survivor net
+    and the pool would never shrink — which is the net doing its job, not a
+    merge the model made.
+    """
+    ids = [f"A{i}" for i in range(1, len(task["candidates"]) + 1)]
+    return AttributeConsolidationResult(
+        decision_summary=[],
+        attributes=[_settle_attribute(task["candidates"][0], *ids)])
+
+
+def _attribute_names(structure, label="d", index=0):
+    return sorted(a["attribute_name"]
+                  for a in structure[label][index]["attributes"])
+
+
+def test_a_facet_whose_pool_fits_is_settled_after_one_round():
+    clf = _clf()
+    rounds = _stub_dispatch(clf, _fold_into_first)
+    structure = asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}), {"d": [_pool("A", "x", "y")]}, verbose=False))
+    assert len(rounds) == 1
+    assert _attribute_names(structure) == ["x"]
+
+
+def test_a_skipped_facet_never_reaches_the_model_and_keeps_its_attribute():
+    clf = _clf()
+    rounds = _stub_dispatch(clf, lambda task: None)
+    structure = asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}), {"d": [_pool("A", "x")]}, verbose=False))
+    assert rounds == []
+    assert _attribute_names(structure) == ["x"]
+
+
+def test_a_failed_call_leaves_the_facet_pool_whole_in_the_structure():
+    """The fallback returns nothing, the survivor net returns everything, and
+    the assembler must carry that all the way into the structure."""
+    clf = _clf()
+    _stub_dispatch(clf, lambda task: None)
+    structure = asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}), {"d": [_pool("A", "x", "y", "z")]}, verbose=False))
+    assert _attribute_names(structure) == ["x", "y", "z"]
+    assert _actions(clf, "attribute_consolidation_failed")[0]["facet"] == "A"
+
+
+def test_a_pool_wider_than_the_cap_takes_another_round():
+    """Groups never see each other, so a facet split over several is not settled
+    until its survivors have been put back together in one call."""
+    clf = _clf(attribute_consolidation_max_attributes_per_call=2)
+    rounds = _stub_dispatch(clf, _fold_into_first)
+    structure = asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}), {"d": [_pool("A", "v", "w", "x", "y", "z")]},
+        verbose=False))
+    assert [len(r) for r in rounds] == [3, 2]
+    assert _attribute_names(structure) == ["v", "z"]
+
+
+def test_an_exhausted_round_budget_carries_every_attribute():
+    """The round cap is the one place survivors could quietly fall off the end.
+    A stub that merges nothing never converges, and still loses nothing."""
+    clf = _clf(attribute_consolidation_max_attributes_per_call=2,
+               consolidation_max_rounds=2)
+    rounds = _stub_dispatch(clf, lambda task: AttributeConsolidationResult(
+        decision_summary=[],
+        attributes=[_settle_attribute(c, f"A{i}")
+                    for i, c in enumerate(task["candidates"], 1)]))
+    structure = asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}), {"d": [_pool("A", "x", "y", "z")]}, verbose=False))
+    assert len(rounds) == 2
+    assert _attribute_names(structure) == ["x", "y", "z"]
+    entry = _actions(clf, "consolidation_rounds_exhausted")[0]
+    assert (entry["facet"], entry["rounds"], entry["remaining"]) == ("A", 2, 3)
+
+
+def test_a_phase_that_converged_reports_no_exhausted_rounds():
+    """Paired with the test above: an unconditional log over what is left in
+    `pending` would fire on the skip path too, and read as a phase in trouble."""
+    clf = _clf()
+    _stub_dispatch(clf, _fold_into_first)
+    asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}), {"d": [_pool("A", "x"), _pool("B", "p", "q")]},
+        verbose=False))
+    assert _actions(clf, "consolidation_rounds_exhausted") == []
+    assert _actions(clf, "attribute_consolidation")[0]["facet"] == "B"
+
+
+def test_two_facets_sharing_a_name_keep_their_own_attributes():
+    """A domain can hold two facets with the same name: task 4's facet net keeps
+    both candidates whole when the name is ambiguous about which was meant, so
+    one round is enough to produce it.
+
+    Keyed on the name, the skipped facet was handed the other facet's result and
+    its own attribute was gone for good — the exact failure class this refactor
+    must not make worse. Keyed on position, each card keeps what is its own.
+    """
+    clf = _clf()
+    rounds = _stub_dispatch(clf, _fold_into_first)
+    structure = asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}),
+        {"d": [_pool("Snelheid", "solo"), _pool("Snelheid", "x", "y")]},
+        verbose=False))
+    assert [len(r) for r in rounds] == [1]
+    assert [_attribute_names(structure, index=i) for i in (0, 1)] == [
+        ["solo"], ["x"]]
+
+
+def test_a_partial_requeue_still_writes_back_to_the_right_facet():
+    """`pending` shrinks between rounds, so from round two a pool's position in
+    it no longer matches its position in `settled`. Here facet A settles in
+    round one and facet B does not, which shifts B from position 1 to position
+    0; without the translation back, B's round-two result is written onto A.
+
+    The only test that separates the two: where every pool requeues, the
+    mapping is the identity and a naive key looks correct.
+    """
+    clf = _clf(attribute_consolidation_max_attributes_per_call=2)
+    rounds = _stub_dispatch(clf, _fold_into_first)
+    structure = asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}),
+        {"d": [_pool("A", "p", "q"),
+               _pool("B", "v", "w", "x", "y", "z")]},
+        verbose=False))
+    assert [len(r) for r in rounds] == [4, 2]
+    assert [_attribute_names(structure, index=i) for i in (0, 1)] == [
+        ["p"], ["v", "z"]]
+
+
+def test_a_second_round_writes_back_to_the_right_facet():
+    """The re-round carries each pool's position along. Two same-named facets
+    in one domain, both oversized, must not overwrite each other's result."""
+    clf = _clf(attribute_consolidation_max_attributes_per_call=2)
+    rounds = _stub_dispatch(clf, _fold_into_first)
+    structure = asyncio.run(clf._run_attribute_consolidation(
+        _ctx({"d": []}),
+        {"d": [_pool("Snelheid", "a", "b", "c", "d", "e"),
+               _pool("Snelheid", "v", "w", "x", "y", "z")]},
+        verbose=False))
+    assert [len(r) for r in rounds] == [6, 4]
+    assert [_attribute_names(structure, index=i) for i in (0, 1)] == [
+        ["a", "e"], ["v", "z"]]
 
 
 # =============================================================================
