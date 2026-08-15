@@ -1,7 +1,7 @@
-"""Tests voor de taakvormen van de zes fasen (step 4).
+"""Tests for the task shapes of the six phases (step 4).
 
-De `_build_<fase>_tasks` zijn pure functies van hun argumenten, dus scope,
-overslaan, chunking en tellingen zijn te controleren zonder een LLM-call.
+The `_build_<phase>_tasks` are pure functions of their arguments, so scope,
+skipping, chunking and counts can be checked without an LLM call.
 """
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.classifier import (
@@ -52,16 +52,16 @@ def _structure(facets_per_domain):
 # =============================================================================
 
 def test_discovery_slaat_de_vangnetdomeinen_over():
-    """Step 3 definieert ze als bewust brede vangnetten; er structuur op leggen
-    verzint onderscheid dat de antwoorden niet dragen."""
+    """Step 3 defines them as deliberately broad catch-alls; imposing structure
+    on them invents distinctions the responses do not carry."""
     ctx = _ctx({"inhoud": ["a"], "Overig": ["b"]}, drains=["overig"])
     tasks = _clf()._build_discovery_tasks(ctx)
     assert {t["domain_label"] for t in tasks} == {"inhoud"}
 
 
 def test_vangnet_match_is_hoofdletterongevoelig():
-    """Step 3 schrijft het label met hoofdletter, domeindiscovery maakt de
-    partitienaam lowercase. Een exacte match vond geen van beide, stil."""
+    """Step 3 writes the label capitalised, domain discovery lowercases the
+    partition name. An exact match found neither, silently."""
     ctx = _ctx({"Overig": ["b"]}, drains=["overig"])
     assert ctx.is_drain("Overig") is True
     assert _clf()._build_discovery_tasks(ctx) == []
@@ -73,7 +73,7 @@ def test_kleine_scope_krijgt_een_chunk():
     assert tasks[0]["total_chunks"] == 1
 
 
-def test_grote_scope_wordt_gechunkt_met_overlap():
+def test_a_large_scope_is_chunked_with_overlap():
     ctx = _ctx({"d": [f"obs{i}" for i in range(500)]})
     tasks = _clf()._build_discovery_tasks(ctx)
     assert len(tasks) > 1
@@ -87,8 +87,8 @@ def test_grote_scope_wordt_gechunkt_met_overlap():
 # =============================================================================
 
 def test_groepen_tellen_attributen_niet_facetten():
-    """Dertig facetten valt onder de cap terwijl er vijfhonderd attributen
-    onder kunnen hangen, en daar bezwijkt het oordeel."""
+    """Thirty facets falls under the cap while five hundred attributes can hang
+    beneath them, and that is where the judgement gives way."""
     clf = _clf(consolidation_max_items_per_call=10)
     kandidaten = [_facet(f"f{i}", *[f"a{j}" for j in range(6)]) for i in range(4)]
     groepen = clf._consolidation_groups(kandidaten)
@@ -96,13 +96,13 @@ def test_groepen_tellen_attributen_niet_facetten():
     assert all(len(g) == 1 for g in groepen)
 
 
-def test_alles_in_een_groep_wanneer_het_past():
+def test_everything_in_one_group_when_it_fits():
     clf = _clf(consolidation_max_items_per_call=150)
     groepen = clf._consolidation_groups([_facet(f"f{i}", "a") for i in range(30)])
     assert len(groepen) == 1
 
 
-def test_facet_reist_nooit_los_van_zijn_attributen():
+def test_a_facet_never_travels_apart_from_its_attributes():
     clf = _clf(consolidation_max_items_per_call=2)
     groot = _facet("groot", *[f"a{j}" for j in range(9)])
     groepen = clf._consolidation_groups([groot])
@@ -110,13 +110,13 @@ def test_facet_reist_nooit_los_van_zijn_attributen():
     assert len(groepen[0][0].attributes) == 9
 
 
-def test_kandidaten_worden_op_naam_gesorteerd_voor_het_groeperen():
-    """Bijna-identieke namen komen naast elkaar te staan, zodat ze meestal in
-    dezelfde groep vallen in plaats van elkaar een ronde lang mis te lopen.
+def test_candidates_are_sorted_by_name_before_grouping():
+    """Near-identical names end up next to each other, so they usually fall in
+    the same group instead of missing each other for a whole round.
 
-    Meestal, niet altijd: een greedy vulling kan de groepsgrens nog steeds
-    precies tussen twee buren leggen. Dat is aanvaard — de volgende ronde zet
-    de overlevenden alsnog bij elkaar.
+    Usually, not always: a greedy fill can still place the group boundary
+    exactly between two neighbours. That is accepted — the next round puts the
+    survivors together after all.
     """
     clf = _clf(consolidation_max_items_per_call=2)
     kandidaten = [_facet("Snelheid van afhandeling", "a"),
@@ -131,7 +131,7 @@ def test_kandidaten_worden_op_naam_gesorteerd_voor_het_groeperen():
 # =============================================================================
 
 def test_een_taak_per_uniek_label():
-    """Identieke tekst deelt een oordeel; dat is geen batch."""
+    """Identical text shares one judgement; that is not a batch."""
     structure = _structure({"d": [_facet("f", "a1", "a2")]})
     tasks = _clf()._build_assignment_tasks(
         _ctx({"d": []}), structure,
@@ -140,7 +140,7 @@ def test_een_taak_per_uniek_label():
     assert sorted(len(t["rep"].idea_ids) for t in tasks) == [1, 2]
 
 
-def test_menu_van_een_krijgt_geen_taak():
+def test_a_menu_of_one_gets_no_task():
     structure = _structure({"d": [_facet("f", "enige")]})
     tasks = _clf()._build_assignment_tasks(
         _ctx({"d": []}), structure, {"d": {"i1": "x"}})
@@ -159,7 +159,7 @@ def test_menu_is_domeinbreed_en_per_facet_gegroepeerd():
 # VANGNETTEN AANHAKEN
 # =============================================================================
 
-def test_elk_facet_krijgt_een_other_en_elk_domein_een_other_facet():
+def test_every_facet_gets_an_other_and_every_domain_an_other_facet():
     clf = _clf()
     structure = clf._add_drains(
         _ctx({"d": []}), _structure({"d": [_facet("f1", "a1"), _facet("f2", "a2")]}))
@@ -170,8 +170,8 @@ def test_elk_facet_krijgt_een_other_en_elk_domein_een_other_facet():
 
 
 def test_vangnetten_komen_na_consolidatie_niet_ervoor():
-    """Consolidatie beoordeelt wat de passes voorstelden; een bak die per
-    constructie bestaat is geen voorstel."""
+    """Consolidation judges what the passes proposed; a bucket that exists by
+    construction is not a proposal."""
     clf = _clf()
     voor = _structure({"d": [_facet("f1", "a1")]})
     na = clf._add_drains(_ctx({"d": []}), voor)
@@ -183,14 +183,14 @@ def test_vangnetten_komen_na_consolidatie_niet_ervoor():
 # FACETTOEWIJZING IS AFGELEID
 # =============================================================================
 
-def test_facettoewijzing_volgt_waar_het_attribuut_leeft():
-    """Een bron. Twee los bepaalde toewijzingen konden een idee in facet F
-    zetten en in een attribuut dat onder G hangt."""
+def test_facet_assignment_follows_where_the_attribute_lives():
+    """One source. Two separately determined assignments could put an idea in
+    facet F and in an attribute hanging under G."""
     structure = _structure({"d": [_facet("f1", "a1"), _facet("f2", "a2")]})
     assert derive_facet_assignments({"i1": "a2"}, structure) == {"d": {"i1": "f2"}}
 
 
-def test_onbekend_attribuut_levert_geen_facet_op():
+def test_an_unknown_attribute_yields_no_facet():
     structure = _structure({"d": [_facet("f1", "a1")]})
     assert derive_facet_assignments({"i1": "verzonnen"}, structure) == {}
 
@@ -204,9 +204,9 @@ def test_facettoewijzing_matcht_hoofdletterongevoelig():
 # UITPAKKEN NAAR DE TWEE CACHEREGISTERS
 # =============================================================================
 
-def test_facetkaarten_dragen_hun_attributen_niet_mee():
-    """De cache houdt facetten en attributen in twee registers; de nesting die
-    de structuur door de run draagt wordt aan het eind uitgepakt."""
+def test_facet_cards_do_not_carry_their_attributes():
+    """The cache holds facets and attributes in two registers; the nesting that
+    carries the structure through the run is unpacked at the end."""
     nested = _structure({"d": [_facet("f", "a1", "a2")]})["d"]
     assert "attributes" not in facet_dicts(nested)[0]
     assert [a["attribute_name"] for a in attribute_dicts(nested)["f"]] == ["a1", "a2"]
@@ -225,10 +225,10 @@ def test_elke_fasenaam_is_een_geldig_stoppunt():
 # RATE LIMITS
 # =============================================================================
 
-def test_rate_limits_worden_uitgepakt_niet_opnieuw_ingepakt(monkeypatch):
-    """`fetch_rate_limits` geeft al (RateLimits, has_headers) terug. Die nog een
-    keer in een tuple wikkelen gaf een AttributeError op de eerste printregel —
-    ná de setup en dus midden in een betaalde run.
+def test_rate_limits_are_unpacked_not_repacked(monkeypatch):
+    """`fetch_rate_limits` already returns (RateLimits, has_headers). Wrapping
+    that in a tuple once more gave an AttributeError on the first print line —
+    after setup, and therefore in the middle of a paid run.
     """
     import asyncio
 
@@ -251,7 +251,7 @@ def test_rate_limits_worden_uitgepakt_niet_opnieuw_ingepakt(monkeypatch):
 
 
 def test_nul_limieten_vallen_terug_op_de_fallback(monkeypatch):
-    """Een deployment die geen limieten teruggeeft mag niet op nul draaien."""
+    """A deployment that returns no limits must not run on zero."""
     import asyncio
 
     import pipeline.step_4_classifier.classifier as mod
@@ -274,8 +274,8 @@ def test_nul_limieten_vallen_terug_op_de_fallback(monkeypatch):
 # =============================================================================
 
 def test_telling_scheidt_vangnetten_van_echte_items():
-    """Een fase die de vangnetten meetelt naast een fase die dat niet doet
-    leest als groei die er niet is."""
+    """A phase that counts the catch-alls next to a phase that does not reads as
+    growth that is not there."""
     from pipeline.step_4_classifier.classifier import count_structure, format_counts
     clf = _clf()
     structure = clf._add_drains(

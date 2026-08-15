@@ -46,8 +46,8 @@ def test_facet_draagt_zijn_attributen():
 
 
 def test_attribuut_heet_definition_niet_description():
-    """Step 5 leest `attribute_definition` uit de taxonomiecache; `*_description`
-    was de oude naam en een hernoeming brak P8 stil."""
+    """Step 5 reads `attribute_definition` from the taxonomy cache;
+    `*_description` was the old name and a rename broke step 5 silently."""
     assert set(DiscoveredAttribute.model_fields) == {
         "attribute_name", "attribute_definition", "example_observations"}
 
@@ -72,7 +72,7 @@ def test_geneste_structuur_valideert():
 # PROMPT ↔ MODEL SLUITEN AAN
 # =============================================================================
 
-def test_prompt_noemt_elk_veld_dat_het_model_kent():
+def test_prompt_names_every_field_the_model_knows():
     prompt = build_discovery_prompt(**_kwargs())
     for veld in ("scratchpad", "facets", "facet_name", "facet_definition",
                  "attributes", "attribute_name", "attribute_definition",
@@ -80,7 +80,7 @@ def test_prompt_noemt_elk_veld_dat_het_model_kent():
         assert veld in prompt, veld
 
 
-def test_prompt_vraagt_geen_veld_dat_het_model_niet_heeft():
+def test_prompt_asks_for_no_field_the_model_lacks():
     prompt = build_discovery_prompt(**_kwargs())
     for verdwenen in ("facet_description", "attribute_description",
                       "parent_facet", "boundary_test", "exclusions\""):
@@ -96,9 +96,9 @@ def test_prompt_eindigt_op_de_instructor_zin():
 # =============================================================================
 
 def test_prompt_kent_geen_dimensie_opdracht():
-    """De prompt vraagt naar facetten en attributen, nooit naar de dimensies of
-    assen waarop antwoorden verschillen. Let op: 'orthogonaal' mag wél — dat gaat
-    over de verhouding tussen facetten onderling, niet over het zoeken van assen."""
+    """The prompt asks for facets and attributes, never for the dimensions or
+    axes along which responses differ. Note: 'orthogonal' IS allowed — that is
+    about the relation between facets, not about finding axes."""
     prompt = build_discovery_prompt(**_kwargs())
     assert "Lens" not in prompt
     assert "dimensions on which" not in prompt.lower()
@@ -106,20 +106,19 @@ def test_prompt_kent_geen_dimensie_opdracht():
 
 
 def test_prompt_bevat_geen_drempelgetallen():
-    """Een drempel als 'minstens 5% van zijn scope' is van een dataset
-    afgelezen en valt onder hetzelfde verbod als een use-case-voorbeeld."""
+    """A threshold like 'at least 5% of its scope' is read off one dataset and
+    falls under the same ban as a use-case example."""
     prompt = build_discovery_prompt(**_kwargs())
     assert "%" not in prompt
 
 
 def _skelet_prompt():
-    """De prompt met élk dynamisch slot op een sentinel — ook de dimensie.
+    """The prompt with EVERY dynamic slot on a sentinel — the dimension too.
 
-    Wat er dan nog aan woorden in staat is het statische instructieskelet: de
-    tekst die voor iedere dataset én iedere dimensie ongewijzigd wordt verstuurd.
-    De builder raakt van een dimensie alleen `prompt_rules` aan, dus een stub
-    volstaat en is eerlijker dan een echte dimensie — die smokkelt haar eigen
-    vocabulaire mee de meting in.
+    What is then left in words is the static instruction skeleton: the text sent
+    unchanged for every dataset and every dimension. The builder touches only
+    `prompt_rules` of a dimension, so a stub suffices and is more honest than a
+    real dimension — that one smuggles its own vocabulary into the measurement.
     """
     rules = SimpleNamespace(
         domain_instruction="Definition: DOMAINRULE\nKey idea: DOMAINIDEA",
@@ -137,17 +136,16 @@ def _skelet_prompt():
         observations=["OBSERVATION"]))
 
 
-def test_skelet_leent_geen_vocabulaire_van_dataset_of_dimensie():
-    """Tripwire voor het lekpad uit CLAUDE.md: een diagnose op één dataset die
-    als vuistregel in de prompt belandt en daar blijft staan.
+def test_skeleton_borrows_no_vocabulary_from_dataset_or_dimension():
+    """Tripwire for the leak path from CLAUDE.md: a diagnosis on one dataset that
+    ends up in the prompt as a rule of thumb and stays there.
 
-    Vangt twee soorten lek in één meting. Onderwerpwoorden ('sustainability')
-    horen bij één klant; dimensiewoorden ('association') horen bij één van de
-    tien dimensies, terwijl deze prompt ze allemaal bedient.
+    Catches two kinds of leak in one measurement. Subject words ('sustainability')
+    belong to one client; dimension words ('association') belong to one of the ten
+    dimensions, while this prompt serves all of them.
 
-    Geen bewijs van agnosticisme — een grendel op wat deze repo daadwerkelijk
-    heeft gecodeerd. Komt er een nieuw voorbeeld in, breid de lijst dan uit in
-    plaats van hem te laten verwateren.
+    Not proof of agnosticism — a latch on what this repo has actually coded. If a
+    new example arrives, extend the list rather than letting it dilute.
     """
     ontleend = [
         # onderwerp van één dataset
@@ -186,7 +184,7 @@ def test_prompt_zonder_uitsluitingen_blijft_geldig():
     assert prompt.rstrip().endswith(INSTRUCTOR_HINT)
 
 
-def test_prompt_vraagt_om_de_enquetetaal():
+def test_prompt_asks_for_the_survey_language():
     assert build_discovery_prompt(**_kwargs()).count("Dutch") >= 2
 
 
@@ -195,7 +193,7 @@ def test_prompt_draagt_de_universele_regels():
     assert "<universal_rules>" in prompt
 
 
-def test_prompt_vraagt_beide_niveaus_in_een_beurt():
+def test_prompt_asks_for_both_levels_in_one_pass():
     prompt = build_discovery_prompt(**_kwargs())
     assert "fewest" in prompt.lower()
     assert prompt.index("facet") < prompt.rindex("attribute")

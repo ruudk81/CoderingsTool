@@ -41,9 +41,9 @@ def test_responses_without_ideas_are_skipped():
 
 
 def test_a_renamed_idea_field_raises_instead_of_going_empty():
-    """Een veld dat step 4 hernoemt moet luid stuk. Leeg is een geldige waarde,
-    afwezig is een contractbreuk — zonder dit onderscheid werd een hernoemde
-    `valence` stil een neutraal idee."""
+    """A field step 4 renames must break loudly. Empty is a valid value, absent is
+    a breach of contract — without that distinction a renamed `valence` silently
+    became a neutral idea."""
     class IdeaWithoutValence:
         idea_id = "R1_1"
         attribute_id = "A1"

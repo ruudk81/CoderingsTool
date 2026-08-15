@@ -1,9 +1,9 @@
-"""Tests voor de dimensie-specifieke standing domains.
+"""Tests for the dimension-specific standing domains.
 
-Structureel, geen LLM. Wat hier bewezen wordt is de CONSTRUCTIE: elke dimensie
-levert er drie, ze bereiken de prompt, en de keys overleven. Of de teksten goed
-GEFORMULEERD zijn is niet mechanisch te toetsen — dat blijkt pas op data die een
-andere dimensie kiest.
+Structural, no LLM. What is proven here is the CONSTRUCTION: every dimension
+supplies three, they reach the prompt, and the keys survive. Whether the texts
+are well PHRASED cannot be tested mechanically — that only shows on data that
+picks a different dimension.
 """
 
 import pytest
@@ -35,27 +35,27 @@ from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import (
 ALL_KEYS = sorted(DIMENSIONS)
 
 
-# ── 1. Volledigheid ────────────────────────────────────────────────────────
+# ── 1. Completeness ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_every_dimension_carries_all_standing_domains(dimension_key):
-    """Een dimensie zonder standing domains laat step 3 zonder afvoerdomein draaien."""
+    """A dimension without standing domains leaves step 3 running with no drain."""
     d = get_dimension(dimension_key)
     for spec in (d.standing_not_known, d.standing_other, d.standing_no_subject):
         assert isinstance(spec, StandingDomain)
         for field in ("fallback_label", "definition", "short"):
             value = getattr(spec, field)
-            assert value and value.strip(), f"{dimension_key}.{field} is leeg"
+            assert value and value.strip(), f"{dimension_key}.{field} is empty"
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_the_standing_domains_are_pairwise_distinct(dimension_key):
-    """Samengevallen definities maken de afvoeren ononderscheidbaar.
+    """Collapsed definitions make the drains indistinguishable.
 
-    De drie vangen drie verschillende faalvormen van de domeinas: het onderwerp
-    niet kennen, een onderwerp noemen dat geen domein dekt, en geen onderwerp
-    noemen. Lopen er twee in elkaar, dan verliest een van de drie zijn eigen
-    categorie.
+    The three catch three different failure modes of the domain axis: not
+    knowing the subject, naming a subject no domain covers, and naming no
+    subject at all. If two run into each other, one of the three loses its own
+    category.
     """
     d = get_dimension(dimension_key)
     specs = (d.standing_not_known, d.standing_other, d.standing_no_subject)
@@ -66,10 +66,11 @@ def test_the_standing_domains_are_pairwise_distinct(dimension_key):
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_contentless_test_is_present_and_distinct_from_not_known(dimension_key):
-    """`contentless_test` (P8) en `standing_not_known.short` (step 3) zijn andere concepten.
+    """`contentless_test` and `standing_not_known.short` are different concepts.
 
-    De eerste is "noemt niets op de as", de tweede "kent het onderwerp niet". Ze
-    mogen niet stilzwijgend samenvallen — dat zou P8 de verkeerde toets geven.
+    The first is "names nothing on the axis", the second "does not know the
+    subject". They must not silently coincide — that would give the contentless
+    check the wrong test.
     """
     d = get_dimension(dimension_key)
     contentless_test = d.prompt_rules.contentless_test
@@ -78,7 +79,7 @@ def test_contentless_test_is_present_and_distinct_from_not_known(dimension_key):
 
 
 def test_standing_domains_are_required_fields():
-    """Zonder default kan een nieuwe dimensie ze niet vergeten: TypeError bij import."""
+    """Without a default a new dimension cannot forget them: TypeError at import."""
     fields = DIMENSIONS[ALL_KEYS[0]].__dataclass_fields__
     import dataclasses
     for name in ("standing_not_known", "standing_other", "standing_no_subject"):
@@ -86,11 +87,11 @@ def test_standing_domains_are_required_fields():
         assert fields[name].default_factory is dataclasses.MISSING
 
 
-# ── 2. Resolutie ───────────────────────────────────────────────────────────
+# ── 2. Resolution ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_resolve_falls_back_when_there_is_no_translation(dimension_key):
-    """Geen vertaling (call gefaald of overgeslagen): het Engelse fallback-label."""
+    """No translation (call failed or skipped): the English fallback label."""
     d = get_dimension(dimension_key)
     out = IdeaExtractor._resolve_standing_domains(None, d)
 
@@ -104,7 +105,7 @@ def test_resolve_falls_back_when_there_is_no_translation(dimension_key):
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_resolve_prefers_the_rendered_text_but_keeps_the_english_as_source(dimension_key):
-    """Label, definitie én lidmaatschapstoets komen uit de weergave als die er is."""
+    """Label, definition and membership test all come from the rendering, if any."""
     d = get_dimension(dimension_key)
     rendered = MenuEntryRenderResponse(
         not_known_label="Kent het merk niet", not_known_definition="NL definitie een.",
@@ -126,7 +127,7 @@ def test_resolve_prefers_the_rendered_text_but_keeps_the_english_as_source(dimen
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_resolve_falls_back_to_the_dimension_on_a_blank_rendering(dimension_key):
-    """Geen weergave (call gefaald of overgeslagen): de Engelse dimensietekst."""
+    """No rendering (call failed or skipped): the English dimension text."""
     d = get_dimension(dimension_key)
     out = IdeaExtractor._resolve_standing_domains(None, d)
     assert out[0].definition == d.standing_not_known.definition
@@ -135,10 +136,10 @@ def test_resolve_falls_back_to_the_dimension_on_a_blank_rendering(dimension_key)
 
 
 def test_resolve_standing_domains_have_no_exclusions():
-    """Pin voor bevinding C: de menu-regel ✗ mag alleen verschijnen als er iets in staat.
+    """Pin for finding C: the ✗ menu line may only appear when it holds something.
 
-    `_resolve_standing_domains` levert altijd `exclusions=[]` — niet per dimensie
-    verschillend, dus één dimensie volstaat om de constructie vast te leggen.
+    `_resolve_standing_domains` always yields `exclusions=[]` — not different per
+    dimension, so one dimension suffices to pin the construction.
     """
     d = get_dimension(ALL_KEYS[0])
     out = IdeaExtractor._resolve_standing_domains(None, d)
@@ -147,8 +148,8 @@ def test_resolve_standing_domains_have_no_exclusions():
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_resolve_ignores_an_empty_translated_label(dimension_key):
-    """Een leeg of blank label mag geen naamloos domein op het menu zetten — en
-    dat mag onafhankelijk zijn van of de definitie/boundary_test wél gerenderd is."""
+    """An empty or blank label must not put a nameless domain on the menu — and
+    that holds independently of whether definition/boundary_test did render."""
     d = get_dimension(dimension_key)
     out = IdeaExtractor._resolve_standing_domains(
         MenuEntryRenderResponse(
@@ -165,15 +166,15 @@ def test_resolve_ignores_an_empty_translated_label(dimension_key):
     assert out[2].definition == "d3"
 
 
-# ── 2b. De normalisatie ná consolidatie ────────────────────────────────────
+# ── 2b. The normalisation after consolidation ──────────────────────────────
 
 def test_set_domain_keys_derives_from_label_but_spares_the_standing_two():
-    """Ontdekte domeinen krijgen hun key uit het label, de staande twee houden de hunne.
+    """Discovered domains get their key from the label, the standing ones keep theirs.
 
-    Regressie (2026-08-09): deze normalisatie liep onvoorwaardelijk over álle
-    domeinen en wiste de staande keys vóórdat _orthogonalize_domains ze kon
-    beschermen. De guard daar bewaakte dus iets dat al vernietigd was, en step 4's
-    DRAIN_KEYS vond niets meer — zonder foutmelding.
+    Regression (2026-08-09): this normalisation ran unconditionally over ALL
+    domains and wiped the standing keys before _orthogonalize_domains could
+    protect them. The guard there was therefore protecting something already
+    destroyed, and step 4's DRAIN_KEYS found nothing — without an error.
     """
     domains = [
         DomainItem(key="", label="Duurzaamheid",
@@ -190,16 +191,16 @@ def test_set_domain_keys_derives_from_label_but_spares_the_standing_two():
 
 
 def test_set_domain_keys_accepts_no_domains():
-    """Fase 3 kan overgeslagen zijn; dan is er niets te normaliseren."""
+    """Phase 3 may have been skipped; then there is nothing to normalise."""
     IdeaExtractor._set_domain_keys(None)
     IdeaExtractor._set_domain_keys([])
 
 
-# ── 3. De teksten bereiken de prompt ───────────────────────────────────────
+# ── 3. The texts reach the prompt ──────────────────────────────────────────
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_consolidation_prompt_carries_this_dimensions_wording(dimension_key):
-    """De builder leest de vangnetten uit de meegegeven dimensie en zet ze als grond."""
+    """The builder reads the drains from the given dimension and lays them down."""
     d = get_dimension(dimension_key)
     prompt = build_domain_consolidation_prompt(
         language="nl-NL", survey_question="Vraag?", sector="s", entity="e",
@@ -210,37 +211,37 @@ def test_consolidation_prompt_carries_this_dimensions_wording(dimension_key):
     assert d.standing_other.definition in prompt
     assert d.standing_not_known.short in prompt
     assert d.prompt_rules.domain_diagnostic in prompt
-    # De eenrichtingsregel: de verplichting ligt bij de ontdekte domeinen.
+    # The one-way rule: the obligation sits with the discovered domains.
     assert "must not reach into" in prompt
-    # Het model levert ze niet meer op — de prompt zegt dat met zoveel woorden.
+    # The model no longer returns them — the prompt says so in as many words.
     assert "you do NOT return them" in prompt
 
 
 def test_consolidation_response_has_no_slot_for_the_standing_domains():
-    """Constructie, geen instructie: er is geen veld om ze in te herschrijven."""
+    """Construction, not instruction: there is no field to rewrite them into."""
     assert set(DomainConsolidatedResponse.model_fields) == {"domains"}
 
 
 def test_orthogonalize_response_has_no_slot_for_the_standing_domains():
-    """Zelfde constructie-toets, voor het herformuleringsmodel."""
+    """Same construction test, for the reformulation model."""
     assert set(ReformulatedDomains.model_fields) == {"domains"}
 
 
-# ── 4. Elke dimensie stelt de structurele toets, geen inhoudelijke ─────────
+# ── 4. Every dimension makes the structural test, not a substantive one ────
 #
-# Verving de no-op-pin op ATTRIBUTES_ASSOCIATIONS (2026-08-09). Die legde de tekst
-# byte voor byte vast om te bewijzen dat de per-dimensie-refactor daar niets
-# veranderde. Dat bewijs is geleverd — en de pin bevroor intussen een fout: de
-# refactor verbreedde het concept naar "noemt niets op de as" en schreef tien nieuwe
-# definities, terwijl de elfde op de oude, smallere tekst bleef staan. Een snapshot
-# bewaakt de letter; deze tests bewaken de vorm.
+# Replaced the no-op pin on ATTRIBUTES_ASSOCIATIONS (2026-08-09). That one fixed
+# the text byte for byte to prove the per-dimension refactor changed nothing
+# there. That proof has been delivered — and meanwhile the pin froze a bug: the
+# refactor widened the concept to "names nothing on the axis" and wrote ten new
+# definitions, while the eleventh stayed on the old, narrower text. A snapshot
+# guards the letter; these tests guard the shape.
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_standing_other_sends_axis_failures_back_to_the_bare_domain(dimension_key):
-    """`other` is voor een genoemd onderwerp dat geen domein dekt — niet voor leegte.
+    """`other` is for a named subject no domain covers — not for emptiness.
 
-    Zonder die afbakening lopen de twee vol elkaar in: alles wat nergens past wordt
-    `other`, en de kale antwoorden verliezen hun eigen categorie.
+    Without that boundary the two run into each other: everything that fits
+    nowhere becomes `other`, and the bare answers lose their own category.
     """
     d = get_dimension(dimension_key)
     assert "not for" in d.standing_other.definition
@@ -252,24 +253,25 @@ CORE_GUARD = ("A response that gives no answer at all, or that states there is n
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_not_known_carries_the_filter_boundary_verbatim(dimension_key):
-    """Deze zin is de grens met filtercode 97 en 98. Zonder hem loopt het vangnet vol."""
+    """This sentence is the boundary with filter codes 97 and 98. Without it the
+    drain fills up."""
     assert CORE_GUARD in get_dimension(dimension_key).standing_not_known.definition
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_not_known_avoids_the_category_one_magnets(dimension_key):
-    """'I don't know' is letterlijk categorie 1 van het filter — dat woord trekt het aan."""
+    """'I don't know' is literally category 1 of the filter — that phrase attracts it."""
     t = get_dimension(dimension_key).standing_not_known.definition.lower()
     for magnet in ("i don't know", "i do not know", "not sure", "no opinion"):
-        assert magnet not in t, f"{dimension_key}: bevat '{magnet}'"
+        assert magnet not in t, f"{dimension_key}: contains '{magnet}'"
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_not_known_describes_what_the_respondent_reports(dimension_key):
-    """Een uitspraak over het onderwerp, niet een constatering over het antwoord.
+    """A statement about the subject, not an observation about the answer.
 
-    'contains no content' zou samenvallen met filtercode 98; 'reports not knowing'
-    niet.
+    'contains no content' would coincide with filter code 98; 'reports not
+    knowing' does not.
     """
     d = get_dimension(dimension_key).standing_not_known
     assert "reports" in d.definition or "reports" in d.short
@@ -278,17 +280,18 @@ def test_not_known_describes_what_the_respondent_reports(dimension_key):
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_standing_other_points_at_the_not_known_domain(dimension_key):
-    """De oude staart verwees naar het vangnet dat niet meer bestaat."""
+    """The old tail pointed at the drain that no longer exists."""
     t = get_dimension(dimension_key).standing_other.definition
     assert "not-known domain" in t
     assert "unplaced" not in t.lower()
 
 
-# ── 5. De vertaalcall ─────────────────────────────────────────────────────
+# ── 5. The translation call ───────────────────────────────────────────────
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_standing_labels_prompt_carries_both_fixed_definitions(dimension_key):
-    """De vertaalcall krijgt de canonieke tekst mee — anders vertaalt hij een gok."""
+    """The translation call is given the canonical text — otherwise it translates
+    a guess."""
     d = get_dimension(dimension_key)
     prompt = build_standing_labels_prompt(language="nl-NL", entity="e", dimension=d)
 
@@ -305,7 +308,7 @@ def test_standing_labels_prompt_carries_both_fixed_definitions(dimension_key):
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_standing_labels_prompt_also_carries_the_non_answer_bucket(dimension_key):
-    """Bevinding C: de tijdelijke bak krijgt dezelfde vertaalbehandeling."""
+    """Finding C: the temporary bucket gets the same translation treatment."""
     d = get_dimension(dimension_key)
     prompt = build_standing_labels_prompt(language="nl-NL", entity="e", dimension=d)
 
@@ -314,8 +317,8 @@ def test_standing_labels_prompt_also_carries_the_non_answer_bucket(dimension_key
 
 
 def test_menu_entry_render_response_carries_three_fields_per_entry():
-    """Label, definitie én boundary_test — voor alle drie de vangnetten én de
-    non-answer-bak."""
+    """Label, definition and boundary_test — for all three drains and the
+    non-answer bucket."""
     assert set(MenuEntryRenderResponse.model_fields) == {
         "not_known_label", "not_known_definition", "not_known_boundary_test",
         "other_label", "other_definition", "other_boundary_test",
@@ -323,7 +326,7 @@ def test_menu_entry_render_response_carries_three_fields_per_entry():
         "non_answer_label", "non_answer_definition", "non_answer_boundary_test"}
 
 
-# ── 6. Orthogonalisatie raakt de vangnetten niet ──────────────────────────
+# ── 6. Orthogonalisation does not touch the drains ────────────────────────
 
 def _mk(key, label):
     return DomainItem(key=key, label=label, definition=f"def {label}",
@@ -342,7 +345,7 @@ def test_partition_standing_splits_and_keeps_order():
 
 
 def test_merge_orthogonalized_leaves_the_standing_two_untouched():
-    """Het vangnet mag niet herschreven terugkomen — dat is hoe de definitie versmalde."""
+    """The drain must not come back rewritten — that is how the definition narrowed."""
     discovered = [_mk("Duurzaamheid", "Duurzaamheid")]
     standing = [_mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"),
                 _mk(STANDING_OTHER_KEY, "Overig")]
@@ -359,11 +362,11 @@ def test_merge_orthogonalized_leaves_the_standing_two_untouched():
 
 
 def test_merge_orthogonalized_refuses_a_count_mismatch():
-    """De telcontrole vergelijkt tegen de ONTDEKTE domeinen, niet tegen het totaal.
+    """The count check compares against the DISCOVERED domains, not the total.
 
-    Regressie: de guard telde tegen de volledige lijst inclusief de twee
-    vangnetten. Zodra het responsemodel er twee minder teruggeeft, slaat hij aan
-    en draait orthogonalisatie helemaal niet meer — zonder foutmelding.
+    Regression: the guard counted against the full list including the two
+    drains. As soon as the response model returns two fewer, it trips and
+    orthogonalisation stops running altogether — without an error.
     """
     discovered = [_mk("A", "A"), _mk("B", "B")]
     standing = [_mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"),
@@ -377,10 +380,10 @@ def test_merge_orthogonalized_refuses_a_count_mismatch():
 
 
 def test_orthogonalize_prompt_shows_the_standing_two_as_fixed():
-    """Zichtbaar zodat de andere zich ervan wegformuleren, met de eenrichtingsregel.
+    """Visible so the others phrase themselves away from it, with the one-way rule.
 
-    De builder neemt geen dimensie — parametriseren over alle elf gaf elf keer
-    dezelfde run.
+    The builder takes no dimension — parametrising over all eleven gave the same
+    run eleven times.
     """
     prompt = build_orthogonalize_domains_prompt(
         language="nl-NL", survey_question="Vraag?", sector="s", entity="e",
@@ -395,13 +398,13 @@ def test_orthogonalize_prompt_shows_the_standing_two_as_fixed():
     assert "must not reach into" in prompt
 
 
-# ── 7. `key` is niet meer door het model te schrijven (bevinding A) ────────
+# ── 7. `key` can no longer be written by the model (finding A) ────────────
 
 def test_response_schemas_expose_no_key_property_to_the_model():
-    """Dit is het echte contract: de JSON schema die instructor naar het model stuurt.
+    """This is the real contract: the JSON schema instructor sends to the model.
 
-    Een veld dat wél op `DomainItem` bestaat maar hier ontbreekt kan nooit
-    modeloutput worden, ongeacht wat de prompttekst zegt.
+    A field that does exist on `DomainItem` but is missing here can never become
+    model output, whatever the prompt text says.
     """
     for cls in (DomainChunkResponse, DomainConsolidatedResponse, ReformulatedDomains):
         schema = cls.model_json_schema()
@@ -410,10 +413,10 @@ def test_response_schemas_expose_no_key_property_to_the_model():
 
 
 def test_model_supplied_key_cannot_reach_self_domains():
-    """Zelfs een kwaadwillig/verward 'key': 'other' in de ruwe modeloutput haalt
-    `self.domains` niet: het schema heeft er geen plek voor, dus Pydantic laat het
-    veld vallen bij het parsen, en de enige plek waar `key` daarna gezet wordt is
-    `_set_domain_keys`, vanuit het label.
+    """Even a malicious/confused 'key': 'other' in the raw model output does not
+    reach `self.domains`: the schema has no place for it, so Pydantic drops the
+    field while parsing, and the only place `key` is set afterwards is
+    `_set_domain_keys`, from the label.
     """
     raw = DiscoveredDomainItem.model_validate({
         "key": STANDING_OTHER_KEY,
@@ -429,13 +432,13 @@ def test_model_supplied_key_cannot_reach_self_domains():
     assert domain.key != STANDING_OTHER_KEY
 
 
-# ── 8. Labelbotsing met een staand domein (bevinding B) ────────────────────
+# ── 8. Label collision with a standing domain (finding B) ──────────────────
 
 def test_disambiguate_against_standing_renames_the_discovered_one():
-    """Eerste botsingsrichting: bij het samenstellen van de lijst kiest een ontdekt
-    domein toevallig hetzelfde label als een staand domein. De staande twee komen
-    uit een aparte, parallelle vertaalcall — niets garandeert dat de labels
-    verschillen."""
+    """First collision direction: while assembling the list a discovered domain
+    happens to pick the same label as a standing domain. The standing two come
+    from a separate, parallel translation call — nothing guarantees the labels
+    differ."""
     standing = [_mk(STANDING_NOT_KNOWN_KEY, "Overig"), _mk(STANDING_OTHER_KEY, "Kale associatie")]
     discovered = [_mk("Overig", "Overig")]
 
@@ -443,7 +446,7 @@ def test_disambiguate_against_standing_renames_the_discovered_one():
 
     assert renames == [("Overig", "Overig (2)")]
     assert discovered[0].label == "Overig (2)"
-    # De staande twee blijven onaangeroerd.
+    # The standing two remain untouched.
     assert [d.label for d in standing] == ["Overig", "Kale associatie"]
 
 
@@ -458,12 +461,12 @@ def test_disambiguate_against_standing_leaves_non_colliding_labels_alone():
 
 
 def test_disambiguate_and_remap_fixes_a_relabel_that_collides_after_orthogonalize():
-    """Tweede botsingsrichting: de herformulering beschrijft een ontdekt domein
-    opnieuw en komt toevallig op een staand label uit. Dat mag geen dubbel label op
-    het toewijzingsmenu zetten, en een idee dat tegelijk naar dat label wordt
-    hernoemd moet op het uiteindelijke (ontdubbelde) label uitkomen."""
+    """Second collision direction: the reformulation redescribes a discovered
+    domain and happens to land on a standing label. That must not put a duplicate
+    label on the assignment menu, and an idea being renamed to that label at the
+    same time must end up on the final (deduplicated) label."""
     standing = [_mk(STANDING_NOT_KNOWN_KEY, "Kale associatie"), _mk(STANDING_OTHER_KEY, "Overig")]
-    new_discovered = [_mk("Overig", "Overig")]  # _merge_orthogonalized zette de key al
+    new_discovered = [_mk("Overig", "Overig")]  # _merge_orthogonalized already set the key
     rename = {"Duurzaamheid": "Overig"}
 
     new_domains, rename2, collisions = IdeaExtractor._disambiguate_and_remap(
@@ -473,7 +476,7 @@ def test_disambiguate_and_remap_fixes_a_relabel_that_collides_after_orthogonaliz
     assert rename2 is rename
     assert rename2 == {"Duurzaamheid": "Overig (2)"}
     assert [d.label for d in new_domains] == ["Overig (2)", "Kale associatie", "Overig"]
-    # De key volgt het uiteindelijke label, niet het botsende tussenlabel.
+    # The key follows the final label, not the colliding intermediate one.
     assert new_domains[0].key == "Overig (2)"
 
 
@@ -490,11 +493,11 @@ def test_disambiguate_and_remap_is_a_noop_without_a_collision():
     assert [d.label for d in new_domains] == ["Duurzaamheid", "Kale associatie", "Overig"]
 
 
-# ── 9. Het toewijzingsmenu (bevinding C) ────────────────────────────────────
+# ── 9. The assignment menu (finding C) ──────────────────────────────────────
 
 def test_domain_table_omits_the_dangling_exclusion_marker():
-    """Een staand domein heeft `exclusions=[]` — de ✗-regel moet dan wegvallen in
-    plaats van kaal '✗ ' te tonen voor precies de twee gevoeligste domeinen."""
+    """A standing domain has `exclusions=[]` — the ✗ line must then drop out
+    rather than show a bare '✗ ' for exactly the two most sensitive domains."""
     d = get_dimension(ALL_KEYS[0])
     standing = IdeaExtractor._resolve_standing_domains(None, d)
     domain_with_exclusions = _mk("Duurzaamheid", "Duurzaamheid")
@@ -509,10 +512,10 @@ def test_domain_table_omits_the_dangling_exclusion_marker():
     assert not table.rstrip().endswith("✗")
 
 
-# ── 10. Domeinoverzicht na orthogonalisatie ─────────────────────────────────
+# ── 10. Domain overview after orthogonalisation ─────────────────────────────
 
 def test_format_domain_overview_shows_arrow_for_a_renamed_discovered_domain():
-    """Een hernoemd ontdekt domein toont `oud label → nieuw label`."""
+    """A renamed discovered domain shows `old label → new label`."""
     d = _mk("Duurzaamheid", "Ecologische koers")
     rename = {"Duurzaamheid": "Ecologische koers"}
 
@@ -523,7 +526,7 @@ def test_format_domain_overview_shows_arrow_for_a_renamed_discovered_domain():
 
 
 def test_format_domain_overview_shows_the_label_alone_when_unchanged():
-    """Geen botsing van bewoording nodig: een ongewijzigd label staat er kaal."""
+    """No wording clash needed: an unchanged label stands there bare."""
     d = _mk("Aanbod", "Aanbod")
     rename = {"Aanbod": "Aanbod"}
 
@@ -534,7 +537,7 @@ def test_format_domain_overview_shows_the_label_alone_when_unchanged():
 
 
 def test_format_domain_overview_marks_a_standing_domain_and_omits_its_exclusion_line():
-    """Een staand domein krijgt de markering en nooit een ✗-regel (exclusions=[])."""
+    """A standing domain gets the marker and never a ✗ line (exclusions=[])."""
     standing = _mk(STANDING_NOT_KNOWN_KEY, "Kale associatie")
 
     lines = IdeaExtractor._format_domain_overview_lines(
@@ -544,10 +547,10 @@ def test_format_domain_overview_marks_a_standing_domain_and_omits_its_exclusion_
     assert not any(line.strip().startswith("✗") for line in lines)
 
 
-def test_format_domain_overview_toont_geen_promptteksten():
-    """Definitie, boundary_test en exclusions staan al in de promptexport. Vier
-    regels per domein — sinds 2026-08-14 een ervan vijf regels lang — begroeven
-    het enige waar dit overzicht voor is: zien wat er hernoemd is."""
+def test_format_domain_overview_shows_no_prompt_texts():
+    """Definition, boundary_test and exclusions are already in the prompt export.
+    Four lines per domain — one of them five lines long since 2026-08-14 — buried
+    the only thing this overview is for: seeing what got renamed."""
     d = _mk("Duurzaamheid", "Duurzaamheid")
     d.exclusions = ["Aanbod", "Prijs"]
 
@@ -557,20 +560,20 @@ def test_format_domain_overview_toont_geen_promptteksten():
     assert lines == ["    • Duurzaamheid"]
 
 
-# ── 11. De oude sleutel mag nergens achterblijven ───────────────────────────
+# ── 11. The old key must be left nowhere ────────────────────────────────────
 
 def test_no_file_in_src_still_mentions_the_old_key():
-    """Een achtergebleven oude sleutel matcht nergens meer en faalt stil.
+    """A leftover old key matches nothing any more and fails silently.
 
-    Bouwt de oude sleutel uit delen op: anders bevat deze testfile zelf het
-    verboden woord (in deze docstring, in de vergelijking hieronder) en zou
-    de test zichzelf altijd als overtreder aanwijzen.
+    Assembles the old key from parts: otherwise this test file itself contains
+    the forbidden word (in this docstring, in the comparison below) and the test
+    would always point at itself as an offender.
 
-    Matcht op woordgrens, niet als kale substring: `measure_stability.py` leest
-    historische snapshotregels (`data/step3_stability.jsonl`, geschreven vóór
-    deze hernoeming) tolerant terug via het oude veld `bare_evaluation_pct` —
-    dat bestand blijft ongewijzigd en mag dus niet herschreven worden. Die
-    veldnaam is geen sleutel-gebruik en moet dit niet laten falen.
+    Matches on a word boundary, not as a bare substring: `measure_stability.py`
+    reads historical snapshot lines (`data/step3_stability.jsonl`, written before
+    this rename) back tolerantly via the old field `bare_evaluation_pct` — that
+    file stays unchanged and must therefore not be rewritten. That field name is
+    not a use of the key and must not make this fail.
     """
     import re
     from pathlib import Path
@@ -583,14 +586,14 @@ def test_no_file_in_src_still_mentions_the_old_key():
         for p in src.rglob("*.py")
         if p != this_file and "__pycache__" not in str(p) and pattern.search(p.read_text(encoding="utf-8"))
     ]
-    assert offenders == [], f"nog aanwezig in: {offenders}"
+    assert offenders == [], f"still present in: {offenders}"
 
 
-# ── 12. Vergaarbak-verbod toetst de grensvorm, niet het onderwerp ──────────
+# ── 12. The catch-all ban tests the boundary form, not the subject ─────────
 
 def test_both_prompts_ban_a_residual_boundary_not_a_subject_type():
-    """De grensvorm is de toets, niet het onderwerp — anders blokkeert de regel
-    het eigenschappen-domein dat we juist willen."""
+    """The boundary form is the test, not the subject — otherwise the rule blocks
+    the very attributes domain we want."""
     d = get_dimension("ATTRIBUTES_ASSOCIATIONS")
     disc = build_domain_discovery_prompt(
         language="nl-NL", survey_question="Vraag?", chunk_responses="x", chunk_size=10,
@@ -606,10 +609,10 @@ def test_both_prompts_ban_a_residual_boundary_not_a_subject_type():
         assert '"character"' not in prompt
 
 
-# ── 13. De tijdelijke non-answer-bak bij de toewijzing ─────────────────────
+# ── 13. The temporary non-answer bucket at assignment ──────────────────────
 
 def test_domain_table_offers_the_non_answer_bucket():
-    """Zonder zichtbare bak kan het model zo'n fragment nergens kwijt."""
+    """Without a visible bucket the model has nowhere to put such a fragment."""
     doms = [DomainItem(key="Duurzaamheid", label="Duurzaamheid", definition="d",
                        boundary_test="t?", exclusions=["x"])]
     non_answer = DomainItem(key="non_answer", label="Geen inhoud", definition="d?",
@@ -620,7 +623,7 @@ def test_domain_table_offers_the_non_answer_bucket():
 
 
 def test_domain_table_falls_back_to_canonical_english_without_a_rendering():
-    """Geen `non_answer` meegegeven: het Engelse fallback-label, niet stil niets."""
+    """No `non_answer` supplied: the English fallback label, not silently nothing."""
     doms = [DomainItem(key="Duurzaamheid", label="Duurzaamheid", definition="d",
                        boundary_test="t?", exclusions=[])]
     table = IdeaExtractor.build_domain_table(doms)
@@ -628,7 +631,7 @@ def test_domain_table_falls_back_to_canonical_english_without_a_rendering():
 
 
 def test_drop_non_answer_ideas_removes_them_and_reports_what_went():
-    """Verwijderen mag, ongemerkt verwijderen niet."""
+    """Removing is allowed, removing unnoticed is not."""
     import models
 
     def _idea(idea_id, instance, domain):
@@ -665,7 +668,7 @@ def test_drop_non_answer_ideas_is_a_noop_without_them():
 
 
 def test_drop_non_answer_ideas_handles_a_response_with_no_ideas():
-    """Bevinding H: `response_ideas=None` mag niet crashen — de `or []`-guard."""
+    """Finding H: `response_ideas=None` must not crash — the `or []` guard."""
     import models
     rows = [models.IdeasExtractedModel(
         respondent_id=1, response="", response_type="text",
@@ -677,7 +680,7 @@ def test_drop_non_answer_ideas_handles_a_response_with_no_ideas():
 
 
 def test_drop_non_answer_ideas_can_drop_every_idea_in_a_response():
-    """Bevinding H: alle ideeën van één respons zitten in de non-answer-bak."""
+    """Finding H: every idea of one response sits in the non-answer bucket."""
     import models
     label = "Geen inhoud"
 
@@ -699,12 +702,12 @@ def test_drop_non_answer_ideas_can_drop_every_idea_in_a_response():
     assert rows[0].idea_count == 0
 
 
-# ── 14. De drie sleutel-definities blijven synchroon (bevinding F) ─────────
+# ── 14. The three key definitions stay in sync (finding F) ────────────────
 
 def test_drain_key_literals_agree_across_the_three_definitions():
-    """`prompts_ideaExtractor`, `measure_stability` en `taxonomy_health` houden
-    elk hun eigen kopie van dezelfde drie sleutels — niets anders bewaakte dat
-    een hernoeming ze alle drie raakt."""
+    """`prompts_ideaExtractor`, `measure_stability` and `taxonomy_health` each
+    keep their own copy of the same three keys — nothing else guarded that a
+    rename reaches all three."""
     from pipeline.step_3_ideaExtractor.measure_stability import DRAIN_KEYS as stability_keys
     from pipeline.step_4_classifier.taxonomy_health import DRAIN_KEYS as health_keys
 
@@ -715,12 +718,12 @@ def test_drain_key_literals_agree_across_the_three_definitions():
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
 def test_consolidation_prompt_grounds_all_three_standing_domains(dimension_key):
-    """Consolidatie moet alle drie zien, anders maakt hij er alsnog een duplicaat van.
+    """Consolidation must see all three, or it makes a duplicate of one anyway.
 
-    Regressie-vorm: tot 2026-08-13 zag hij er twee, en de zin erbij zei dat
-    "answers reporting no knowledge" al gedekt waren. Dat las als dekking voor
-    alles wat leeg leek, waardoor het ontdekte geen-inhoud-domein sneuvelde en
-    de onderwerploze antwoorden over de inhoudelijke domeinen werden uitgesmeerd.
+    Regression shape: until 2026-08-13 it saw two, and the sentence alongside said
+    "answers reporting no knowledge" were already covered. That read as coverage
+    for everything that looked empty, so the discovered no-content domain died and
+    the subject-less answers were smeared over the substantive domains.
     """
     d = get_dimension(dimension_key)
     prompt = build_domain_consolidation_prompt(
@@ -733,19 +736,19 @@ def test_consolidation_prompt_grounds_all_three_standing_domains(dimension_key):
         assert spec.short in prompt
 
 
-# ── 15. Eén bron voor "is dit een vangnet?" ────────────────────────────────
+# ── 15. One source for "is this a drain?" ──────────────────────────────────
 
-def test_standing_keys_bevat_alle_drie():
+def test_standing_keys_holds_all_three():
     from pipeline.step_3_ideaExtractor.prompts_ideaExtractor import STANDING_KEYS
     assert set(STANDING_KEYS) == {
         STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY, STANDING_NO_SUBJECT_KEY}
 
 
-def test_set_domain_keys_spaart_alle_drie_de_staande_domeinen():
-    """Regressie 2026-08-13: `no_subject` kwam erbij maar `_set_domain_keys`
-    kende er twee, dus het derde vangnet kreeg zijn label als key. Step 4's
-    drain_domains() zag het daardoor niet en gaf het een volledige facetlaag —
-    precies waar een vangnet van gevrijwaard hoort te zijn."""
+def test_set_domain_keys_spares_all_three_standing_domains():
+    """Regression 2026-08-13: `no_subject` was added but `_set_domain_keys` knew
+    of two, so the third drain got its label as key. Step 4's drain_domains()
+    therefore did not see it and gave it a full facet layer — exactly what a drain
+    should be spared."""
     domains = [
         DomainItem(key="", label="Duurzaamheid", definition="d",
                    boundary_test="t", exclusions=[]),
@@ -763,7 +766,7 @@ def test_set_domain_keys_spaart_alle_drie_de_staande_domeinen():
         STANDING_NO_SUBJECT_KEY]
 
 
-def test_partition_standing_herkent_alle_drie():
+def test_partition_standing_recognises_all_three():
     domains = [_mk("Duurzaamheid", "Duurzaamheid"),
                _mk(STANDING_NOT_KNOWN_KEY, "Onbekend"),
                _mk(STANDING_NO_SUBJECT_KEY, "Geen genoemd onderwerp"),
@@ -774,29 +777,29 @@ def test_partition_standing_herkent_alle_drie():
     assert len(standing) == 3
 
 
-def test_niemand_hardcodeert_nog_een_deelverzameling():
-    """De vorige twee bugs ontstonden allebei doordat een tweede plek zijn eigen
-    lijstje bijhield. Deze test faalt zodra er weer een los paar verschijnt."""
+def test_nobody_hardcodes_a_subset_any_more():
+    """The previous two bugs both arose from a second place keeping its own little
+    list. This test fails as soon as a loose pair appears again."""
     from pathlib import Path
     here = Path(__file__).parent
-    verboden = "STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY)"
-    overtreders = [
+    forbidden = "STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY)"
+    offenders = [
         p.name for p in here.glob("*.py")
-        if p.name != Path(__file__).name and verboden in p.read_text(encoding="utf-8")
+        if p.name != Path(__file__).name and forbidden in p.read_text(encoding="utf-8")
     ]
-    assert overtreders == [], f"los paar in: {overtreders}"
+    assert offenders == [], f"loose pair in: {offenders}"
 
 
-# ── 16. Inhoud versus plaatsing: de vier vaste ingangen ────────────────────
+# ── 16. Content versus placement: the four fixed entries ───────────────────
 
-def test_non_answer_gaat_over_leegte_niet_over_onderwerploosheid():
-    """De vier ingangen beantwoorden twee verschillende vragen. non_answer:
-    is er iets gezegd? De drie staande domeinen: waar hoort het gezegde?
+def test_non_answer_is_about_emptiness_not_about_subjectlessness():
+    """The four entries answer two different questions. non_answer: was anything
+    said at all? The three standing domains: where does what was said belong?
 
-    Tot 2026-08-14 stond non_answer in plaatsingstermen ("without naming the
-    subject") en noemde het bovendien 'does not know' — daarmee botste het met
-    zowel no_subject als not_known, en belandden losse getallen in het
-    geen-onderwerp-domein in plaats van weggegooid te worden.
+    Until 2026-08-14 non_answer was phrased in placement terms ("without naming
+    the subject") and moreover mentioned 'does not know' — which made it clash
+    with both no_subject and not_known, and bare numbers ended up in the
+    no-subject domain instead of being discarded.
     """
     t = NON_ANSWER_DOMAIN.definition
     assert "carries no statement at all" in t
@@ -804,25 +807,25 @@ def test_non_answer_gaat_over_leegte_niet_over_onderwerploosheid():
     assert "no-subject domain instead" in t
 
 
-def test_non_answer_is_niet_per_dimensie():
-    """Een restje van het splitsen is een artefact van het splitsen, niet van
-    de dimensie. Wat wel per dimensie verschilt staat in standing_no_subject."""
+def test_non_answer_is_not_per_dimension():
+    """A remnant of the splitting is an artefact of the splitting, not of the
+    dimension. What does differ per dimension sits in standing_no_subject."""
     from pipeline.step_3_ideaExtractor import prompts_ideaExtractor as mod
     assert isinstance(mod.NON_ANSWER_DOMAIN, StandingDomain)
     assert not hasattr(DIMENSIONS[ALL_KEYS[0]], "non_answer")
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_no_subject_wijst_leegte_terug_naar_de_non_answer_ingang(dimension_key):
-    """De andere kant van dezelfde grens, in elke dimensie."""
+def test_no_subject_points_emptiness_back_to_the_non_answer_entry(dimension_key):
+    """The other side of the same boundary, in every dimension."""
     t = get_dimension(dimension_key).standing_no_subject.definition
     assert "communicates nothing at all" in t
     assert "no-content entry" in t
 
 
 @pytest.mark.parametrize("dimension_key", ALL_KEYS)
-def test_de_vier_vaste_ingangen_verwijzen_naar_elkaar_zonder_overlap(dimension_key):
-    """Elk van de vier moet zeggen wat het NIET is, of ze lopen vol elkaar."""
+def test_the_four_fixed_entries_reference_each_other_without_overlap(dimension_key):
+    """Each of the four must say what it is NOT, or they run into each other."""
     d = get_dimension(dimension_key)
     assert "not for" in d.standing_other.definition
     assert "not-known domain" in d.standing_other.definition

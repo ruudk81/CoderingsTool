@@ -1,9 +1,9 @@
-"""Tests voor het opschonen van verzamelnamen (stap 2b van step 5).
+"""Tests for cleaning up umbrella names (step 2b of step 5).
 
-Per-item vraag ("is er een andere naam die hetzelfde betekent?"), niet een
-groepeervraag — zie de moduledocstring van prompts_umbrella_merge.py voor
-waarom. De canonieke naam wordt niet door het model gekozen maar deterministisch
-in code afgeleid (relations.py); dat wordt hier getest via apply_umbrella_merge.
+A per-item question ("is there another name that means the same?"), not a
+grouping question — see the module docstring of prompts_umbrella_merge.py for
+why. The canonical name is not chosen by the model but derived deterministically
+in code (relations.py); that is tested here via apply_umbrella_merge.
 """
 import pydantic
 import pytest

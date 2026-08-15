@@ -1,7 +1,7 @@
-"""Tests voor stap 5 van step 5: MECE-afdwinging over de codeverzameling
-(`mece.py`). Deterministische delen (samenvoegen, componenten, vereniging i.p.v.
-som, alleen-zelfde-richting, iteratiestop, scoring, drempelbeslissing) staan
-los van de dispatch-tests."""
+"""Tests for step 5 of step 5: MECE enforcement across the code set
+(`mece.py`). The deterministic parts (merging, components, union rather than
+sum, same-direction-only, iteration stop, scoring, threshold decision) stand
+apart from the dispatch tests."""
 import asyncio
 
 from utils.smoothRequester import SmoothRequester
@@ -262,7 +262,7 @@ def test_build_pair_probe_is_deterministic_across_calls():
 
 
 # ---------------------------------------------------------------------------
-# score_probe — deterministisch: nooit de eigen claim van het model
+# score_probe — deterministic: never the model's own claim
 # ---------------------------------------------------------------------------
 
 def test_score_probe_all_correct_is_accuracy_one():

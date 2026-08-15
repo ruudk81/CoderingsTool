@@ -1,16 +1,14 @@
-"""Tests voor de codeboek-reassemblage in run_codeGenerator.py — het
-samenvoegen van geschreven tekst terug op de vorm waar hij bij hoort, na de
-MECE-ronde.
+"""Tests for the codebook reassembly in run_codeGenerator.py — joining written
+text back onto the shape it belongs to, after the MECE round.
 
-De echte fout (live ASN-run): twee compleet verschillende vormen kregen
-dezelfde geschreven codenaam ("Stijl en merkbeleving" / "Merkuitstraling en
-stijl" was zo'n paar). Een woordenboek gekeyd op die naam
-(`{code.code_name: code for code in codes}`) versmelt de twee entries tot één
-object zodra dat gebeurt — beide vormen erven dan de definitie van welke van
-de twee toevallig als laatste in de iteratie stond, inclusief de vorm wiens
-eigen leden die tekst niet beschrijven. `_index_codes_by_shape_key` keyt in
-plaats daarvan op `shape.key` (uniek per run, nooit hergebruikt), dus een
-naamcollision kan de mapping niet meer laten instorten.
+The real bug (live run): two completely different shapes were given the same
+written code name — a near-synonymous pair differing only in word order. A dict
+keyed on that name (`{code.code_name: code for code in codes}`) collapses the two
+entries into one object as soon as that happens — both shapes then inherit the
+definition of whichever of the two happened to come last in the iteration,
+including the shape whose own members that text does not describe.
+`_index_codes_by_shape_key` keys on `shape.key` instead (unique per run, never
+reused), so a name collision can no longer make the mapping collapse.
 """
 from pipeline.step_5_codeGenerator import run_codeGenerator as rcg
 from pipeline.step_5_codeGenerator.concept_inventory import Concept

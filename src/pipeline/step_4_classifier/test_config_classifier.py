@@ -7,8 +7,8 @@ from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 
 
 def test_elke_fase_heeft_een_modelsleutel():
-    """PHASES en de config-attributen zijn een tabel, geen twee registers die
-    uit elkaar kunnen lopen."""
+    """PHASES and the config attributes are one table, not two registers that
+    can drift apart."""
     config = CategoriesConfig()
     for phase in TaxonomyClassifier.PHASES:
         assert hasattr(config, f"model_{phase}"), phase
@@ -22,8 +22,8 @@ def test_geen_modelsleutel_zonder_fase():
 
 
 def test_elke_modelsleutel_bestaat_in_config_step_model():
-    """Een rung die niet bestaat is een RuntimeError bij import, nooit een
-    stille omleiding."""
+    """A rung that does not exist is a RuntimeError at import, never a silent
+    reroute."""
     for phase in TaxonomyClassifier.PHASES:
         assert f"classifier_{phase}" in STEP_MODEL, phase
 
@@ -34,7 +34,7 @@ def test_consolidatiegrenzen_zijn_aanwezig():
     assert config.consolidation_max_rounds > 0
 
 
-def test_chunking_heeft_een_register_niet_twee():
+def test_chunking_has_one_register_not_two():
     """Facetten en attributen komen uit dezelfde call, dus er is een
     chunkbron."""
     attrs = set(vars(CategoriesConfig))
@@ -43,8 +43,8 @@ def test_chunking_heeft_een_register_niet_twee():
 
 
 def test_batch_en_shortlistknoppen_zijn_weg():
-    """Er is geen batch meer om te valideren, en een getrimd menu zou de
-    catch-all de makkelijke uitweg maken."""
+    """There is no batch left to validate, and a trimmed menu would make the
+    catch-all the easy way out."""
     attrs = set(vars(CategoriesConfig))
     for verdwenen in ("assignment_batch_k", "assignment_shortlist_enabled",
                       "assignment_shortlist_k"):
@@ -58,7 +58,7 @@ def test_stopfase_neemt_een_naam():
 
 
 def test_onbekende_stopfase_is_een_valueerror():
-    """De numerieke voorganger draaide de volledige pijplijn bij elke waarde
-    die geen stoppunt was, en dat kostte een volle run om te ontdekken."""
+    """The numeric predecessor ran the full pipeline for every value that was
+    not a stop point, and that cost a full run to discover."""
     with pytest.raises(ValueError):
         TaxonomyClassifier(CategoriesConfig(stop_after_phase="facet_discovery"))

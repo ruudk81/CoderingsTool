@@ -1,4 +1,4 @@
-"""Tests voor de conceptinventaris (stap 1 van step 5)."""
+"""Tests for the concept inventory (step 1 of step 5)."""
 from pipeline.step_5_codeGenerator.concept_inventory import build_inventory, t_keep
 from pipeline.step_5_codeGenerator.taxonomy_input import AttributeRef, IdeaUnit
 

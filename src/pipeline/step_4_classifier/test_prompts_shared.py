@@ -31,9 +31,9 @@ def test_taxonomy_block_bevat_alle_vier_niveaus():
         assert marker in block
 
 
-def test_taxonomy_block_noemt_l1_de_dimensie_en_niet_de_lens():
-    """De lens-benaming kwam uit de herbouw en gaat er weer uit: de prompts
-    heten hier weer bij het niveau dat `dimension_data` zelf hanteert."""
+def test_taxonomy_block_calls_l1_the_dimension_and_not_the_lens():
+    """The lens naming came out of the rebuild and goes out again: the prompts
+    call the level here by the name `dimension_data` itself uses."""
     block = build_taxonomy_block(
         dimension=DIM, dimension_name=DIM.key,
         dimension_description=DIM.dimension_description,
@@ -42,9 +42,9 @@ def test_taxonomy_block_noemt_l1_de_dimensie_en_niet_de_lens():
     assert "L1 — Dimension" in block
 
 
-def test_level_diagnostic_bestaat_niet_meer():
-    """De dimensie-opdracht is weg met de tweelaagse opzet: discovery vraagt
-    naar facetten en attributen zelf, niet naar de as waarop ze verschillen."""
+def test_level_diagnostic_no_longer_exists():
+    """The dimension instruction went with the two-layer design: discovery asks
+    for facets and attributes themselves, not for the axis they differ along."""
     import pipeline.step_4_classifier.prompts_shared as ps
     assert not hasattr(ps, "level_diagnostic")
 
@@ -71,16 +71,16 @@ def test_cross_scope_model_dwingt_de_id_ruimte_af():
 
 
 def test_universele_regels_verbieden_een_zelfverzonnen_restcategorie():
-    """Het model maakte acht attributen die letterlijk 'Overig' heetten, naast
-    de vangnetten die de code al aanbiedt (gemeten 2026-08-13)."""
+    """The model made eight attributes literally named 'Overig', alongside the
+    catch-alls the code already offers (measured 2026-08-13)."""
     tekst = UNIVERSAL_RULES
     assert "NEVER CREATE A LEFTOVER CATEGORY" in tekst
     assert '"Other"' in tekst
 
 
-def test_het_verbod_botst_niet_met_de_restcategorie_voor_kale_oordelen():
-    """Regel 2 stuurt kale oordelen juist naar een enkele residual — dat is
-    gedefinieerd door wat ze zijn, niet door wat ze missen."""
+def test_the_ban_does_not_clash_with_the_residual_for_bare_judgments():
+    """Rule 2 sends bare judgments to a single residual precisely — that one is
+    defined by what they are, not by what they lack."""
     tekst = UNIVERSAL_RULES
     assert "residual overall-judgment item" in tekst
     assert "Overall judgment" in tekst

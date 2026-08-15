@@ -74,7 +74,7 @@ def test_kandidaat_zonder_telling_valt_terug_op_een_pas():
     assert "Proposed in 1 of 6 independent passes" in block
 
 
-def test_kandidaat_zonder_attributen_breekt_het_blok_niet():
+def test_a_candidate_without_attributes_does_not_break_the_block():
     block = build_candidate_block([_facet("Leeg")], {"Leeg": 2}, 3)
     assert "Leeg" in block
 
@@ -88,8 +88,8 @@ def test_resultaat_is_scratchpad_plus_facetten():
 
 
 def test_geconsolideerd_facet_zegt_wat_erin_is_opgegaan():
-    """Zonder dit veld ziet een samengevoegde kandidaat er identiek uit aan een
-    vergeten kandidaat: allebei staan ze niet in het antwoord."""
+    """Without this field a merged candidate looks identical to a forgotten one:
+    neither appears in the answer."""
     assert "source_facets" in ConsolidatedFacet.model_fields
 
 
@@ -106,14 +106,14 @@ def test_geconsolideerd_facet_draagt_geconsolideerde_attributen():
     assert item.attributes[0].source_attributes == ["Wachttijd"]
 
 
-def test_prompt_legt_uit_dat_dekking_gecontroleerd_wordt():
+def test_prompt_explains_that_coverage_is_checked():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     assert "source_facets" in prompt
     assert "source_attributes" in prompt
     assert "exactly one surviving" in prompt
 
 
-def test_prompt_noemt_elk_veld_dat_het_model_kent():
+def test_prompt_names_every_field_the_model_knows():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     for veld in ("scratchpad", "facets", "facet_name", "facet_definition",
                  "attributes", "attribute_name", "attribute_definition",
@@ -143,10 +143,10 @@ def test_prompt_noemt_de_precedentie_expliciet():
     assert "Precedence when rules conflict" in prompt
 
 
-def test_regel_een_gebruikt_niet_het_woord_dimension():
-    """L1 heet Dimension in het taxonomieblok. Als regel 1 het woord ook voor
-    'de as waarop een begrip varieert' gebruikt, betekent het twee dingen op
-    een pagina — dat is precies wat de lens-benaming ooit moest oplossen."""
+def test_rule_one_does_not_use_the_word_dimension():
+    """L1 is called Dimension in the taxonomy block. If rule 1 also uses the word
+    for 'the axis along which a concept varies', it means two things on one page
+    — which is exactly what the lens naming was once meant to solve."""
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     regels = prompt[prompt.index("# Consolidation Rules"):
                     prompt.index("# Step-by-Step")]
@@ -158,12 +158,12 @@ def test_regel_een_gebruikt_niet_het_woord_dimension():
 # DE GENESTE STAP
 # =============================================================================
 
-def test_prompt_zegt_wat_er_met_attributen_gebeurt_bij_een_facetmerge():
+def test_prompt_says_what_happens_to_attributes_on_a_facet_merge():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     assert "pool" in prompt.lower()
 
 
-def test_prompt_consolideert_ook_binnen_een_facet():
+def test_prompt_also_consolidates_within_a_facet():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     stappen = prompt[prompt.index("# Step-by-Step"):]
     assert "attribute" in stappen.lower()

@@ -1,4 +1,4 @@
-"""Tests voor de schrijfprompt (stap 4 van step 5)."""
+"""Tests for the writing prompt (step 4 of step 5)."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.consolidator import CodeShape
 from pipeline.step_5_codeGenerator.prompts_writer import (
@@ -22,8 +22,8 @@ def shape(key, valence, umbrella, members, n_resp=40, origin="solo"):
 
 
 class Shape:
-    """Fixture uit de taakbrief — geen consolidator.CodeShape, alleen de velden
-    die build_writer_prompt daadwerkelijk gebruikt."""
+    """Fixture from the task brief — not a consolidator.CodeShape, only the
+    fields build_writer_prompt actually uses."""
     def __init__(self, key, valence, umbrella, members, n_resp, origin="solo"):
         self.key, self.valence, self.umbrella = key, valence, umbrella
         self.members, self.origin = members, origin

@@ -1,9 +1,9 @@
-"""Tests voor de relatiedispatch (relations.py) — het contract met SmoothRequester.
+"""Tests for the relations dispatch (relations.py) — the contract with SmoothRequester.
 
-process_all verwacht List[Dict]: _execute_task/_worker doen task.get(...) op elk
-element. resolve_relations gaf ooit [None] door — dat crasht op None.get(...)
-voordat er ook maar één LLM-call vertrekt. Deze test pint het echte contract door
-process_all te stubben en het doorgegeven `tasks`-argument te inspecteren.
+process_all expects List[Dict]: _execute_task/_worker call task.get(...) on every
+element. resolve_relations once passed [None] — that crashes on None.get(...)
+before a single LLM call departs. This test pins the real contract by stubbing
+process_all and inspecting the `tasks` argument it was handed.
 """
 import asyncio
 

@@ -1,4 +1,4 @@
-"""Tests voor de relatieprompt (stap 2 van step 5)."""
+"""Tests for the relations prompt (step 2 of step 5)."""
 import re
 
 from pipeline.step_5_codeGenerator.concept_inventory import Concept

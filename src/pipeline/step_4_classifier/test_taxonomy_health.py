@@ -101,9 +101,9 @@ def test_drain_keys_has_three_members():
     assert DRAIN_KEYS == frozenset({"other", "not_known", "no_subject"})
 
 
-def test_vangnetaandeel_telt_alleen_ideeen_in_een_drain():
-    """De tegenmetriek van grover indelen: elke merge die te ver gaat duwt
-    responsen naar een catch-all."""
+def test_drain_share_counts_only_ideas_inside_a_drain():
+    """The counter-metric to coarser grouping: every merge that goes too far
+    pushes responses into a catch-all."""
     from models import DomainResultModel, DomainSet, TaxonomyResultsCache
     from pipeline.step_4_classifier.drains import make_drain_attribute
     from pipeline.step_4_classifier.taxonomy_health import measure
@@ -126,15 +126,15 @@ def test_vangnetaandeel_telt_alleen_ideeen_in_een_drain():
 
 
 # =============================================================================
-# PRUNE — de vangregel voor een run die vóór de toewijzing stopt
+# PRUNE — the guard for a run that stops before assignment
 # =============================================================================
 
-def test_prune_laat_alles_staan_als_er_niets_is_toegewezen():
-    """Een `stop_after_phase` vóór `assignment` levert structuur zonder
-    toewijzingen. "Geen ideeën hier" betekent dan niet dat de knoop leeg is,
-    alleen dat er nog niet is toegewezen — en snoeien op die lezing wist de hele
-    taxonomie. Gemeten op 2026-08-15: 55 facetten en 179 attributen ontdekt,
-    alle 234 gesnoeid, een lege taxonomie over de volledige heen geschreven."""
+def test_prune_leaves_everything_when_nothing_was_assigned():
+    """A `stop_after_phase` before `assignment` yields structure without
+    assignments. "No ideas here" then does not mean the node is empty, only that
+    nothing has been assigned yet — and pruning on that reading wiped the whole
+    taxonomy. Measured 2026-08-15: 55 facets and 179 attributes discovered, all
+    234 pruned, an empty taxonomy written over the complete one."""
     tax = _tax({})
     report = prune_empty_nodes(tax)
 
@@ -144,9 +144,9 @@ def test_prune_laat_alles_staan_als_er_niets_is_toegewezen():
     assert report.facets == [] and report.attributes == []
 
 
-def test_prune_snoeit_wel_zodra_er_toewijzingen_zijn():
-    """Met toewijzingen in de run betekent "geen ideeën hier" wél leeg: de
-    vangregel mag het normale snoeien niet uitschakelen."""
+def test_prune_does_run_once_assignments_exist():
+    """With assignments in the run, "no ideas here" does mean empty: the guard
+    must not switch off the normal pruning."""
     tax = _tax({"idea-1": "Iets anders"})
     report = prune_empty_nodes(tax)
 

@@ -14,7 +14,7 @@ def _attr(name, definition, example=None):
 
 
 def _inventaris():
-    """Twee inhoudelijke facetten met hun other, plus het domein-other."""
+    """Two substantive facets with their other, plus the domain other."""
     return [
         {"facet_name": "Snelheid", "facet_definition": "Hoe snel er geleverd wordt.",
          "attributes": [_attr("Wachttijd", "De tijd tot antwoord.", "lange wachttijd"),
@@ -46,7 +46,7 @@ def _kwargs(**overrides):
 # HET MENU
 # =============================================================================
 
-def test_menu_groepeert_attributen_onder_hun_facet():
+def test_menu_groups_attributes_under_their_facet():
     block, _ = build_assignment_menu(_inventaris())
     assert block.index("Snelheid") < block.index("Wachttijd") < block.index("Bejegening")
 
@@ -62,15 +62,15 @@ def test_id_map_wijst_naar_facet_en_attribuut():
     assert id_map["A1"]["attribute_name"] == "Wachttijd"
 
 
-def test_menu_bevat_per_facet_een_other_en_het_domein_other():
+def test_menu_holds_an_other_per_facet_and_the_domain_other():
     _, id_map = build_assignment_menu(_inventaris())
     drains = [v for v in id_map.values() if v["is_drain"]]
     assert len(drains) == 3
 
 
 def test_facet_zonder_attributen_valt_uit_het_menu():
-    """Een facet zonder attributen is onbereikbaar — toewijzing kiest een
-    attribuut, dus zo'n facet zou een dode regel in het menu zijn."""
+    """A facet without attributes is unreachable — assignment picks an
+    attribute, so such a facet would be a dead line in the menu."""
     _, id_map = build_assignment_menu(
         [{"facet_name": "Leeg", "facet_definition": "…", "attributes": []}])
     assert id_map == {}
@@ -95,9 +95,9 @@ def test_model_dwingt_de_id_ruimte_af():
 
 
 def test_model_heeft_geen_none_uitgang():
-    """other is een echte keuze in het menu, dus een aparte NONE-uitgang zou
-    een tweede manier zijn om niets te kiezen — en die kwam als __UNASSIGNED__
-    weer terug."""
+    """other is a real choice in the menu, so a separate NONE exit would be a
+    second way of choosing nothing — and that one kept coming back as
+    __UNASSIGNED__."""
     literal = str(build_assignment_model(
         ["A1", "A2"]).model_fields["assigned_attribute_id"].annotation)
     for verboden in ("NONE", "A_NONE", "UNASSIGNED"):
@@ -118,7 +118,7 @@ def test_model_weigert_een_verzonnen_id():
 # PROMPT ↔ MODEL SLUITEN AAN
 # =============================================================================
 
-def test_prompt_noemt_elk_veld_dat_het_model_kent():
+def test_prompt_names_every_field_the_model_knows():
     prompt = build_assignment_prompt(**_kwargs())
     for veld in ("assigned_attribute_id", "confidence", "valence"):
         assert veld in prompt, veld
@@ -128,7 +128,7 @@ def test_prompt_eindigt_op_de_instructor_zin():
     assert build_assignment_prompt(**_kwargs()).rstrip().endswith(INSTRUCTOR_HINT)
 
 
-def test_prompt_vraagt_om_precies_een_attribuut():
+def test_prompt_asks_for_exactly_one_attribute():
     prompt = build_assignment_prompt(**_kwargs())
     assert "exactly one" in prompt.lower()
 
@@ -137,14 +137,14 @@ def test_prompt_vraagt_om_precies_een_attribuut():
 # DE OTHER-UITGANG
 # =============================================================================
 
-def test_prompt_legt_uit_wanneer_het_vangnet_de_juiste_keuze_is():
+def test_prompt_explains_when_the_catch_all_is_the_right_choice():
     prompt = build_assignment_prompt(**_kwargs())
     assert "marked [CATCH-ALL]" in prompt
     assert "last resort" in prompt.lower()
 
 
 def test_menu_markeert_vangnetten_op_drain_key_niet_op_naam():
-    """De naam staat in de enquêtetaal; de markering komt uit drain_key."""
+    """The name is in the survey language; the marker comes from drain_key."""
     block, _ = build_assignment_menu(_inventaris())
     gemarkeerd = [r for r in block.splitlines() if "[CATCH-ALL]" in r]
     # twee facet-others, het domein-other-facet en zijn attribuut
@@ -152,10 +152,10 @@ def test_menu_markeert_vangnetten_op_drain_key_niet_op_naam():
     assert not any("Wachttijd" in r or "Vriendelijkheid" in r for r in gemarkeerd)
 
 
-def test_prompt_noemt_het_vangnet_niet_bij_naam():
-    """drains.py noemt het vangnet in de enquêtetaal — Overig, Other, of wat de
-    volgende taal ervan maakt. Een prompt die naar "Overig" verwijst wijst op een
-    Engelse dataset naar een optie die niet in het menu staat."""
+def test_prompt_does_not_name_the_catch_all():
+    """drains.py names the catch-all in the survey language — Overig, Other, or
+    whatever the next language makes of it. A prompt pointing at "Overig" points,
+    on an English dataset, at an option that is not in the menu."""
     prompt = build_assignment_prompt(**_kwargs(menu_block="<menu>"))
     for naam in ("Overig", "Other"):
         assert naam not in prompt, naam
@@ -166,7 +166,7 @@ def test_prompt_zet_valence_neer_als_richting_niet_sentiment():
     assert "not emotional sentiment" in prompt
 
 
-def test_prompt_toont_het_label_en_de_domeingrens():
+def test_prompt_shows_the_label_and_the_domain_boundary():
     prompt = build_assignment_prompt(**_kwargs())
     assert "lange wachttijd bij de klantenservice" in prompt
     assert "dienstverlening" in prompt

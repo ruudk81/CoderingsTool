@@ -116,7 +116,7 @@ def test_alle_vijf_uitgangen_staan_in_de_prompt():
         assert f'"{uitgang}"' in prompt, uitgang
 
 
-def test_model_kent_de_vier_acties_en_de_twee_verdicts():
+def test_model_knows_the_four_actions_and_the_two_verdicts():
     assert str(RefinedAttribute.model_fields["action"].annotation) == (
         "typing.Literal['keep', 'merge', 'widen', 'split']")
     assert str(RefinementMisfitGroup.model_fields["verdict"].annotation) == (
@@ -132,13 +132,13 @@ def test_resultaat_draagt_attributen_en_misfits():
 # DOMEIN VAST, FACET NIET
 # =============================================================================
 
-def test_attribuut_mag_binnen_het_domein_van_facet_wisselen():
+def test_an_attribute_may_change_facet_within_the_domain():
     prompt = build_refinement_prompt(**_kwargs())
     assert "THE DOMAIN IS FIXED, THE FACET IS NOT" in prompt
     assert "facet_name" in RefinedAttribute.model_fields
 
 
-def test_prompt_noemt_elk_veld_dat_de_modellen_kennen():
+def test_prompt_names_every_field_the_models_know():
     prompt = build_refinement_prompt(**_kwargs())
     for veld in ("scratchpad", "attributes", "misfits", "action", "facet_name",
                  "attribute_name", "attribute_definition", "example_observations",
@@ -151,12 +151,12 @@ def test_prompt_noemt_elk_veld_dat_de_modellen_kennen():
 # VANGNETTEN DOEN NIET MEE
 # =============================================================================
 
-def test_naslijpen_laat_de_vangnetten_met_rust():
+def test_refinement_leaves_the_catch_alls_alone():
     prompt = build_refinement_prompt(**_kwargs())
     assert "LEAVE THE CATCH-ALLS ALONE" in prompt
 
 
-def test_cross_domein_laat_de_vangnetten_met_rust():
+def test_cross_domain_leaves_the_catch_alls_alone():
     prompt = build_cross_domain_prompt(**_xkwargs())
     assert "catch-all" in prompt
 
@@ -170,12 +170,12 @@ def test_cross_domein_werkt_op_ids():
     assert "source_ids" in prompt and "home_id" in prompt
 
 
-def test_cross_domein_zegt_dat_een_solist_een_groep_van_een_is():
+def test_cross_domain_says_a_soloist_is_a_group_of_one():
     prompt = build_cross_domain_prompt(**_xkwargs())
     assert "group of one" in prompt
 
 
-def test_cross_domein_eist_dat_elk_id_precies_een_keer_voorkomt():
+def test_cross_domain_requires_every_id_exactly_once():
     prompt = build_cross_domain_prompt(**_xkwargs())
     assert "exactly one" in prompt
 
@@ -194,23 +194,23 @@ def test_beide_prompts_dragen_de_universele_regels():
     assert "<universal_rules>" in build_cross_domain_prompt(**_xkwargs())
 
 
-def test_regels_gebruiken_niet_het_woord_dimension():
+def test_rules_do_not_use_the_word_dimension():
     prompt = build_refinement_prompt(**_kwargs())
     regels = prompt[prompt.index("# Rules"):prompt.index("# Required Process")]
     assert "dimension" not in regels.lower()
 
 
-def test_geen_drempelgetallen_in_de_regels():
-    """Aandelen komen uit de data en mogen; een vaste drempel is van een
-    dataset afgelezen en mag niet."""
+def test_no_threshold_numbers_in_the_rules():
+    """Shares come from the data and are allowed; a fixed threshold is read off
+    one dataset and is not."""
     prompt = build_refinement_prompt(**_kwargs())
     regels = prompt[prompt.index("# Rules"):prompt.index("# Required Process")]
     assert "%" not in regels
     assert "never against a fixed number" in " ".join(regels.split())
 
 
-def test_vangnetten_worden_gemarkeerd_niet_op_naam_herkend():
-    """De naam is vertaald en herschrijfbaar; de markering komt uit drain_key."""
+def test_catch_alls_are_marked_not_recognised_by_name():
+    """The name is translated and rewritable; the marker comes from drain_key."""
     block = build_contents_block(FACETS, CONTENTS, SHARES, COUNTS, 5)
     gemarkeerd = [r for r in block.splitlines() if "[CATCH-ALL]" in r]
     assert len(gemarkeerd) == 1
@@ -218,7 +218,7 @@ def test_vangnetten_worden_gemarkeerd_niet_op_naam_herkend():
     assert "Wachttijd" not in gemarkeerd[0]
 
 
-def test_regel_negen_verwijst_naar_de_markering():
+def test_rule_nine_points_at_the_marker():
     prompt = build_refinement_prompt(**_kwargs())
     assert "marked [CATCH-ALL]" in prompt
     assert "Judge only what is not marked" in prompt

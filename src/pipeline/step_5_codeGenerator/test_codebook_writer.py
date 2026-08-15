@@ -1,4 +1,4 @@
-"""Tests voor de schrijfdispatch (codebook_writer.py) — stap 4 van step 5."""
+"""Tests for the writing dispatch (codebook_writer.py) — step 4 of step 5."""
 import asyncio
 
 from utils.smoothRequester import SmoothRequester
@@ -165,7 +165,7 @@ def test_a_missing_shape_in_the_response_still_gets_a_code(monkeypatch):
 
 
 def test_a_total_call_failure_still_returns_a_code_per_shape(monkeypatch):
-    # "Faalt de call helemaal, dan zijn de vormen nog geldig" — the codebook must
+    # "If the call fails entirely the shapes are still valid" — the codebook must
     # not fall just because the writer call failed outright.
     async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
         return [fallback_fn(tasks[0], "boom")]

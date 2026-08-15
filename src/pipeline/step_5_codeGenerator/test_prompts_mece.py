@@ -1,5 +1,5 @@
-"""Tests voor de MECE-prompts (stap 5 van step 5): Pass A (detectie) en
-Pass B (blinde toewijzingsproef)."""
+"""Tests for the MECE prompts (step 5 of step 5): Pass A (detection) and
+Pass B (blind assignment probe)."""
 from pipeline.step_5_codeGenerator.consolidator import CodeShape
 from pipeline.step_5_codeGenerator.prompts_mece import (
     CandidatePair, CodeCandidate, ProbeIdea, build_overlap_prompt, build_probe_prompt,
