@@ -1,36 +1,33 @@
-"""Stap 5 — MECE-afdwinging over de codeverzameling. De enige plek in step 5
-die codes als VERZAMELING bekijkt in plaats van per attribuut of per vorm.
+"""Step 5 — MECE enforcement across the code set. The only place in step 5 that
+looks at codes as a SET rather than per attribute or per shape.
 
-De operationele toets (het hele ontwerp, bronspecificatie §4.8): twee codes
-zijn ÉÉN dimensie als een blinde toewijzingsproef op ECHTE ideeën ze niet
-betrouwbaar uit elkaar houdt, ÓF als ideeën uit die proef er structureel
-allebei genuinely bij horen. Pass A (opzoeking) levert de kandidaat-paren;
-Pass B (deze proef) meet ze op twee manieren, niet één — zie `prompts_mece.py`
-voor waarom een binaire toewijzingsproef (91% gemiddelde accuracy, nul
-samenvoegingen op een live run met vier codes over duurzaamheid, vier over
-persoonlijk contact) het verkeerde meet: scheidbaarheid is geen
-orthogonaliteit. De nuloptie is hierna samenvoegen, niet apart houden
-(bronspecificatie §2.5, compressievoorkeur) — een paar houdt zich alleen apart
-als de proef dat aantoont, niet omgekeerd.
+The operational test (the whole design, source specification §4.8): two codes are
+ONE dimension when a blind assignment probe on REAL ideas cannot tell them apart
+reliably, OR when ideas from that probe structurally belong to both. Pass A (the
+lookup) yields the candidate pairs; Pass B (this probe) measures them in two ways,
+not one — see `prompts_mece.py` for why a binary assignment probe (91% average
+accuracy, zero merges on a live run that kept four codes on one theme and four on
+another) measures the wrong thing: separability is not orthogonality. The null
+option from here on is to merge, not to keep apart (source specification §2.5,
+compression preference) — a pair stays separate only when the probe demonstrates
+it, not the other way round.
 
-Een nóg eerdere vorm van Pass B liet het model een scheidingsregel SCHRIJVEN
-en daarna zelf beoordelen of die regel echt was — dat kan niet werken, want
-een model dat gevraagd wordt een regel te schrijven schrijft er altijd één,
-en concludeert daarna dat de codes scheidbaar zijn. Het genereren van een
-verantwoording is geen toets zolang het model zelf bepaalt of hij slaagt; de
-score van een blinde proef op data die het model niet zelf heeft
-geproduceerd, is dat wel.
+An even earlier form of Pass B had the model WRITE a separation rule and then
+judge for itself whether that rule was real — which cannot work, because a model
+asked to write a rule always writes one, and then concludes the codes are
+separable. Generating a justification is not a test as long as the model decides
+whether it passes; the score of a blind probe on data the model did not produce
+itself is.
 
-Samenvoegen is hierna volledig deterministisch: alleen dezelfde richting
-(een positieve en een negatieve code zijn door hun richting alleen al
-onderscheiden — dat is geen overlap, dat is het richtingsonderscheid zelf),
-componenten via union-find (een keten A-B-C wordt één groep), en een
-VERENIGING van leden en respondentverzamelingen — nooit een som.
+Merging from here on is fully deterministic: same direction only (a positive and a
+negative code are distinguished by their direction alone — that is not overlap,
+that is the direction distinction itself), components via union-find (a chain
+A-B-C becomes one group), and a UNION of members and respondent sets — never a
+sum.
 
-Samenvoegen verandert de verzameling, dus een latere ronde kan overlap
-zichtbaar maken die een eerdere ronde nog niet kon zien. Daarom itereert
-`enforce_mece` pass A + pass B tot een ronde niets meer samenvoegt, met een
-plafond (`config.mece_max_rounds`)."""
+Merging changes the set, so a later round can reveal overlap an earlier round
+could not yet see. That is why `enforce_mece` iterates pass A + pass B until a
+round merges nothing, with a cap (`config.mece_max_rounds`)."""
 from __future__ import annotations
 
 from collections import defaultdict, namedtuple
@@ -118,9 +115,9 @@ async def resolve_overlap_detection(
 
 @dataclass(frozen=True)
 class PairVerdict:
-    """De uitkomst van één blinde proef: run-lokaal, nooit een LLM-
-    responsemodel. `one_dimension` volgt uit `accuracy` en `both_rate` in
-    Python (`is_one_dimension`) — het model claimt hier niets over zichzelf."""
+    """The outcome of one blind probe: run-local, never an LLM response model.
+    `one_dimension` follows from `accuracy` and `both_rate` in Python
+    (`is_one_dimension`) — the model claims nothing about itself here."""
     pair_id: int
     accuracy: float
     both_rate: float
@@ -129,18 +126,18 @@ class PairVerdict:
 
 @dataclass(frozen=True)
 class PairProbe:
-    """Alles om één paar te bevragen én te scoren. `truth` (idea_ref -> echte
-    codenaam) is de antwoordsleutel — gebouwd in Python, nooit getoond aan het
-    model (zie `prompts_mece.build_probe_prompt`, dat alleen `ideas` krijgt)."""
+    """Everything needed to probe one pair and to score it. `truth` (idea_ref ->
+    real code name) is the answer key — built in Python, never shown to the model
+    (see `prompts_mece.build_probe_prompt`, which only receives `ideas`)."""
     pair: CandidatePair
     ideas: List[ProbeIdea]
     truth: Dict[int, str]
 
 
 def _shuffled_ideas(units: List[IdeaUnit]) -> List[IdeaUnit]:
-    """`units` in de gedeelde deterministische volgorde, gekeyd op elk ideetje
-    zijn eigen `idea_id` — niet op de gedeelde attribuut-id (die zou ideeën
-    uit hetzelfde attribuut ongesorteerd laten) en niet op invoervolgorde."""
+    """`units` in the shared deterministic order, keyed on each idea's own
+    `idea_id` — not on the shared attribute id (that would leave ideas from the
+    same attribute unsorted) and not on input order."""
     keyed = [_KeyedIdea(attribute_id=unit.idea_id, unit=unit) for unit in units]
     return [entry.unit for entry in _shuffled(keyed)]
 
@@ -154,9 +151,9 @@ def _idea_text(unit: IdeaUnit) -> str:
 def _idea_pool(
     candidate: CodeCandidate, idea_units_by_attribute: Dict[str, List[IdeaUnit]], n: int,
 ) -> List[IdeaUnit]:
-    """Tot `n` ideeën van deze code, gepoold over al haar bronattributen (ook
-    na een eerdere MECE-samenvoeging: `shape.members` draagt dan de vereniging
-    van de oorspronkelijke attribuut-ids) en deterministisch bemonsterd."""
+    """Up to `n` ideas from this code, pooled across all its source attributes
+    (including after an earlier MECE merge: `shape.members` then carries the
+    union of the original attribute ids) and sampled deterministically."""
     pooled = [unit for member_id in candidate.shape.members
               for unit in idea_units_by_attribute.get(member_id, [])]
     return _shuffled_ideas(pooled)[:n]
@@ -168,11 +165,10 @@ def build_pair_probe(
     idea_units_by_attribute: Dict[str, List[IdeaUnit]],
     ideas_per_code: int,
 ) -> Optional[PairProbe]:
-    """Bouwt de gepoolde, geschudde ideeënlijst en de antwoordsleutel voor één
-    paar. `None` als een van beide kanten geen enkel idee heeft — een proef
-    zonder materiaal aan één kant meet niets, dus dat paar wordt overgeslagen
-    (niet samengevoegd: hetzelfde geen-hard-stop-contract als een mislukte
-    call)."""
+    """Builds the pooled, shuffled idea list and the answer key for one pair.
+    `None` when either side has no ideas at all — a probe without material on one
+    side measures nothing, so that pair is skipped (not merged: the same
+    no-hard-stop contract as a failed call)."""
     a = _idea_pool(candidate_by_name[pair.code_a], idea_units_by_attribute, ideas_per_code)
     b = _idea_pool(candidate_by_name[pair.code_b], idea_units_by_attribute, ideas_per_code)
     if not a or not b:
@@ -192,23 +188,22 @@ def build_pair_probe(
 
 @dataclass(frozen=True)
 class ProbeScore:
-    """De twee deterministische signalen uit één blinde proef — nooit een
-    claim van het model over zichzelf, altijd berekend tegen `PairProbe.truth`
-    in Python."""
+    """The two deterministic signals from one blind probe — never a claim by the
+    model about itself, always computed against `PairProbe.truth` in Python."""
     accuracy: float
     both_rate: float
 
 
 def score_probe(assignments: List[IdeaAssignment], truth: Dict[int, str]) -> ProbeScore:
-    """`accuracy` — van de ideeën die het model op één kant zette (A of B,
-    dus NIET "BOTH"), het aandeel dat op de kant kwam waar het idee
-    werkelijk vandaan komt. Een idee zonder toewijzing, of met "BOTH", telt
-    niet mee in die teller: het is niet "op een kant gezet". `both_rate` —
-    het aandeel van ALLE bevraagde ideeën (heel `truth`) dat "BOTH" kreeg,
-    ongeacht welke kant dat idee werkelijk vandaan kwam. Een dubbele
-    toewijzing voor eenzelfde `idea_ref` laat het laatste antwoord winnen.
-    Lege `truth` (kan niet via `build_pair_probe`, wel direct getest) geeft
-    beide op 0.0, niet een deling door nul."""
+    """`accuracy` — of the ideas the model put on one side (A or B, so NOT
+    "BOTH"), the share that landed on the side the idea really comes from. An
+    idea without an assignment, or with "BOTH", does not count in that
+    denominator: it was not "put on a side". `both_rate` — the share of ALL
+    probed ideas (the whole of `truth`) that got "BOTH", regardless of which side
+    that idea really came from. A duplicate assignment for the same `idea_ref`
+    lets the last answer win. An empty `truth` (impossible via
+    `build_pair_probe`, but tested directly) puts both at 0.0 rather than
+    dividing by zero."""
     if not truth:
         return ProbeScore(accuracy=0.0, both_rate=0.0)
     assigned = {a.idea_ref: a.assigned_to for a in assignments}
@@ -222,15 +217,14 @@ def score_probe(assignments: List[IdeaAssignment], truth: Dict[int, str]) -> Pro
 def is_one_dimension(
     accuracy: float, both_rate: float, accuracy_threshold: float, both_rate_threshold: float,
 ) -> bool:
-    """Samenvoegen (`True`) wanneer scheidbaarheid ontbreekt (`accuracy` op of
-    onder zijn drempel) ÓF wanneer ideeën structureel bij beide horen
-    (`both_rate` op of boven zijn drempel) — de twee manieren waarop een paar
-    kan mislukken in "aantoonbaar apart blijven": onscheidbaar, of scheidbaar-
-    maar-beide-passen-echt. Kansniveau bij een binaire keuze (`accuracy`,
-    exclusief "BOTH") is 0.50; de standaarddrempel (0.70) ligt daarboven, dus
-    'geen beter dan raden' merget ruimschoots mee. De nuloptie is samenvoegen,
-    niet apart houden (bronspecificatie §2.5) — dit is dan ook een OF, geen
-    EN: één van de twee signalen is genoeg."""
+    """Merge (`True`) when separability is absent (`accuracy` at or below its
+    threshold) OR when ideas structurally belong to both (`both_rate` at or above
+    its threshold) — the two ways a pair can fail at "demonstrably staying
+    apart": inseparable, or separable-but-both-genuinely-fit. Chance level on a
+    binary choice (`accuracy`, excluding "BOTH") is 0.50; the default threshold
+    (0.70) sits above that, so 'no better than guessing' merges comfortably. The
+    null option is to merge, not to keep apart (source specification §2.5) —
+    which is why this is an OR, not an AND: either signal alone is enough."""
     return accuracy <= accuracy_threshold or both_rate >= both_rate_threshold
 
 
@@ -244,11 +238,10 @@ async def resolve_pair_probes(
     verbose: bool = False,
     prompt_printer=None,
 ) -> Dict[int, PairVerdict]:
-    """Eén taak per paar (pairs zijn onafhankelijk), gebundeld in één
-    SmoothRequester-batch voor concurrency. Een paar zonder materiaal
-    (`build_pair_probe` gaf `None`) of met een mislukte call krijgt gewoon
-    geen entry — hetzelfde geen-hard-stop-contract als elders in deze
-    module."""
+    """One task per pair (pairs are independent), bundled into a single
+    SmoothRequester batch for concurrency. A pair without material
+    (`build_pair_probe` returned `None`) or with a failed call simply gets no
+    entry — the same no-hard-stop contract as elsewhere in this module."""
     probes = [p for p in (build_pair_probe(pair, candidate_by_name, idea_units_by_attribute,
                                             config.mece_probe_ideas_per_code)
                           for pair in pairs) if p is not None]
@@ -294,9 +287,9 @@ async def resolve_pair_probes(
         verbose=verbose, known_limits=known_limits, has_server_headers=has_server_headers,
         quiet=True,
     )
-    # SmoothRequester.process_all eist List[Dict] — een lijst objecten laat
-    # _execute_task struikelen op task.get(), en de foutafhandeling daarna
-    # nog eens, waardoor de echte oorzaak onzichtbaar wordt.
+    # SmoothRequester.process_all demands List[Dict] — a list of objects trips
+    # _execute_task on task.get(), and then trips the error handling after it as
+    # well, which hides the real cause.
     results: List[Optional[ProbeResult]] = await requester.process_all(
         [{"probe": probe} for probe in probes], prepare_fn, parse_fn, fallback_fn
     )
@@ -323,13 +316,12 @@ async def resolve_pair_probes(
 def build_candidate_pairs(
     verdicts: List[OverlapVerdict], valence_by_name: Dict[str, str]
 ) -> List[CandidatePair]:
-    """Unieke, ongeordende, zelfde-richting paren uit Pass A. Een paar dat het
-    model over een richtingsgrens heen voorstelt, of een code die zichzelf
-    voorstelt, wordt hier verwijderd — deterministisch, ongeacht wat het model
-    zei: een positieve en een negatieve code zijn door hun richting alleen al
-    onderscheiden, nooit een samenvoegkandidaat. `pair_id` volgt de
-    `_shuffled`-volgorde, zodat promptvolgorde en de `Literal`-enum in het
-    responsemodel altijd gelijk lopen."""
+    """Unique, unordered, same-direction pairs from Pass A. A pair the model
+    proposes across a direction boundary, or a code proposing itself, is removed
+    here — deterministically, regardless of what the model said: a positive and a
+    negative code are distinguished by their direction alone, and are never a
+    merge candidate. `pair_id` follows the `_shuffled` order, so that prompt order
+    and the `Literal` enum in the response model always stay in step."""
     seen: Set[frozenset] = set()
     for verdict in verdicts:
         other = verdict.hardest_to_separate_from
@@ -351,10 +343,10 @@ def build_candidate_pairs(
 def merge_components(
     pair_by_id: Dict[int, CandidatePair], verdicts: List[PairVerdict]
 ) -> List[Set[str]]:
-    """Samenhangende componenten (union-find) over `one_dimension=True`
-    verdicts: een keten A-B, B-C wordt één component, ongeacht de volgorde
-    waarin de paren zijn beoordeeld. Alleen componenten van meer dan één lid
-    zijn een echte samenvoeging."""
+    """Connected components (union-find) over `one_dimension=True` verdicts: a
+    chain A-B, B-C becomes one component, regardless of the order in which the
+    pairs were judged. Only components with more than one member are a real
+    merge."""
     parent: Dict[str, str] = {}
 
     def find(node: str) -> str:
@@ -387,9 +379,9 @@ def merge_components(
 
 
 def _canonical_name(group: Set[str], candidate_by_name: Dict[str, CodeCandidate]) -> str:
-    """Het lid met de meeste bron-attributen wint (een inhoudelijke telling,
-    berekend in code — nooit aan het model getoond); bij gelijke stand de
-    kortste naam, dan alfabetisch."""
+    """The member with the most source attributes wins (a substantive count,
+    computed in code — never shown to the model); on a tie the shortest name,
+    then alphabetically."""
     return min(group, key=lambda name: (
         -len(candidate_by_name[name].shape.members), len(name), name
     ))
@@ -398,12 +390,12 @@ def _canonical_name(group: Set[str], candidate_by_name: Dict[str, CodeCandidate]
 def merge_candidates(
     group: Set[str], candidate_by_name: Dict[str, CodeCandidate], key: str
 ) -> CodeCandidate:
-    """Verenigt leden-ids ÉN respondentverzamelingen over de groep — nooit een
-    som (`CodeShape` draagt `frozenset`s precies hiervoor). Weigert een groep
-    die niet allemaal dezelfde richting deelt: dat zou het richtingsonderscheid
-    zelf tegenspreken, en mag hier nooit binnenkomen (de deterministische
-    filter in `build_candidate_pairs` voorkomt het al bovenstrooms — dit is
-    het vangnet)."""
+    """Unions member ids AND respondent sets across the group — never a sum
+    (`CodeShape` carries `frozenset`s for exactly this). Refuses a group that
+    does not all share the same direction: that would contradict the direction
+    distinction itself, and must never arrive here (the deterministic filter in
+    `build_candidate_pairs` already prevents it upstream — this is the safety
+    net)."""
     shapes = [candidate_by_name[name].shape for name in group]
     valences = {s.valence for s in shapes}
     if len(valences) > 1:
@@ -431,25 +423,23 @@ def merge_candidates(
 
 
 def apply_merges(candidates: List[CodeCandidate], components: List[Set[str]]) -> List[CodeCandidate]:
-    """Vervangt elke component door één samengevoegde kandidaat; codes die in
-    geen enkele component zitten blijven ongewijzigd (zelfde object).
+    """Replaces every component with one merged candidate; codes in no component
+    stay unchanged (same object).
 
-    `candidate_by_name` is onvermijdelijk naam-gekeyd: de componenten komen uit
-    Pass A/B, die allebei in het naam-domein van het model werken (een prompt
-    kan een code alleen bij de naam noemen die het model te zien kreeg — er is
-    geen `shape.key` dat het model kent om mee te disambigueren). Deelt twee
-    kandidaten toevallig een naam, dan is de opzoeking zelf al dubbelzinnig, en
-    valt hier niets aan te repareren. Wat wél te repareren is: welke van de
-    twee bij een samenvoeging hoorde mag niet ook zijn naamgenoot meesleuren.
-    `untouched` filterde vroeger op naam (`c.name not in merged_names`) — als
-    twee kandidaten dezelfde naam droegen en er ÉÉN daarvan werd samengevoegd,
-    verdwenen ALLEBEI uit `untouched` terwijl alleen degene die de dict-opzoeking
-    daadwerkelijk opleverde is samengevoegd. De ander — een compleet andere
-    vorm die toevallig dezelfde naam draagt — werd dan stilzwijgend uit het
-    codeboek verwijderd, erger dan een foute samenvoeging. `consumed_keys`
-    volgt daarom welk fysiek object (`shape.key`, uniek per vorm) de opzoeking
-    echt gebruikte, dus een naamgenoot die niet zelf is opgezocht blijft
-    behouden."""
+    `candidate_by_name` is unavoidably name-keyed: the components come from
+    Pass A/B, which both work in the model's name domain (a prompt can only refer
+    to a code by the name the model was shown — there is no `shape.key` the model
+    knows to disambiguate with). If two candidates happen to share a name, the
+    lookup is ambiguous in itself, and nothing here can repair that. What can be
+    repaired: whichever of the two belonged to a merge must not drag its namesake
+    along. `untouched` used to filter on name (`c.name not in merged_names`) — if
+    two candidates carried the same name and ONE of them was merged, BOTH
+    disappeared from `untouched` while only the one the dict lookup actually
+    returned had been merged. The other — a completely different shape that
+    happens to carry the same name — was then silently removed from the codebook,
+    worse than a wrong merge. `consumed_keys` therefore tracks which physical
+    object (`shape.key`, unique per shape) the lookup really used, so a namesake
+    that was not itself looked up is kept."""
     candidate_by_name = {c.name: c for c in candidates}
     merged = [merge_candidates(group, candidate_by_name, key=f"MECE{i}")
               for i, group in enumerate(components, start=1)]
@@ -467,9 +457,9 @@ def _mean_accuracy(verdicts: Dict[int, PairVerdict]) -> Optional[float]:
 def _pair_details(
     pair_by_id: Dict[int, CandidatePair], verdict_by_id: Dict[int, PairVerdict],
 ) -> List[dict]:
-    """Eén entry per bevraagd paar, gesorteerd op `pair_id` voor een
-    reproduceerbare printvolgorde — de gegevens voor de per-paar logregel
-    (de twee codenamen, `accuracy`, `both_rate`, de samenvoegbeslissing)."""
+    """One entry per probed pair, sorted on `pair_id` for a reproducible print
+    order — the data for the per-pair log line (the two code names, `accuracy`,
+    `both_rate`, the merge decision)."""
     return [
         {"code_a": pair_by_id[pair_id].code_a, "code_b": pair_by_id[pair_id].code_b,
          "accuracy": verdict.accuracy, "both_rate": verdict.both_rate,
@@ -483,13 +473,13 @@ def _log_round(
     mean_accuracy: Optional[float] = None, merges: int = 0, reason: Optional[str] = None,
     pairs: Optional[List[dict]] = None,
 ) -> None:
-    """Elke afsluitreden is een apart veld — nooit alleen `merges=0`. Een
-    call die crasht (`reason="detection_failed"` etc.) en een ronde die
-    echt niets vond (`reason=None`, `pairs_probed > 0`) loggen allebei
-    `merges=0`, maar zijn hierna nooit meer van elkaar te onderscheiden op
-    dat getal alleen — dat was precies het defect dat dit verving. `pairs`
-    (leeg tenzij Pass B daadwerkelijk paren scoorde) draagt de per-paar
-    uitsplitsing (`_pair_details`) voor de printregel in de aanroeper."""
+    """Every termination reason is its own field — never just `merges=0`. A call
+    that crashes (`reason="detection_failed"` etc.) and a round that genuinely
+    found nothing (`reason=None`, `pairs_probed > 0`) both log `merges=0`, but
+    are afterwards indistinguishable on that number alone — which was exactly the
+    defect this replaced. `pairs` (empty unless Pass B actually scored pairs)
+    carries the per-pair breakdown (`_pair_details`) for the caller's print
+    line."""
     if log is None:
         return
     log.add(action="MECE_ROUND", round=round_num, pairs_found=pairs_found,
@@ -511,13 +501,12 @@ async def enforce_mece(
     verbose: bool = False,
     prompt_printer=None,
 ) -> List[CodeCandidate]:
-    """Detecteer (Pass A) + bevraag blind (Pass B), herhaald tot een ronde
-    niets samenvoegt of `config.mece_max_rounds` is bereikt. Geeft de finale
-    kandidaten terug: samengevoegde codes hebben `shape.origin ==
-    "mece_merge"` en dragen nog placeholder-tekst — de aanroeper herschrijft
-    de tekst alleen voor die codes (`write_codebook` op hun `shape`).
-    `idea_units_by_attribute` (attribuut-id -> zijn ideeën) levert het
-    materiaal voor de blinde proef; zie `taxonomy_input.build_idea_units`."""
+    """Detect (Pass A) + probe blindly (Pass B), repeated until a round merges
+    nothing or `config.mece_max_rounds` is reached. Returns the final candidates:
+    merged codes have `shape.origin == "mece_merge"` and still carry placeholder
+    text — the caller rewrites the text for those codes only (`write_codebook` on
+    their `shape`). `idea_units_by_attribute` (attribute id -> its ideas) supplies
+    the material for the blind probe; see `taxonomy_input.build_idea_units`."""
     current = list(candidates)
     if len(current) < 2:
         return current

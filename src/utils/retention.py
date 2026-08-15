@@ -1,52 +1,50 @@
 """
-retention.py - Opruimen van exports/ en data/cache/ per analyse, met een prullenbak.
+retention.py - Clean up exports/ and data/cache/ per analysis, with a trash folder.
 
-De eenheid is de **analyse** — dataset + vraag + steekproef — niet de map. De
-artefacten van één analyse liggen verspreid over vijf exportmappen (het logboek,
-de prompts, het codeboek, de codering, de kosten) plus negen cachebestanden; een
-plafond per map kan prompts/ snoeien en codebook/ laten staan en levert dan een
-halve analyse op. Daarom bewaren of verhuizen we een analyse in zijn geheel.
+The unit is the **analysis** — dataset + question + sample — not the directory.
+One analysis scatters its artefacts over five export directories (the log, the
+prompts, the codebook, the coding, the costs) plus nine cache files; a per-
+directory cap can prune prompts/ while leaving codebook/ in place, and then
+yields half an analysis. So an analysis is kept or moved as a whole.
 
-Twee domeinen, één analyse-begrip, twee plafonds:
+Two domains, one notion of an analysis, two caps:
 
-  MAX_ANALYSES = 10        exports/     — vrij te herstellen (stap 7, seconden)
-  CACHE_MAX_ANALYSES = 25  data/cache/  — alleen te herstellen door de hele
-                                          keten 0-6 opnieuw te draaien
+  MAX_ANALYSES = 10        exports/     — freely restorable (step 7, seconds)
+  CACHE_MAX_ANALYSES = 25  data/cache/  — restorable only by rerunning the whole
+                                          chain 0-6
 
-Het verschil is opzet, geen slordigheid. Een export weggooien kost je dertig
-seconden rekenwerk; een cache-analyse weggooien kost een volledige keten —
-minuten tot uren en echt geld — om ~5 MB terug te winnen. Het ruimere
-cacheplafond garandeert bovendien "cache ⊇ exports": elke bewaarde export is
-altijd nog opnieuw te genereren.
+The difference is deliberate, not sloppiness. Throwing away an export costs you
+thirty seconds of compute; throwing away a cached analysis costs a full chain —
+minutes to hours, and real money — to reclaim ~5 MB. The wider cache cap also
+guarantees "cache superset of exports": every export kept can always still be
+regenerated.
 
-Analyses worden gesorteerd op hun nieuwste bestand; per domein blijven de N
-nieuwste die in dát domein bestanden hebben, de rest gaat naar
-exports/_prullenbak/.
+Analyses are sorted by their newest file; per domain the N newest that have files
+in *that* domain are kept, the rest go to exports/_prullenbak/.
 
-Twee bodems eronder, in beide domeinen:
-  - Alles binnen PROTECT_DAYS blijft hoe dan ook staan, ook als het plafond
-    daardoor wordt overschreden. Beschermde analyses tellen wél mee voor N.
-  - De nieuwste analyse blijft altijd staan.
+Two floors underneath, in both domains:
+  - Anything modified within PROTECT_DAYS stays regardless, even when that
+    exceeds the cap. Protected analyses do count towards N.
+  - The newest analysis always stays.
 
-Bestanden die niet bij een bekende analyse horen (restanten van een oudere
-naamgeving of van een verwijderde dataset) verhuizen ook naar de prullenbak,
-maar pas als ze ouder zijn dan PROTECT_DAYS. In de cache telt daar één soort
-extra mee: een .pkl waarvan de db-rij op 'invalid' staat. CacheManager
-verwijdert het bestand niet bij invalidatie, dus zulke bestanden blijven liggen
-terwijl geen enkel codepad ze nog kan lezen. Ze volgen niet hun analyse maar hun
-eigen leeftijd — anders dan een export met een oude naam is dit geen artefact
-van de analyse meer, maar een lijk.
+Files that belong to no known analysis (leftovers from an older naming scheme or
+from a deleted dataset) also move to the trash, but only once they are older than
+PROTECT_DAYS. In the cache one extra kind counts as a leftover: a .pkl whose db
+row reads 'invalid'. CacheManager does not delete the file on invalidation, so
+such files linger while no code path can read them any more. They follow their own
+age rather than their analysis — unlike an export under an old name, this is no
+longer an artefact of the analysis but a corpse.
 
-De prullenbak heeft zijn eigen plafond in MB. Dáár — en alleen daar — gaat iets
-onherroepelijk weg. Let op: **terugzetten uit de prullenbak is voor de cache
-niet symmetrisch.** Het bestand komt terug, de db-rij blijft ongeldig, dus de
-cache blijft ongeldig. Wil je zo'n analyse echt terug, draai hem opnieuw.
+The trash has a cap of its own, in MB. There — and only there — something goes
+irreversibly. Note: **restoring from the trash is not symmetric for the cache.**
+The file comes back, the db row stays invalid, so the cache stays invalid. If you
+really want such an analysis back, rerun it.
 
-Veiligheidsinvariant: elk pad dat dit script aanraakt ligt onder exports/ (en
-daar alleen in MANAGED_DIRS) óf is een .pkl direct onder data/cache/. De twee
-.db-bestanden worden nooit aangeraakt, alleen bijgewerkt.
+Safety invariant: every path this script touches lies under exports/ (and there
+only inside MANAGED_DIRS) or is a .pkl directly under data/cache/. The two .db
+files are never touched, only updated.
 
-Aanroep vanuit src/:
+Invocation from src/:
     python -m utils.retention              # dry-run
     python -m utils.retention --apply
     python -m utils.retention --status
@@ -70,62 +68,62 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPORTS_DIRNAME = "exports"
 TRASH_DIRNAME = "_prullenbak"
 
-# De cache ligt buiten exports/, dus krijgt hij een eigen tak in dezelfde
-# prullenbak — één bak, één plafond, één plek om te zoeken. Cachenamen zijn plat
-# (geen submappen), dus de tak is dat ook.
+# The cache lives outside exports/, so it gets its own branch in the same trash
+# folder — one bin, one cap, one place to look. Cache names are flat (no
+# subdirectories), so the branch is flat too.
 CACHE_DIRNAME = Path("data") / "cache"
 CACHE_TRASH_SUBDIR = "data_cache"
 CACHE_DB_NAME = "cache.db"
 
-# Ligt bewust direct onder exports/, niet in de prullenbak: anders valt het
-# onder de bak-regel en kan het script zijn eigen audit-spoor wissen.
+# Deliberately directly under exports/, not in the trash: otherwise it falls
+# under the trash rule and the script could erase its own audit trail.
 LOG_PATH = Path(EXPORTS_DIRNAME) / "retention.log"
 
 # =============================================================================
-# INSTELLINGEN — pas deze aan vlak vóór een run
+# SETTINGS — adjust these right before a run
 # =============================================================================
 
 RETENTION_ENABLED = True
 
-# Hoeveel analyses bewaren we? None = uit; dan verhuist er niets.
-# Beschermde analyses (zie PROTECT_DAYS) tellen mee voor dit getal: staan er
-# zes beschermd en is het plafond 10, dan komen er nog vier bij.
+# How many analyses do we keep? None = off; then nothing moves.
+# Protected analyses (see PROTECT_DAYS) count towards this number: with six
+# protected and a cap of 10, four more are kept on top.
 MAX_ANALYSES: Optional[int] = 10
 
-# Hetzelfde, maar voor data/cache/. Bewust ruimer dan MAX_ANALYSES: een export
-# is gratis te herstellen (stap 7), een cache-analyse alleen door de hele keten
-# 0-6 opnieuw te draaien. Zolang dit getal groter is dan MAX_ANALYSES geldt
-# "cache ⊇ exports" en is elke bewaarde export nog te reproduceren.
+# The same, but for data/cache/. Deliberately wider than MAX_ANALYSES: an export
+# is free to restore (step 7), a cached analysis only by rerunning the whole
+# chain 0-6. As long as this number exceeds MAX_ANALYSES, "cache superset of
+# exports" holds and every export kept can still be reproduced.
 CACHE_MAX_ANALYSES: Optional[int] = 25
 
-# Plafond op de prullenbak in MB. None = uit. Dit is de enige plek waar iets
-# onherroepelijk verdwijnt — zolang dit None is verhuist alles alleen maar en
-# kun je alles terugzetten.
+# Cap on the trash in MB. None = off. This is the only place where something
+# disappears irreversibly — as long as this is None everything merely moves and
+# you can put it all back.
 TRASH_MAX_MB: Optional[int] = None
 
-# Bodem: wat hierbinnen is gewijzigd gaat nooit weg, ook niet als het plafond
-# daardoor wordt overschreden. Dit is de zekerheid tegen een verkeerd ingesteld
-# plafond: hoe fout het getal ook is, het werk van deze week overleeft het.
-# 0 = uit.
+# Floor: anything modified within this window never goes, even when that exceeds
+# the cap. This is the guarantee against a badly set cap: however wrong the
+# number, this week's work survives it.
+# 0 = off.
 PROTECT_DAYS = 7
 
-# De beheerde mappen. Bewust NIET beheerd: exports/adhoc/,
-# exports/diagnostics/, exports/experiment_logs/, en alles buiten exports/.
+# The managed directories. Deliberately NOT managed: exports/adhoc/,
+# exports/diagnostics/, exports/experiment_logs/, and everything outside exports/.
 MANAGED_DIRS = ("verbose_logs", "prompts", "codebook", "coderingen", "costs")
 
 
 
 class RetentionError(Exception):
-    """Onveilige toestand: het script stopt liever dan dat het iets verplaatst."""
+    """Unsafe state: the script would rather stop than move anything."""
 
 
 @dataclass(frozen=True)
 class Entry:
-    """Eén meting van één bestand: pad, mtime en omvang in bytes.
+    """One measurement of one file: path, mtime and size in bytes.
 
-    Alles wordt één keer gemeten. Zou de mtime later opnieuw van disk worden
-    gelezen, dan kan een bestand dat tussentijds wordt aangeraakt — de pipeline
-    die schrijft terwijl dit draait — de beschermingsaanname omzeilen.
+    Everything is measured once. Were the mtime read from disk again later, a
+    file touched in the meantime — the pipeline writing while this runs — could
+    slip past the protection assumption.
     """
     path: Path
     mtime: float
@@ -144,11 +142,11 @@ class AnalysisKey:
 
 @dataclass
 class Analysis:
-    """Eén analyse, met haar bestanden in beide domeinen.
+    """One analysis, with its files in both domains.
 
-    `entries` zijn de exports, `cache_entries` de pickles onder data/cache/. Een
-    analyse hoeft niet in beide domeinen te bestaan: een verse run heeft nog geen
-    exports, en een analyse waarvan de exports al zijn opgeruimd houdt haar cache.
+    `entries` are the exports, `cache_entries` the pickles under data/cache/. An
+    analysis need not exist in both domains: a fresh run has no exports yet, and
+    an analysis whose exports were already cleaned up keeps its cache.
     """
     key: AnalysisKey
     entries: list[Entry] = field(default_factory=list)
@@ -160,11 +158,11 @@ class Analysis:
 
     @property
     def mtime(self) -> float:
-        """De analyse is zo oud als haar nieuwste bestand, in welk domein ook.
+        """An analysis is as old as its newest file, in whichever domain.
 
-        Bewust over beide domeinen heen: een analyse waarvan alleen stap 7 net
-        opnieuw is gedraaid is als geheel recent, en haar cache hoort dan niet
-        opeens als oud te gelden.
+        Deliberately across both domains: an analysis where only step 7 was just
+        rerun is recent as a whole, and its cache should not suddenly count as
+        old.
         """
         return max(e.mtime for e in self.alle)
 
@@ -178,12 +176,12 @@ class Analysis:
 # =============================================================================
 
 def known_stems(root: Path) -> set[str]:
-    """Bekende datasets: wat de cache kent én wat er in data/ ligt.
+    """Known datasets: what the cache knows plus what sits in data/.
 
-    Beide bronnen zijn nodig. De cache kent analyses waarvan het .sav-bestand
-    is verplaatst; data/ bevat bestanden waarvoor nog niets gedraaid is. Is de
-    cache onleesbaar, dan stopt het script: met een onvolledige lijst lijkt
-    ineens alles een restant.
+    Both sources are needed. The cache knows analyses whose .sav file has been
+    moved; data/ holds files nothing has been run on yet. If the cache is
+    unreadable the script stops: with an incomplete list, suddenly everything
+    looks like a leftover.
     """
     stems = {p.name for p in (root / "data").glob("*.sav")}
     db = root / "data" / "cache" / "cache.db"
@@ -206,15 +204,15 @@ def known_stems(root: Path) -> set[str]:
 
 
 def collect(root: Path) -> tuple[list[Analysis], list[Entry]]:
-    """Alle beheerde bestanden uit beide domeinen, per analyse, plus de restanten.
+    """All managed files from both domains, per analysis, plus the leftovers.
 
-    Een export hoort bij een analyse als zijn naam volgens de canonieke
-    conventie te lezen is (utils.exportNaming). Lukt dat niet, dan is het een
-    restant: een oudere naamgeving, of een dataset die niet meer bestaat.
+    An export belongs to an analysis when its name reads according to the
+    canonical convention (utils.exportNaming). If it does not, it is a leftover:
+    an older naming scheme, or a dataset that no longer exists.
 
-    Een cachebestand wordt niet uit zijn naam gelezen maar uit cache.db, waar
-    filename en variable_key als losse kolommen staan. Betrouwbaarder dan de
-    exportkant: er valt niets verkeerd te splitsen.
+    A cache file is not read from its name but from cache.db, where filename and
+    variable_key sit as separate columns. More reliable than the export side:
+    there is nothing to split wrongly.
     """
     exports = (root / EXPORTS_DIRNAME).resolve()
     stems = known_stems(root)
@@ -242,25 +240,25 @@ def collect(root: Path) -> tuple[list[Analysis], list[Entry]]:
 
     cache_restanten = _verzamel_cache(root, per_key)
     analyses = sorted(per_key.values(), key=lambda a: a.mtime, reverse=True)
-    # Alleen de export-restanten gaan langs de hecht-stap: die zoekt op oude
-    # bestandsnamen, en een cachebestand heeft er per definitie geen.
+    # Only the export leftovers go through the attach step: it matches on old
+    # file names, and a cache file has none by definition.
     restanten = _hecht_restanten_aan_analyses(restanten, analyses, stems)
     return analyses, restanten + cache_restanten
 
 
 def _cache_analyse_key(filename: str, variable_key: str) -> Optional[AnalysisKey]:
-    """De analyse waar een cache-ingang bij hoort.
+    """The analysis a cache entry belongs to.
 
-    De cache heeft de parseerproblematiek van exports niet: filename en
-    variable_key staan als losse kolommen in cache.db, dus alleen de steekproef
-    hoeft nog van de variabelenaam te worden gescheiden. Dezelfde eis als in
-    exportNaming: een getal of "full", anders is het geen leesbare sleutel.
+    The cache does not have the parsing problem exports have: filename and
+    variable_key sit as separate columns in cache.db, so only the sample still
+    has to be separated from the variable name. Same requirement as in
+    exportNaming: a number or "full", otherwise it is not a readable key.
 
-    Randgeval: bij samengevoegde variabelen bevat variable_key ook de
-    merge-configuratie (Q1+Q2_concat_semicolon_skip_500), terwijl de export de
-    kále variabelenaam gebruikt. Zo'n analyse matcht dan niet met haar exports
-    en wordt een eigen analyse. Dat is de veilige kant: matchen bepaalt alleen
-    de groepering, nooit of iets weg mag.
+    Edge case: for merged variables, variable_key also carries the merge
+    configuration (Q1+Q2_concat_semicolon_skip_500), while the export uses the
+    bare variable name. Such an analysis then does not match its exports and
+    becomes an analysis of its own. That is the safe side: matching only decides
+    the grouping, never whether something may go.
     """
     var_name, _, sample = variable_key.rpartition("_")
     if not var_name or (sample != "full" and not sample.isdigit()):
@@ -269,12 +267,12 @@ def _cache_analyse_key(filename: str, variable_key: str) -> Optional[AnalysisKey
 
 
 def _verzamel_cache(root: Path, per_key: dict[AnalysisKey, Analysis]) -> list[Entry]:
-    """Voeg de cachebestanden bij hun analyse. Geeft de cache-restanten terug.
+    """Attach the cache files to their analysis. Returns the cache leftovers.
 
-    Restant is hier alles wat geen levend codepad meer kan bereiken: een .pkl
-    zonder db-rij, en een .pkl waarvan de rij op 'invalid' staat. Dat tweede
-    komt vaker voor dan je zou denken — CacheManager invalideert een ingang maar
-    verwijdert het bestand niet, dus afgedankte caches blijven liggen.
+    A leftover here is anything no live code path can still reach: a .pkl without
+    a db row, and a .pkl whose row reads 'invalid'. The second happens more often
+    than you would think — CacheManager invalidates an entry but does not delete
+    the file, so discarded caches linger.
     """
     cache = (root / CACHE_DIRNAME).resolve()
     if not cache.is_dir():
@@ -319,19 +317,19 @@ def _hecht_restanten_aan_analyses(
     analyses: list[Analysis],
     stems: set[str],
 ) -> list[Entry]:
-    """Voeg elk eenduidig toewijsbaar restant bij zijn analyse.
+    """Attach every unambiguously assignable leftover to its analysis.
 
-    Een bestand met een oude naam hoort vaak wel degelijk bij een analyse die
-    je bewaart — het logboek van een stap die sinds de hernoeming niet opnieuw
-    is gedraaid. Zonder deze stap wordt zo'n bestand alleen door zijn eigen
-    leeftijd beschermd en verdwijnt het binnen een week, terwijl de analyse
-    blijft. Dat botst met het uitgangspunt dat de analyse de eenheid is.
+    A file under an old name often does belong to an analysis you are keeping —
+    the log of a step that has not been rerun since the rename. Without this step
+    such a file is protected only by its own age and disappears within a week,
+    while the analysis stays. That conflicts with the principle that the analysis
+    is the unit.
 
-    Toewijzen gebeurt alleen bij zekerheid: de naam moet beginnen met dataset +
-    variabele van precies één analyse, én de steekproef van die analyse moet
-    als los naamdeel voorkomen. Zo blijven de coderingen waarvan de steekproef
-    nooit is opgeschreven ongemoeid — daar zijn meerdere analyses mogelijk, en
-    gokken is hoe je een bestand onder een verkeerd etiket kwijtraakt.
+    Assignment happens only on certainty: the name must start with dataset +
+    variable of exactly one analysis, and that analysis's sample must appear as a
+    separate name part. That leaves the codings whose sample was never written
+    down untouched — several analyses are possible there, and guessing is how you
+    lose a file under the wrong label.
     """
     origineel = {Path(s).stem.replace(" ", "_"): Path(s).stem for s in stems}
     overig: list[Entry] = []
@@ -354,10 +352,10 @@ def _hecht_restanten_aan_analyses(
 
 
 def _prefixen(dataset_slug: str, origineel: dict[str, str]) -> set[str]:
-    """De vormen waarin een datasetnaam vooraan een oude bestandsnaam kan staan.
+    """The forms a dataset name can take at the front of an old file name.
 
-    Oude namen gebruikten soms spaties, soms underscores, en de verbose logs
-    kapten de naam af op 50 tekens.
+    Old names sometimes used spaces, sometimes underscores, and the verbose logs
+    truncated the name at 50 characters.
     """
     vormen = {dataset_slug, origineel.get(dataset_slug, dataset_slug)}
     return vormen | {v[:50] for v in vormen}
@@ -390,16 +388,15 @@ def _selecteer(
     entries_van,
     now: Optional[float],
 ) -> list[Analysis]:
-    """De analyses voorbij het plafond in één domein, exclusief de beschermde.
+    """The analyses beyond the cap in one domain, excluding the protected ones.
 
-    De lijst staat op mtime gesorteerd, dus de beschermde analyses en de
-    nieuwste vormen samen het begin van de rij. Een beschermde analyse telt
-    mee voor het plafond maar wordt zelf nooit geselecteerd — het plafond
-    accepteert dan liever een overschrijding.
+    The list is sorted on mtime, so the protected analyses and the newest one
+    together form the head of the queue. A protected analysis counts towards the
+    cap but is never selected itself — the cap would rather accept an overrun.
 
-    Analyses zonder bestanden in dít domein slaan we over: een analyse waarvan
-    de exports al zijn opgeruimd mag geen exportplek meer bezet houden, anders
-    krimpt het effectieve plafond met elke opruiming.
+    Analyses without files in *this* domain are skipped: an analysis whose
+    exports were already cleaned up must not keep occupying an export slot, or
+    the effective cap shrinks with every cleanup.
     """
     if plafond is None:
         return []
@@ -422,7 +419,7 @@ def select_analyses_for_removal(
     analyses: list[Analysis],
     now: Optional[float] = None,
 ) -> list[Analysis]:
-    """De exports voorbij MAX_ANALYSES, exclusief de beschermde."""
+    """The exports beyond MAX_ANALYSES, excluding the protected ones."""
     return _selecteer(analyses, MAX_ANALYSES, lambda a: a.entries, now)
 
 
@@ -430,11 +427,10 @@ def select_cache_for_removal(
     analyses: list[Analysis],
     now: Optional[float] = None,
 ) -> list[Analysis]:
-    """Hetzelfde voor data/cache/, tegen het ruimere CACHE_MAX_ANALYSES.
+    """The same for data/cache/, against the wider CACHE_MAX_ANALYSES.
 
-    Zolang CACHE_MAX_ANALYSES groter is dan MAX_ANALYSES verdwijnt de cache van
-    een analyse nooit vóór haar exports, en blijft elke bewaarde export
-    reproduceerbaar.
+    As long as CACHE_MAX_ANALYSES exceeds MAX_ANALYSES, an analysis's cache never
+    disappears before its exports, and every export kept stays reproducible.
     """
     return _selecteer(analyses, CACHE_MAX_ANALYSES, lambda a: a.cache_entries, now)
 
@@ -454,10 +450,10 @@ def select_trash_for_removal(
     entries: list[Entry],
     now: Optional[float] = None,
 ) -> list[Entry]:
-    """Wat er uit de prullenbak definitief weg mag, boven TRASH_MAX_MB.
+    """What may go from the trash for good, beyond TRASH_MAX_MB.
 
-    Ook hier blijft de nieuwste altijd staan, zodat een te krap plafond de bak
-    niet in één keer leegt.
+    Here too the newest always stays, so that a cap set too tight does not empty
+    the bin in one go.
     """
     if TRASH_MAX_MB is None:
         return []
@@ -477,16 +473,16 @@ def select_trash_for_removal(
 # =============================================================================
 
 def _invalideer_cache_rij(root: Path, pad: Path) -> None:
-    """Zet de db-rij van een verhuisd cachebestand op 'invalid'.
+    """Set the db row of a moved cache file to 'invalid'.
 
-    Zonder dit blijft er een 'valid'-rij staan die naar een verdwenen bestand
-    wijst. CacheManager vangt dat op bij het eerstvolgende gebruik, maar dan is
-    het een storing in plaats van een besluit. Vergelijken gebeurt op het
-    geresolvede pad, want de db bewaart het pad zoals het bij het schrijven
-    werd samengesteld — niet noodzakelijk in dezelfde vorm.
+    Without this a 'valid' row remains, pointing at a file that is gone.
+    CacheManager catches that on the next use, but by then it is a malfunction
+    rather than a decision. Comparison happens on the resolved path, because the
+    db stores the path as it was assembled at write time — not necessarily in the
+    same form.
 
-    Let op de asymmetrie: het bestand terugzetten uit de prullenbak maakt deze
-    rij niet weer geldig. Zie de moduledocstring.
+    Note the asymmetry: restoring the file from the trash does not make this row
+    valid again. See the module docstring.
     """
     db = root / CACHE_DIRNAME / CACHE_DB_NAME
     if not db.exists():
@@ -504,15 +500,15 @@ def _invalideer_cache_rij(root: Path, pad: Path) -> None:
 
 
 def move_to_trash(pad: Path, root: Path) -> None:
-    """Verplaats naar exports/_prullenbak/, met behoud van waar het vandaan kwam.
+    """Move to exports/_prullenbak/, preserving where it came from.
 
-    Exports houden hun pad onder exports/; cachebestanden gaan naar de platte
-    tak data_cache/ (cachenamen kennen geen submappen) en hun db-rij gaat mee op
-    'invalid'.
+    Exports keep their path under exports/; cache files go to the flat branch
+    data_cache/ (cache names have no subdirectories) and their db row goes along
+    as 'invalid'.
 
-    Ligt het pad al in de bak, dan wordt het verwijderd — de bak is de laatste
-    schakel. De membership-test gebruikt het ongeresolvede pad, zodat een
-    symlink in de bak niet via .resolve() alsnog de verplaats-tak neemt.
+    If the path is already in the bin it is deleted — the bin is the last link.
+    The membership test uses the unresolved path, so that a symlink inside the
+    bin does not take the move branch anyway via .resolve().
     """
     bak = root / EXPORTS_DIRNAME / TRASH_DIRNAME
 
@@ -535,14 +531,14 @@ def move_to_trash(pad: Path, root: Path) -> None:
 
 
 def run(root: Path, apply: bool, now: Optional[float] = None) -> dict:
-    """Inventariseer, selecteer en (bij apply) verplaats.
+    """Inventory, select and (on apply) move.
 
-    De volgorde is bewust: eerst wordt álles geïnventariseerd en geselecteerd,
-    daarna pas verplaatst. Zou de prullenbak ná de verhuizing worden bekeken,
-    dan zag hij de bestanden die in déze run net binnenkwamen — en shutil.move
-    behoudt de mtime, dus PROTECT_DAYS beschermt ze daar niet. Eén --apply zou
-    dan een bestand kunnen verplaatsen én meteen definitief wissen, waarmee de
-    bak nooit respijt bood.
+    The order is deliberate: everything is inventoried and selected first, and
+    only then moved. Were the trash inspected *after* the move, it would see the
+    files that arrived in *this* run — and shutil.move preserves the mtime, so
+    PROTECT_DAYS does not protect them there. A single --apply could then move a
+    file and immediately delete it for good, so the bin never granted any
+    reprieve.
     """
     if not RETENTION_ENABLED:
         return {"uit": True, "analyses": [], "restanten": 0, "prullenbak": {}}
@@ -610,10 +606,10 @@ STEMPEL_LEN = len("2026-08-01 00:00:00")
 
 
 def _laatste_run(root: Path) -> str:
-    """Tijdstip van de laatste dáádwerkelijke uitvoering.
+    """Timestamp of the last actual execution.
 
-    Het log bevat ook regels van move_to_trash en van een mislukte run; alleen
-    de regel met het "RUN  "-voorvoegsel telt hier.
+    The log also holds lines from move_to_trash and from a failed run; only the
+    line with the "RUN  " prefix counts here.
     """
     log = root / LOG_PATH
     if not log.exists():
@@ -624,11 +620,11 @@ def _laatste_run(root: Path) -> str:
 
 
 def _kort(key: str, breedte: int = 62) -> str:
-    """Kort de datasetnaam in, nooit de variabele en de steekproef.
+    """Shorten the dataset name, never the variable and the sample.
 
-    Die twee zijn juist wat twee analyses van dezelfde dataset onderscheidt;
-    een blinde afkapping op breedte snijdt ze eraf en maakt de regels
-    onleesbaar gelijk.
+    Those two are exactly what tells two analyses of the same dataset apart; a
+    blind truncation on width cuts them off and makes the lines unreadably
+    identical.
     """
     dataset, _, staart = key.partition(" · ")
     ruimte = breedte - len(staart) - 3
@@ -675,12 +671,12 @@ def _print_verslag(verslag: dict, apply: bool) -> None:
 
 
 def opruimen(root: Path = PROJECT_ROOT, aanleiding: str = "") -> str:
-    """Voer de opruiming uit, log het resultaat, en geef één regel terug.
+    """Run the cleanup, log the result, and return a single line.
 
-    Dit is het haakje voor de app. Een fout wordt niet verzwegen: hij gaat naar
-    exports/retention.log én komt terug als tekst, zodat de aanroeper hem kan
-    tonen. De vorige opruimer slikte zijn eigen ImportError en was daardoor
-    maandenlang stuk zonder dat iemand het merkte.
+    This is the hook for the app. An error is not swallowed: it goes to
+    exports/retention.log AND comes back as text, so the caller can show it. The
+    previous cleaner swallowed its own ImportError and was therefore broken for
+    months without anyone noticing.
     """
     try:
         verslag = run(root, apply=True)
