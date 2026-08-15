@@ -63,6 +63,11 @@ These four rules hold at every level of the taxonomy and for every decision you 
    the subject, not the judgment. Evaluative direction is recorded separately, per
    response, as valence — never inside the taxonomy. If a candidate reads as a verdict,
    restate it as the subject being judged.
+   REVERSAL TEST, on every name you return: would a response expressing the opposite
+   direction still belong under it? A name that only fits one direction has taken a side,
+   even when it looks like a plain noun — and responses pointing the other way will be
+   pushed elsewhere or dropped. Rename it to the property being judged, so that both
+   directions sit under it and valence tells them apart.
 
 2. NEVER SPLIT ONE CONCEPT BY EVALUATIVE DIRECTION.
    Do not return two items that differ only in evaluative direction — a positive and a

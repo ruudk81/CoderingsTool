@@ -7,6 +7,7 @@ from pipeline.step_4_classifier.prompts_discovery import (
     DiscoveredAttribute,
     DiscoveredFacet,
     build_candidate_block,
+    build_candidate_index,
     build_chunk_consolidation_prompt,
 )
 from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
@@ -102,34 +103,37 @@ def test_a_candidate_without_attributes_does_not_break_the_block():
 # PROMPT ↔ MODEL SLUITEN AAN
 # =============================================================================
 
-def test_the_result_is_scratchpad_plus_facets():
-    assert set(ConsolidationResult.model_fields) == {"scratchpad", "facets"}
+def test_the_result_is_a_decision_summary_plus_facets():
+    """A free-form scratchpad on a phase that already reasons internally gives
+    long, uneven output in which the result is the smaller part."""
+    assert set(ConsolidationResult.model_fields) == {
+        "decision_summary", "facets"}
 
 
 def test_a_consolidated_facet_states_what_folded_into_it():
     """Without this field a merged candidate looks identical to a forgotten one:
     neither appears in the answer."""
-    assert "source_facets" in ConsolidatedFacet.model_fields
+    assert "source_facet_ids" in ConsolidatedFacet.model_fields
 
 
 def test_a_consolidated_attribute_says_the_same_one_level_down():
-    assert "source_attributes" in ConsolidatedAttribute.model_fields
+    assert "source_attribute_ids" in ConsolidatedAttribute.model_fields
 
 
 def test_a_consolidated_facet_carries_consolidated_attributes():
     item = ConsolidatedFacet(
-        facet_name="Snelheid", facet_definition="…", source_facets=["Snelheid"],
+        facet_name="Snelheid", facet_definition="…", source_facet_ids=["F1"],
         facet_question="Hoe snel gaat het?",
         attributes=[ConsolidatedAttribute(
             attribute_name="Wachttijd", attribute_definition="…",
-            example_observations=["x"], source_attributes=["Wachttijd"])])
-    assert item.attributes[0].source_attributes == ["Wachttijd"]
+            example_observations=["x"], source_attribute_ids=["F1-A1"])])
+    assert item.attributes[0].source_attribute_ids == ["F1-A1"]
 
 
 def test_prompt_explains_that_coverage_is_checked():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
-    assert "source_facets" in prompt
-    assert "source_attributes" in prompt
+    assert "source_facet_ids" in prompt
+    assert "source_attribute_ids" in prompt
     assert "at least one surviving" in prompt
 
 
@@ -167,9 +171,10 @@ def test_the_candidate_block_shows_more_than_one_example():
 
 def test_prompt_names_every_field_the_model_knows():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
-    for veld in ("scratchpad", "facets", "facet_name", "facet_definition",
-                 "facet_question", "attributes", "attribute_name",
-                 "attribute_definition", "example_observations"):
+    for veld in ("decision_summary", "facets", "facet_name", "facet_definition",
+                 "facet_question", "source_facet_ids", "attributes",
+                 "attribute_name", "attribute_definition",
+                 "example_observations", "source_attribute_ids"):
         assert veld in prompt, veld
 
 
@@ -286,3 +291,74 @@ def test_the_prompt_carries_the_universal_rules():
 def test_a_prompt_without_exclusions_stays_valid():
     prompt = build_chunk_consolidation_prompt(**_kwargs(domain_exclusions=[]))
     assert prompt.rstrip().endswith(INSTRUCTOR_HINT)
+
+
+# =============================================================================
+# WAT DE REVIEW VAN 2026-08-15 OPLOSTE
+# =============================================================================
+
+def test_the_candidate_block_hands_out_ids():
+    """Names are not unique: the same attribute name can sit under two candidate
+    facets, and a list of two identical strings is something a JSON layer may
+    quietly collapse to one."""
+    block = build_candidate_block(CANDIDATES, RECURRENCE, ATTR_RECURRENCE, 6)
+    assert "[F1] Snelheid" in block
+    assert "[F1-A1] Wachttijd" in block
+    assert "[F3-A1] Vriendelijkheid" in block
+
+
+def test_the_index_is_stable_for_a_given_task():
+    facets, attributes = build_candidate_index(CANDIDATES)
+    assert list(facets) == ["F1", "F2", "F3"]
+    assert attributes["F1-A2"][0] == "F1"
+    assert attributes["F1-A2"][1].attribute_name == "Doorlooptijd"
+
+
+def test_coverage_is_checked_on_ids_not_names():
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "never on names" in prompt
+
+
+def test_prevalence_is_not_an_absolute_veto():
+    """Two concepts can both be well supported and still be one concept said
+    twice; `never dissolve` made support outrank deduplication."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "unless it demonstrably" in prompt
+    assert "never a reason to keep a duplicate" in prompt
+
+
+def test_the_facet_question_is_tested_against_being_a_subject():
+    """Sorting by what the material is ABOUT belongs one level up, and produces
+    facets that overlap wherever a response touches two topics."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "answered by naming a subject" in prompt
+
+
+def test_a_merge_test_is_given():
+    """`Minimal` on its own is not measurable, and the phase licensed to merge
+    needs a test it can apply."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "MERGE TEST" in prompt
+    assert "Would the same observation be coded under both?" in prompt
+
+
+def test_nesting_between_sibling_attributes_is_forbidden():
+    """A general item and a specific one inside it let the same response be
+    coded twice, honestly."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "subtype, a component or a concrete instance" in prompt
+
+
+def test_a_lone_attribute_is_a_warning_not_a_verdict():
+    """A real lens can hold one attribute in this material and several in the
+    next batch."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "is a WARNING, not a verdict" in prompt
+
+
+def test_the_definitions_are_not_rendered_twice():
+    """They already stand as L3 and L4 in the taxonomy block; the same sentence
+    twice within a few hundred words is not an anchor."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "# What a facet is" not in prompt
+    assert prompt.count("L3 — Facet:") == 1

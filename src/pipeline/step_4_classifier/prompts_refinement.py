@@ -294,8 +294,9 @@ Anything marked [CATCH-ALL] above is an offer, not a category: it exists so that
 response has a home. Do not merge, split, widen, rename or move it, and do not route misfits
 into it. Return it exactly as it is. Judge only what is not marked.
 
-**Precedence when rules conflict:** 1 (orthogonality) > 5 (the domain is fixed) >
-2 (prevalence grouping) > 4 (label clarity).
+**When these conflict, decide in this order:** 1 (orthogonality) > 5 (the domain is fixed)
+> 2 (prevalence grouping) > 3 (split or widen) > 4 (label clarity). Rules 6 to 9 are not
+weighed against these — they say what to do, not what to prefer.
 
 # Required Process
 

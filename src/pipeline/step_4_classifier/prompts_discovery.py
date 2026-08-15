@@ -99,10 +99,11 @@ class DiscoveryResult(BaseModel):
 
 class ConsolidatedAttribute(DiscoveredAttribute):
     """An attribute after consolidation, stating what folded into it."""
-    source_attributes: List[str] = Field(
+    source_attribute_ids: List[str] = Field(
         ..., description=(
-            "Every candidate attribute name that folded into this one, "
-            "including its own if it survived unchanged"))
+            "The bracketed ids of every candidate attribute that folded into "
+            "this one, e.g. ['F1-A2', 'F4-A1']. One that survived unchanged "
+            "lists just its own id"))
 
 
 class ConsolidatedFacet(DiscoveredFacet):
@@ -111,10 +112,11 @@ class ConsolidatedFacet(DiscoveredFacet):
         ..., description=(
             "The one question this facet answers about the responses, phrased "
             "as a question, in the survey language"))
-    source_facets: List[str] = Field(
+    source_facet_ids: List[str] = Field(
         ..., description=(
-            "Every candidate facet name that folded into this one, including "
-            "its own if it survived unchanged"))
+            "The bracketed ids of every candidate facet that folded into this "
+            "one, e.g. ['F1', 'F7']. One that survived unchanged lists just "
+            "its own id"))
     attributes: List[ConsolidatedAttribute] = Field(
         ..., description=(
             "The consolidated attributes of this facet, pooled from every "
@@ -133,18 +135,20 @@ class ConsolidationResult(BaseModel):
 
     `raw_facets` also preserves the state before the merge, but that serves a
     different purpose: diagnosis afterwards, not detection during the run.
+
+    `decision_summary` replaced a free-form `scratchpad` on 2026-08-15. The
+    seven steps are still worked through — they are the process — but what comes
+    back is the decisions, not the working. A field that invites a full
+    reasoning trace on a phase that already reasons internally produces long,
+    uneven output in which the result is the smaller part.
     """
-    scratchpad: str = Field(
+    decision_summary: List[str] = Field(
         ..., description=(
-            "Step-by-step reasoning before the final output: "
-            "(1) scan the candidate facets from all passes, "
-            "(2) group the ones that mean the same thing, "
-            "(3) state the question each group answers and compare them, "
-            "(4) let prevalence set the granularity within one question, "
-            "(5) verify the domain boundary, "
-            "(6) for each surviving facet, pool and consolidate the attributes "
-            "of everything that folded into it, "
-            "(7) check that every candidate is accounted for, then output"))
+            "One short line per consolidation decision that took judgement, "
+            "each stating what was done and why — 'kept X and Y apart: they "
+            "answer different questions'. Not a reasoning trace, and not a "
+            "line for every candidate: only the calls a reader would want to "
+            "check"))
     facets: List[ConsolidatedFacet] = Field(
         ..., description=(
             "The fewest mutually exclusive facets that cover the domain, each "
@@ -525,9 +529,6 @@ def build_chunk_consolidation_prompt(
     attributes with them, and those must then be measured against each other by
     the same yardstick.
     """
-    rules = dimension.prompt_rules
-    facet_definition = _extract_definition(rules.facet_instruction)
-    attribute_definition = _extract_definition(rules.attribute_instruction)
     exclusion_hint = (
         "\n".join(f"- {x}" for x in domain_exclusions)
         if domain_exclusions else "- (no neighbouring domains were named)")
@@ -538,14 +539,6 @@ into a single minimal set, and to do the same for the attributes those facets ho
 
 Each pass saw only part of the domain and proposed on its own, so the same concept comes
 back under different names — at both levels at once. That is what you are resolving.
-
-# What a facet is
-
-{facet_definition}
-
-# What an attribute is
-
-{attribute_definition}
 
 {build_context_block(
     language=language, survey_question=survey_question, sector=sector,
@@ -587,7 +580,10 @@ Every candidate carries how many passes proposed it UNDER THAT EXACT NAME. Suppo
 concept is therefore the sum over the group you form, never the number on one candidate:
 five passes that each worded the same concept differently arrive as five candidates
 carrying one pass each.
-- A concept whose group is well supported keeps its own facet — never dissolve it.
+- A concept whose group is well supported keeps its own facet, unless it demonstrably
+  draws the same analytical distinction as another surviving facet. Support is a strong
+  reason to keep something, never a reason to keep a duplicate: two concepts can both be
+  well supported and still be one concept said twice.
 - Several thinly supported concepts answering the same question are GROUPED into one facet
   that still names what they share in plain language.
 Prevalence decides how finely to split WITHIN one question; it never licenses merging
@@ -637,6 +633,12 @@ question are one facet, and two that state different questions never merge.
 Same question and same meaning: group. Different questions: separate. Distinct answers to
 one question: separate only when merging them would erase what tells them apart.
 
+Test the question itself before you accept it. If it can be answered by naming a subject or
+a topic, you have written a split of the domain, not a facet — every facet here shares one
+subject, and what separates them is the KIND of thing said about it. A question that sorts
+the material by what it is about belongs one level up, and using it here produces facets
+that overlap wherever a response touches two topics at once.
+
 **Step 4 — Let prevalence set the granularity**
 Add up the passes across each group you formed; the counts are per exact name, so any
 single candidate understates a concept that came back reworded. Within one question, a
@@ -654,17 +656,32 @@ different passes, so put it through the same four rules one level down:
 - Attributes answering different questions about the facet stay apart.
 - Attributes that restate each other in different words become one.
 - A well-supported attribute keeps its own place; thin ones that share a meaning group.
+- No attribute may be a broader category, a subtype, a component or a concrete instance of
+  another under the same facet. A general item and a specific one that sits inside it are
+  one level too many: keep the level a coder can apply and fold the other into it.
+  Left standing, the same response can honestly be coded under both.
+
+MERGE TEST — run it on any two items before you fold them together:
+1. Would the same observation be coded under both? If not, they are not duplicates.
+2. Does the difference between them give an analysis anything? If it does, keep it.
+3. Can you state what they share as a thing in its own right, without listing them?
+4. After merging, does every example still have one obvious place?
+Merge only on four times yes. Never merge to reach a count — not of items, not of examples.
+
 Then check the result against its facet: every attribute must sit inside the facet it hangs
 under. If one does not, move it to the facet where it belongs, or drop it if no facet fits.
-A facet left holding a single attribute means the facet and the attribute are the same
-concept — keep it at the level where it belongs and do not state it twice.
+A facet left holding a single attribute is a WARNING, not a verdict. Usually the facet and
+the attribute are the same concept stated twice, and then you keep the level that carries
+the meaning. But a real lens can hold one attribute in this material and several in the
+next batch. Collapse it only when you can say plainly that the two names mean one thing.
 
 **Step 7 — Account for every candidate**
 Confirm you have the minimal set of facets that covers the domain, each holding the minimal
 set of attributes that covers what it contains.
-Then check coverage: every candidate facet you were given must appear in the `source_facets`
-of at least one surviving facet, and every attribute proposed inside those candidates must
-appear in the `source_attributes` of at least one surviving attribute.
+Then check coverage, and do it on the bracketed ids, never on names: every candidate facet
+id must appear in the `source_facet_ids` of at least one surviving facet, and every
+candidate attribute id in the `source_attribute_ids` of at least one surviving attribute.
+Two candidates can carry the same name, so a name says nothing about which one you meant.
 A candidate whose contents genuinely divide — its attributes belonging under different
 survivors — is listed by every survivor that took part. That is the honest record, not a
 breach of the rule: forcing such a candidate onto one survivor would claim an absorption
@@ -676,14 +693,16 @@ what went where.
 # Output
 
 Return a JSON object with these fields:
-- `scratchpad`: your reasoning for steps 1-7
+- `decision_summary`: one short line per decision that took judgement, in {language} —
+  what you did and why. Not a reasoning trace, and not a line per candidate: only the
+  calls a reader would want to check.
 - `facets`: an array, one entry per surviving facet, each with:
   - `facet_name`: a short descriptive name in {language} (at most 5 words)
   - `facet_definition`: what the facet captures, in {language} (1-2 sentences)
   - `facet_question`: the one question this facet answers about the responses, in
     {language}, phrased as a question. No two surviving facets may state the same one.
-  - `source_facets`: the names of every candidate facet that folded into this one,
-    exactly as they were given to you. A facet that survived unchanged lists just itself.
+  - `source_facet_ids`: the bracketed ids of every candidate facet that folded into this
+    one, e.g. ["F1", "F7"]. One that survived unchanged lists just its own id.
   - `attributes`: an array, one entry per surviving attribute in that facet, each with:
     - `attribute_name`: a short descriptive name in {language} (at most 5 words)
     - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
@@ -692,11 +711,11 @@ Return a JSON object with these fields:
       attribute that carries one example gives one. NEVER merge attributes that mean
       different things in order to reach a higher count — the count follows the
       taxonomy, never the other way round
-    - `source_attributes`: the names of every candidate attribute that folded into this one,
-      exactly as they were given to you. One that survived unchanged lists just itself.
+    - `source_attribute_ids`: the bracketed ids of every candidate attribute that folded
+      into this one, e.g. ["F1-A2", "F4-A1"]. One that survived unchanged lists its own id.
 
-Names and definitions must be written in {language}. The two `source_*` fields are the
-exception: they repeat the candidate names verbatim, whatever language those were in.
+Names, definitions, questions and the decision summary are written in {language}. The two
+`source_*_ids` fields carry ids, not names, and are copied exactly as bracketed above.
 
 {UNIVERSAL_RULES}
 

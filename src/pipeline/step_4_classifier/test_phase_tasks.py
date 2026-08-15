@@ -162,22 +162,22 @@ def test_candidates_are_sorted_by_name_before_grouping():
 # =============================================================================
 
 def _survivor(name, *attrs, sources=(), attr_sources=None, question=""):
-    """One returned facet, with what it claims at both levels."""
+    """One returned facet, with the candidate ids it claims at both levels."""
     attr_sources = attr_sources or {}
     return ConsolidatedFacet(
         facet_name=name, facet_definition="d",
         facet_question=question or f"Wat zegt dit over {name}?",
-        source_facets=list(sources) or [name],
+        source_facet_ids=list(sources),
         attributes=[ConsolidatedAttribute(
             attribute_name=a, attribute_definition="d",
             example_observations=["e"],
-            source_attributes=list(attr_sources.get(a, [a]))) for a in attrs])
+            source_attribute_ids=list(attr_sources.get(a, []))) for a in attrs])
 
 
 def _survivors(clf, candidates, facets):
     task = {"domain_label": "d", "candidates": candidates}
     return clf._consolidation_survivors(task, ConsolidationResult(
-        scratchpad="", facets=facets))
+        decision_summary=[], facets=facets))
 
 
 def _actions(clf, action):
@@ -190,7 +190,8 @@ def test_an_unclaimed_facet_stays():
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Bejegening", "toon")]
     overlevenden = _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid"])])
+        _survivor("Snelheid", "wachttijd", sources=["F1"],
+                  attr_sources={"wachttijd": ["F1-A1"]})])
     assert {f.facet_name for f in overlevenden} == {"Snelheid", "Bejegening"}
     assert _actions(clf, "facet_kept_unclaimed")[0]["facet"] == "Bejegening"
 
@@ -202,7 +203,8 @@ def test_an_attribute_under_a_claimed_facet_stays():
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd", "doorlooptijd")]
     overlevenden = _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid"])])
+        _survivor("Snelheid", "wachttijd", sources=["F1"],
+                  attr_sources={"wachttijd": ["F1-A1"]})])
     assert len(overlevenden) == 1
     assert [a.attribute_name for a in overlevenden[0].attributes] == [
         "wachttijd", "doorlooptijd"]
@@ -215,7 +217,8 @@ def test_a_rescued_attribute_lands_on_the_survivor_that_absorbed_its_facet():
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Tempo", "doorlooptijd")]
     overlevenden = _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid", "Tempo"])])
+        _survivor("Snelheid", "wachttijd", sources=["F1", "F2"],
+                  attr_sources={"wachttijd": ["F1-A1"]})])
     assert len(overlevenden) == 1
     assert _actions(clf, "attribute_kept_unclaimed")[0]["landed_on"] == "Snelheid"
 
@@ -225,7 +228,8 @@ def test_a_wholly_kept_facet_brings_its_attributes_once():
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Bejegening", "toon")]
     overlevenden = _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid"])])
+        _survivor("Snelheid", "wachttijd", sources=["F1"],
+                  attr_sources={"wachttijd": ["F1-A1"]})])
     namen = [a.attribute_name for f in overlevenden for a in f.attributes]
     assert namen.count("toon") == 1
     assert not _actions(clf, "attribute_kept_unclaimed")
@@ -237,20 +241,37 @@ def test_a_relocated_attribute_counts_as_claimed():
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Bejegening", "toon")]
     overlevenden = _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid"]),
-        _survivor("Bejegening", "toon", sources=["Bejegening"])])
+        _survivor("Snelheid", "wachttijd", sources=["F1"],
+                  attr_sources={"wachttijd": ["F1-A1"]}),
+        _survivor("Bejegening", "toon", sources=["F2"],
+                  attr_sources={"toon": ["F2-A1"]})])
     assert not _actions(clf, "attribute_kept_unclaimed")
     assert sum(len(f.attributes) for f in overlevenden) == 2
 
 
-def test_an_invented_source_name_is_reported():
+def test_an_invented_source_id_is_reported():
     """An invented source claims nothing, which silently turns the candidate it
-    was meant to cover into an unclaimed one."""
+    was meant to cover into an unclaimed one. On ids the check is clean: the set
+    was handed out in this very prompt."""
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd")]
     _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid", "Vlotheid"])])
-    assert _actions(clf, "unknown_source_name")[0]["facets"] == ["Vlotheid"]
+        _survivor("Snelheid", "wachttijd", sources=["F1", "F9"],
+                  attr_sources={"wachttijd": ["F1-A1"]})])
+    assert _actions(clf, "unknown_source_id")[0]["facets"] == ["F9"]
+
+
+def test_the_same_attribute_name_under_two_facets_is_two_claims():
+    """Names are not unique. Claiming one used to count for both, so the other
+    was silently treated as absorbed."""
+    clf = _clf()
+    kandidaten = [_facet("Ecologie", "verantwoordelijkheid"),
+                  _facet("Samenleving", "verantwoordelijkheid")]
+    _survivors(clf, kandidaten, [
+        _survivor("Ecologie", "verantwoordelijkheid", sources=["F1", "F2"],
+                  attr_sources={"verantwoordelijkheid": ["F1-A1"]})])
+    gered = _actions(clf, "attribute_kept_unclaimed")
+    assert [g["id"] for g in gered] == ["F2-A1"]
 
 
 def test_provenance_pins_both_levels():
@@ -259,13 +280,12 @@ def test_provenance_pins_both_levels():
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Tempo", "doorlooptijd")]
     _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid", "Tempo"],
-                  attr_sources={"wachttijd": ["wachttijd", "doorlooptijd"]})])
+        _survivor("Snelheid", "wachttijd", sources=["F1", "F2"],
+                  attr_sources={"wachttijd": ["F1-A1", "F2-A1"]})])
     entry = _actions(clf, "consolidation_provenance")[0]["facets"][0]
-    assert entry["source_facets"] == ["Snelheid", "Tempo"]
+    assert entry["source_facet_ids"] == ["F1", "F2"]
     assert entry["facet_question"]
-    assert entry["attributes"][0]["source_attributes"] == [
-        "wachttijd", "doorlooptijd"]
+    assert entry["attributes"][0]["source_attribute_ids"] == ["F1-A1", "F2-A1"]
 
 
 def test_the_structure_carries_no_source_fields():
@@ -273,9 +293,11 @@ def test_the_structure_carries_no_source_fields():
     different thing and must not inherit its bookkeeping."""
     clf = _clf()
     overlevenden = _survivors(clf, [_facet("Snelheid", "wachttijd")], [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid"])])
+        _survivor("Snelheid", "wachttijd", sources=["F1"],
+                  attr_sources={"wachttijd": ["F1-A1"]})])
     kaart = overlevenden[0].model_dump()
-    assert "source_facets" not in kaart
+    assert "source_facet_ids" not in kaart
+    assert "facet_question" not in kaart
     assert set(kaart["attributes"][0]) == {
         "attribute_name", "attribute_definition", "example_observations"}
 
@@ -287,9 +309,11 @@ def test_two_survivors_stating_one_question_are_reported():
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Tempo", "doorlooptijd")]
     _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid"],
+        _survivor("Snelheid", "wachttijd", sources=["F1"],
+                  attr_sources={"wachttijd": ["F1-A1"]},
                   question="Hoe snel gaat het?"),
-        _survivor("Tempo", "doorlooptijd", sources=["Tempo"],
+        _survivor("Tempo", "doorlooptijd", sources=["F2"],
+                  attr_sources={"doorlooptijd": ["F2-A1"]},
                   question="hoe snel gaat het? ")])
     melding = _actions(clf, "duplicate_facet_question")[0]
     assert melding["facets"] == ["Snelheid", "Tempo"]
@@ -299,9 +323,11 @@ def test_distinct_questions_are_not_reported():
     clf = _clf()
     kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Bejegening", "toon")]
     _survivors(clf, kandidaten, [
-        _survivor("Snelheid", "wachttijd", sources=["Snelheid"],
+        _survivor("Snelheid", "wachttijd", sources=["F1"],
+                  attr_sources={"wachttijd": ["F1-A1"]},
                   question="Hoe snel gaat het?"),
-        _survivor("Bejegening", "toon", sources=["Bejegening"],
+        _survivor("Bejegening", "toon", sources=["F2"],
+                  attr_sources={"toon": ["F2-A1"]},
                   question="Hoe wordt men bejegend?")])
     assert not _actions(clf, "duplicate_facet_question")
 
@@ -312,11 +338,14 @@ def test_a_candidate_split_across_survivors_is_reported():
     clf = _clf()
     kandidaten = [_facet("Thema's", "ecologisch", "sociaal")]
     _survivors(clf, kandidaten, [
-        _survivor("Ecologie", "ecologisch", sources=["Thema's"],
+        _survivor("Ecologie", "ecologisch", sources=["F1"],
+                  attr_sources={"ecologisch": ["F1-A1"]},
                   question="Waar gaat het ecologisch over?"),
-        _survivor("Samenleving", "sociaal", sources=["Thema's"],
+        _survivor("Samenleving", "sociaal", sources=["F1"],
+                  attr_sources={"sociaal": ["F1-A2"]},
                   question="Waar gaat het sociaal over?")])
     melding = _actions(clf, "divided_source_facet")[0]
+    assert melding["source"] == "F1"
     assert melding["claimants"] == ["Ecologie", "Samenleving"]
 
 
