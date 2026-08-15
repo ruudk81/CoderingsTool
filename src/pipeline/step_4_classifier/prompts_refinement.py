@@ -366,10 +366,10 @@ def build_cross_domain_prompt(
 
     Every phase before this one is scope-bound, and that is no accident: per-idea
     (domain, facet) is a projection of where the attribute lives, so a structure
-    merge across a boundary drags every idea in that bucket along with it. Which
-    is exactly why it is allowed here and nowhere else — with dozens of scopes
-    each settled on its own, the same concept survives in several places, and no
-    other phase can see that.
+    merge across a domain boundary drags every idea in that bucket along with
+    it. Which is exactly why it is allowed here and nowhere else — with dozens
+    of scopes each settled on its own, the same concept survives in several
+    places, and no other phase can see that.
 
     Works on ids, never on names: the model returns groups as `source_ids` plus a
     `home_id`, and the surviving attribute inherits both the domain and the facet
