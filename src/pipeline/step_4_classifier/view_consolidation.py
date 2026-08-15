@@ -1,12 +1,17 @@
 #%%
 """
-View the consolidation decisions of the last step-4 run, human-readable.
+View the structure decisions of the last step-4 run, human-readable.
 
-Renders the action log (exports/experiment_logs/<dataset>_<vk>_p9_log.json)
-per domain: first the P5 facet decisions (grouped by axis), then the P8
-attribute decisions (grouped by facet). One line per decision, with the
-response texts that moved. Read-only — the log is the source, nothing is
+Renders the action log (exports/experiment_logs/<dataset>_<vk>_step4_log.json)
+per domain: first what consolidation settled, then what assignment had to drain,
+then what refinement judged on real counts. Cross-domain and run totals follow,
+since neither is domain-scoped. Read-only — the log is the source, nothing is
 recomputed.
+
+Every action name the classifier writes is routed below. An action this renderer
+does not know lands in UNKNOWN and is printed as such: the writer's names have
+drifted before, and a renderer that silently drops what it does not recognise
+reports "no decisions" for a run full of them.
 
 Usage:
     cd src && python -m pipeline.step_4_classifier.view_consolidation
@@ -14,90 +19,104 @@ Usage:
 
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 src_dir = Path(__file__).parent.parent.parent
 project_root = src_dir.parent
 sys.path.insert(0, str(src_dir))
 
+from utils.cacheManager import generate_enhanced_variable_key
 from test_data import TEST_DATA
 
 FILENAME = TEST_DATA.filename
 VAR_NAME = TEST_DATA.var_name
 SAMPLE_SIZE = TEST_DATA.sample_size
 
-MAX_TEXTS = 6          # response texts shown per decision
 RULE = "─" * 80
 
-# Facet-level (P5) and attribute-level (P8) action names as the log writes them.
-FACET_ACTIONS = {
-    "facet_keep", "facet_widen", "facet_merge", "facet_split",
-    "facet_misfit_move", "facet_misfit_out", "facet_kept_unclaimed",
-    "unknown_source_facet", "unroutable_facet_claim",
-    "facet_consolidation_failed",
+# Action names as classifier.py writes them, grouped by the phase that emits
+# them. Domain-scoped phases carry a "domain" field; the last two do not.
+CONSOLIDATION_ACTIONS = {
+    "facet_exact_dedup", "chunk_consolidation", "facet_kept_unclaimed",
+    "consolidation_failed", "consolidation_rounds_exhausted",
 }
-ATTR_ACTIONS = {
+ASSIGNMENT_ACTIONS = {"assignment_failed_to_drain"}
+REFINEMENT_ACTIONS = {
     "keep", "widen", "merge", "split", "misfit_move", "misfit_out",
-    "unknown_source_name", "unroutable_claim", "failed",
+    "unknown_source_name", "unroutable_claim",
+    "attribute_kept_unclaimed_in_refinement", "refinement_failed",
 }
+CROSS_DOMAIN_ACTIONS = {
+    "cross_domain_merge", "cross_domain_failed",
+    "attribute_kept_unclaimed_cross_domain",
+}
+TOTAL_ACTIONS = {"ideas_moved"}
 
 
-def _texts(entry, prefix="        "):
-    texts = entry.get("texts") or []
-    shown = [f'"{t}"' for t in texts[:MAX_TEXTS]]
-    more = f" … +{len(texts) - MAX_TEXTS} meer" if len(texts) > MAX_TEXTS else ""
-    return f"{prefix}{' · '.join(shown)}{more}" if shown else None
-
-
-def _print_structure_line(e, kind):
-    """One structure decision: keep/widen/merge/split."""
-    action = e["action"].replace("facet_", "")
-    result = e.get("result") or e.get("into") or ""
+def _sources(e):
+    """Sources as ' ← [a, b]', empty when a decision only names itself."""
     sources = e.get("sources") or []
-    if action == "split":
-        print(f"    SPLIT  → '{result}'  uit: {sources}  ({e.get('n_texts', 0)} teksten)")
-        line = _texts(e)
-        if line:
-            print(line)
-    elif sources == [result] or not sources:
-        print(f"    {action.upper():6s} '{result}'")
-    else:
-        print(f"    {action.upper():6s} '{result}'  ← {sources}")
+    result = e.get("result")
+    if not sources or sources == [result]:
+        return ""
+    return "  ← " + ", ".join(f"'{s}'" for s in sources)
 
 
-def _print_misfit_line(e):
-    verdict = "OUT " if e["action"].endswith("out") else "MOVE"
-    src = e.get("from_facet") or e.get("from_attribute") or "?"
-    tgt = e.get("target") or e.get("target_attribute") or ""
-    arrow = f" → '{tgt}'" if tgt else " → (geen doel: contentloos, blijft staan)"
-    print(f"    {verdict}   {e.get('n_texts', 0)} teksten uit '{src}'{arrow}")
-    line = _texts(e)
-    if line:
-        print(line)
-    reason = e.get("reason")
-    if reason:
-        print(f"        reden: {reason}")
-
-
-def _print_guard_line(e):
-    action = e["action"]
-    if action in ("facet_kept_unclaimed",):
+def _print_consolidation(e):
+    a = e["action"]
+    if a == "facet_exact_dedup":
+        print(f"    DEDUP  {e.get('before', 0)} → {e.get('after', 0)} facetten "
+              f"(byte-identieke chunk-herhalingen)")
+    elif a == "chunk_consolidation":
+        print(f"    SAMEN  facetten {e.get('facets_before', 0)} → {e.get('facets_after', 0)}"
+              f"  ·  attributen {e.get('attributes_before', 0)} → {e.get('attributes_after', 0)}")
+    elif a == "facet_kept_unclaimed":
         print(f"    BLEEF  '{e.get('facet')}'  (door geen enkele output geclaimd)")
-    elif action in ("unknown_source_facet", "unknown_source_name"):
-        print(f"    ?BRON  onbekende bronnen genoemd: {e.get('sources')}")
-    elif action in ("unroutable_facet_claim", "unroutable_claim"):
-        print(f"    !CLAIM {e.get('sources')} door meerdere outputs geclaimd "
-              f"zonder teksten — ideeën bleven op de bron")
-    elif action in ("facet_consolidation_failed", "failed"):
-        scope = e.get("axis") or e.get("facet") or ""
-        print(f"    FAAL   {scope}: {e.get('note', 'geen resultaat')}")
+    elif a == "consolidation_failed":
+        print(f"    FAAL   {e.get('note', 'geen resultaat')} "
+              f"({len(e.get('candidates') or [])} kandidaten)")
+    elif a == "consolidation_rounds_exhausted":
+        print(f"    RONDEN op na {e.get('rounds', 0)} rondes — "
+              f"{e.get('remaining', 0)} kandidaten niet samengevoegd")
+
+
+def _print_assignment(e):
+    print(f"    VANGNET {e.get('n_ideas', 0)} ideeën zonder antwoord "
+          f"→ '{e.get('target')}'")
+
+
+def _print_refinement(e):
+    a = e["action"]
+    if a in ("keep", "widen", "merge"):
+        print(f"    {a.upper():6s} '{e.get('result')}'{_sources(e)}")
+    elif a == "split":
+        srcs = ", ".join(f"'{s}'" for s in (e.get("sources") or []))
+        print(f"    SPLIT  → '{e.get('into')}'  uit: {srcs}  "
+              f"({e.get('n_texts', 0)} teksten)")
+    elif a == "misfit_move":
+        print(f"    MOVE   {e.get('n_texts', 0)} teksten → '{e.get('target')}'")
+    elif a == "misfit_out":
+        print(f"    OUT    {e.get('n_texts', 0)} teksten "
+              f"(geen bestemming: blijven staan waar ze zitten)")
+    elif a == "unknown_source_name":
+        print(f"    ?BRON  {e.get('sources')} — {e.get('note', '')}")
+    elif a == "unroutable_claim":
+        print(f"    !CLAIM {e.get('sources')} — {e.get('note', '')}")
+    elif a == "attribute_kept_unclaimed_in_refinement":
+        print(f"    BLEEF  '{e.get('attribute')}'  (door geen enkele output geclaimd)")
+    elif a == "refinement_failed":
+        print(f"    FAAL   {e.get('note', 'geen resultaat')} "
+              f"({e.get('attributes_before', 0)} attributen onaangeroerd)")
 
 
 def main():
     stem = Path(FILENAME).stem
-    variable_key = f"{VAR_NAME}_{SAMPLE_SIZE}"
-    log_path = project_root / "exports" / "experiment_logs" / f"{stem}_{variable_key}_p9_log.json"
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[VAR_NAME], is_merged=False, sample_size=SAMPLE_SIZE,
+    )
+    log_path = (project_root / "exports" / "experiment_logs"
+                / f"{stem}_{variable_key}_step4_log.json")
     if not log_path.exists():
         print(f"Geen actielog op: {log_path}")
         return
@@ -105,97 +124,82 @@ def main():
     actions = data.get("actions", [])
 
     print("=" * 80)
-    print("CONSOLIDATIEBESLISSINGEN (P5 facetten, P8 attributen)")
+    print("STRUCTUURBESLISSINGEN STEP 4")
     print("=" * 80)
     print(f"Dataset:  {data.get('dataset', FILENAME)}")
     print(f"Variable: {data.get('variable_key', variable_key)}")
     print(f"Log:      {log_path.name} ({len(actions)} acties)")
 
-    # -- bucket by domain --------------------------------------------------
-    facet_by_domain = defaultdict(list)
-    attr_by_domain = defaultdict(list)
-    p4_escalation_by_domain = defaultdict(list)
+    # -- route every action, keeping what we do not recognise ------------------
+    consolidation = defaultdict(list)
+    assignment = defaultdict(list)
+    refinement = defaultdict(list)
+    cross_domain = []
     totals = []
+    unknown = []
     for e in actions:
         a = e.get("action", "")
-        if a in ("_facet_totals", "_totals", "orphaned_facet_assignment",
-                 "orphaned_assignment"):
+        if a in CONSOLIDATION_ACTIONS:
+            consolidation[e.get("domain", "?")].append(e)
+        elif a in ASSIGNMENT_ACTIONS:
+            assignment[e.get("domain", "?")].append(e)
+        elif a in REFINEMENT_ACTIONS:
+            refinement[e.get("domain", "?")].append(e)
+        elif a in CROSS_DOMAIN_ACTIONS:
+            cross_domain.append(e)
+        elif a in TOTAL_ACTIONS:
             totals.append(e)
-        elif a in FACET_ACTIONS:
-            facet_by_domain[e.get("domain", "?")].append(e)
-        elif a in ATTR_ACTIONS:
-            attr_by_domain[e.get("domain", "?")].append(e)
-        elif a == "p4_batch_escalation":
-            p4_escalation_by_domain[e.get("domain", "?")].append(e)
-        # axis_system_* entries are P1 provenance; view_taxonomy covers them
+        else:
+            unknown.append(e)
 
-    domains = sorted(set(facet_by_domain) | set(attr_by_domain)
-                      | set(p4_escalation_by_domain))
+    domains = sorted(set(consolidation) | set(assignment) | set(refinement))
     for dom in domains:
         print(f"\n{RULE}\nDOMEIN: {dom}\n{RULE}")
 
-        p4_entries = p4_escalation_by_domain.get(dom, [])
-        if p4_entries:
-            print("\n  P4 — batch-escalaties:")
-            for e in p4_entries:
-                reasons = e.get("reasons") or {}
-                reasons_str = ", ".join(f"{k}={v}" for k, v in reasons.items())
-                print(f"    P4-escalaties: {reasons_str}")
+        if consolidation.get(dom):
+            print("\n  consolidatie — de inventaris vastzetten:")
+            for e in consolidation[dom]:
+                _print_consolidation(e)
 
-        f_entries = facet_by_domain.get(dom, [])
-        if f_entries:
-            print("\n  P5 — facetconsolidatie:")
-            by_axis = defaultdict(list)
-            for e in f_entries:
-                by_axis[e.get("axis", "")].append(e)
-            for axis in sorted(by_axis):
-                if axis:
-                    print(f"\n  as «{axis}»")
-                for e in by_axis[axis]:
-                    a = e["action"]
-                    if a in ("facet_keep", "facet_widen", "facet_merge", "facet_split"):
-                        _print_structure_line(e, "facet")
-                    elif a.startswith("facet_misfit"):
-                        _print_misfit_line(e)
-                    else:
-                        _print_guard_line(e)
+        if assignment.get(dom):
+            print("\n  toewijzing:")
+            for e in assignment[dom]:
+                _print_assignment(e)
 
-        a_entries = attr_by_domain.get(dom, [])
-        if a_entries:
-            print("\n  P8 — attribuutconsolidatie:")
-            by_facet = defaultdict(list)
-            for e in a_entries:
-                by_facet[e.get("facet", "")].append(e)
-            for facet in sorted(by_facet):
-                print(f"\n  facet «{facet}»")
-                for e in by_facet[facet]:
-                    a = e["action"]
-                    if a in ("keep", "widen", "merge", "split"):
-                        _print_structure_line(e, "attr")
-                    elif a.startswith("misfit"):
-                        _print_misfit_line(e)
-                    else:
-                        _print_guard_line(e)
+        if refinement.get(dom):
+            print("\n  naslijpen — oordeel op echte aantallen:")
+            for e in refinement[dom]:
+                _print_refinement(e)
+
+    if cross_domain:
+        print(f"\n{RULE}\nCROSS-DOMEIN\n{RULE}")
+        kept = [e for e in cross_domain
+                if e["action"] == "attribute_kept_unclaimed_cross_domain"]
+        for e in cross_domain:
+            a = e["action"]
+            if a == "cross_domain_merge":
+                print(f"    MERGE  '{e.get('result')}'{_sources(e)}")
+                print(f"           home: {e.get('home')}")
+            elif a == "cross_domain_failed":
+                print(f"    FAAL   {e.get('note', 'geen resultaat')}")
+        if kept:
+            print(f"\n    {len(kept)} attributen door geen enkele groep geclaimd "
+                  f"— bleven staan waar ze stonden")
 
     if totals:
         print(f"\n{RULE}\nTOTALEN\n{RULE}")
         for e in totals:
-            a = e["action"]
-            if a in ("_facet_totals", "_totals"):
-                level = "facetten (P5)" if a == "_facet_totals" else "attributen (P8)"
-                print(f"  {level}: {e.get('ideas_remapped', 0)} geremapt, "
-                      f"{e.get('ideas_split', 0)} gesplitst, "
-                      f"{e.get('ideas_moved', 0)} verplaatst, "
-                      f"{e.get('flagged_contentless_left_in_place', 0)} contentloos blijven staan, "
-                      f"{e.get('moves_with_unresolvable_target', 0)} moves zonder oplosbaar doel")
-                unresolved = e.get("unresolved_target_names") or {}
-                if unresolved:
-                    print(f"      onoplosbare doelen: {unresolved}")
-            else:
-                level = "facet" if "facet" in a else "attribuut"
-                print(f"  self-check ({level}): {e.get('ideas_affected', 0)} ideeën wezen naar "
-                      f"verdwenen nodes — {e.get('restored_nodes', 0)} node(s) teruggezet: "
-                      f"{e.get('facets') or e.get('attributes')}")
+            if e["action"] == "ideas_moved":
+                print(f"  {e.get('n_ideas', 0)} ideeën verplaatst door naslijpen")
+
+    if unknown:
+        print(f"\n{RULE}\nONBEKENDE ACTIES\n{RULE}")
+        print("  Deze viewer kent onderstaande namen niet. De schrijfkant in")
+        print("  classifier.py is veranderd zonder dat dit bestand meeging.")
+        for name, n in sorted(Counter(e.get("action", "") for e in unknown).items()):
+            example = next(e for e in unknown if e.get("action") == name)
+            fields = ", ".join(k for k in example if k != "action")
+            print(f"    {name}  (n={n})  velden: {fields}")
 
 
 if __name__ == "__main__":

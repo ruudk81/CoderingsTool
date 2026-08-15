@@ -47,7 +47,7 @@ def load_ideas(
     """Load ideas from step 4 growing model (taxonomy_classified cache).
 
     The growing model contains per-idea facet, attribute, and partition_name
-    populated by P4/P8/P9.
+    populated by assignment, refinement and cross-domain.
     """
     variable_key = generate_enhanced_variable_key(
         selected_variables=[variable],
@@ -63,7 +63,7 @@ def load_ideas(
     if not data:
         raise FileNotFoundError(
             f"No cached results found for variable_key '{variable_key}'.\n"
-            f"Run at least taxonomy (P1-P9) first."
+            f"Run step 4 (taxonomy) first."
         )
 
     ideas = []

@@ -1,6 +1,6 @@
 #%%
 """
-View taxonomy results (P1-P10): domains, facets, attributes, assignments.
+View taxonomy results: domains, facets, attributes, assignments.
 
 Loads from cached taxonomy results (step "taxonomy").
 
@@ -9,6 +9,7 @@ Usage:
 """
 
 import sys
+from collections import Counter
 from pathlib import Path
 
 src_dir = Path(__file__).parent.parent.parent
@@ -28,7 +29,7 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 def main():
     print("=" * 80)
-    print("TAXONOMY RESULTS VIEWER (P1-P10)")
+    print("TAXONOMY RESULTS VIEWER")
     print("=" * 80)
     print(f"Variable:     {VAR_NAME}")
     print(f"Sample size:  {SAMPLE_SIZE}")
@@ -72,39 +73,19 @@ def main():
 
         if result and result.facets:
             print(f"\n  Facets ({len(result.facets)}):")
-            if any(f.get("axis") for f in result.facets):
-                by_axis = {}
-                for j, facet_dict in enumerate(result.facets, 1):
-                    by_axis.setdefault(facet_dict.get("axis", ""), []).append((j, facet_dict))
-                for axis_name, items in by_axis.items():
-                    print(f"    Axis: {axis_name}")
-                    for j, facet_dict in items:
-                        facet_name = facet_dict.get("facet_name", "?")
-                        facet_desc = facet_dict.get("facet_description", "")
-                        print(f"      {j}. {facet_name}: {facet_desc}")
-                        boundary = facet_dict.get("boundary_test", "")
-                        if boundary:
-                            print(f"         Boundary: {boundary}")
-            else:
-                for j, facet_dict in enumerate(result.facets, 1):
-                    facet_name = facet_dict.get("facet_name", "?")
-                    facet_desc = facet_dict.get("facet_description", "")
-                    print(f"    {j}. {facet_name}: {facet_desc}")
+            for j, facet_dict in enumerate(result.facets, 1):
+                facet_name = facet_dict.get("facet_name", "?")
+                facet_def = facet_dict.get("facet_definition", "")
+                print(f"    {j}. {facet_name}: {facet_def}")
 
         if result and result.attributes:
+            attr_counts = Counter(result.attribute_assignments.values())
             print(f"\n  Attributes per facet:")
             for facet_name, attrs in sorted(result.attributes.items()):
-                # Count ideas assigned to each attribute
-                attr_counts = {}
-                for attr_name in result.attribute_assignments.values():
-                    attr_counts[attr_name] = attr_counts.get(attr_name, 0) + 1
-
                 print(f"    {facet_name} ({len(attrs)} attributes):")
                 for attr_dict in attrs:
                     attr_name = attr_dict.get("attribute_name", "?")
-                    attr_desc = attr_dict.get("attribute_description", "")
-                    count = attr_counts.get(attr_name, 0)
-                    print(f"      - {attr_name}: {count}")
+                    print(f"      - {attr_name}: {attr_counts.get(attr_name, 0)}")
 
     # Summary
     total_facets = sum(len(r.facets) for r in results.values())
