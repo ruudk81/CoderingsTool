@@ -362,3 +362,11 @@ def test_the_definitions_are_not_rendered_twice():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     assert "# What a facet is" not in prompt
     assert prompt.count("L3 — Facet:") == 1
+
+
+def test_disposition_action_and_outcome_stay_apart():
+    """A broad facet can otherwise treat an outcome as if it were an act. The
+    discovery prompt draws this line; the phase that actually merges did not."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "different KINDS of statement" in prompt
+    assert "Do not infer one from another either" in prompt

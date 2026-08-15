@@ -574,6 +574,11 @@ For each concept, work out which underlying question it answers about the respon
   answer. Evaluative direction is not an answer — see the universal rules below.
 - Do not create separate facets based only on the object being discussed when the same
   underlying answer applies. An object is not a question.
+- A disposition, an action and an outcome are different KINDS of statement, not degrees of
+  one. What something is oriented towards, what it actually does, and what follows from it
+  answer three questions, so they never fold together — a group that mixes them reads as
+  one item and codes as three. Do not infer one from another either: an action is only an
+  action when the response names one, and an outcome only when the response states it.
 
 **2. PREVALENCE SETS GRANULARITY (within one question only).**
 Every candidate carries how many passes proposed it UNDER THAT EXACT NAME. Support for a
