@@ -5,8 +5,8 @@ skipping, chunking and counts can be checked without an LLM call.
 """
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.classifier import (
-    PromptContext, TaxonomyClassifier, attribute_dicts, derive_facet_assignments,
-    facet_dicts,
+    PromptContext, TaxonomyClassifier, _strip_enumeration, attribute_dicts,
+    derive_facet_assignments, facet_dicts,
 )
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.drains import is_drain_item
@@ -81,6 +81,36 @@ def test_a_large_scope_is_chunked_with_overlap():
     assert all(t["total_chunks"] == len(tasks) for t in tasks)
     gezien = {o for t in tasks for o in t["observations"]}
     assert gezien == set(ctx.domain("d")["observations"])
+
+
+def test_the_list_number_is_taken_back_off_an_example():
+    """Discovery renders its input as `f"{i}. {obs}"` so the scratchpad can point
+    at lines. The model copies the whole line, and that rendering artefact then
+    travelled through consolidation into the codebook."""
+    assert _strip_enumeration("6. investeert in natuur → investeringen") == (
+        "investeert in natuur → investeringen")
+    assert _strip_enumeration("20.  duurzaam") == "duurzaam"
+
+
+def test_stripping_leaves_an_ordinary_answer_alone():
+    """A response may legitimately start with a figure."""
+    assert _strip_enumeration("1 op de 5 keer mis") == "1 op de 5 keer mis"
+    assert _strip_enumeration("geen winst → niet op winst gericht") == (
+        "geen winst → niet op winst gericht")
+
+
+def test_discovery_parse_cleans_the_examples():
+    clf = _clf()
+    parse = clf._discovery_parse_fn()
+
+    class _Response:
+        facets = [_facet("Snelheid", "Wachttijd")]
+
+    _Response.facets[0].attributes[0].example_observations = [
+        "3. lang wachten", "traag"]
+    facets = parse({}, _Response())
+    assert facets[0].attributes[0].example_observations == [
+        "lang wachten", "traag"]
 
 
 # =============================================================================
@@ -274,6 +304,20 @@ def test_distinct_questions_are_not_reported():
         _survivor("Bejegening", "toon", sources=["Bejegening"],
                   question="Hoe wordt men bejegend?")])
     assert not _actions(clf, "duplicate_facet_question")
+
+
+def test_a_candidate_split_across_survivors_is_reported():
+    """Not a breach: step 6 may move an attribute, so a divided candidate is the
+    honest record. It does leave its orphans an arbitrary landing spot."""
+    clf = _clf()
+    kandidaten = [_facet("Thema's", "ecologisch", "sociaal")]
+    _survivors(clf, kandidaten, [
+        _survivor("Ecologie", "ecologisch", sources=["Thema's"],
+                  question="Waar gaat het ecologisch over?"),
+        _survivor("Samenleving", "sociaal", sources=["Thema's"],
+                  question="Waar gaat het sociaal over?")])
+    melding = _actions(clf, "divided_source_facet")[0]
+    assert melding["claimants"] == ["Ecologie", "Samenleving"]
 
 
 # =============================================================================

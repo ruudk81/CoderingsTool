@@ -130,7 +130,39 @@ def test_prompt_explains_that_coverage_is_checked():
     prompt = build_chunk_consolidation_prompt(**_kwargs())
     assert "source_facets" in prompt
     assert "source_attributes" in prompt
-    assert "exactly one surviving" in prompt
+    assert "at least one surviving" in prompt
+
+
+def test_a_divided_candidate_may_be_claimed_by_several_survivors():
+    """Step 6 lets an attribute move to the facet where it belongs, so a
+    candidate facet whose contents divide cannot honestly be pinned to one
+    survivor. `exactly one` made the model claim an absorption that never
+    happened."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "exactly one surviving" not in prompt
+    assert "listed by every survivor that took part" in prompt
+
+
+def test_examples_are_one_to_three_and_never_a_reason_to_merge():
+    """Every candidate attribute usually carries a single example. Demanding
+    two or three left merging semantically distinct attributes as the cheapest
+    way to comply."""
+    prompt = build_chunk_consolidation_prompt(**_kwargs())
+    assert "1-3 observations carried over" in prompt
+    assert "NEVER merge attributes that mean" in prompt
+    assert "2-3 observations" not in prompt
+
+
+def test_the_candidate_block_shows_more_than_one_example():
+    """Consolidation can only carry over what it is shown."""
+    rich = DiscoveredFacet(
+        facet_name="Snelheid", facet_definition="…",
+        attributes=[DiscoveredAttribute(
+            attribute_name="Wachttijd", attribute_definition="…",
+            example_observations=["lang wachten", "traag", "duurt eeuwen"])])
+    block = build_candidate_block([rich], {}, {}, 4)
+    for text in ("lang wachten", "traag", "duurt eeuwen"):
+        assert f'e.g. "{text}"' in block
 
 
 def test_prompt_names_every_field_the_model_knows():

@@ -58,8 +58,9 @@ class DiscoveredAttribute(BaseModel):
             "in 1-2 sentences, in the survey language"))
     example_observations: List[str] = Field(
         ..., description=(
-            "2-3 representative observations from the input, using the exact "
-            "observation text"))
+            "1-3 representative observations, each copied exactly as the line "
+            "shows it but WITHOUT its leading number. Give what this attribute "
+            "actually has; never invent, pad or borrow one"))
 
 
 class DiscoveredFacet(BaseModel):
@@ -396,7 +397,9 @@ Return a JSON object with these fields:
   - `attributes`: an array, one entry per attribute inside that facet, each with:
     - `attribute_name`: a short descriptive name in {language} (at most 5 words)
     - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
-    - `example_observations`: 2-3 observations from the input, using the exact observation text
+    - `example_observations`: 1-3 observations this attribute actually holds, each copied
+      exactly as its line reads but WITHOUT the leading number. An attribute resting on one
+      observation gives one; never pad the list, and never borrow from another attribute
 
 All names, definitions and examples must be written in {language}.
 
@@ -406,6 +409,13 @@ All names, definitions and examples must be written in {language}.
 # =============================================================================
 # PROMPT — CHUNK CONSOLIDATION
 # =============================================================================
+
+#: Examples shown per candidate attribute. Consolidation is asked to carry
+#: examples over, so it can only pass on what it is shown: rendering one while
+#: asking for two or three left the model a choice between merging attributes it
+#: had just judged distinct, and writing an example that was never in the data.
+_EXAMPLES_SHOWN = 3
+
 
 def build_candidate_block(
     candidates: List[DiscoveredFacet],
@@ -442,13 +452,14 @@ def build_candidate_block(
         if facet.attributes:
             lines.append("    Attributes proposed inside it:")
             for attribute in facet.attributes:
-                example = (attribute.example_observations or [""])[0]
                 times = attribute_recurrence.get(attribute.attribute_name, 1)
                 lines.append(
                     f"      - {attribute.attribute_name} "
                     f"[{times}/{n_passes} passes]: "
                     f"{attribute.attribute_definition}")
-                if example:
+                examples = [e for e in attribute.example_observations
+                            if e][:_EXAMPLES_SHOWN]
+                for example in examples:
                     lines.append(f"        e.g. \"{example}\"")
         else:
             lines.append("    Attributes proposed inside it: (none)")
@@ -619,10 +630,15 @@ concept — keep it at the level where it belongs and do not state it twice.
 Confirm you have the minimal set of facets that covers the domain, each holding the minimal
 set of attributes that covers what it contains.
 Then check coverage: every candidate facet you were given must appear in the `source_facets`
-of exactly one surviving facet, and every attribute proposed inside those candidates must
-appear in the `source_attributes` of exactly one surviving attribute. A candidate you
-deliberately dropped is not exempt — fold it into whichever survivor absorbs its meaning.
-Merging and forgetting look identical in the output unless you list what went where.
+of at least one surviving facet, and every attribute proposed inside those candidates must
+appear in the `source_attributes` of at least one surviving attribute.
+A candidate whose contents genuinely divide — its attributes belonging under different
+survivors — is listed by every survivor that took part. That is the honest record, not a
+breach of the rule: forcing such a candidate onto one survivor would claim an absorption
+that did not happen.
+A candidate you deliberately dropped is not exempt — fold it into whichever survivor
+absorbs its meaning. Merging and forgetting look identical in the output unless you list
+what went where.
 
 # Output
 
@@ -638,7 +654,11 @@ Return a JSON object with these fields:
   - `attributes`: an array, one entry per surviving attribute in that facet, each with:
     - `attribute_name`: a short descriptive name in {language} (at most 5 words)
     - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
-    - `example_observations`: 2-3 observations carried over from the candidates, exact text
+    - `example_observations`: 1-3 observations carried over from the candidates that
+      folded into this attribute, copied exactly as shown. Give what is there: an
+      attribute that carries one example gives one. NEVER merge attributes that mean
+      different things in order to reach a higher count — the count follows the
+      taxonomy, never the other way round
     - `source_attributes`: the names of every candidate attribute that folded into this one,
       exactly as they were given to you. One that survived unchanged lists just itself.
 

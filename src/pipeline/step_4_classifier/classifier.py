@@ -50,6 +50,7 @@ Usage:
 """
 
 import asyncio
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -112,6 +113,25 @@ def _norm(text: Optional[str]) -> str:
     normalisers would drift, and a drifted one fails silently.
     """
     return (text or "").strip().lower()
+
+
+_ENUMERATION = re.compile(r"^\s*\d+\.\s*")
+
+
+def _strip_enumeration(text: str) -> str:
+    """Remove the list number the observation block put in front of a line.
+
+    Discovery renders its input as `f"{i}. {obs}"` so the scratchpad can point
+    at specific observations. The model then copies a whole line into
+    `example_observations` — it was told to use the exact observation text, and
+    the number is part of what it was shown. That rendering artefact became
+    data: `"6. investeert in natuur → …"` travelled through consolidation into
+    the codebook.
+
+    Stripped here rather than only asked for in the prompt, because compliance
+    is not something to depend on for a purely mechanical repair.
+    """
+    return _ENUMERATION.sub("", text).strip()
 
 
 def facet_dicts(nested: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -829,8 +849,23 @@ class TaxonomyClassifier:
 
     @staticmethod
     def _discovery_parse_fn():
+        """Facets as proposed, with the list numbering taken back off the examples.
+
+        The one place where examples enter the step, so the one place this has
+        to happen: everything downstream carries them over rather than reading
+        the observation block again.
+        """
         def parse_fn(task: Dict, response) -> List[DiscoveredFacet]:
-            return list(response.facets) if response else []
+            if not response:
+                return []
+            for facet in response.facets:
+                for attribute in facet.attributes:
+                    attribute.example_observations = [
+                        cleaned for cleaned in (
+                            _strip_enumeration(t)
+                            for t in attribute.example_observations)
+                        if cleaned]
+            return list(response.facets)
         return parse_fn
 
     @staticmethod
@@ -1064,9 +1099,21 @@ class TaxonomyClassifier:
         ]
         by_name = {_norm(s.facet_name): s for s in survivors}
         home: Dict[str, DiscoveredFacet] = {}
+        divided: Dict[str, List[str]] = {}
         for facet, survivor in zip(result.facets, survivors):
             for source in (facet.source_facets or []):
+                divided.setdefault(_norm(source), []).append(facet.facet_name)
                 home.setdefault(_norm(source), survivor)
+        # A candidate whose attributes belong under different survivors is
+        # listed by each of them, and that is the honest record — forcing it
+        # onto one would claim an absorption that did not happen. It does leave
+        # its orphans, if any, with an arbitrary landing spot: first claimant.
+        for source, claimants in divided.items():
+            if len(claimants) > 1:
+                self._action_log.append({
+                    "action": "divided_source_facet", "domain": label,
+                    "source": source, "claimants": claimants,
+                    "note": "split across survivors; orphans land on the first"})
 
         self._log_unknown_sources(label, result, candidates)
 
