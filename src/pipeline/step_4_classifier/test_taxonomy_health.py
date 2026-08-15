@@ -1,4 +1,5 @@
-"""Tests for `drain_domains` (finding B in the 2026-08-12 review).
+"""Tests for `drain_domains` (finding B in the 2026-08-12 review) and for the
+guard in `prune_empty_nodes`.
 
 A step-3 cache written under a stale key matches on whichever `DRAIN_KEYS`
 member survived and returns fewer than two — non-empty, so nothing downstream
@@ -7,11 +8,33 @@ notices on its own. These pin the warning that now makes that visible.
 
 from types import SimpleNamespace
 
-from pipeline.step_4_classifier.taxonomy_health import DRAIN_KEYS, drain_domains
+from models import DomainResultModel, DomainSet, TaxonomyResultsCache
+from pipeline.step_4_classifier.taxonomy_health import (
+    DRAIN_KEYS,
+    drain_domains,
+    prune_empty_nodes,
+)
 
 
 def _meta(domains):
     return SimpleNamespace(domains=domains)
+
+
+def _tax(assignments):
+    """One domain holding one facet with one attribute, with `assignments` on it."""
+    return TaxonomyResultsCache(
+        partition_set=DomainSet(partitions=[]),
+        partition_results={
+            "duurzaamheid": DomainResultModel(
+                partition_name="duurzaamheid",
+                n_labels=3,
+                n_batches=1,
+                facets=[{"facet_name": "Ecologie", "facet_definition": "…"}],
+                attributes={"Ecologie": [{"attribute_name": "Milieugerichtheid"}]},
+                attribute_assignments=assignments,
+            )
+        },
+    )
 
 
 def test_drain_domains_finds_both_by_current_keys():
@@ -100,3 +123,34 @@ def test_vangnetaandeel_telt_alleen_ideeen_in_een_drain():
     report = measure(tax)
     assert report.n_drain_ideas == 2
     assert round(report.drain_share) == 67
+
+
+# =============================================================================
+# PRUNE — de vangregel voor een run die vóór de toewijzing stopt
+# =============================================================================
+
+def test_prune_laat_alles_staan_als_er_niets_is_toegewezen():
+    """Een `stop_after_phase` vóór `assignment` levert structuur zonder
+    toewijzingen. "Geen ideeën hier" betekent dan niet dat de knoop leeg is,
+    alleen dat er nog niet is toegewezen — en snoeien op die lezing wist de hele
+    taxonomie. Gemeten op 2026-08-15: 55 facetten en 179 attributen ontdekt,
+    alle 234 gesnoeid, een lege taxonomie over de volledige heen geschreven."""
+    tax = _tax({})
+    report = prune_empty_nodes(tax)
+
+    dr = tax.partition_results["duurzaamheid"]
+    assert len(dr.facets) == 1
+    assert dr.attributes["Ecologie"]
+    assert report.facets == [] and report.attributes == []
+
+
+def test_prune_snoeit_wel_zodra_er_toewijzingen_zijn():
+    """Met toewijzingen in de run betekent "geen ideeën hier" wél leeg: de
+    vangregel mag het normale snoeien niet uitschakelen."""
+    tax = _tax({"idea-1": "Iets anders"})
+    report = prune_empty_nodes(tax)
+
+    dr = tax.partition_results["duurzaamheid"]
+    assert dr.facets == []
+    assert "Ecologie" not in dr.attributes
+    assert [n for _, _, n in report.attributes] == ["Milieugerichtheid"]

@@ -136,8 +136,20 @@ def prune_empty_nodes(tax: TaxonomyResultsCache) -> PruneReport:
 
     An attribute goes when no idea is assigned to it. A facet goes only when it has
     no attributes left AND no ideas of its own — never strand an idea.
+
+    Does nothing when the run produced no assignments at all. "No ideas here" then
+    does not mean the node is empty, only that nothing has been assigned yet — and
+    pruning on that reading deletes the entire taxonomy. A `stop_after_phase`
+    before `assignment` hit exactly that: 55 facets and 179 attributes discovered,
+    all 234 pruned, an empty taxonomy written over the complete one in the cache.
+
+    The guard is on the data rather than on the phase name, so it also covers an
+    assignment phase that failed outright, and needs no knowledge of phase order.
     """
     report = PruneReport()
+
+    if not any(dr.attribute_assignments for dr in tax.partition_results.values()):
+        return report
 
     for dname, dr in tax.partition_results.items():
         attr_counts = Counter((dr.attribute_assignments or {}).values())
