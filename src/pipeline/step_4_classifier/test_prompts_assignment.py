@@ -137,10 +137,28 @@ def test_prompt_vraagt_om_precies_een_attribuut():
 # DE OTHER-UITGANG
 # =============================================================================
 
-def test_prompt_legt_uit_wanneer_other_de_juiste_keuze_is():
+def test_prompt_legt_uit_wanneer_het_vangnet_de_juiste_keuze_is():
     prompt = build_assignment_prompt(**_kwargs())
-    assert "Overig" in prompt
+    assert "marked [CATCH-ALL]" in prompt
     assert "last resort" in prompt.lower()
+
+
+def test_menu_markeert_vangnetten_op_drain_key_niet_op_naam():
+    """De naam staat in de enquêtetaal; de markering komt uit drain_key."""
+    block, _ = build_assignment_menu(_inventaris())
+    gemarkeerd = [r for r in block.splitlines() if "[CATCH-ALL]" in r]
+    # twee facet-others, het domein-other-facet en zijn attribuut
+    assert len(gemarkeerd) == 4
+    assert not any("Wachttijd" in r or "Vriendelijkheid" in r for r in gemarkeerd)
+
+
+def test_prompt_noemt_het_vangnet_niet_bij_naam():
+    """drains.py noemt het vangnet in de enquêtetaal — Overig, Other, of wat de
+    volgende taal ervan maakt. Een prompt die naar "Overig" verwijst wijst op een
+    Engelse dataset naar een optie die niet in het menu staat."""
+    prompt = build_assignment_prompt(**_kwargs(menu_block="<menu>"))
+    for naam in ("Overig", "Other"):
+        assert naam not in prompt, naam
 
 
 def test_prompt_zet_valence_neer_als_richting_niet_sentiment():

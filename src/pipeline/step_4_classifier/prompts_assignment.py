@@ -10,10 +10,13 @@ Nu is er één poort. Het menu is domeinbreed maar per facet gegroepeerd, zodat
 het model de structuur ziet waarbinnen het kiest, en het facet volgt uit het
 gekozen attribuut in plaats van er los van te worden bepaald.
 
-**Het menu heeft altijd een uitgang.** Onder elk facet staat een `Overig`, en
-onderaan staat het `Overig`-facet van het domein met zijn eigen attribuut. Er is
-dus altijd een geldig antwoord, en er hoeft geen tweede manier te zijn om niets
-te kiezen — die kwam als `__UNASSIGNED__` telkens terug.
+**Het menu heeft altijd een uitgang.** Onder elk facet staat een `other`-
+attribuut, en onderaan staat het `other`-facet van het domein met zijn eigen
+attribuut. Er is dus altijd een geldig antwoord, en er hoeft geen tweede manier
+te zijn om niets te kiezen — die kwam als `__UNASSIGNED__` telkens terug.
+
+Beide dragen in het menu de markering `[CATCH-ALL]`, en de prompt verwijst
+daarnaar. Naar hun naam verwijzen kan niet: die staat in de enquêtetaal.
 
 **Eén call per uniek genormaliseerd label**, niet per idee-instantie: identieke
 tekst deelt één oordeel. Dat is geen batch — het model ziet één label en geeft
@@ -45,6 +48,10 @@ def build_assignment_menu(
 
     Een facet zonder attributen valt weg. Toewijzing kiest een attribuut, dus
     zo'n facet zou een regel in het menu zijn die niemand kan kiezen.
+
+    Vangnetten dragen `[CATCH-ALL]`, net als in `build_contents_block`. De naam
+    staat in de enquêtetaal — `Overig`, `Other`, of wat de volgende taal ervan
+    maakt — dus de prompt kan er niet naar verwijzen; de markering wel.
     """
     blocks: List[str] = []
     id_map: Dict[str, Dict[str, Any]] = {}
@@ -54,7 +61,9 @@ def build_assignment_menu(
         attributes = facet.get("attributes") or []
         if not attributes:
             continue
-        lines = [f"Facet: {facet['facet_name']} — {facet['facet_definition']}"]
+        facet_tag = "  [CATCH-ALL]" if is_drain_item(facet) else ""
+        lines = [f"Facet: {facet['facet_name']} — "
+                 f"{facet['facet_definition']}{facet_tag}"]
         for attribute in attributes:
             counter += 1
             attribute_id = f"A{counter}"
@@ -63,7 +72,8 @@ def build_assignment_menu(
                 "attribute_name": attribute["attribute_name"],
                 "is_drain": is_drain_item(attribute),
             }
-            lines.append(f"  [{attribute_id}] {attribute['attribute_name']}")
+            tag = "  [CATCH-ALL]" if is_drain_item(attribute) else ""
+            lines.append(f"  [{attribute_id}] {attribute['attribute_name']}{tag}")
             lines.append(f"        {attribute['attribute_definition']}")
             examples = attribute.get("example_observations") or []
             if examples:
@@ -149,10 +159,10 @@ Here is the response to place:
 Pick exactly one attribute — the one that names what this response actually refers to. Read
 the definitions, not only the names. If two seem to fit, choose the more specific one.
 
-Each facet ends with an "Overig" option, and the menu ends with an "Overig" facet for the
-domain as a whole. These are real answers, for a response that belongs here but that none
-of the named attributes covers. Use them as a last resort, never as a way to avoid reading
-the menu: if a named attribute fits, that attribute is the answer.
+Some options are marked [CATCH-ALL]: one at the end of every facet, and one whole facet at
+the end of the menu for the domain as a whole. These are real answers, for a response that
+belongs here but that none of the named attributes covers. Use them as a last resort, never
+as a way to avoid reading the menu: if a named attribute fits, that attribute is the answer.
 
 # Valence
 
