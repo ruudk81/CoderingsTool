@@ -626,7 +626,7 @@ MERGE TEST — run it on any two facets before you fold them together:
 2. Does the difference between them give an analysis anything? If it does, keep it.
 3. Can you state what they share as a thing in its own right, without listing them?
 4. After merging, does every attribute named under them still have one obvious place?
-Merge only on four times yes. Never merge to reach a count — not of items, not of examples.
+Merge only on four times yes. Never merge to reach a count — not of facets, not of attributes.
 
 **Step 3 — Apply the same-question test**
 For each group, WRITE DOWN the one question it answers about the responses, phrased as a
