@@ -45,10 +45,10 @@ STANDING_NOT_KNOWN_KEY = "not_known"
 STANDING_OTHER_KEY = "other"
 STANDING_NO_SUBJECT_KEY = "no_subject"
 
-# Elke plek die "is dit een vangnet?" vraagt leest DEZE tuple. Losse paren
-# hebben het twee keer verkeerd gedaan: bij de hernoeming van 2026-08-12 en
-# opnieuw op 2026-08-13, toen no_subject erbij kwam en _set_domain_keys hem
-# niet kende — het domein kreeg zijn label als key en step 4 zag geen vangnet.
+# Every place asking "is this a catch-all?" reads THIS tuple. Separate pairs got
+# it wrong twice: at the 2026-08-12 rename, and again on 2026-08-13 when
+# no_subject was added and _set_domain_keys did not know it — the domain got its
+# label as key and step 4 saw no catch-all.
 STANDING_KEYS = (STANDING_NOT_KNOWN_KEY, STANDING_OTHER_KEY,
                  STANDING_NO_SUBJECT_KEY)
 

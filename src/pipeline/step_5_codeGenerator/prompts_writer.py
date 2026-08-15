@@ -1,15 +1,16 @@
-"""Stap 4 — opschrijven. De vorm staat al vast: hoeveel codes en welke richting.
+"""Step 4 — writing it down. The shape is already fixed: how many codes, and
+which direction.
 
-Dit vult alleen de teksten in — naam, definitie, diagnostische test, indicatoren,
-een grensnotitie tegen de naaste buurcode, en het enige veto dat deze stap nog
-mag uitoefenen: `nameable`. De prompt toont per code elk lid-attribuut als
-naam + definitie (nooit alleen een naam — een gepoolde of MECE-samengevoegde
-vorm kan tien of meer leden dragen, en een kale naamlijst geeft het model te
-weinig grond om een naam en definitie te schrijven die bij de werkelijke
-inhoud past) en de al besloten richting; respondenttellingen, domein, facet en
-attribuut-ids zijn oordeel-irrelevant en komen nergens in de prompt of het
-responsemodel voor. De richting wordt wél getoond — die is al besloten en moet
-gerespecteerd worden, niet herleid.
+This only fills in the texts — name, definition, diagnostic test, indicators, a
+boundary note against the nearest neighbouring code, and the one veto this step
+may still exercise: `nameable`. Per code the prompt shows every member attribute
+as name + definition (never a name alone — a pooled or MECE-merged shape can
+carry ten members or more, and a bare list of names gives the model too little
+ground to write a name and definition that fit the actual contents) together with
+the direction already decided. Respondent counts, domain, facet and attribute ids
+are judgement-irrelevant and appear nowhere in the prompt or the response model.
+The direction is shown — it has already been decided and must be respected, not
+re-derived.
 """
 from __future__ import annotations
 
@@ -86,8 +87,8 @@ class WriterResult(BaseModel):
 
 
 def make_writer_model(shapes) -> type:
-    """WriterResult met `key` beperkt tot de aangeboden vormen, zodat de LLM er
-    geen kan verzinnen of overslaan."""
+    """WriterResult with `key` restricted to the shapes on offer, so the LLM can
+    neither invent one nor skip one."""
     keys: Tuple[str, ...] = tuple(shape.key for shape in _ordered(shapes))
     constrained_code_text = create_model(
         "ConstrainedCodeText",

@@ -1,23 +1,23 @@
-"""Stap 2b — verzamelnamen consolideren voordat er gepoold wordt.
+"""Step 2b — consolidate umbrella names before pooling.
 
-Stap 2 (prompts_relations.py) genereert per attribuut onafhankelijk een
-verzamelnaam ("umbrella"). Niets dwingt twee gelijke betekenissen tot dezelfde
-bewoording, dus verwante namen versplinteren de pool ("Bankdiensten" /
-"Bankdiensten en aanbod").
+Step 2 (prompts_relations.py) generates an umbrella name per attribute,
+independently. Nothing forces two identical meanings into the same wording, so
+related names splinter the pool (one name and that same name plus a trailing
+"and offering").
 
-Eerste vorm van deze module vroeg het model een partitionering te maken
-("groepeer de namen die hetzelfde betekenen"). Op een echte run leverde dat
-NIETS op: elke naam als eigen groep is een even geldig antwoord op die vraag, dus
-er was geen dwang om iets samen te voegen. De vorm hieronder stelt in plaats
-daarvan een per-naam vraag — "is er een andere naam in de lijst die hetzelfde
-betekent?" — hetzelfde patroon als `synonym_of` in prompts_relations.py, dat op
-diezelfde run wél drie correcte paren vond. Een per-item vraag dwingt een
-opzoeking per item af; een groepeervraag niet.
+The first form of this module asked the model for a partition ("group the names
+that mean the same thing"). On a real run that yielded NOTHING: every name as its
+own group is an equally valid answer to that question, so there was no pressure
+to merge anything. The form below asks a per-name question instead — "is there
+another name in the list that means the same thing?" — the same pattern as
+`synonym_of` in prompts_relations.py, which did find three correct pairs on that
+same run. A per-item question forces a lookup per item; a grouping question does
+not.
 
-De canonieke naam per groep wordt niet meer door het model gekozen: dat is
-deterministiek in code (relations.py), gebaseerd op hoeveel attributen elke naam
-al draagt — een telling die in een prompt een lekkanaal zou zijn, maar in code
-gewoon een sorteersleutel is.
+The canonical name per group is no longer chosen by the model: that is
+deterministic in code (relations.py), based on how many attributes each name
+already carries — a count that would be a leak channel in a prompt, but is just a
+sort key in code.
 """
 from __future__ import annotations
 

@@ -1,26 +1,25 @@
-"""Toewijzing: één label, één attribuut, en daarmee ook zijn facet.
+"""Assignment: one label, one attribute, and with it the attribute's facet.
 
-Hiervoor waren dit twee poorten. Een idee kreeg eerst een facet en daarna,
-binnen dat facet, een attribuut. Wie op de eerste poort strandde kreeg
-`__UNASSIGNED__` en daarmee per definitie ook geen attribuut — een naam die
-niet in de structuur stond, waar alles stroomafwaarts een uitzondering voor
-moest maken.
+This used to be two gates. An idea was given a facet first, then an attribute
+inside that facet. Anything that stranded on the first gate got `__UNASSIGNED__`
+and by definition no attribute either — a name that was not in the structure, and
+that everything downstream had to make an exception for.
 
-Nu is er één poort. Het menu is domeinbreed maar per facet gegroepeerd, zodat
-het model de structuur ziet waarbinnen het kiest, en het facet volgt uit het
-gekozen attribuut in plaats van er los van te worden bepaald.
+Now there is one gate. The menu spans the domain but stays grouped by facet, so
+the model sees the structure it is choosing within, and the facet follows from
+the chosen attribute instead of being determined separately.
 
-**Het menu heeft altijd een uitgang.** Onder elk facet staat een `other`-
-attribuut, en onderaan staat het `other`-facet van het domein met zijn eigen
-attribuut. Er is dus altijd een geldig antwoord, en er hoeft geen tweede manier
-te zijn om niets te kiezen — die kwam als `__UNASSIGNED__` telkens terug.
+**The menu always has an exit.** Every facet carries an `other` attribute, and
+the domain's `other` facet sits at the bottom with an attribute of its own. So
+there is always a valid answer, and no second way of choosing nothing is needed —
+that one kept coming back as `__UNASSIGNED__`.
 
-Beide dragen in het menu de markering `[CATCH-ALL]`, en de prompt verwijst
-daarnaar. Naar hun naam verwijzen kan niet: die staat in de enquêtetaal.
+Both carry the `[CATCH-ALL]` marker in the menu, and the prompt points at that
+marker. Pointing at their name is impossible: the name is in the survey language.
 
-**Eén call per uniek genormaliseerd label**, niet per idee-instantie: identieke
-tekst deelt één oordeel. Dat is geen batch — het model ziet één label en geeft
-één attribuut.
+**One call per unique normalised label**, not per idea instance: identical text
+shares one judgement. This is not a batch — the model sees one label and returns
+one attribute.
 """
 from __future__ import annotations
 
@@ -39,19 +38,19 @@ from .prompts_shared import INSTRUCTOR_HINT, build_context_block
 def build_assignment_menu(
     facets: List[Dict[str, Any]],
 ) -> Tuple[str, Dict[str, Dict[str, Any]]]:
-    """Het domeinbrede menu, per facet gegroepeerd, plus de id→keuze-map.
+    """The domain-wide menu, grouped by facet, plus the id -> choice map.
 
-    Ids lopen door over facetgrenzen heen: het model kiest een attribuut, niet
-    een facet plus een attribuut. De map is wat de parse nodig heeft om van id
-    terug naar (facet, attribuut) te komen — een keuze tussen de invoer in
-    plaats van vrije tekst die teruggematcht moet worden.
+    Ids run on across facet boundaries: the model picks an attribute, not a facet
+    plus an attribute. The map is what the parse needs to get from an id back to
+    (facet, attribute) — a choice among the inputs rather than free text that has
+    to be matched back.
 
-    Een facet zonder attributen valt weg. Toewijzing kiest een attribuut, dus
-    zo'n facet zou een regel in het menu zijn die niemand kan kiezen.
+    A facet without attributes drops out. Assignment picks an attribute, so such
+    a facet would be a line in the menu that nobody can choose.
 
-    Vangnetten dragen `[CATCH-ALL]`, net als in `build_contents_block`. De naam
-    staat in de enquêtetaal — `Overig`, `Other`, of wat de volgende taal ervan
-    maakt — dus de prompt kan er niet naar verwijzen; de markering wel.
+    Catch-alls carry `[CATCH-ALL]`, as in `build_contents_block`. Their name is in
+    the survey language — `Overig`, `Other`, or whatever the next language makes
+    of it — so the prompt cannot point at the name; it can point at the marker.
     """
     blocks: List[str] = []
     id_map: Dict[str, Dict[str, Any]] = {}
@@ -89,11 +88,11 @@ def build_assignment_menu(
 # =============================================================================
 
 def build_assignment_model(attribute_ids: List[str]):
-    """Runtime model waarin het menu de id-ruimte is.
+    """Runtime model in which the menu is the id space.
 
-    Het menu ligt als `Literal` in het schema, dus een verzonnen id is een
-    schemafout die instructor overdoet — in plaats van een inhoudsfout die drie
-    fasen verderop opduikt als een attribuut dat niemand kent.
+    The menu sits in the schema as a `Literal`, so an invented id is a schema
+    error that instructor retries — instead of a content error that surfaces
+    three phases later as an attribute nobody knows.
     """
     id_literal = Literal[tuple(attribute_ids)]  # type: ignore[valid-type]
     return create_model(
@@ -127,7 +126,7 @@ def build_assignment_prompt(
     menu_block: str,
     label: str,
 ) -> str:
-    """Plaats één label in het menu van zijn domein."""
+    """Place one label in the menu of its domain."""
     return f"""You are a qualitative coding assistant. Assign the survey response below to
 the single attribute that best captures what it refers to.
 

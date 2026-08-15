@@ -1,29 +1,29 @@
-"""Naslijpen binnen het domein, en één ronde over de domeingrenzen heen.
+"""Refinement inside the domain, and one round across the domain boundaries.
 
-Consolidatie oordeelde op de observaties waaruit elke kandidaat voortkwam;
-naslijpen is de eerste fase die **echte aantallen, aandelen en antwoordteksten**
-voor zich heeft. Het is daarmee de enige plek waar zichtbaar wordt dat een bak
-iets anders bevat dan zijn naam belooft.
+Consolidation judged on the observations each candidate came from; refinement is
+the first phase with **real counts, shares and response texts** in front of it.
+That makes it the only place where it becomes visible that a bucket holds
+something other than its name promises.
 
-Twee dingen verschillen van de vorige opzet:
+Two things differ from the previous design:
 
-**De scope is het domein, niet het facet.** Daardoor ligt het facet níét meer
-vast: een attribuut mag binnen zijn domein naar een ander facet verhuizen. Het
-domein blijft gelijk, en `facet_assignments` volgt waar het attribuut leeft, dus
-zo'n verplaatsing herlabelt precies de ideeën die het betreft. Per facet was dat
-onmogelijk — daar kon alleen de ideeën verhuizen, nooit de plaatsing.
+**The scope is the domain, not the facet.** That leaves the facet **not** fixed:
+an attribute may move to another facet within its domain. The domain stays the
+same, and `facet_assignments` follows where the attribute lives, so such a move
+relabels exactly the ideas it concerns. Per facet that was impossible — there
+only the ideas could move, never the placement.
 
-**De splitsclausule is herschreven.** Hij luidde: *"an attribute holding a large
+**The split clause has been rewritten.** It read: *"an attribute holding a large
 share AND visibly diverse contents is too abstract: SPLIT it, do not widen it"*.
-Die is geschreven toen items smal en talrijk waren; sinds discovery ze bewust
-breed maakt vuurde hij voortdurend. Gemeten gevolg: consolidatie bracht 102
-attributen terug, naslijpen blies ze op naar 126, cross-scope haalde er 23 weer
-af. Netto stilstand. Nu mag splitsen alleen wanneer de inhoud twee onderscheiden
-waarden op dezelfde eigenschap toont die de bak niet allebei eerlijk kan noemen.
+That was written when items were narrow and numerous; since discovery makes them
+deliberately broad it fired constantly. Measured effect: consolidation brought
+102 attributes back, refinement inflated them to 126, cross-scope removed 23
+again. Net standstill. Splitting is now allowed only when the contents show two
+distinct values on the same property that no single honest name covers.
 
-Vangnetten doen niet mee. Ze worden niet samengevoegd, gesplitst, verplaatst of
-verbreed — een vangnet is een aanbod, geen categorie, en het beoordelen alsof
-het er een is maakt er alsnog een van.
+Catch-alls take no part. They are not merged, split, moved or widened — a
+catch-all is an offer, not a category, and judging it as if it were one turns it
+into one after all.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 # =============================================================================
 
 class RefinedAttribute(BaseModel):
-    """Eén attribuut zoals het uit het naslijpen komt."""
+    """One attribute as refinement leaves it."""
     action: Literal["keep", "merge", "widen", "split"] = Field(
         ..., description=(
             "What was done: 'keep' unchanged, 'merge' several inputs into this "
@@ -84,7 +84,7 @@ class RefinedAttribute(BaseModel):
 
 
 class RefinementMisfitGroup(BaseModel):
-    """Een groep responsen die verkeerd zit, met waar hij heen moet."""
+    """A group of responses sitting in the wrong place, with where it belongs."""
     verdict: Literal["move", "out"] = Field(
         ..., description=(
             "'move' when the group belongs to another attribute in this "
@@ -129,11 +129,11 @@ def build_contents_block(
     counts: Dict[str, int],
     top_n: int,
 ) -> str:
-    """Wat elk attribuut werkelijk bevat, per facet, met zijn omvang.
+    """What each attribute actually holds, per facet, with its size.
 
-    Aandelen worden getoond zodat het model omvang relatief aan de buren kan
-    wegen. Er staat nergens een drempel: die zou van één dataset zijn afgelezen
-    en daarmee net zo use-case-gebonden als een voorbeeld uit klantdata.
+    Shares are shown so the model can weigh size relative to the neighbours. No
+    threshold appears anywhere: one would have been read off a single dataset,
+    and is therefore just as use-case-bound as an example lifted from client data.
     """
     blocks = []
     for facet in facets:
@@ -355,20 +355,20 @@ def build_cross_domain_prompt(
     intent: str,
     inventory_block: str,
 ) -> str:
-    """De enige fase die meer dan één domein tegelijk ziet.
+    """The only phase that sees more than one domain at a time.
 
-    Elke fase hiervoor is scope-vast, en dat is geen toeval: per-idee (domein,
-    facet) is een projectie van waar het attribuut leeft, dus een structuurmerge
-    over een grens versleept élk idee in die bak tegelijk. Precies daarom mag
-    het hier wél en nergens anders — met tientallen scopes die elk apart zijn
-    vastgezet overleeft hetzelfde begrip op meerdere plekken, en geen andere
-    fase kan dat zien.
+    Every phase before this one is scope-bound, and that is no accident: per-idea
+    (domain, facet) is a projection of where the attribute lives, so a structure
+    merge across a boundary drags every idea in that bucket along with it. Which
+    is exactly why it is allowed here and nowhere else — with dozens of scopes
+    each settled on its own, the same concept survives in several places, and no
+    other phase can see that.
 
-    Werkt op ids, nooit op namen: het model geeft groepen terug als `source_ids`
-    plus een `home_id`, en het overlevende attribuut erft het domein én het
-    facet van die home. Verplaatsing is daarmee een keuze tussen de invoer in
-    plaats van vrije tekst die teruggematcht moet worden, en een vergeten id is
-    detecteerbaar in plaats van stil.
+    Works on ids, never on names: the model returns groups as `source_ids` plus a
+    `home_id`, and the surviving attribute inherits both the domain and the facet
+    of that home. Relocation is thereby a choice among the inputs rather than free
+    text that has to be matched back, and a forgotten id is detectable instead of
+    silent.
     """
     return f"""You are a taxonomy consolidation specialist for surveys.
 Each domain settled its attributes on its own, without seeing the others. The same concept

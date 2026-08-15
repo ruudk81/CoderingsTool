@@ -1,53 +1,48 @@
-"""Stap 5 — MECE-afdwinging over de verzameling codes: prompts + responsemodellen.
+"""Step 5 — MECE enforcement across the set of codes: prompts + response models.
 
-Pass A (`OverlapVerdict`) vraagt per code naar de moeilijkste buur: een
-gedwongen opzoeking, geen partitionering — nooit een groepeervraag. Een
-groepeervraag ("welke codes overlappen?") is in deze codebase eerder
-geprobeerd voor verzamelnamen (`prompts_umbrella_merge.py`'s eerste vorm) en
-leverde op een echte run niets op: 45 namen in, 45 groepen uit, want "hoort
-bij niets" is een even geldig antwoord als een echte groep. Een per-item vraag
-met een gedwongen opzoeking werkt wél — `synonym_of` in `prompts_relations.py`
-vond in dezelfde run drie echte paren.
+Pass A (`OverlapVerdict`) asks each code for its hardest neighbour: a forced
+lookup, not a partition — never a grouping question. A grouping question ("which
+codes overlap?") has been tried before in this codebase, for umbrella names (the
+first form of `prompts_umbrella_merge.py`), and yielded nothing on a real run:
+45 names in, 45 groups out, because "belongs with nothing" is as valid an answer
+as a real group. A per-item question with a forced lookup does work — `synonym_of`
+in `prompts_relations.py` found three genuine pairs in that same run.
 
-Pass B was ooit een geschreven scheidingsregel + een boolean (`one_dimension`).
-Dat kon niet werken: een model dat gevraagd wordt een regel te schrijven,
-schrijft er altijd één, en concludeert daarna — omdat het de regel zelf net
-heeft geschreven — dat de codes scheidbaar zijn. Op een live run kwamen er 31
-paren uit Pass A en nul samenvoegingen uit Pass B: de "regels" waren de twee
-definities herhaald, geen regel. Het genereren van een verantwoording is geen
-toets zolang de model zelf bepaalt of hij slaagt.
+Pass B was once a written separation rule plus a boolean (`one_dimension`). That
+could not work: a model asked to write a rule always writes one, and then
+concludes — because it just wrote the rule itself — that the codes are separable.
+On a live run Pass A produced 31 pairs and Pass B zero merges: the "rules" were
+the two definitions restated, not a rule. Generating a justification is not a test
+as long as the model decides whether it passes.
 
-Pass B werd daarna een blinde binaire toewijzingsproef: echte ideeteksten van
-beide codes gepoold, geschud, zonder herkomst voorgelegd, en gescoord tegen de
-bekende herkomst. Ook dát mat het verkeerde: op een live run haalde het 31
-paren gemiddeld 91% accuracy — en het codeboek hield alsnog vier codes over
-duurzaamheid, vier over persoonlijk contact en vier over visuele identiteit
-over. Scheidbaarheid is geen orthogonaliteit: de proef toont ideeën uit elke
-code's EIGEN attributen, en die zijn lexicaal te onderscheiden zelfs wanneer
-beide codes dezelfde dimensie dekken. Een model dat op bewoording sorteert,
-scoort hoog zonder dat de codes een echte dimensie uiteen leggen.
+Pass B then became a blind binary assignment probe: real idea texts from both
+codes pooled, shuffled, presented without provenance, and scored against the known
+provenance. That measured the wrong thing too: on a live run 31 pairs averaged 91%
+accuracy — and the codebook still kept four codes on one theme, four on another and
+four on a third. Separability is not orthogonality: the probe shows ideas from each
+code's OWN attributes, and those are lexically distinguishable even when both codes
+cover the same dimension. A model sorting on wording scores high without the codes
+pulling a real dimension apart.
 
-Pass B is nu een blinde toewijzingsproef met een DERDE keuze (bronspecificatie
-§4.8): naast code A en code B mag het model "BOTH" antwoorden — het idee past
-bij beide even goed. Twee deterministische signalen (Python, nooit een claim
-van het model zelf; zie `mece.py`'s `score_probe`): `accuracy` (onder de
-ideeën die wél op één kant vielen, het aandeel dat op de juiste kant kwam —
-vangt "kan niet uit elkaar gehouden worden") en `both_rate` (het aandeel van
-ALLE bevraagde ideeën dat BOTH kreeg — vangt "kan wel uit elkaar gehouden
-worden, maar hoort allebei écht bij beide", precies het duurzaamheidsgeval).
-Samenvoegen bij accuracy op/onder zijn drempel ÓF both_rate op/boven de zijne
-— zie `mece.py` (`score_probe`, `is_one_dimension`). De nuloptie is
-samenvoegen, niet apart houden (bronspecificatie §2.5, compressievoorkeur):
-een paar moet zijn aparte bestaansrecht bewijzen, niet andersom.
+Pass B is now a blind assignment probe with a THIRD choice (source specification
+§4.8): besides code A and code B the model may answer "BOTH" — the idea fits both
+equally well. Two deterministic signals (Python, never a claim by the model itself;
+see `score_probe` in `mece.py`): `accuracy` (among the ideas that did fall on one
+side, the share that landed on the correct side — catches "cannot be told apart")
+and `both_rate` (the share of ALL probed ideas that got BOTH — catches "can be told
+apart, but genuinely belongs to both"). Merge when accuracy is at/below its
+threshold OR both_rate at/above its own — see `mece.py` (`score_probe`,
+`is_one_dimension`). The null option is to merge, not to keep apart (source
+specification §2.5, compression preference): a pair must prove its separate right
+to exist, not the other way round.
 
-Lekdiscipline: geen respondenttellingen, ideetellingen, domein, facet of
-attribuut-ids. Pass A toont een code als naam + definitie + indicatoren.
-Richting (valence) wordt WEL getoond in Pass A: die is al besloten en bepaalt
-welke paren überhaupt vergelijkbaar zijn (twee codes met tegengestelde
-richting zijn door hun richting alleen al onderscheiden, nooit een
-samenvoegkandidaat). Pass B toont een code als naam + definitie, en toont de
-geschudde ideeteksten zonder enige aanduiding van welke kant ze vandaan
-komen — dat blijft uitsluitend in Python (`PairProbe.truth` in `mece.py`)."""
+Leak discipline: no respondent counts, idea counts, domain, facet or attribute ids.
+Pass A shows a code as name + definition + indicators. Direction (valence) IS shown
+in Pass A: it is already decided and determines which pairs are comparable at all
+(two codes with opposite direction are distinguished by their direction alone, and
+are never a merge candidate). Pass B shows a code as name + definition, and shows
+the shuffled idea texts without any indication of which side they came from — that
+stays exclusively in Python (`PairProbe.truth` in `mece.py`)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -61,9 +56,9 @@ from .prompts_relations import INSTRUCTOR_HINT, _shuffled
 
 @dataclass(frozen=True)
 class CodeCandidate:
-    """Eén code zoals de MECE-stap 'm ziet. `shape` is nooit aan het model
-    getoond — alleen gebruikt om na een merge-oordeel deterministisch de
-    leden en respondentverzamelingen samen te voegen (zie `mece.py`)."""
+    """One code as the MECE step sees it. `shape` is never shown to the model —
+    it is used only to merge members and respondent sets deterministically after
+    a merge verdict (see `mece.py`)."""
     name: str
     definition: str
     indicators: Tuple[str, ...]
@@ -72,17 +67,16 @@ class CodeCandidate:
 
     @property
     def attribute_id(self) -> str:
-        """Laat de gedeelde `_shuffled` (op `.attribute_id` gesorteerd) ook
-        codes ordenen, zonder een tweede hashing-implementatie."""
+        """Lets the shared `_shuffled` (which sorts on `.attribute_id`) order
+        codes as well, without a second hashing implementation."""
         return self.name
 
 
 @dataclass(frozen=True)
 class CandidatePair:
-    """Eén kandidaat-paar voor Pass B. `pair_id` is een run-lokale sleutel die
-    de `_shuffled`-volgorde volgt (zie `mece.build_candidate_pairs`), zodat
-    promptvolgorde en de `Literal`-enum in het responsemodel altijd gelijk
-    lopen."""
+    """One candidate pair for Pass B. `pair_id` is a run-local key following the
+    `_shuffled` order (see `mece.build_candidate_pairs`), so that prompt order and
+    the `Literal` enum in the response model always stay in step."""
     pair_id: int
     code_a: str
     code_b: str
@@ -173,10 +167,10 @@ Codes:
 
 @dataclass(frozen=True)
 class ProbeIdea:
-    """Eén gepoold ideetje zoals het model het te zien krijgt: alleen een
-    volgnummer en de tekst. Welke code dit idee werkelijk levert, staat
-    nergens op dit object — dat leeft uitsluitend in `mece.PairProbe.truth`,
-    in Python, nooit in de prompt of het responsemodel."""
+    """One pooled idea as the model gets to see it: a sequence number and the
+    text, nothing more. Which code this idea actually comes from appears nowhere
+    on this object — that lives exclusively in `mece.PairProbe.truth`, in Python,
+    never in the prompt or the response model."""
     idea_ref: int
     text: str
 
@@ -200,9 +194,9 @@ class ProbeResult(BaseModel):
 
 
 def make_probe_model(pair: CandidatePair, ideas: List[ProbeIdea]) -> type:
-    """ProbeResult met `idea_ref` beperkt tot de getoonde ideeën en
-    `assigned_to` beperkt tot de twee codenamen van dit paar plus "BOTH" —
-    de derde, gelijkwaardige keuze (zie moduledocstring)."""
+    """ProbeResult with `idea_ref` restricted to the ideas shown and
+    `assigned_to` restricted to this pair's two code names plus "BOTH" — the
+    third, equally valid choice (see the module docstring)."""
     idea_refs: Tuple[int, ...] = tuple(idea.idea_ref for idea in ideas)
     choices: Tuple[str, str, str] = (pair.code_a, pair.code_b, "BOTH")
     constrained_assignment = create_model(
