@@ -159,7 +159,7 @@ def count_structure(structure: Dict[str, List[Dict[str, Any]]]) -> Dict[str, int
 
 
 def format_counts(structure: Dict[str, List[Dict[str, Any]]]) -> str:
-    """Eén regel die zegt wat er staat, zonder de vangnetten te verstoppen."""
+    """One line stating what is there, without hiding the catch-alls."""
     c = count_structure(structure)
     line = f"{c['facets']} facets, {c['attributes']} attributes"
     if c["drain_facets"] or c["drain_attributes"]:
@@ -350,9 +350,12 @@ class TaxonomyClassifier:
         # orchestrator reads as the phase calls it is, and the task builders
         # stay pure because only the run methods touch this.
         self._action_log: List[Dict] = []
-        # Hoe vaak elke kandidaat door een onafhankelijke chunk is
-        # voorgesteld — de enige prevalentie die vóór toewijzing bestaat.
+        # How often an independent chunk proposed each candidate — the only
+        # prevalence that exists before assignment. Kept per level, because
+        # rule 2 is applied at both: consolidation groups facets on it and
+        # step 6 groups attributes on it.
         self._recurrence: Dict[str, Dict[str, int]] = {}
+        self._attr_recurrence: Dict[str, Dict[str, int]] = {}
         self._passes: Dict[str, int] = {}
         self._last_stats: Dict = {}
 
@@ -867,9 +870,17 @@ class TaxonomyClassifier:
         raw: Dict[str, List[DiscoveredFacet]] = {}
         for label in sorted(flat):
             seen = Counter(_norm(f.facet_name) for f in flat[label])
+            # Counted domain-wide and before the dedup, exactly as facets are:
+            # the same attribute proposed under two different facets is still
+            # one concept two passes put forward.
+            attr_seen = Counter(_norm(a.attribute_name)
+                                for f in flat[label] for a in f.attributes)
             deduped = dedup_exact_facets(flat[label])
             self._recurrence[label] = {
                 f.facet_name: seen[_norm(f.facet_name)] for f in deduped}
+            self._attr_recurrence[label] = {
+                a.attribute_name: attr_seen[_norm(a.attribute_name)]
+                for f in deduped for a in f.attributes}
             self._passes[label] = passes[label]
             if len(deduped) < len(flat[label]):
                 self._action_log.append({
@@ -950,6 +961,7 @@ class TaxonomyClassifier:
                 tasks.append({
                     "domain_label": label, "candidates": group,
                     "recurrence": self._recurrence.get(label) or {},
+                    "attribute_recurrence": self._attr_recurrence.get(label) or {},
                     "n_passes": self._passes.get(label, 0)})
         return tasks
 
@@ -967,7 +979,8 @@ class TaxonomyClassifier:
                 domain_definition=domain["definition"],
                 domain_exclusions=domain["exclusions"],
                 candidate_block=build_candidate_block(
-                    task["candidates"], task["recurrence"], task["n_passes"]),
+                    task["candidates"], task["recurrence"],
+                    task["attribute_recurrence"], task["n_passes"]),
             )
             self._capture(
                 f"chunk_consolidation_{task['domain_label']}", prompt,
@@ -1140,7 +1153,13 @@ class TaxonomyClassifier:
             "note": "named as a source but not among this domain's candidates"})
 
     def _log_consolidation_provenance(self, label: str, result) -> None:
-        """Which candidate went where, at both levels.
+        """Which candidate went where, at both levels, and on what question.
+
+        `facet_question` exists to make rule 1 checkable: two survivors that
+        state the same question answer the same question, which is the one thing
+        rule 1 forbids. Written down it is comparable; left implicit it was a
+        matter of feel. A collision is logged, not repaired — merging on it here
+        would override a judgement the model made with the candidates in view.
 
         The `source_*` fields cost the model real effort and then die with the
         phase: survivors are rebuilt as plain structure, which has no room for
@@ -1148,10 +1167,23 @@ class TaxonomyClassifier:
         twelve, but not which one absorbed which — and that is exactly what is
         needed to tell a changed rule from a changed run.
         """
+        stated: Dict[str, str] = {}
+        for facet in result.facets:
+            key = _norm(facet.facet_question)
+            if key and key in stated:
+                self._action_log.append({
+                    "action": "duplicate_facet_question", "domain": label,
+                    "facets": [stated[key], facet.facet_name],
+                    "question": facet.facet_question,
+                    "note": "two survivors answer the same question — rule 1"})
+            elif key:
+                stated[key] = facet.facet_name
+
         self._action_log.append({
             "action": "consolidation_provenance", "domain": label,
             "facets": [
                 {"facet": f.facet_name,
+                 "facet_question": f.facet_question,
                  "source_facets": list(f.source_facets or []),
                  "attributes": [
                      {"attribute": a.attribute_name,

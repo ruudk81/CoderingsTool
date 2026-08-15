@@ -122,7 +122,7 @@ def make_drain_facet(domain_label: str, language: str) -> Dict[str, Any]:
 # =============================================================================
 
 def is_drain_item(item: Dict[str, Any]) -> bool:
-    """Of dit item een vangnet is — op sleutel, niet op naam."""
+    """Whether this item is a catch-all — by key, not by name."""
     return bool(item.get("drain_key"))
 
 

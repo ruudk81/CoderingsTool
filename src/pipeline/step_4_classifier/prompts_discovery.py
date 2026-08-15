@@ -410,30 +410,43 @@ All names, definitions and examples must be written in {language}.
 def build_candidate_block(
     candidates: List[DiscoveredFacet],
     recurrence: Dict[str, int],
+    attribute_recurrence: Dict[str, int],
     n_passes: int,
 ) -> str:
     """The candidates from every chunk, each with its attributes and its reach.
 
     Consolidation runs before a single idea has been assigned, so there are no
-    counts. What there is: how many independent chunks proposed a given facet.
+    counts. What there is: how many independent chunks proposed a given item.
     A concept that returns in five passes out of five is better supported than
     one that surfaced once, and that can be made visible without any assignment.
 
-    `dedup_exact_facets` collapses byte-identical names beforehand, so the count
-    has to be carried separately — otherwise this exact signal disappears.
+    `dedup_exact_facets` collapses byte-identical names beforehand, so the counts
+    have to be carried separately — otherwise this exact signal disappears.
+
+    Both levels carry one, because rule 2 is applied at both: step 6 asks which
+    attributes are well supported, and until 2026-08-15 that judgement had no
+    data behind it at all.
+
+    The count is per EXACT name and the wording says so. A concept five passes
+    proposed under five wordings arrives as five candidates of one pass each —
+    precisely the case this phase exists to resolve — so a label promising
+    support for the concept would mislead on exactly the wrong candidates.
+    Summing over a group is the model's job, and the prompt asks for it.
     """
     blocks = []
     for i, facet in enumerate(candidates, 1):
         seen = recurrence.get(facet.facet_name, 1)
-        lines = [f"[{i}] {facet.facet_name} — Proposed in {seen} of "
-                 f"{n_passes} independent passes",
+        lines = [f"[{i}] {facet.facet_name} — proposed under this exact name in "
+                 f"{seen} of {n_passes} independent passes",
                  f"    Definition: {facet.facet_definition}"]
         if facet.attributes:
             lines.append("    Attributes proposed inside it:")
             for attribute in facet.attributes:
                 example = (attribute.example_observations or [""])[0]
+                times = attribute_recurrence.get(attribute.attribute_name, 1)
                 lines.append(
-                    f"      - {attribute.attribute_name}: "
+                    f"      - {attribute.attribute_name} "
+                    f"[{times}/{n_passes} passes]: "
                     f"{attribute.attribute_definition}")
                 if example:
                     lines.append(f"        e.g. \"{example}\"")

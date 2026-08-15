@@ -101,7 +101,7 @@ class RefinementMisfitGroup(BaseModel):
 
 
 class RefinementResult(BaseModel):
-    """Wat één naslijpcall per domein teruggeeft."""
+    """What one refinement call per domain returns."""
     scratchpad: str = Field(
         ..., description=(
             "Step-by-step reasoning before the final output: "
@@ -177,7 +177,7 @@ def build_refinement_prompt(
     domain_definition: str,
     contents_block: str,
 ) -> str:
-    """Oordeel over één domein, op wat de bakken werkelijk bevatten."""
+    """Judgement over one domain, on what the buckets actually hold."""
     rules = dimension.prompt_rules
     attribute_definition = _extract_definition(rules.attribute_instruction)
 
@@ -219,8 +219,9 @@ by these rules, in this order.
 **1. UNDERLYING QUESTION FIRST (orthogonality — the guardrail).**
 For each concept, work out which underlying question it answers about the responses.
 - Concepts answering DIFFERENT questions are orthogonal: never merge them into one attribute.
-- Mutually exclusive ANSWERS to the SAME question are also kept apart; merging opposite
-  answers creates a container that says nothing.
+- Distinct ANSWERS to the SAME question stay apart when merging them would erase what
+  tells them apart. Merge only when what the group shares can itself be stated as an
+  answer. Evaluative direction is not an answer — see the universal rules below.
 - Do not keep attributes separate based only on the object being discussed when the same
   underlying answer applies. An object is not a question.
 

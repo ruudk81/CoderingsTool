@@ -38,7 +38,7 @@ def test_does_not_merge_near_duplicates():
 
 
 def test_merged_facet_pools_its_attributes():
-    """Twee chunks die hetzelfde facet noemen zagen er niet hetzelfde in."""
+    """Two chunks naming the same facet did not see the same things in it."""
     result = dedup_exact_facets([
         make_facet("X", [make_attribute("Wachttijd")]),
         make_facet("X", [make_attribute("Doorlooptijd")]),

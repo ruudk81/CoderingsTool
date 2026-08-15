@@ -1,4 +1,4 @@
-"""Tests voor de configuratie van step 4."""
+"""Tests for the configuration of step 4."""
 import pytest
 
 from config import STEP_MODEL
@@ -35,7 +35,7 @@ def test_consolidatiegrenzen_zijn_aanwezig():
 
 
 def test_chunking_has_one_register_not_two():
-    """Facetten en attributen komen uit dezelfde call, dus er is een
+    """Facets and attributes come from the same call, so there is one
     chunkbron."""
     attrs = set(vars(CategoriesConfig))
     assert "batch_size_min" in attrs

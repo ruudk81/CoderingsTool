@@ -147,7 +147,7 @@ def test_the_menu_marks_catch_alls_by_drain_key_not_by_name():
     """The name is in the survey language; the marker comes from drain_key."""
     block, _ = build_assignment_menu(_inventaris())
     gemarkeerd = [r for r in block.splitlines() if "[CATCH-ALL]" in r]
-    # twee facet-others, het domein-other-facet en zijn attribuut
+    # two facet others, the domain other facet and its attribute
     assert len(gemarkeerd) == 4
     assert not any("Wachttijd" in r or "Vriendelijkheid" in r for r in gemarkeerd)
 

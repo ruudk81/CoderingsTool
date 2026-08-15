@@ -131,11 +131,12 @@ def test_candidates_are_sorted_by_name_before_grouping():
 # CONSOLIDATIE-OVERLEVENDEN
 # =============================================================================
 
-def _survivor(name, *attrs, sources=(), attr_sources=None):
+def _survivor(name, *attrs, sources=(), attr_sources=None, question=""):
     """One returned facet, with what it claims at both levels."""
     attr_sources = attr_sources or {}
     return ConsolidatedFacet(
         facet_name=name, facet_definition="d",
+        facet_question=question or f"Wat zegt dit over {name}?",
         source_facets=list(sources) or [name],
         attributes=[ConsolidatedAttribute(
             attribute_name=a, attribute_definition="d",
@@ -232,6 +233,7 @@ def test_provenance_pins_both_levels():
                   attr_sources={"wachttijd": ["wachttijd", "doorlooptijd"]})])
     entry = _actions(clf, "consolidation_provenance")[0]["facets"][0]
     assert entry["source_facets"] == ["Snelheid", "Tempo"]
+    assert entry["facet_question"]
     assert entry["attributes"][0]["source_attributes"] == [
         "wachttijd", "doorlooptijd"]
 
@@ -246,6 +248,32 @@ def test_the_structure_carries_no_source_fields():
     assert "source_facets" not in kaart
     assert set(kaart["attributes"][0]) == {
         "attribute_name", "attribute_definition", "example_observations"}
+
+
+def test_two_survivors_stating_one_question_are_reported():
+    """Rule 1 forbids exactly this, and written-down questions are what make it
+    visible. Logged, not repaired: merging here would override a judgement the
+    model made with the candidates in view."""
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Tempo", "doorlooptijd")]
+    _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid"],
+                  question="Hoe snel gaat het?"),
+        _survivor("Tempo", "doorlooptijd", sources=["Tempo"],
+                  question="hoe snel gaat het? ")])
+    melding = _actions(clf, "duplicate_facet_question")[0]
+    assert melding["facets"] == ["Snelheid", "Tempo"]
+
+
+def test_distinct_questions_are_not_reported():
+    clf = _clf()
+    kandidaten = [_facet("Snelheid", "wachttijd"), _facet("Bejegening", "toon")]
+    _survivors(clf, kandidaten, [
+        _survivor("Snelheid", "wachttijd", sources=["Snelheid"],
+                  question="Hoe snel gaat het?"),
+        _survivor("Bejegening", "toon", sources=["Bejegening"],
+                  question="Hoe wordt men bejegend?")])
+    assert not _actions(clf, "duplicate_facet_question")
 
 
 # =============================================================================
