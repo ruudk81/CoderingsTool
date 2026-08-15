@@ -90,7 +90,7 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     # refinement per level, then the valence merge. Named by function, not by
     # number: a reordering should not force a rename here or in the perf model.
     "classifier_discovery":            ("5.6", 3),
-    "classifier_chunk_consolidation":  ("5.6", 3),
+    "classifier_chunk_consolidation":  ("5.4", 5),
     "classifier_assignment":           ("5.6", 3),
     "classifier_refinement":           ("5.6", 3),
     "classifier_cross_domain":         ("5.6", 3),
@@ -205,7 +205,7 @@ STEP_EFFORT = {
     "classifier_chunk_consolidation": "medium",
     "classifier_refinement": "medium",
     "classifier_cross_domain": "medium",
-    "classifier_valence_merge": "low",
+    "classifier_valence_merge": "medium",
     # Step 5: writing and consolidating the codebook
     "codegen_relations": "medium",
     "codegen_umbrella_merge": "medium",
