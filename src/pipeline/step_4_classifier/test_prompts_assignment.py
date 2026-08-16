@@ -1,14 +1,20 @@
 """Tests voor de toewijzingsprompt (step 4)."""
+from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.drains import make_drain_attribute, make_drain_facet
 from pipeline.step_4_classifier.prompts_assignment import (
     build_assignment_menu,
     build_assignment_model,
     build_assignment_prompt,
+    build_facet_assignment_model,
+    build_facet_assignment_prompt,
+    build_facet_menu,
 )
 from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
 from pipeline.step_4_classifier.test_prompts_shared import (
     assert_every_field_is_described, assert_prompt_does_not_restate_the_schema,
 )
+
+DIM = get_dimensions_in_decision_order()[0]
 
 
 def _attr(name, definition, example=None):
@@ -179,3 +185,98 @@ def test_prompt_shows_the_label_and_the_domain_boundary():
 
 def test_prompt_bevat_geen_drempelgetallen():
     assert "%" not in build_assignment_prompt(**_kwargs())
+
+
+# =============================================================================
+# DE FACETTOEWIJZING
+# =============================================================================
+
+FACETS = [
+    {"facet_name": "Snelheid", "facet_definition": "Hoe snel er geleverd wordt.",
+     "facet_question": "Hoe snel wordt er geleverd?", "attributes": []},
+    {"facet_name": "Bejegening", "facet_definition": "Hoe klanten worden aangesproken.",
+     "facet_question": "", "attributes": []},
+    make_drain_facet("dienstverlening", "Dutch"),
+]
+
+
+def _fkwargs(**overrides):
+    menu_block, _ = build_facet_menu(FACETS)
+    base = dict(
+        language="Dutch",
+        survey_question="Waar denkt u aan?",
+        sector="finance", entity="asn_bank", topic="brand_association",
+        perspective="consumer", intent="associate",
+        dimension=DIM, dimension_name=DIM.key,
+        dimension_description=DIM.dimension_description,
+        domain_label="dienstverlening",
+        domain_definition="Alles wat de organisatie aanbiedt en levert.",
+        menu_block=menu_block,
+        observation="lange wachttijd",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_het_facetmenu_deelt_ids_uit():
+    block, id_map = build_facet_menu(FACETS)
+    assert list(id_map) == ["F1", "F2", "F3"]
+    assert id_map["F1"]["facet_name"] == "Snelheid"
+    assert "[F1]" in block
+
+
+def test_het_facetmenu_toont_de_vraag_die_het_facet_beantwoordt():
+    """De facetvraag is het sterkste signaal over de identiteit van een facet,
+    en bestaat precies om die toetsbaar te maken."""
+    block, _ = build_facet_menu(FACETS)
+    assert "Hoe snel wordt er geleverd?" in block
+
+
+def test_een_facet_zonder_vraag_rendert_geen_leeg_label():
+    """Een domein met één kandidaat wordt zonder call vastgezet en heeft geen
+    vraag; een label met niets erachter leest als een vraag die het facet niet
+    wist te stellen."""
+    block, _ = build_facet_menu(FACETS[1:2])
+    assert "question it answers" not in block.lower()
+
+
+def test_het_facetmenu_toont_de_attribuutnamen_niet():
+    """De pool is op dit moment nog ongeconsolideerd — tot tientallen
+    bijna-gelijke namen per facet — en zou het menu onleesbaar maken."""
+    facets = [dict(FACETS[0], attributes=[{"attribute_name": "Wachttijd",
+                                           "attribute_definition": "d"}])]
+    block, _ = build_facet_menu(facets)
+    assert "Wachttijd" not in block
+
+
+def test_het_vangnetfacet_staat_gemarkeerd_in_het_menu():
+    """Op de marker, nooit op de naam: die staat in de enquêtetaal."""
+    block, id_map = build_facet_menu(FACETS)
+    assert id_map["F3"]["is_drain"] is True
+    gemarkeerd = [r for r in block.splitlines() if "[CATCH-ALL]" in r]
+    assert len(gemarkeerd) == 1 and "[F3]" in gemarkeerd[0]
+
+
+def test_het_responsemodel_laat_alleen_uitgedeelde_ids_toe():
+    """Een verzonnen id is zo een schemafout die instructor overdoet, in plaats
+    van een inhoudsfout die verderop opduikt."""
+    model = build_facet_assignment_model(["F1", "F2"])
+    assert str(model.model_fields["assigned_facet_id"].annotation) == (
+        "typing.Literal['F1', 'F2']")
+
+
+def test_het_responsemodel_draagt_geen_valence():
+    """Valence wordt beoordeeld ten opzichte van het attribuut, niet het facet;
+    hem hier vragen zou een oordeel verzinnen dat pas later te geven is."""
+    model = build_facet_assignment_model(["F1"])
+    assert set(model.model_fields) == {"assigned_facet_id", "confidence"}
+
+
+def test_de_prompt_eindigt_op_de_instructor_zin():
+    assert build_facet_assignment_prompt(**_fkwargs()).rstrip().endswith(INSTRUCTOR_HINT)
+
+
+def test_de_prompt_draagt_geen_universele_regels():
+    """Toewijzing kiest een id uit een menu en bedenkt geen naam — dezelfde
+    uitzondering als de attribuuttoewijzing."""
+    assert "<universal_rules>" not in build_facet_assignment_prompt(**_fkwargs())

@@ -20,15 +20,24 @@ marker. Pointing at their name is impossible: the name is in the survey language
 **One call per unique normalised label**, not per idea instance: identical text
 shares one judgement. This is not a batch — the model sees one label and returns
 one attribute.
+
+This module also builds the facet menu, response model and prompt for the
+separate, earlier facet-assignment phase — see the FACET ASSIGNMENT section
+below. That phase exists so facet consolidation can judge candidate facets by
+real idea counts instead of by how many text chunks proposed a name during
+discovery.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
 
 from pydantic import Field, create_model
 
 from .drains import is_drain_item
-from .prompts_shared import INSTRUCTOR_HINT, build_context_block
+from .prompts_shared import INSTRUCTOR_HINT, build_context_block, build_taxonomy_block
+
+if TYPE_CHECKING:
+    from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
 
 
 # =============================================================================
@@ -172,5 +181,123 @@ Record the evaluative direction of this response relative to the attribute you c
 
 Valence is not emotional sentiment. It is direction relative to the attribute, and it is
 recorded here precisely so the taxonomy itself never has to encode it.
+
+{INSTRUCTOR_HINT}"""
+
+
+# =============================================================================
+# FACET ASSIGNMENT — one gate earlier, on real idea counts
+# =============================================================================
+#
+# Facet consolidation needs to judge candidate facets by how many ideas actually
+# belong to them, not by how many text chunks proposed the name during
+# discovery. That count does not exist until ideas are placed in facets, so this
+# phase runs before attribute assignment and produces it: one call per label,
+# picking a facet id from the domain's menu.
+
+def build_facet_menu(
+    facets: List[Dict[str, Any]],
+) -> Tuple[str, Dict[str, Dict[str, Any]]]:
+    """The domain-wide facet menu, plus the id -> facet map.
+
+    Names are not unique — two facets of one domain may carry the same name —
+    so the choice is an id, and the map is what the parse needs to get back to
+    the facet that was meant.
+
+    The attribute pool is not rendered. It is still unconsolidated at this
+    point, and tens of near-identical names per facet would make the menu
+    unreadable. The facet question is the signal that makes a facet's identity
+    testable.
+    """
+    blocks: List[str] = []
+    id_map: Dict[str, Dict[str, Any]] = {}
+    for counter, facet in enumerate(facets, start=1):
+        facet_id = f"F{counter}"
+        id_map[facet_id] = {
+            "facet_name": facet["facet_name"],
+            "is_drain": is_drain_item(facet),
+        }
+        tag = "  [CATCH-ALL]" if is_drain_item(facet) else ""
+        line = (f"[{facet_id}] {facet['facet_name']} — "
+                f"{facet['facet_definition']}{tag}")
+        question = facet.get("facet_question") or ""
+        if question:
+            line += f"\n      The question it answers: {question}"
+        blocks.append(line)
+    return "\n".join(blocks), id_map
+
+
+def build_facet_assignment_model(facet_ids: List[str]):
+    """Runtime model in which the facet menu is the id space.
+
+    No valence field: valence is judged relative to the chosen attribute, which
+    this phase does not choose yet. Asking for it here would invent a judgment
+    that only the later, attribute-scoped call can actually make.
+    """
+    id_literal = Literal[tuple(facet_ids)]  # type: ignore[valid-type]
+    return create_model(
+        "FacetAssignmentResult",
+        assigned_facet_id=(id_literal, Field(..., description=(
+            "The id from the [F#] prefix of the single best-fitting facet. "
+            "Return only the id, not the name"))),
+        confidence=(float, Field(..., ge=0.0, le=1.0, description=(
+            "How certain the assignment is, from 0.0 to 1.0"))),
+    )
+
+
+def build_facet_assignment_prompt(
+    *,
+    language: str,
+    survey_question: str,
+    sector: str,
+    entity: str,
+    topic: str,
+    perspective: str,
+    intent: str,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+    domain_label: str,
+    domain_definition: str,
+    menu_block: str,
+    observation: str,
+) -> str:
+    """Place one observation in the facet menu of its domain.
+
+    No `UNIVERSAL_RULES`: this phase picks an id from a menu and invents no
+    name, the same exception documented in `prompts_shared.py` for attribute
+    assignment.
+    """
+    return f"""You are a taxonomy classification specialist for surveys.
+Pick the one facet this observation belongs to.
+
+{build_context_block(
+    language=language, survey_question=survey_question, sector=sector,
+    entity=entity, topic=topic, perspective=perspective, intent=intent)}
+
+{build_taxonomy_block(
+    dimension=dimension, dimension_name=dimension_name,
+    dimension_description=dimension_description)}
+
+You are working inside this domain:
+<taxonomy_domain>
+{domain_label} — {domain_definition}
+</taxonomy_domain>
+
+These are the facets of this domain. Pick exactly one by its id:
+<facets>
+{menu_block}
+</facets>
+
+This is the observation to place:
+<observation>
+{observation}
+</observation>
+
+# Rules
+
+1. Pick the facet whose question this observation answers. The question is the test, not the name: an observation may mention words from a facet's name and still answer a different question.
+2. An observation that answers none of the questions belongs in the facet marked [CATCH-ALL]. That is a valid outcome, not a failure — forcing it into a facet it does not answer costs more than leaving it there.
+3. Judge only this observation. What other observations do is another call.
 
 {INSTRUCTOR_HINT}"""
