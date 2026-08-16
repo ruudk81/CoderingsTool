@@ -21,7 +21,7 @@ import asyncio
 import logging
 import math
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
@@ -856,6 +856,30 @@ class RealTimeRPMTracker:
 # SMOOTH REQUESTER — the orchestrator
 # =============================================================================
 
+def _count_retry(retry_state) -> None:
+    """Record a retry that tenacity is about to sleep through.
+
+    Tenacity absorbs 429s and connection errors so smoothly that nothing
+    downstream can see them: only the attempt that succeeds reaches the latency
+    tracker and the perf model, and `tasks_failed` counts only what tenacity
+    gave up on after five attempts. A task that backed off four times over a
+    minute therefore reads as one call of 1.6 seconds — which is how a phase
+    can spend three minutes on its last hundred tasks with every metric
+    reporting health.
+
+    `retry_state.args[0]` is the bound `self` of `_execute_task`; the decorator
+    is applied to the method, so the requester is the first positional
+    argument.
+    """
+    requester = retry_state.args[0] if retry_state.args else None
+    if requester is None:
+        return
+    requester.stats['retries'] += 1
+    requester._retry_sleep_total += getattr(retry_state.next_action, 'sleep', 0.0) or 0.0
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    requester._retry_reasons[type(exception).__name__] += 1
+
+
 class SmoothRequester:
     """Orchestrates concurrent API request processing.
 
@@ -974,7 +998,14 @@ class SmoothRequester:
             'tasks_failed': 0,
             'timeouts': 0,
             'rate_limits': 0,
+            'retries': 0,
         }
+        # What tenacity absorbed. Only the winning attempt reaches the latency
+        # tracker and the perf model, so a task that backed off four times over
+        # a minute is indistinguishable from one fast call — and `tasks_failed`
+        # counts only what tenacity gave up on entirely.
+        self._retry_sleep_total = 0.0
+        self._retry_reasons = Counter()
         self.failed_task_ids = set()
         self.failure_log = []
 
@@ -1194,6 +1225,7 @@ class SmoothRequester:
         retry=retry_if_exception_type((RateLimitError, APIConnectionError, InternalServerError)),
         wait=wait_exponential_jitter(initial=2, max=60),
         stop=stop_after_attempt(5),
+        before_sleep=_count_retry,
         reraise=True
     )
     async def _execute_task(self, task, prepare_fn, parse_fn):
@@ -1708,7 +1740,14 @@ class SmoothRequester:
         if not self._quiet:
             print(f"\n⏱ T+0.0s: Starting task processing")
 
-        while not queue.empty():
+        # Runs while work is outstanding, not while the queue holds items. A
+        # queue is empty as soon as its last task has been TAKEN, so the old
+        # condition stopped the loop with a full complement still in flight —
+        # and with it stopped the ticks, the PID and the recalibration. The
+        # tail of every phase ran unobserved and unregulated, which is exactly
+        # where a phase goes wrong: measured 2026-08-15, step-4 assignment
+        # spent 177 of its 207 seconds after this loop had exited.
+        while not queue.empty() or self.semaphore.active > 0:
             await asyncio.sleep(0.1)
             now = time.time()
             completed = self.stats['tasks_processed']
@@ -1787,7 +1826,10 @@ class SmoothRequester:
         await asyncio.gather(*workers)
 
         if not self._quiet:
-            print(f"⏱ T+{time.time() - start_time:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred")
+            retry_note = (f", {self.stats['retries']} retries "
+                          f"({self._retry_sleep_total:.0f}s backoff)"
+                          if self.stats['retries'] else "")
+            print(f"⏱ T+{time.time() - start_time:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred{retry_note}")
             is_rate_capped = self._rate_limit_concurrency <= self._server_concurrency
             if is_rate_capped:
                 print(f"  RATE-CAPPED at {self.optimal_concurrency} (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
@@ -1873,6 +1915,11 @@ class SmoothRequester:
                 print(f"- Recovered: {recovered} (retried successfully)")
             print(f"- Rate limits: {self.stats['rate_limits']}")
             print(f"- Timeouts: {self.stats['timeouts']}")
+            if self.stats['retries'] > 0:
+                reasons = ", ".join(f"{n}x {name}" for name, n
+                                    in self._retry_reasons.most_common())
+                print(f"- Retries absorbed: {self.stats['retries']} "
+                      f"({self._retry_sleep_total:.0f}s in backoff) — {reasons}")
             if rate_capped_final:
                 print(f"- Rate-capped at concurrency {self.optimal_concurrency}")
             else:
