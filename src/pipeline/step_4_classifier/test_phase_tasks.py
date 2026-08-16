@@ -11,7 +11,10 @@ from pipeline.step_4_classifier.classifier import (
     Placement, facet_dicts, flatten_placements,
 )
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
-from pipeline.step_4_classifier.drains import is_drain_item
+from pipeline.step_4_classifier.drains import is_drain_item, make_drain_attribute
+from pipeline.step_4_classifier.prompts_refinement import (
+    RefinedAttribute, RefinementResult,
+)
 from pipeline.step_4_classifier.prompts_discovery import (
     DiscoveredAttribute, DiscoveredFacet,
 )
@@ -870,6 +873,127 @@ def test_dezelfde_attribuutnaam_in_twee_facetten_blijft_uit_elkaar():
                   "i2": Placement("d", "f2", "Merkbekendheid")}
     _, facetten = flatten_placements(placements)
     assert facetten == {"d": {"i1": "f1", "i2": "f2"}}
+
+
+# =============================================================================
+# NASLIJPEN
+# =============================================================================
+
+def _refined(name, *sources, definition="d"):
+    return RefinedAttribute(
+        attribute_name=name, attribute_definition=definition,
+        example_observations=["e"], source_attributes=list(sources))
+
+
+def _card(facet_name, *attribute_names, drain=None):
+    attributes = [{"attribute_name": a, "attribute_definition": "d",
+                   "example_observations": ["e"]} for a in attribute_names]
+    if drain:
+        attributes.append(make_drain_attribute(facet_name, "Dutch"))
+    return {"facet_name": facet_name, "facet_definition": "d",
+            "facet_question": "", "attributes": attributes}
+
+
+def test_a_catch_all_named_as_a_source_keeps_its_ideas():
+    """Protecting the returned name and the card was not enough: a catch-all
+    named as a SOURCE was remapped like any other attribute, so its ideas
+    emptied into a content attribute while the drain card stayed in place and
+    hid it."""
+    clf = _clf()
+    card = _card("f", "a1", drain=True)
+    drain_name = card["attributes"][-1]["attribute_name"]
+    structure = {"d": [card]}
+    assignments = {"i1": Placement("d", "f", "a1"),
+                   "i2": Placement("d", "f", drain_name)}
+    result = RefinementResult(
+        scratchpad="s", attributes=[_refined("Breed", "a1", drain_name)])
+
+    structure, out = clf._apply_refinement(
+        tasks=[{"domain_label": "d", "facet_index": 0, "facet": card}],
+        results=[result], structure=structure, assignments=assignments)
+
+    assert out["i1"] == Placement("d", "f", "Breed")
+    assert out["i2"] == Placement("d", "f", drain_name)
+    assert _actions(clf, "drain_source_ignored")[0]["sources"] == [drain_name]
+
+
+def test_a_catch_all_survives_the_rebuild_as_a_card():
+    clf = _clf()
+    card = _card("f", "a1", drain=True)
+    drain_name = card["attributes"][-1]["attribute_name"]
+    structure, _ = clf._apply_refinement(
+        tasks=[{"domain_label": "d", "facet_index": 0, "facet": card}],
+        results=[RefinementResult(
+            scratchpad="s", attributes=[_refined("Breed", "a1")])],
+        structure={"d": [card]},
+        assignments={"i1": Placement("d", "f", "a1")})
+    assert [a["attribute_name"] for a in structure["d"][0]["attributes"]] == [
+        "Breed", drain_name]
+
+
+def test_refinement_moves_nothing_out_of_its_facet():
+    """The misfit exit named its destinations before the phase and resolved
+    them after, while renaming is the phase's whole job — 70% of routed texts
+    landed on a name their neighbour had just consumed. It is gone, and so is
+    every field it needed."""
+    assert set(RefinementResult.model_fields) == {"scratchpad", "attributes"}
+
+
+# =============================================================================
+# DUBBELE NAMEN BINNEN EEN DOMEIN
+# =============================================================================
+
+def test_one_name_in_two_facets_folds_into_the_bigger_one():
+    """Two refinement calls do not see each other and can land on one name.
+    Within a domain, one name is one attribute — no model needed, and
+    cross-domain no longer spends a merge on a name identical to itself."""
+    clf = _clf()
+    structure = {"d": [_card("f1", "Omvang"), _card("f2", "Omvang", "Rest")]}
+    assignments = {
+        "i1": Placement("d", "f1", "Omvang"),
+        "i2": Placement("d", "f2", "Omvang"),
+        "i3": Placement("d", "f2", "Omvang"),
+        "i4": Placement("d", "f2", "Rest")}
+
+    structure, out = clf._merge_duplicate_names(structure, assignments)
+
+    assert [a["attribute_name"] for a in structure["d"][0]["attributes"]] == []
+    assert [a["attribute_name"] for a in structure["d"][1]["attributes"]] == [
+        "Omvang", "Rest"]
+    assert out["i1"] == Placement("d", "f2", "Omvang")
+    assert out["i4"] == Placement("d", "f2", "Rest")
+    logged = _actions(clf, "duplicate_name_merged")[0]
+    assert logged["kept_in"] == "f2" and logged["dropped_from"] == ["f1"]
+    assert logged["n_ideas"] == 3
+
+
+def test_a_tie_is_broken_by_position_not_by_chance():
+    clf = _clf()
+    structure = {"d": [_card("f1", "Omvang"), _card("f2", "Omvang")]}
+    assignments = {"i1": Placement("d", "f1", "Omvang"),
+                   "i2": Placement("d", "f2", "Omvang")}
+    structure, out = clf._merge_duplicate_names(structure, assignments)
+    assert out["i2"] == Placement("d", "f1", "Omvang")
+
+
+def test_one_name_in_two_domains_is_left_alone():
+    """Two domains settled separately; folding them is cross-domain's call,
+    and it needs the model because the two may not mean the same thing."""
+    clf = _clf()
+    structure = {"d1": [_card("f", "Omvang")], "d2": [_card("f", "Omvang")]}
+    assignments = {"i1": Placement("d1", "f", "Omvang"),
+                   "i2": Placement("d2", "f", "Omvang")}
+    _, out = clf._merge_duplicate_names(structure, assignments)
+    assert out == assignments
+    assert not _actions(clf, "duplicate_name_merged")
+
+
+def test_a_catch_all_takes_no_part_in_the_fold():
+    clf = _clf()
+    structure = {"d": [_card("f1", drain=True), _card("f2", drain=True)]}
+    names = [f["attributes"][0]["attribute_name"] for f in structure["d"]]
+    structure, _ = clf._merge_duplicate_names(structure, {})
+    assert [f["attributes"][0]["attribute_name"] for f in structure["d"]] == names
 
 
 # =============================================================================

@@ -12,13 +12,17 @@ consolidation bought by splitting off: the judgement gets a pool it can hold at
 once, with nothing else competing for attention. The share stays measured over
 the DOMAIN all the same — see `build_contents_block`.
 
-What it costs is reach, and one exit is widened to pay for it. A group of
-responses may belong under an attribute in a NEIGHBOURING facet, and with only
-this facet in view the model's only remaining exit would be "out" — the verdict
-reserved for text with no substance at all. `build_move_targets_block` therefore
-renders the rest of the domain by name and definition only, as a destination list
-and not as material to judge. Scope of judgement is the facet; scope of
-destination is the domain.
+**Routing is gone with it** (2026-08-16). The facet once carried a misfit exit:
+a group of responses could be sent to an attribute in a neighbouring facet, with
+the rest of the domain rendered as a destination list. It could not work as
+built. The destinations were rendered from the structure as it stood *before*
+the phase, while `_apply_refinement` resolved them against the names as they
+stood *after* — and renaming is the main thing this phase does. Measured on the
+run of 2026-08-16: 83 of 118 routed texts (70%) named a destination that its own
+neighbour's call had just consumed, and fell back silently to where they already
+sat. Removing the exit rather than repairing it keeps one rule per scope: this
+phase merges what one facet holds, and nothing else. Placement across facets is
+cross-domain's job.
 
 **Splitting is gone.** The clause once read *"an attribute holding a large share
 AND visibly diverse contents is too abstract: SPLIT it, do not widen it"*,
@@ -29,13 +33,16 @@ again — net standstill. It was tightened, and then dropped with the rewritten
 rules. This phase only merges now, and `RefinedAttribute` carries neither an
 action nor the texts a split would have had to route by.
 
-Catch-alls take no part. They are not merged, split, moved or widened — a
-catch-all is an offer, not a category, and judging it as if it were one turns it
-into one after all.
+Catch-alls take no part. They are not merged, renamed or absorbed — a catch-all
+is an offer, not a category, and judging it as if it were one turns it into one
+after all. That is stated as a rule *and* enforced in `_apply_refinement`: the
+marker was rendered for a while with no rule left to explain it, and a
+catch-all named as a SOURCE then had its ideas remapped into a content
+attribute, which the drain card surviving in the structure hid completely.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from pydantic import BaseModel, Field
 
@@ -86,50 +93,23 @@ class RefinedAttribute(BaseModel):
             "attribute you meant to replace it with"))
 
 
-class RefinementMisfitGroup(BaseModel):
-    """A group of responses sitting in the wrong place, with where it belongs."""
-    verdict: Literal["move", "out"] = Field(
-        ..., description=(
-            "'move' when the group belongs to another attribute in this "
-            "domain, 'out' when it carries no substantive content at all"))
-    target_attribute: Optional[str] = Field(
-        default=None,
-        description=(
-            "For 'move' only: the exact name of the attribute these responses "
-            "belong to, as shown in this domain"))
-    instance_texts: List[str] = Field(
-        ..., description=(
-            "The exact response texts in this group, copied from the contents "
-            "shown. Never counts, paraphrases or summaries"))
-
-
 class RefinementResult(BaseModel):
     """What one refinement call per facet returns.
 
-    The scratchpad walks the prompt's own rules in order, and ends on the
-    misfits deliberately. Route a group first and merge afterwards, and the
-    attribute it was routed to can disappear under the model's own hand:
-    `_apply_refinement` resolves a misfit target against the attributes that
-    still exist, and a target that no longer does falls back to where the
-    responses already sat — no error, no log line, the move simply gone.
+    Merging is all it returns. The misfit exit that once sat beside it is gone
+    — see the module docstring — so there is no ordering left to get wrong
+    between routing a group and merging the attribute it was routed to.
     """
     scratchpad: str = Field(
         ..., description=(
-            "Work through this before writing the output. "
-            "1. Minimize the number of containers. Merge candidate attributes whenever they can be represented by one broader, meaningful attribute without losing an important distinction for the survey question. When in doubt, prefer merging. "
-            "2. Keep a distinction only when it is substantively meaningful and clearly codable. Differences in wording, synonyms, closely related meanings, or broad-versus-narrow versions of the same idea normally belong in the same container. "
-            "3. The final attributes must be MECE. Each substantive idea should have one natural home, and together the attributes must cover all substantive material belonging to this facet. Avoid overlapping attributes and parent/child attributes alongside each other. "
-            "4. Use prevalence to simplify. Small or low-prevalence distinctions should normally be absorbed into the nearest broader attribute rather than becoming separate attributes, provided the resulting container remains semantically coherent. "
-            "5. Remove misfits. Material that does not belong in this facet should be moved to the best matching attribute in <move_targets>, or marked as carrying no substantive content. "
-            "6. Before returning the result, ask one final question: Can any two remaining attributes still be merged without losing an important, clearly codable distinction? If yes, merge them. "
-            "7. Check every attribute shown appears in exactly one source_attributes list"))
+            "Work through the numbered rules of the prompt in the order they "
+            "are given, before writing the output. The rules are not repeated "
+            "here: two copies of them drifted apart once, and the model was "
+            "handed both"))
     attributes: List[RefinedAttribute] = Field(
         ..., description=(
             "The fewest mutually exclusive attributes that cover what this "
             "facet holds"))
-    misfits: List[RefinementMisfitGroup] = Field(
-        default_factory=list,
-        description="Groups of responses that belong elsewhere or nowhere")
 
 
 # =============================================================================
@@ -142,6 +122,8 @@ def build_contents_block(
     shares: Dict[str, float],
     counts: Dict[str, int],
     top_n: int,
+    facet_total: int,
+    domain_total: int,
 ) -> str:
     """What each attribute of ONE facet actually holds, with its size.
 
@@ -152,13 +134,23 @@ def build_contents_block(
     on a scale that shifts per call. The domain is the one denominator every
     facet of it shares.
 
+    That one denominator needs a second number beside it, and the header carries
+    it: how much of the domain this whole facet holds. Without it "small" has no
+    calibration inside the call — a facet holding a twentieth of its domain shows
+    every one of its attributes as a low percentage, and a prevalence rule then
+    reads as "absorb everything". Both scales are visible; neither is a
+    threshold.
+
     No threshold appears anywhere: one would have been read off a single dataset,
     and is therefore just as use-case-bound as an example lifted from client data.
 
     The facet itself is no longer a header here. It is the scope of the whole
     call and is rendered once, as context, by the prompt.
     """
-    blocks = []
+    share = (facet_total / domain_total) if domain_total else 0.0
+    blocks = [f"This facet holds {facet_total} of the {domain_total} responses "
+              f"in its domain ({share:.0%}). The percentage on each attribute "
+              f"below is its share of the DOMAIN, not of this facet."]
     for attribute in attributes:
           name = attribute["attribute_name"]
           tag = "  [CATCH-ALL]" if is_drain_item(attribute) else ""
@@ -173,35 +165,6 @@ def build_contents_block(
               lines.append("    Actually holds: (nothing was assigned to it)")
           blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
-
-
-def build_move_targets_block(
-    facets: List[Dict[str, Any]],
-    facet_index: int,
-) -> str:
-    """Where a misfit group may go: the rest of the domain, names only.
-
-    A destination list, not material to judge. Counts, shares and contents are
-    deliberately absent — with them the model would start weighing these
-    attributes too, which is the next facet's call and not this one.
-
-    Excluded by POSITION, not by name: a domain may hold two facets with the
-    same name, and excluding by name would hide the neighbour's attributes as
-    well as this facet's own.
-    """
-    blocks = []
-    for index, facet in enumerate(facets):
-        if index == facet_index or is_drain_item(facet):
-            continue
-        names = [a for a in (facet.get("attributes") or [])
-                 if not is_drain_item(a)]
-        if not names:
-            continue
-        lines = [f"{facet['facet_name']}"]
-        lines.extend(f"  {a['attribute_name']} — {a['attribute_definition']}"
-                     for a in names)
-        blocks.append("\n".join(lines))
-    return "\n\n".join(blocks) if blocks else "(this domain holds no other facet)"
 
 
 # =============================================================================
@@ -226,7 +189,6 @@ def build_refinement_prompt(
     facet_definition: str,
     facet_question: str,
     contents_block: str,
-    move_targets_block: str,
 ) -> str:
     """Judgement over one facet, on what its buckets actually hold.
 
@@ -265,23 +227,28 @@ This is the facet you need to consolidate:
 {contents_block}
 </facet_contents>
 
-These are the attributes of the other facets in this domain. They are a destination list,
-not material to judge: a group of responses that belongs under one of them is a misfit you
-send there, and you return nothing about these attributes themselves.
-<move_targets>
-{move_targets_block}
-</move_targets>
+# Objective
 
-Rules
+Find the minimum number of attribute-containers required to organize all substantive candidate material belonging to this facet while remaining mutually exclusive and collectively exhaustive (MECE).
+
+The optimization priority is:
+- MECE
+- Minimum number of containers
+- Interpretability
+- Preservation of meaningful prevalent distinctions
+
+Do not preserve a distinction merely because it appears in the input.
+
+# Rules
+
+Apply these rules:
+
 1. Minimize the number of containers. Merge candidate attributes whenever they can be represented by one broader, meaningful attribute without losing an important distinction for the survey question. When in doubt, prefer merging.
 2. Keep a distinction only when it is substantively meaningful and clearly codable. Differences in wording, synonyms, closely related meanings, or broad-versus-narrow versions of the same idea normally belong in the same container.
 3. The final attributes must be MECE. Each substantive idea should have one natural home, and together the attributes must cover all substantive material belonging to this facet. Avoid overlapping attributes and parent/child attributes alongside each other.
-4. Use prevalence to simplify. Small or low-prevalence distinctions should normally be absorbed into the nearest broader attribute rather than becoming separate attributes, provided the resulting container remains semantically coherent.
-5. Remove misfits. Material that does not belong in this facet should be moved to the best matching attribute in <move_targets>, or marked as carrying no substantive content.
-
-Before returning the result, ask one final question:
-"Can any two remaining attributes still be merged without losing an important, clearly codable distinction?"
-If yes, merge them.
+4. Use prevalence to simplify. Absorb a distinction that is far less prevalent than the others in this facet into the nearest broader attribute, provided the resulting container remains semantically coherent. Judge "far less" against the other attributes shown here, never against a fixed percentage: the share is measured over the whole domain, so in a facet that holds a small part of its domain every attribute shows a low percentage.
+5. Attributes marked [CATCH-ALL] take no part. Do not merge, rename or absorb one, and never name one as a source. A catch-all is an offer, not a category, and treating it as one turns it into one.
+6. Before returning the result, ask one final question: Can any two remaining attributes still be merged without losing an important, clearly codable distinction? If yes, merge them.
 
 {UNIVERSAL_RULES}
 
