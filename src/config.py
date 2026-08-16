@@ -225,6 +225,7 @@ STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
     "classifier_discovery": "low",
     "classifier_facet_consolidation": "low",
+    "classifier_facet_settle": "low",
     "classifier_attribute_consolidation": "low",
     "classifier_refinement": "low",
     "classifier_cross_domain": "low",

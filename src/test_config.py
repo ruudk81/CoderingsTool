@@ -137,3 +137,16 @@ def test_bulk_phases_stay_at_the_default():
             f"{phase} is a bulk phase; giving it its own effort multiplies cost "
             f"across ~98% of all calls"
         )
+
+
+def test_step4_judgement_phases_run_low_verbosity():
+    """Every step-4 phase raised to STEP_EFFORT "medium" reasons with a
+    scratchpad, and low verbosity is what saves tokens on it (see the comment
+    on STEP_VERBOSITY). A classifier_ phase found reasoning at "medium"
+    without "low" here means the two tables have started disagreeing about
+    what kind of phase it is — exactly what happened to classifier_facet_settle
+    before this test existed.
+    """
+    for phase, effort in STEP_EFFORT.items():
+        if phase.startswith("classifier_") and effort == "medium":
+            assert get_step_verbosity(phase) == "low", phase
