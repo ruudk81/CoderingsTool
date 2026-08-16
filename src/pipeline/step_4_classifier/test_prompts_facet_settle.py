@@ -1,0 +1,152 @@
+"""Tests voor het naslijpen van facetten (step 4)."""
+from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
+from pipeline.step_4_classifier.prompts_facet_settle import (
+    AttributeMove,
+    FacetSettleResult,
+    SettledFacetCard,
+    build_facet_settle_block,
+    build_facet_settle_prompt,
+)
+from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
+from pipeline.step_4_classifier.test_prompts_shared import (
+    assert_every_field_is_described, assert_prompt_does_not_restate_the_schema,
+)
+
+DIM = get_dimensions_in_decision_order()[0]
+
+FACETS = [
+    {
+        "facet_name": "Snelheid",
+        "facet_definition": "Hoe snel er geleverd wordt.",
+        "facet_question": "Hoe snel wordt er geleverd?",
+        "attributes": [
+            {"attribute_name": "Wachttijd", "attribute_definition": "De tijd tot antwoord."},
+            {"attribute_name": "Levertijd", "attribute_definition": "De tijd tot levering."},
+        ],
+    },
+]
+COUNTS = {"Snelheid": 124}
+SHARES = {"Snelheid": 0.62}
+CONTENTS = {"Snelheid": ["lange wachttijd", "duurt lang"]}
+ATTRIBUTE_IDS = {"Wachttijd": "A1", "Levertijd": "A2"}
+
+
+def _blok(facets=FACETS, counts=COUNTS, shares=SHARES, contents=CONTENTS,
+          attribute_ids=ATTRIBUTE_IDS, top_n=5):
+    return build_facet_settle_block(
+        facets, counts, shares, contents, attribute_ids, top_n)
+
+
+def _skwargs(**overrides):
+    base = dict(
+        language="Dutch", survey_question="Waar denkt u aan?",
+        sector="finance", entity="asn_bank", topic="brand_association",
+        perspective="consumer", intent="associate",
+        dimension=DIM, dimension_name=DIM.key,
+        dimension_description=DIM.dimension_description,
+        domain_label="dienstverlening",
+        domain_definition="Alles wat de organisatie aanbiedt en levert.",
+        settle_block=_blok(),
+    )
+    base.update(overrides)
+    return base
+
+
+def _rules(prompt: str) -> str:
+    """De eigen regels van deze prompt, zonder de universele eronder."""
+    return prompt[prompt.index("\n# Rules\n"):prompt.index("<universal_rules>")]
+
+
+# =============================================================================
+# HET BLOK
+# =============================================================================
+
+def test_het_blok_zet_de_facetvraag_naast_wat_het_facet_werkelijk_houdt():
+    blok = _blok()
+    assert "Claims to answer" in blok
+    assert "Actually holds" in blok
+    assert blok.index("Claims to answer") < blok.index("Actually holds")
+
+
+def test_het_blok_toont_aantal_en_aandeel_van_het_domein():
+    """Het domein is de noemer die alle facetten ervan delen."""
+    blok = _blok()
+    assert "124 responses" in blok
+    assert "62% of this domain" in blok
+
+
+def test_het_blok_deelt_ids_uit_op_beide_niveaus():
+    """De twee uitgangen wijzen naar allebei: een merge naar facet-ids, een
+    verplaatsing naar een attribuut-id en een facet-id."""
+    blok = _blok()
+    assert "[F1]" in blok and "[A1]" in blok
+
+
+def test_het_blok_toont_attribuutnamen_zonder_definities():
+    """Bewijs van wat er onder een facet hangt, geen materiaal om te bewerken —
+    die laag is nog niet aan de beurt."""
+    blok = _blok()
+    assert "Wachttijd" in blok
+    assert "De tijd tot antwoord." not in blok
+
+
+# =============================================================================
+# DE UITGANGEN
+# =============================================================================
+
+def test_de_uitgangen_lopen_op_ids():
+    """Op 2026-08-16 noemde de misfit-uitgang van het naslijpen zijn
+    bestemmingen op naam vóór de fase en zocht ze op ná de fase; 70% landde op
+    een naam die de buurcall net had opgeslokt."""
+    move = AttributeMove.model_fields
+    assert set(move) == {"attribute_id", "to_facet_id"}
+
+
+def test_een_overlevend_facet_noemt_zijn_bronnen_op_id():
+    assert "source_facet_ids" in SettledFacetCard.model_fields
+
+
+def test_een_overlevend_facet_schrijft_zijn_vraag_opnieuw_op():
+    """Een samengevouwen facet dat de vraag van één van zijn bronnen overneemt,
+    beschrijft de merge niet."""
+    assert "facet_question" in SettledFacetCard.model_fields
+
+
+def test_het_resultaat_draagt_facetten_en_verplaatsingen():
+    assert set(FacetSettleResult.model_fields) == {
+        "scratchpad", "facets", "attribute_moves"}
+
+
+# =============================================================================
+# DE PROMPT
+# =============================================================================
+
+def test_de_prompt_verbiedt_het_hernoemen_van_attributen():
+    regels = _rules(build_facet_settle_prompt(**_skwargs()))
+    assert "attribute" in regels.lower()
+    assert "do not rename" in regels.lower()
+
+
+def test_de_prompt_markeert_de_vangnetten():
+    assert "[CATCH-ALL]" in _rules(build_facet_settle_prompt(**_skwargs()))
+
+
+def test_geen_drempelgetallen_in_de_regels():
+    """Aandelen komen uit de data en mogen; een vast percentage is van één
+    dataset afgelezen en mag niet."""
+    regels = _rules(build_facet_settle_prompt(**_skwargs()))
+    assert "%" not in regels
+
+
+def test_de_prompt_beschrijft_zijn_eigen_schema_niet():
+    assert_prompt_does_not_restate_the_schema(build_facet_settle_prompt(**_skwargs()))
+
+
+def test_het_model_beschrijft_elk_veld_dat_het_heeft():
+    assert_every_field_is_described(FacetSettleResult)
+
+
+def test_de_prompt_eindigt_op_de_universele_regels_en_de_instructor_zin():
+    prompt = build_facet_settle_prompt(**_skwargs())
+    assert "<universal_rules>" in prompt
+    assert prompt.rstrip().endswith(INSTRUCTOR_HINT)
