@@ -22,21 +22,23 @@ FACETS = [
         "facet_definition": "Hoe snel er geleverd wordt.",
         "facet_question": "Hoe snel wordt er geleverd?",
         "attributes": [
-            {"attribute_name": "Wachttijd", "attribute_definition": "De tijd tot antwoord."},
-            {"attribute_name": "Levertijd", "attribute_definition": "De tijd tot levering."},
+            {"attribute_name": "Wachttijd", "attribute_id": "A1",
+             "attribute_definition": "De tijd tot antwoord."},
+            {"attribute_name": "Levertijd", "attribute_id": "A2",
+             "attribute_definition": "De tijd tot levering."},
         ],
     },
 ]
-COUNTS = {"Snelheid": 124}
-SHARES = {"Snelheid": 0.62}
-CONTENTS = {"Snelheid": ["lange wachttijd", "duurt lang"]}
-ATTRIBUTE_IDS = {"Wachttijd": "A1", "Levertijd": "A2"}
+# Keyed on the [F#] id this block assigns to `facets`, in that same order —
+# never on the name: two facets of one domain may legally share one.
+COUNTS = {"F1": 124}
+SHARES = {"F1": 0.62}
+CONTENTS = {"F1": ["lange wachttijd", "duurt lang"]}
 
 
 def _blok(facets=FACETS, counts=COUNTS, shares=SHARES, contents=CONTENTS,
-          attribute_ids=ATTRIBUTE_IDS, top_n=5):
-    return build_facet_settle_block(
-        facets, counts, shares, contents, attribute_ids, top_n)
+          top_n=5):
+    return build_facet_settle_block(facets, counts, shares, contents, top_n)
 
 
 def _skwargs(**overrides):
@@ -95,6 +97,22 @@ def test_het_blok_toont_attribuutnamen_zonder_definities():
     blok = _blok()
     assert "Wachttijd" in blok
     assert "De tijd tot antwoord." not in blok
+
+
+def test_twee_gelijknamige_facetten_delen_geen_telling():
+    """`build_facet_menu` staat toe dat twee facetten van één domein dezelfde
+    naam dragen. Op naam keyen zou de telling van de één naar de ander lekken
+    — precies de invoer waarop deze fase moet oordelen."""
+    facets = [
+        {"facet_name": "Snelheid", "facet_definition": "d", "facet_question": "",
+         "attributes": []},
+        {"facet_name": "Snelheid", "facet_definition": "d", "facet_question": "",
+         "attributes": []},
+    ]
+    blok = build_facet_settle_block(
+        facets, {"F1": 10, "F2": 90}, {"F1": 0.1, "F2": 0.9}, {}, top_n=5)
+    assert "10 responses" in blok and "90 responses" in blok
+    assert "10% of this domain" in blok and "90% of this domain" in blok
 
 
 # =============================================================================

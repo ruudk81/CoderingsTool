@@ -98,9 +98,15 @@ def build_facet_settle_model(facet_ids: List[str], attribute_ids: List[str]):
     `attribute_ids` can be empty — every facet built by facet consolidation
     carries at least one attribute in practice, but a task built against
     stubbed pools has none to hand out. `Literal` over an empty tuple is not
-    itself a valid type, and there is nothing a move could invent when no
-    attribute is shown anyway, so the field falls back to `List[Any]`, which
-    only an empty list can ever satisfy.
+    itself a valid type, and there is nothing a move could legitimately name
+    when no attribute is shown anyway — so rather than relax the field to
+    something like `List[Any]` (which would accept any answer, including a
+    real-looking move that then crashes uncaught on `move.attribute_id`
+    instead of failing the schema the way an invented id does everywhere
+    else), the list itself is capped at zero. A non-empty answer is then the
+    same schema error instructor retries as an invented id would be — the
+    protection stays in force in this degenerate case instead of being
+    quietly suspended.
     """
     facet_literal = Literal[tuple(facet_ids)]  # type: ignore[valid-type]
 
@@ -119,14 +125,17 @@ def build_facet_settle_model(facet_ids: List[str], attribute_ids: List[str]):
                     "id space as `source_facet_ids`, not the name of the "
                     "facet it ends up folded into"))),
         )
-        moves_type, moves_description = List[move], (
-            "Every attribute that answers a different candidate facet's "
-            "question than the one it is shown under, redirected there. "
-            "An attribute already sitting under the facet whose question "
-            "it answers does not appear here")
+        moves_field = (List[move], Field(
+            ..., description=(
+                "Every attribute that answers a different candidate facet's "
+                "question than the one it is shown under, redirected there. "
+                "An attribute already sitting under the facet whose "
+                "question it answers does not appear here")))
     else:
-        moves_type, moves_description = List[Any], (
-            "No attributes are shown in this call — leave this empty")
+        moves_field = (List[str], Field(
+            default_factory=list, max_length=0, description=(
+                "No attributes are shown in this call — this must stay "
+                "empty, there is nothing to move")))
 
     return create_model(
         "FacetSettleResult",
@@ -140,7 +149,7 @@ def build_facet_settle_model(facet_ids: List[str], attribute_ids: List[str]):
             ..., description=(
                 "The fewest mutually exclusive facets that cover this "
                 "domain"))),
-        attribute_moves=(moves_type, Field(..., description=moves_description)),
+        attribute_moves=moves_field,
     )
 
 
@@ -153,19 +162,27 @@ def build_facet_settle_block(
     counts: Dict[str, int],
     shares: Dict[str, float],
     contents: Dict[str, List[str]],
-    attribute_ids: Dict[str, str],
     top_n: int,
 ) -> str:
     """One domain's facets, each with its real size and what it actually holds.
+
+    Keyed on id everywhere, never on name: `build_facet_menu` guarantees two
+    facets of one domain may legally share a name, and facet consolidation
+    can produce exactly that. A name-keyed `counts`/`shares`/`contents` would
+    let one of them's numbers silently stand in for the other's — corrupting
+    the one input this whole phase exists to get right. `counts`/`shares`/
+    `contents` are keyed on the same `F#` id this function assigns below, in
+    the same order `facets` is handed in.
+
+    Each attribute dict already carries its own `attribute_id` (assigned once,
+    by object identity, where the task was built) rather than being looked up
+    here by name — the same reason: two attributes of one domain may share a
+    name, and a name-keyed lookup would render one under the other's id.
 
     Attribute names are shown so the model can check them against the facet's
     own question — that is the whole test in rule 3 — but their definitions
     are not: this phase moves and folds, it does not redefine, and material to
     redefine with would only invite it to.
-
-    `attribute_ids` is supplied rather than built here: it has to stay stable
-    across every facet in the domain, since an `AttributeMove` names a
-    destination facet, not the facet the attribute started under.
     """
     blocks = []
     for i, facet in enumerate(facets, 1):
@@ -173,18 +190,18 @@ def build_facet_settle_block(
         name = facet["facet_name"]
         tag = "  [CATCH-ALL]" if is_drain_item(facet) else ""
         lines = [f"[{facet_id}] {name} — {facet['facet_definition']}  "
-                 f"{counts.get(name, 0)} responses "
-                 f"({shares.get(name, 0.0):.0%} of this domain){tag}"]
+                 f"{counts.get(facet_id, 0)} responses "
+                 f"({shares.get(facet_id, 0.0):.0%} of this domain){tag}"]
         question = facet.get("facet_question")
         if question:
             lines.append(f"      Claims to answer: {question}")
         attributes = facet.get("attributes") or []
         if attributes:
             listed = ", ".join(
-                f"[{attribute_ids.get(a['attribute_name'], '?')}] "
-                f"{a['attribute_name']}" for a in attributes)
+                f"[{a['attribute_id']}] {a['attribute_name']}"
+                for a in attributes)
             lines.append(f"      Holds these attributes: {listed}")
-        texts = (contents.get(name) or [])[:top_n]
+        texts = (contents.get(facet_id) or [])[:top_n]
         if texts:
             lines.append("      Actually holds:")
             lines.extend(f"        - {t}" for t in texts)

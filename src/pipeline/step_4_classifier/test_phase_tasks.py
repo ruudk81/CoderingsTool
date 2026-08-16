@@ -567,8 +567,7 @@ def test_een_domein_met_een_facet_krijgt_geen_taak():
     clf = _clf()
     settled = {"d": [_pool("f1", "a1")]}
     id_maps = {"d": {"F1": {"facet_name": "f1", "is_drain": False}}}
-    tasks = clf._build_facet_settle_tasks(
-        _ctx({"d": []}), settled, {}, id_maps, {"d": {}})
+    tasks = clf._build_facet_settle_tasks(settled, {}, id_maps, {"d": {}})
     assert tasks == []
 
 
@@ -584,12 +583,29 @@ def test_de_tellingen_komen_van_echte_toewijzingen_en_het_vangnet_telt_apart():
     facet_assignments = {"i1": "F1", "i2": "F1", "i3": "F2", "i4": "F3"}
     labels = {"d": {"i1": "traag", "i2": "traag", "i3": "duur", "i4": "geen idee"}}
     task = clf._build_facet_settle_tasks(
-        _ctx({"d": []}), settled, facet_assignments, id_maps, labels)[0]
-    assert task["counts"] == {"f1": 2, "f2": 1}
-    assert task["contents"]["f1"] == ["traag"]
+        settled, facet_assignments, id_maps, labels)[0]
+    assert task["counts"] == {"F1": 2, "F2": 1}
+    assert task["contents"]["F1"] == ["traag"]
     assert task["domain_total"] == 4
-    assert task["shares"]["f1"] == 0.5
+    assert task["shares"]["F1"] == 0.5
     assert task["drain_count"] == 1
+
+
+def test_de_tellingen_bridgen_op_positie_niet_op_gelijke_id_strings():
+    """Facettoewijzing en naslijpen delen alleen de VOLGORDE over `pools`, geen
+    letterlijk gelijke id's — hier expres verschillend genummerd, zodat een
+    fix die stiekem op tekstgelijke [F#]'s leunt zou falen."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    id_maps = {"d": {
+        "F9": {"facet_name": "f1", "is_drain": False},
+        "F8": {"facet_name": "f2", "is_drain": False},
+        "F7": {"facet_name": "Overig", "is_drain": True}}}
+    facet_assignments = {"i1": "F9", "i2": "F8"}
+    labels = {"d": {"i1": "traag", "i2": "duur"}}
+    task = clf._build_facet_settle_tasks(
+        settled, facet_assignments, id_maps, labels)[0]
+    assert task["counts"] == {"F1": 1, "F2": 1}
 
 
 def test_attribuut_ids_lopen_in_documentvolgorde_over_alle_pools_heen():
@@ -597,8 +613,7 @@ def test_attribuut_ids_lopen_in_documentvolgorde_over_alle_pools_heen():
     settled = {"d": [_pool("f1", "a1", "a2"), _pool("f2", "a3")]}
     id_maps = {"d": {"F1": {"facet_name": "f1", "is_drain": False},
                      "F2": {"facet_name": "f2", "is_drain": False}}}
-    task = clf._build_facet_settle_tasks(
-        _ctx({"d": []}), settled, {}, id_maps, {"d": {}})[0]
+    task = clf._build_facet_settle_tasks(settled, {}, id_maps, {"d": {}})[0]
     assert list(task["id_map"]) == ["F1", "F2"]
     assert [a.attribute_name for a in task["attribute_ids"].values()] == [
         "a1", "a2", "a3"]
@@ -643,6 +658,43 @@ def test_een_ongeclaimd_facet_blijft_staan():
     assert _actions(clf, "facet_kept_unclaimed_in_settle")[0]["facet"] == "f2"
 
 
+def test_een_ongeclaimde_kaart_is_een_kopie_niet_het_origineel():
+    """Een latere verplaatsing herschrijft `.attributes` van de kaart in
+    `rebuilt` — dat mag nooit het object zijn dat `settled` nog vasthoudt, of
+    de aanroeper zou de mutatie van deze functie erven."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2"), _pool("f3", "a3")]}
+    original_f1 = settled["d"][0]
+    a1 = original_f1.attributes[0]
+    task = _settle_task(settled["d"], {
+        "F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"},
+        "F3": {"facet_name": "f3"}})
+    move_id = next(aid for aid, a in task["attribute_ids"].items() if a is a1)
+    result = _settle_result(
+        [_settled("f2", "F2")], moves=[(move_id, "F3")], facet_ids=("F1", "F2", "F3"),
+        attribute_ids=tuple(task["attribute_ids"]))
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert not any(p is original_f1 for p in out["d"])
+    assert a1 in original_f1.attributes
+
+
+def test_een_verplaatsing_naar_een_facet_dat_het_net_behield_lukt():
+    """Een facet dat het model niet noemt wordt door het net bewaard (regel
+    'wat niemand claimt blijft staan') — een verplaatsing daarheen moet dat
+    bewaarde facet vinden, niet lezen als een verdwenen bestemming."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}})
+    result = _settle_result(
+        [_settled("f1", "F1")], moves=[("A1", "F2")], attribute_ids=("A1", "A2"))
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert _names(out["d"][0]) == []
+    assert _names(out["d"][1]) == ["a2", "a1"]
+    assert _actions(clf, "attribute_moved_between_facets")
+    assert not _actions(clf, "move_target_gone")
+
+
 def test_een_bron_die_twee_keer_wordt_geclaimd_gaat_naar_de_eerste():
     """Aan allebei geven zou één attribuut onder twee facetten laten overleven."""
     clf = _clf()
@@ -654,6 +706,27 @@ def test_een_bron_die_twee_keer_wordt_geclaimd_gaat_naar_de_eerste():
     assert _names(out["d"][0]) == ["a1", "a2"]
     assert _names(out["d"][1]) == []
     assert _actions(clf, "divided_source_facet_in_settle")
+
+
+def test_een_verplaatsing_naar_een_verdeeld_geclaimde_bron_gaat_naar_de_eerste():
+    """`to_facet_id` kan een bron noemen die twee overlevenden claimden — de
+    bestemming moet resolven naar dezelfde eerste claimant die de structuur
+    zelf al koos ("gaat naar de eerste"), niet naar de tweede die er niets
+    van kreeg."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2"), _pool("f3", "a3")]}
+    task = _settle_task(settled["d"], {
+        "F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"},
+        "F3": {"facet_name": "f3"}})
+    result = _settle_result(
+        [_settled("x", "F1", "F2"), _settled("y", "F2"), _settled("f3", "F3")],
+        moves=[("A3", "F2")], facet_ids=("F1", "F2", "F3"),
+        attribute_ids=("A1", "A2", "A3"))
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert out["d"][0].facet_name == "x"
+    assert _names(out["d"][0]) == ["a1", "a2", "a3"]
+    assert _names(out["d"][1]) == []  # "y", the losing claimant
+    assert _names(out["d"][2]) == []  # f3's own survivor, now empty
 
 
 def test_een_attribuut_verhuist_naar_het_facet_dat_het_doel_noemt():
@@ -670,6 +743,31 @@ def test_een_attribuut_verhuist_naar_het_facet_dat_het_doel_noemt():
     assert _actions(clf, "attribute_moved_between_facets")[0]["attribute"] == "a2"
 
 
+def test_een_verplaatsing_kiest_de_juiste_kopie_bij_identieke_attributen():
+    """Twee facetten die toevallig een inhoudelijk identiek attribuut dragen
+    zijn met `==` niet uit elkaar te houden — `DiscoveredAttribute` is een
+    pydantic-model en vergelijkt op waarde, niet op identiteit. Zonder
+    objectidentiteit verwijdert de verplaatsing de verkeerde kopie (uit het
+    facet dat niets hoefde te verliezen) en verdubbelt de goede."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "dup"), _pool("f2", "dup"), _pool("f3", "other")]}
+    dup_in_f1 = settled["d"][0].attributes[0]
+    dup_in_f2 = settled["d"][1].attributes[0]
+    task = _settle_task(settled["d"], {
+        "F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"},
+        "F3": {"facet_name": "f3"}})
+    move_id = next(aid for aid, a in task["attribute_ids"].items() if a is dup_in_f2)
+    result = _settle_result(
+        [_settled("f1", "F1"), _settled("f2", "F2"), _settled("f3", "F3")],
+        moves=[(move_id, "F3")], facet_ids=("F1", "F2", "F3"),
+        attribute_ids=tuple(task["attribute_ids"]))
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    # f1's own copy is left alone; f2's copy is the one that actually moved.
+    assert [a is dup_in_f1 for a in out["d"][0].attributes] == [True]
+    assert out["d"][1].attributes == []
+    assert [a is dup_in_f2 for a in out["d"][2].attributes] == [False, True]
+
+
 def test_een_verplaatsing_naar_een_verdwenen_facet_laat_het_attribuut_staan():
     """Het doelfacet kan door de merge van dezelfde call verdwenen zijn. Dan
     blijft het attribuut waar het stond, met een logregel — nooit stil. Dat is
@@ -683,7 +781,30 @@ def test_een_verplaatsing_naar_een_verdwenen_facet_laat_het_attribuut_staan():
         moves=[("A1", "F2")], attribute_ids=("A1", "A2"))
     out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
     assert sorted(_names(out["d"][0])) == ["a1", "a2"]
-    assert _actions(clf, "move_target_gone")
+    logged = _actions(clf, "move_target_gone")
+    assert logged
+    # Unknown attribute, vanished target and no-op are three different
+    # situations; the log has to keep them apart, not fold all three into one
+    # indistinguishable line. Here it's the "already there" case: F1 and F2
+    # folded into the same survivor, so the move's source and destination are
+    # already the same facet.
+    assert logged[0]["reason"] == "already_there"
+
+
+def test_move_target_gone_bij_een_onbekend_attribuut_id():
+    """Als de taak geen attributen heeft uitgedeeld kan een verplaatsing nooit
+    een geldig id noemen — de reden moet dat onderscheiden van een echt
+    verdwenen bestemming."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}}, {})
+    result = _settle_result(
+        [_settled("f1", "F1"), _settled("f2", "F2")],
+        moves=[("A1", "F2")], attribute_ids=("A1",))
+    clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    logged = _actions(clf, "move_target_gone")
+    assert logged[0]["reason"] == "unknown_attribute"
 
 
 def test_een_mislukte_call_laat_het_domein_zoals_consolidatie_het_zette():

@@ -1590,7 +1590,6 @@ class TaxonomyClassifier:
 
     def _build_facet_settle_tasks(
         self,
-        ctx: PromptContext,
         settled: Dict[str, List[FacetPool]],
         facet_assignments: Dict[str, str],
         id_maps: Dict[str, Dict[str, Dict[str, Any]]],
@@ -1598,10 +1597,18 @@ class TaxonomyClassifier:
     ) -> List[Dict]:
         """One task per domain with something to compare against real counts.
 
-        Counted per facet NAME, not per facet id: `build_facet_settle_block`
-        renders its own [F#] numbering over `settled[domain]`, in that order,
-        and looks counts up by name — the id space facet assignment used to
-        place ideas belongs to a different call and dies here.
+        Counted per facet id, never per name: two facets of one domain may
+        legally share a name (`build_facet_menu`'s own guarantee), and facet
+        consolidation can produce exactly that — a name-keyed count would let
+        one of them stand in for the other, corrupting the one input this
+        phase exists to get right.
+
+        Facet assignment numbered `settled[domain]` in its own call, in the
+        same order, plus one trailing id for the domain's catch-all
+        (`_build_facet_assignment_tasks` builds its menu as `[...pools] +
+        [drain]`) — a DIFFERENT id space from the one this task hands out
+        below. `old_to_task` bridges them by POSITION, not by name, since
+        name is exactly what is not guaranteed unique here.
 
         A domain with fewer than two facets gets no task: there is nothing to
         fold it with. Ideas that landed on the domain's catch-all facet are
@@ -1617,7 +1624,11 @@ class TaxonomyClassifier:
                 continue
             texts = labels.get(domain) or {}
             choices = id_maps.get(domain) or {}
-            name_of_fid = {fid: c["facet_name"] for fid, c in choices.items()}
+            task_id_map = {f"F{i}": {"facet_name": p.facet_name}
+                           for i, p in enumerate(pools, 1)}
+            non_drain_old_fids = [
+                fid for fid, c in choices.items() if not c["is_drain"]]
+            old_to_task = dict(zip(non_drain_old_fids, task_id_map))
             drain_fid = next(
                 (fid for fid, c in choices.items() if c["is_drain"]), None)
 
@@ -1630,11 +1641,11 @@ class TaxonomyClassifier:
                 if fid == drain_fid:
                     n_drain += 1
                     continue
-                name = name_of_fid.get(fid)
-                if name is None:
+                task_fid = old_to_task.get(fid)
+                if task_fid is None:
                     continue
-                counts[name] += 1
-                seen = contents.setdefault(name, [])
+                counts[task_fid] += 1
+                seen = contents.setdefault(task_fid, [])
                 text = texts[idea_id]
                 if text and text not in seen:
                     seen.append(text)
@@ -1643,14 +1654,13 @@ class TaxonomyClassifier:
             tasks.append({
                 "domain_label": domain,
                 "pools": pools,
-                "id_map": {f"F{i}": {"facet_name": p.facet_name}
-                          for i, p in enumerate(pools, 1)},
+                "id_map": task_id_map,
                 "attribute_ids": {
                     f"A{i}": a for i, a in enumerate(
                         (a for p in pools for a in p.attributes), start=1)},
                 "counts": dict(counts),
-                "shares": {name: (n / total if total else 0.0)
-                          for name, n in counts.items()},
+                "shares": {fid: (n / total if total else 0.0)
+                          for fid, n in counts.items()},
                 "contents": contents,
                 "drain_count": n_drain,
                 "domain_total": total,
@@ -1660,17 +1670,17 @@ class TaxonomyClassifier:
     def _facet_settle_prepare_fn(self, ctx: PromptContext):
         def prepare_fn(task: Dict) -> Dict:
             domain = ctx.domain(task["domain_label"])
-            # `build_facet_settle_block` looks an attribute's id up by name to
-            # render it next to the name; the task's own map goes the other
-            # way (id -> object), because applying a move needs the object,
-            # not the label.
-            id_by_name = {a.attribute_name: aid
-                         for aid, a in task["attribute_ids"].items()}
+            # Looked up by object identity, never by name: two attributes of
+            # one domain may share a name, and a name-keyed lookup would
+            # render one of them under the other's id — a move could then
+            # name an id whose object lives in a different facet entirely.
+            id_by_object = {id(a): aid for aid, a in task["attribute_ids"].items()}
             facets = [{
                 "facet_name": p.facet_name,
                 "facet_definition": p.facet_definition,
                 "facet_question": p.facet_question,
-                "attributes": [{"attribute_name": a.attribute_name}
+                "attributes": [{"attribute_name": a.attribute_name,
+                               "attribute_id": id_by_object[id(a)]}
                               for a in p.attributes],
             } for p in task["pools"]]
             prompt = build_facet_settle_prompt(
@@ -1684,7 +1694,7 @@ class TaxonomyClassifier:
                 domain_definition=domain["definition"],
                 settle_block=build_facet_settle_block(
                     facets, task["counts"], task["shares"], task["contents"],
-                    id_by_name, self._contents_top_n),
+                    self._contents_top_n),
             )
             self._capture(
                 f"facet_settle_{task['domain_label']}", prompt, "facet_settle",
@@ -1767,9 +1777,21 @@ class TaxonomyClassifier:
                 continue
 
             # --- facets ---------------------------------------------------
+            # `home_of` answers "which pool in `rebuilt` ended up holding
+            # source id X", for every id in `cards` — built alongside the two
+            # loops below rather than reconstructed from `result.facets`
+            # afterwards, which is what let a move naming a facet the net
+            # kept (not returned by the model at all) find no entry and get
+            # misread as a vanished target. Populated from `fresh`/kept ids
+            # only — never `sources`, whose duplicates would let a later,
+            # losing claimant overwrite the first, contradicting the "goes to
+            # the first claimant" rule the structure itself follows —  and
+            # `setdefault` so an id, once registered, can never be
+            # overwritten by a later iteration either.
             claimed: Set[str] = set()
             rebuilt: List[FacetPool] = []
             provenance: List[Dict[str, Any]] = []
+            home_of: Dict[str, FacetPool] = {}
             for item in result.facets:
                 sources = [fid for fid in item.source_facet_ids if fid in cards]
                 unknown = [fid for fid in item.source_facet_ids if fid not in cards]
@@ -1789,45 +1811,71 @@ class TaxonomyClassifier:
                         "sources": [f for f in sources if f in claimed],
                         "note": "already claimed; attributes stayed with the first"})
                 claimed.update(fresh)
-                rebuilt.append(FacetPool(
+                pool = FacetPool(
                     facet_name=item.facet_name,
                     facet_definition=item.facet_definition,
                     facet_question=item.facet_question,
-                    attributes=[a for fid in fresh for a in cards[fid].attributes]))
+                    attributes=[a for fid in fresh for a in cards[fid].attributes])
+                rebuilt.append(pool)
+                for fid in fresh:
+                    home_of.setdefault(fid, pool)
                 provenance.append({"facet": item.facet_name,
                                    "source_facet_ids": fresh,
                                    "facet_question": item.facet_question})
 
             # What nobody claimed stays standing: unclaimed and folded-away
             # look identical in the answer, so `source_facet_ids` is the only
-            # thing that tells them apart.
+            # thing that tells them apart. Copied rather than reused: `card`
+            # is the very object living in the caller's `settled`, and a move
+            # below may reassign its `.attributes` — mutating the caller's
+            # input is not this function's to do.
             for fid, card in cards.items():
                 if fid in claimed:
                     continue
-                rebuilt.append(card)
+                kept = FacetPool(
+                    facet_name=card.facet_name,
+                    facet_definition=card.facet_definition,
+                    facet_question=card.facet_question,
+                    attributes=list(card.attributes))
+                rebuilt.append(kept)
+                home_of.setdefault(fid, kept)
                 self._action_log.append({
                     "action": "facet_kept_unclaimed_in_settle", "domain": domain,
                     "facet": card.facet_name})
 
             # --- moves, against the rebuilt pools --------------------------
-            # `to_facet_id` names a SOURCE facet, so the destination is the
-            # survivor that claimed it. Not found means the merge of this same
-            # call removed it.
-            home_of = {fid: pool for pool, item in zip(rebuilt, result.facets)
-                       for fid in item.source_facet_ids if fid in cards}
+            # `to_facet_id` names a SOURCE facet, so the destination is
+            # whichever pool ended up holding it — `home_of` above, built to
+            # cover every id in `cards`, claimed or kept. Resolved by object
+            # identity throughout: `DiscoveredAttribute` is a pydantic model,
+            # so `in`/`.remove()` compare by VALUE, and two facets of one
+            # domain can hold two attributes with identical fields — the
+            # exact case the id -> object map exists to keep apart.
             for move in (result.attribute_moves or []):
                 attribute = task["attribute_ids"].get(move.attribute_id)
                 target = home_of.get(move.to_facet_id)
-                holder = next((p for p in rebuilt if attribute in p.attributes), None)
-                if attribute is None or target is None or holder is target:
+                holder = next(
+                    (p for p in rebuilt if any(a is attribute for a in p.attributes)),
+                    None) if attribute is not None else None
+                if attribute is None:
+                    reason = "unknown_attribute"
+                elif target is None:
+                    reason = "target_gone"
+                elif holder is None:
+                    reason = "not_found"
+                elif holder is target:
+                    reason = "already_there"
+                else:
+                    reason = None
+                if reason is not None:
                     self._action_log.append({
                         "action": "move_target_gone", "domain": domain,
                         "attribute_id": move.attribute_id,
-                        "to_facet_id": move.to_facet_id,
+                        "to_facet_id": move.to_facet_id, "reason": reason,
                         "note": "target gone after the merge, or already there — "
                                 "attribute left where it was"})
                     continue
-                holder.attributes.remove(attribute)
+                holder.attributes = [a for a in holder.attributes if a is not attribute]
                 target.attributes.append(attribute)
                 self._action_log.append({
                     "action": "attribute_moved_between_facets", "domain": domain,
@@ -1870,7 +1918,7 @@ class TaxonomyClassifier:
         started = time.time()
 
         tasks = self._build_facet_settle_tasks(
-            ctx, settled, facet_assignments, id_maps, labels)
+            settled, facet_assignments, id_maps, labels)
         results = await self._dispatch(
             "facet_settle", tasks,
             self._facet_settle_prepare_fn(ctx),
