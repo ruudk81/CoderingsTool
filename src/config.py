@@ -207,7 +207,6 @@ STEP_EFFORT = {
     # the calls are.
     "classifier_discovery": "medium",
     "classifier_facet_consolidation": "medium",
-    "classifier_facet_settle": "medium",
     "classifier_attribute_consolidation": "medium",
     "classifier_refinement": "medium",
     "classifier_cross_domain": "medium",
@@ -225,7 +224,6 @@ STEP_VERBOSITY = {
     # Step 4: discovery/consolidation phases have scratchpad → low saves tokens
     "classifier_discovery": "low",
     "classifier_facet_consolidation": "low",
-    "classifier_facet_settle": "low",
     "classifier_attribute_consolidation": "low",
     "classifier_refinement": "low",
     "classifier_cross_domain": "low",
