@@ -80,6 +80,16 @@ class TokenBucket:
         self.last_update = time.monotonic()
         self.lock = asyncio.Lock()
         self._max_attempts = max_acquire_attempts
+        # How much of a phase is spent waiting here, and how hard the waiting
+        # is. `acquire` computes a wait without reserving anything, so every
+        # waiter sleeps and then races for the same tokens: attempts per
+        # acquisition is what tells a queue apart from a scramble. Wait seconds
+        # sum across concurrent workers, so they exceed wall-clock by design —
+        # what they measure is total worker time lost, not elapsed time.
+        self.wait_seconds = 0.0
+        self.acquire_attempts = 0
+        self.acquisitions = 0
+        self.longest_wait = 0.0
 
     async def acquire(self, tokens_needed):
         async with self.lock:
@@ -94,9 +104,15 @@ class TokenBucket:
                 return (tokens_needed - self.available) * 60 / self.tpm
 
     async def wait_and_acquire(self, tokens_needed):
+        started = time.monotonic()
         for _ in range(self._max_attempts):
+            self.acquire_attempts += 1
             result = await self.acquire(tokens_needed)
             if result is True:
+                waited = time.monotonic() - started
+                self.wait_seconds += waited
+                self.longest_wait = max(self.longest_wait, waited)
+                self.acquisitions += 1
                 return
             await asyncio.sleep(result)
         raise RuntimeError(f"Failed to acquire {tokens_needed} tokens")
@@ -1920,6 +1936,12 @@ class SmoothRequester:
                                     in self._retry_reasons.most_common())
                 print(f"- Retries absorbed: {self.stats['retries']} "
                       f"({self._retry_sleep_total:.0f}s in backoff) — {reasons}")
+            bucket = self.tpm_bucket
+            if bucket is not None and bucket.acquisitions:
+                print(f"- Token bucket: {bucket.wait_seconds:.0f}s waited across "
+                      f"all workers, longest single wait {bucket.longest_wait:.1f}s, "
+                      f"{bucket.acquire_attempts / bucket.acquisitions:.1f} attempts "
+                      f"per acquisition")
             if rate_capped_final:
                 print(f"- Rate-capped at concurrency {self.optimal_concurrency}")
             else:
