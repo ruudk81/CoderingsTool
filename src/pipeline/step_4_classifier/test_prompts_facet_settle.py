@@ -1,10 +1,12 @@
 """Tests voor het naslijpen van facetten (step 4)."""
+import pydantic
+import pytest
+
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.prompts_facet_settle import (
-    AttributeMove,
-    FacetSettleResult,
     SettledFacetCard,
     build_facet_settle_block,
+    build_facet_settle_model,
     build_facet_settle_prompt,
 )
 from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
@@ -57,6 +59,11 @@ def _rules(prompt: str) -> str:
     return prompt[prompt.index("\n# Rules\n"):prompt.index("<universal_rules>")]
 
 
+def _model():
+    """Het model over dezelfde id-ruimte als `_blok()` uitdeelt."""
+    return build_facet_settle_model(["F1"], ["A1", "A2"])
+
+
 # =============================================================================
 # HET BLOK
 # =============================================================================
@@ -98,8 +105,21 @@ def test_de_uitgangen_lopen_op_ids():
     """Op 2026-08-16 noemde de misfit-uitgang van het naslijpen zijn
     bestemmingen op naam vóór de fase en zocht ze op ná de fase; 70% landde op
     een naam die de buurcall net had opgeslokt."""
-    move = AttributeMove.model_fields
-    assert set(move) == {"attribute_id", "to_facet_id"}
+    move = _model().model_fields["attribute_moves"].annotation.__args__[0]
+    assert set(move.model_fields) == {"attribute_id", "to_facet_id"}
+
+
+def test_een_verzonnen_bestemming_wordt_geweigerd():
+    """Het hele punt van de fabriek: `to_facet_id` mag alleen een id zijn die
+    dit blok heeft uitgedeeld, anders is een verzonnen bestemming niet te
+    onderscheiden van een facet dat dezelfde call heeft weggevouwen."""
+    model = _model()
+    move = model.model_fields["attribute_moves"].annotation.__args__[0]
+    with pytest.raises(pydantic.ValidationError):
+        move(attribute_id="A1", to_facet_id="F99")
+    with pytest.raises(pydantic.ValidationError):
+        move(attribute_id="A99", to_facet_id="F1")
+    move(attribute_id="A1", to_facet_id="F1")  # binnen de ruimte: geen fout
 
 
 def test_een_overlevend_facet_noemt_zijn_bronnen_op_id():
@@ -113,7 +133,7 @@ def test_een_overlevend_facet_schrijft_zijn_vraag_opnieuw_op():
 
 
 def test_het_resultaat_draagt_facetten_en_verplaatsingen():
-    assert set(FacetSettleResult.model_fields) == {
+    assert set(_model().model_fields) == {
         "scratchpad", "facets", "attribute_moves"}
 
 
@@ -143,7 +163,7 @@ def test_de_prompt_beschrijft_zijn_eigen_schema_niet():
 
 
 def test_het_model_beschrijft_elk_veld_dat_het_heeft():
-    assert_every_field_is_described(FacetSettleResult)
+    assert_every_field_is_described(_model())
 
 
 def test_de_prompt_eindigt_op_de_universele_regels_en_de_instructor_zin():

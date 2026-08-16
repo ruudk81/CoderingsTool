@@ -13,12 +13,15 @@ attributes actually contain — not just what they claim to. A facet that
 looked substantial by pass-count and turns out to hold almost nothing once
 ideas are counted is exactly the case the first pass could not see.
 
-**Two exits, both on ids handed out in the same block.** A facet can fold
-into another (`source_facet_ids`), and a single attribute can move to a
-better-fitting facet (`AttributeMove`) without its container being touched.
-Both name their target as an id from `build_facet_settle_block`, never as a
-name to be looked up afterwards — see `AttributeMove` for why that distinction
-is load-bearing here.
+**Two exits, both on ids handed out in the same block, but they are not the
+same kind of claim.** A facet can fold into another, via `source_facet_ids` —
+a claim a coverage gate recomputes and can catch after the call. A single
+attribute can move to a better-fitting facet without its container being
+touched — a destination, which nothing recomputes. `build_facet_settle_model`
+types the move as a `Literal` over exactly the ids this call handed out, so an
+invented destination is a schema error instructor retries, not a content error
+that looks identical to a facet legitimately merged away by the same call —
+see that function for why the difference matters.
 
 **Attributes are evidence, not material.** Their names are rendered so the
 model can judge whether a facet's question is actually being answered by what
@@ -28,9 +31,9 @@ redefining an attribute is not this phase's job — see
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from .drains import is_drain_item
 from .prompts_shared import (
@@ -75,47 +78,58 @@ class SettledFacetCard(BaseModel):
             "where it was, next to the facet you meant to replace it with"))
 
 
-class AttributeMove(BaseModel):
-    """One attribute relocated to a better-fitting facet, container untouched.
+def build_facet_settle_model(facet_ids: List[str], attribute_ids: List[str]):
+    """Runtime model in which a move's destination is this call's own id space.
 
-    Both `attribute_id` and `to_facet_id` are ids from `build_facet_settle_block`,
-    never names. Refinement's own misfit exit named its destinations before the
-    phase ran and resolved them against the names as they stood after it — on
-    the run of 2026-08-16, 70% of routed groups landed on a name a neighbouring
-    call had just consumed, and fell back silently to where they already sat.
-    An id chosen from the input the model is looking at cannot go stale that
-    way; resolving `to_facet_id` against the facet that finally claims it is
-    the caller's job, done once the whole call is back.
+    `source_facet_ids`, on `SettledFacetCard` above, is a claim: a coverage
+    gate recomputes what every candidate id was accounted for by, and an
+    invented id there is caught and logged as `unknown_source_id`. A move has
+    no such gate — nothing recomputes whether `to_facet_id` was ever real.
+    And the wiring that resolves a move logs `move_target_gone` for the
+    legitimate case where the target facet was merged away by this same call;
+    an invented id would produce the identical log line, making a model error
+    indistinguishable from a normal outcome. That is the exact blurring that
+    let refinement's own misfit exit lose 70% of its routed groups silently
+    on the run of 2026-08-16, before anyone noticed. Typing both id fields
+    `Literal` over exactly the ids this call handed out turns the invented
+    case into a schema error instructor retries, instead of a content error
+    reaching that log line at all.
     """
-    attribute_id: str = Field(
-        ..., description=(
-            "The bracketed id, from the facets shown, of the attribute being "
-            "relocated, e.g. 'A3'"))
-    to_facet_id: str = Field(
-        ..., description=(
-            "The bracketed id of the candidate facet this attribute actually "
-            "belongs under — the id as shown, in the same id space as "
-            "`source_facet_ids`, not the name of the facet it ends up folded "
-            "into"))
+    facet_literal = Literal[tuple(facet_ids)]  # type: ignore[valid-type]
+    attribute_literal = Literal[tuple(attribute_ids)]  # type: ignore[valid-type]
 
-
-class FacetSettleResult(BaseModel):
-    """What one facet-settle call per domain returns."""
-    scratchpad: str = Field(
-        ..., description=(
-            "Work through the numbered rules of the prompt in the order they "
-            "are given, before writing the output. The rules are not "
-            "repeated here: two copies of them drifted apart once, and the "
-            "model was handed both"))
-    facets: List[SettledFacetCard] = Field(
-        ..., description=(
-            "The fewest mutually exclusive facets that cover this domain"))
-    attribute_moves: List[AttributeMove] = Field(
-        ..., description=(
-            "Every attribute that answers a different candidate facet's "
-            "question than the one it is shown under, redirected there. An "
-            "attribute already sitting under the facet whose question it "
-            "answers does not appear here"))
+    move = create_model(
+        "AttributeMove",
+        attribute_id=(attribute_literal, Field(
+            ..., description=(
+                "The bracketed id, from the facets shown, of the attribute "
+                "being relocated, e.g. 'A3'"))),
+        to_facet_id=(facet_literal, Field(
+            ..., description=(
+                "The bracketed id of the candidate facet this attribute "
+                "actually belongs under — the id as shown, in the same id "
+                "space as `source_facet_ids`, not the name of the facet it "
+                "ends up folded into"))),
+    )
+    return create_model(
+        "FacetSettleResult",
+        scratchpad=(str, Field(
+            ..., description=(
+                "Work through the numbered rules of the prompt in the order "
+                "they are given, before writing the output. The rules are "
+                "not repeated here: two copies of them drifted apart once, "
+                "and the model was handed both"))),
+        facets=(List[SettledFacetCard], Field(
+            ..., description=(
+                "The fewest mutually exclusive facets that cover this "
+                "domain"))),
+        attribute_moves=(List[move], Field(
+            ..., description=(
+                "Every attribute that answers a different candidate facet's "
+                "question than the one it is shown under, redirected there. "
+                "An attribute already sitting under the facet whose "
+                "question it answers does not appear here"))),
+    )
 
 
 # =============================================================================
