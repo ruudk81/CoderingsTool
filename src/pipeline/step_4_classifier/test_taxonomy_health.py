@@ -9,6 +9,7 @@ notices on its own. These pin the warning that now makes that visible.
 from types import SimpleNamespace
 
 from models import DomainResultModel, DomainSet, TaxonomyResultsCache
+from pipeline.step_4_classifier.drains import make_drain_facet
 from pipeline.step_4_classifier.taxonomy_health import (
     DRAIN_KEYS,
     drain_domains,
@@ -35,6 +36,47 @@ def _tax(assignments):
             )
         },
     )
+
+
+def _tax_met_bladeren(domains, drains=None):
+    """Bouw een cache uit {domein: {facet: {attribuut: n ideeën}}}, voor de
+    blad- en facetmetrieken. `drains` voegt per genoemd domein een vangnetfacet
+    (met zijn eigen vangnetattribuut, zoals `_add_drains` dat ook doet) toe met
+    dat aantal ideeën — om te toetsen dat het vangnet niet meetelt als blad of
+    facet."""
+    partition_results = {}
+    idea_n = 0
+
+    def _assign(assignments, attribute_name, n):
+        nonlocal idea_n
+        for _ in range(n):
+            idea_n += 1
+            assignments[f"idea-{idea_n}"] = attribute_name
+
+    for dname, facets in domains.items():
+        facet_dicts, attributes, assignments = [], {}, {}
+        for fname, attrs in facets.items():
+            facet_dicts.append({"facet_name": fname})
+            attributes[fname] = [{"attribute_name": an} for an in attrs]
+            for an, n in attrs.items():
+                _assign(assignments, an, n)
+
+        if drains and dname in drains:
+            drain_facet = make_drain_facet(dname, "Dutch")
+            drain_attr = drain_facet["attributes"][0]
+            facet_dicts.append(
+                {k: v for k, v in drain_facet.items() if k != "attributes"})
+            attributes[drain_facet["facet_name"]] = [drain_attr]
+            _assign(assignments, drain_attr["attribute_name"], drains[dname])
+
+        partition_results[dname] = DomainResultModel(
+            partition_name=dname, n_labels=len(assignments), n_batches=1,
+            facets=facet_dicts, attributes=attributes,
+            attribute_assignments=assignments,
+        )
+
+    return TaxonomyResultsCache(
+        partition_set=DomainSet(partitions=[]), partition_results=partition_results)
 
 
 def test_drain_domains_finds_both_by_current_keys():
@@ -201,3 +243,44 @@ def test_a_domain_without_assigned_ideas_is_left_out():
             partition_name="leeg", n_labels=0, n_batches=1,
             facets=[], attributes={}, attribute_assignments={})})
     assert measure(tax).drain_share_by_domain == []
+
+
+# =============================================================================
+# LARGEST LEAF / LEAF BUCKETS / LARGEST FACET — the ceiling on what step 5 can
+# still split, and the counter-metric to "fewer attributes is better"
+# =============================================================================
+
+def test_het_grootste_blad_wordt_gerapporteerd():
+    """Het blad dat een kwart van de steekproef draagt is het signaal dat step 5
+    niet meer kan repareren: een codeboek snijdt omhoog, nooit onder een blad."""
+    from pipeline.step_4_classifier.taxonomy_health import measure
+    rep = measure(_tax_met_bladeren({"d": {"f": {"a1": 300, "a2": 20}}}))
+    assert rep.largest_leaf == ("a1", 300)
+    assert rep.largest_leaf_share == 300 / 320
+
+
+def test_de_bladverdeling_telt_de_kleine_knopen():
+    """Minder attributen is triviaal te bereiken door harder samen te voegen.
+    De verdeling laat zien of het aantal daalt doordat kleine knopen verdwijnen
+    of doordat er een grote bak bijkomt."""
+    from pipeline.step_4_classifier.taxonomy_health import measure
+    rep = measure(_tax_met_bladeren({"d": {"f": {"a1": 1, "a2": 4, "a3": 9, "a4": 40}}}))
+    assert rep.leaf_buckets == {5: 2, 10: 3}
+
+
+def test_het_grootste_facet_wordt_gerapporteerd_binnen_zijn_domein():
+    """Het aandeel is dat van zijn eigen domein: een facet dat het halve domein
+    draagt is een facetprobleem, ook als het domein klein is."""
+    from pipeline.step_4_classifier.taxonomy_health import measure
+    rep = measure(_tax_met_bladeren({"d": {"f1": {"a1": 80}, "f2": {"a2": 20}}}))
+    assert rep.largest_facet == ("d", "f1", 80)
+    assert rep.largest_facet_share == 0.8
+
+
+def test_vangnetten_tellen_niet_mee_als_blad_of_facet():
+    """Een vangnet is een aanbod, geen categorie. Het grootste blad is een
+    inhoudelijke bevinding; een grote drain staat al in `drain_share_by_domain`."""
+    from pipeline.step_4_classifier.taxonomy_health import measure
+    rep = measure(_tax_met_bladeren(
+        {"d": {"f": {"a1": 10}}}, drains={"d": 500}))
+    assert rep.largest_leaf == ("a1", 10)

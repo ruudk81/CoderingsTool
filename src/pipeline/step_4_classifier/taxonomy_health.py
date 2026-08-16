@@ -37,6 +37,17 @@ Four things, all dataset-independent and all cheap enough to run on every build:
                         a deliberate placeholder for later waves. A high SHARE of
                         them is the signal.
 
+                        A second group marks the opposite failure — over-consolidation
+                        rather than flatness. The largest leaf and the largest facet
+                        are the ceiling on how far step 5 can still split a run: a
+                        codebook cuts a taxonomy up, it never cuts one leaf into two,
+                        so a single attribute or facet holding a large share of the
+                        sample is a merge that already went too far to undo downstream.
+                        The leaf-size distribution tells the two ways "fewer attributes"
+                        can happen apart: small nodes disappearing versus a big one
+                        growing. Catch-alls are excluded from all three — a drain is an
+                        offer, not a finding, and it already has its own metric above.
+
 Scope: this module operates PRE-finalization, where name still is identity —
 stable ids (D#/F#/A#, src/identity.py) are minted at cache-save, after these
 checks ran. It therefore deliberately stays name-based.
@@ -46,6 +57,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Tuple
 
 from models import TaxonomyResultsCache
+from .drains import is_drain_item
 
 SENTINELS = {"__UNASSIGNED__", "(no attribute)", "(geen attribuut)"}
 
@@ -193,10 +205,27 @@ class HealthReport:
     n_drain_ideas: int = 0
     drain_ideas_by_domain: Dict[str, int] = field(default_factory=dict)
     ideas_by_domain: Dict[str, int] = field(default_factory=dict)
+    largest_leaf: Tuple[str, int] = ("", 0)
+    leaf_buckets: Dict[int, int] = field(default_factory=dict)
+    largest_facet: Tuple[str, str, int] = ("", "", 0)
 
     @property
     def solo_facet_share(self) -> float:
         return 100.0 * len(self.solo_facets) / self.n_facets if self.n_facets else 0.0
+
+    @property
+    def largest_leaf_share(self) -> float:
+        """Aandeel van álle toegewezen ideeën. Een blad is een blad, ongeacht
+        in welk domein het hangt — step 5 kan er hoe dan ook niet onder snijden."""
+        return self.largest_leaf[1] / self.n_ideas if self.n_ideas else 0.0
+
+    @property
+    def largest_facet_share(self) -> float:
+        """Aandeel van zijn eigen domein. Het domein is de noemer die alle
+        facetten ervan delen — dezelfde telling als `drain_share_by_domain`
+        gebruikt, dus geen tweede optelling ernaast."""
+        total = self.ideas_by_domain.get(self.largest_facet[0], 0)
+        return self.largest_facet[2] / total if total else 0.0
 
     @property
     def drain_share(self) -> float:
@@ -231,6 +260,13 @@ class HealthReport:
         out = [
             f"  {self.n_domains} domeinen / {self.n_facets} facetten / "
             f"{self.n_attributes} attributen / {self.n_ideas} ideeën",
+            f"  grootste blad      : {self.largest_leaf[1]} ideeën "
+            f"({self.largest_leaf_share:.1%}) — {self.largest_leaf[0]!r}",
+            f"  kleine bladeren    : {self.leaf_buckets.get(5, 0)} onder 5, "
+            f"{self.leaf_buckets.get(10, 0)} onder 10",
+            f"  grootste facet     : {self.largest_facet[2]} ideeën "
+            f"({self.largest_facet_share:.0%} van {self.largest_facet[0]!r}) — "
+            f"{self.largest_facet[1]!r}",
             f"  facet == attribuut : {len(self.facet_equals_attribute)}",
             f"  1:1-facetten       : {len(self.solo_facets)} "
             f"({self.solo_facet_share:.0f}% van de facetten)",
@@ -261,6 +297,8 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
     attr_where: Dict[str, List[str]] = defaultdict(list)
     facet_where: Dict[str, List[str]] = defaultdict(list)
     ideas = set()
+    leaves: List[Tuple[str, int]] = []              # (attribuutnaam, n ideeën)
+    facet_sizes: List[Tuple[str, str, int]] = []    # (domein, facetnaam, n ideeën)
 
     for dname, dr in tax.partition_results.items():
         counts = Counter(v for v in (dr.attribute_assignments or {}).values()
@@ -270,17 +308,25 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
 
         drain_names = {a.get("attribute_name")
                        for attrs in (dr.attributes or {}).values()
-                       for a in attrs if a.get("drain_key")}
+                       for a in attrs if is_drain_item(a)}
         drained = sum(n for name, n in counts.items() if name in drain_names)
         rep.n_drain_ideas += drained
         rep.drain_ideas_by_domain[dname] = drained
         rep.ideas_by_domain[dname] = sum(counts.values())
+
+        facet_meta = {f.get("facet_name"): f for f in (dr.facets or [])}
 
         for fname, attrs in (dr.attributes or {}).items():
             rep.n_facets += 1
             facet_where[fname].append(dname)
             names = [a.get("attribute_name") for a in attrs]
             rep.n_attributes += len(names)
+
+            own = [(an, counts.get(an, 0)) for a, an in zip(attrs, names)
+                   if not is_drain_item(a)]
+            if not is_drain_item(facet_meta.get(fname) or {}):
+                leaves.extend(own)
+                facet_sizes.append((dname, fname, sum(n for _, n in own)))
 
             for an in names:
                 attr_where[an].append(f"{dname}/{fname}")
@@ -294,6 +340,10 @@ def measure(tax: TaxonomyResultsCache) -> HealthReport:
     rep.n_ideas = len(ideas)
     rep.duplicate_attributes = {k: v for k, v in attr_where.items() if len(v) > 1}
     rep.duplicate_facets = {k: v for k, v in facet_where.items() if len(set(v)) > 1}
+    rep.largest_leaf = max(leaves, key=lambda x: x[1], default=("", 0))
+    rep.leaf_buckets = {5: sum(1 for _, n in leaves if n < 5),
+                        10: sum(1 for _, n in leaves if n < 10)}
+    rep.largest_facet = max(facet_sizes, key=lambda x: x[2], default=("", "", 0))
     return rep
 
 
