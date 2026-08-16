@@ -1372,6 +1372,92 @@ def test_every_phase_name_is_a_valid_stop_point():
         _clf(stop_after_phase=phase)
 
 
+def test_de_nieuwe_fasen_staan_tussen_facetconsolidatie_en_attribuutconsolidatie():
+    fasen = list(TaxonomyClassifier.PHASES)
+    assert fasen.index("facet_consolidation") < fasen.index("facet_assignment")
+    assert fasen.index("facet_assignment") < fasen.index("facet_settle")
+    assert fasen.index("facet_settle") < fasen.index("attribute_consolidation")
+
+
+def _stub_orchestrated_phases(clf, called):
+    """Vervang elke `_run_<fase>` door een stub die zijn naam noteert en het
+    minimale dat de orchestrator nodig heeft teruggeeft, zodat de keten kan
+    doorlopen tot aan het stoppunt zonder een LLM te raken."""
+    async def discovery(ctx, verbose):
+        called.append("discovery")
+        return {}
+
+    async def facet_consolidation(ctx, raw, verbose):
+        called.append("facet_consolidation")
+        return {}
+
+    async def facet_assignment(ctx, settled, labels, verbose):
+        called.append("facet_assignment")
+        return {}, {}
+
+    async def facet_settle(ctx, settled, facet_assignments, id_maps, labels, verbose):
+        called.append("facet_settle")
+        return {}
+
+    async def attribute_consolidation(ctx, settled, verbose):
+        called.append("attribute_consolidation")
+        return {}
+
+    async def assignment(ctx, structure, labels, verbose):
+        called.append("assignment")
+        return {}
+
+    async def refinement(ctx, structure, assignments, labels, verbose):
+        called.append("refinement")
+        return structure, assignments
+
+    async def cross_domain(ctx, structure, assignments, verbose):
+        called.append("cross_domain")
+        return structure, assignments
+
+    clf._run_discovery = discovery
+    clf._run_facet_consolidation = facet_consolidation
+    clf._run_facet_assignment = facet_assignment
+    clf._run_facet_settle = facet_settle
+    clf._run_attribute_consolidation = attribute_consolidation
+    clf._run_assignment = assignment
+    clf._run_refinement = refinement
+    clf._run_cross_domain = cross_domain
+
+
+def _label_mapping():
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        labels=["een observatie"],
+        ideas=[SimpleNamespace(idea_id="i1")])
+
+
+def test_een_stop_na_facetassignment_draait_facetsettle_niet():
+    """De numerieke voorganger liet elke naam die geen stoppunt was de hele
+    pijplijn doordraaien, en dat kostte een volle run om te ontdekken. Hier
+    wordt beweerd dat de fasen ná het stoppunt niet draaiden — niet alleen dat
+    de naam geldig is."""
+    clf = _clf(stop_after_phase="facet_assignment")
+    called = []
+    _stub_orchestrated_phases(clf, called)
+    asyncio.run(clf._process_taxonomy_async(
+        {"d": _label_mapping()}, _ctx({"d": []}), verbose=False))
+    assert called == ["discovery", "facet_consolidation", "facet_assignment"]
+
+
+def test_een_stop_na_facetsettle_draait_attribuutconsolidatie_niet():
+    """De meting waar dit hele traject op uitloopt draait met
+    `stop_after_phase="facet_settle"` — dit is het hoogst renderende testgeval
+    in deze taak."""
+    clf = _clf(stop_after_phase="facet_settle")
+    called = []
+    _stub_orchestrated_phases(clf, called)
+    asyncio.run(clf._process_taxonomy_async(
+        {"d": _label_mapping()}, _ctx({"d": []}), verbose=False))
+    assert called == [
+        "discovery", "facet_consolidation", "facet_assignment", "facet_settle"]
+
+
 # =============================================================================
 # RATE LIMITS
 # =============================================================================

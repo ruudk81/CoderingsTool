@@ -1,4 +1,4 @@
-"""Taxonomy Classifier: inductive taxonomy discovery, seven phases.
+"""Taxonomy Classifier: inductive taxonomy discovery, nine phases.
 
 Facets (L3) and attributes (L4) are FOUND together rather than as two stacked
 layers, and SETTLED apart — one call per level, so each merge judgement is made
@@ -6,6 +6,8 @@ with everything it compares in view and nothing else:
 
   discovery               per (domain, chunk)  facets WITH their attributes
   facet_consolidation     per domain           settle the facets, pool the rest
+  facet_assignment        per unique label     one facet from a domain-wide menu
+  facet_settle            per domain           fold facets on real idea counts
   attribute_consolidation per settled facet    settle that facet's pool
   assignment              per unique label     one attribute; the facet follows
   refinement              per domain           judge it on real contents
@@ -347,7 +349,7 @@ class PromptContext:
 
 @dataclass
 class TaxonomyResult:
-    """Output of the five in-classifier phases (valence merge runs after)."""
+    """Output of the eight in-classifier phases (valence merge runs after)."""
     partition_n_labels: Dict[str, int]
     partition_n_batches: Dict[str, int]
     partition_facets: Dict[str, List[Dict[str, Any]]]
@@ -381,7 +383,7 @@ class TaxonomyResult:
 class TaxonomyClassifier:
     """Builds the facet (L3) and attribute (L4) layers of the taxonomy.
 
-    Six phases run here; the seventh, the valence-neutral merge, runs afterwards
+    Eight phases run here; the ninth, the valence-neutral merge, runs afterwards
     from the runner (see `valence_consolidator.py`).
 
     Every phase is one method with an explicit signature, plus a pure
@@ -554,14 +556,14 @@ class TaxonomyClassifier:
         verbose: bool = False,
         extraction_metadata=None,
     ) -> TaxonomyResult:
-        """Run the five in-classifier phases.
+        """Run the eight in-classifier phases.
 
         `extraction_metadata` (models.ExtractionMetadata) identifies the two
         standing drain domains by key (taxonomy_health.drain_domains); those get
         no facets, because step 3 defines them as deliberately broad catch-alls.
         """
         print(f"\n{'='*70}")
-        print("TAXONOMY DISCOVERY (5 phases)")
+        print("TAXONOMY DISCOVERY (8 phases)")
         print(f"{'='*70}")
 
         prompt_context, active_partitions = self._prepare_context(
@@ -575,8 +577,9 @@ class TaxonomyClassifier:
             total_ideas = sum(len(m.ideas) for m in active_partitions.values())
             print(f"  Processing {len(active_partitions)} domains concurrently "
                   f"({total_labels} observations, {total_ideas} ideas)")
-            print("  discovery → consolidation → assignment → refinement "
-                  "→ cross-domain")
+            print("  discovery → facet consolidation → facet assignment → "
+                  "facet settle → attribute consolidation → assignment → "
+                  "refinement → cross-domain")
 
         async def _run():
             await self._initialize_async_resources(verbose)
@@ -651,9 +654,9 @@ class TaxonomyClassifier:
         prompt_context: PromptContext,
         verbose: bool,
     ) -> TaxonomyResult:
-        """The six phases that run here, in order. Each one logs its own lines
+        """The eight phases that run here, in order. Each one logs its own lines
         and its own cost; this method only decides what runs and what feeds
-        what. The seventh, the valence merge, runs from the runner.
+        what. The ninth, the valence merge, runs from the runner.
 
         `stop_after_phase` returns the state as it stands after that phase. A
         partial return is a real result, not an empty one — the phases that did
@@ -712,6 +715,18 @@ class TaxonomyClassifier:
 
         settled = await self._run_facet_consolidation(ctx, raw, verbose)
         if _stop("facet_consolidation"):
+            structure = self._assemble_structure(settled, {})
+            return self._taxonomy_result(state, structure, {}, started, verbose)
+
+        facet_assignments, facet_id_maps = await self._run_facet_assignment(
+            ctx, settled, labels, verbose)
+        if _stop("facet_assignment"):
+            structure = self._assemble_structure(settled, {})
+            return self._taxonomy_result(state, structure, {}, started, verbose)
+
+        settled = await self._run_facet_settle(
+            ctx, settled, facet_assignments, facet_id_maps, labels, verbose)
+        if _stop("facet_settle"):
             structure = self._assemble_structure(settled, {})
             return self._taxonomy_result(state, structure, {}, started, verbose)
 

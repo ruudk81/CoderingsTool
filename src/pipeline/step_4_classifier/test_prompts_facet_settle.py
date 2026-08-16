@@ -165,10 +165,6 @@ def test_de_prompt_verbiedt_het_hernoemen_van_attributen():
     assert "do not rename" in regels.lower()
 
 
-def test_de_prompt_markeert_de_vangnetten():
-    assert "[CATCH-ALL]" in _rules(build_facet_settle_prompt(**_skwargs()))
-
-
 def test_geen_drempelgetallen_in_de_regels():
     """Aandelen komen uit de data en mogen; een vast percentage is van één
     dataset afgelezen en mag niet."""

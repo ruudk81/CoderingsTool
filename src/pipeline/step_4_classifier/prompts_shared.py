@@ -12,9 +12,14 @@ in this order:
 The shape is taken from step 3, which builds the domain layer (L2) the same
 way.
 
-Assignment is the exception, and deliberately so: it picks an id from a menu and
-invents no name, so the naming rules have no work to do there and the taxonomy
-block would only be noise. It carries the context block and INSTRUCTOR_HINT only.
+The two assignment phases (facet and attribute) are the exception, and
+deliberately so: each picks an id from a menu and invents no name, so the
+naming rules have no work to do there and the taxonomy block would only be
+noise. They carry the context block and INSTRUCTOR_HINT only.
+
+(`prompts_valence.py` also skips UNIVERSAL_RULES, but not for this reason — it
+does invent a name. Whether it should carry the rules is an open prompt-design
+question, not decided here; see WORK.md.)
 
 ## One thing called a dimension
 

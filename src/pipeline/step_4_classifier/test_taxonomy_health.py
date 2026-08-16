@@ -186,6 +186,23 @@ def test_prune_leaves_everything_when_nothing_was_assigned():
     assert report.facets == [] and report.attributes == []
 
 
+def test_prune_leaves_everything_after_a_stop_that_has_only_facet_assignments():
+    """A `stop_after_phase="facet_settle"` yields facet assignments but no
+    attribute assignments yet — the same "not empty, just not assigned"
+    reading as the 2026-08-15 defect, one layer up. The guard must key on the
+    attribute register, not on "any assignment at all", or this prunes the
+    whole tree the moment the facet layer alone has placed ideas."""
+    tax = _tax({})
+    tax.partition_results["duurzaamheid"].facet_assignments = {
+        "idea-1": "Ecologie"}
+    report = prune_empty_nodes(tax)
+
+    dr = tax.partition_results["duurzaamheid"]
+    assert len(dr.facets) == 1
+    assert dr.attributes["Ecologie"]
+    assert report.facets == [] and report.attributes == []
+
+
 def test_prune_does_run_once_assignments_exist():
     """With assignments in the run, "no ideas here" does mean empty: the guard
     must not switch off the normal pruning."""

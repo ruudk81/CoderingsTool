@@ -35,7 +35,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal
 
 from pydantic import BaseModel, Field, create_model
 
-from .drains import is_drain_item
 from .prompts_shared import (
     INSTRUCTOR_HINT,
     UNIVERSAL_RULES,
@@ -188,10 +187,9 @@ def build_facet_settle_block(
     for i, facet in enumerate(facets, 1):
         facet_id = f"F{i}"
         name = facet["facet_name"]
-        tag = "  [CATCH-ALL]" if is_drain_item(facet) else ""
         lines = [f"[{facet_id}] {name} — {facet['facet_definition']}  "
                  f"{counts.get(facet_id, 0)} responses "
-                 f"({shares.get(facet_id, 0.0):.0%} of this domain){tag}"]
+                 f"({shares.get(facet_id, 0.0):.0%} of this domain)"]
         question = facet.get("facet_question")
         if question:
             lines.append(f"      Claims to answer: {question}")
@@ -284,8 +282,7 @@ Do not preserve a distinction merely because it appears in the input.
 2. A facet holding a small share of its domain relative to its neighbours here belongs with the facet whose question it shares. Judge "small" against the other facets shown here, never against a fixed percentage.
 3. An attribute that does not answer its own facet's question, but does answer another facet's question in this domain, moves there.
 4. Do not rename or redefine attributes — that layer has not had its turn yet.
-5. Facets marked [CATCH-ALL] take no part: do not fold one, do not rename one, and move nothing into one. A catch-all is an offer, not a category.
-6. Every surviving facet writes its own name, definition and the question it answers — even one with a single source.
+5. Every surviving facet writes its own name, definition and the question it answers — even one with a single source.
 
 {UNIVERSAL_RULES}
 
