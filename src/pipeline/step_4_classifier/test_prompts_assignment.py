@@ -1,5 +1,4 @@
 """Tests voor de toewijzingsprompt (step 4)."""
-from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.drains import make_drain_attribute, make_drain_facet
 from pipeline.step_4_classifier.prompts_assignment import (
     build_assignment_menu,
@@ -13,8 +12,6 @@ from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
 from pipeline.step_4_classifier.test_prompts_shared import (
     assert_every_field_is_described, assert_prompt_does_not_restate_the_schema,
 )
-
-DIM = get_dimensions_in_decision_order()[0]
 
 
 def _attr(name, definition, example=None):
@@ -207,8 +204,6 @@ def _fkwargs(**overrides):
         survey_question="Waar denkt u aan?",
         sector="finance", entity="asn_bank", topic="brand_association",
         perspective="consumer", intent="associate",
-        dimension=DIM, dimension_name=DIM.key,
-        dimension_description=DIM.dimension_description,
         domain_label="dienstverlening",
         domain_definition="Alles wat de organisatie aanbiedt en levert.",
         menu_block=menu_block,
@@ -280,3 +275,10 @@ def test_de_prompt_draagt_geen_universele_regels():
     """Toewijzing kiest een id uit een menu en bedenkt geen naam — dezelfde
     uitzondering als de attribuuttoewijzing."""
     assert "<universal_rules>" not in build_facet_assignment_prompt(**_fkwargs())
+
+
+def test_de_prompt_draagt_geen_taxonomieblok():
+    """Dezelfde uitzondering, om dezelfde reden: er wordt geen naam bedacht,
+    dus het taxonomieblok zou hier alleen ruis zijn. De facetvraag draagt al
+    concreet, uit deze dataset zelf, wat het blok abstract zou zeggen."""
+    assert "<taxonomy_structure>" not in build_facet_assignment_prompt(**_fkwargs())

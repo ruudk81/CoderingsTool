@@ -29,15 +29,12 @@ discovery.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple
 
 from pydantic import Field, create_model
 
 from .drains import is_drain_item
-from .prompts_shared import INSTRUCTOR_HINT, build_context_block, build_taxonomy_block
-
-if TYPE_CHECKING:
-    from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
+from .prompts_shared import INSTRUCTOR_HINT, build_context_block
 
 
 # =============================================================================
@@ -254,9 +251,6 @@ def build_facet_assignment_prompt(
     topic: str,
     perspective: str,
     intent: str,
-    dimension: "DimensionDefinition",
-    dimension_name: str,
-    dimension_description: str,
     domain_label: str,
     domain_definition: str,
     menu_block: str,
@@ -264,9 +258,11 @@ def build_facet_assignment_prompt(
 ) -> str:
     """Place one observation in the facet menu of its domain.
 
-    No `UNIVERSAL_RULES`: this phase picks an id from a menu and invents no
-    name, the same exception documented in `prompts_shared.py` for attribute
-    assignment.
+    No taxonomy block and no `UNIVERSAL_RULES`: this phase picks an id from a
+    menu inside a domain that is already fixed and invents no name, the same
+    exception documented in `prompts_shared.py` for attribute assignment. The
+    facet question in the menu already carries, concretely and derived from
+    this dataset, what the taxonomy block would say abstractly.
     """
     return f"""You are a taxonomy classification specialist for surveys.
 Pick the one facet this observation belongs to.
@@ -274,10 +270,6 @@ Pick the one facet this observation belongs to.
 {build_context_block(
     language=language, survey_question=survey_question, sector=sector,
     entity=entity, topic=topic, perspective=perspective, intent=intent)}
-
-{build_taxonomy_block(
-    dimension=dimension, dimension_name=dimension_name,
-    dimension_description=dimension_description)}
 
 You are working inside this domain:
 <taxonomy_domain>
