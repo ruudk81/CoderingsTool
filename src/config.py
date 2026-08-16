@@ -91,8 +91,8 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     # function, not by number: a reordering should not force a rename here or
     # in the perf model.
     "classifier_discovery":               ("5.6", 3),
-    "classifier_facet_consolidation":     ("5.4", 5),
-    "classifier_attribute_consolidation": ("5.4", 5),
+    "classifier_facet_consolidation":     ("5.6", 3),
+    "classifier_attribute_consolidation": ("5.6", 3),
     "classifier_assignment":              ("5.6", 3),
     "classifier_refinement":              ("5.6", 3),
     "classifier_cross_domain":            ("5.6", 3),

@@ -5,6 +5,7 @@ back is the same concept under several names at two levels at once. Settling
 that is this module's job, and it takes two calls with different scopes — see
 dev/ARCHITECTURE.md.
 """
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -100,6 +101,11 @@ def build_facet_candidate_index(pools: List[FacetPool]) -> Dict[str, FacetPool]:
     """
     return {f"F{i}": pool for i, pool in enumerate(pools, 1)}
 
+_FACET_SELF_REFERENCE = re.compile(r"\b(?:(?:deze|dit)\s+)?facet\b", re.IGNORECASE)
+
+def _strip_facet_self_reference(text: str) -> str:
+      """Haalt `deze facet` / `facet` weg, in welke casing dan ook."""
+      return re.sub(r"\s{2,}", " ", _FACET_SELF_REFERENCE.sub("", text)).strip()
 
 def build_facet_candidate_block(
     pools: List[FacetPool],
@@ -119,14 +125,14 @@ def build_facet_candidate_block(
     blocks = []
     for facet_id, pool in build_facet_candidate_index(pools).items():
         seen = recurrence.get(pool.facet_name, 1)
-        lines = [f"[{facet_id}] {pool.facet_name} — proposed under this exact "
-                 f"name in {seen} of {n_passes} independent passes",
-                 f"    Definition: {pool.facet_definition}"]
+        lines = [f"[{facet_id}] {_strip_facet_self_reference(pool.facet_definition)}"]
         if pool.facet_question:
-            lines.append(f"    Question it answers: {pool.facet_question}")
+             lines.append(
+                  f"    Question it answers: "
+                  f"{_strip_facet_self_reference(pool.facet_question)}")
         names = [a.attribute_name for a in pool.attributes]
         lines.append(
-            "    Attributes proposed inside it: "
+            "    Attributes: "
             + (", ".join(names) if names else "(none)"))
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
@@ -161,143 +167,32 @@ def build_facet_consolidation_prompt(
         if domain_exclusions else "- (no neighbouring domains were named)")
 
     return f"""You are a taxonomy consolidation specialist for surveys.
-Your task is to merge the facets proposed by several independent passes over one domain
-into a single minimal set. The attributes each facet holds are shown as evidence of what it
-contains; settling those is a separate step and not your job here.
-
-Each pass saw only part of the domain and proposed on its own, so the same concept comes
-back under different names. That is what you are resolving.
-
-{build_taxonomy_block(
-    dimension=dimension, dimension_name=dimension_name,
-    dimension_description=dimension_description)}
+ Your task is to organize group of attributes into a minimal set of facets within a given domain.
 
 {build_context_block(
     language=language, survey_question=survey_question, sector=sector,
     entity=entity, topic=topic, perspective=perspective, intent=intent)}
 
-You are working within this domain, and only within it:
+This is the taxonomy structure you are working with:
+{build_taxonomy_block(
+    dimension=dimension, dimension_name=dimension_name,
+    dimension_description=dimension_description)}
 
+You are working within this domain:
 <taxonomy_domain>
 {domain_label} — {domain_definition}
 </taxonomy_domain>
 
-Here are the candidates from all passes over this domain. Each shows how many independent
-passes proposed it, and the attributes that were proposed inside it:
-
-<candidates>
+Here are the groups with attributes you need to organize into a minimal set of facets:
+<attribute_groups>
 {candidate_block}
-</candidates>
+</attribute_groups>
 
-# Consolidation Rules
+# Rules
 
-Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping
-by these rules, in this order.
+1) The set of facets need to be MECE; mutually exclusive and collectively exhaustive. This means that the facets are not allowed to overlap semantically or meaningfull in light of the survey question. And this means that the set of facets should provide full coverage for all attributes.
 
-**1. UNDERLYING QUESTION FIRST (orthogonality — the guardrail).**
-For each concept, work out which underlying question it answers about the responses.
-- Concepts answering DIFFERENT questions are orthogonal: never merge them into one facet.
-- Distinct ANSWERS to the SAME question stay apart when merging them would erase what
-  tells them apart. Merge only when what the group shares can itself be stated as an
-  answer. Evaluative direction is not an answer — see the universal rules below.
-- Do not create separate facets based only on the object being discussed when the same
-  underlying answer applies. An object is not a question.
-- A disposition, an action and an outcome are different KINDS of statement, not degrees of
-  one. What something is oriented towards, what it actually does, and what follows from it
-  answer three questions, so they never fold together — a group that mixes them reads as
-  one item and codes as three. Do not infer one from another either: an action is only an
-  action when the response names one, and an outcome only when the response states it.
-
-**2. PREVALENCE SETS GRANULARITY (within one question only).**
-Every candidate carries how many passes proposed it UNDER THAT EXACT NAME. Support for a
-concept is therefore the sum over the group you form, never the number on one candidate:
-five passes that each worded the same concept differently arrive as five candidates
-carrying one pass each.
-- A concept whose group is well supported keeps its own facet, unless it demonstrably
-  draws the same analytical distinction as another surviving facet. Support is a strong
-  reason to keep something, never a reason to keep a duplicate: two concepts can both be
-  well supported and still be one concept said twice.
-- Several thinly supported concepts answering the same question are GROUPED into one facet
-  that still names what they share in plain language.
-Prevalence decides how finely to split WITHIN one question; it never licenses merging
-ACROSS questions.
-
-**3. LIFT, DON'T FLATTEN.**
-When grouping is needed, raise the concepts to a shared higher-level label that still
-carries their meaning — not a label that merely names the question.
-FORBIDDEN: a container that only names the question it sits on. The reader learns what was
-asked, not what was said.
-REQUIRED: a label that states the answer itself.
-Test: read the label alone. If it tells you only which question was asked, it is a
-container; if it tells you what the respondents expressed, it is an answer.
-
-**4. PLAIN, MEANINGFUL LABELS.**
-Name every surviving facet in everyday language. Test: reading the label
-alone, and knowing the survey question, a layperson knows which distinction is meant. A
-short, ordinary noun phrase is what you want — no jargon, no policy register, no long
-derived constructions.
-
-**When these conflict, decide in this order:**
-1. Domain validity — the facet belongs to this domain and not to a neighbouring one.
-2. Orthogonality (rule 1) — concepts answering different questions never merge.
-3. Prevalence (rule 2) — how finely to split within one question.
-4. Lifting (rule 3) — a group is named by what it says, never by what it asks.
-5. Label clarity (rule 4).
-6. Fewest facets — and only once everything above holds. Never merge distinct concepts, and
-   never introduce an umbrella, merely to bring the count down. A smaller inventory that
-   has lost a distinction is not a better one.
-
-# Step-by-Step Analysis Process
-
-Work through these steps before writing your final output. What you return is the
-decisions, not the working.
-
-**Step 1 — Scan the candidates**
-Read every candidate facet from every pass. Note recurring concepts, near-duplicates, and
-obvious repeats under different names.
-
-**Step 2 — Group overlapping facets**
-Group the facets that describe the same or overlapping concept across passes.
-
-MERGE TEST — run it on any two facets before you fold them together:
-1. Would the same observation be coded under both? If not, they are not duplicates.
-2. Does the difference between them give an analysis anything? If it does, keep it.
-3. Can you state what they share as a thing in its own right, without listing them?
-4. After merging, does every attribute named under them still have one obvious place?
-Merge only on four times yes. Never merge to reach a count — not of facets, not of attributes.
-
-**Step 3 — Apply the same-question test**
-For each group, WRITE DOWN the one question it answers about the responses, phrased as a
-question. That sentence is what you return in `facet_question`, and it is what makes this
-test checkable rather than a matter of feel: two groups that turn out to state the same
-question are one facet, and two that state different questions never merge.
-Same question and same meaning: group. Different questions: separate. Distinct answers to
-one question: separate only when merging them would erase what tells them apart.
-
-Test the question itself before you accept it. If it can be answered by naming a subject or
-a topic, you have written a split of the domain, not a facet — every facet here shares one
-subject, and what separates them is the KIND of thing said about it. A question that sorts
-the material by what it is about belongs one level up, and using it here produces facets
-that overlap wherever a response touches two topics at once.
-
-**Step 4 — Let prevalence set the granularity**
-Add up the passes across each group you formed; the counts are per exact name, so any
-single candidate understates a concept that came back reworded. Within one question, a
-well-supported group keeps its own facet; several thinly supported ones are grouped under a
-single plainly named facet. Never group across questions.
-
-**Step 5 — Verify the domain boundary**
-Every surviving facet must belong to {domain_label} and not to a neighbouring domain:
-{exclusion_hint}
-
-**Step 6 — Account for every candidate**
-Confirm you have the minimal set of facets that covers the domain.
-Then check coverage, and do it on the bracketed ids, never on names: every candidate facet
-id must appear in the `source_facet_ids` of at least one surviving facet. Two candidates can
-carry the same name, so a name says nothing about which one you meant.
-A candidate you deliberately dropped is not exempt — fold it into whichever survivor absorbs
-its meaning. Merging and forgetting look identical in the output unless you list what went
-where.
+2) You need to find the minimal number of facets to organize the attribute groups by beging MECE.
 
 {UNIVERSAL_RULES}
 
@@ -358,7 +253,6 @@ def build_attribute_candidate_index(
     """
     return {f"A{i}": attribute for i, attribute in enumerate(attributes, 1)}
 
-
 def build_attribute_candidate_block(
     attributes: List[DiscoveredAttribute],
     recurrence: Dict[str, int],
@@ -375,8 +269,8 @@ def build_attribute_candidate_block(
     for attribute_id, attribute in build_attribute_candidate_index(attributes).items():
         times = recurrence.get(attribute.attribute_name, 1)
         lines.append(
-            f"[{attribute_id}] {attribute.attribute_name} "
-            f"[{times}/{n_passes} passes]: {attribute.attribute_definition}")
+            f"[{attribute_id}] {attribute.attribute_name} ")
+            #f"[{times}/{n_passes} passes]: {attribute.attribute_definition}")
         for example in [e for e in attribute.example_observations
                         if e][:_EXAMPLES_SHOWN]:
             lines.append(f"    e.g. \"{example}\"")
@@ -413,76 +307,31 @@ def build_attribute_consolidation_prompt(
     question_line = (f"\nThe question this facet answers: {facet_question}"
                      if facet_question else "")
     return f"""You are a taxonomy consolidation specialist for surveys.
-Your task is to fold the attributes proposed for ONE facet into a single minimal set.
-
-{build_facets_attributes_block(dimension=dimension)}
-
+ Your task is to organize group of attributes into a minimal set within a given facet.
+ 
 {build_context_block(
     language=language, survey_question=survey_question, sector=sector,
     entity=entity, topic=topic, perspective=perspective, intent=intent)}
 
-You are working inside this facet, and only inside it:
+{build_facets_attributes_block(dimension=dimension)}
+
+You are working inside this facet:
 
 <taxonomy_facet>
 Facet: {facet_name} — {facet_definition}{question_line}
 </taxonomy_facet>
 
-Here are the attributes proposed for it, each with how many independent passes proposed it
-under that exact name:
-
+Here are the attributes you need to organize into a minimal set:
 <candidates>
 {candidate_block}
 </candidates>
 
-# Task
+# Rules
 
-Several independent passes over this domain proposed these attributes, and the facets they
-sat under have since been consolidated into the one above. The pool therefore holds
-duplicates and near-duplicates of the same concept under different names. That is what you
-are resolving.
+1) The set of attributes need to be MECE; mutually exclusive and collectively exhaustive. This means that the attributes are not allowed to overlap semantically or meaningfull in light of the survey question. And this means that the set of attributes should provide full coverage for all attributes.
 
-# Consolidation
+2) You need to find the minimal number of facets to organize the attribute groups by beging MECE. The fewer attributes by achieving MECE, the better.
 
-Work through these steps before writing your final output. What you return is the decisions,
-not the working.
-
-**Step 1 — Scan the pool**
-Read every candidate. Note recurring concepts, near-duplicates, and obvious repeats under
-different names.
-
-**Step 2 — Group what means the same**
-Group the candidates that restate each other in different words.
-
-MERGE TEST — run it on any two attributes before you fold them together:
-1. Would the same observation be coded under both? If not, they are not duplicates.
-2. Does the difference between them give an analysis anything? If it does, keep it.
-3. Can you state what they share as a thing in its own right, without listing them?
-4. After merging, does every example still have one obvious place?
-Merge only on four times yes. Never merge to reach a count — not of attributes, not of examples.
-
-NEVER DROP. You see one facet, so you cannot judge where something would belong instead.
-An attribute that does not seem to fit this facet stays in your output as it is; say so in
-your decision summary and leave it. A later phase sees every facet of the domain at once and
-can move it.
-
-**Step 3 — Apply the same-question test**
-For each group, work out which question about the facet it answers. Same question and same
-meaning: group. Different questions: separate. Distinct answers to one question: separate
-only when merging them would erase what tells them apart.
-
-**Step 4 — Let prevalence set the granularity**
-Add up the passes across each group you formed; the counts are per exact name, so any single
-candidate understates a concept that came back reworded.
-
-**Step 5 — Check for hierarchy**
-No survivor may sit inside another. Where one does, fold it into the level a coder can apply.
-
-**Step 6 — Account for every candidate**
-Check coverage on the bracketed ids, never on names: every candidate attribute id must
-appear in the `source_attribute_ids` of at least one surviving attribute. Two candidates can
-carry the same name, so a name says nothing about which one you meant. A candidate you
-folded away is not exempt — list it under whichever survivor absorbs its meaning. Merging and
-forgetting look identical in the output unless you list what went where.
 
 {UNIVERSAL_RULES}
 

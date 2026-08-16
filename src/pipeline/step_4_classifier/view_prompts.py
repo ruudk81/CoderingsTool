@@ -30,7 +30,7 @@ from pipeline.step_4_classifier.prompts_consolidation import (
 from pipeline.step_4_classifier.prompts_refinement import RefinementResult
 from pipeline.step_4_classifier.prompts_valence import ValenceNeutralRenameResponse
 
-SHOW_ALL = False
+SHOW_ALL = True
 
 # Assignment and cross-domain build their response model at call time — the menu
 # ids are Literals in the schema — so there is no static model to render.
