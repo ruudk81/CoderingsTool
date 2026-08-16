@@ -8,7 +8,7 @@ import asyncio
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.classifier import (
     PromptContext, TaxonomyClassifier, _strip_enumeration, attribute_dicts,
-    derive_facet_assignments, facet_dicts,
+    Placement, facet_dicts, flatten_placements,
 )
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.drains import is_drain_item
@@ -853,21 +853,23 @@ def test_catch_alls_arrive_after_consolidation_not_before():
 # FACET ASSIGNMENT IS DERIVED
 # =============================================================================
 
-def test_facet_assignment_follows_where_the_attribute_lives():
-    """One source. Two separately determined assignments could put an idea in
-    facet F and in an attribute hanging under G."""
-    structure = _structure({"d": [_facet("f1", "a1"), _facet("f2", "a2")]})
-    assert derive_facet_assignments({"i1": "a2"}, structure) == {"d": {"i1": "f2"}}
+def test_de_plaatsing_valt_uiteen_in_de_twee_cacheregisters():
+    """One source. Two separately determined registers could put an idea in
+    facet F and on an attribute hanging under G; a placement cannot."""
+    placements = {"i1": Placement("d", "f2", "a2"),
+                  "i2": Placement("d", "f1", "a1")}
+    attributen, facetten = flatten_placements(placements)
+    assert attributen == {"i1": "a2", "i2": "a1"}
+    assert facetten == {"d": {"i1": "f2", "i2": "f1"}}
 
 
-def test_an_unknown_attribute_yields_no_facet():
-    structure = _structure({"d": [_facet("f1", "a1")]})
-    assert derive_facet_assignments({"i1": "verzonnen"}, structure) == {}
-
-
-def test_facettoewijzing_matcht_hoofdletterongevoelig():
-    structure = _structure({"d": [_facet("f1", "Wachttijd")]})
-    assert derive_facet_assignments({"i1": "wachttijd"}, structure) == {"d": {"i1": "f1"}}
+def test_dezelfde_attribuutnaam_in_twee_facetten_blijft_uit_elkaar():
+    """Waar de naamopzoeking de laatste liet winnen, houdt de plaatsing beide
+    ideeën in hun eigen facet."""
+    placements = {"i1": Placement("d", "f1", "Merkbekendheid"),
+                  "i2": Placement("d", "f2", "Merkbekendheid")}
+    _, facetten = flatten_placements(placements)
+    assert facetten == {"d": {"i1": "f1", "i2": "f2"}}
 
 
 # =============================================================================

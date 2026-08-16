@@ -56,7 +56,7 @@ import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 import nest_asyncio
 
@@ -100,7 +100,7 @@ from .prompts_assignment import (
 )
 from .prompts_refinement import (
     RefinementResult, build_contents_block, build_cross_domain_prompt,
-    build_refinement_prompt,
+    build_move_targets_block, build_refinement_prompt,
 )
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
@@ -248,31 +248,42 @@ def format_counts(structure: Dict[str, List[Dict[str, Any]]]) -> str:
     return line
 
 
-def derive_facet_assignments(
-    attribute_assignments: Dict[str, str],
-    structure: Dict[str, List[Dict[str, Any]]],
-) -> Dict[str, Dict[str, str]]:
-    """Which facet each idea sits in, read off where its attribute lives.
+class Placement(NamedTuple):
+    """Where one idea sits, carried as one thing instead of reconstructed.
 
-    One source of truth. Two separately determined assignments could put an
-    idea in facet F and in an attribute that hangs under G; here that cannot be
-    expressed.
+    Assignment picks an attribute from a menu that already knows which domain
+    and facet it hangs under (`build_assignment_menu` builds that map), so all
+    three are known at the moment of the choice. Writing only the attribute name
+    down and recovering the rest later by looking the name up is what fails: a
+    domain may hold two facets carrying an attribute of the same name, and the
+    lookup then serves whichever was stored last. Measured on 2026-08-16:
+    `Merkbekendheid` lived in three facets of one domain and its 18 responses
+    were counted under each.
+
+    It also removes a whole class of contradiction. Two separately determined
+    registers could put an idea in facet F and on an attribute hanging under G;
+    here that cannot be expressed.
+
+    Step 4 carries this internally and flattens it at the boundary:
+    `attribute_assignments` in the cache stays idea -> attribute name, the one
+    name link the chain keeps by design.
     """
-    home: Dict[str, Tuple[str, str]] = {}
-    for domain, facets in structure.items():
-        for facet in facets:
-            for attribute in facet.get("attributes") or []:
-                home[_norm(attribute["attribute_name"])] = (
-                    domain, facet["facet_name"])
+    domain: str
+    facet: str
+    attribute: str
 
-    out: Dict[str, Dict[str, str]] = {}
-    for idea_id, attribute_name in attribute_assignments.items():
-        found = home.get(_norm(attribute_name))
-        if found is None:
-            continue
-        domain, facet_name = found
-        out.setdefault(domain, {})[idea_id] = facet_name
-    return out
+
+def flatten_placements(
+    placements: Dict[str, "Placement"],
+) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+    """The two registers the cache keeps: attribute per idea, facet per idea."""
+    attribute_assignments: Dict[str, str] = {}
+    facet_assignments: Dict[str, Dict[str, str]] = {}
+    for idea_id, placement in placements.items():
+        attribute_assignments[idea_id] = placement.attribute
+        facet_assignments.setdefault(placement.domain, {})[idea_id] = (
+            placement.facet)
+    return attribute_assignments, facet_assignments
 
 
 # =============================================================================
@@ -706,8 +717,9 @@ class TaxonomyClassifier:
 
         assignments = await self._run_assignment(ctx, structure, labels, verbose)
         # The state before refinement remaps anything. This is what makes a bad
-        # merge diagnosable afterwards.
-        state["raw_attribute_assignments"] = dict(assignments)
+        # merge diagnosable afterwards. Flattened, because it is a cache field.
+        state["raw_attribute_assignments"] = {
+            i: p.attribute for i, p in assignments.items()}
         if _stop("assignment"):
             return self._taxonomy_result(state, structure, assignments, started, verbose)
 
@@ -725,11 +737,17 @@ class TaxonomyClassifier:
         self,
         state: Dict,
         structure: Dict[str, List[Dict[str, Any]]],
-        assignments: Dict[str, str],
+        placements: Dict[str, Placement],
         started: float,
         verbose: bool,
     ) -> TaxonomyResult:
         """Unpack the nested structure into the two registers the cache keeps.
+
+        This is the boundary where the placement is flattened. Inside the step
+        an idea carries (domain, facet, attribute) as one thing; what the cache
+        stores is the attribute per idea and the facet per idea, separately —
+        `attribute_assignments` being the one name link the chain keeps by
+        design.
 
         Empty catch-alls are dropped here and nowhere earlier: a catch-all is an
         offer, and whether it caught anything is only known once every phase has
@@ -737,14 +755,14 @@ class TaxonomyClassifier:
         """
         facets = {d: facet_dicts(items) for d, items in structure.items()}
         attributes = {d: attribute_dicts(items) for d, items in structure.items()}
+        assignments, facet_assignments = flatten_placements(placements)
         facets, attributes, assignments = strip_empty_drains(
             facets, attributes, assignments)
 
         state["partition_facets"] = facets
         state["partition_attributes"] = attributes
         state["attribute_assignments"] = assignments
-        state["partition_assignments"] = derive_facet_assignments(
-            assignments, structure)
+        state["partition_assignments"] = facet_assignments
 
         if verbose:
             print(f"\n  Taxonomy complete in {time.time() - started:.1f}s")
@@ -1754,14 +1772,21 @@ class TaxonomyClassifier:
         return prepare_fn
 
     def _assignment_parse_fn(self):
-        """Fan the one judgment out over every idea carrying that label."""
-        def parse_fn(task: Dict, response) -> Dict[str, str]:
+        """Fan the one judgment out over every idea carrying that label.
+
+        The menu entry carries the facet the chosen attribute hangs under, so
+        the placement is complete here and nothing downstream has to work it
+        out from the name.
+        """
+        def parse_fn(task: Dict, response) -> Dict[str, Placement]:
             if response is None:
                 return {}
             choice = task["id_map"][response.assigned_attribute_id]
-            out: Dict[str, str] = {}
+            out: Dict[str, Placement] = {}
             for idea_id in task["rep"].idea_ids:
-                out[idea_id] = choice["attribute_name"]
+                out[idea_id] = Placement(task["domain_label"],
+                                         choice["facet_name"],
+                                         choice["attribute_name"])
                 self._attribute_confidence[idea_id] = response.confidence
                 self._facet_confidence[idea_id] = response.confidence
                 self._attribute_valence[idea_id] = response.valence
@@ -1771,7 +1796,7 @@ class TaxonomyClassifier:
     @staticmethod
     def _assignment_fallback_fn():
         """A failed call leaves its ideas unplaced; the net below catches them."""
-        def fallback_fn(task: Dict, reason: str) -> Dict[str, str]:
+        def fallback_fn(task: Dict, reason: str) -> Dict[str, Placement]:
             return {}
         return fallback_fn
 
@@ -1781,13 +1806,13 @@ class TaxonomyClassifier:
         structure: Dict[str, List[Dict[str, Any]]],
         labels: Dict[str, Dict[str, str]],
         verbose: bool,
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Placement]:
         """Place every idea on one attribute within its own domain."""
         if verbose:
             print("\n  Assignment")
         started = time.time()
 
-        assignments: Dict[str, str] = {}
+        assignments: Dict[str, Placement] = {}
         auto: Dict[str, int] = {}
 
         # A menu of one is not a choice. Assign it without a call.
@@ -1795,9 +1820,11 @@ class TaxonomyClassifier:
             _, id_map = build_assignment_menu(facets)
             if len(id_map) != 1:
                 continue
-            only = next(iter(id_map.values()))["attribute_name"]
+            only = next(iter(id_map.values()))
+            placement = Placement(domain, only["facet_name"],
+                                  only["attribute_name"])
             for idea_id in labels.get(domain) or {}:
-                assignments[idea_id] = only
+                assignments[idea_id] = placement
                 self._attribute_confidence[idea_id] = 1.0
                 self._facet_confidence[idea_id] = 1.0
             auto[domain] = len(labels.get(domain) or {})
@@ -1831,8 +1858,9 @@ class TaxonomyClassifier:
             self._action_log.append({
                 "action": "assignment_failed_to_drain", "domain": domain,
                 "n_ideas": len(missing), "target": target})
+            placement = Placement(domain, drain["facet_name"], target)
             for idea_id in missing:
-                assignments[idea_id] = target
+                assignments[idea_id] = placement
                 self._attribute_confidence[idea_id] = 0.0
                 self._facet_confidence[idea_id] = 0.0
 
@@ -1840,7 +1868,7 @@ class TaxonomyClassifier:
             print(f"    {len(tasks)} calls for {len(tasks)} unique labels, "
                   f"{time.time() - started:.1f}s; "
                   f"{len(auto)} domains auto-assigned")
-            placed = derive_facet_assignments(assignments, structure)
+            _, placed = flatten_placements(assignments)
             for domain in sorted(structure):
                 n = len(placed.get(domain) or {})
                 tag = " (auto)" if domain in auto else ""
@@ -1855,44 +1883,73 @@ class TaxonomyClassifier:
         self,
         ctx: PromptContext,
         structure: Dict[str, List[Dict[str, Any]]],
-        assignments: Dict[str, str],
+        assignments: Dict[str, Placement],
         labels: Dict[str, Dict[str, str]],
     ) -> List[Dict]:
-        """One task per domain, carrying what its attributes really hold.
+        """One task per facet, carrying what its attributes really hold.
 
         This is the first phase with real counts in front of it, so the task
         shape is where those counts get computed: per attribute the number of
-        ideas, its share of the domain, and the distinct response texts.
+        ideas, its **share of the domain**, and the distinct response texts. The
+        share is deliberately wider than the call: measured within the facet,
+        every facet would look equally weighty, and granularity would be set on a
+        scale that shifts per call. The domain is the one denominator all of its
+        facets share.
+
+        The whole domain rides along in `facets` all the same, because the
+        misfit exit needs somewhere outside this facet to point at. Facets are
+        carried by INDEX, not by name: a domain may hold two facets with the
+        same name, and the result is spliced back by position.
+
+        A catch-all facet gets no task. Rule 9 has it return everything
+        unchanged, which as a per-domain step cost nothing and as a call of its
+        own is a call to do nothing.
         """
         tasks: List[Dict] = []
         for domain in sorted(structure):
             texts = labels.get(domain) or {}
+            # Keyed on (facet, attribute), never on the attribute alone: two
+            # facets of one domain may carry the same attribute name, and a
+            # name-keyed tally would hand each of them the other's responses.
             counts: Counter = Counter()
-            contents: Dict[str, List[str]] = {}
-            for idea_id, attribute_name in assignments.items():
+            contents: Dict[Tuple[str, str], List[str]] = {}
+            for idea_id, placement in assignments.items():
                 if idea_id not in texts:
                     continue
-                counts[attribute_name] += 1
-                seen = contents.setdefault(attribute_name, [])
+                key = (placement.facet, placement.attribute)
+                counts[key] += 1
+                seen = contents.setdefault(key, [])
                 text = texts[idea_id]
                 if text and text not in seen:
                     seen.append(text)
             total = sum(counts.values())
             if total == 0:
                 continue
-            shares = {name: n / total for name, n in counts.items()}
-            tasks.append({
-                "domain_label": domain,
-                "facets": structure[domain],
-                "counts": dict(counts),
-                "shares": shares,
-                "contents": contents,
-            })
+            for index, facet in enumerate(structure[domain]):
+                if is_drain_item(facet):
+                    continue
+                facet_name = facet["facet_name"]
+                names = [a["attribute_name"]
+                         for a in (facet.get("attributes") or [])]
+                own = {name: counts.get((facet_name, name), 0) for name in names}
+                if not any(own.values()):
+                    continue
+                tasks.append({
+                    "domain_label": domain,
+                    "facet_index": index,
+                    "facet": facet,
+                    "facets": structure[domain],
+                    "counts": own,
+                    "shares": {name: n / total for name, n in own.items()},
+                    "contents": {name: contents.get((facet_name, name), [])
+                                 for name in names},
+                })
         return tasks
 
     def _refinement_prepare_fn(self, ctx: PromptContext):
         def prepare_fn(task: Dict) -> Dict:
             domain = ctx.domain(task["domain_label"])
+            facet = task["facet"]
             prompt = build_refinement_prompt(
                 language=ctx.language,
                 survey_question=ctx.survey_question,
@@ -1902,17 +1959,24 @@ class TaxonomyClassifier:
                 dimension_description=ctx.dimension_description,
                 domain_label=domain["label"],
                 domain_definition=domain["definition"],
+                facet_name=facet["facet_name"],
+                facet_definition=facet.get("facet_definition") or "",
+                facet_question=facet.get("facet_question") or "",
                 contents_block=build_contents_block(
-                    task["facets"], task["contents"], task["shares"],
-                    task["counts"], self._contents_top_n),
+                    facet.get("attributes") or [], task["contents"],
+                    task["shares"], task["counts"], self._contents_top_n),
+                move_targets_block=build_move_targets_block(
+                    task["facets"], task["facet_index"]),
             )
             self._capture(
-                f"refinement_{task['domain_label']}", prompt, "refinement",
+                f"refinement_{task['domain_label']}_{task['facet_index']}",
+                prompt, "refinement",
                 {"model": self._model["refinement"],
                  "temperature": 0.0,
                  "max_tokens": self._max_tokens_consolidation,
                  "language": ctx.language,
                  "domain": task["domain_label"],
+                 "facet": facet["facet_name"],
                  "dimension_name": ctx.dimension_name})
             return {
                 "prompt": prompt,
@@ -1933,7 +1997,7 @@ class TaxonomyClassifier:
 
     @staticmethod
     def _refinement_fallback_fn():
-        """On failure the domain keeps the inventory assignment settled."""
+        """On failure the facet keeps the inventory assignment settled."""
         def fallback_fn(task: Dict, reason: str) -> None:
             return None
         return fallback_fn
@@ -1944,41 +2008,53 @@ class TaxonomyClassifier:
         tasks: List[Dict],
         results: List,
         structure: Dict[str, List[Dict[str, Any]]],
-        assignments: Dict[str, str],
+        assignments: Dict[str, Placement],
         labels: Dict[str, Dict[str, str]],
-    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
-        """Rebuild each domain's structure, then route its ideas.
+    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Placement]]:
+        """Rebuild each facet's card, then route the ideas of every domain.
 
-        Structure first, so a move target resolves against the FINAL names
+        Structure first, so a misfit target resolves against the FINAL names
         rather than the name it had before a merge renamed it. Then the ideas,
-        in the order splits → renames → misfits: a split routes by exact text
-        and must win over the wholesale rename its source also carries.
+        renames before misfits.
 
-        Only one domain is ever in flight per task, so unlike the per-facet
-        predecessor there is no concurrent scope renaming this one's targets.
+        Several facets of one domain are in flight at once, and each owns
+        exactly one card: a result is spliced back at `facet_index` and can
+        never rewrite a neighbour's. That is what makes the concurrency safe
+        here where the per-facet predecessor raced — there, a returned facet
+        name could land anywhere in the domain.
+
+        The routing registers stay keyed on the DOMAIN. A misfit may point at an
+        attribute in a neighbouring facet, and since per-idea (domain, facet) is
+        a projection of where the attribute lives, such a group lands in that
+        facet by moving to its attribute.
         """
-        new_structure = dict(structure)
-        remap: Dict[Tuple[str, str], str] = {}          # (domain, old) -> new
-        splits: Dict[Tuple[str, str], str] = {}          # (domain, norm text) -> child
-        misfits: Dict[Tuple[str, str], Optional[str]] = {}  # (domain, norm text) -> target
+        new_structure = {d: list(facets) for d, facets in structure.items()}
+        # (domain, facet, old attribute) -> new attribute. The facet is in the
+        # key because a name alone is not unique within a domain.
+        remap: Dict[Tuple[str, str, str], str] = {}
+        # (domain, norm text) -> target attribute NAME, or None for verdict
+        # "out". Resolved to a placement only after every facet has been
+        # rebuilt, so a target reads against the final names and not against the
+        # name it carried before a neighbour's call renamed it.
+        misfits: Dict[Tuple[str, str], Optional[str]] = {}
 
         for task, result in zip(tasks, results):
             domain = task["domain_label"]
-            before = [a["attribute_name"]
-                      for f in task["facets"] for a in (f.get("attributes") or [])]
+            card = task["facet"]
+            own = list(card.get("attributes") or [])
+            before = [a["attribute_name"] for a in own]
 
             if result is None or not result.attributes:
                 self._action_log.append({
                     "action": "refinement_failed", "domain": domain,
-                    "note": "no result — domain left as assignment settled it",
+                    "facet": card["facet_name"],
+                    "note": "no result — facet left as assignment settled it",
                     "attributes_before": before})
                 continue
 
             by_norm = {_norm(b): b for b in before}
-            drains_by_name = {
-                a["attribute_name"]: (f["facet_name"], a)
-                for f in task["facets"] for a in (f.get("attributes") or [])
-                if is_drain_item(a)}
+            drains_by_name = {a["attribute_name"]: a
+                              for a in own if is_drain_item(a)}
 
             unmatched = sorted({
                 s for item in result.attributes
@@ -1987,38 +2063,36 @@ class TaxonomyClassifier:
             if unmatched:
                 self._action_log.append({
                     "action": "unknown_source_name", "domain": domain,
-                    "sources": unmatched,
-                    "note": "named as a source but not among this domain's attributes"})
+                    "facet": card["facet_name"], "sources": unmatched,
+                    "note": "named as a source but not among this facet's attributes"})
 
-            # A source claimed by several returned attributes is only routable
-            # when the claimants carry instance_texts. Without them the remap
-            # would let the last writer win and move the whole bucket.
+            # A source claimed by two returned attributes is not routable at
+            # all: the remap would let the last writer win and move the whole
+            # bucket. Dividing one input over two was what `split` did, and
+            # that exit is gone — the schema no longer offers a way to say
+            # which responses go where.
             claims: Counter = Counter()
             for item in result.attributes:
                 for src in (item.source_attributes or []):
                     real = by_norm.get(_norm(src))
                     if real:
                         claims[real] += 1
-            split_sources = {
-                by_norm.get(_norm(s))
-                for item in result.attributes if item.instance_texts
-                for s in (item.source_attributes or [])}
-            contested = {src for src, n in claims.items()
-                         if n > 1 and src not in split_sources}
+            contested = {src for src, n in claims.items() if n > 1}
             if contested:
                 self._action_log.append({
                     "action": "unroutable_claim", "domain": domain,
-                    "sources": sorted(contested),
-                    "note": "claimed by several returned attributes with no "
-                            "instance_texts — ideas left on the source"})
+                    "facet": card["facet_name"], "sources": sorted(contested),
+                    "note": "claimed by several returned attributes — "
+                            "ideas left on the source"})
 
             # ---- structure ---------------------------------------------------
-            per_facet: Dict[str, List[Dict[str, Any]]] = {}
+            kept: List[Dict[str, Any]] = []
             consumed: Set[str] = set()
+            provenance: List[Dict[str, Any]] = []
             for item in result.attributes:
                 if item.attribute_name in drains_by_name:
                     continue  # a catch-all the model touched anyway: ignore it
-                per_facet.setdefault(item.facet_name, []).append({
+                kept.append({
                     "attribute_name": item.attribute_name,
                     "attribute_definition": item.attribute_definition,
                     "example_observations": list(item.example_observations),
@@ -2026,53 +2100,44 @@ class TaxonomyClassifier:
                 sources = [by_norm[_norm(s)] for s in (item.source_attributes or [])
                            if _norm(s) in by_norm]
                 consumed.update(sources)
+                provenance.append({"attribute": item.attribute_name,
+                                   "source_attributes": sources})
 
-                if item.action == "split" and item.instance_texts:
-                    for text in item.instance_texts:
-                        splits[(domain, _norm(text))] = item.attribute_name
-                    self._action_log.append({
-                        "action": "split", "domain": domain,
-                        "into": item.attribute_name, "sources": sources,
-                        "n_texts": len(item.instance_texts)})
-                else:
-                    for src in sources:
-                        if src != item.attribute_name and src not in contested:
-                            remap[(domain, src)] = item.attribute_name
-                    if item.action in ("merge", "widen") or (
-                            sources and sources != [item.attribute_name]):
-                        self._action_log.append({
-                            "action": item.action, "domain": domain,
-                            "result": item.attribute_name, "sources": sources})
+                for src in sources:
+                    if src != item.attribute_name and src not in contested:
+                        remap[(domain, card["facet_name"], src)] = (
+                            item.attribute_name)
+
+            # One line per call, holding what claimed what. The model states no
+            # action, so nothing is logged per decision: what happened is
+            # readable from how many sources an attribute claimed and whether it
+            # kept their name. The scratchpad is reasoning, not a record, and
+            # stays out of the log.
+            self._action_log.append({
+                "action": "refinement_provenance", "domain": domain,
+                "facet": card["facet_name"], "attributes": provenance})
 
             # Sources never claimed keep their place, or their ideas would point
             # at a name no longer in the structure.
-            returned = {_norm(a["attribute_name"])
-                        for items in per_facet.values() for a in items}
-            for facet in task["facets"]:
-                for attribute in facet.get("attributes") or []:
-                    name = attribute["attribute_name"]
-                    if is_drain_item(attribute):
-                        per_facet.setdefault(facet["facet_name"], []).append(attribute)
-                        continue
-                    if name in consumed or _norm(name) in returned:
-                        continue
-                    per_facet.setdefault(facet["facet_name"], []).append(attribute)
-                    self._action_log.append({
-                        "action": "attribute_kept_unclaimed_in_refinement",
-                        "domain": domain, "attribute": name})
+            returned = {_norm(a["attribute_name"]) for a in kept}
+            for attribute in own:
+                name = attribute["attribute_name"]
+                if is_drain_item(attribute):
+                    kept.append(attribute)
+                    continue
+                if name in consumed or _norm(name) in returned:
+                    continue
+                kept.append(attribute)
+                self._action_log.append({
+                    "action": "attribute_kept_unclaimed_in_refinement",
+                    "domain": domain, "facet": card["facet_name"],
+                    "attribute": name})
 
-            # Facet cards: keep the ones that still hold attributes, in the order
-            # the domain had them, then any facet the model named that is new.
-            known = {f["facet_name"]: f for f in task["facets"]}
-            rebuilt: List[Dict[str, Any]] = []
-            for facet_name, items in per_facet.items():
-                card = dict(known.get(facet_name) or {
-                    "facet_name": facet_name,
-                    "facet_definition": "",
-                })
-                card["attributes"] = items
-                rebuilt.append(card)
-            new_structure[domain] = rebuilt
+            # One call owns one card, so the result is spliced back at its own
+            # position — never appended, never matched by name.
+            rebuilt = dict(card)
+            rebuilt["attributes"] = kept
+            new_structure[domain][task["facet_index"]] = rebuilt
 
             for misfit in (result.misfits or []):
                 target = misfit.target_attribute if misfit.verdict == "move" else None
@@ -2080,41 +2145,58 @@ class TaxonomyClassifier:
                     misfits[(domain, _norm(text))] = target
                 self._action_log.append({
                     "action": f"misfit_{misfit.verdict}", "domain": domain,
+                    "facet": card["facet_name"],
                     "target": misfit.target_attribute,
                     "n_texts": len(misfit.instance_texts or [])})
 
         # ---- ideas -----------------------------------------------------------
-        domain_of: Dict[str, str] = {
-            idea_id: domain
-            for domain, texts in labels.items() for idea_id in texts}
-        live = {_norm(a["attribute_name"])
-                for facets in new_structure.values() for f in facets
-                for a in (f.get("attributes") or [])}
+        # Where each surviving attribute lives now. A name may occur in more
+        # than one facet of a domain, so this maps to a LIST: a misfit target
+        # that resolves to several places is not a destination at all.
+        home: Dict[Tuple[str, str], List[Placement]] = {}
+        for domain, facets in new_structure.items():
+            for facet in facets:
+                for attribute in facet.get("attributes") or []:
+                    name = attribute["attribute_name"]
+                    home.setdefault((domain, _norm(name)), []).append(
+                        Placement(domain, facet["facet_name"], name))
 
         moved = 0
-        out: Dict[str, str] = {}
-        for idea_id, attribute_name in assignments.items():
-            domain = domain_of.get(idea_id)
-            if domain is None:
-                out[idea_id] = attribute_name
-                continue
+        ambiguous: Counter = Counter()
+        out: Dict[str, Placement] = {}
+        for idea_id, placement in assignments.items():
+            domain = placement.domain
             text = _norm((labels.get(domain) or {}).get(idea_id))
+            target = placement
 
-            target = splits.get((domain, text))
-            if target is None and (domain, text) in misfits:
-                target = misfits[(domain, text)]
-                if target is None:
-                    # verdict "out": no destination exists, so it stays where it
-                    # is and the log carries the finding.
-                    target = attribute_name
-            if target is None:
-                target = remap.get((domain, attribute_name), attribute_name)
+            if (domain, text) in misfits:
+                # verdict "out" carries no destination, so those responses stay
+                # where they are and the log carries the finding.
+                named = misfits[(domain, text)]
+                if named:
+                    candidates = home.get((domain, _norm(named))) or []
+                    if len(candidates) == 1:
+                        target = candidates[0]
+                    elif candidates:
+                        ambiguous[named] += 1
+            else:
+                renamed = remap.get(
+                    (domain, placement.facet, placement.attribute))
+                if renamed:
+                    target = placement._replace(attribute=renamed)
 
-            if _norm(target) not in live:
-                target = attribute_name
-            if target != attribute_name:
+            if (domain, _norm(target.attribute)) not in home:
+                target = placement
+            if target != placement:
                 moved += 1
             out[idea_id] = target
+
+        for name, n in ambiguous.items():
+            self._action_log.append({
+                "action": "misfit_target_ambiguous", "target": name,
+                "n_ideas": n,
+                "note": "the name occurs in more than one facet of its domain "
+                        "— ideas left where they were"})
 
         if moved:
             self._action_log.append({"action": "ideas_moved", "n_ideas": moved})
@@ -2124,11 +2206,11 @@ class TaxonomyClassifier:
         self,
         ctx: PromptContext,
         structure: Dict[str, List[Dict[str, Any]]],
-        assignments: Dict[str, str],
+        assignments: Dict[str, Placement],
         labels: Dict[str, Dict[str, str]],
         verbose: bool,
-    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
-        """Judge each domain against what its attributes really hold."""
+    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Placement]]:
+        """Judge each facet against what its attributes really hold."""
         if verbose:
             print("\n  Refinement")
         started = time.time()
@@ -2146,7 +2228,7 @@ class TaxonomyClassifier:
             assignments=assignments, labels=labels)
 
         if verbose:
-            print(f"    {len(tasks)} domains, {time.time() - started:.1f}s → "
+            print(f"    {len(tasks)} facets, {time.time() - started:.1f}s → "
                   f"{format_counts(structure)}")
         return structure, assignments
 
@@ -2158,9 +2240,9 @@ class TaxonomyClassifier:
         self,
         ctx: PromptContext,
         structure: Dict[str, List[Dict[str, Any]]],
-        assignments: Dict[str, str],
+        assignments: Dict[str, Placement],
         verbose: bool,
-    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
+    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Placement]]:
         """Fold duplicate attributes together across domains.
 
         Every domain settled on its own, so the same concept survives in several
@@ -2173,6 +2255,9 @@ class TaxonomyClassifier:
             print("\n  Cross-domain consolidation")
         started = time.time()
 
+        # Counted per placement, not per name: the same attribute name in two
+        # facets of one domain is two entries here, and a name-keyed tally would
+        # show each of them the sum of both.
         counts = Counter(assignments.values())
         entries: List[Dict[str, Any]] = []
         for domain in sorted(structure):
@@ -2185,7 +2270,9 @@ class TaxonomyClassifier:
                         "domain": domain,
                         "facet": facet["facet_name"],
                         "attribute": attribute,
-                        "n": counts.get(attribute["attribute_name"], 0)})
+                        "n": counts.get(Placement(
+                            domain, facet["facet_name"],
+                            attribute["attribute_name"]), 0)})
         if len(entries) < 2:
             return structure, assignments
 
@@ -2244,7 +2331,9 @@ class TaxonomyClassifier:
         # Rebuild from the answer. An id nobody claimed stays exactly where it
         # is: a dropped id must not silently take its ideas with it.
         rebuilt: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-        rename: Dict[str, str] = {}
+        # Keyed on the source's own placement, so a merge relocates exactly the
+        # ideas of that entry — not every idea that happened to share its name.
+        rename: Dict[Placement, Placement] = {}
         claimed: Set[str] = set()
         merges = 0
 
@@ -2261,8 +2350,11 @@ class TaxonomyClassifier:
                     "example_observations": list(
                         home["attribute"].get("example_observations") or []),
                 })
+            destination = Placement(home["domain"], home["facet"], item.name)
             for entry in sources:
-                rename[_norm(entry["attribute"]["attribute_name"])] = item.name
+                rename[Placement(entry["domain"], entry["facet"],
+                                 entry["attribute"]["attribute_name"])] = (
+                    destination)
             if len(sources) > 1:
                 merges += 1
                 self._action_log.append({
@@ -2308,10 +2400,10 @@ class TaxonomyClassifier:
             new_structure[domain] = cards
 
         moved = 0
-        out: Dict[str, str] = {}
-        for idea_id, attribute_name in assignments.items():
-            target = rename.get(_norm(attribute_name), attribute_name)
-            if target != attribute_name:
+        out: Dict[str, Placement] = {}
+        for idea_id, placement in assignments.items():
+            target = rename.get(placement, placement)
+            if target != placement:
                 moved += 1
             out[idea_id] = target
 

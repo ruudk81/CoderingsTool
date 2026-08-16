@@ -167,7 +167,8 @@ def build_facet_consolidation_prompt(
         if domain_exclusions else "- (no neighbouring domains were named)")
 
     return f"""You are a taxonomy consolidation specialist for surveys.
- Your task is to organize group of attributes into a minimal set of facets within a given domain.
+Your task is to organize the candidate attributes within one facet into the smallest possible set of meaningful attribute-containers that is MECE.
+Default toward consolidation. A distinction should survive only when keeping it separate is necessary to preserve meaningful semantic differences in the context of the survey question.
 
 {build_context_block(
     language=language, survey_question=survey_question, sector=sector,
@@ -188,11 +189,28 @@ Here are the groups with attributes you need to organize into a minimal set of f
 {candidate_block}
 </attribute_groups>
 
-# Rules
+# Objective
 
-1) The set of facets need to be MECE; mutually exclusive and collectively exhaustive. This means that the facets are not allowed to overlap semantically or meaningfull in light of the survey question. And this means that the set of facets should provide full coverage for all attributes.
+Find the minimum number of attribute-containers required to organize all substantive candidate material belonging to this facet while remaining mutually exclusive and collectively exhaustive (MECE).
 
-2) You need to find the minimal number of facets to organize the attribute groups by beging MECE.
+The optimization priority is:
+- Correct facet membership
+- MECE
+- Minimum number of containers
+- Interpretability
+- Preservation of meaningful prevalent distinctions
+
+Do not preserve a distinction merely because it appears in the input.
+
+Rules
+1. Minimize the number of containers. Merge candidate attributes whenever they can be represented by one broader, meaningful attribute without losing an important distinction for the survey question. When in doubt, prefer merging.
+2. Keep a distinction only when it is substantively meaningful and clearly codable. Differences in wording, synonyms, closely related meanings, or broad-versus-narrow versions of the same idea normally belong in the same container.
+3. The final attributes must be MECE. Each substantive idea should have one natural home, and together the attributes must cover all substantive material belonging to this facet. Avoid overlapping attributes and parent/child attributes alongside each other.
+4. Use prevalence to simplify. Small or low-prevalence distinctions should normally be absorbed into the nearest broader attribute rather than becoming separate attributes, provided the resulting container remains semantically coherent.
+
+Before returning the result, ask one final question:
+"Can any two remaining attributes still be merged without losing an important, clearly codable distinction?"
+If yes, merge them.
 
 {UNIVERSAL_RULES}
 
@@ -307,8 +325,9 @@ def build_attribute_consolidation_prompt(
     question_line = (f"\nThe question this facet answers: {facet_question}"
                      if facet_question else "")
     return f"""You are a taxonomy consolidation specialist for surveys.
- Your task is to organize group of attributes into a minimal set within a given facet.
- 
+Your task is to organize the attributes within one facet into the smallest possible set of meaningful attribute-containers that is MECE.
+Default toward consolidation. A distinction should survive only when keeping it separate is necessary to preserve meaningful semantic differences in the context of the survey question.
+
 {build_context_block(
     language=language, survey_question=survey_question, sector=sector,
     entity=entity, topic=topic, perspective=perspective, intent=intent)}
@@ -326,12 +345,28 @@ Here are the attributes you need to organize into a minimal set:
 {candidate_block}
 </candidates>
 
-# Rules
+# Objective
 
-1) The set of attributes need to be MECE; mutually exclusive and collectively exhaustive. This means that the attributes are not allowed to overlap semantically or meaningfull in light of the survey question. And this means that the set of attributes should provide full coverage for all attributes.
+Find the minimum number of attribute-containers required to organize all substantive candidate material belonging to this facet while remaining mutually exclusive and collectively exhaustive (MECE).
 
-2) You need to find the minimal number of facets to organize the attribute groups by beging MECE. The fewer attributes by achieving MECE, the better.
+The optimization priority is:
+- Correct facet membership
+- MECE
+- Minimum number of containers
+- Interpretability
+- Preservation of meaningful prevalent distinctions
 
+Do not preserve a distinction merely because it appears in the input.
+
+Rules
+1. Minimize the number of containers. Merge candidate attributes whenever they can be represented by one broader, meaningful attribute without losing an important distinction for the survey question. When in doubt, prefer merging.
+2. Keep a distinction only when it is substantively meaningful and clearly codable. Differences in wording, synonyms, closely related meanings, or broad-versus-narrow versions of the same idea normally belong in the same container.
+3. The final attributes must be MECE. Each substantive idea should have one natural home, and together the attributes must cover all substantive material belonging to this facet. Avoid overlapping attributes and parent/child attributes alongside each other.
+4. Use prevalence to simplify. Small or low-prevalence distinctions should normally be absorbed into the nearest broader attribute rather than becoming separate attributes, provided the resulting container remains semantically coherent.
+
+Before returning the result, ask one final question:
+"Can any two remaining attributes still be merged without losing an important, clearly codable distinction?"
+If yes, merge them.
 
 {UNIVERSAL_RULES}
 
