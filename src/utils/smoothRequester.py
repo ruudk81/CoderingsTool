@@ -1022,6 +1022,14 @@ class SmoothRequester:
         # counts only what tenacity gave up on entirely.
         self._retry_sleep_total = 0.0
         self._retry_reasons = Counter()
+        # Two registers, two jobs. `failed_task_indices` is what the retry pass
+        # runs on: a position in `tasks` always exists and is always unique.
+        # `failed_task_ids` reports which respondent it was, and is empty for a
+        # phase whose tasks carry no respondent — steps 4, 5 and 6 build tasks
+        # per domain, per facet or per label. Keying the retry on that id meant
+        # those three never retried a failed task at all: the id resolved to
+        # `'?'` on the way in and to `''` on the way out, so nothing matched.
+        self.failed_task_indices = set()
         self.failed_task_ids = set()
         self.failure_log = []
 
@@ -1428,7 +1436,9 @@ class SmoothRequester:
                 self.stats['tasks_failed'] += 1
                 if task is not None:
                     task_index, task_data = task
-                    self.failed_task_ids.add(str(task_data.get('respondent_id', '?')))
+                    self.failed_task_indices.add(task_index)
+                    if 'respondent_id' in task_data:
+                        self.failed_task_ids.add(str(task_data['respondent_id']))
                     self.failure_log.append({
                         'task_id': task_data.get('respondent_id', '?'),
                         'reason': 'exception',
@@ -1858,15 +1868,14 @@ class SmoothRequester:
         if timed_out:
             for idx, data in timed_out:
                 failed_for_retry.append((idx, data, 'timeout'))
-        if self.failed_task_ids:
-            for i, task in enumerate(tasks):
-                if str(task.get('respondent_id', '')) in self.failed_task_ids:
-                    failed_for_retry.append((i, task, 'exception'))
+        for idx in sorted(self.failed_task_indices):
+            failed_for_retry.append((idx, tasks[idx], 'exception'))
 
         recovered = 0
         if failed_for_retry:
             if not self._quiet:
                 print(f"\n[RETRY PASS] Retrying {len(failed_for_retry)} failed tasks with reduced concurrency...")
+            self.failed_task_indices.clear()
             self.failed_task_ids.clear()
             self.failure_log.clear()
 

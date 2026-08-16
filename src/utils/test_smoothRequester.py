@@ -4,6 +4,8 @@ The spread exists to prevent one thing: the first wave of heavy requests arrivin
 at the server as a single wall. Two things went wrong there and are pinned here —
 it was switched on by a borrowed estimate, and it never stopped.
 """
+import asyncio
+
 import pytest
 
 from utils.llm import RateLimits
@@ -201,3 +203,52 @@ def test_the_token_bucket_does_use_the_fallback():
         from config import FALLBACK_TPM
         r = _setup(mp, probe_limits=RateLimits(0, 0))
         assert r.rate_limits.tokens_per_minute == FALLBACK_TPM
+
+
+# =============================================================================
+# The retry pass has to reach a task that carries no respondent
+# =============================================================================
+
+def _run_worker(requester, tasks):
+    """Drive one worker over `tasks`, with every call raising.
+
+    `_execute_task` is replaced rather than mocked at the network boundary: what
+    is under test is what the worker records about a failure, not how the
+    failure came about.
+    """
+    async def _boom(task_data, prepare_fn, parse_fn):
+        raise RuntimeError("collapsed")
+
+    async def _drive():
+        requester._execute_task = _boom
+        queue = asyncio.Queue()
+        for i, task in enumerate(tasks):
+            await queue.put((i, task))
+        await queue.put(None)
+        results = [None] * len(tasks)
+        await requester._worker(queue, results, [], lambda t: {}, lambda t, r: r, None)
+        return results
+
+    return asyncio.run(_drive())
+
+
+def test_a_failing_task_is_registered_by_position():
+    """Steps 4, 5 and 6 build tasks per domain, facet or label — no respondent
+    anywhere. Keying the retry on `respondent_id` meant a failure there was
+    recorded as `'?'` and looked up as `''`, so those three steps never retried
+    a failed task at all."""
+    with pytest.MonkeyPatch.context() as mp:
+        r = _requester(mp, p50=1.0, origin="curve", num_tasks=2)
+        _run_worker(r, [{"domain_label": "a"}, {"domain_label": "b"}])
+        assert r.failed_task_indices == {0, 1}
+        assert r.failed_task_ids == set()
+
+
+def test_a_respondent_is_still_reported_where_there_is_one():
+    """Steps 1-3 do carry one, and their failure reporting reads it."""
+    with pytest.MonkeyPatch.context() as mp:
+        r = _requester(mp, p50=1.0, origin="curve", num_tasks=1)
+        _run_worker(r, [{"respondent_id": 42, "response": "x"}])
+        assert r.failed_task_indices == {0}
+        assert r.failed_task_ids == {"42"}
+        assert r.failure_log[0]["task_id"] == 42
