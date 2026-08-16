@@ -54,7 +54,7 @@ Usage:
 import asyncio
 import re
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -139,6 +139,59 @@ def _strip_enumeration(text: str) -> str:
     is not something to depend on for a purely mechanical repair.
     """
     return _ENUMERATION.sub("", text).strip()
+
+
+# A consolidation call that accounts for less than half of the candidates it
+# was handed has made no judgement — it returned a scaffold. Half is a
+# boundary rather than a tuned number: below it the net would be authoring the
+# result instead of patching it, and patching is what a net is for.
+_MIN_CLAIM_COVERAGE = 0.5
+
+
+class ConsolidationCollapse(RuntimeError):
+    """A consolidation answer that validated but accounted for almost nothing.
+
+    Raised from the parse, because that is what makes the requester treat the
+    call as failed: it reruns the task, and if the rerun collapses too the
+    phase's fallback keeps every candidate and says so in the log.
+
+    Before this existed such an answer was a success. One call in the run of
+    2026-08-16 returned a single attribute named "Voorlopige consolidatie"
+    citing 1 of 12 candidates; the net rebuilt the other eleven and the log
+    reported `12 -> 12`, indistinguishable from a deliberate keep.
+    """
+
+
+def _accounted_for(index: Dict[str, Any], claimed: Set[str],
+                   returned_names: Set[str], name_of) -> Set[str]:
+    """Which of the ids handed out in one call the answer accounts for.
+
+    Two routes, the same two the survivor nets use: cited by id, or holding a
+    name that identifies exactly one candidate and appears in the answer. One
+    definition, because the gate that rejects a collapsed call and the net that
+    keeps what a good call forgot have to agree on what "forgotten" means —
+    otherwise the net repairs precisely what the gate just rejected.
+
+    `name_of` returns an already-normalised name, so this goes through `_norm`
+    like every other name comparison in the step.
+    """
+    names = Counter(name_of(candidate) for candidate in index.values())
+    return {
+        candidate_id for candidate_id, candidate in index.items()
+        if candidate_id in claimed
+        or (names[name_of(candidate)] == 1
+            and name_of(candidate) in returned_names)}
+
+
+def _guard_collapse(level: str, where: str, index: Dict[str, Any],
+                    claimed: Set[str], returned_names: Set[str],
+                    name_of) -> None:
+    """Reject an answer that left most of its candidates unaccounted for."""
+    accounted = _accounted_for(index, claimed, returned_names, name_of)
+    if index and len(accounted) / len(index) < _MIN_CLAIM_COVERAGE:
+        raise ConsolidationCollapse(
+            f"{level} consolidation for {where}: {len(accounted)}/{len(index)} "
+            f"candidates accounted for")
 
 
 def facet_dicts(nested: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -388,6 +441,10 @@ class TaxonomyClassifier:
         self._attr_recurrence: Dict[str, Dict[str, int]] = {}
         self._passes: Dict[str, int] = {}
         self._last_stats: Dict = {}
+        # Per phase, summed over its rounds: `_last_stats` holds the final
+        # round only, and a call rejected in round one would vanish from the
+        # summary line the moment a second round ran.
+        self._dispatch_totals: Dict[str, Counter] = defaultdict(Counter)
 
         # Assignment confidence and valence (populated by the assignment parse)
         self._facet_confidence: Dict[str, float] = {}
@@ -730,11 +787,27 @@ class TaxonomyClassifier:
         )
         results = await requester.process_all(tasks, prepare_fn, parse_fn, fallback_fn)
         self._last_stats = requester.stats
+        self._dispatch_totals[phase].update({
+            "tasks_failed": requester.stats.get("tasks_failed", 0),
+            "recovered": requester.stats.get("recovered", 0)})
         if self.cost_tracker and snapshot is not None:
             self.cost_tracker.record_phase(
                 "step_4_taxonomy_classifier", phase, snapshot,
                 token_tracker.snapshot(), model)
         return results
+
+    def _rejected_note(self, phase: str) -> str:
+        """What a phase had to redo, for its summary line.
+
+        Empty when nothing failed, so a clean phase reads exactly as before.
+        A rejected call that is not reported is a fix that hides itself: the
+        whole point of the gate is that a collapse stops being invisible.
+        """
+        totals = self._dispatch_totals.get(phase)
+        if not totals or not (totals["tasks_failed"] or totals["recovered"]):
+            return ""
+        return (f" ({totals['tasks_failed']} rejected, "
+                f"{totals['recovered']} recovered)")
 
     def _capture(self, gate_key: str, prompt: str, prompt_type: str,
                  metadata: Dict) -> None:
@@ -1036,8 +1109,23 @@ class TaxonomyClassifier:
 
     @staticmethod
     def _facet_consolidation_parse_fn():
+        """Accept an answer only if it accounts for its candidates.
+
+        The schema cannot carry this test: the candidate set is handed out in
+        the prompt and lives nowhere in the model, so an answer citing one id
+        out of forty validates exactly as well as one citing all forty.
+        """
         def parse_fn(task: Dict, response):
-            return response if response else None
+            if not response:
+                return None
+            index = build_facet_candidate_index(task["candidates"])
+            _guard_collapse(
+                "facet", task["domain_label"], index,
+                {s.strip() for facet in response.facets
+                 for s in (facet.source_facet_ids or [])},
+                {_norm(facet.facet_name) for facet in response.facets},
+                lambda candidate: _norm(candidate.facet_name))
+            return response
         return parse_fn
 
     @staticmethod
@@ -1137,11 +1225,22 @@ class TaxonomyClassifier:
                 "facet": candidate.facet_name, "id": facet_id})
 
         self._log_facet_provenance(task["domain_label"], result)
+        # How much of its own input the answer accounted for. Without it a call
+        # that judged nothing and a call that judged everything both read as
+        # `before -> after`, and the net between them is invisible.
+        accounted = _accounted_for(
+            cand_facets,
+            {s.strip() for facet in result.facets
+             for s in (facet.source_facet_ids or [])},
+            {_norm(facet.facet_name) for facet in result.facets},
+            lambda candidate: _norm(candidate.facet_name))
         self._action_log.append({
             "action": "facet_consolidation",
             "domain": task["domain_label"],
             "facets_before": len(candidates),
-            "facets_after": len(survivors)})
+            "facets_after": len(survivors),
+            "accounted_for": len(accounted),
+            "candidates": len(cand_facets)})
         return survivors
 
     def _log_unknown_facet_sources(
@@ -1267,7 +1366,8 @@ class TaxonomyClassifier:
             n_facets = sum(len(v) for v in settled.values())
             n_attrs = sum(len(p.attributes) for v in settled.values() for p in v)
             print(f"    {time.time() - started:.1f}s → {n_facets} facets, "
-                  f"{n_attrs} pooled attributes")
+                  f"{n_attrs} pooled attributes"
+                  f"{self._rejected_note('facet_consolidation')}")
             for label in sorted(settled):
                 names = ", ".join(p.facet_name for p in settled[label])
                 print(f"      {label}: {len(settled[label])} — {names}")
@@ -1367,8 +1467,19 @@ class TaxonomyClassifier:
 
     @staticmethod
     def _attribute_consolidation_parse_fn():
+        """Same gate as one level up, on this call's own pool."""
         def parse_fn(task: Dict, response):
-            return response if response else None
+            if not response:
+                return None
+            index = build_attribute_candidate_index(task["candidates"])
+            _guard_collapse(
+                "attribute", f"{task['domain_label']} › {task['facet'].facet_name}",
+                index,
+                {s.strip() for attribute in response.attributes
+                 for s in (attribute.source_attribute_ids or [])},
+                {_norm(a.attribute_name) for a in response.attributes},
+                lambda candidate: _norm(candidate.attribute_name))
+            return response
         return parse_fn
 
     @staticmethod
@@ -1441,11 +1552,16 @@ class TaxonomyClassifier:
                  "source_attribute_ids": list(a.source_attribute_ids or [])}
                 for a in result.attributes],
             "decisions": list(result.decision_summary or [])})
+        accounted = _accounted_for(
+            index, claimed, returned,
+            lambda candidate: _norm(candidate.attribute_name))
         self._action_log.append({
             "action": "attribute_consolidation", "domain": label,
             "facet": facet.facet_name,
             "attributes_before": len(candidates),
-            "attributes_after": len(survivors)})
+            "attributes_after": len(survivors),
+            "accounted_for": len(accounted),
+            "candidates": len(index)})
         return survivors
 
     @staticmethod
@@ -1573,7 +1689,8 @@ class TaxonomyClassifier:
 
         structure = self._assemble_structure(settled, consolidated)
         if verbose:
-            print(f"    {time.time() - started:.1f}s → {format_counts(structure)}")
+            print(f"    {time.time() - started:.1f}s → {format_counts(structure)}"
+                  f"{self._rejected_note('attribute_consolidation')}")
         return structure
 
     # =========================================================================
