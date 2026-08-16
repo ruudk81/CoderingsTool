@@ -9,8 +9,9 @@ from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 def test_the_phases_name_both_consolidation_calls():
     """One name for one job: facets and attributes are settled by two calls."""
     assert TaxonomyClassifier.PHASES == (
-        "discovery", "facet_consolidation", "attribute_consolidation",
-        "assignment", "refinement", "cross_domain", "valence_merge")
+        "discovery", "facet_consolidation", "facet_assignment", "facet_settle",
+        "attribute_consolidation", "assignment", "refinement", "cross_domain",
+        "valence_merge")
 
 
 def test_every_phase_has_a_model_key():

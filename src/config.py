@@ -92,6 +92,8 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     # in the perf model.
     "classifier_discovery":               ("5.6", 3),
     "classifier_facet_consolidation":     ("5.6", 3),
+    "classifier_facet_assignment":        ("5.6", 3),
+    "classifier_facet_settle":            ("5.6", 3),
     "classifier_attribute_consolidation": ("5.6", 3),
     "classifier_assignment":              ("5.6", 3),
     "classifier_refinement":              ("5.6", 3),
@@ -205,6 +207,7 @@ STEP_EFFORT = {
     # the calls are.
     "classifier_discovery": "medium",
     "classifier_facet_consolidation": "medium",
+    "classifier_facet_settle": "medium",
     "classifier_attribute_consolidation": "medium",
     "classifier_refinement": "medium",
     "classifier_cross_domain": "medium",

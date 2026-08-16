@@ -69,6 +69,8 @@ class CategoriesConfig:
 
     model_discovery: str = get_step_model("classifier_discovery")
     model_facet_consolidation: str = get_step_model("classifier_facet_consolidation")
+    model_facet_assignment: str = get_step_model("classifier_facet_assignment")
+    model_facet_settle: str = get_step_model("classifier_facet_settle")
     model_attribute_consolidation: str = get_step_model("classifier_attribute_consolidation")
     model_assignment: str = get_step_model("classifier_assignment")
     model_refinement: str = get_step_model("classifier_refinement")
@@ -119,6 +121,10 @@ class CategoriesConfig:
     # The facet call renders attribute names only, so what bounds it is the
     # number of facets being compared, not the volume hanging under them.
     facet_consolidation_max_facets_per_call: int = 40
+
+    # Same shape of cap, for the later re-judgement of facets on real idea
+    # counts (facet_settle) rather than on how many chunks proposed a name.
+    facet_settle_max_facets_per_call: int = 25
 
     # The attribute call is one facet's pool. Measured 2026-08-15: the largest
     # pool in a real domain was twenty-six, so this rarely rounds.

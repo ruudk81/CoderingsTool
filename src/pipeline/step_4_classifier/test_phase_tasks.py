@@ -478,6 +478,49 @@ def test_a_domain_that_never_converges_is_reported_not_dropped():
 
 
 # =============================================================================
+# FACET ASSIGNMENT
+# =============================================================================
+
+def test_een_taak_per_uniek_label_per_domein():
+    """Ideeën met hetzelfde label worden één rep: één call beslist voor
+    allemaal. Dat is geen batch, het is niet twee keer dezelfde vraag stellen."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    labels = {"d": {"i1": "traag", "i2": "traag", "i3": "duur"}}
+    tasks = clf._build_facet_assignment_tasks(_ctx({"d": []}), settled, labels)
+    assert len(tasks) == 2
+
+
+def test_het_vangnetfacet_staat_altijd_in_het_menu():
+    """Zonder vangnet heeft een idee dat geen enkele facetvraag beantwoordt geen
+    geldig antwoord, en dan komt `__UNASSIGNED__` terug — precies wat de
+    één-poort-toewijzing ooit moest oplossen."""
+    clf = _clf()
+    tasks = clf._build_facet_assignment_tasks(
+        _ctx({"d": []}), {"d": [_pool("f1", "a1")]}, {"d": {"i1": "traag"}})
+    assert len(tasks) == 1
+    assert [v["is_drain"] for v in tasks[0]["id_map"].values()] == [False, True]
+
+
+def test_een_domein_zonder_inhoudelijk_facet_krijgt_geen_taak():
+    """Kiezen tussen alleen een vangnet is geen keuze."""
+    clf = _clf()
+    tasks = clf._build_facet_assignment_tasks(
+        _ctx({"d": []}), {"d": []}, {"d": {"i1": "traag"}})
+    assert tasks == []
+
+
+def test_het_menu_wordt_een_keer_per_domein_gebouwd():
+    """Alle taken van een domein delen één id_map, anders zou F1 per call iets
+    anders kunnen betekenen en is de uitkomst niet te remappen."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    labels = {"d": {"i1": "traag", "i2": "duur"}}
+    tasks = clf._build_facet_assignment_tasks(_ctx({"d": []}), settled, labels)
+    assert tasks[0]["id_map"] == tasks[1]["id_map"]
+
+
+# =============================================================================
 # ATTRIBUTE CONSOLIDATION
 # =============================================================================
 

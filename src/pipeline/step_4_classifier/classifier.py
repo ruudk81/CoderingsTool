@@ -97,6 +97,7 @@ from .prompts_consolidation import (
 )
 from .prompts_assignment import (
     build_assignment_menu, build_assignment_model, build_assignment_prompt,
+    build_facet_assignment_model, build_facet_assignment_prompt, build_facet_menu,
 )
 from .prompts_refinement import (
     RefinementResult, build_contents_block, build_cross_domain_prompt,
@@ -388,8 +389,9 @@ class TaxonomyClassifier:
     # Phase key → (config attribute, cost-tracker label). One table, so a phase
     # cannot end up with a model in one register and a different one in another.
     PHASES = (
-        "discovery", "facet_consolidation", "attribute_consolidation",
-        "assignment", "refinement", "cross_domain", "valence_merge",
+        "discovery", "facet_consolidation", "facet_assignment", "facet_settle",
+        "attribute_consolidation", "assignment", "refinement", "cross_domain",
+        "valence_merge",
     )
 
     def __init__(self, config: CategoriesConfig, prompt_printer=None, cost_tracker=None):
@@ -1390,6 +1392,194 @@ class TaxonomyClassifier:
                 names = ", ".join(p.facet_name for p in settled[label])
                 print(f"      {label}: {len(settled[label])} — {names}")
         return settled
+
+    # =========================================================================
+    # PHASE — FACET ASSIGNMENT (one facet per unique label, ahead of the
+    # attribute layer)
+    # =========================================================================
+
+    def _build_facet_assignment_tasks(
+        self,
+        ctx: PromptContext,
+        settled: Dict[str, List[FacetPool]],
+        labels: Dict[str, Dict[str, str]],
+    ) -> List[Dict]:
+        """One task per unique normalised label within one domain, facets only.
+
+        Built from the settled facet pools, not the assembled structure: this
+        phase runs before there is an attribute layer to render, so the menu
+        carries only each facet's name, definition and question. The catch-all
+        is appended here with the same call `_add_drains` makes later
+        (`make_drain_facet`), so the facet offered to the model is the facet
+        that survives into the structure — never a proposal `_add_drains` has
+        not made yet. `_add_drains` itself is untouched: the pools this phase
+        reads never gain a catch-all of their own.
+
+        A domain with no content facets gets no task: choosing between only
+        the catch-all is not a choice.
+        """
+        tasks: List[Dict] = []
+        for domain in sorted(settled):
+            pools = settled[domain]
+            if not pools:
+                continue
+            facets = [
+                {"facet_name": p.facet_name, "facet_definition": p.facet_definition,
+                 "facet_question": p.facet_question}
+                for p in pools
+            ] + [make_drain_facet(domain, ctx.language)]
+            menu_block, id_map = build_facet_menu(facets)
+            for rep in group_label_reps((labels.get(domain) or {}).items()):
+                tasks.append({
+                    "domain_label": domain,
+                    "rep": rep,
+                    "menu_block": menu_block,
+                    "id_map": id_map,
+                })
+        return tasks
+
+    def _facet_assignment_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            domain = ctx.domain(task["domain_label"])
+            prompt = build_facet_assignment_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                menu_block=task["menu_block"],
+                observation=task["rep"].label,
+            )
+            self._capture(
+                f"facet_assignment_{task['domain_label']}", prompt, "facet_assignment",
+                {"model": self._model["facet_assignment"],
+                 "temperature": self._temperature,
+                 "max_tokens": self._max_tokens_assignment,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "n_facets": len(task["id_map"]),
+                 "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": build_facet_assignment_model(list(task["id_map"])),
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens_assignment,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["facet_assignment"], phase="classifier_facet_assignment"),
+            }
+        return prepare_fn
+
+    def _facet_assignment_parse_fn(self):
+        """Fan the one judgment out over every idea carrying that label.
+
+        Confidence rides along in the return value rather than
+        `self._facet_confidence`: that register belongs to attribute
+        assignment, which runs later in the same pass and overwrites it
+        (`classifier.py:1791`) — writing it here too would be discarded work
+        wearing the appearance of an effect. This phase's evidence is the
+        per-domain mean `_run_facet_assignment` puts in the action log.
+        """
+        def parse_fn(task: Dict, response) -> Dict[str, Tuple[str, float]]:
+            if response is None:
+                return {}
+            facet_id = response.assigned_facet_id
+            return {idea_id: (facet_id, response.confidence)
+                    for idea_id in task["rep"].idea_ids}
+        return parse_fn
+
+    def _facet_assignment_fallback_fn(self):
+        """An unassignable idea gets the domain's catch-all facet — never none.
+
+        Resolved right here rather than left for a later net: `make_drain_facet`
+        guarantees a catch-all on every menu, found by scanning `is_drain`
+        rather than assuming a fixed id, and the first facet stands in on the
+        remote chance none is marked. Either way an idea always leaves this
+        phase with a facet — a facet-less idea would become an exception
+        downstream, exactly what `__UNASSIGNED__` used to be.
+        """
+        def fallback_fn(task: Dict, reason: str) -> Dict[str, Tuple[str, float]]:
+            drain_id = next((fid for fid, choice in task["id_map"].items()
+                             if choice["is_drain"]), None)
+            target = drain_id or next(iter(task["id_map"]))
+            self._action_log.append({
+                "action": "facet_assignment_fallback", "domain": task["domain_label"],
+                "label": task["rep"].label, "n_ideas": len(task["rep"].idea_ids),
+                "target": target})
+            return {idea_id: (target, 0.0) for idea_id in task["rep"].idea_ids}
+        return fallback_fn
+
+    async def _run_facet_assignment(
+        self,
+        ctx: PromptContext,
+        settled: Dict[str, List[FacetPool]],
+        labels: Dict[str, Dict[str, str]],
+        verbose: bool,
+    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, Dict[str, Any]]]]:
+        """Place every idea on one facet, ahead of the attribute layer.
+
+        Returns idea_id -> facet_id rather than idea_id -> facet_name: facet
+        names are not unique within one domain (see `build_facet_menu`), so
+        the id is the only thing a caller can resolve unambiguously — using
+        the id_map this also returns, keyed by domain.
+        """
+        if verbose:
+            print("\n  Facet assignment")
+        started = time.time()
+
+        tasks = self._build_facet_assignment_tasks(ctx, settled, labels)
+        id_maps: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for task in tasks:
+            id_maps.setdefault(task["domain_label"], task["id_map"])
+
+        results = await self._dispatch(
+            "facet_assignment", tasks,
+            self._facet_assignment_prepare_fn(ctx),
+            self._facet_assignment_parse_fn(),
+            self._facet_assignment_fallback_fn(),
+            verbose, quiet=False,
+        )
+
+        assignments: Dict[str, str] = {}
+        confidences: Dict[str, List[float]] = defaultdict(list)
+        for task, result in zip(tasks, results):
+            if not result:
+                continue
+            domain = task["domain_label"]
+            for idea_id, (facet_id, confidence) in result.items():
+                assignments[idea_id] = facet_id
+                confidences[domain].append(confidence)
+
+        # The catch-all share is the counter-metric for this phase's kill
+        # criterion. It belongs in the action log, not only in the health
+        # report, or a regression stays invisible until someone runs one.
+        entries: List[Dict] = []
+        for domain, id_map in id_maps.items():
+            expected = set(labels.get(domain) or {})
+            drain_id = next((fid for fid, choice in id_map.items()
+                             if choice["is_drain"]), None)
+            n_drain = sum(1 for idea_id in expected
+                         if assignments.get(idea_id) == drain_id)
+            domain_confidences = confidences.get(domain) or []
+            entries.append({
+                "action": "facet_assignment", "domain": domain,
+                "n_ideas": len(expected), "n_facets": len(id_map),
+                "drain_share": (n_drain / len(expected)) if expected else 0.0,
+                "mean_confidence": (
+                    sum(domain_confidences) / len(domain_confidences)
+                    if domain_confidences else 0.0),
+            })
+        self._action_log.extend(entries)
+
+        if verbose:
+            print(f"    {len(tasks)} calls for {len(tasks)} unique labels, "
+                  f"{time.time() - started:.1f}s")
+            for entry in sorted(entries, key=lambda e: e["domain"]):
+                print(f"      {entry['domain']}: {entry['n_ideas']} ideas, "
+                      f"{entry['drain_share']:.0%} catch-all, "
+                      f"mean confidence {entry['mean_confidence']:.2f}")
+
+        return assignments, id_maps
 
     # =========================================================================
     # PHASE — ATTRIBUTE CONSOLIDATION (per settled facet, one call each)
