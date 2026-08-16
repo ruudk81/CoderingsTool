@@ -5,13 +5,18 @@ skipping, chunking and counts can be checked without an LLM call.
 """
 import asyncio
 
+import pytest
+
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimensions_in_decision_order
 from pipeline.step_4_classifier.classifier import (
-    PromptContext, TaxonomyClassifier, _strip_enumeration, attribute_dicts,
-    Placement, facet_dicts, flatten_placements,
+    ConsolidationCollapse, PromptContext, TaxonomyClassifier, _strip_enumeration,
+    attribute_dicts, Placement, facet_dicts, flatten_placements,
 )
 from pipeline.step_4_classifier.config_classifier import CategoriesConfig
 from pipeline.step_4_classifier.drains import is_drain_item, make_drain_attribute
+from pipeline.step_4_classifier.prompts_facet_settle import (
+    SettledFacetCard, build_facet_settle_model,
+)
 from pipeline.step_4_classifier.prompts_refinement import (
     RefinedAttribute, RefinementResult,
 )
@@ -518,6 +523,192 @@ def test_het_menu_wordt_een_keer_per_domein_gebouwd():
     labels = {"d": {"i1": "traag", "i2": "duur"}}
     tasks = clf._build_facet_assignment_tasks(_ctx({"d": []}), settled, labels)
     assert tasks[0]["id_map"] == tasks[1]["id_map"]
+
+
+# =============================================================================
+# FACET SETTLE
+# =============================================================================
+
+def _settle_result(facets, moves=(), facet_ids=("F1", "F2"), attribute_ids=()):
+    """Een resultaat van één facet_settle-call, tegen het per-call model.
+
+    `moves` is een reeks `(attribuut_id, doel_facet_id)`-paren."""
+    model = build_facet_settle_model(list(facet_ids), list(attribute_ids))
+    return model(
+        scratchpad="s", facets=list(facets),
+        attribute_moves=[{"attribute_id": a, "to_facet_id": f} for a, f in moves])
+
+
+def _settled(name, *source_ids, question="v"):
+    return SettledFacetCard(facet_name=name, facet_definition="d",
+                            facet_question=question,
+                            source_facet_ids=list(source_ids))
+
+
+def _settle_task(pools, id_map, attribute_ids=None):
+    """`attribute_ids` mapt een id op het attribuut-OBJECT, niet op zijn naam.
+
+    Op naam zou de verplaatsing stukgaan waar twee facetten van één domein
+    dezelfde attribuutnaam dragen — en dat mag. Objectidentiteit overleeft de
+    merge, want samenvouwen zet dezelfde objecten in een nieuwe pool."""
+    if attribute_ids is None:
+        attribute_ids = {f"A{i}": a for i, a in enumerate(
+            (a for p in pools for a in p.attributes), start=1)}
+    return {"domain_label": "d", "pools": pools,
+            "id_map": id_map, "attribute_ids": attribute_ids}
+
+
+def _names(pool):
+    return [a.attribute_name for a in pool.attributes]
+
+
+def test_een_domein_met_een_facet_krijgt_geen_taak():
+    """Er valt niets te vergelijken, dus geen call."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1")]}
+    id_maps = {"d": {"F1": {"facet_name": "f1", "is_drain": False}}}
+    tasks = clf._build_facet_settle_tasks(
+        _ctx({"d": []}), settled, {}, id_maps, {"d": {}})
+    assert tasks == []
+
+
+def test_de_tellingen_komen_van_echte_toewijzingen_en_het_vangnet_telt_apart():
+    """Dit is de reden dat de fase hier staat: het aandeel is een telling van
+    ideeën, niet van hoeveel chunks een naam voorstelden."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    id_maps = {"d": {
+        "F1": {"facet_name": "f1", "is_drain": False},
+        "F2": {"facet_name": "f2", "is_drain": False},
+        "F3": {"facet_name": "Overig", "is_drain": True}}}
+    facet_assignments = {"i1": "F1", "i2": "F1", "i3": "F2", "i4": "F3"}
+    labels = {"d": {"i1": "traag", "i2": "traag", "i3": "duur", "i4": "geen idee"}}
+    task = clf._build_facet_settle_tasks(
+        _ctx({"d": []}), settled, facet_assignments, id_maps, labels)[0]
+    assert task["counts"] == {"f1": 2, "f2": 1}
+    assert task["contents"]["f1"] == ["traag"]
+    assert task["domain_total"] == 4
+    assert task["shares"]["f1"] == 0.5
+    assert task["drain_count"] == 1
+
+
+def test_attribuut_ids_lopen_in_documentvolgorde_over_alle_pools_heen():
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1", "a2"), _pool("f2", "a3")]}
+    id_maps = {"d": {"F1": {"facet_name": "f1", "is_drain": False},
+                     "F2": {"facet_name": "f2", "is_drain": False}}}
+    task = clf._build_facet_settle_tasks(
+        _ctx({"d": []}), settled, {}, id_maps, {"d": {}})[0]
+    assert list(task["id_map"]) == ["F1", "F2"]
+    assert [a.attribute_name for a in task["attribute_ids"].values()] == [
+        "a1", "a2", "a3"]
+
+
+def test_twee_facetten_worden_er_een_en_hun_pools_plakken_aan_elkaar():
+    """Attributen reizen mee. Er hangen op dit moment nog geen ideeën aan, dus
+    dit kost niets — dat is de reden dat deze fase vóór de attribuuttoewijzing
+    staat en niet erna."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}})
+    result = _settle_result([_settled("f", "F1", "F2")])
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert [p.facet_name for p in out["d"]] == ["f"]
+    assert _names(out["d"][0]) == ["a1", "a2"]
+
+
+def test_een_overlevend_facet_draagt_de_vraag_die_het_model_opschreef():
+    """Een vraag die van één van de bronnen is overgenomen beschrijft de merge
+    niet, dus het model schrijft hem opnieuw op en die versie reist door."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}}, {})
+    result = _settle_result([_settled("f", "F1", "F2", question="Wat vraagt dit?")])
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert out["d"][0].facet_question == "Wat vraagt dit?"
+
+
+def test_een_ongeclaimd_facet_blijft_staan():
+    """Zonder bronvelden ziet een samengevouwen facet er identiek uit aan een
+    vergeten facet: allebei staan ze niet in het antwoord."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}}, {})
+    result = _settle_result([_settled("f", "F1")])
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert [p.facet_name for p in out["d"]] == ["f", "f2"]
+    assert _actions(clf, "facet_kept_unclaimed_in_settle")[0]["facet"] == "f2"
+
+
+def test_een_bron_die_twee_keer_wordt_geclaimd_gaat_naar_de_eerste():
+    """Aan allebei geven zou één attribuut onder twee facetten laten overleven."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}}, {})
+    result = _settle_result([_settled("x", "F1", "F2"), _settled("y", "F2")])
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert _names(out["d"][0]) == ["a1", "a2"]
+    assert _names(out["d"][1]) == []
+    assert _actions(clf, "divided_source_facet_in_settle")
+
+
+def test_een_attribuut_verhuist_naar_het_facet_dat_het_doel_noemt():
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1", "a2"), _pool("f2", "a3")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}})
+    result = _settle_result(
+        [_settled("f1", "F1"), _settled("f2", "F2")],
+        moves=[("A2", "F2")], attribute_ids=("A1", "A2", "A3"))
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert _names(out["d"][0]) == ["a1"]
+    assert _names(out["d"][1]) == ["a3", "a2"]
+    assert _actions(clf, "attribute_moved_between_facets")[0]["attribute"] == "a2"
+
+
+def test_een_verplaatsing_naar_een_verdwenen_facet_laat_het_attribuut_staan():
+    """Het doelfacet kan door de merge van dezelfde call verdwenen zijn. Dan
+    blijft het attribuut waar het stond, met een logregel — nooit stil. Dat is
+    de les van de misfit-uitgang, hier afgedwongen in plaats van gehoopt."""
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}})
+    result = _settle_result(
+        [_settled("f", "F1", "F2")],
+        moves=[("A1", "F2")], attribute_ids=("A1", "A2"))
+    out = clf._apply_facet_settle(tasks=[task], results=[result], settled=settled)
+    assert sorted(_names(out["d"][0])) == ["a1", "a2"]
+    assert _actions(clf, "move_target_gone")
+
+
+def test_een_mislukte_call_laat_het_domein_zoals_consolidatie_het_zette():
+    clf = _clf()
+    settled = {"d": [_pool("f1", "a1"), _pool("f2", "a2")]}
+    task = _settle_task(settled["d"],
+                        {"F1": {"facet_name": "f1"}, "F2": {"facet_name": "f2"}}, {})
+    out = clf._apply_facet_settle(tasks=[task], results=[None], settled=settled)
+    assert [p.facet_name for p in out["d"]] == ["f1", "f2"]
+    assert _actions(clf, "facet_settle_failed")
+
+
+def test_een_antwoord_dat_bijna_niets_verantwoordt_wordt_geweigerd():
+    """Dezelfde poort als bij consolidatie: onder de helft is geen oordeel maar
+    een steiger, en het net zou het resultaat gaan schrijven in plaats van
+    repareren. Getoetst op de parse van déze fase, niet op het gedeelde
+    hulpmiddel — de poort is pas een poort als hij ook aangeroepen wordt."""
+    clf = _clf()
+    pools = [_pool(f"f{i}", f"a{i}") for i in range(1, 11)]
+    task = _settle_task(pools,
+                        {f"F{i}": {"facet_name": f"f{i}"} for i in range(1, 11)}, {})
+    result = _settle_result([_settled("f", "F1")],
+                            facet_ids=tuple(f"F{i}" for i in range(1, 11)))
+    with pytest.raises(ConsolidationCollapse):
+        clf._facet_settle_parse_fn()(task, result)
 
 
 # =============================================================================

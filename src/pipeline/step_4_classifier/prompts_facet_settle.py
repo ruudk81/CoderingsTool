@@ -94,23 +94,40 @@ def build_facet_settle_model(facet_ids: List[str], attribute_ids: List[str]):
     `Literal` over exactly the ids this call handed out turns the invented
     case into a schema error instructor retries, instead of a content error
     reaching that log line at all.
+
+    `attribute_ids` can be empty — every facet built by facet consolidation
+    carries at least one attribute in practice, but a task built against
+    stubbed pools has none to hand out. `Literal` over an empty tuple is not
+    itself a valid type, and there is nothing a move could invent when no
+    attribute is shown anyway, so the field falls back to `List[Any]`, which
+    only an empty list can ever satisfy.
     """
     facet_literal = Literal[tuple(facet_ids)]  # type: ignore[valid-type]
-    attribute_literal = Literal[tuple(attribute_ids)]  # type: ignore[valid-type]
 
-    move = create_model(
-        "AttributeMove",
-        attribute_id=(attribute_literal, Field(
-            ..., description=(
-                "The bracketed id, from the facets shown, of the attribute "
-                "being relocated, e.g. 'A3'"))),
-        to_facet_id=(facet_literal, Field(
-            ..., description=(
-                "The bracketed id of the candidate facet this attribute "
-                "actually belongs under — the id as shown, in the same id "
-                "space as `source_facet_ids`, not the name of the facet it "
-                "ends up folded into"))),
-    )
+    if attribute_ids:
+        attribute_literal = Literal[tuple(attribute_ids)]  # type: ignore[valid-type]
+        move = create_model(
+            "AttributeMove",
+            attribute_id=(attribute_literal, Field(
+                ..., description=(
+                    "The bracketed id, from the facets shown, of the "
+                    "attribute being relocated, e.g. 'A3'"))),
+            to_facet_id=(facet_literal, Field(
+                ..., description=(
+                    "The bracketed id of the candidate facet this attribute "
+                    "actually belongs under — the id as shown, in the same "
+                    "id space as `source_facet_ids`, not the name of the "
+                    "facet it ends up folded into"))),
+        )
+        moves_type, moves_description = List[move], (
+            "Every attribute that answers a different candidate facet's "
+            "question than the one it is shown under, redirected there. "
+            "An attribute already sitting under the facet whose question "
+            "it answers does not appear here")
+    else:
+        moves_type, moves_description = List[Any], (
+            "No attributes are shown in this call — leave this empty")
+
     return create_model(
         "FacetSettleResult",
         scratchpad=(str, Field(
@@ -123,12 +140,7 @@ def build_facet_settle_model(facet_ids: List[str], attribute_ids: List[str]):
             ..., description=(
                 "The fewest mutually exclusive facets that cover this "
                 "domain"))),
-        attribute_moves=(List[move], Field(
-            ..., description=(
-                "Every attribute that answers a different candidate facet's "
-                "question than the one it is shown under, redirected there. "
-                "An attribute already sitting under the facet whose "
-                "question it answers does not appear here"))),
+        attribute_moves=(moves_type, Field(..., description=moves_description)),
     )
 
 

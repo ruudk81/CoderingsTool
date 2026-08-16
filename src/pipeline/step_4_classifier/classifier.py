@@ -99,6 +99,9 @@ from .prompts_assignment import (
     build_assignment_menu, build_assignment_model, build_assignment_prompt,
     build_facet_assignment_model, build_facet_assignment_prompt, build_facet_menu,
 )
+from .prompts_facet_settle import (
+    build_facet_settle_block, build_facet_settle_model, build_facet_settle_prompt,
+)
 from .prompts_refinement import (
     RefinementResult, build_contents_block, build_cross_domain_prompt,
     build_refinement_prompt,
@@ -1580,6 +1583,317 @@ class TaxonomyClassifier:
                       f"mean confidence {entry['mean_confidence']:.2f}")
 
         return assignments, id_maps
+
+    # =========================================================================
+    # PHASE — FACET SETTLE (per domain, facets judged on real placement)
+    # =========================================================================
+
+    def _build_facet_settle_tasks(
+        self,
+        ctx: PromptContext,
+        settled: Dict[str, List[FacetPool]],
+        facet_assignments: Dict[str, str],
+        id_maps: Dict[str, Dict[str, Dict[str, Any]]],
+        labels: Dict[str, Dict[str, str]],
+    ) -> List[Dict]:
+        """One task per domain with something to compare against real counts.
+
+        Counted per facet NAME, not per facet id: `build_facet_settle_block`
+        renders its own [F#] numbering over `settled[domain]`, in that order,
+        and looks counts up by name — the id space facet assignment used to
+        place ideas belongs to a different call and dies here.
+
+        A domain with fewer than two facets gets no task: there is nothing to
+        fold it with. Ideas that landed on the domain's catch-all facet are
+        not in `settled` at all and so cannot land in any pool's count; their
+        share rides along on the task so `_run_facet_settle` can log it as the
+        counter-metric of the kill criterion, not leave it to the health
+        report alone.
+        """
+        tasks: List[Dict] = []
+        for domain in sorted(settled):
+            pools = settled[domain]
+            if len(pools) < 2:
+                continue
+            texts = labels.get(domain) or {}
+            choices = id_maps.get(domain) or {}
+            name_of_fid = {fid: c["facet_name"] for fid, c in choices.items()}
+            drain_fid = next(
+                (fid for fid, c in choices.items() if c["is_drain"]), None)
+
+            counts: Counter = Counter()
+            contents: Dict[str, List[str]] = {}
+            n_drain = 0
+            for idea_id, fid in facet_assignments.items():
+                if idea_id not in texts:
+                    continue
+                if fid == drain_fid:
+                    n_drain += 1
+                    continue
+                name = name_of_fid.get(fid)
+                if name is None:
+                    continue
+                counts[name] += 1
+                seen = contents.setdefault(name, [])
+                text = texts[idea_id]
+                if text and text not in seen:
+                    seen.append(text)
+            total = sum(counts.values()) + n_drain
+
+            tasks.append({
+                "domain_label": domain,
+                "pools": pools,
+                "id_map": {f"F{i}": {"facet_name": p.facet_name}
+                          for i, p in enumerate(pools, 1)},
+                "attribute_ids": {
+                    f"A{i}": a for i, a in enumerate(
+                        (a for p in pools for a in p.attributes), start=1)},
+                "counts": dict(counts),
+                "shares": {name: (n / total if total else 0.0)
+                          for name, n in counts.items()},
+                "contents": contents,
+                "drain_count": n_drain,
+                "domain_total": total,
+            })
+        return tasks
+
+    def _facet_settle_prepare_fn(self, ctx: PromptContext):
+        def prepare_fn(task: Dict) -> Dict:
+            domain = ctx.domain(task["domain_label"])
+            # `build_facet_settle_block` looks an attribute's id up by name to
+            # render it next to the name; the task's own map goes the other
+            # way (id -> object), because applying a move needs the object,
+            # not the label.
+            id_by_name = {a.attribute_name: aid
+                         for aid, a in task["attribute_ids"].items()}
+            facets = [{
+                "facet_name": p.facet_name,
+                "facet_definition": p.facet_definition,
+                "facet_question": p.facet_question,
+                "attributes": [{"attribute_name": a.attribute_name}
+                              for a in p.attributes],
+            } for p in task["pools"]]
+            prompt = build_facet_settle_prompt(
+                language=ctx.language,
+                survey_question=ctx.survey_question,
+                **ctx.specifiers(),
+                dimension=ctx.dimension,
+                dimension_name=ctx.dimension_name,
+                dimension_description=ctx.dimension_description,
+                domain_label=domain["label"],
+                domain_definition=domain["definition"],
+                settle_block=build_facet_settle_block(
+                    facets, task["counts"], task["shares"], task["contents"],
+                    id_by_name, self._contents_top_n),
+            )
+            self._capture(
+                f"facet_settle_{task['domain_label']}", prompt, "facet_settle",
+                {"model": self._model["facet_settle"],
+                 "temperature": 0.0,
+                 "max_tokens": self._max_tokens_consolidation,
+                 "language": ctx.language,
+                 "domain": task["domain_label"],
+                 "n_facets": len(task["id_map"]),
+                 "dimension_name": ctx.dimension_name})
+            return {
+                "prompt": prompt,
+                "response_model": build_facet_settle_model(
+                    list(task["id_map"]), list(task["attribute_ids"])),
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens_consolidation,
+                "max_retries": 3,
+                "extra_kwargs": get_reasoning_params(
+                    self._model["facet_settle"], phase="classifier_facet_settle"),
+            }
+        return prepare_fn
+
+    @staticmethod
+    def _facet_settle_parse_fn():
+        """Same gate as facet consolidation, on this call's own facets.
+
+        The index is the pools this call was handed, keyed by the ids the
+        block rendered them under — the id space this call itself made, not
+        the one facet assignment used to place ideas.
+        """
+        def parse_fn(task: Dict, response):
+            if not response:
+                return None
+            index = dict(zip(task["id_map"], task["pools"]))
+            _guard_collapse(
+                "facet", task["domain_label"], index,
+                {s.strip() for facet in response.facets
+                 for s in (facet.source_facet_ids or [])},
+                {_norm(facet.facet_name) for facet in response.facets},
+                lambda candidate: _norm(candidate.facet_name))
+            return response
+        return parse_fn
+
+    @staticmethod
+    def _facet_settle_fallback_fn():
+        """On failure the domain keeps exactly what consolidation settled."""
+        def fallback_fn(task: Dict, reason: str) -> None:
+            return None
+        return fallback_fn
+
+    def _apply_facet_settle(
+        self, *, tasks: List[Dict], results: List,
+        settled: Dict[str, List[FacetPool]],
+    ) -> Dict[str, List[FacetPool]]:
+        """Rebuild each domain's facets from what this call folded, then move
+        the attributes the model relocated — in that order, never the reverse.
+
+        A move names its destination by a SOURCE facet's id (`to_facet_id`
+        lives in the same id space as `source_facet_ids`), so it can only be
+        resolved once the fold that id belongs to has already happened.
+        Applying moves first would resolve every destination against the
+        pre-merge cards and could aim a move at a facet that same call folded
+        away — the exact ambiguity `move_target_gone` exists to report
+        honestly instead of losing silently. That is the misfit exit's lesson,
+        enforced here rather than hoped for.
+        """
+        # Domains without a task — too few facets to compare — travel through
+        # unchanged. Copy first, overwrite per task.
+        out: Dict[str, List[FacetPool]] = {
+            d: list(pools) for d, pools in settled.items()}
+
+        for task, result in zip(tasks, results):
+            domain = task["domain_label"]
+            cards = {fid: task["pools"][i]
+                     for i, fid in enumerate(task["id_map"])}
+            if result is None or not result.facets:
+                self._action_log.append({
+                    "action": "facet_settle_failed", "domain": domain,
+                    "note": "no result — domain left as consolidation settled it"})
+                continue
+
+            # --- facets ---------------------------------------------------
+            claimed: Set[str] = set()
+            rebuilt: List[FacetPool] = []
+            provenance: List[Dict[str, Any]] = []
+            for item in result.facets:
+                sources = [fid for fid in item.source_facet_ids if fid in cards]
+                unknown = [fid for fid in item.source_facet_ids if fid not in cards]
+                if unknown:
+                    self._action_log.append({
+                        "action": "unknown_source_id", "domain": domain,
+                        "phase": "facet_settle", "sources": unknown,
+                        "note": "cited as a source but never handed out"})
+                # A source already claimed by an earlier survivor does not hand
+                # its attributes over again — that would let one attribute
+                # survive under two facets.
+                fresh = [fid for fid in sources if fid not in claimed]
+                if len(fresh) < len(sources):
+                    self._action_log.append({
+                        "action": "divided_source_facet_in_settle", "domain": domain,
+                        "facet": item.facet_name,
+                        "sources": [f for f in sources if f in claimed],
+                        "note": "already claimed; attributes stayed with the first"})
+                claimed.update(fresh)
+                rebuilt.append(FacetPool(
+                    facet_name=item.facet_name,
+                    facet_definition=item.facet_definition,
+                    facet_question=item.facet_question,
+                    attributes=[a for fid in fresh for a in cards[fid].attributes]))
+                provenance.append({"facet": item.facet_name,
+                                   "source_facet_ids": fresh,
+                                   "facet_question": item.facet_question})
+
+            # What nobody claimed stays standing: unclaimed and folded-away
+            # look identical in the answer, so `source_facet_ids` is the only
+            # thing that tells them apart.
+            for fid, card in cards.items():
+                if fid in claimed:
+                    continue
+                rebuilt.append(card)
+                self._action_log.append({
+                    "action": "facet_kept_unclaimed_in_settle", "domain": domain,
+                    "facet": card.facet_name})
+
+            # --- moves, against the rebuilt pools --------------------------
+            # `to_facet_id` names a SOURCE facet, so the destination is the
+            # survivor that claimed it. Not found means the merge of this same
+            # call removed it.
+            home_of = {fid: pool for pool, item in zip(rebuilt, result.facets)
+                       for fid in item.source_facet_ids if fid in cards}
+            for move in (result.attribute_moves or []):
+                attribute = task["attribute_ids"].get(move.attribute_id)
+                target = home_of.get(move.to_facet_id)
+                holder = next((p for p in rebuilt if attribute in p.attributes), None)
+                if attribute is None or target is None or holder is target:
+                    self._action_log.append({
+                        "action": "move_target_gone", "domain": domain,
+                        "attribute_id": move.attribute_id,
+                        "to_facet_id": move.to_facet_id,
+                        "note": "target gone after the merge, or already there — "
+                                "attribute left where it was"})
+                    continue
+                holder.attributes.remove(attribute)
+                target.attributes.append(attribute)
+                self._action_log.append({
+                    "action": "attribute_moved_between_facets", "domain": domain,
+                    "attribute": attribute.attribute_name,
+                    "from": holder.facet_name, "to": target.facet_name})
+
+            accounted = _accounted_for(
+                cards, claimed, {_norm(item.facet_name) for item in result.facets},
+                lambda candidate: _norm(candidate.facet_name))
+            self._action_log.append({
+                "action": "facet_settle", "domain": domain,
+                "facets_before": len(cards), "facets_after": len(rebuilt),
+                "accounted_for": len(accounted), "candidates": len(cards)})
+            self._action_log.append({
+                "action": "facet_settle_provenance", "domain": domain,
+                "facets": provenance})
+
+            out[domain] = rebuilt
+
+        return out
+
+    async def _run_facet_settle(
+        self,
+        ctx: PromptContext,
+        settled: Dict[str, List[FacetPool]],
+        facet_assignments: Dict[str, str],
+        id_maps: Dict[str, Dict[str, Dict[str, Any]]],
+        labels: Dict[str, Dict[str, str]],
+        verbose: bool,
+    ) -> Dict[str, List[FacetPool]]:
+        """Re-judge every domain's facets against how the ideas actually placed.
+
+        Runs after facet assignment, not before: that is what makes a facet's
+        size a real count of responses instead of how many independent chunks
+        happened to propose its name — see prompts_facet_settle.py for why
+        that first signal points the wrong way.
+        """
+        if verbose:
+            print("\n  Facet settle")
+        started = time.time()
+
+        tasks = self._build_facet_settle_tasks(
+            ctx, settled, facet_assignments, id_maps, labels)
+        results = await self._dispatch(
+            "facet_settle", tasks,
+            self._facet_settle_prepare_fn(ctx),
+            self._facet_settle_parse_fn(),
+            self._facet_settle_fallback_fn(),
+            verbose,
+        )
+        out = self._apply_facet_settle(tasks=tasks, results=results, settled=settled)
+
+        for task in tasks:
+            total = task["domain_total"]
+            self._action_log.append({
+                "action": "facet_settle_drain_share", "domain": task["domain_label"],
+                "n_drain": task["drain_count"], "n_ideas": total,
+                "share": (task["drain_count"] / total) if total else 0.0})
+
+        if verbose:
+            n_before = sum(len(settled[t["domain_label"]]) for t in tasks)
+            n_after = sum(len(out[t["domain_label"]]) for t in tasks)
+            print(f"    {len(tasks)} domains, {time.time() - started:.1f}s → "
+                  f"{n_before} facets in, {n_after} out"
+                  f"{self._rejected_note('facet_settle')}")
+        return out
 
     # =========================================================================
     # PHASE — ATTRIBUTE CONSOLIDATION (per settled facet, one call each)
