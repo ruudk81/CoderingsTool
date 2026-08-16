@@ -173,11 +173,4 @@ Record the evaluative direction of this response relative to the attribute you c
 Valence is not emotional sentiment. It is direction relative to the attribute, and it is
 recorded here precisely so the taxonomy itself never has to encode it.
 
-# Output
-
-Return a JSON object with:
-- `assigned_attribute_id`: the id from the [A#] prefix, and nothing else
-- `confidence`: how certain you are, from 0.0 to 1.0
-- `valence`: "+", "-" or "0"
-
 {INSTRUCTOR_HINT}"""

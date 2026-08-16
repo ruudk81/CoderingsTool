@@ -333,20 +333,6 @@ Keep only what passed every check. Use the fewest facets that cover the observat
 
 Before finalizing, perform a last parent–child, whole–part, generic–specific, and orientation–implementation overlap check. Do not return the taxonomy if any such relationship remains between sibling attributes or between facets.
 
-# Output
-
-Return a JSON object with these fields:
-- `scratchpad`: your reasoning for steps 1-7
-- `facets`: an array, one entry per facet, each with:
-  - `facet_name`: a short descriptive name in {language} (at most 5 words)
-  - `facet_definition`: what the facet captures, in {language} (1-2 sentences)
-  - `attributes`: an array, one entry per attribute inside that facet, each with:
-    - `attribute_name`: a short descriptive name in {language} (at most 5 words)
-    - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
-    - `example_observations`: 1-3 observations this attribute actually holds, each copied
-      exactly as its line reads but WITHOUT the leading number. An attribute resting on one
-      observation gives one; never pad the list, and never borrow from another attribute
-
 All names, definitions and examples must be written in {language}.
 
 {INSTRUCTOR_HINT}"""

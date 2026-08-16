@@ -23,6 +23,9 @@ from pipeline.step_4_classifier.prompts_consolidation import (
     build_facet_candidate_index,
     build_facet_consolidation_prompt,
 )
+from pipeline.step_4_classifier.test_prompts_shared import (
+    assert_every_field_is_described, assert_prompt_does_not_restate_the_schema,
+)
 from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
 
 DIM = get_dimensions_in_decision_order()[0]
@@ -124,19 +127,19 @@ def test_a_consolidated_facet_states_its_question_and_its_sources():
     assert "source_facet_ids" in SettledFacet.model_fields
 
 
-def test_the_facet_prompt_names_every_field_of_its_model():
-    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
-    for field in ("decision_summary", "facet_name",
-                  "facet_definition", "facet_question", "source_facet_ids"):
-        assert field in prompt
-    # The bare word sits in the opening prose too, so it would pass whatever the
-    # output section said. The backticked form is the field.
-    assert "`facets`:" in prompt
+def test_the_facet_model_describes_every_field_it_has():
+    assert_every_field_is_described(FacetConsolidationResult)
 
 
-def test_the_facet_prompt_asks_for_no_attribute_field():
-    prompt = build_facet_consolidation_prompt(**_facet_kwargs())
-    assert "source_attribute_ids" not in prompt
+def test_the_facet_prompt_does_not_restate_the_schema():
+    assert_prompt_does_not_restate_the_schema(
+        build_facet_consolidation_prompt(**_facet_kwargs()))
+
+
+def test_the_facet_model_carries_no_attribute_field():
+    """This call settles the inventory and hands the pools on untouched. An
+    attribute field would let it settle both levels again."""
+    assert "source_attribute_ids" not in SettledFacet.model_fields
 
 
 def test_the_facet_prompt_carries_the_merge_test():
@@ -208,9 +211,14 @@ def test_the_facet_precedence_covers_every_rule_and_ends_on_the_count():
 
 def test_the_facet_question_must_be_written_down():
     """Rule 1 asks whether two candidates answer the same question. Unless the
-    question is stated, that test is a matter of feel and not checkable."""
+    question is stated, that test is a matter of feel and not checkable — and
+    two survivors stating the same one is the visible violation the classifier
+    logs as `duplicate_facet_question`. The rule travelled inside the removed
+    `# Output` block; it lives on the field it constrains."""
+    assert ("No two surviving facets may state the same one"
+            in SettledFacet.model_fields["facet_question"].description)
     prompt = build_facet_consolidation_prompt(**_facet_kwargs())
-    assert "No two surviving facets may state the same one." in prompt
+    assert "`facet_question`" in prompt
 
 
 def test_the_facet_question_is_tested_against_being_a_subject():
@@ -454,12 +462,13 @@ def test_the_attribute_prompt_omits_the_question_when_the_facet_has_none():
     assert "Facet: Snelheid — Wat Snelheid vastlegt.\n</taxonomy_facet>" in prompt
 
 
-def test_the_attribute_prompt_names_every_field_of_its_model():
-    prompt = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    for field in ("decision_summary", "attributes", "attribute_name",
-                  "attribute_definition", "example_observations",
-                  "source_attribute_ids"):
-        assert field in prompt
+def test_the_attribute_model_describes_every_field_it_has():
+    assert_every_field_is_described(AttributeConsolidationResult)
+
+
+def test_the_attribute_prompt_does_not_restate_the_schema():
+    assert_prompt_does_not_restate_the_schema(
+        build_attribute_consolidation_prompt(**_attribute_kwargs()))
 
 
 def test_the_attribute_prompt_forbids_dropping():
@@ -503,11 +512,12 @@ def test_the_attribute_prompt_asks_coverage_on_ids():
 def test_examples_are_one_to_three_and_never_a_reason_to_merge():
     """Every candidate attribute usually carries a single example. Demanding
     two or three left merging semantically distinct attributes as the cheapest
-    way to comply."""
-    prompt = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    assert "1-3 observations carried over" in prompt
-    assert "NEVER merge attributes that mean" in prompt
-    assert "2-3 observations" not in prompt
+    way to comply. The field is overridden here rather than inherited from
+    discovery: this is the phase that may merge at all."""
+    described = SettledAttribute.model_fields["example_observations"].description
+    assert "1-3 observations carried over" in described
+    assert "NEVER merge attributes that mean" in described
+    assert "2-3 observations" not in described
 
 
 def test_the_attribute_prompt_ends_on_the_universal_rules_and_the_hint():

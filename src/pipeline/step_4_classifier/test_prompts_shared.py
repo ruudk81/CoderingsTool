@@ -85,3 +85,49 @@ def test_the_ban_does_not_clash_with_the_residual_for_bare_judgments():
     assert "residual overall-judgment item" in tekst
     assert "Overall judgment" in tekst
     assert "not a ban on abstraction" in tekst.lower()
+
+
+# =============================================================================
+# HET UITVOERCONTRACT — één plek, en dat is het responsemodel
+# =============================================================================
+#
+# Elke prompt beschreef zijn JSON-vorm ook zelf, in een `# Output`-blok. Dat is
+# dezelfde instructie op twee plekken: instructor rendert het schema mét zijn
+# descriptions al in de call. Twee plekken lopen uit elkaar — en dat gebeurde:
+# het kandidatenblok toonde één voorbeeld terwijl de outputspec er 2-3 eiste.
+#
+# De blokken zijn weg. Wat een veld betekent staat in zijn `Field(description=)`
+# en nergens anders. Regels die naar een veld verwijzen blijven wel in de prompt
+# staan — "elk id moet in `source_facet_ids` van minstens één survivor staan" is
+# een regel, geen vormvoorschrift.
+
+def describable_fields(model, _seen=None):
+    """Elk veld van een responsemodel, ook die van geneste modellen."""
+    _seen = set() if _seen is None else _seen
+    if model in _seen:
+        return
+    _seen.add(model)
+    for name, field in model.model_fields.items():
+        yield f"{model.__name__}.{name}", field
+        for nested in _nested_models(field.annotation):
+            yield from describable_fields(nested, _seen)
+
+
+def _nested_models(annotation):
+    import typing
+    import pydantic
+    if isinstance(annotation, type) and issubclass(annotation, pydantic.BaseModel):
+        yield annotation
+        return
+    for arg in typing.get_args(annotation):
+        yield from _nested_models(arg)
+
+
+def assert_every_field_is_described(model):
+    for where, field in describable_fields(model):
+        assert field.description, where
+
+
+def assert_prompt_does_not_restate_the_schema(prompt):
+    assert "# Output" not in prompt
+    assert "Return a JSON object" not in prompt

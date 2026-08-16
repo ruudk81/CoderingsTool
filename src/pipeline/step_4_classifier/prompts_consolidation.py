@@ -58,7 +58,8 @@ class SettledFacet(BaseModel):
     facet_question: str = Field(
         ..., description=(
             "The one question this facet answers about the responses, phrased "
-            "as a question, in the survey language"))
+            "as a question, in the survey language. No two surviving facets "
+            "may state the same one"))
     source_facet_ids: List[str] = Field(
         ..., description=(
             "The bracketed ids of every candidate facet that folded into this "
@@ -294,23 +295,6 @@ A candidate you deliberately dropped is not exempt — fold it into whichever su
 its meaning. Merging and forgetting look identical in the output unless you list what went
 where.
 
-# Output
-
-Return a JSON object with these fields:
-- `decision_summary`: one short line per decision that took judgement, in {language} —
-  what you did and why. Not a reasoning trace, and not a line per candidate: only the
-  calls a reader would want to check.
-- `facets`: an array, one entry per surviving facet, each with:
-  - `facet_name`: a short descriptive name in {language} (at most 5 words)
-  - `facet_definition`: what the facet captures, in {language} (1-2 sentences)
-  - `facet_question`: the one question this facet answers about the responses, in
-    {language}, phrased as a question. No two surviving facets may state the same one.
-  - `source_facet_ids`: the bracketed ids of every candidate facet that folded into this
-    one, e.g. ["F1", "F7"]. One that survived unchanged lists just its own id.
-
-Names, definitions, questions and the decision summary are written in {language}. The
-`source_facet_ids` field carries ids, not names, and is copied exactly as bracketed above.
-
 {UNIVERSAL_RULES}
 
 {INSTRUCTOR_HINT}"""
@@ -323,6 +307,17 @@ Names, definitions, questions and the decision summary are written in {language}
 
 class SettledAttribute(DiscoveredAttribute):
     """An attribute after consolidation, stating what folded into it."""
+    # Overridden rather than inherited: this phase has no observations in view,
+    # only what the candidates brought, so its examples are carried over and
+    # never chosen. The clause against merging to reach a count belongs here and
+    # not in discovery, because this is the phase that may merge at all.
+    example_observations: List[str] = Field(
+        ..., description=(
+            "1-3 observations carried over from the candidates that folded "
+            "into this attribute, copied exactly as shown. Give what is there: "
+            "an attribute that carries one example gives one. NEVER merge "
+            "attributes that mean different things in order to reach a higher "
+            "count — the count follows the taxonomy, never the other way round"))
     source_attribute_ids: List[str] = Field(
         ..., description=(
             "The bracketed ids of every candidate attribute that folded into "
@@ -533,25 +528,6 @@ appear in the `source_attribute_ids` of at least one surviving attribute. Two ca
 carry the same name, so a name says nothing about which one you meant. A candidate you
 folded away is not exempt — list it under whichever survivor absorbs its meaning. Merging and
 forgetting look identical in the output unless you list what went where.
-
-# Output
-
-Return a JSON object with these fields:
-- `decision_summary`: one short line per decision that took judgement, in {language} —
-  what you did and why. Not a reasoning trace, and not a line per candidate: only the
-  calls a reader would want to check.
-- `attributes`: an array, one entry per surviving attribute, each with:
-  - `attribute_name`: a short descriptive name in {language} (at most 5 words)
-  - `attribute_definition`: the observable property it captures, in {language} (1-2 sentences)
-  - `example_observations`: 1-3 observations carried over from the candidates that folded
-    into this attribute, copied exactly as shown. Give what is there: an attribute that
-    carries one example gives one. NEVER merge attributes that mean different things in
-    order to reach a higher count — the count follows the taxonomy, never the other way round
-  - `source_attribute_ids`: the bracketed ids of every candidate attribute that folded into
-    this one, e.g. ["A2", "A7"]. One that survived unchanged lists just its own id.
-
-Names, definitions and the decision summary are written in {language}. The
-`source_attribute_ids` field carries ids, not names, and is copied exactly as bracketed above.
 
 {UNIVERSAL_RULES}
 

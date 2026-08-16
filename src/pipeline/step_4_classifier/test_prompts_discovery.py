@@ -9,6 +9,9 @@ from pipeline.step_4_classifier.prompts_discovery import (
     build_discovery_prompt,
 )
 from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
+from pipeline.step_4_classifier.test_prompts_shared import (
+    assert_every_field_is_described, assert_prompt_does_not_restate_the_schema,
+)
 
 DIM = get_dimensions_in_decision_order()[0]
 
@@ -72,12 +75,12 @@ def test_geneste_structuur_valideert():
 # PROMPT ↔ MODEL SLUITEN AAN
 # =============================================================================
 
-def test_prompt_names_every_field_the_model_knows():
-    prompt = build_discovery_prompt(**_kwargs())
-    for veld in ("scratchpad", "facets", "facet_name", "facet_definition",
-                 "attributes", "attribute_name", "attribute_definition",
-                 "example_observations"):
-        assert veld in prompt, veld
+def test_the_model_describes_every_field_it_has():
+    assert_every_field_is_described(DiscoveryResult)
+
+
+def test_the_prompt_does_not_restate_the_schema():
+    assert_prompt_does_not_restate_the_schema(build_discovery_prompt(**_kwargs()))
 
 
 def test_prompt_asks_for_no_field_the_model_lacks():

@@ -6,6 +6,9 @@ from pipeline.step_4_classifier.prompts_assignment import (
     build_assignment_prompt,
 )
 from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
+from pipeline.step_4_classifier.test_prompts_shared import (
+    assert_every_field_is_described, assert_prompt_does_not_restate_the_schema,
+)
 
 
 def _attr(name, definition, example=None):
@@ -118,10 +121,12 @@ def test_model_weigert_een_verzonnen_id():
 # PROMPT ↔ MODEL SLUITEN AAN
 # =============================================================================
 
-def test_prompt_names_every_field_the_model_knows():
-    prompt = build_assignment_prompt(**_kwargs())
-    for veld in ("assigned_attribute_id", "confidence", "valence"):
-        assert veld in prompt, veld
+def test_the_model_describes_every_field_it_has():
+    assert_every_field_is_described(build_assignment_model(["A1", "A2"]))
+
+
+def test_the_prompt_does_not_restate_the_schema():
+    assert_prompt_does_not_restate_the_schema(build_assignment_prompt(**_kwargs()))
 
 
 def test_prompt_eindigt_op_de_instructor_zin():

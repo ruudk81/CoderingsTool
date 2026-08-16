@@ -329,19 +329,6 @@ For each group from Step 1, pick one of the five exits in rule 6.
 Every attribute shown above appears in the `source_attributes` of exactly one returned
 attribute. Merging and forgetting look identical unless you list what went where.
 
-# Output
-
-Return a JSON object with:
-- `scratchpad`: your reasoning for steps 1-6
-- `attributes`: every attribute that survives, each with `action`, `facet_name`,
-  `attribute_name`, `attribute_definition`, `example_observations`, `source_attributes`,
-  and `instance_texts` (for "split" only)
-- `misfits`: every group of responses that belongs elsewhere, each with `verdict`,
-  `target_attribute` (for "move" only) and `instance_texts`
-
-Names and definitions must be written in {language}. Response texts are copied exactly as
-they appear above.
-
 {UNIVERSAL_RULES}
 
 {INSTRUCTOR_HINT}"""
@@ -411,17 +398,6 @@ each such group into one.
 Leave the catch-all attributes alone. They are per-domain offers, not concepts, and folding
 two of them together would merge two different domains' residuals into one meaningless bucket.
 Return each of them as a group of one.
-
-# Output
-
-Return a JSON object with:
-- `scratchpad`: your reasoning — (1) which attributes across scopes mean the same thing,
-  (2) for each group, which scope holds most of its responses, (3) a check that every id
-  appears exactly once
-- `items`: the merged inventory. Each entry has `name`, `definition`, `source_ids` and
-  `home_id`. Every input id must appear in exactly one entry's `source_ids`.
-
-Names and definitions must be written in {language}.
 
 {UNIVERSAL_RULES}
 

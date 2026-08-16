@@ -9,7 +9,12 @@ from pipeline.step_4_classifier.prompts_refinement import (
     build_cross_domain_prompt,
     build_refinement_prompt,
 )
-from pipeline.step_4_classifier.prompts_shared import INSTRUCTOR_HINT
+from pipeline.step_4_classifier.prompts_shared import (
+    INSTRUCTOR_HINT, build_cross_scope_model,
+)
+from pipeline.step_4_classifier.test_prompts_shared import (
+    assert_every_field_is_described, assert_prompt_does_not_restate_the_schema,
+)
 
 DIM = get_dimensions_in_decision_order()[0]
 
@@ -157,13 +162,12 @@ def test_the_placement_check_lives_in_the_facet_rule():
     assert "saw one facet at a time" in rule_five
 
 
-def test_prompt_names_every_field_the_models_know():
-    prompt = build_refinement_prompt(**_kwargs())
-    for veld in ("scratchpad", "attributes", "misfits", "action", "facet_name",
-                 "attribute_name", "attribute_definition", "example_observations",
-                 "source_attributes", "instance_texts", "verdict",
-                 "target_attribute"):
-        assert veld in prompt, veld
+def test_the_model_describes_every_field_it_has():
+    assert_every_field_is_described(RefinementResult)
+
+
+def test_the_prompt_does_not_restate_the_schema():
+    assert_prompt_does_not_restate_the_schema(build_refinement_prompt(**_kwargs()))
 
 
 # =============================================================================
@@ -185,8 +189,12 @@ def test_cross_domain_leaves_the_catch_alls_alone():
 # =============================================================================
 
 def test_cross_domein_werkt_op_ids():
-    prompt = build_cross_domain_prompt(**_xkwargs())
-    assert "source_ids" in prompt and "home_id" in prompt
+    """Groups come back as ids plus a home, never as free text that has to be
+    matched back. That is a property of the model, and since the schema is the
+    only place the output shape is stated, this is where it is checked."""
+    item = build_cross_scope_model(["A1", "A2"], "attribute").model_fields[
+        "items"].annotation.__args__[0]
+    assert {"source_ids", "home_id"} <= set(item.model_fields)
 
 
 def test_cross_domain_says_a_soloist_is_a_group_of_one():
@@ -195,8 +203,14 @@ def test_cross_domain_says_a_soloist_is_a_group_of_one():
 
 
 def test_cross_domain_requires_every_id_exactly_once():
-    prompt = build_cross_domain_prompt(**_xkwargs())
-    assert "exactly one" in prompt
+    """A forgotten id is what makes this round lose an attribute silently, so
+    the demand is stated twice in the schema: once as the reasoning step that
+    checks it, once on the field that has to satisfy it."""
+    model = build_cross_scope_model(["A1", "A2"], "attribute")
+    assert "every id appears exactly once" in model.model_fields[
+        "scratchpad"].description
+    assert "Every input id appears exactly once" in model.model_fields[
+        "items"].description
 
 
 # =============================================================================
