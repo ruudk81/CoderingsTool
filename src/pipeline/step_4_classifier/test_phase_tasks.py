@@ -692,16 +692,23 @@ def test_a_failed_call_leaves_the_facet_pool_whole_in_the_structure():
     assert _actions(clf, "attribute_consolidation_failed")[0]["facet"] == "A"
 
 
-def test_a_pool_wider_than_the_cap_takes_another_round():
+def test_a_pool_wider_than_the_cap_rounds_until_one_call_saw_everything():
     """Groups never see each other, so a facet split over several is not settled
-    until its survivors have been put back together in one call."""
+    until its survivors have been put back together in ONE call.
+
+    Ending on "the survivors would now fit in one group" is a round too early:
+    the second round here leaves v and z, which fit the cap but were judged in
+    separate calls and never compared. The last round must be a single task —
+    that is the invariant, and the round counts alone do not show it.
+    """
     clf = _clf(attribute_consolidation_max_attributes_per_call=2)
     rounds = _stub_dispatch(clf, _fold_into_first)
     structure = asyncio.run(clf._run_attribute_consolidation(
         _ctx({"d": []}), {"d": [_pool("A", "v", "w", "x", "y", "z")]},
         verbose=False))
-    assert [len(r) for r in rounds] == [3, 2]
-    assert _attribute_names(structure) == ["v", "z"]
+    assert [len(r) for r in rounds] == [3, 2, 1]
+    assert len(rounds[-1]) == 1
+    assert _attribute_names(structure) == ["v"]
 
 
 def test_an_exhausted_round_budget_carries_every_attribute():
@@ -769,9 +776,9 @@ def test_a_partial_requeue_still_writes_back_to_the_right_facet():
         {"d": [_pool("A", "p", "q"),
                _pool("B", "v", "w", "x", "y", "z")]},
         verbose=False))
-    assert [len(r) for r in rounds] == [4, 2]
+    assert [len(r) for r in rounds] == [4, 2, 1]
     assert [_attribute_names(structure, index=i) for i in (0, 1)] == [
-        ["p"], ["v", "z"]]
+        ["p"], ["v"]]
 
 
 def test_a_second_round_writes_back_to_the_right_facet():
@@ -784,9 +791,9 @@ def test_a_second_round_writes_back_to_the_right_facet():
         {"d": [_pool("Snelheid", "a", "b", "c", "d", "e"),
                _pool("Snelheid", "v", "w", "x", "y", "z")]},
         verbose=False))
-    assert [len(r) for r in rounds] == [6, 4]
+    assert [len(r) for r in rounds] == [6, 4, 2]
     assert [_attribute_names(structure, index=i) for i in (0, 1)] == [
-        ["a", "e"], ["v", "z"]]
+        ["a"], ["v"]]
 
 
 # =============================================================================

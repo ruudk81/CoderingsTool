@@ -1536,14 +1536,17 @@ class TaxonomyClassifier:
             # A facet split over several groups is not settled yet: its groups
             # never saw each other. Put the survivors back in as one pool, and
             # carry its position along so the next round writes the same key.
-            cap = self._attribute_consolidation_max_attributes_per_call
+            # The test is how many groups this facet was just split into, not
+            # whether its survivors would now fit in one: "would fit" ends a
+            # round early, leaving survivors that were never compared. The facet
+            # phase settles a domain on the same test, one level up.
             again: Dict[str, List[FacetPool]] = {}
             again_origin: Dict[str, List[Tuple[str, int]]] = {}
             for label, pools in pending.items():
                 for index, pool in enumerate(pools):
                     key = origin[label][index]
                     kept = merged.get(key)
-                    if kept is None or len(kept) <= cap:
+                    if kept is None or groups_per_facet[key] == 1:
                         continue
                     again.setdefault(label, []).append(FacetPool(
                         facet_name=pool.facet_name,
