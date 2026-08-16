@@ -6,7 +6,7 @@ that is this module's job, and it takes two calls with different scopes — see
 dev/ARCHITECTURE.md.
 """
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,6 +14,9 @@ from pipeline.step_4_classifier.prompts_discovery import DiscoveredAttribute
 from pipeline.step_4_classifier.prompts_shared import (
     INSTRUCTOR_HINT, UNIVERSAL_RULES, build_context_block, build_taxonomy_block,
 )
+
+if TYPE_CHECKING:
+    from pipeline.step_3_ideaExtractor.dimension_data import DimensionDefinition
 
 
 #: Examples shown per candidate attribute, in the attribute call — the facet
