@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 
 from pipeline.step_4_classifier.prompts_discovery import DiscoveredAttribute
 from pipeline.step_4_classifier.prompts_shared import (
-    INSTRUCTOR_HINT, UNIVERSAL_RULES, build_context_block, build_taxonomy_block,
+    INSTRUCTOR_HINT, UNIVERSAL_RULES, build_context_block,
+    build_facets_attributes_block, build_taxonomy_block,
 )
 
 if TYPE_CHECKING:
@@ -167,13 +168,13 @@ contains; settling those is a separate step and not your job here.
 Each pass saw only part of the domain and proposed on its own, so the same concept comes
 back under different names. That is what you are resolving.
 
-{build_context_block(
-    language=language, survey_question=survey_question, sector=sector,
-    entity=entity, topic=topic, perspective=perspective, intent=intent)}
-
 {build_taxonomy_block(
     dimension=dimension, dimension_name=dimension_name,
     dimension_description=dimension_description)}
+
+{build_context_block(
+    language=language, survey_question=survey_question, sector=sector,
+    entity=entity, topic=topic, perspective=perspective, intent=intent)}
 
 You are working within this domain, and only within it:
 
@@ -392,10 +393,6 @@ def build_attribute_consolidation_prompt(
     perspective: str,
     intent: str,
     dimension: "DimensionDefinition",
-    dimension_name: str,
-    dimension_description: str,
-    domain_label: str,
-    domain_definition: str,
     facet_name: str,
     facet_definition: str,
     facet_question: str,
@@ -418,23 +415,15 @@ def build_attribute_consolidation_prompt(
     return f"""You are a taxonomy consolidation specialist for surveys.
 Your task is to fold the attributes proposed for ONE facet into a single minimal set.
 
-Several independent passes over this domain proposed these attributes, and the facets they
-sat under have since been consolidated into the one below. The pool therefore holds
-duplicates and near-duplicates of the same concept under different names. That is what you
-are resolving.
+{build_facets_attributes_block(dimension=dimension)}
 
 {build_context_block(
     language=language, survey_question=survey_question, sector=sector,
     entity=entity, topic=topic, perspective=perspective, intent=intent)}
 
-{build_taxonomy_block(
-    dimension=dimension, dimension_name=dimension_name,
-    dimension_description=dimension_description)}
-
 You are working inside this facet, and only inside it:
 
 <taxonomy_facet>
-Domain: {domain_label} — {domain_definition}
 Facet: {facet_name} — {facet_definition}{question_line}
 </taxonomy_facet>
 
@@ -445,45 +434,24 @@ under that exact name:
 {candidate_block}
 </candidates>
 
-# Consolidation Rules
+# Task
 
-Consolidation is the goal: do NOT keep every concept separate — group. But govern grouping
-by these rules, in this order.
+Several independent passes over this domain proposed these attributes, and the facets they
+sat under have since been consolidated into the one above. The pool therefore holds
+duplicates and near-duplicates of the same concept under different names. That is what you
+are resolving.
 
-**1. DIFFERENT QUESTIONS STAY APART (the guardrail).**
-Every attribute here answers the facet's question in its own way. Two that answer DIFFERENT
-questions about the facet are orthogonal and never merge. Distinct ANSWERS to the same
-question stay apart when merging them would erase what tells them apart. Evaluative
-direction is not an answer — see the universal rules below.
+# Consolidation
 
-**2. PREVALENCE SETS GRANULARITY (within one question only).**
-Every candidate carries how many passes proposed it UNDER THAT EXACT NAME. Support for a
-concept is therefore the sum over the group you form, never the number on one candidate:
-several passes that each worded the same concept differently arrive as several candidates
-carrying one pass each. A well-supported group keeps its own attribute, unless it
-demonstrably draws the same distinction as another survivor. Thinly supported concepts that
-share a meaning are grouped under one plainly named attribute.
+Work through these steps before writing your final output. What you return is the decisions,
+not the working.
 
-**3. NO HIERARCHY UNDER ONE FACET.**
-No attribute may be a broader category, a subtype, a component or a concrete instance of
-another. A general item and a specific one that sits inside it are one level too many: keep
-the level a coder can apply and fold the other into it. Left standing, the same response can
-honestly be coded under both.
+**Step 1 — Scan the pool**
+Read every candidate. Note recurring concepts, near-duplicates, and obvious repeats under
+different names.
 
-**4. LIFT, DON'T FLATTEN.**
-When grouping is needed, raise the concepts to a shared label that still carries their
-meaning — not a label that merely names the question. Read the label alone: if it tells you
-only which question was asked, it is a container; if it tells you what the respondents
-expressed, it is an answer.
-
-**5. PLAIN, MEANINGFUL LABELS.**
-Name every surviving attribute in everyday language. Reading the label alone, and knowing
-the survey question, a layperson knows which distinction is meant.
-
-**When these conflict, decide in this order:** 1 (different questions) > 2 (prevalence) >
-3 (no hierarchy) > 4 (lifting) > 5 (label clarity) > fewest attributes. Never merge distinct
-concepts, and never introduce an umbrella, merely to bring the count down. A smaller
-inventory that has lost a distinction is not a better one.
+**Step 2 — Group what means the same**
+Group the candidates that restate each other in different words.
 
 MERGE TEST — run it on any two attributes before you fold them together:
 1. Would the same observation be coded under both? If not, they are not duplicates.
@@ -496,22 +464,6 @@ NEVER DROP. You see one facet, so you cannot judge where something would belong 
 An attribute that does not seem to fit this facet stays in your output as it is; say so in
 your decision summary and leave it. A later phase sees every facet of the domain at once and
 can move it.
-
-If this facet ends up holding a single attribute, that is a signal worth recording: usually
-the facet and the attribute are then the same concept stated twice. Note it in your decision
-summary. Do not act on it here — the facet is not yours to change.
-
-# Step-by-Step Analysis Process
-
-Work through these steps before writing your final output. What you return is the decisions,
-not the working.
-
-**Step 1 — Scan the pool**
-Read every candidate. Note recurring concepts, near-duplicates, and obvious repeats under
-different names.
-
-**Step 2 — Group what means the same**
-Group the candidates that restate each other in different words.
 
 **Step 3 — Apply the same-question test**
 For each group, work out which question about the facet it answers. Same question and same

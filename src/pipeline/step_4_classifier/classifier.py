@@ -1425,17 +1425,12 @@ class TaxonomyClassifier:
 
     def _attribute_consolidation_prepare_fn(self, ctx: PromptContext):
         def prepare_fn(task: Dict) -> Dict:
-            domain = ctx.domain(task["domain_label"])
             facet = task["facet"]
             prompt = build_attribute_consolidation_prompt(
                 language=ctx.language,
                 survey_question=ctx.survey_question,
                 **ctx.specifiers(),
                 dimension=ctx.dimension,
-                dimension_name=ctx.dimension_name,
-                dimension_description=ctx.dimension_description,
-                domain_label=domain["label"],
-                domain_definition=domain["definition"],
                 facet_name=facet.facet_name,
                 facet_definition=facet.facet_definition,
                 facet_question=facet.facet_question,

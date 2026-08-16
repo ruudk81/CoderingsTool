@@ -194,6 +194,24 @@ L4 — Attribute: {_extract_definition(rules.attribute_instruction)}
 </taxonomy_structure>"""
 
 
+def build_facets_attributes_block(*, dimension: "DimensionDefinition") -> str:
+    """The two levels a facet-scoped call works in, unnumbered.
+
+    No level numbers here: this call settles what sits under one facet and never
+    has to place anything relative to a level it cannot see.
+    """
+    rules = dimension.prompt_rules
+    return f"""<definitions>
+Facet:
+- {_extract_definition(rules.facet_instruction)}
+- Key idea: {_extract_key_idea(rules.facet_instruction)}
+
+Attribute:
+- {_extract_definition(rules.attribute_instruction)}
+- Key idea: {_extract_key_idea(rules.attribute_instruction)}
+</definitions>"""
+
+
 # =============================================================================
 # Cross-scope consolidation — the one phase that sees more than one scope
 # =============================================================================

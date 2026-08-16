@@ -373,10 +373,6 @@ def _attribute_kwargs(**overrides):
         sector="finance", entity="asn_bank", topic="brand_association",
         perspective="consumer", intent="associate",
         dimension=DIM,
-        dimension_name=DIM.key,
-        dimension_description=DIM.dimension_description,
-        domain_label="dienstverlening",
-        domain_definition="Alles wat de organisatie aanbiedt en levert.",
         facet_name="Snelheid",
         facet_definition="Wat Snelheid vastlegt.",
         facet_question="Hoe snel ging het?",
@@ -484,18 +480,24 @@ def test_the_attribute_prompt_carries_the_merge_test():
 
 
 def test_the_attribute_prompt_forbids_a_hierarchy_under_one_facet():
+    """Step 5 carries what used to be rule 3: a general item and a specific one
+    inside it are one level too many, and let the same response be coded twice."""
     prompt = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    assert "broader category" in prompt
+    assert "No survivor may sit inside another" in prompt
 
 
-def test_the_attribute_prompt_carries_its_five_grouping_rules():
+def test_the_attribute_prompt_carries_its_six_steps():
+    """The five numbered rules became a six-step process on 2026-08-16. Three of
+    them survive as steps 3, 4 and 5; the ranking, `lift don't flatten` and the
+    plain-label rule were dropped deliberately."""
     prompt = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    for rule in ("DIFFERENT QUESTIONS STAY APART",
-                 "PREVALENCE SETS GRANULARITY",
-                 "NO HIERARCHY UNDER ONE FACET",
-                 "LIFT, DON'T FLATTEN",
-                 "PLAIN, MEANINGFUL LABELS"):
-        assert rule in prompt, rule
+    for step in ("Step 1 — Scan the pool",
+                 "Step 2 — Group what means the same",
+                 "Step 3 — Apply the same-question test",
+                 "Step 4 — Let prevalence set the granularity",
+                 "Step 5 — Check for hierarchy",
+                 "Step 6 — Account for every candidate"):
+        assert step in prompt, step
 
 
 def test_the_attribute_prompt_carries_no_threshold_numbers():
@@ -574,27 +576,31 @@ def test_ruling_the_merge_test_closes_on_the_levels_this_call_has():
     assert "not of items, not of examples." not in attribute
 
 
-def test_ruling_the_precedence_minimises_attributes_not_items():
-    """Same vagueness, one screen above the merge test."""
+def test_ruling_this_call_counts_attributes_and_never_items():
+    """`Items` was the combined predecessor's word for two levels at once. This
+    call holds one, so anything it counts is an attribute. The explicit ranking
+    that used to carry the ruling is gone; the merge test still carries it."""
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    assert "fewest attributes" in attribute
+    assert "not of attributes, not of examples" in attribute
     assert "Fewest items" not in attribute
 
 
-def test_ruling_rule_five_asks_for_attribute_names_only():
-    """This call returns no facets, so naming them is output it cannot deliver
-    — the mirror image of the ruling on the facet prompt."""
+def test_ruling_the_prompt_never_asks_for_a_facet_name():
+    """This call returns no facets, so naming one is output it cannot deliver —
+    the mirror image of the ruling on the facet prompt."""
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    assert "Name every surviving attribute in everyday language" in attribute
-    assert "Name every surviving facet and attribute" not in attribute
+    assert "Name every surviving facet" not in attribute
 
 
-def test_ruling_the_lone_attribute_note_is_recorded_not_acted_on():
+def test_ruling_the_call_may_not_touch_its_facet():
     """The old wording let the call collapse a facet into its single attribute.
-    The facet is settled before this call and is not in its output model."""
+    The facet is settled before this call and is not in its output model. The
+    lone-attribute note was dropped on 2026-08-16; the ruling it enforced is a
+    negative and stands without it."""
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
-    assert "the facet is not yours to change" in attribute
     assert "Collapse it only when you can say plainly" not in attribute
+    assert "facet_name" not in AttributeConsolidationResult.model_fields
+    assert "facet_name" not in SettledAttribute.model_fields
 
 
 def test_ruling_the_attribute_prompt_may_speak_of_examples():
@@ -613,4 +619,4 @@ def test_ruling_the_attribute_prompt_points_at_no_step_of_another_prompt():
     Copied here it would name a step this prompt does not have."""
     attribute = build_attribute_consolidation_prompt(**_attribute_kwargs())
     assert "The same reasoning governs the attributes in step 6" not in attribute
-    assert "PREVALENCE SETS GRANULARITY" in attribute
+    assert "Step 4 — Let prevalence set the granularity" in attribute
