@@ -22,7 +22,11 @@ from pipeline.step_4_classifier.prompts_consolidation import (
     AttributeConsolidationResult, FacetConsolidationResult, FacetPool,
     SettledAttribute, SettledFacet, build_attribute_candidate_index,
 )
+from pipeline.step_4_classifier.drains import make_drain_attribute
 from pipeline.step_4_classifier.prompts_discovery import DiscoveredAttribute
+from pipeline.step_4_classifier.prompts_refinement import (
+    RefinedAttribute, RefinementResult,
+)
 
 
 def _clf():
@@ -174,6 +178,104 @@ def test_the_gate_and_the_net_agree_on_which_candidates_are_forgotten():
 
     assert accounted == set(index) - kept
     assert kept == {"A4"}
+
+
+# =============================================================================
+# The same gate on refinement — the other phase that folds
+# =============================================================================
+#
+# Refinement claims on NAME (`source_attributes`), not on id: it shows the model
+# names and never hands out ids. Coverage is therefore counted over the names of
+# the facet's own attributes. Catch-alls stay out of that count — rule 5 forbids
+# naming one as a source, so requiring the model to account for one would demand
+# exactly what the prompt prohibits.
+
+
+def _refinement_task(*names, with_drain=False):
+    attributes = [{"attribute_name": name,
+                   "attribute_definition": f"De eigenschap {name}."}
+                  for name in names]
+    if with_drain:
+        attributes.append(make_drain_attribute("Reclame", "nl-NL"))
+    return {
+        "domain_label": "merkidentiteit", "facet_index": 0,
+        "facet": {"facet_name": "Reclame", "facet_definition": "d",
+                  "facet_question": "Wat?", "attributes": attributes},
+        "counts": {}, "shares": {}, "facet_total": 0, "domain_total": 0,
+        "contents": {}}
+
+
+def _refined(name, *sources):
+    return RefinedAttribute(
+        attribute_name=name, attribute_definition="d",
+        example_observations=["e"], source_attributes=list(sources))
+
+
+def _refinement_answer(*attributes):
+    return RefinementResult(scratchpad="x", attributes=list(attributes))
+
+
+def test_a_refinement_answer_that_accounts_for_almost_nothing_is_rejected():
+    """Naslijpen had no gate at all: a call that named 2 of its 7 attributes
+    counted as a success, and the net then wrote the result instead of
+    repairing it."""
+    parse = TaxonomyClassifier._refinement_parse_fn()
+    task = _refinement_task(*[f"attribuut {i}" for i in range(1, 9)])
+    answer = _refinement_answer(_refined("Samengevoegd", "attribuut 1",
+                                         "attribuut 2"))
+    with pytest.raises(ConsolidationCollapse):
+        parse(task, answer)
+
+
+def test_a_refinement_merge_that_accounts_for_everything_passes():
+    """Eight into two is the phase doing its job. The gate measures coverage of
+    the input, never the size of the output."""
+    parse = TaxonomyClassifier._refinement_parse_fn()
+    names = [f"attribuut {i}" for i in range(1, 9)]
+    task = _refinement_task(*names)
+    answer = _refinement_answer(
+        _refined("Eerste", *names[:4]), _refined("Tweede", *names[4:]))
+    assert parse(task, answer) is answer
+
+
+def test_a_survivor_that_kept_a_name_accounts_for_it_without_citing_it():
+    """The second route the net accepts, here the only one that differs from a
+    citation: a survivor holding a candidate's name."""
+    parse = TaxonomyClassifier._refinement_parse_fn()
+    task = _refinement_task("alpha", "beta")
+    answer = _refinement_answer(_refined("alpha"), _refined("beta"))
+    assert parse(task, answer) is answer
+
+
+def test_a_catch_all_is_not_counted_against_a_refinement_answer():
+    """Four real attributes plus a catch-all, two accounted for. Counting the
+    catch-all would make that 2/5 and reject an answer that obeyed rule 5."""
+    parse = TaxonomyClassifier._refinement_parse_fn()
+    names = [f"attribuut {i}" for i in range(1, 5)]
+    task = _refinement_task(*names, with_drain=True)
+    answer = _refinement_answer(_refined("Samengevoegd", *names[:2]))
+    assert parse(task, answer) is answer
+
+
+def test_an_empty_refinement_answer_is_rejected():
+    parse = TaxonomyClassifier._refinement_parse_fn()
+    with pytest.raises(ConsolidationCollapse):
+        parse(_refinement_task("a", "b", "c", "d"), _refinement_answer())
+
+
+def test_the_refinement_log_carries_the_coverage_of_every_call():
+    """A gate that does not report itself only moves the problem. The pair also
+    shows the catch-all staying out of the denominator, where a pass/fail check
+    can only straddle the threshold to see it."""
+    clf = _clf()
+    names = [f"attribuut {i}" for i in range(1, 5)]
+    task = _refinement_task(*names, with_drain=True)
+    clf._apply_refinement(
+        tasks=[task], results=[_refinement_answer(_refined("Samen", *names[:2]))],
+        structure={"merkidentiteit": [task["facet"]]}, assignments={})
+    row = next(e for e in clf._action_log
+               if e["action"] == "refinement_provenance")
+    assert (row["accounted_for"], row["candidates"]) == (2, 4)
 
 
 def test_the_log_carries_the_coverage_of_every_call():

@@ -189,14 +189,14 @@ def _accounted_for(index: Dict[str, Any], claimed: Set[str],
             and name_of(candidate) in returned_names)}
 
 
-def _guard_collapse(level: str, where: str, index: Dict[str, Any],
+def _guard_collapse(phase: str, where: str, index: Dict[str, Any],
                     claimed: Set[str], returned_names: Set[str],
                     name_of) -> None:
     """Reject an answer that left most of its candidates unaccounted for."""
     accounted = _accounted_for(index, claimed, returned_names, name_of)
     if index and len(accounted) / len(index) < _MIN_CLAIM_COVERAGE:
         raise ConsolidationCollapse(
-            f"{level} consolidation for {where}: {len(accounted)}/{len(index)} "
+            f"{phase} for {where}: {len(accounted)}/{len(index)} "
             f"candidates accounted for")
 
 
@@ -1158,7 +1158,7 @@ class TaxonomyClassifier:
                 return None
             index = build_facet_candidate_index(task["candidates"])
             _guard_collapse(
-                "facet", task["domain_label"], index,
+                "facet consolidation", task["domain_label"], index,
                 {s.strip() for facet in response.facets
                  for s in (facet.source_facet_ids or [])},
                 {_norm(facet.facet_name) for facet in response.facets},
@@ -1749,7 +1749,7 @@ class TaxonomyClassifier:
                 return None
             index = dict(zip(task["id_map"], task["pools"]))
             _guard_collapse(
-                "facet", task["domain_label"], index,
+                "facet settle", task["domain_label"], index,
                 {s.strip() for facet in response.facets
                  for s in (facet.source_facet_ids or [])},
                 {_norm(facet.facet_name) for facet in response.facets},
@@ -2064,7 +2064,8 @@ class TaxonomyClassifier:
                 return None
             index = build_attribute_candidate_index(task["candidates"])
             _guard_collapse(
-                "attribute", f"{task['domain_label']} › {task['facet'].facet_name}",
+                "attribute consolidation",
+                f"{task['domain_label']} › {task['facet'].facet_name}",
                 index,
                 {s.strip() for attribute in response.attributes
                  for s in (attribute.source_attribute_ids or [])},
@@ -2573,8 +2574,33 @@ class TaxonomyClassifier:
 
     @staticmethod
     def _refinement_parse_fn():
+        """Accept an answer only if it accounts for the attributes it was shown.
+
+        The same gate the two consolidation phases carry, on the third phase
+        that folds. It claims on NAME and not on id, because this call renders
+        names and hands out no ids — so coverage is counted over the names of
+        the facet's own attributes.
+
+        Catch-alls stay out of that count. Rule 5 forbids naming one as a
+        source, so a denominator that included them would reject an answer for
+        obeying the prompt.
+        """
         def parse_fn(task: Dict, response):
-            return response if response else None
+            if not response:
+                return None
+            index = {
+                _norm(attribute["attribute_name"]): attribute
+                for attribute in (task["facet"].get("attributes") or [])
+                if not is_drain_item(attribute)}
+            _guard_collapse(
+                "refinement",
+                f"{task['domain_label']} › {task['facet']['facet_name']}",
+                index,
+                {_norm(s) for item in response.attributes
+                 for s in (item.source_attributes or [])},
+                {_norm(item.attribute_name) for item in response.attributes},
+                lambda candidate: _norm(candidate["attribute_name"]))
+            return response
         return parse_fn
 
     @staticmethod
@@ -2704,9 +2730,19 @@ class TaxonomyClassifier:
             # readable from how many sources an attribute claimed and whether it
             # kept their name. The scratchpad is reasoning, not a record, and
             # stays out of the log.
+            # Coverage of the call's own input, on the same two routes and the
+            # same denominator the gate uses — catch-alls excluded, because
+            # rule 5 forbids naming one as a source.
+            index = {_norm(a["attribute_name"]): a
+                     for a in own if not is_drain_item(a)}
+            accounted = _accounted_for(
+                index, named,
+                {_norm(item.attribute_name) for item in result.attributes},
+                lambda candidate: _norm(candidate["attribute_name"]))
             self._action_log.append({
                 "action": "refinement_provenance", "domain": domain,
-                "facet": card["facet_name"], "attributes": provenance})
+                "facet": card["facet_name"], "attributes": provenance,
+                "accounted_for": len(accounted), "candidates": len(index)})
 
             # Sources never claimed keep their place, or their ideas would point
             # at a name no longer in the structure.
