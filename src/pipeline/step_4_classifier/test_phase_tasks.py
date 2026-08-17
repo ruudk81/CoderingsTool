@@ -535,7 +535,7 @@ def _settle_result(facets, moves=(), facet_ids=("F1", "F2"), attribute_ids=()):
     `moves` is een reeks `(attribuut_id, doel_facet_id)`-paren."""
     model = build_facet_settle_model(list(facet_ids), list(attribute_ids))
     return model(
-        scratchpad="s", facets=list(facets),
+        scratchpad="s", decision_summary=[], facets=list(facets),
         attribute_moves=[{"attribute_id": a, "to_facet_id": f} for a, f in moves])
 
 
@@ -585,7 +585,6 @@ def test_de_tellingen_komen_van_echte_toewijzingen_en_het_vangnet_telt_apart():
     task = clf._build_facet_settle_tasks(
         settled, facet_assignments, id_maps, labels)[0]
     assert task["counts"] == {"F1": 2, "F2": 1}
-    assert task["contents"]["F1"] == ["traag"]
     assert task["domain_total"] == 4
     assert task["shares"]["F1"] == 0.5
     assert task["drain_count"] == 1

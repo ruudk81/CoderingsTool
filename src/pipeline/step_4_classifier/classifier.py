@@ -1653,7 +1653,6 @@ class TaxonomyClassifier:
                 (fid for fid, c in choices.items() if c["is_drain"]), None)
 
             counts: Counter = Counter()
-            contents: Dict[str, List[str]] = {}
             n_drain = 0
             for idea_id, fid in facet_assignments.items():
                 if idea_id not in texts:
@@ -1665,10 +1664,6 @@ class TaxonomyClassifier:
                 if task_fid is None:
                     continue
                 counts[task_fid] += 1
-                seen = contents.setdefault(task_fid, [])
-                text = texts[idea_id]
-                if text and text not in seen:
-                    seen.append(text)
             total = sum(counts.values()) + n_drain
 
             tasks.append({
@@ -1681,7 +1676,6 @@ class TaxonomyClassifier:
                 "counts": dict(counts),
                 "shares": {fid: (n / total if total else 0.0)
                           for fid, n in counts.items()},
-                "contents": contents,
                 "drain_count": n_drain,
                 "domain_total": total,
             })
@@ -1700,6 +1694,7 @@ class TaxonomyClassifier:
                 "facet_definition": p.facet_definition,
                 "facet_question": p.facet_question,
                 "attributes": [{"attribute_name": a.attribute_name,
+                               "attribute_definition": a.attribute_definition,
                                "attribute_id": id_by_object[id(a)]}
                               for a in p.attributes],
             } for p in task["pools"]]
@@ -1713,8 +1708,7 @@ class TaxonomyClassifier:
                 domain_label=domain["label"],
                 domain_definition=domain["definition"],
                 settle_block=build_facet_settle_block(
-                    facets, task["counts"], task["shares"], task["contents"],
-                    self._contents_top_n),
+                    facets, task["counts"], task["shares"]),
             )
             self._capture(
                 f"facet_settle_{task['domain_label']}", prompt, "facet_settle",
@@ -1918,7 +1912,8 @@ class TaxonomyClassifier:
                 "accounted_for": len(accounted), "candidates": len(cards)})
             self._action_log.append({
                 "action": "facet_settle_provenance", "domain": domain,
-                "facets": provenance})
+                "facets": provenance,
+                "decisions": list(result.decision_summary or [])})
 
             out[domain] = rebuilt
 

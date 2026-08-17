@@ -1,34 +1,5 @@
-"""Settling a domain's facets, with real placement in front of them.
+"""Settling a domain's facets for step 4"""
 
-Facets are first settled before any idea has been assigned — see
-`prompts_consolidation.py` — so the only prevalence signal available there is
-how many chunks proposed a name. That signal points the wrong way: a concept
-proposed under five different wordings arrives as five one-pass candidates,
-so exactly the cases that should merge look rarest. Assignment runs after
-that and gives every candidate its real ideas.
-
-This module re-judges a domain's facets once those ideas are in: how many
-responses each facet actually holds, its share of the domain, and what its
-attributes actually contain — not just what they claim to. A facet that
-looked substantial by pass-count and turns out to hold almost nothing once
-ideas are counted is exactly the case the first pass could not see.
-
-**Two exits, both on ids handed out in the same block, but they are not the
-same kind of claim.** A facet can fold into another, via `source_facet_ids` —
-a claim a coverage gate recomputes and can catch after the call. A single
-attribute can move to a better-fitting facet without its container being
-touched — a destination, which nothing recomputes. `build_facet_settle_model`
-types the move as a `Literal` over exactly the ids this call handed out, so an
-invented destination is a schema error instructor retries, not a content error
-that looks identical to a facet legitimately merged away by the same call —
-see that function for why the difference matters.
-
-**Attributes are evidence, not material.** Their names are rendered so the
-model can judge whether a facet's question is actually being answered by what
-sits under it; their definitions are not shown, because renaming or
-redefining an attribute is not this phase's job — see
-`prompts_consolidation.py`'s attribute-consolidation call for that.
-"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Literal
@@ -40,7 +11,7 @@ from .prompts_shared import (
     UNIVERSAL_RULES,
     _extract_definition,
     build_context_block,
-    build_taxonomy_block,
+    build_taxonomy_block_L3,
 )
 
 if TYPE_CHECKING:
@@ -52,8 +23,6 @@ if TYPE_CHECKING:
 # =============================================================================
 
 class SettledFacetCard(BaseModel):
-    """A facet after settling — folded or left standing, with real placement
-    behind the decision instead of a name proposed once."""
     facet_name: str = Field(
         ..., description=(
             "Short descriptive name for the facet, in the survey language "
@@ -64,7 +33,7 @@ class SettledFacetCard(BaseModel):
             "sentences, in the survey language"))
     facet_question: str = Field(
         ..., description=(
-            "The one question this facet answers about the responses, "
+            "The one question this facet answers about the material under it, "
             "phrased as a question, in the survey language — one folded from "
             "several sources states the question itself, never that a merge "
             "took place. No two surviving facets may state the same one"))
@@ -72,41 +41,12 @@ class SettledFacetCard(BaseModel):
         ..., description=(
             "The bracketed ids of every candidate facet that folds into this "
             "one, e.g. ['F1', 'F7']. One that survives unchanged lists just "
-            "its own id. Name every facet id shown exactly once across all "
-            "of these lists: one you leave out is not removed — it stays "
-            "where it was, next to the facet you meant to replace it with"))
+            "its own id"))
 
 
 def build_facet_settle_model(facet_ids: List[str], attribute_ids: List[str]):
-    """Runtime model in which a move's destination is this call's own id space.
+    """Runtime model in which a move's destination is this call's own id space."""
 
-    `source_facet_ids`, on `SettledFacetCard` above, is a claim: a coverage
-    gate recomputes what every candidate id was accounted for by, and an
-    invented id there is caught and logged as `unknown_source_id`. A move has
-    no such gate — nothing recomputes whether `to_facet_id` was ever real.
-    And the wiring that resolves a move logs `move_target_gone` for the
-    legitimate case where the target facet was merged away by this same call;
-    an invented id would produce the identical log line, making a model error
-    indistinguishable from a normal outcome. That is the exact blurring that
-    let refinement's own misfit exit lose 70% of its routed groups silently
-    on the run of 2026-08-16, before anyone noticed. Typing both id fields
-    `Literal` over exactly the ids this call handed out turns the invented
-    case into a schema error instructor retries, instead of a content error
-    reaching that log line at all.
-
-    `attribute_ids` can be empty — every facet built by facet consolidation
-    carries at least one attribute in practice, but a task built against
-    stubbed pools has none to hand out. `Literal` over an empty tuple is not
-    itself a valid type, and there is nothing a move could legitimately name
-    when no attribute is shown anyway — so rather than relax the field to
-    something like `List[Any]` (which would accept any answer, including a
-    real-looking move that then crashes uncaught on `move.attribute_id`
-    instead of failing the schema the way an invented id does everywhere
-    else), the list itself is capped at zero. A non-empty answer is then the
-    same schema error instructor retries as an invented id would be — the
-    protection stays in force in this degenerate case instead of being
-    quietly suspended.
-    """
     facet_literal = Literal[tuple(facet_ids)]  # type: ignore[valid-type]
 
     if attribute_ids:
@@ -140,10 +80,17 @@ def build_facet_settle_model(facet_ids: List[str], attribute_ids: List[str]):
         "FacetSettleResult",
         scratchpad=(str, Field(
             ..., description=(
-                "Work through the numbered rules of the prompt in the order "
-                "they are given, before writing the output. The rules are "
+                "Work through the prompt's decision rules in the order they "
+                "are given, before writing the output. The rules are "
                 "not repeated here: two copies of them drifted apart once, "
                 "and the model was handed both"))),
+        decision_summary=(List[str], Field(
+            ..., description=(
+                "One short line per decision that took judgement, each stating "
+                "what was done and why. Include here the candidate distinctions "
+                "that are theoretically plausible but that the attributes do "
+                "not support. Not a line for every facet: only the calls a "
+                "reader would want to check"))),
         facets=(List[SettledFacetCard], Field(
             ..., description=(
                 "The fewest mutually exclusive facets that cover this "
@@ -160,51 +107,44 @@ def build_facet_settle_block(
     facets: List[Dict[str, Any]],
     counts: Dict[str, int],
     shares: Dict[str, float],
-    contents: Dict[str, List[str]],
-    top_n: int,
 ) -> str:
-    """One domain's facets, each with its real size and what it actually holds.
+    """One domain's facets, each with its real size and the attributes it holds.
 
-    Keyed on id everywhere, never on name: `build_facet_menu` guarantees two
-    facets of one domain may legally share a name, and facet consolidation
-    can produce exactly that. A name-keyed `counts`/`shares`/`contents` would
-    let one of them's numbers silently stand in for the other's — corrupting
-    the one input this whole phase exists to get right. `counts`/`shares`/
-    `contents` are keyed on the same `F#` id this function assigns below, in
-    the same order `facets` is handed in.
+    The response texts this call used to show are gone. What makes the phase
+    empirical is that its numbers come from the assignment that actually ran,
+    and those are still here; the attributes are the qualitative half, and they
+    are still unconsolidated, which is exactly what shows whether two facets are
+    being used interchangeably.
 
-    Each attribute dict already carries its own `attribute_id` (assigned once,
-    by object identity, where the task was built) rather than being looked up
-    here by name — the same reason: two attributes of one domain may share a
-    name, and a name-keyed lookup would render one under the other's id.
+    Attributes carry their definitions, and no examples. Names alone cannot show
+    that two facets use the same underlying concepts — the test this call's core
+    principle actually asks for. Examples are the layer that went too far once:
+    facet consolidation renders names only, because a predecessor given the full
+    attribute cards started settling the attributes as well. That cannot happen
+    here — `attribute_moves` can relocate an attribute and nothing else, so the
+    schema forbids what a prompt rule had to forbid there.
 
-    Attribute names are shown so the model can check them against the facet's
-    own question — that is the whole test in rule 3 — but their definitions
-    are not: this phase moves and folds, it does not redefine, and material to
-    redefine with would only invite it to.
+    The size sits on the id line. This phase exists because it judges on the
+    counts of a real assignment instead of on how many chunks proposed a name,
+    so that number belongs where a facet is introduced, not somewhere below it.
     """
     blocks = []
     for i, facet in enumerate(facets, 1):
         facet_id = f"F{i}"
-        name = facet["facet_name"]
-        lines = [f"[{facet_id}] {name} — {facet['facet_definition']}  "
+        lines = [f"[{facet_id}] {facet['facet_name']} — "
                  f"{counts.get(facet_id, 0)} responses "
-                 f"({shares.get(facet_id, 0.0):.0%} of this domain)"]
+                 f"({shares.get(facet_id, 0.0):.0%} of this domain)",
+                 f"Definition: {facet['facet_definition']}"]
         question = facet.get("facet_question")
         if question:
-            lines.append(f"      Claims to answer: {question}")
+            lines.append(f"Claims to answer: {question}")
         attributes = facet.get("attributes") or []
         if attributes:
-            listed = ", ".join(
-                f"[{a['attribute_id']}] {a['attribute_name']}"
+            lines.append("Holds these attributes:")
+            lines.extend(
+                f"- [{a['attribute_id']}] {a['attribute_name']}: "
+                f"{a.get('attribute_definition') or ''}".rstrip(": ")
                 for a in attributes)
-            lines.append(f"      Holds these attributes: {listed}")
-        texts = (contents.get(facet_id) or [])[:top_n]
-        if texts:
-            lines.append("      Actually holds:")
-            lines.extend(f"        - {t}" for t in texts)
-        else:
-            lines.append("      Actually holds: (nothing was assigned to it)")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
@@ -229,61 +169,133 @@ def build_facet_settle_prompt(
     domain_definition: str,
     settle_block: str,
 ) -> str:
-    """Judgement over one domain's facets, on what they turned out to hold.
-
-    The framing sentence states what a facet is in this dimension's own
-    words — the same test rule 1 applies when it asks whether two facets
-    answer the same underlying question.
-    """
     rules = dimension.prompt_rules
     facet_definition = _extract_definition(rules.facet_instruction)
 
     return f"""You are a taxonomy consolidation specialist for surveys.
-Your task is to settle this domain's facets against how the responses actually placed under them, not just how each was named. A facet, in this taxonomy, is: {facet_definition}
+Your task is to settle this domain's facets based on how the attributes are actually organized under them, not just on how the candidate facets were originally named or defined.
 
-{build_context_block(
-    language=language, survey_question=survey_question, sector=sector,
-    entity=entity, topic=topic, perspective=perspective, intent=intent)}
+# Taxonomy structure 
 
-{build_taxonomy_block(
+{build_taxonomy_block_L3(
     dimension=dimension, dimension_name=dimension_name,
     dimension_description=dimension_description)}
+
+A facet, in this taxonomy, is: {facet_definition}
+For this task, “independently analyzable” means independently distinguishable in the observed attributes, not merely theoretically distinguishable from the candidate definitions. 
+A distinction that exists only in the wording or definitions of the candidate facets should not be preserved if their attributes represent the same underlying type of content.
+
+# Survey context  
+
+{build_context_block(
+    language=language,
+    dimension_name=dimension_name, dimension_description=dimension_description,
+    survey_question=survey_question,
+    sector=sector, entity=entity, topic=topic, perspective=perspective, intent=intent)}
 
 You are working inside this domain:
 <taxonomy_domain>
 {domain_label} — {domain_definition}
 </taxonomy_domain>
 
-Here are this domain's candidate facets, each with how much of the domain it
-holds, the attributes currently placed under it, and what those attributes
-actually contain:
+Here are this domain's candidate facets, each with how much of the domain it holds, the attributes currently placed under it, and what those attributes actually contain:
 <facet_placements>
 {settle_block}
 </facet_placements>
 
 # Objective
 
-Find the smallest set of facets for this domain that is mutually exclusive and
-collectively exhaustive (MECE), given how the responses actually placed —
-not how many candidates were originally proposed.
+Find the smallest set of facets that organizes the attributes in this domain in a mutually exclusive and collectively exhaustive (MECE) way.
 
-The optimization priority is:
-- Correct facet membership
-- MECE
-- Minimum number of facets
-- Interpretability
-- Preservation of meaningful prevalent distinctions
+Treat the candidate facets as provisional hypotheses. The final facet structure may retain, merge or reorganize them, and attributes may be reassigned between surviving facets.
 
-Do not preserve a distinction merely because it appears in the input.
+Optimize in this order:
 
-# Rules
+1. Correct attribute membership
+2. MECE
+3. Minimum number of facets
+4. Interpretability
+5. Preservation of distinctions that are clearly and consistently represented by the attributes
 
-1. Fold facets together that answer the same underlying question. The question is the test, not the name.
-2. A facet holding a small share of its domain relative to its neighbours here belongs with the facet whose question it shares. Judge "small" against the other facets shown here, never against a fixed percentage.
-3. An attribute that does not answer its own facet's question, but does answer another facet's question in this domain, moves there.
-4. Do not rename or redefine attributes — that layer has not had its turn yet.
-5. Every surviving facet writes its own name, definition and the question it answers — even one with a single source.
+# Core decision principle
 
+Preserve a facet distinction only when the attributes support a clear, stable and independently recognizable boundary between different types of content.
+
+Do not preserve a distinction merely because it:
+- appears in the candidate taxonomy;
+- has a theoretically distinct definition;
+- contains many attributes;
+- has high prevalence; or
+- can be conceptually justified.
+
+If two candidate facets are theoretically different but their attributes do not support a reliable substantive distinction, merge them.
+
+Where possible, preserve narrower substantive differences at the attribute level rather than creating additional facets.
+
+# Procedure
+
+## 1. Identify attribute clusters
+
+Temporarily set aside the candidate facet boundaries and examine the attributes themselves.
+
+Identify the smallest number of recurring semantic groups needed to organize them coherently.
+
+Ask:
+- What type of content does each attribute represent?
+- Which attributes belong to the same underlying analytical category?
+- Which groups of attributes are meaningfully distinguishable from one another?
+- Which apparent distinctions arise mainly from the existing candidate facet structure rather than from meaningful differences between the attributes?
+
+## 2. Validate the facet structure
+
+Compare these attribute groups with the candidate facets.
+
+For each candidate distinction, decide whether to:
+- retain it;
+- merge it with another facet;
+- move misplaced attributes to another surviving facet; or
+- otherwise reorganize the structure to obtain the smallest MECE set of facets supported by the attributes.
+
+# Decision rules
+
+1. **Same underlying question → merge.**
+   Merge facets when their attributes answer the same underlying analytical question.
+   Test the question represented by the attributes, not the candidate facet names.
+
+2. **Clear attribute boundary → keep separate.**
+   Keep facets separate only when a competent coder could reliably decide which facet an attribute belongs to using a clear substantive rule.
+
+3. **Misplaced attributes → move.**
+   If an attribute does not answer its current facet's question but clearly answers another candidate facet's question in this domain, move it there. Name that candidate by its [F#] id, even when it folds into a larger facet: the surviving facets have no ids of their own.
+
+4. **Do not consolidate attributes yet.**
+   Do not rename, redefine, merge or split attributes.
+   Attribute consolidation happens at a later stage.
+
+5. **Use prevalence only as supporting evidence.**
+   Prevalence may help judge whether a distinction is substantively important, but it never determines the facet structure by itself.
+   A low-prevalence but clearly distinct type of attribute may warrant its own facet; a high-prevalence but overlapping type does not.
+
+6. **Every surviving facet must stand on its own.**
+   Give every surviving facet its own name, definition and facet question, including facets that survive unchanged.
+
+7. **Every attribute must have one natural home.**
+   The final facets must form a partition of the attributes in this domain.
+   Each attribute must end up under exactly one surviving facet and should not require arbitrary judgment between several.
+
+8. **Account for every candidate facet.**
+   Name every [F#] id shown exactly once across all `source_facet_ids` lists. One you leave out is not removed — it stays where it was, next to the facet you meant to replace it with.
+
+# Evidence for decisions
+
+For every merge or retention decision, base the judgment on:
+
+- the semantic content represented by the attributes;
+- whether the attributes answer the same or different underlying analytical questions;
+- the clarity of the boundary between the proposed facets; and
+- whether each resulting facet represents an independently recognizable type of attribute.
+
+Explicitly identify candidate distinctions that are theoretically plausible but are not sufficiently supported by meaningful differences between the attributes.
 {UNIVERSAL_RULES}
 
 {INSTRUCTOR_HINT}"""

@@ -33,12 +33,10 @@ FACETS = [
 # never on the name: two facets of one domain may legally share one.
 COUNTS = {"F1": 124}
 SHARES = {"F1": 0.62}
-CONTENTS = {"F1": ["lange wachttijd", "duurt lang"]}
 
 
-def _blok(facets=FACETS, counts=COUNTS, shares=SHARES, contents=CONTENTS,
-          top_n=5):
-    return build_facet_settle_block(facets, counts, shares, contents, top_n)
+def _blok(facets=FACETS, counts=COUNTS, shares=SHARES):
+    return build_facet_settle_block(facets, counts, shares)
 
 
 def _skwargs(**overrides):
@@ -58,7 +56,8 @@ def _skwargs(**overrides):
 
 def _rules(prompt: str) -> str:
     """De eigen regels van deze prompt, zonder de universele eronder."""
-    return prompt[prompt.index("\n# Rules\n"):prompt.index("<universal_rules>")]
+    return prompt[prompt.index("\n# Decision rules\n"):
+                  prompt.index("<universal_rules>")]
 
 
 def _model():
@@ -71,10 +70,13 @@ def _model():
 # =============================================================================
 
 def test_het_blok_zet_de_facetvraag_naast_wat_het_facet_werkelijk_houdt():
+    """Wat het facet claimt te beantwoorden, en daarna wat er feitelijk onder
+    hangt — in die volgorde, want de claim is wat aan de inhoud getoetst wordt.
+    De responsteksten zijn hier weg; de attributen zijn nu die inhoud."""
     blok = _blok()
     assert "Claims to answer" in blok
-    assert "Actually holds" in blok
-    assert blok.index("Claims to answer") < blok.index("Actually holds")
+    assert "Holds these attributes" in blok
+    assert blok.index("Claims to answer") < blok.index("Holds these attributes")
 
 
 def test_het_blok_toont_aantal_en_aandeel_van_het_domein():
@@ -91,12 +93,21 @@ def test_het_blok_deelt_ids_uit_op_beide_niveaus():
     assert "[F1]" in blok and "[A1]" in blok
 
 
-def test_het_blok_toont_attribuutnamen_zonder_definities():
-    """Bewijs van wat er onder een facet hangt, geen materiaal om te bewerken —
-    die laag is nog niet aan de beurt."""
+def test_het_blok_toont_attribuutnamen_met_definities_en_zonder_voorbeelden():
+    """Sinds de responsteksten uit dit blok zijn, zijn de attributen het enige
+    kwalitatieve bewijs — en aan namen alleen is niet te zien of twee facetten
+    dezelfde begrippen door elkaar gebruiken, wat de kernregel hier vraagt.
+
+    Voorbeelden blijven eruit: dat is de laag waarmee de voorganger van
+    facetconsolidatie de attributen óók ging vastzetten. Hier kan dat niet —
+    `attribute_moves` verplaatst en verandert niets — maar het materiaal is
+    hier evengoed niet nodig.
+    """
     blok = _blok()
     assert "Wachttijd" in blok
-    assert "De tijd tot antwoord." not in blok
+    assert "De tijd tot antwoord." in blok
+    assert "e.g." not in blok
+    assert "example" not in blok.lower()
 
 
 def test_twee_gelijknamige_facetten_delen_geen_telling():
@@ -110,7 +121,7 @@ def test_twee_gelijknamige_facetten_delen_geen_telling():
          "attributes": []},
     ]
     blok = build_facet_settle_block(
-        facets, {"F1": 10, "F2": 90}, {"F1": 0.1, "F2": 0.9}, {}, top_n=5)
+        facets, {"F1": 10, "F2": 90}, {"F1": 0.1, "F2": 0.9})
     assert "10 responses" in blok and "90 responses" in blok
     assert "10% of this domain" in blok and "90% of this domain" in blok
 
@@ -151,8 +162,11 @@ def test_een_overlevend_facet_schrijft_zijn_vraag_opnieuw_op():
 
 
 def test_het_resultaat_draagt_facetten_en_verplaatsingen():
+    """`decision_summary` hoort erbij sinds de prompt om een expliciete
+    verantwoording vraagt — zonder veld kon die alleen in de scratchpad
+    landen, en die is redeneerruimte en geen opleverpunt."""
     assert set(_model().model_fields) == {
-        "scratchpad", "facets", "attribute_moves"}
+        "scratchpad", "decision_summary", "facets", "attribute_moves"}
 
 
 # =============================================================================

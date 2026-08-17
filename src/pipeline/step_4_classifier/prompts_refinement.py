@@ -1,45 +1,5 @@
-"""Refinement inside one facet, and one round across the scope boundaries.
+"""Refinement prompts voor step 4""" 
 
-Consolidation judged on the observations each candidate came from; refinement is
-the first phase with **real counts, shares and response texts** in front of it.
-That makes it the only place where it becomes visible that a bucket holds
-something other than its name promises.
-
-**The scope is the facet.** One call is one facet, and the facet is therefore
-fixed: an attribute cannot be moved out of it, and `RefinedAttribute` carries no
-facet to move it to. What the narrow scope buys is the same thing attribute
-consolidation bought by splitting off: the judgement gets a pool it can hold at
-once, with nothing else competing for attention. The share stays measured over
-the DOMAIN all the same — see `build_contents_block`.
-
-**Routing is gone with it** (2026-08-16). The facet once carried a misfit exit:
-a group of responses could be sent to an attribute in a neighbouring facet, with
-the rest of the domain rendered as a destination list. It could not work as
-built. The destinations were rendered from the structure as it stood *before*
-the phase, while `_apply_refinement` resolved them against the names as they
-stood *after* — and renaming is the main thing this phase does. Measured on the
-run of 2026-08-16: 83 of 118 routed texts (70%) named a destination that its own
-neighbour's call had just consumed, and fell back silently to where they already
-sat. Removing the exit rather than repairing it keeps one rule per scope: this
-phase merges what one facet holds, and nothing else. Placement across facets is
-cross-domain's job.
-
-**Splitting is gone.** The clause once read *"an attribute holding a large share
-AND visibly diverse contents is too abstract: SPLIT it, do not widen it"*,
-written when items were narrow and numerous; since discovery makes them
-deliberately broad it fired constantly. Measured effect: consolidation brought
-102 attributes back, refinement inflated them to 126, cross-scope removed 23
-again — net standstill. It was tightened, and then dropped with the rewritten
-rules. This phase only merges now, and `RefinedAttribute` carries neither an
-action nor the texts a split would have had to route by.
-
-Catch-alls take no part. They are not merged, renamed or absorbed — a catch-all
-is an offer, not a category, and judging it as if it were one turns it into one
-after all. That is stated as a rule *and* enforced in `_apply_refinement`: the
-marker was rendered for a while with no rule left to explain it, and a
-catch-all named as a SOURCE then had its ideas remapped into a content
-attribute, which the drain card surviving in the structure hid completely.
-"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List
@@ -64,14 +24,6 @@ if TYPE_CHECKING:
 # =============================================================================
 
 class RefinedAttribute(BaseModel):
-    """One attribute as refinement leaves it.
-
-    It states no action. What happened is readable from `source_attributes`:
-    more than one source is a merge, one source under another name a rename,
-    one source under its own name an attribute left alone. Asking the model to
-    label that as well made it classify what the code can already see, and the
-    labels outlived the rules that explained when each applied.
-    """
     attribute_name: str = Field(
         ..., description=(
             "Short descriptive name for the attribute, in the survey language "
@@ -94,12 +46,6 @@ class RefinedAttribute(BaseModel):
 
 
 class RefinementResult(BaseModel):
-    """What one refinement call per facet returns.
-
-    Merging is all it returns. The misfit exit that once sat beside it is gone
-    — see the module docstring — so there is no ordering left to get wrong
-    between routing a group and merging the attribute it was routed to.
-    """
     scratchpad: str = Field(
         ..., description=(
             "Work through the numbered rules of the prompt in the order they "
@@ -125,28 +71,6 @@ def build_contents_block(
     facet_total: int,
     domain_total: int,
 ) -> str:
-    """What each attribute of ONE facet actually holds, with its size.
-
-    The share is the share of the DOMAIN, deliberately wider than the call. A
-    share of the facet would make every facet look equally weighty — the biggest
-    attribute of a facet holding a handful of responses would read the same as
-    the biggest of one holding half the domain, and granularity would then be set
-    on a scale that shifts per call. The domain is the one denominator every
-    facet of it shares.
-
-    That one denominator needs a second number beside it, and the header carries
-    it: how much of the domain this whole facet holds. Without it "small" has no
-    calibration inside the call — a facet holding a twentieth of its domain shows
-    every one of its attributes as a low percentage, and a prevalence rule then
-    reads as "absorb everything". Both scales are visible; neither is a
-    threshold.
-
-    No threshold appears anywhere: one would have been read off a single dataset,
-    and is therefore just as use-case-bound as an example lifted from client data.
-
-    The facet itself is no longer a header here. It is the scope of the whole
-    call and is rendered once, as context, by the prompt.
-    """
     share = (facet_total / domain_total) if domain_total else 0.0
     blocks = [f"This facet holds {facet_total} of the {domain_total} responses "
               f"in its domain ({share:.0%}). The percentage on each attribute "
@@ -190,14 +114,6 @@ def build_refinement_prompt(
     facet_question: str,
     contents_block: str,
 ) -> str:
-    """Judgement over one facet, on what its buckets actually hold.
-
-    The domain comes along as parent context — an attribute is judged against
-    the question its facet answers, and that question only means something
-    inside the domain it divides. The facet's own question is rendered when
-    there is one; a facet settled without a call has none, and a rendered label
-    with nothing behind it reads as a question the facet failed to state.
-    """
     rules = dimension.prompt_rules
     attribute_definition = _extract_definition(rules.attribute_instruction)
     question_line = (f"\nThe question it answers: {facet_question}"

@@ -132,9 +132,11 @@ Default toward consolidation. A distinction should survive only when keeping it 
     entity=entity, topic=topic, perspective=perspective, intent=intent)}
 
 This is the taxonomy structure you are working with:
-{build_taxonomy_block_L3(
-    dimension=dimension, dimension_name=dimension_name,
-    dimension_description=dimension_description)}
+{build_context_block(
+    language=language,
+    dimension_name=dimension_name, dimension_description=dimension_description,
+    survey_question=survey_question,
+    sector=sector, entity=entity, topic=topic, perspective=perspective, intent=intent)}    
 
 You are working within this domain:
 <taxonomy_domain>
