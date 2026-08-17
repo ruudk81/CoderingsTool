@@ -1,37 +1,10 @@
 """Shared building blocks for the step-4 prompts.
 
-Every step-4 prompt that NAMES something is assembled from the same four blocks,
-in this order:
-
   1. context            build_context_block()
   2. the taxonomy       build_taxonomy_block()
   3. the task           the caller writes this
   4. rules + output     the caller writes this, ending on UNIVERSAL_RULES
                         and INSTRUCTOR_HINT
-
-The shape is taken from step 3, which builds the domain layer (L2) the same
-way.
-
-The two assignment phases (facet and attribute) are the exception, and
-deliberately so: each picks an id from a menu and invents no name, so the
-naming rules have no work to do there and the taxonomy block would only be
-noise. They carry the context block and INSTRUCTOR_HINT only.
-
-(`prompts_valence.py` also skips UNIVERSAL_RULES, but not for this reason — it
-does invent a name. Whether it should carry the rules is an open prompt-design
-question, not decided here; see WORK.md.)
-
-## One thing called a dimension
-
-L1 is the **dimension**: the one kind of information the whole study reads every
-response as, fixed in `dimension_data.py` and named in the taxonomy block. The
-prompts call it that, `ExtractionMetadata` carries it across the step boundary
-under `dimension_name`, and nothing else in step 4 uses the word.
-
-The prompts do not ask a model to *find* dimensions. Discovery asks for facets
-and the attributes they hold, in those words — the levels the taxonomy actually
-has. `dimension_data.py` supplies what each of those levels means for the
-dimension at hand, and that is the only place the wording per level comes from.
 """
 from __future__ import annotations
 
@@ -47,12 +20,7 @@ if TYPE_CHECKING:
 # The sentence instructor needs
 # =============================================================================
 
-# Field(description=...) on the response model is not enough on its own: without
-# this sentence at the end of the prompt a large share of calls comes back
-# unparseable. Every builder ends on it.
-INSTRUCTOR_HINT = (
-    "provide your output as valid JSON following the response schema provided"
-)
+INSTRUCTOR_HINT = ("provide your output as valid JSON following the response schema provided")
 
 
 # =============================================================================
@@ -68,6 +36,7 @@ These four rules hold at every level of the taxonomy and for every decision you 
    the subject, not the judgment. Evaluative direction is recorded separately, per
    response, as valence — never inside the taxonomy. If a candidate reads as a verdict,
    restate it as the subject being judged.
+   
    REVERSAL TEST, on every name you return: would a response expressing the opposite
    direction still belong under it? A name that only fits one direction has taken a side,
    even when it looks like a plain noun — and responses pointing the other way will be
@@ -92,6 +61,7 @@ These four rules hold at every level of the taxonomy and for every decision you 
    they lack. Do not return an item whose real definition is "the ones that fit nowhere
    else" — names like "Other", "Various", "Miscellaneous", "Remaining" are the signature,
    and so is a definition that describes the item by exclusion.
+   
    If a group of responses shares nothing statable, it does not become a category: leave
    those responses out of your grouping and let them fall through. A residual bucket is
    provided for them elsewhere, and one you invent here would compete with it.
@@ -140,31 +110,66 @@ def build_context_block(
     topic: str,
     perspective: str,
     intent: str,
+    dimension_name: str = "",
+    dimension_description: str = "",
 ) -> str:
-    """The survey context, in step 3's shape."""
+    dimension_lines = f"""
+The responses vary within this dimension:
+<dimension>
+Dimension name: {dimension_name}
+Clarification: {dimension_description}
+</dimension>""" if dimension_name else ""
     return f"""Here is the language the survey responses are written in:
 <language>
 {language}
 </language>
 
-Here is the survey question that was asked in {language}:
+The respondents answered the following survey question (in {language}):
 <survey_question>
 {survey_question}
 </survey_question>
+{dimension_lines}
 
-Here is contextual information from prior analysis:
+The following contextual information helps clarify how the survey question should be understood:
 <context>
 - Sector: {sector}
 - Entity of interest: {entity}
 - Topic: {topic}
 - Type of respondent: {perspective}
 - Question intent: {intent}
-</context>"""
 
+Use this context to interpret the survey question and ambiguous responses.
+Do not infer content that is not supported by the responses themselves
+</context>"""
 
 # =============================================================================
 # Block 2 — the taxonomy
 # =============================================================================
+
+def build_dimension_block(
+    *,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+) -> str:
+    rules = dimension.prompt_rules
+    return f"""<taxonomy_dimension>
+Dimension name: {dimension_name}
+Clarification: {dimension_description}
+</taxonomy_dimension>"""
+
+def build_taxonomy_block_L3(
+    *,
+    dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
+) -> str:
+    rules = dimension.prompt_rules
+    return f"""<taxonomy_structure>
+L1 — Domain: {_extract_definition(rules.domain_instruction)} Key idea: {_extract_key_idea(rules.domain_instruction)}
+L2 — Facet: {_extract_definition(rules.facet_instruction)} Key idea: {_extract_key_idea(rules.facet_instruction)}
+L3 — Attribute: {_extract_definition(rules.attribute_instruction)} Key idea: {_extract_key_idea(rules.attribute_instruction)}
+</taxonomy_structure>"""
 
 def build_taxonomy_block(
     *,
@@ -172,17 +177,8 @@ def build_taxonomy_block(
     dimension_name: str,
     dimension_description: str,
 ) -> str:
-    """All four levels, each described in this dimension's own words.
-
-    Shown in full even though a phase only builds one level: an item that
-    belongs one level up or one level down is the most common failure, and it
-    is only recognisable against the neighbouring levels.
-    """
     rules = dimension.prompt_rules
     return f"""<taxonomy_structure>
-The taxonomy has four levels. All four are given so you can see where your own task
-sits, and so you do not return something that belongs one level up or one level down.
-
 L1 — Dimension: {dimension_name}
      The kind of information every response in this study is read as. Fixed for
      every response, every domain and every level below.

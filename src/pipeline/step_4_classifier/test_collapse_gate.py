@@ -52,13 +52,13 @@ def _attribute_task(*attr_names):
 
 
 def _settled_facet(name, *source_ids):
-    return SettledFacet(
+    return SettledFacet(boundary_rules=[], 
         facet_name=name, facet_definition="d", facet_question="Wat?",
         source_facet_ids=list(source_ids))
 
 
 def _settled_attribute(name, *source_ids):
-    return SettledAttribute(
+    return SettledAttribute(boundary_rules=[], 
         attribute_name=name, attribute_definition="d",
         example_observations=["e"], source_attribute_ids=list(source_ids))
 

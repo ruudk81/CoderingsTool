@@ -50,7 +50,7 @@ def _ctx(domains, drains=()):
 
 def _facet(name, *attrs):
     return DiscoveredFacet(
-        facet_name=name, facet_definition="d",
+        facet_name=name, facet_definition="d", analytical_question="q",
         attributes=[DiscoveredAttribute(
             attribute_name=a, attribute_definition="d",
             example_observations=["e"]) for a in attrs])
@@ -181,7 +181,7 @@ def test_a_survivor_pools_the_attributes_of_what_it_claimed():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Snelheid", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=["F1", "F2"])])
     survivors = clf._facet_consolidation_survivors(task, result)
@@ -198,7 +198,7 @@ def test_a_pooled_attribute_proposed_twice_is_collapsed_once():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Snelheid", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=["F1", "F2"])])
     survivors = clf._facet_consolidation_survivors(task, result)
@@ -214,7 +214,7 @@ def test_an_unclaimed_facet_is_kept_whole():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Snelheid", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=["F1"])])
     survivors = clf._facet_consolidation_survivors(task, result)
@@ -233,7 +233,7 @@ def test_a_name_fallback_only_counts_when_the_name_is_unique():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Snelheid", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=[])])
     survivors = clf._facet_consolidation_survivors(task, result)
@@ -250,9 +250,9 @@ def test_two_survivors_stating_one_question_are_still_reported():
     result = FacetConsolidationResult(
         decision_summary=[],
         facets=[
-            SettledFacet(facet_name="A", facet_definition="…",
+            SettledFacet(boundary_rules=[], facet_name="A", facet_definition="…",
                          facet_question="Hoe snel?", source_facet_ids=["F1"]),
-            SettledFacet(facet_name="B", facet_definition="…",
+            SettledFacet(boundary_rules=[], facet_name="B", facet_definition="…",
                          facet_question="Hoe snel?", source_facet_ids=["F2"])])
     clf._facet_consolidation_survivors(task, result)
     assert _actions(clf, "duplicate_facet_question")
@@ -268,10 +268,10 @@ def test_distinct_questions_are_not_reported():
     result = FacetConsolidationResult(
         decision_summary=[],
         facets=[
-            SettledFacet(facet_name="Snelheid", facet_definition="…",
+            SettledFacet(boundary_rules=[], facet_name="Snelheid", facet_definition="…",
                          facet_question="Hoe snel gaat het?",
                          source_facet_ids=["F1"]),
-            SettledFacet(facet_name="Bejegening", facet_definition="…",
+            SettledFacet(boundary_rules=[], facet_name="Bejegening", facet_definition="…",
                          facet_question="Hoe wordt men bejegend?",
                          source_facet_ids=["F2"])])
     clf._facet_consolidation_survivors(task, result)
@@ -288,7 +288,7 @@ def test_facet_provenance_pins_which_candidate_went_where():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=["hield X en Y uiteen"],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Snelheid", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=["F1", "F2"])])
     clf._facet_consolidation_survivors(task, result)
@@ -304,7 +304,7 @@ def test_a_cited_id_that_was_never_handed_out_is_logged():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Snelheid", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=["F1", "F9"])])
     clf._facet_consolidation_survivors(task, result)
@@ -322,9 +322,9 @@ def test_a_candidate_claimed_by_two_survivors_pools_into_the_first():
     result = FacetConsolidationResult(
         decision_summary=[],
         facets=[
-            SettledFacet(facet_name="A", facet_definition="…",
+            SettledFacet(boundary_rules=[], facet_name="A", facet_definition="…",
                          facet_question="?", source_facet_ids=["F1"]),
-            SettledFacet(facet_name="B", facet_definition="…",
+            SettledFacet(boundary_rules=[], facet_name="B", facet_definition="…",
                          facet_question="?", source_facet_ids=["F1"])])
     survivors = clf._facet_consolidation_survivors(task, result)
     by_name = {s.facet_name: s for s in survivors}
@@ -343,7 +343,7 @@ def test_one_survivor_citing_an_id_twice_is_not_a_split():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(facet_name="A", facet_definition="…",
+        facets=[SettledFacet(boundary_rules=[], facet_name="A", facet_definition="…",
                              facet_question="?",
                              source_facet_ids=["F1", "F1"])])
     survivors = clf._facet_consolidation_survivors(task, result)
@@ -363,7 +363,7 @@ def test_a_name_fallback_hands_over_the_attributes_it_covers():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Snelheid", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=[])])
     survivors = clf._facet_consolidation_survivors(task, result)
@@ -383,7 +383,7 @@ def test_an_invented_id_does_not_cost_the_candidate_its_attributes():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Snelheid", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=["F9"])])
     survivors = clf._facet_consolidation_survivors(task, result)
@@ -400,7 +400,7 @@ def test_a_name_fallback_does_not_pool_a_repeat_twice():
             "recurrence": {}, "n_passes": 3}
     result = FacetConsolidationResult(
         decision_summary=[],
-        facets=[SettledFacet(
+        facets=[SettledFacet(boundary_rules=[], 
             facet_name="Tempo", facet_definition="…",
             facet_question="Hoe snel?", source_facet_ids=["F1"])])
     survivors = clf._facet_consolidation_survivors(task, result)
@@ -429,7 +429,7 @@ def _stub_dispatch(clf, answer):
 
 
 def _settle(name, *sources):
-    return SettledFacet(facet_name=name, facet_definition="…",
+    return SettledFacet(boundary_rules=[], facet_name=name, facet_definition="…",
                         facet_question=f"Wat zegt dit over {name}?",
                         source_facet_ids=list(sources))
 
@@ -866,7 +866,7 @@ def test_an_unclaimed_attribute_is_kept():
             "recurrence": {}, "n_passes": 3}
     result = AttributeConsolidationResult(
         decision_summary=[],
-        attributes=[SettledAttribute(
+        attributes=[SettledAttribute(boundary_rules=[], 
             attribute_name="x", attribute_definition="…",
             example_observations=["o"], source_attribute_ids=["A1"])])
     kept = clf._attribute_consolidation_survivors(task, result)
@@ -893,7 +893,7 @@ def test_a_cited_attribute_id_that_was_never_handed_out_is_logged():
             "recurrence": {}, "n_passes": 3}
     result = AttributeConsolidationResult(
         decision_summary=[],
-        attributes=[SettledAttribute(
+        attributes=[SettledAttribute(boundary_rules=[], 
             attribute_name="Snelheid", attribute_definition="…",
             example_observations=["o"], source_attribute_ids=["A1", "A9"])])
     kept = clf._attribute_consolidation_survivors(task, result)
@@ -911,7 +911,7 @@ def test_the_same_name_twice_in_one_pool_is_two_claims():
             "recurrence": {}, "n_passes": 3}
     result = AttributeConsolidationResult(
         decision_summary=[],
-        attributes=[SettledAttribute(
+        attributes=[SettledAttribute(boundary_rules=[], 
             attribute_name="verantwoordelijkheid", attribute_definition="…",
             example_observations=["o"], source_attribute_ids=[])])
     kept = clf._attribute_consolidation_survivors(task, result)
@@ -930,7 +930,7 @@ def test_attribute_provenance_pins_the_level_below_the_facet():
             "recurrence": {}, "n_passes": 3}
     result = AttributeConsolidationResult(
         decision_summary=["x en y vielen samen"],
-        attributes=[SettledAttribute(
+        attributes=[SettledAttribute(boundary_rules=[], 
             attribute_name="x", attribute_definition="…",
             example_observations=["o"], source_attribute_ids=["A1", "A2"])])
     clf._attribute_consolidation_survivors(task, result)
@@ -996,7 +996,7 @@ def test_a_result_lands_on_the_facet_it_came_from():
 # =============================================================================
 
 def _settle_attribute(candidate, *sources):
-    return SettledAttribute(
+    return SettledAttribute(boundary_rules=[], 
         attribute_name=candidate.attribute_name,
         attribute_definition=candidate.attribute_definition,
         example_observations=list(candidate.example_observations),

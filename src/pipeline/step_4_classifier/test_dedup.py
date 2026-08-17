@@ -17,6 +17,7 @@ def make_facet(name, attributes=None):
     return DiscoveredFacet(
         facet_name=name,
         facet_definition="d",
+        analytical_question="q",
         attributes=attributes if attributes is not None else [make_attribute("a")],
     )
 

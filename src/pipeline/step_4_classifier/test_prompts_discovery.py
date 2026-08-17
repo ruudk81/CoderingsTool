@@ -39,13 +39,18 @@ def _kwargs(**overrides):
 # HET RESPONSEMODEL
 # =============================================================================
 
-def test_the_result_is_scratchpad_plus_facets():
-    assert set(DiscoveryResult.model_fields) == {"scratchpad", "facets"}
+def test_the_result_is_facets_only():
+    """`scratchpad` is parked, not deleted: discovery runs on `medium` effort, so
+    the model reasons internally anyway, and `analytical_question` below is the
+    lighter anchor being tried in its place. Restoring it means updating this."""
+    assert set(DiscoveryResult.model_fields) == {"facets"}
 
 
-def test_a_facet_carries_its_attributes():
-    assert set(DiscoveredFacet.model_fields) == {
-        "facet_name", "facet_definition", "attributes"}
+def test_a_facet_carries_its_attributes_and_its_question():
+    """The question is asked before the attributes are named — a field ordered
+    after them would be a justification, not an anchor."""
+    assert list(DiscoveredFacet.model_fields) == [
+        "facet_name", "facet_definition", "analytical_question", "attributes"]
 
 
 def test_the_attribute_field_is_definition_not_description():
@@ -55,12 +60,12 @@ def test_the_attribute_field_is_definition_not_description():
         "attribute_name", "attribute_definition", "example_observations"}
 
 
-def test_geneste_structuur_valideert():
+def test_the_nested_structure_validates():
     result = DiscoveryResult(
-        scratchpad="…",
         facets=[DiscoveredFacet(
             facet_name="Snelheid",
             facet_definition="Hoe snel er geleverd wordt.",
+            analytical_question="Hoe snel wordt er geleverd?",
             attributes=[DiscoveredAttribute(
                 attribute_name="Wachttijd",
                 attribute_definition="De tijd tot antwoord.",

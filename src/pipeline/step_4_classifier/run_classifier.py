@@ -3,10 +3,12 @@
 """
 Step 4: Taxonomy Classifier runner.
 
-Domain discovery, then discovery → facet consolidation → attribute
-consolidation → assignment → refinement → cross-domain, and the valence-neutral
-merge last. Seven phases; facets and attributes are found together and settled
-apart, one call per level. See `classifier.TaxonomyClassifier`.
+Domain discovery, then discovery → facet consolidation → facet assignment →
+facet settle → attribute consolidation → assignment → refinement →
+cross-domain, and the valence-neutral merge last. Nine phases; facets and
+attributes are found together and settled apart, one call per level, and the
+facet layer is settled on the ideas it actually drew rather than on how many
+chunks proposed a name. See `classifier.TaxonomyClassifier`.
 """
 import sys
 import json
@@ -29,15 +31,18 @@ PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
 # not where you stop after a phase; that is STOP_AFTER_PHASE below.
 LIMIT_N = None
 
-# None = all seven phases. Otherwise one of TaxonomyClassifier.PHASES, which is
+# None = all nine phases. Otherwise one of TaxonomyClassifier.PHASES, which is
 # the only place the names live:
-#   discovery, facet_consolidation, attribute_consolidation, assignment,
-#   refinement, cross_domain, valence_merge
+#   discovery, facet_consolidation, facet_assignment, facet_settle,
+#   attribute_consolidation, assignment, refinement, cross_domain, valence_merge
 # An unknown name raises at construction rather than quietly running everything.
+#
+# A stop before `assignment` leaves the facets with their attribute pools still
+# unconsolidated, and no catch-alls: those arrive after attribute consolidation.
 #
 # WARNING: a phase stop still writes its partial taxonomy to the cache, over the
 # complete one that was there. Copy data/cache before an early-stop run.
-STOP_AFTER_PHASE = None
+STOP_AFTER_PHASE = "facet_settle"
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key

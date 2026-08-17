@@ -1218,6 +1218,7 @@ class TaxonomyClassifier:
                 facet_name=facet.facet_name,
                 facet_definition=facet.facet_definition,
                 facet_question=facet.facet_question,
+                boundary_rules=list(facet.boundary_rules or []),
                 attributes=dedup_exact_attributes(pooled)))
 
         for source, claimants in claimed_by.items():
@@ -1443,7 +1444,8 @@ class TaxonomyClassifier:
                 continue
             facets = [
                 {"facet_name": p.facet_name, "facet_definition": p.facet_definition,
-                 "facet_question": p.facet_question}
+                 "facet_question": p.facet_question,
+                 "boundary_rules": list(p.boundary_rules)}
                 for p in pools
             ] + [make_drain_facet(domain, ctx.language)]
             menu_block, id_map = build_facet_menu(facets)
@@ -1475,7 +1477,10 @@ class TaxonomyClassifier:
                  "max_tokens": self._max_tokens_assignment,
                  "language": ctx.language,
                  "domain": task["domain_label"],
-                 "n_facets": len(task["id_map"]),
+                 # The ids, not their count: the menu is a Literal in the
+                 # schema, so this is what view_prompts needs to rebuild the
+                 # very model instructor was handed.
+                 "facet_ids": list(task["id_map"]),
                  "dimension_name": ctx.dimension_name})
             return {
                 "prompt": prompt,
@@ -1718,7 +1723,10 @@ class TaxonomyClassifier:
                  "max_tokens": self._max_tokens_consolidation,
                  "language": ctx.language,
                  "domain": task["domain_label"],
-                 "n_facets": len(task["id_map"]),
+                 # Both id spaces, for the same reason as facet assignment: a
+                 # move's destination is a Literal over them.
+                 "facet_ids": list(task["id_map"]),
+                 "attribute_ids": list(task["attribute_ids"]),
                  "dimension_name": ctx.dimension_name})
             return {
                 "prompt": prompt,
@@ -1826,6 +1834,9 @@ class TaxonomyClassifier:
                         "sources": [f for f in sources if f in claimed],
                         "note": "already claimed; attributes stayed with the first"})
                 claimed.update(fresh)
+                # No boundary rules survive a settle merge: they were written to
+                # separate two facets that are now one, so the rule they state no
+                # longer has a second side.
                 pool = FacetPool(
                     facet_name=item.facet_name,
                     facet_definition=item.facet_definition,
@@ -1851,6 +1862,7 @@ class TaxonomyClassifier:
                     facet_name=card.facet_name,
                     facet_definition=card.facet_definition,
                     facet_question=card.facet_question,
+                    boundary_rules=list(card.boundary_rules),
                     attributes=list(card.attributes))
                 rebuilt.append(kept)
                 home_of.setdefault(fid, kept)
@@ -2248,6 +2260,7 @@ class TaxonomyClassifier:
                         facet_name=pool.facet_name,
                         facet_definition=pool.facet_definition,
                         facet_question=pool.facet_question,
+                        boundary_rules=list(pool.boundary_rules),
                         attributes=kept))
                     again_origin.setdefault(label, []).append(key)
             pending, origin = again, again_origin

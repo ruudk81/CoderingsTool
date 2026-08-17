@@ -436,7 +436,7 @@ def test_a_consolidated_attribute_states_what_folded_into_it():
 def test_a_settled_attribute_keeps_the_discovered_attribute_fields():
     """It is what the taxonomy carries onward, so it must still be a complete
     attribute and not just a provenance record."""
-    item = SettledAttribute(
+    item = SettledAttribute(boundary_rules=[], 
         attribute_name="Wachttijd", attribute_definition="…",
         example_observations=["lang wachten"], source_attribute_ids=["A1"])
     assert item.attribute_name == "Wachttijd"

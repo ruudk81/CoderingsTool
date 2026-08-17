@@ -245,11 +245,15 @@ def test_het_facetmenu_toont_de_attribuutnamen_niet():
 
 
 def test_het_vangnetfacet_staat_gemarkeerd_in_het_menu():
-    """Op de marker, nooit op de naam: die staat in de enquêtetaal."""
+    """Op de marker, nooit op de naam: die staat in de enquêtetaal.
+
+    De marker staat op een eigen regel, dus de toets loopt over het blok van
+    het facet en niet over de regel met zijn id.
+    """
     block, id_map = build_facet_menu(FACETS)
     assert id_map["F3"]["is_drain"] is True
-    gemarkeerd = [r for r in block.splitlines() if "[CATCH-ALL]" in r]
-    assert len(gemarkeerd) == 1 and "[F3]" in gemarkeerd[0]
+    gemarkeerd = [b for b in block.split("\n\n") if "[CATCH-ALL]" in b]
+    assert len(gemarkeerd) == 1 and gemarkeerd[0].startswith("[F3]")
 
 
 def test_het_responsemodel_laat_alleen_uitgedeelde_ids_toe():
