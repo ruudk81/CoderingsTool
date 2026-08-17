@@ -98,6 +98,11 @@ def build_facet_candidate_block(
         lines.append(
             "    Attributes: "
             + (", ".join(names) if names else "(none)"))
+        # Rule 4 lets prevalence set the granularity, so the number has to be
+        # in front of the model. It counts how often this candidate's name was
+        # proposed across the passes — but the name itself is deliberately not
+        # rendered, so the line says nothing about a name the model cannot see.
+        lines.append(f"    Proposed in {seen} of {n_passes} independent passes")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
@@ -127,16 +132,19 @@ def build_facet_consolidation_prompt(
 Your task is to organize the candidate attributes within one facet into the smallest possible set of meaningful attribute-containers that is MECE.
 Default toward consolidation. A distinction should survive only when keeping it separate is necessary to preserve meaningful semantic differences in the context of the survey question.
 
-{build_context_block(
-    language=language, survey_question=survey_question, sector=sector,
-    entity=entity, topic=topic, perspective=perspective, intent=intent)}
+# Survey context  
 
-This is the taxonomy structure you are working with:
 {build_context_block(
     language=language,
     dimension_name=dimension_name, dimension_description=dimension_description,
     survey_question=survey_question,
-    sector=sector, entity=entity, topic=topic, perspective=perspective, intent=intent)}    
+    sector=sector, entity=entity, topic=topic, perspective=perspective, intent=intent)}
+    
+# Taxonomy structure 
+
+{build_taxonomy_block_L3(
+    dimension=dimension, dimension_name=dimension_name,
+    dimension_description=dimension_description)}
 
 You are working within this domain:
 <taxonomy_domain>
@@ -166,6 +174,7 @@ Rules
 2. Keep a distinction only when it is substantively meaningful and clearly codable. Differences in wording, synonyms, closely related meanings, or broad-versus-narrow versions of the same idea normally belong in the same container.
 3. The final attributes must be MECE. Each substantive idea should have one natural home, and together the attributes must cover all substantive material belonging to this facet. Avoid overlapping attributes and parent/child attributes alongside each other.
 4. Use prevalence to simplify. Small or low-prevalence distinctions should normally be absorbed into the nearest broader attribute rather than becoming separate attributes, provided the resulting container remains semantically coherent.
+5. Account for every candidate on its id. Every [F#] shown must appear in `source_facet_ids` of at least one surviving facet. Coverage is checked on the ids and never on names: two candidates of one domain may carry the same name. One you leave out is not removed — it stays where it was, next to the facet you meant to replace it with, so never drop a candidate.
 
 Before returning the result, ask one final question:
 "Can any two remaining attributes still be merged without losing an important, clearly codable distinction?"
@@ -232,8 +241,8 @@ def build_attribute_candidate_block(
     for attribute_id, attribute in build_attribute_candidate_index(attributes).items():
         times = recurrence.get(attribute.attribute_name, 1)
         lines.append(
-            f"[{attribute_id}] {attribute.attribute_name} ")
-            #f"[{times}/{n_passes} passes]: {attribute.attribute_definition}")
+            f"[{attribute_id}] {attribute.attribute_name} "
+            f"[{times}/{n_passes} passes]: {attribute.attribute_definition}")
         for example in [e for e in attribute.example_observations
                         if e][:_EXAMPLES_SHOWN]:
             lines.append(f"    e.g. \"{example}\"")
@@ -250,6 +259,8 @@ def build_attribute_consolidation_prompt(
     perspective: str,
     intent: str,
     dimension: "DimensionDefinition",
+    dimension_name: str,
+    dimension_description: str,
     facet_name: str,
     facet_definition: str,
     facet_question: str,
@@ -258,22 +269,30 @@ def build_attribute_consolidation_prompt(
     question_line = (f"\nThe question this facet answers: {facet_question}"
                      if facet_question else "")
     return f"""You are a taxonomy consolidation specialist for surveys.
-Your task is to organize the attributes within one facet into the smallest possible set of meaningful attribute-containers that is MECE.
+Your task is to organize the attributes into the smallest possible set of meaningful attribute-containers within a given facet that is MECE.
 Default toward consolidation. A distinction should survive only when keeping it separate is necessary to preserve meaningful semantic differences in the context of the survey question.
 
+# Survey context 
+
 {build_context_block(
-    language=language, survey_question=survey_question, sector=sector,
-    entity=entity, topic=topic, perspective=perspective, intent=intent)}
+    language=language,
+    dimension_name=dimension_name, dimension_description=dimension_description,
+    survey_question=survey_question,
+    sector=sector, entity=entity, topic=topic, perspective=perspective, intent=intent)}
+    
+# Taxonomy structure 
 
-{build_facets_attributes_block(dimension=dimension)}
-
+{build_taxonomy_block_L3(
+    dimension=dimension, dimension_name=dimension_name,
+    dimension_description=dimension_description)}
+    
 You are working inside this facet:
 
 <taxonomy_facet>
 Facet: {facet_name} — {facet_definition}{question_line}
 </taxonomy_facet>
 
-Here are the attributes you need to organize into a minimal set:
+Here are the attributes you need to organize into a minimal set of meaningful containers:
 <candidates>
 {candidate_block}
 </candidates>
@@ -296,6 +315,7 @@ Rules
 2. Keep a distinction only when it is substantively meaningful and clearly codable. Differences in wording, synonyms, closely related meanings, or broad-versus-narrow versions of the same idea normally belong in the same container.
 3. The final attributes must be MECE. Each substantive idea should have one natural home, and together the attributes must cover all substantive material belonging to this facet. Avoid overlapping attributes and parent/child attributes alongside each other.
 4. Use prevalence to simplify. Small or low-prevalence distinctions should normally be absorbed into the nearest broader attribute rather than becoming separate attributes, provided the resulting container remains semantically coherent.
+5. Account for every candidate on its id. Every [A#] shown must appear in `source_attribute_ids` of at least one surviving attribute. Coverage is checked on the ids and never on names. Merging is allowed here; losing is not — one facet in view cannot judge where something else belongs, so never drop a candidate.
 
 Before returning the result, ask one final question:
 "Can any two remaining attributes still be merged without losing an important, clearly codable distinction?"

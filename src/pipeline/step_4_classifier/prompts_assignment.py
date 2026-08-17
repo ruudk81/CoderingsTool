@@ -9,9 +9,8 @@ from pydantic import Field, create_model
 from .drains import is_drain_item
 from .prompts_shared import INSTRUCTOR_HINT, build_context_block
 
-
 # =============================================================================
-# HET MENU
+# ATTRIBUTE ASSIGNMENT
 # =============================================================================
 
 def build_assignment_menu(
@@ -82,17 +81,8 @@ def build_assignment_menu(
 
     return "\n\n\n".join(blocks), id_map
 
-# =============================================================================
-# ATTRIBUTE  
-# =============================================================================
-
 def build_assignment_model(attribute_ids: List[str]):
-    """Runtime model in which the menu is the id space.
-
-    The menu sits in the schema as a `Literal`, so an invented id is a schema
-    error that instructor retries — instead of a content error that surfaces
-    three phases later as an attribute nobody knows.
-    """
+    """Runtime model in which the menu is the id space."""
     id_literal = Literal[tuple(attribute_ids)]  # type: ignore[valid-type]
     return create_model(
         "AssignmentResult",
@@ -117,6 +107,8 @@ def build_assignment_prompt(
     intent: str,
     domain_label: str,
     domain_definition: str,
+    dimension_name: str,
+    dimension_description: str,
     menu_block: str,
     label: str,
 ) -> str:
@@ -125,8 +117,10 @@ def build_assignment_prompt(
 the single attribute that best captures what it refers to.
 
 {build_context_block(
-    language=language, survey_question=survey_question, sector=sector,
-    entity=entity, topic=topic, perspective=perspective, intent=intent)}
+    language=language,
+    dimension_name=dimension_name, dimension_description=dimension_description,
+    survey_question=survey_question,
+    sector=sector, entity=entity, topic=topic, perspective=perspective, intent=intent)}
 
 The response has already been placed in this domain:
 
@@ -253,6 +247,8 @@ def build_facet_assignment_prompt(
     topic: str,
     perspective: str,
     intent: str,
+    dimension_name: str,
+    dimension_description: str,
     domain_label: str,
     domain_definition: str,
     menu_block: str,
@@ -262,8 +258,10 @@ def build_facet_assignment_prompt(
 Pick the one facet this observation belongs to.
 
 {build_context_block(
-    language=language, survey_question=survey_question, sector=sector,
-    entity=entity, topic=topic, perspective=perspective, intent=intent)}
+    language=language,
+    dimension_name=dimension_name, dimension_description=dimension_description,
+    survey_question=survey_question,
+    sector=sector, entity=entity, topic=topic, perspective=perspective, intent=intent)}
 
 You are working inside this domain:
 <taxonomy_domain>

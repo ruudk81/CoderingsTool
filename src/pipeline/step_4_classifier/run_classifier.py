@@ -42,7 +42,7 @@ LIMIT_N = None
 #
 # WARNING: a phase stop still writes its partial taxonomy to the cache, over the
 # complete one that was there. Copy data/cache before an early-stop run.
-STOP_AFTER_PHASE = "facet_settle"
+STOP_AFTER_PHASE = None
 
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key

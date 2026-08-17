@@ -32,7 +32,7 @@ from pipeline.step_4_classifier.prompts_valence import ValenceNeutralRenameRespo
 from pipeline.step_4_classifier.prompts_assignment import build_facet_assignment_model
 from pipeline.step_4_classifier.prompts_facet_settle import build_facet_settle_model
 
-SHOW_ALL = True
+SHOW_ALL = False
 
 # Four phases build their response model at call time, because the menu ids are
 # Literals in the schema. Where the capture carries those ids, the builder
