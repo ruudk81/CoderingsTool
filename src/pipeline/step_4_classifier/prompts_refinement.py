@@ -231,6 +231,11 @@ each such group into one.
   across domains.
 - Most attributes belong to no group. An attribute that stays exactly where it is returns as
   a group of one, listing only its own id.
+- A group of one may still change scope. Where an attribute does not answer the question its
+  own facet asks, and another facet in the inventory asks the question it does answer, name
+  that facet's id as the `home_id`. This moves the attribute and its responses without merging
+  anything. Never use it to even out sizes, and never for an attribute that already answers
+  its own facet's question.
 
 Leave the catch-all attributes alone. They are per-domain offers, not concepts, and folding
 two of them together would merge two different domains' residuals into one meaningless bucket.

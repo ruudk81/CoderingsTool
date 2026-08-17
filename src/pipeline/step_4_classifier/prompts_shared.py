@@ -240,15 +240,21 @@ def build_cross_scope_model(item_ids: List[str], noun: str):
                 f"A {noun} kept unchanged lists exactly one id"))),
         home_id=(id_literal, Field(
             ..., description=(
-                "The id whose scope this one keeps. Must be one of the source_ids. "
-                "Pick the scope where most of these responses already sit"))),
+                "The id whose domain and facet this one keeps. For a group of "
+                "more than one, pick the scope where most of these responses "
+                "already sit. A group of one normally names itself; it may name "
+                "another id's scope for one reason only — the "
+                f"{noun} does not answer the question its own facet asks, and "
+                "that one's facet does"))),
     )
     return create_model(
         "CrossScopeResult",
         scratchpad=(str, Field(..., description=(
             f"Reasoning: (1) group the {noun}s that mean the same thing across scopes, "
             f"(2) for each group pick the scope where most of its responses sit, "
-            f"(3) check every id appears exactly once"))),
+            f"(3) check whether any lone {noun} answers a different facet's "
+            f"question than its own, "
+            f"(4) check every id appears exactly once"))),
         items=(List[item], Field(
             ..., description="The merged inventory. Every input id appears exactly once")),
     )

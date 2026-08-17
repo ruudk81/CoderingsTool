@@ -2954,11 +2954,21 @@ class TaxonomyClassifier:
         if len(entries) < 2:
             return structure, assignments
 
+        # The facet question rides along in the header. Without it this phase
+        # sees facet NAMES only, and the one judgement that can move a lone
+        # attribute — does it answer the question its facet asks? — has nothing
+        # to test against. A facet settled without a call carries no question,
+        # and then the line is simply left off.
+        questions = {(d, f["facet_name"]): (f.get("facet_question") or "")
+                     for d, facets in structure.items() for f in facets}
         lines, current = [], None
         for entry in entries:
             head = (entry["domain"], entry["facet"])
             if head != current:
                 lines.append(f"\n{entry['domain']} › {entry['facet']}")
+                question = questions.get(head)
+                if question:
+                    lines.append(f"    Question it answers: {question}")
                 current = head
             lines.append(
                 f"  [{entry['id']}] {entry['attribute']['attribute_name']} — "
@@ -3039,6 +3049,19 @@ class TaxonomyClassifier:
                     "action": "cross_domain_merge", "result": item.name,
                     "sources": [e["attribute"]["attribute_name"] for e in sources],
                     "home": f"{home['domain']} › {home['facet']}"})
+            elif (sources[0]["domain"], sources[0]["facet"]) != (
+                    home["domain"], home["facet"]):
+                # A move without a merge. It needs its own line because
+                # `cross_domain_merge` only fires on more than one source, and
+                # churn — not correctness — is what this exit risks: without a
+                # count there is no way to tell a phase that placed four
+                # attributes better from one that shuffled forty.
+                self._action_log.append({
+                    "action": "attribute_relocated_cross_domain",
+                    "attribute": sources[0]["attribute"]["attribute_name"],
+                    "result": item.name,
+                    "from": f"{sources[0]['domain']} › {sources[0]['facet']}",
+                    "to": f"{home['domain']} › {home['facet']}"})
 
         for entry in entries:
             if entry["id"] in claimed:
