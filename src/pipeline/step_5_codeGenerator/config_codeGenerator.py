@@ -1,8 +1,11 @@
 """
 Configuration for Code Generator.
 
-Pipeline: taxonomy_input -> concept_inventory -> relations -> consolidator ->
-codebook_writer -> mece.
+Pipeline: taxonomy_input -> concept_inventory -> v2.attribute_cards ->
+v2.consolidation -> v2.grouping -> codebook_writer.
+
+De `umbrella_merge`- en `mece_*`-velden bedienen alleen `_quarantine_v1/`; die
+keten draait niet meer, maar moet wel kunnen blijven importeren.
 """
 
 from dataclasses import dataclass
@@ -13,7 +16,7 @@ from config import get_step_model
 class CodebookConfig:
     """Configuration for Codebook Generation."""
 
-    # LLM settings (derived from MODEL_FAMILY toggle)
+    # LLM settings — sport uit de modelladder (config.py STEP_MODEL)
     model_relations: str = get_step_model("codegen_relations")  # relations between attributes
     model_umbrella_merge: str = get_step_model("codegen_umbrella_merge")  # consolidate umbrella names
     model_writer: str = get_step_model("codegen_writer")  # codebook writing from clusters
