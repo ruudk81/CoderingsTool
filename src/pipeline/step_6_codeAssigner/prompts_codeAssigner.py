@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 
 # Tier-aware validation: True for mini/default (strict), False for nano (lenient).
 # Set once at CodeAssigner init via configure_validation_mode().
@@ -27,7 +27,7 @@ def configure_validation_mode(model: str) -> None:
 # =============================================================================
 
 def _build_codes_block(
-    codes: List[CodeFromAttributes],
+    codes: List[ConsolidatedCode],
     no_fit_label: Optional[str] = None,
 ) -> str:
     """Format codes for assignment prompt (code-only, no attributes)."""
@@ -62,7 +62,7 @@ def build_code_assignment_prompt(
     survey_question: str,
     language: str,
     dataset_context_section: str,
-    codes: List[CodeFromAttributes],
+    codes: List[ConsolidatedCode],
     no_fit_label: Optional[str],
     idea,
     facet_lookup: Optional[Dict[str, str]] = None,

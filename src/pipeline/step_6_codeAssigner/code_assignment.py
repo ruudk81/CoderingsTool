@@ -49,7 +49,7 @@ from .prompts_codeAssigner import (
     CodeAssignmentResponse,
     configure_validation_mode,
 )
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import CodeFromAttributes
+from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from models import CodeAssignment, CodeAssignmentBatch
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
@@ -92,7 +92,7 @@ class CodeAssigner:
         partition_set: DomainSet,
         extraction_metadata: Optional[models.ExtractionMetadata] = None,
         prompt_printer=None,
-        codes: List[CodeFromAttributes] = None,
+        codes: List[ConsolidatedCode] = None,
         attribute_assignments: Optional[Dict[str, str]] = None,
         cost_tracker=None,
     ):
