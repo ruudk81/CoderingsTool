@@ -21,9 +21,11 @@ def test_prompt_requires_direction_in_name_and_definition():
     prompt = build_writer_prompt_v2([shape("V1", "negative")], CONCEPTS,
                                     "vooral in ...", "Dutch")
 
-    lowered = prompt.lower()
-    assert "direction" in lowered
-    assert "name" in lowered and "definition" in lowered
+    # Rule 1 specifically requires direction in BOTH name and definition
+    assert "must be readable in" in prompt
+    assert "BOTH its name and its definition" in prompt
+    # v2 has three rules (Rule 1 about direction), v1 has two
+    assert "Three rules:" in prompt
 
 
 def test_neutral_codes_are_explicitly_exempt_from_carrying_direction():
@@ -32,7 +34,8 @@ def test_neutral_codes_are_explicitly_exempt_from_carrying_direction():
     prompt = build_writer_prompt_v2([shape("V1", "neutral")], CONCEPTS,
                                     "vooral in ...", "Dutch")
 
-    assert "neutral" in prompt.lower()
+    # Rule 1 explicitly exempts neutral codes from invented evaluation
+    assert "do not invent an evaluation it does not carry" in prompt
 
 
 def test_prompt_still_shows_members_and_ends_with_the_hint():
