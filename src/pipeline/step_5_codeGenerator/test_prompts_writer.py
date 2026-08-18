@@ -1,6 +1,6 @@
 """Tests for the writing prompt (step 4 of step 5)."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
-from pipeline.step_5_codeGenerator.consolidator import CodeShape
+from pipeline.step_5_codeGenerator.code_shape import CodeShape
 from pipeline.step_5_codeGenerator.prompts_writer import (
     CodeText, build_writer_prompt, make_writer_model,
 )

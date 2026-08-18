@@ -43,6 +43,7 @@ async def resolve_consolidation(
                     "model": config.model_relations,
                     "n_cards": len(task["cards"]),
                     "card_ids": [c.attribute_id for c in task["cards"]],
+                    "card_names": [c.name for c in task["cards"]],
                     "language": language,
                 },
             )

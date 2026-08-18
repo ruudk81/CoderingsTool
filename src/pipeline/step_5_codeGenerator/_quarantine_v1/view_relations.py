@@ -25,12 +25,12 @@ from config import CacheConfig
 from utils.cacheManager import CacheManager
 from utils.llm import token_tracker
 
-from pipeline.step_5_codeGenerator import run_codeGenerator
+from pipeline.step_5_codeGenerator._quarantine_v1 import run_codeGenerator
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult, tagged
-from pipeline.step_5_codeGenerator.prompts_umbrella_merge import Umbrella, umbrellas_from_relations
-from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
+from pipeline.step_5_codeGenerator._quarantine_v1.prompts_relations import RelationsResult, tagged
+from pipeline.step_5_codeGenerator._quarantine_v1.prompts_umbrella_merge import Umbrella, umbrellas_from_relations
+from pipeline.step_5_codeGenerator._quarantine_v1.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
 from pipeline.step_5_codeGenerator.taxonomy_input import build_attribute_refs, build_idea_units
 
 CLEAR, SMALL = "✓ eigen code", "· te klein"

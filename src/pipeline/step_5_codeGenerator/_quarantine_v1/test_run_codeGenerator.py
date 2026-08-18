@@ -10,9 +10,9 @@ including the shape whose own members that text does not describe.
 `_index_codes_by_shape_key` keys on `shape.key` instead (unique per run, never
 reused), so a name collision can no longer make the mapping collapse.
 """
-from pipeline.step_5_codeGenerator import run_codeGenerator as rcg
+from pipeline.step_5_codeGenerator._quarantine_v1 import run_codeGenerator as rcg
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
-from pipeline.step_5_codeGenerator.consolidator import CodeShape
+from pipeline.step_5_codeGenerator.code_shape import CodeShape
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 
 

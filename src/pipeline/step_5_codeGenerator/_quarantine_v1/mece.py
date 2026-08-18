@@ -38,15 +38,15 @@ from config import get_reasoning_params
 from utils.llm import RateLimits
 from utils.smoothRequester import SmoothRequester
 
-from .config_codeGenerator import CodebookConfig
-from .consolidator import CodeShape
+from ..config_codeGenerator import CodebookConfig
+from ..code_shape import CodeShape
 from .prompts_mece import (
     CandidatePair, CodeCandidate, IdeaAssignment, OverlapDetectionResult, OverlapVerdict,
     ProbeIdea, ProbeResult, build_overlap_prompt, build_probe_prompt, make_overlap_model,
     make_probe_model,
 )
-from .prompts_relations import _shuffled
-from .taxonomy_input import IdeaUnit
+from ..prompts_common import _shuffled
+from ..taxonomy_input import IdeaUnit
 
 DETECT_PHASE = "step5_mece_detect"
 PROBE_PHASE = "step5_mece_probe"

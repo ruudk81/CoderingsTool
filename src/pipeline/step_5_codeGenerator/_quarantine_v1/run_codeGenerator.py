@@ -1,20 +1,25 @@
 #%%
 
-"""
-Step 5: Code Generator runner.
+"""De v1-keten van step 5 — MET PENSIOEN sinds de v2-promotie (2026-08-18).
 
-Pipeline: load taxonomy from step 4 cache, then build the codebook:
+Draait niet meer in productie: `run_pipeline.py` en `app_backend.py` roepen
+`v2.run_codebook_v2` aan. Deze module blijft staan omdat v2 op één dataset is
+gemeten; blijkt v2 elders te breken, dan is dit de keten om tegen af te zetten.
 
-    taxonomy_input -> concept_inventory -> relations (2 LLM calls) ->
-    consolidator (deterministic: dedup, pooling, direction) -> codebook_writer
-    (1 LLM call) -> mece (2 LLM calls per round, iterating) -> codebook_writer
-    (re-write of merged codes only) -> three deterministic guards (duplicate
-    names, duplicate definitions, naming mismatch) -> Overig sweep ->
-    scorecard -> cache for step 6.
+    taxonomy_input -> concept_inventory -> relations (2 LLM-calls) ->
+    consolidator (deterministisch: dedup, pooling, richting) -> codebook_writer
+    (1 LLM-call) -> mece (2 LLM-calls per ronde, iteratief) -> codebook_writer
+    (herschrijven van samengevoegde codes) -> drie deterministische bewakers ->
+    Overig-sweep -> scorecard -> cache voor step 6.
 
-`generate_codebook()` is the reusable orchestration entry point — also used
-by run_codebook_preview.py (same chain, a different cache dir, a markdown
-report instead of a cache write).
+Wat v1 en v2 delen staat een map hoger: `codebook_io.py` (inlezen, wegschrijven,
+rapporteren), `code_shape.py`, `prompts_common.py`, `codebook_writer.py`.
+
+Waarom v1 met pensioen ging staat in
+`.superpowers/specs/2026-08-18-step5-v2-promotienotitie.md`.
+
+Handmatig draaien:
+    cd src && python -m pipeline.step_5_codeGenerator._quarantine_v1.run_codeGenerator
 """
 
 import asyncio
@@ -25,163 +30,44 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# Add parent paths for imports
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-import models
-from config import MISCELLANEOUS_CODE_LABELS
-from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.costTracker import CostTracker
-from utils.exportNaming import export_filename
-from utils.identity import ensure_codebook_ids
 from utils.llm import token_tracker
 from utils.promptPrinter import PromptPrinter
 from utils.saveVerbose import VerboseCapture
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
-from pipeline.step_5_codeGenerator.codebook_verifier import (
-    build_scorecard, collect_idea_assignments, collect_taxonomy_attributes, format_scorecard,
+from pipeline.step_5_codeGenerator.code_shape import CodeShape, _match_shape, _shape_lookup
+from pipeline.step_5_codeGenerator.codebook_io import (
+    FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE, apply_overig_sweep,
+    cache_mece_results, load_classified_ideas, load_extraction_metadata,
+    load_taxonomy_cache, print_codebook_results, run_scorecard, save_prompts_to_json,
 )
 from pipeline.step_5_codeGenerator.codebook_writer import (
     find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names, write_codebook,
 )
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.consolidator import CodeShape, consolidate, normalize_relations
-from pipeline.step_5_codeGenerator.mece import enforce_mece
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
-from pipeline.step_5_codeGenerator.prompts_mece import CodeCandidate
-from pipeline.step_5_codeGenerator.prompts_umbrella_merge import umbrellas_from_relations
-from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
 from pipeline.step_5_codeGenerator.taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 
-from models import CodingResultsCache
-from models import (
-    DomainResultModel, DomainSet, TaxonomyClassifiedModel, TaxonomyResultsCache,
-)
+from .consolidator import consolidate, normalize_relations
+from .mece import enforce_mece
+from .prompts_mece import CodeCandidate
+from .prompts_umbrella_merge import umbrellas_from_relations
+from .relations import apply_umbrella_merge, resolve_relations, resolve_umbrella_merge
 
-FALLBACK_DIAGNOSTIC = "Do responses mainly differ in qualities, traits, images, or associations?"
-
-
-# =============================================================================
-from test_data import TEST_DATA
-
-FILENAME = TEST_DATA.filename
-VARIABLE = TEST_DATA.var_name
-SAMPLE_SIZE = TEST_DATA.sample_size
+from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from models import TaxonomyResultsCache
 
 PRINT_PROMPTS = False  # Set True to print prompts to console in real-time
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
 CONFIG = CodebookConfig()
 
 
 # =============================================================================
-# DATA LOADING
-# =============================================================================
-
-def load_extraction_metadata(
-    filename: Optional[str] = None,
-    variable: Optional[str] = None,
-    sample_size: Optional[int] = None,
-    variable_key: Optional[str] = None,
-) -> Optional[models.ExtractionMetadata]:
-    """Load ExtractionMetadata from cache (if available)."""
-    filename = FILENAME if filename is None else filename
-    variable = VARIABLE if variable is None else variable
-    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
-    if variable_key is None:
-        variable_key = generate_enhanced_variable_key(
-            selected_variables=[variable],
-            is_merged=False,
-            sample_size=sample_size
-        )
-
-    cache_manager = CacheManager()
-    metadata = cache_manager.load_metadata_from_cache(
-        filename=filename,
-        step="extracted_ideas",
-        variable_key=variable_key,
-        model_cls=models.ExtractionMetadata
-    )
-
-    if metadata:
-        print(f"Loaded ExtractionMetadata: primary_dimension={metadata.primary_dimension}")
-        if metadata.var_lab:
-            print(f"  Survey question (var_lab): {metadata.var_lab}")
-    else:
-        print("ExtractionMetadata not found in cache (optional)")
-
-    return metadata
-
-
-def load_taxonomy_cache(
-    filename: Optional[str] = None,
-    variable: Optional[str] = None,
-    sample_size: Optional[int] = None,
-    variable_key: Optional[str] = None,
-) -> Optional[TaxonomyResultsCache]:
-    """Load cached taxonomy results from step 4."""
-    filename = FILENAME if filename is None else filename
-    variable = VARIABLE if variable is None else variable
-    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
-    if variable_key is None:
-        variable_key = generate_enhanced_variable_key(
-            selected_variables=[variable],
-            is_merged=False,
-            sample_size=sample_size,
-        )
-
-    cache_manager = CacheManager()
-    return cache_manager.load_metadata_from_cache(
-        filename=filename,
-        step="taxonomy",
-        variable_key=variable_key,
-        model_cls=TaxonomyResultsCache,
-    )
-
-
-def load_classified_ideas(
-    filename: Optional[str] = None,
-    variable: Optional[str] = None,
-    sample_size: Optional[int] = None,
-    variable_key: Optional[str] = None,
-) -> Optional[List[TaxonomyClassifiedModel]]:
-    """Load step 4's taxonomy-classified growing model (ideas with attribute/valence)."""
-    filename = FILENAME if filename is None else filename
-    variable = VARIABLE if variable is None else variable
-    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
-    if variable_key is None:
-        variable_key = generate_enhanced_variable_key(
-            selected_variables=[variable],
-            is_merged=False,
-            sample_size=sample_size,
-        )
-
-    cache_manager = CacheManager()
-    data = cache_manager.load_from_cache(
-        filename=filename,
-        step="taxonomy_classified",
-        variable_key=variable_key,
-        model_cls=TaxonomyClassifiedModel,
-    )
-
-    if data:
-        n_ideas = sum(
-            len(r.response_ideas) for r in data if r.response_ideas
-        )
-        print(f"Loaded classified ideas: {len(data)} responses, {n_ideas} ideas")
-    else:
-        print("WARNING: taxonomy_classified growing model not found in cache")
-
-    return data
-
-
-# =============================================================================
-# CODEBOOK GENERATION — the reusable chain
+# DE KETEN
 # =============================================================================
 
 class _RoundLog:
@@ -204,26 +90,6 @@ class _CollisionLog:
 
     def add(self, **kwargs):
         self.collisions.append(kwargs)
-
-
-def _shape_lookup(
-    shapes: List[CodeShape], concept_by_id: Dict[str, Concept],
-) -> Dict[tuple, CodeShape]:
-    """Key shapes by (their source-attribute names, valence) — the same two
-    things `write_codebook` echoes back on each `ConsolidatedCode` — so a
-    returned code can be matched to the shape it came from without needing
-    write_codebook to carry shape identity through the LLM round-trip."""
-    lookup = {}
-    for shape in shapes:
-        names = frozenset(concept_by_id[m].name for m in shape.members if m in concept_by_id)
-        lookup[(names, shape.valence)] = shape
-    return lookup
-
-
-def _match_shape(
-    code: ConsolidatedCode, lookup: Dict[tuple, CodeShape],
-) -> Optional[CodeShape]:
-    return lookup.get((frozenset(code.source_attributes), code.valence))
 
 
 def _index_codes_by_shape_key(
@@ -399,191 +265,6 @@ def report_codebook_build(result: GeneratedCodebook) -> None:
                 print(f"    {p['code_a']} vs {p['code_b']}: accuracy {p['accuracy']:.0%}, "
                       f"both_rate {p['both_rate']:.0%} -> {decision}")
 
-
-# =============================================================================
-# RESULTS PRINTING
-# =============================================================================
-
-def print_codebook_results(codes: List[ConsolidatedCode]):
-    """Print codebook results: codes with definitions and source attributes."""
-    n_pos = sum(1 for c in codes if getattr(c, 'valence', '') == 'positive')
-    n_neg = sum(1 for c in codes if getattr(c, 'valence', '') == 'negative')
-    n_neu = len(codes) - n_pos - n_neg
-
-    print(f"\n{'='*80}")
-    print(f"CODEBOOK ({len(codes)} codes: {n_pos} positive, {n_neg} negative, {n_neu} neutral)")
-    print(f"{'='*80}")
-
-    for j, code in enumerate(codes, 1):
-        indicators = ", ".join(code.typical_indicators[:5]) if code.typical_indicators else "(none)"
-        sources = ", ".join(code.source_attributes[:5]) if code.source_attributes else "(none)"
-        valence = getattr(code, 'valence', '') or ''
-        diagnostic = getattr(code, 'diagnostic_test', '') or ''
-        valence_tag = f" ({valence})" if valence else ""
-        print(f"\n    [{j}] {code.code_name}{valence_tag}")
-        print(f"        Definition: {code.definition}")
-        if diagnostic:
-            print(f"        Diagnostic: {diagnostic}")
-        print(f"        Indicators: {indicators}")
-        print(f"        Source attributes: {sources}")
-
-    print(f"\n{'='*80}")
-    print(f"Total codes: {len(codes)}")
-    print(f"{'='*80}\n")
-
-
-# =============================================================================
-# MECE CACHING
-# =============================================================================
-
-def cache_mece_results(
-    partition_set: DomainSet,
-    pydantic_results: Dict[str, DomainResultModel],
-    codes: List[ConsolidatedCode],
-    filename: Optional[str] = None,
-    variable: Optional[str] = None,
-    sample_size: Optional[int] = None,
-    variable_key: Optional[str] = None,
-    step: str = "mece_codes",
-) -> None:
-    """Cache codebook results for later use by code assignment (step 6).
-
-    `step` names the cache key step 6 and step 7 read from."""
-    filename = FILENAME if filename is None else filename
-    variable = VARIABLE if variable is None else variable
-    sample_size = SAMPLE_SIZE if sample_size is None else sample_size
-    if variable_key is None:
-        variable_key = generate_enhanced_variable_key(
-            selected_variables=[variable],
-            is_merged=False,
-            sample_size=sample_size,
-        )
-
-    n_codes = len(codes)
-    mece_cache = CodingResultsCache(
-        partition_set=partition_set,
-        partition_results=pydantic_results,
-        label_counts={
-            name: r.n_labels for name, r in pydantic_results.items()
-        },
-        total_categories=n_codes,
-        raw_codes=[c.model_dump() for c in codes],
-    )
-
-    # Mint K# (list order: written codes, then Overig) and fill any
-    # source_attribute_ids still missing — new codebooks are id-bearing on
-    # disk, not just normalized at load.
-    ensure_codebook_ids(mece_cache)
-
-    cache_manager = CacheManager()
-    saved = cache_manager.save_metadata_to_cache(
-        metadata=mece_cache,
-        filename=filename,
-        step=step,
-        variable_key=variable_key,
-    )
-    total_facets = sum(
-        len(r.facets) for r in pydantic_results.values()
-    )
-    if saved:
-        print(f"Codebook cached "
-              f"({n_codes} codes, {total_facets} facets across "
-              f"{len(pydantic_results)} domains)")
-    else:
-        print(f"ERROR: codebook NOT cached ({n_codes} codes) — downstream steps "
-              f"will regenerate. See CACHE SAVE FAILED above for the cause.")
-
-
-# =============================================================================
-# SCORECARD
-# =============================================================================
-
-def apply_overig_sweep(
-    codes: List[ConsolidatedCode],
-    pydantic_results: Dict[str, DomainResultModel],
-    language: str,
-) -> Optional[str]:
-    """Route attributes no code placed into a single catch-all 'Overig' code.
-
-    Guarantees 100% attribute/idea coverage by construction. Mutates `codes`
-    in place. Returns the Overig code name.
-    """
-    # Referenced = taxonomy attributes AND attributes ideas were actually assigned to
-    # (the latter catches step-4 dangling assignments → guarantees 100% idea coverage).
-    all_attrs = collect_taxonomy_attributes(pydantic_results)
-    idea_attrs = [a for a in collect_idea_assignments(pydantic_results).values() if a]
-    referenced = list(dict.fromkeys(all_attrs + idea_attrs))
-    covered = set()
-    for code in codes:
-        covered.update(code.source_attributes or [])
-    orphans = [a for a in referenced if a not in covered]
-    # Always emit Overig — even with zero orphans at generation time, step 6
-    # assignment can still produce an idea with no confident code match; Overig
-    # must exist as a routing target instead of falling through to __UNASSIGNED__.
-
-    # Union of ids per orphan name across ALL domains — the catch-all covers the
-    # attribute wherever it lives. Dangling idea-assigned names have no id.
-    name_to_ids: Dict[str, List[str]] = {}
-    for r in pydantic_results.values():
-        for attrs in r.attributes.values():
-            for a in attrs:
-                if a.get("attribute_name") and a.get("attribute_id"):
-                    ids = name_to_ids.setdefault(a["attribute_name"], [])
-                    if a["attribute_id"] not in ids:
-                        ids.append(a["attribute_id"])
-
-    label = MISCELLANEOUS_CODE_LABELS.get(language, "Overig")
-    codes.append(ConsolidatedCode(
-        code_name=label,
-        definition="Catch-all voor antwoorden die geen specifieke code kregen "
-                   "(o.a. diffuus of algemeen oordeel zonder concreet onderwerp).",
-        diagnostic_test="valt buiten alle specifieke codes",
-        valence="neutral",
-        typical_indicators=[],
-        source_attributes=orphans,  # may be empty list
-        source_attribute_ids=[i for name in orphans for i in name_to_ids.get(name, [])],
-    ))
-    return label
-
-
-def run_scorecard(
-    codes: List[ConsolidatedCode],
-    pydantic_results: Dict[str, DomainResultModel],
-    overig_code_name: Optional[str] = None,
-):
-    """Build the post-generation verification scorecard (PASS/FAIL) and print it.
-
-    Console only — the PASS/FAIL readout is captured in the verbose log (which is
-    auto-pruned); no separate JSON file is written.
-    """
-    scorecard = build_scorecard(codes, pydantic_results, overig_code_name)
-    print("\n" + format_scorecard(scorecard))
-    return scorecard
-
-
-# =============================================================================
-# PROMPT SAVING
-# =============================================================================
-
-def save_prompts_to_json(prompt_printer):
-    """Save captured prompts to JSON file.
-
-    Everything the runner captured goes in, unfiltered — no doctype whitelist
-    here (see run_classifier.py's save_prompts_to_json for why).
-    """
-    if not prompt_printer or not prompt_printer.prompts:
-        return
-
-    prompts_dir = project_root / "exports" / "prompts"
-    prompts_dir.mkdir(parents=True, exist_ok=True)
-
-    prompt_printer.save_prompts(str(prompts_dir / export_filename(
-        FILENAME, VARIABLE, SAMPLE_SIZE, "prompts_step5", "json")))
-
-
-# =============================================================================
-# MAIN
-# =============================================================================
 
 def _project_corrected(corrected_taxonomy):
     """A copy of the corrected taxonomy where the corrected_* fields are exposed as

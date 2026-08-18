@@ -1,6 +1,6 @@
 """Tests for merging and direction (step 3 of step 5)."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
-from pipeline.step_5_codeGenerator.consolidator import consolidate
+from pipeline.step_5_codeGenerator._quarantine_v1.consolidator import consolidate
 
 
 def concept(attribute_id, name, pos=0, neg=0, neu=0):
@@ -14,7 +14,7 @@ def concept(attribute_id, name, pos=0, neg=0, neu=0):
 
 def relations(mapping, synonyms=None):
     """mapping: attribute_id -> umbrella; synonyms: attribute_id -> attribute_id."""
-    from pipeline.step_5_codeGenerator.consolidator import RelationMap
+    from pipeline.step_5_codeGenerator._quarantine_v1.consolidator import RelationMap
     return RelationMap(umbrella=mapping, synonym_of=synonyms or {})
 
 
@@ -99,7 +99,7 @@ def test_neutral_pool_above_threshold_gets_its_own_code():
 
 
 def test_normalize_maps_qualified_names_back_to_ids():
-    from pipeline.step_5_codeGenerator.consolidator import normalize_relations
+    from pipeline.step_5_codeGenerator._quarantine_v1.consolidator import normalize_relations
     concepts = [concept("A1", "Prijs"), concept("A2", "Kosten")]
 
     class Result:
@@ -116,7 +116,7 @@ def test_normalize_maps_qualified_names_back_to_ids():
 
 
 def test_normalize_ignores_a_synonym_pointing_outside_the_list():
-    from pipeline.step_5_codeGenerator.consolidator import normalize_relations
+    from pipeline.step_5_codeGenerator._quarantine_v1.consolidator import normalize_relations
     concepts = [concept("A1", "Prijs")]
 
     class Result:

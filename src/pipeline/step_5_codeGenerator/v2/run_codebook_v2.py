@@ -15,6 +15,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+from utils.costTracker import CostTracker
+from utils.llm import token_tracker
+from utils.promptPrinter import PromptPrinter
+from utils.saveVerbose import VerboseCapture
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
 
@@ -24,9 +28,14 @@ from ..codebook_writer import (
 )
 from ..concept_inventory import Concept, build_inventory, t_keep
 from ..config_codeGenerator import CodebookConfig
-from ..consolidator import CodeShape
+from ..code_shape import CodeShape, _match_shape, _shape_lookup
+from ..codebook_io import (
+    FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE, apply_overig_sweep,
+    cache_mece_results, load_classified_ideas, load_extraction_metadata,
+    load_taxonomy_cache, print_codebook_results, run_scorecard,
+    save_prompts_to_json,
+)
 from ..prompts_codeGenerator import ConsolidatedCode
-from ..run_codeGenerator import _match_shape, _shape_lookup
 from ..taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from .attribute_cards import build_cards
 from .consolidation import resolve_consolidation
@@ -40,6 +49,8 @@ from .stability import (
 from .prompts_writer_v2 import build_writer_prompt_v2
 
 CACHE_STEP = "mece_codes"
+
+PRINT_PROMPTS = False  # True zet de prompts realtime op de console
 
 
 class _RepairLog:
@@ -262,12 +273,6 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
     `stability_runs` >= 2 herhaalt fase 1, meet welke groeperingen wisselen en
     zet daarmee de post-mortem aan. De eerste run wordt het codeboek; de rest
     dient alleen om te zien waar het model geen vast oordeel had."""
-    from ..run_codeGenerator import (
-        FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE, apply_overig_sweep,
-        cache_mece_results, load_classified_ideas, load_extraction_metadata,
-        load_taxonomy_cache, print_codebook_results, run_scorecard,
-    )
-
     filename = FILENAME if filename is None else filename
     var_name = VARIABLE if var_name is None else var_name
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size
@@ -334,12 +339,27 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
     print(f"  {len(concepts)} attributen, {n_respondents} met een idee, "
           f"T_keep = {threshold} over {n_resp_total} responses")
 
+    cost_tracker = CostTracker(filename=filename, var_name=var_name,
+                               sample_size=sample_size)
+    snapshot_before = token_tracker.snapshot()
+    prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
+
     result = generate_codebook_v2(
         concepts, by_attribute, threshold, survey_question, n_respondents,
         dimension_diagnostic, language, config, verbose=config.verbose,
-        stability_runs=stability_runs,
+        stability_runs=stability_runs, prompt_printer=prompt_printer,
     )
     report_codebook_build_v2(result)
+
+    # Eén fase voor de hele keten: consolidatie en schrijven staan op dezelfde
+    # sport van STEP_MODEL, dus fijner uitsplitsen levert geen ander getal op.
+    cost_tracker.record_phase(
+        "step_5_code_generator", "codebook_generation",
+        snapshot_before, token_tracker.snapshot(), model=config.model_writer,
+    )
+    cost_tracker.finalize_step("step_5_code_generator")
+
+    save_prompts_to_json(prompt_printer)
 
     overig_name = apply_overig_sweep(result.codes, taxonomy.partition_results, language)
     print_codebook_results(result.codes)
@@ -370,4 +390,11 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
 
 
 if __name__ == "__main__":
-    run_codebook_v2(force_recalc=True, stability_runs=5)
+    # stability_runs blijft 0: de post-mortem-splitser staat uit tot zijn
+    # vraagvorm herzien is — zie dev/WORK.md, sectie "v2 post-mortem".
+    with VerboseCapture(filename=FILENAME, var_name=VARIABLE,
+                        sample_size=SAMPLE_SIZE, step=5):
+        token_tracker.reset()
+        run_codebook_v2(force_recalc=True)
+        if token_tracker.call_count > 0:
+            print(token_tracker.get_summary())

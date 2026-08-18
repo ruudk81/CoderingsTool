@@ -9,11 +9,11 @@ import asyncio
 
 from utils.smoothRequester import SmoothRequester
 
-from pipeline.step_5_codeGenerator import relations
+from pipeline.step_5_codeGenerator._quarantine_v1 import relations
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult
-from pipeline.step_5_codeGenerator.prompts_umbrella_merge import Umbrella, UmbrellaMergeResult
+from pipeline.step_5_codeGenerator._quarantine_v1.prompts_relations import RelationsResult
+from pipeline.step_5_codeGenerator._quarantine_v1.prompts_umbrella_merge import Umbrella, UmbrellaMergeResult
 
 
 def concept(attribute_id, name):

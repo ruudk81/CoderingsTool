@@ -14,7 +14,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from .concept_inventory import Concept
+from ..code_shape import CodeShape
+from ..concept_inventory import Concept
 from .prompts_relations import tagged
 
 
@@ -23,21 +24,6 @@ class RelationMap:
     """Genormaliseerde LLM-relaties, gekeyd op attribuut-id."""
     umbrella: Dict[str, str]
     synonym_of: Dict[str, str]
-
-
-@dataclass(frozen=True)
-class CodeShape:
-    """One outcome of consolidation: how many codes, which members, which
-    direction. `key` is a run-local ordering key, not a codebook id."""
-    key: str
-    members: Tuple[str, ...]
-    valence: str
-    umbrella: str
-    resp_ids: frozenset[str]
-    resp_pos: frozenset[str]
-    resp_neg: frozenset[str]
-    resp_neu: frozenset[str]
-    origin: str
 
 
 @dataclass(frozen=True)

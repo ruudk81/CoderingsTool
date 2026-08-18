@@ -8,10 +8,10 @@ in code (relations.py); that is tested here via apply_umbrella_merge.
 import pydantic
 import pytest
 
-from pipeline.step_5_codeGenerator.prompts_umbrella_merge import (
+from pipeline.step_5_codeGenerator._quarantine_v1.prompts_umbrella_merge import (
     Umbrella, build_umbrella_merge_prompt, make_umbrella_merge_model,
 )
-from pipeline.step_5_codeGenerator.relations import apply_umbrella_merge
+from pipeline.step_5_codeGenerator._quarantine_v1.relations import apply_umbrella_merge
 
 
 def umbrella(name, members, definition="def"):

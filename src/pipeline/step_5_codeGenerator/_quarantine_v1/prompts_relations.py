@@ -1,14 +1,11 @@
 """Stap 2 — relaties tussen attributen. Semantiek, geen aantallen."""
 from __future__ import annotations
 
-import hashlib
 from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, create_model
 
-INSTRUCTOR_HINT = (
-    "provide your output as valid JSON following the response schema provided"
-)
+from ..prompts_common import INSTRUCTOR_HINT, _shuffled
 
 
 class AttributeRelation(BaseModel):
@@ -40,22 +37,6 @@ def tagged(concept) -> str:
     names (like the old domain qualification did) but — unlike the domain —
     carries no groupable content: it cannot be handed back as an umbrella."""
     return f"[{concept.attribute_id}] {concept.name}"
-
-
-def _shuffled(concepts):
-    """Concepts in a deterministic order unrelated to prevalence OR domain.
-
-    Both the prompt text and the response model's enum must use this instead of
-    the caller's order: `concepts` arrives prevalence-sorted (build_inventory's
-    `(-n_resp, name)`), and that order — whether in prose or in a JSON schema
-    enum — is itself a signal about how often something occurs. Sorting by
-    attribute_id instead fixes that, but opens a second, subtler channel:
-    identity.py mints A# sequentially PER DOMAIN, so id order still groups
-    domains into contiguous blocks — visible structure of exactly the kind this
-    step exists to stop handing the model. Sorting by a hash of the id keeps the
-    order reproducible across runs (the hash is a pure function of a stable id)
-    while carrying neither signal."""
-    return sorted(concepts, key=lambda c: hashlib.md5(c.attribute_id.encode()).hexdigest())
 
 
 def make_relations_model(concepts) -> type:

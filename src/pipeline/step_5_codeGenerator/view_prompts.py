@@ -1,20 +1,18 @@
 #%%
-"""
-View the prompts step 5 sent to the LLM: relations, umbrella merge, codebook
-writing, MECE detection, MECE probing.
+"""View the prompts step 5 sent to the LLM: consolidation and codebook writing.
 
-All five response models are built at runtime, constrained to the exact
-identifiers offered in that call (attribute names, umbrella names, shape
-keys, candidate names, or a pair's two code names + idea refs). Each builder
-below reconstructs that same enum-constrained model from identifiers stored
-in the captured prompt's own metadata, so the schema shown here is the one
-instructor actually enforced — not a guess. If a captured entry predates
-those metadata fields, the builder falls back to the base, unconstrained
-response model instead of pretending the constrained variant is shown; the
-header line then names the base class, honestly.
+Beide responsemodellen worden per call opgebouwd en beperkt tot precies de
+identifiers die in die call zijn aangeboden — de attribuuttags bij consolidatie,
+de shape-keys bij het schrijven. De builders hieronder reconstrueren datzelfde
+model uit de metadata die bij de prompt is opgeslagen, zodat het schema dat je
+hier ziet het schema is dat instructor daadwerkelijk heeft afgedwongen — geen
+benadering. Mist een opgeslagen entry die metadata, dan valt de builder terug op
+het onbeperkte basismodel in plaats van te doen alsof; de kopregel noemt dan de
+basisklasse, eerlijk.
 
-`mece_probe` fires once per candidate pair per round, so a captured file can
-hold many entries of that type — expected, not a bug; see PROCESSING.md.
+De v1-prompttypes (relations, umbrella_merge, mece_detect, mece_probe) staan
+hier niet meer: die fasen draaien niet sinds de v2-promotie. Een oud
+promptbestand met die types rendert nog, met "[no model mapped]" erbij.
 
 Usage:
     cd src && python -m pipeline.step_5_codeGenerator.view_prompts
@@ -31,91 +29,49 @@ from utils.promptViewer import render
 
 from test_data import TEST_DATA
 
-from pipeline.step_5_codeGenerator.prompts_mece import (
-    OverlapDetectionResult, ProbeResult, make_overlap_model, make_probe_model,
-)
-from pipeline.step_5_codeGenerator.prompts_relations import RelationsResult, make_relations_model
-from pipeline.step_5_codeGenerator.prompts_umbrella_merge import (
-    UmbrellaMergeResult, make_umbrella_merge_model,
-)
 from pipeline.step_5_codeGenerator.prompts_writer import WriterResult, make_writer_model
+from pipeline.step_5_codeGenerator.v2.prompts_consolidation import (
+    ConsolidationResult, make_consolidation_model,
+)
 
 SHOW_ALL = False
 
 
-class _NamedRef(NamedTuple):
-    """Stand-in for a Concept/Umbrella/CodeCandidate: the two attributes
-    `_shuffled` and the `make_*_model` builders actually read."""
+class _CardRef(NamedTuple):
+    """Stand-in voor een AttributeCard: `_shuffled` leest `.attribute_id`,
+    `make_consolidation_model` leest `.tag`."""
     attribute_id: str
     name: str
 
+    @property
+    def tag(self) -> str:
+        return f"[{self.attribute_id}] {self.name}"
+
 
 class _ShapeRef(NamedTuple):
-    """Stand-in for a CodeShape: only `.key` is read by `make_writer_model`."""
+    """Stand-in voor een CodeShape: `make_writer_model` leest alleen `.key`."""
     key: str
 
 
-class _PairRef(NamedTuple):
-    """Stand-in for a CandidatePair: only the two code names are read by
-    `make_probe_model`."""
-    code_a: str
-    code_b: str
-
-
-class _IdeaRef(NamedTuple):
-    """Stand-in for a ProbeIdea: only `.idea_ref` is read by `make_probe_model`."""
-    idea_ref: int
-
-
-def _relations_model(metadata: dict):
-    ids = metadata.get("concept_ids") or []
-    names = metadata.get("concept_names") or []
+def _consolidation_model(metadata: dict):
+    ids = metadata.get("card_ids") or []
+    names = metadata.get("card_names") or []
     if not ids or len(ids) != len(names):
-        return RelationsResult
-    concepts = [_NamedRef(attribute_id=i, name=n) for i, n in zip(ids, names)]
-    return make_relations_model(concepts)
-
-
-def _umbrella_merge_model(metadata: dict):
-    names = metadata.get("umbrella_names") or []
-    if not names:
-        return UmbrellaMergeResult
-    umbrellas = [_NamedRef(attribute_id=n, name=n) for n in names]
-    return make_umbrella_merge_model(umbrellas)
+        return ConsolidationResult
+    return make_consolidation_model(
+        [_CardRef(attribute_id=i, name=n) for i, n in zip(ids, names)])
 
 
 def _writer_model(metadata: dict):
     keys = metadata.get("shape_keys") or []
     if not keys:
         return WriterResult
-    shapes = [_ShapeRef(key=k) for k in keys]
-    return make_writer_model(shapes)
-
-
-def _mece_detect_model(metadata: dict):
-    names = metadata.get("candidate_names") or []
-    if not names:
-        return OverlapDetectionResult
-    candidates = [_NamedRef(attribute_id=n, name=n) for n in names]
-    return make_overlap_model(candidates)
-
-
-def _mece_probe_model(metadata: dict):
-    code_a, code_b = metadata.get("code_a"), metadata.get("code_b")
-    idea_refs = metadata.get("idea_refs") or []
-    if not code_a or not code_b or not idea_refs:
-        return ProbeResult
-    pair = _PairRef(code_a=code_a, code_b=code_b)
-    ideas = [_IdeaRef(idea_ref=ref) for ref in idea_refs]
-    return make_probe_model(pair, ideas)
+    return make_writer_model([_ShapeRef(key=k) for k in keys])
 
 
 PROMPT_MODELS = {
-    "relations": _relations_model,
-    "umbrella_merge": _umbrella_merge_model,
+    "consolidation": _consolidation_model,
     "codebook_writer": _writer_model,
-    "mece_detect": _mece_detect_model,
-    "mece_probe": _mece_probe_model,
 }
 
 

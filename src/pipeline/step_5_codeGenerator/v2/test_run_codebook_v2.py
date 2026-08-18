@@ -1,9 +1,19 @@
 """Tests voor de v2-keten: volgorde van de fasen en de cachecontracten."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.consolidator import CodeShape
+from pipeline.step_5_codeGenerator.code_shape import CodeShape
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
 from pipeline.step_5_codeGenerator.v2 import run_codebook_v2 as runner
+
+
+class _NullCostTracker:
+    """De productie-ingang meet kosten; in een test hoeft dat niet naar schijf."""
+
+    def record_phase(self, *args, **kwargs):
+        pass
+
+    def finalize_step(self, *args, **kwargs):
+        pass
 from pipeline.step_5_codeGenerator.v2.grouping import ShapingResult
 
 
@@ -159,8 +169,6 @@ def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
     `cache_mece_results`-aanroep op die letterlijke sleutel, niet op de
     `CACHE_STEP`-constante: een assert tegen de constante zou meebewegen met
     elke wijziging en dus niets bewaken."""
-    from pipeline.step_5_codeGenerator import run_codeGenerator as v1
-
     class FakeMetadata:
         lang = "Dutch"
         var_lab = "Wat vindt u van dit merk?"
@@ -183,14 +191,16 @@ def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
     captured = {}
 
     monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
+    monkeypatch.setattr(runner, "save_prompts_to_json", lambda printer: None)
+    monkeypatch.setattr(runner, "CostTracker", lambda **kwargs: _NullCostTracker())
     monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: empty_result)
-    monkeypatch.setattr(v1, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
-    monkeypatch.setattr(v1, "load_classified_ideas", lambda *a, **k: [])
-    monkeypatch.setattr(v1, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
-    monkeypatch.setattr(v1, "apply_overig_sweep", lambda codes, results, language: "Overig")
-    monkeypatch.setattr(v1, "print_codebook_results", lambda codes: None)
-    monkeypatch.setattr(v1, "run_scorecard", lambda *a, **k: None)
-    monkeypatch.setattr(v1, "cache_mece_results", lambda *a, **k: captured.update(k))
+    monkeypatch.setattr(runner, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
+    monkeypatch.setattr(runner, "load_classified_ideas", lambda *a, **k: [])
+    monkeypatch.setattr(runner, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
+    monkeypatch.setattr(runner, "apply_overig_sweep", lambda codes, results, language: "Overig")
+    monkeypatch.setattr(runner, "print_codebook_results", lambda codes: None)
+    monkeypatch.setattr(runner, "run_scorecard", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "cache_mece_results", lambda *a, **k: captured.update(k))
 
     runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
@@ -202,8 +212,6 @@ def test_degenerate_proposal_is_not_cached(monkeypatch, capsys):
     CACHE_STEP landen waar step 6 het stilzwijgend zou inlezen. Reporting
     (codebook + scorecard) blijft draaien; alleen de cache-write wordt
     overgeslagen, en dat moet met zoveel woorden gemeld worden."""
-    from pipeline.step_5_codeGenerator import run_codeGenerator as v1
-
     class FakeMetadata:
         lang = "Dutch"
         var_lab = "Wat vindt u van dit merk?"
@@ -227,14 +235,16 @@ def test_degenerate_proposal_is_not_cached(monkeypatch, capsys):
     cache_calls = []
 
     monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
+    monkeypatch.setattr(runner, "save_prompts_to_json", lambda printer: None)
+    monkeypatch.setattr(runner, "CostTracker", lambda **kwargs: _NullCostTracker())
     monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: degenerate_result)
-    monkeypatch.setattr(v1, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
-    monkeypatch.setattr(v1, "load_classified_ideas", lambda *a, **k: [])
-    monkeypatch.setattr(v1, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
-    monkeypatch.setattr(v1, "apply_overig_sweep", lambda codes, results, language: "Overig")
-    monkeypatch.setattr(v1, "print_codebook_results", lambda codes: None)
-    monkeypatch.setattr(v1, "run_scorecard", lambda *a, **k: None)
-    monkeypatch.setattr(v1, "cache_mece_results", lambda *a, **k: cache_calls.append(k))
+    monkeypatch.setattr(runner, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
+    monkeypatch.setattr(runner, "load_classified_ideas", lambda *a, **k: [])
+    monkeypatch.setattr(runner, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
+    monkeypatch.setattr(runner, "apply_overig_sweep", lambda codes, results, language: "Overig")
+    monkeypatch.setattr(runner, "print_codebook_results", lambda codes: None)
+    monkeypatch.setattr(runner, "run_scorecard", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "cache_mece_results", lambda *a, **k: cache_calls.append(k))
 
     runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
@@ -248,8 +258,6 @@ def test_richtingsverlies_is_paired_with_the_scorecards_under_split_count(monkey
     """I3: `under_split_codes` is the number that measures RICHTINGSVERLIES's
     effect on this run — print it alongside, using the scorecard `run_scorecard`
     (v1) already builds, without touching v1 itself."""
-    from pipeline.step_5_codeGenerator import run_codeGenerator as v1
-
     class FakeMetadata:
         lang = "Dutch"
         var_lab = "Wat vindt u van dit merk?"
@@ -273,14 +281,16 @@ def test_richtingsverlies_is_paired_with_the_scorecards_under_split_count(monkey
     )
 
     monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
+    monkeypatch.setattr(runner, "save_prompts_to_json", lambda printer: None)
+    monkeypatch.setattr(runner, "CostTracker", lambda **kwargs: _NullCostTracker())
     monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: result_with_loss)
-    monkeypatch.setattr(v1, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
-    monkeypatch.setattr(v1, "load_classified_ideas", lambda *a, **k: [])
-    monkeypatch.setattr(v1, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
-    monkeypatch.setattr(v1, "apply_overig_sweep", lambda codes, results, language: "Overig")
-    monkeypatch.setattr(v1, "print_codebook_results", lambda codes: None)
-    monkeypatch.setattr(v1, "run_scorecard", lambda *a, **k: FakeScorecard())
-    monkeypatch.setattr(v1, "cache_mece_results", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
+    monkeypatch.setattr(runner, "load_classified_ideas", lambda *a, **k: [])
+    monkeypatch.setattr(runner, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
+    monkeypatch.setattr(runner, "apply_overig_sweep", lambda codes, results, language: "Overig")
+    monkeypatch.setattr(runner, "print_codebook_results", lambda codes: None)
+    monkeypatch.setattr(runner, "run_scorecard", lambda *a, **k: FakeScorecard())
+    monkeypatch.setattr(runner, "cache_mece_results", lambda *a, **k: None)
 
     runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
@@ -293,8 +303,6 @@ def test_no_unconditional_success_claim_when_cache_save_fails(monkeypatch, capsy
     None on a failed save; `run_codebook_v2` used to print a "v2-codeboek
     gecached ..." success line right after, unconditionally. The announcement
     must not claim success when the save failed."""
-    from pipeline.step_5_codeGenerator import run_codeGenerator as v1
-
     class FakeMetadata:
         lang = "Dutch"
         var_lab = "Wat vindt u van dit merk?"
@@ -318,14 +326,16 @@ def test_no_unconditional_success_claim_when_cache_save_fails(monkeypatch, capsy
         print("ERROR: codebook NOT cached (0 codes) — downstream steps will regenerate.")
 
     monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
+    monkeypatch.setattr(runner, "save_prompts_to_json", lambda printer: None)
+    monkeypatch.setattr(runner, "CostTracker", lambda **kwargs: _NullCostTracker())
     monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: empty_result)
-    monkeypatch.setattr(v1, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
-    monkeypatch.setattr(v1, "load_classified_ideas", lambda *a, **k: [])
-    monkeypatch.setattr(v1, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
-    monkeypatch.setattr(v1, "apply_overig_sweep", lambda codes, results, language: "Overig")
-    monkeypatch.setattr(v1, "print_codebook_results", lambda codes: None)
-    monkeypatch.setattr(v1, "run_scorecard", lambda *a, **k: None)
-    monkeypatch.setattr(v1, "cache_mece_results", fake_failed_cache)
+    monkeypatch.setattr(runner, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
+    monkeypatch.setattr(runner, "load_classified_ideas", lambda *a, **k: [])
+    monkeypatch.setattr(runner, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
+    monkeypatch.setattr(runner, "apply_overig_sweep", lambda codes, results, language: "Overig")
+    monkeypatch.setattr(runner, "print_codebook_results", lambda codes: None)
+    monkeypatch.setattr(runner, "run_scorecard", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "cache_mece_results", fake_failed_cache)
 
     runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
 

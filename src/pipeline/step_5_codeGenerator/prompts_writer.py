@@ -19,7 +19,7 @@ from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, create_model
 
-from .prompts_relations import INSTRUCTOR_HINT, _shuffled
+from .prompts_common import INSTRUCTOR_HINT, _shuffled
 
 _Keyed = namedtuple("_Keyed", ["attribute_id", "shape"])
 

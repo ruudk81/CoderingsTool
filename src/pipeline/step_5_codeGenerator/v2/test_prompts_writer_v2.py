@@ -1,6 +1,6 @@
 """Tests voor de v2-writerprompt: richting moet in naam en definitie landen."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
-from pipeline.step_5_codeGenerator.consolidator import CodeShape
+from pipeline.step_5_codeGenerator.code_shape import CodeShape
 from pipeline.step_5_codeGenerator.v2.prompts_writer_v2 import build_writer_prompt_v2
 
 

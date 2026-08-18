@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from ..prompts_relations import INSTRUCTOR_HINT
+from ..prompts_common import INSTRUCTOR_HINT
 from ..prompts_writer import _code_block, _ordered
 
 

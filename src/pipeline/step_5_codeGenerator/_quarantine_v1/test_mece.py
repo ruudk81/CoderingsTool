@@ -6,10 +6,10 @@ import asyncio
 
 from utils.smoothRequester import SmoothRequester
 
-from pipeline.step_5_codeGenerator import mece
+from pipeline.step_5_codeGenerator._quarantine_v1 import mece
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.consolidator import CodeShape
-from pipeline.step_5_codeGenerator.prompts_mece import (
+from pipeline.step_5_codeGenerator.code_shape import CodeShape
+from pipeline.step_5_codeGenerator._quarantine_v1.prompts_mece import (
     CandidatePair, CodeCandidate, IdeaAssignment, OverlapDetectionResult, OverlapVerdict,
     ProbeResult,
 )

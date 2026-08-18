@@ -2,7 +2,7 @@
 import re
 
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
-from pipeline.step_5_codeGenerator.prompts_relations import (
+from pipeline.step_5_codeGenerator._quarantine_v1.prompts_relations import (
     build_relations_prompt, make_relations_model, tagged,
 )
 

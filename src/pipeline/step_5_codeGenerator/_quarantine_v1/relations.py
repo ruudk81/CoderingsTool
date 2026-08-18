@@ -8,8 +8,8 @@ from config import get_reasoning_params
 from utils.llm import RateLimits
 from utils.smoothRequester import SmoothRequester
 
-from .concept_inventory import Concept
-from .config_codeGenerator import CodebookConfig
+from ..concept_inventory import Concept
+from ..config_codeGenerator import CodebookConfig
 from .prompts_relations import RelationsResult, build_relations_prompt, make_relations_model
 from .prompts_umbrella_merge import (
     Umbrella, UmbrellaMergeResult, build_umbrella_merge_prompt, make_umbrella_merge_model,

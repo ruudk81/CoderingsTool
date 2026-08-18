@@ -36,11 +36,11 @@ from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
 from pipeline.step_5_codeGenerator.concept_inventory import build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
-from pipeline.step_5_codeGenerator.run_codeGenerator import (
+from pipeline.step_5_codeGenerator._quarantine_v1.run_codeGenerator import (
     FALLBACK_DIAGNOSTIC, _match_shape, _shape_lookup, generate_codebook, report_codebook_build,
 )
 from pipeline.step_5_codeGenerator.taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
-from pipeline.step_5_codeGenerator.view_relations import load_cache
+from pipeline.step_5_codeGenerator._quarantine_v1.view_relations import load_cache
 
 # Step 4 is being rewritten in a parallel worktree. Unlike view_relations.py's
 # gate runs (which pin a frozen fixture for comparability across runs), this

@@ -29,14 +29,14 @@ from collections import defaultdict
 from itertools import combinations
 from typing import Dict, List, Set
 
-from .concept_inventory import build_inventory
-from .config_codeGenerator import CodebookConfig
+from ..concept_inventory import build_inventory
+from ..config_codeGenerator import CodebookConfig
 from .prompts_relations import tagged
 from .relations import resolve_relations
 from .run_codeGenerator import (
     load_classified_ideas, load_extraction_metadata, load_taxonomy_cache,
 )
-from .taxonomy_input import build_attribute_refs, build_idea_units
+from ..taxonomy_input import build_attribute_refs, build_idea_units
 
 
 def drain_ids(partition_results) -> Set[str]:

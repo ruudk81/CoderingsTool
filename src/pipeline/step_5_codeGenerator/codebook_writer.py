@@ -29,7 +29,7 @@ from utils.smoothRequester import SmoothRequester
 
 from .concept_inventory import Concept
 from .config_codeGenerator import CodebookConfig
-from .consolidator import CodeShape
+from .code_shape import CodeShape
 from .prompts_codeGenerator import ConsolidatedCode
 from .prompts_writer import CodeText, build_writer_prompt, make_writer_model
 
