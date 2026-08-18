@@ -26,6 +26,7 @@ from ..concept_inventory import Concept, build_inventory, t_keep
 from ..config_codeGenerator import CodebookConfig
 from ..consolidator import CodeShape
 from ..prompts_codeGenerator import ConsolidatedCode
+from ..run_codeGenerator import _match_shape, _shape_lookup
 from ..taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from .attribute_cards import build_cards
 from .consolidation import resolve_consolidation
@@ -55,25 +56,8 @@ class GeneratedCodebookV2:
     collisions: List[dict]
     naming_mismatches: List[dict]
     duplicate_definitions: List[dict]
+    vetoes: List[dict]
     concept_by_id: Dict[str, Concept] = field(repr=False)
-
-
-def _shape_lookup(
-    shapes: List[CodeShape], concept_by_id: Dict[str, Concept],
-) -> Dict[tuple, CodeShape]:
-    """Key shapes by (their source-attribute names, valence) — the same two
-    things `write_codebook` echoes back on each `ConsolidatedCode` (see
-    `_to_consolidated_code` in `codebook_writer.py`). `write_codebook` can
-    veto a `pooled` shape and simply omit it from what it returns, so `codes`
-    can come back shorter than the `shapes` list that went in; this lookup is
-    how `_generate_async` recovers, for each code actually written, which
-    shape it belongs to — the same technique v1's `_generate_codebook_async`
-    uses for the same reason."""
-    lookup = {}
-    for shape in shapes:
-        names = frozenset(concept_by_id[m].name for m in shape.members if m in concept_by_id)
-        lookup[(names, shape.valence)] = shape
-    return lookup
 
 
 async def _generate_async(
@@ -91,9 +75,18 @@ async def _generate_async(
     degeneration = check_degeneration(len(groups), len(cards))
     shaped = build_shapes(groups, concepts, threshold)
 
+    # `write_codebook` can veto a `pooled` shape (`nameable: false`) — every
+    # multi-attribute group v2 builds is `pooled` (`grouping.build_shapes`),
+    # so this is the normal route, not an edge case. The attributes don't get
+    # lost (the Overig sweep in `run_codebook_v2` still routes them), but a
+    # silent veto would make a v1-vs-v2 comparison see a smaller v2 codebook
+    # with a bigger Overig and be unable to tell consolidation quality apart
+    # from writer vetoes — the same reason degeneration is reported, not
+    # absorbed. `veto_log` makes it visible.
+    veto_log = _RepairLog()
     codes = await write_codebook(
         shaped.shapes, concepts, dimension_diagnostic, language, config,
-        verbose=verbose, prompt_printer=prompt_printer,
+        log=veto_log, verbose=verbose, prompt_printer=prompt_printer,
         prompt_builder=build_writer_prompt_v2,
     )
 
@@ -101,11 +94,11 @@ async def _generate_async(
     # the two finders below (their own docstrings require it) — but a veto in
     # write_codebook means `codes` can be shorter than `shaped.shapes`. Match
     # each written code back to its own shape rather than assuming the two
-    # lists still walk in lockstep.
+    # lists still walk in lockstep — the same technique v1's
+    # `_generate_codebook_async` uses for the same reason.
     concept_by_id = {c.attribute_id: c for c in concepts}
     shape_lookup = _shape_lookup(shaped.shapes, concept_by_id)
-    shapes = [shape_lookup[(frozenset(code.source_attributes), code.valence)]
-             for code in codes]
+    shapes = [_match_shape(code, shape_lookup) for code in codes]
 
     collision_log = _RepairLog()
     codes = resolve_duplicate_names(codes, shapes, log=collision_log)
@@ -115,6 +108,7 @@ async def _generate_async(
         partition_repairs=repair_log.entries, collisions=collision_log.entries,
         naming_mismatches=find_naming_mismatches(codes, shapes, concept_by_id),
         duplicate_definitions=find_duplicate_definitions(codes, shapes),
+        vetoes=veto_log.entries,
         concept_by_id=concept_by_id,
     )
 
@@ -131,14 +125,24 @@ def generate_codebook_v2(
 
 
 def report_codebook_build_v2(result: GeneratedCodebookV2) -> None:
-    """Wat een run zichtbaar moet maken. Degeneratie en richtingsverlies staan
-    bovenaan: dat zijn de twee dingen die geen enkele bestaande check meldt."""
+    """Wat een run zichtbaar moet maken. Degeneratie, richtingsverlies en
+    vetoes staan bovenaan: dat zijn de drie dingen die geen enkele bestaande
+    check meldt — melden, nooit stil absorberen."""
     if result.degeneration:
         print(f"DEGENERATIE (harde FAIL): {result.degeneration}")
 
     if result.direction_loss:
-        print(f"RICHTINGSVERLIES: {result.direction_loss} respondent(en) in een "
-              f"minderheidspool die de drempel niet haalde — naar Overig.")
+        # Groepstelling, geen respondent-uniek totaal: build_shapes telt per
+        # groep op, dus een respondent die in twee groepen een minderheidspool
+        # mist telt twee keer mee.
+        print(f"RICHTINGSVERLIES: {result.direction_loss} verloren pool-plaatsing(en) "
+              f"onder de drempel — naar Overig.")
+
+    if result.vetoes:
+        print(f"WAARSCHUWING: {len(result.vetoes)} pooled code(s) geveto'd "
+              f"(niet noembaar) — leden gaan naar Overig:")
+        for v in result.vetoes:
+            print(f"  '{v['umbrella']}' — leden: {', '.join(v['members'])}")
 
     for entry in result.partition_repairs:
         if entry["action"] == "PARTITION_MISSING":
@@ -199,6 +203,20 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
     taxonomy = load_taxonomy_cache(filename, var_name, sample_size, variable_key)
     if taxonomy is None:
         print("\nERROR: geen taxonomie in cache. Draai eerst step 4.")
+        return
+
+    # v1's legacy leespad (P9-era over-merge-correctie, van vóór de
+    # P7-promotie) vervangt zowel partition_results als classified_ideas door
+    # een gecorrigeerde variant wanneer die cache bestaat. v2 port dat pad
+    # niet — het zou een uitstervend legacy-mechanisme in een experiment
+    # repliceren — maar mag er ook niet stilzwijgend aan voorbijgaan: zonder
+    # deze check zou v2 op een andere taxonomie bouwen dan v1 (en daarmee ook
+    # een andere drempelbasis), en de vergelijking met v1 zou niet meer
+    # opgaan.
+    if cache_manager.is_metadata_cache_valid(filename, "taxonomy_corrected", variable_key):
+        print("\nERROR: geldige 'taxonomy_corrected'-cache gevonden voor deze dataset. "
+              "v2 ondersteunt dat legacy leespad niet — draai v2 hier niet op, de "
+              "vergelijking met v1 zou anders op een andere taxonomie gebeuren.")
         return
 
     refs = build_attribute_refs(taxonomy.partition_results)
