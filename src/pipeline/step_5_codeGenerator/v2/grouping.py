@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .attribute_cards import AttributeCard
 from ..concept_inventory import Concept
@@ -169,3 +169,29 @@ def build_shapes(
             ))
     return ShapingResult(shapes=shapes, overig_ids=overig_ids,
                          direction_loss=direction_loss)
+
+
+DEGENERATION_FLOOR = 0.05
+DEGENERATION_CEILING = 0.90
+
+
+def check_degeneration(n_groups: int, n_attributes: int) -> Optional[str]:
+    """Is er überhaupt geconsolideerd, en is niet alles op één hoop gegooid?
+
+    Beide grenzen zijn RELATIEF aan de input, nooit absoluut: een vaste
+    ondergrens zou op een dataset met twintig attributen een correcte uitkomst
+    afkeuren. De vraag is niet 'zijn het er genoeg' — dat is een oordeel dat
+    geen deterministische toets kan vellen — maar of het voorstel is ontaard.
+
+    De twee factoren zijn beredeneerd, niet gemeten; ze horen bijgesteld te
+    worden zodra er runs op meer dan één dataset zijn.
+    """
+    if n_attributes == 0:
+        return None
+    if n_groups > DEGENERATION_CEILING * n_attributes:
+        return (f"geen consolidatie: {n_groups} groepen op {n_attributes} attributen "
+                f"(grens {DEGENERATION_CEILING:.0%})")
+    if n_groups < DEGENERATION_FLOOR * n_attributes:
+        return (f"alles op één hoop: {n_groups} groepen op {n_attributes} attributen "
+                f"(grens {DEGENERATION_FLOOR:.0%})")
+    return None

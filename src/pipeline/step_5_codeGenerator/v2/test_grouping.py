@@ -1,7 +1,7 @@
 """Tests voor fase 2 en 3: partitiereparatie, valentiesplitsing, degeneratie."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.v2.attribute_cards import AttributeCard
-from pipeline.step_5_codeGenerator.v2.grouping import Group, build_shapes, repair_partition
+from pipeline.step_5_codeGenerator.v2.grouping import Group, build_shapes, check_degeneration, repair_partition
 from pipeline.step_5_codeGenerator.v2.prompts_consolidation import (
     ConsolidationResult, ProposedCode,
 )
@@ -235,3 +235,27 @@ def test_shape_carries_the_proposed_name_as_umbrella():
     out = build_shapes([group("A1", name="Voorstel")], concepts, threshold=12)
 
     assert out.shapes[0].umbrella == "Voorstel"
+
+
+def test_healthy_consolidation_is_not_flagged():
+    assert check_degeneration(n_groups=26, n_attributes=66) is None
+
+
+def test_no_consolidation_at_all_is_flagged():
+    assert "geen consolidatie" in check_degeneration(n_groups=64, n_attributes=66)
+
+
+def test_everything_on_one_heap_is_flagged():
+    assert "één hoop" in check_degeneration(n_groups=2, n_attributes=66)
+
+
+def test_bounds_are_relative_so_a_small_tree_is_judged_on_its_own_scale():
+    """Een absolute ondergrens ('minder dan 3 codes is fout') zou op een kleine
+    dataset een correcte uitkomst afkeuren. Dat is precies de use-case-
+    afhankelijkheid die dit ontwerp moet vermijden."""
+    assert check_degeneration(n_groups=3, n_attributes=20) is None
+    assert check_degeneration(n_groups=3, n_attributes=200) is not None
+
+
+def test_no_attributes_is_not_a_degeneration_verdict():
+    assert check_degeneration(n_groups=0, n_attributes=0) is None
