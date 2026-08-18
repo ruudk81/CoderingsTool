@@ -50,7 +50,7 @@ from pipeline.step_5_codeGenerator.codebook_writer import (
 )
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 from pipeline.step_5_codeGenerator.taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 
 from .consolidator import consolidate, normalize_relations

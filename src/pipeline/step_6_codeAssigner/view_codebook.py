@@ -46,7 +46,7 @@ from utils.exportNaming import export_filename
 from models import CodeAssignedModel
 from models import TaxonomyResultsCache
 from models import CodingResultsCache, ExtractionMetadata, QualityFilteredModel
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 from pipeline.step_7_export.resultsExporter import build_catalog, ResultsExporter
 
 from test_data import TEST_DATA

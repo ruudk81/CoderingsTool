@@ -2,7 +2,7 @@
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.code_shape import CodeShape
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 from pipeline.step_5_codeGenerator.v2 import run_codebook_v2 as runner
 
 

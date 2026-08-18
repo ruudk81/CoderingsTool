@@ -10,15 +10,16 @@ Metadata & cache models (dataset-level):
     ExtractionMetadata (step 3)
     DomainDescription / DomainSet (step 4 partition definitions)
     DomainResultModel / TaxonomyResultsCache (step 4 taxonomy cache)
-    CodingResultsCache (step 5 codebook cache)
+    ConsolidatedCode / CodingResultsCache (step 5 codebook cache)
 
 This file is the single source of truth for all cross-step models. Step-local
 model files hold only models that never cross a step boundary (LLM response
 models, internal wrappers).
 """
 
-from typing import List, Any, Optional, Union, Dict
+from typing import List, Any, Literal, Optional, Union, Dict
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 # =============================================================================
@@ -283,6 +284,48 @@ class TaxonomyResultsCache(BaseModel):
 # STEP 5: CODEBOOK CACHE MODELS (extends taxonomy with generated codes)
 # =============================================================================
 
+class ConsolidatedCode(BaseModel):
+    """A codebook entry with a diagnostic test for MECE verification."""
+    code_name: str = Field(
+        ..., description="Short code name (3-5 word noun phrase)"
+    )
+    definition: str = Field(
+        ..., description=(
+            "A short interpretive claim that reads like an analyst conclusion. "
+            "Avoid vague abstract phrasing — be concrete and specific."
+        )
+    )
+    diagnostic_test: str = Field(
+        ..., description=(
+            "Completes the dimension-specific diagnostic stem — "
+            "must be unique per code and must not overlap with other codes."
+        )
+    )
+    valence: Literal["positive", "negative", "neutral"] = Field(
+        ...,
+        description=(
+            "The code's evaluative direction. A code whose ideas span a "
+            "well-represented positive AND a well-represented negative pole "
+            "should not carry a single 'positive' or 'negative' label here — "
+            "such a phenomenon splits into two codes, each correctly labeled "
+            "for its own pole. 'neutral' is reserved for a genuinely "
+            "dimensional code (no pole cleared the gate) or the Overig catch-all."
+        )
+    )
+    typical_indicators: List[str] = Field(
+        ..., description="Words or phrases that signal this code"
+    )
+    source_attributes: List[str] = Field(
+        default_factory=list,
+        description="Attribute names this code is derived from (from all merged origins)"
+    )
+    # Stable ids (identity.py) — never part of the LLM response schema: minted at
+    # cache-save (K#), or lazily at load for pre-id codebooks. source_attribute_ids
+    # mirrors source_attributes as attribute ids (A#), resolved at cache-save/load.
+    code_id: SkipJsonSchema[str] = ""
+    source_attribute_ids: SkipJsonSchema[List[str]] = Field(default_factory=list)
+
+
 class CodingResultsCache(BaseModel):
     """Cache for codebook results (taxonomy + codes).
 
@@ -293,5 +336,9 @@ class CodingResultsCache(BaseModel):
     label_counts: Dict[str, int] = Field(default_factory=dict)
     label_source: str = ""
     total_categories: int = 0
-    raw_codes: List[Dict] = Field(default_factory=list)  # ConsolidatedCode dicts
+    # Dicts, niet ConsolidatedCode: dit is de vorm op schijf. Typeren als
+    # List[ConsolidatedCode] zou elk gecachet codeboek bij het laden opnieuw
+    # laten valideren, vóór identity.py's lazy migratie de ontbrekende ids heeft
+    # kunnen bijzetten. Lezers bouwen het model zelf: ConsolidatedCode(**d).
+    raw_codes: List[Dict] = Field(default_factory=list)
     codebook_narrative: str = ""  # legacy P8/P9 scratchpad field; unused since the step-5 rebuild

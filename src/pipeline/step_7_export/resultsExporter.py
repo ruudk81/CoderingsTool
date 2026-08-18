@@ -27,7 +27,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule
 
 from models import CodeAssignedModel
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 from models import DomainSet, DomainResultModel
 from utils.exportNaming import export_filename
 from utils.verboseReporter import VerboseReporter

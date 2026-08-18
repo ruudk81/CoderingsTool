@@ -34,7 +34,7 @@ from typing import Optional
 import models
 from models import CodeAssignedModel
 from models import CodingResultsCache
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 from models import TaxonomyResultsCache
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key

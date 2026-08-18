@@ -32,7 +32,7 @@ from utils.identity import ensure_codebook_ids
 from pipeline.step_5_codeGenerator.codebook_verifier import (
     build_scorecard, collect_idea_assignments, collect_taxonomy_attributes, format_scorecard,
 )
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 
 from models import CodingResultsCache
 from models import (

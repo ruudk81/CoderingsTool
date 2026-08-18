@@ -328,7 +328,7 @@ def run_assignment(filename: str = FILENAME, var_name: str = VARIABLE,
     pydantic_results = mece_cache.partition_results
 
     # Reconstruct ConsolidatedCode from cached dicts
-    from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+    from models import ConsolidatedCode
     codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else None
 
     n_themes = mece_cache.total_categories

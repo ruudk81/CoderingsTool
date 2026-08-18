@@ -13,7 +13,7 @@ reused), so a name collision can no longer make the mapping collapse.
 from pipeline.step_5_codeGenerator._quarantine_v1 import run_codeGenerator as rcg
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.code_shape import CodeShape
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 
 
 def concept(attribute_id, name, n_resp=10):

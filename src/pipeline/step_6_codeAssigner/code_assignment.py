@@ -49,7 +49,7 @@ from .prompts_codeAssigner import (
     CodeAssignmentResponse,
     configure_validation_mode,
 )
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 from models import CodeAssignment, CodeAssignmentBatch
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)

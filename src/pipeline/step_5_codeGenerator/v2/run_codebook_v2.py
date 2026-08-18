@@ -35,7 +35,7 @@ from ..codebook_io import (
     load_taxonomy_cache, print_codebook_results, run_scorecard,
     save_prompts_to_json,
 )
-from ..prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 from ..taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from .attribute_cards import build_cards
 from .consolidation import resolve_consolidation

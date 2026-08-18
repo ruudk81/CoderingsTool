@@ -20,7 +20,7 @@ from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from test_data import TEST_DATA
 
 from models import CodingResultsCache
-from pipeline.step_5_codeGenerator.prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 
 FILENAME = TEST_DATA.filename
 VAR_NAME = TEST_DATA.var_name

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from .concept_inventory import Concept
-from .prompts_codeGenerator import ConsolidatedCode
+from models import ConsolidatedCode
 
 
 @dataclass(frozen=True)
