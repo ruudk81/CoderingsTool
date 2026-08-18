@@ -444,8 +444,12 @@ def cache_mece_results(
     variable: Optional[str] = None,
     sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
+    step: str = "mece_codes",
 ) -> None:
-    """Cache codebook results for later use by code assignment (step 6)."""
+    """Cache codebook results for later use by code assignment (step 6).
+
+    `step` defaults to the v1 cache key; v2 passes "mece_codes_v2" so both
+    codebooks stay loadable side by side on the same taxonomy."""
     filename = FILENAME if filename is None else filename
     variable = VARIABLE if variable is None else variable
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size
@@ -476,7 +480,7 @@ def cache_mece_results(
     saved = cache_manager.save_metadata_to_cache(
         metadata=mece_cache,
         filename=filename,
-        step="mece_codes",
+        step=step,
         variable_key=variable_key,
     )
     total_facets = sum(

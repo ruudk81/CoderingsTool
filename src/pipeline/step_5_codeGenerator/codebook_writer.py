@@ -95,6 +95,7 @@ async def write_codebook(
     verbose: bool = False,
     taken_names: Optional[List[str]] = None,
     prompt_printer=None,
+    prompt_builder=build_writer_prompt,
 ) -> List[ConsolidatedCode]:
     """One call across all fixed code shapes. A `nameable: false` verdict on a
     `pooled` shape drops it (recorded in `log` as a VETO); the same verdict on
@@ -106,14 +107,18 @@ async def write_codebook(
     `shapes` this call, so the model doesn't land on one of them. This is a
     prompt-level ask, not a guarantee; see `resolve_duplicate_names` for the
     deterministic backstop the caller must still run over the full, reassembled
-    codebook."""
+    codebook.
+
+    `prompt_builder` defaults to this module's own prompt — the v2 chain
+    passes `build_writer_prompt_v2` (same five positional params) to reuse
+    this whole dispatch without duplicating it."""
     if not shapes:
         return []
 
     concept_by_id = {concept.attribute_id: concept for concept in concepts}
 
     def prepare_fn(task):
-        prompt = build_writer_prompt(
+        prompt = prompt_builder(
             task["shapes"], task["concept_by_id"],
             task["dimension_diagnostic"], task["language"], task["taken_names"],
         )
