@@ -30,7 +30,13 @@ from ..run_codeGenerator import _match_shape, _shape_lookup
 from ..taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from .attribute_cards import build_cards
 from .consolidation import resolve_consolidation
-from .grouping import build_shapes, check_degeneration, repair_partition
+from .grouping import Group, build_shapes, check_degeneration, repair_partition
+from .postmortem import (
+    apply_splits, format_postmortem, resolve_postmortem, select_candidates,
+)
+from .stability import (
+    StabilityReport, format_stability, run_consolidation_repeatedly,
+)
 from .prompts_writer_v2 import build_writer_prompt_v2
 
 CACHE_STEP = "mece_codes_v2"
@@ -58,6 +64,11 @@ class GeneratedCodebookV2:
     duplicate_definitions: List[dict]
     vetoes: List[dict]
     concept_by_id: Dict[str, Concept] = field(repr=False)
+    # Alleen gevuld wanneer `stability_runs` >= 2; zonder die meting draait de
+    # post-mortem niet en is "niets gemeten, niets gesplitst" de juiste toestand.
+    stability: Optional[StabilityReport] = None
+    postmortem_candidates: int = 0
+    postmortem_log: List[dict] = field(default_factory=list)
 
 
 async def _generate_async(
@@ -71,15 +82,44 @@ async def _generate_async(
     config: CodebookConfig,
     verbose: bool,
     prompt_printer,
+    stability_runs: int = 0,
 ) -> GeneratedCodebookV2:
     cards = build_cards(concepts, idea_units_by_attribute)
-    proposal = await resolve_consolidation(
-        cards, survey_question, n_respondents, language, config,
-        verbose=verbose, prompt_printer=prompt_printer,
-    )
-
     repair_log = _RepairLog()
-    groups = repair_partition(proposal, cards, concepts, log=repair_log)
+
+    # Met `stability_runs` draait fase 1 meerdere keren. De EERSTE run wordt het
+    # codeboek — er wordt niets gemiddeld of samengevoegd, want dat zou een
+    # indeling opleveren die geen enkele run heeft voorgesteld. De overige runs
+    # dienen alleen om te zien welke groeperingen wisselden, en die lijst stuurt
+    # de post-mortem naar de plekken waar het model zelf geen vast oordeel had.
+    report: Optional[StabilityReport] = None
+    if stability_runs >= 2:
+        report, runs_groups = await run_consolidation_repeatedly(
+            cards, concepts, survey_question, n_respondents, language, config,
+            runs=stability_runs, verbose=verbose, first_run_log=repair_log,
+        )
+        groups = runs_groups[0]
+    else:
+        proposal = await resolve_consolidation(
+            cards, survey_question, n_respondents, language, config,
+            verbose=verbose, prompt_printer=prompt_printer,
+        )
+        groups = repair_partition(proposal, cards, concepts, log=repair_log)
+
+    # Post-mortem: alleen groepen die te breed uitvielen of tussen runs wisselden.
+    # Een afgewezen of mislukt oordeel laat het codeboek staan zoals het was —
+    # dit is bijstelling, geen fundament.
+    candidates: List[Group] = []
+    postmortem_log: List[dict] = []
+    if report is not None:
+        candidates = select_candidates(groups, concepts, report, n_respondents)
+        if candidates:
+            verdicts = await resolve_postmortem(
+                candidates, cards, survey_question, n_respondents, language,
+                config, verbose=verbose,
+            )
+            groups, postmortem_log = apply_splits(groups, verdicts)
+
     degeneration = check_degeneration(len(groups), len(cards))
     shaped = build_shapes(groups, concepts, threshold)
 
@@ -113,6 +153,8 @@ async def _generate_async(
     return GeneratedCodebookV2(
         shapes=shapes, overig_ids=shaped.overig_ids, codes=codes,
         direction_loss=shaped.direction_loss, degeneration=degeneration,
+        stability=report, postmortem_candidates=len(candidates),
+        postmortem_log=postmortem_log,
         partition_repairs=repair_log.entries, collisions=collision_log.entries,
         naming_mismatches=find_naming_mismatches(codes, shapes, concept_by_id),
         duplicate_definitions=find_duplicate_definitions(codes, shapes),
@@ -132,11 +174,16 @@ def generate_codebook_v2(
     config: CodebookConfig,
     verbose: bool = True,
     prompt_printer=None,
+    stability_runs: int = 0,
 ) -> GeneratedCodebookV2:
-    """Sync wrapper — één orchestratie-ingang, zoals `generate_codebook` in v1."""
+    """Sync wrapper — één orchestratie-ingang, zoals `generate_codebook` in v1.
+
+    `stability_runs` >= 2 herhaalt fase 1 en zet de post-mortem aan; 0 laat de
+    keten precies zoals hij was."""
     return asyncio.run(_generate_async(
         concepts, idea_units_by_attribute, threshold, survey_question, n_respondents,
         dimension_diagnostic, language, config, verbose, prompt_printer,
+        stability_runs,
     ))
 
 
@@ -144,6 +191,12 @@ def report_codebook_build_v2(result: GeneratedCodebookV2) -> None:
     """Wat een run zichtbaar moet maken. Degeneratie, richtingsverlies en
     vetoes staan bovenaan: dat zijn de drie dingen die geen enkele bestaande
     check meldt — melden, nooit stil absorberen."""
+    if result.stability is not None:
+        names = {i: c.name for i, c in result.concept_by_id.items()}
+        print(format_stability(result.stability, names))
+    if result.postmortem_candidates or result.postmortem_log:
+        print(format_postmortem(result.postmortem_candidates, result.postmortem_log))
+
     if result.degeneration:
         print(f"DEGENERATIE (harde FAIL): {result.degeneration}")
 
@@ -201,9 +254,14 @@ def report_codebook_build_v2(result: GeneratedCodebookV2) -> None:
 
 def run_codebook_v2(filename: str = None, var_name: str = None,
                     sample_size: Optional[int] = None,
-                    force_recalc: bool = False) -> None:
+                    force_recalc: bool = False,
+                    stability_runs: int = 0) -> None:
     """Productie-ingang van v2. Leest dezelfde cache als v1 en schrijft onder
-    CACHE_STEP, zodat beide codeboeken naast elkaar blijven bestaan."""
+    CACHE_STEP, zodat beide codeboeken naast elkaar blijven bestaan.
+
+    `stability_runs` >= 2 herhaalt fase 1, meet welke groeperingen wisselen en
+    zet daarmee de post-mortem aan. De eerste run wordt het codeboek; de rest
+    dient alleen om te zien waar het model geen vast oordeel had."""
     from ..run_codeGenerator import (
         FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE, apply_overig_sweep,
         cache_mece_results, load_classified_ideas, load_extraction_metadata,
@@ -279,6 +337,7 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
     result = generate_codebook_v2(
         concepts, by_attribute, threshold, survey_question, n_respondents,
         dimension_diagnostic, language, config, verbose=config.verbose,
+        stability_runs=stability_runs,
     )
     report_codebook_build_v2(result)
 
@@ -311,4 +370,4 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
 
 
 if __name__ == "__main__":
-    run_codebook_v2(force_recalc=True)
+    run_codebook_v2(force_recalc=True, stability_runs=5)
