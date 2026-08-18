@@ -1,7 +1,7 @@
 """Tests voor fase 2 en 3: partitiereparatie, valentiesplitsing, degeneratie."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.v2.attribute_cards import AttributeCard
-from pipeline.step_5_codeGenerator.v2.grouping import Group, repair_partition
+from pipeline.step_5_codeGenerator.v2.grouping import Group, build_shapes, repair_partition
 from pipeline.step_5_codeGenerator.v2.prompts_consolidation import (
     ConsolidationResult, ProposedCode,
 )
@@ -144,3 +144,94 @@ def test_duplicate_tag_within_group_is_collapsed_and_logged():
     assert g.member_ids == ("A1", "A2")
     assert log.entries[0]["action"] == "PARTITION_DUPLICATE_IN_GROUP"
     assert log.entries[0]["attribute_id"] == "A1"
+
+
+def valence_concept(attribute_id, name, pos=0, neg=0, neu=0):
+    """Concept met poolgrootte per valentie, voor de valentiesplitsing-tests.
+    Anders dan `concept()` hierboven (expliciete resp_ids, geen valentie) —
+    hier is de poolgrootte per valentie precies wat wordt getest, dus een
+    tweede helper in plaats van hergebruik met een andere signatuur."""
+    def resp(prefix, n):
+        return frozenset(f"{attribute_id}{prefix}{i}" for i in range(n))
+    p, g, u = resp("P", pos), resp("G", neg), resp("U", neu)
+    return Concept(attribute_id=attribute_id, name=name, definition="d",
+                   domain="D", facet="F", n_iu=pos + neg + neu,
+                   resp_ids=p | g | u, resp_pos=p, resp_neg=g, resp_neu=u)
+
+
+def group(*ids, name="G"):
+    return Group(member_ids=tuple(ids), proposed_name=name, explanation="e")
+
+
+def test_both_poles_above_threshold_become_two_pure_codes():
+    concepts = [valence_concept("A1", "Iets", pos=30, neg=20)]
+
+    out = build_shapes([group("A1")], concepts, threshold=12)
+
+    by_valence = {s.valence: s for s in out.shapes}
+    assert set(by_valence) == {"positive", "negative"}
+    assert len(by_valence["positive"].resp_ids) == 30
+    assert by_valence["positive"].resp_neg == frozenset()
+    assert len(by_valence["negative"].resp_ids) == 20
+    assert by_valence["negative"].resp_pos == frozenset()
+
+
+def test_minority_pole_below_threshold_goes_to_overig_not_into_the_code():
+    """Dit is de eis die v1 stilzwijgend overtrad: een code die 'positive' heet
+    en de negatieve respondenten meedraagt."""
+    concepts = [valence_concept("A1", "Iets", pos=30, neg=8)]
+
+    out = build_shapes([group("A1")], concepts, threshold=12)
+
+    assert [s.valence for s in out.shapes] == ["positive"]
+    assert out.shapes[0].resp_neg == frozenset()
+    assert len(out.shapes[0].resp_ids) == 30
+    assert out.direction_loss == 8
+
+
+def test_group_where_no_pole_clears_the_threshold_lands_entirely_in_overig():
+    concepts = [valence_concept("A1", "Iets", pos=5, neg=4, neu=3)]
+
+    out = build_shapes([group("A1")], concepts, threshold=12)
+
+    assert out.shapes == []
+    assert out.overig_ids == ["A1"]
+    assert out.direction_loss == 12
+
+
+def test_members_of_a_group_are_unioned_by_respondent_not_summed():
+    """Een respondent die in twee samengevoegde attributen zit telt één keer."""
+    shared = frozenset({"r1", "r2"})
+    concepts = [
+        Concept(attribute_id="A1", name="Een", definition="d", domain="D", facet="F",
+                n_iu=2, resp_ids=shared, resp_pos=shared, resp_neg=frozenset(),
+                resp_neu=frozenset()),
+        Concept(attribute_id="A2", name="Twee", definition="d", domain="D", facet="F",
+                n_iu=2, resp_ids=shared, resp_pos=shared, resp_neg=frozenset(),
+                resp_neu=frozenset()),
+    ]
+
+    out = build_shapes([group("A1", "A2")], concepts, threshold=2)
+
+    assert len(out.shapes) == 1
+    assert len(out.shapes[0].resp_ids) == 2
+
+
+def test_shape_keys_are_unique_across_all_groups_and_poles():
+    concepts = [valence_concept("A1", "Een", pos=30, neg=20), valence_concept("A2", "Twee", pos=30)]
+
+    out = build_shapes([group("A1", name="G1"), group("A2", name="G2")],
+                       concepts, threshold=12)
+
+    keys = [s.key for s in out.shapes]
+    assert len(keys) == len(set(keys))
+
+
+def test_shape_carries_the_proposed_name_as_umbrella():
+    """`umbrella` is waar resolve_duplicate_names op terugvalt bij een
+    naamsbotsing, dus het moet de voorgestelde naam dragen."""
+    concepts = [valence_concept("A1", "Iets", pos=30)]
+
+    out = build_shapes([group("A1", name="Voorstel")], concepts, threshold=12)
+
+    assert out.shapes[0].umbrella == "Voorstel"

@@ -13,6 +13,7 @@ from typing import Dict, List, Tuple
 
 from .attribute_cards import AttributeCard
 from ..concept_inventory import Concept
+from ..consolidator import CodeShape
 
 
 @dataclass(frozen=True)
@@ -102,3 +103,69 @@ def repair_partition(result, cards: List[AttributeCard],
         groups.append(Group(member_ids=(card.attribute_id,),
                             proposed_name=card.name, explanation=card.definition))
     return groups
+
+
+@dataclass(frozen=True)
+class ShapingResult:
+    shapes: List[CodeShape]
+    overig_ids: List[str]
+    direction_loss: int
+
+
+def build_shapes(
+    groups: List[Group], concepts: List[Concept], threshold: int,
+) -> ShapingResult:
+    """Elke groep wordt gesplitst in zijn valentiepolen; elke pool die de drempel
+    zelfstandig haalt wordt één code.
+
+    Daarmee is 'geen mix van + en −' een eigenschap van de constructie: een code
+    ÍS een pool. In v1 was dit een fallback die de tegengestelde respondenten
+    meedroeg zodra maar één pool de drempel haalde — het gat waardoor 17 codes
+    een richting claimden die hun inhoud niet had.
+
+    Een pool die de drempel niet haalt gaat naar Overig en telt mee in
+    `direction_loss`. Haalt geen enkele pool van een groep de drempel, dan gaan
+    de attributen zelf naar Overig.
+    """
+    concept_by_id = {c.attribute_id: c for c in concepts}
+    shapes: List[CodeShape] = []
+    overig_ids: List[str] = []
+    direction_loss = 0
+
+    for group in groups:
+        members = [concept_by_id[i] for i in group.member_ids if i in concept_by_id]
+        if not members:
+            continue
+        poles = {
+            "positive": frozenset().union(*(m.resp_pos for m in members)),
+            "negative": frozenset().union(*(m.resp_neg for m in members)),
+            "neutral": frozenset().union(*(m.resp_neu for m in members)),
+        }
+        kept = {v: r for v, r in poles.items() if len(r) >= threshold}
+        if not kept:
+            overig_ids.extend(group.member_ids)
+            direction_loss += len(frozenset().union(*poles.values()))
+            continue
+
+        # Unie, niet som: een respondent kan zowel een positief als een
+        # negatief idee bij hetzelfde attribuut hebben, en zou anders dubbel
+        # meetellen als beide polen onder de drempel blijven.
+        dropped = (r for v, r in poles.items() if v not in kept)
+        direction_loss += len(frozenset().union(*dropped))
+        for valence in ("positive", "negative", "neutral"):
+            if valence not in kept:
+                continue
+            resp = kept[valence]
+            shapes.append(CodeShape(
+                key=f"V{len(shapes) + 1}",
+                members=group.member_ids,
+                valence=valence,
+                umbrella=group.proposed_name,
+                resp_ids=resp,
+                resp_pos=resp if valence == "positive" else frozenset(),
+                resp_neg=resp if valence == "negative" else frozenset(),
+                resp_neu=resp if valence == "neutral" else frozenset(),
+                origin="pooled" if len(group.member_ids) > 1 else "solo",
+            ))
+    return ShapingResult(shapes=shapes, overig_ids=overig_ids,
+                         direction_loss=direction_loss)
