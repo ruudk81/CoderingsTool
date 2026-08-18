@@ -6,15 +6,20 @@ Two systems, selected by header availability from one probe call:
   System A (server-side data): residual latency drift + passive rate rails
   System B (client-side data): P50-drift + PID rate pacing
 
-The caller provides: task list, process function, config params.
+The caller provides: task list, prepare/parse/fallback callbacks, config params.
 Everything else is internal: workers, dispatch, gates, monitoring, retry, cache.
+
+Both gates are retuned in place, never replaced — ConcurrencyGate.set_limit()
+and ArrivalPacer.set_rate(). A gate whose limit changes has to reach the workers
+already queued behind it; see dev/SMOOTH_REQUESTER_UTIL.md.
 
 Usage:
     requester = SmoothRequester(
         model="gpt-5.4-nano",
         phase_key="step3_idea_extraction",
     )
-    results = await requester.process_all(tasks, process_fn, fallback_fn)
+    results = await requester.process_all(
+        tasks, prepare_fn, parse_fn, fallback_fn)
 """
 
 import asyncio
@@ -395,110 +400,6 @@ class SimplifiedCircuitBreaker:
             if self._last_trip_time and (now - self._last_trip_time) >= self._cooldown_s:
                 self._state = 'CLOSED'
         return None
-
-
-class ConcurrencyCircuitBreaker:
-    """Monitors timeout rate in sliding window. Adjusts concurrency on sustained pressure.
-
-    State machine:
-      CLOSED     — Normal operation. Monitoring timeout rate.
-      OPEN       — Tripped. Concurrency reduced. In cooldown.
-      RECOVERING — Cooldown expired, rate OK. Gradually ramping back to baseline.
-    """
-
-    def __init__(self, config, gate: ConcurrencyGate, baseline: int):
-        self.config = config
-        self.gate = gate
-        self.baseline = baseline
-        self._events: deque = deque()
-        self._state = 'CLOSED'
-        self._last_trip_time: Optional[float] = None
-        self._last_recovery_check: Optional[float] = None
-        self._trip_count: int = 0
-
-    @property
-    def state(self) -> str:
-        return self._state
-
-    @property
-    def trip_count(self) -> int:
-        return self._trip_count
-
-    def record_completion(self):
-        self._events.append((time.monotonic(), 'ok'))
-        self._prune_window()
-
-    def record_timeout(self):
-        self._events.append((time.monotonic(), 'timeout'))
-        self._prune_window()
-
-    def _prune_window(self):
-        cutoff = time.monotonic() - self.config.window_seconds
-        while self._events and self._events[0][0] < cutoff:
-            self._events.popleft()
-
-    def _get_timeout_rate(self) -> Tuple[float, int]:
-        self._prune_window()
-        total = len(self._events)
-        if total == 0:
-            return 0.0, 0
-        timeouts = sum(1 for _, t in self._events if t == 'timeout')
-        return timeouts / total, total
-
-    def check_and_adjust(self) -> Optional[str]:
-        """Returns 'tripped', 'recovering', 'recovered', or None."""
-        now = time.monotonic()
-        rate, total = self._get_timeout_rate()
-
-        if self._state == 'CLOSED':
-            if total >= self.config.min_events_to_trip and rate > self.config.trip_threshold:
-                return self._trip(now, rate, total)
-            return None
-
-        elif self._state == 'OPEN':
-            elapsed = now - self._last_trip_time if self._last_trip_time else 0
-            if elapsed < self.config.cooldown_seconds:
-                return None
-            if total >= self.config.min_events_to_trip and rate > self.config.trip_threshold:
-                return self._trip(now, rate, total)
-            self._state = 'RECOVERING'
-            self._last_recovery_check = now
-            return 'recovering'
-
-        elif self._state == 'RECOVERING':
-            if now - (self._last_recovery_check or now) < self.config.recovery_interval_seconds:
-                return None
-            self._last_recovery_check = now
-            if total >= self.config.min_events_to_trip and rate > self.config.trip_threshold:
-                return self._trip(now, rate, total)
-            current = self.gate.limit
-            target = min(self.baseline, int(current * (1.0 + self.config.recovery_step_pct)))
-            target = max(target, current + 1)
-            if target >= self.baseline:
-                self.gate.set_limit(self.baseline)
-                self._state = 'CLOSED'
-                self._trip_count = 0
-                print(f"Circuit breaker recovered: concurrency restored to {self.baseline}")
-                return 'recovered'
-            self.gate.set_limit(target)
-            print(f"Circuit breaker recovering: {current} -> {target} (target: {self.baseline})")
-            return 'recovering'
-
-        return None
-
-    def _trip(self, now: float, rate: float, total: int) -> str:
-        pre_trip = self.gate.limit
-        new_limit = max(self.config.min_concurrency,
-                        int(self.gate.limit * self.config.reduction_factor))
-        self.gate.set_limit(new_limit)
-        self._state = 'OPEN'
-        self._last_trip_time = now
-        self._trip_count += 1
-        print(f"CIRCUIT BREAKER TRIPPED: timeout rate {rate:.1%} "
-              f"({total} events in {self.config.window_seconds}s) | "
-              f"concurrency {pre_trip} -> {new_limit} "
-              f"(cooldown {self.config.cooldown_seconds}s)")
-        return 'tripped'
 
 
 # =============================================================================
