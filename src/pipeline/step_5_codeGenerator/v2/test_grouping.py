@@ -217,6 +217,35 @@ def test_members_of_a_group_are_unioned_by_respondent_not_summed():
     assert len(out.shapes[0].resp_ids) == 2
 
 
+def test_direction_loss_unions_dropped_poles_instead_of_summing_them():
+    """De unie-niet-som-fix in `direction_loss` (regel 154) had geen test die
+    een terugval op `sum()` zou opmerken — elke bestaande fixture gebruikt
+    onderling disjuncte respondenten per pool. Hier deelt dezelfde respondent
+    twee gedropte polen van dezelfde groep (negatief via A1, neutraal via A2):
+    naief opgeteld (3 + 3) zou 6 zijn, de unie is 5."""
+    shared = "shared1"
+    concept_a1 = Concept(
+        attribute_id="A1", name="Een", definition="d", domain="D", facet="F",
+        n_iu=33,
+        resp_ids=frozenset(f"P{i}" for i in range(30)) | frozenset({shared, "negA", "negB"}),
+        resp_pos=frozenset(f"P{i}" for i in range(30)),
+        resp_neg=frozenset({shared, "negA", "negB"}),
+        resp_neu=frozenset(),
+    )
+    concept_a2 = Concept(
+        attribute_id="A2", name="Twee", definition="d", domain="D", facet="F",
+        n_iu=3, resp_ids=frozenset({shared, "neuA", "neuB"}),
+        resp_pos=frozenset(), resp_neg=frozenset(),
+        resp_neu=frozenset({shared, "neuA", "neuB"}),
+    )
+
+    out = build_shapes([group("A1", "A2")], [concept_a1, concept_a2], threshold=12)
+
+    assert len(out.shapes) == 1
+    assert out.shapes[0].valence == "positive"
+    assert out.direction_loss == 5
+
+
 def test_shape_keys_are_unique_across_all_groups_and_poles():
     concepts = [valence_concept("A1", "Een", pos=30, neg=20), valence_concept("A2", "Twee", pos=30)]
 
@@ -225,6 +254,19 @@ def test_shape_keys_are_unique_across_all_groups_and_poles():
 
     keys = [s.key for s in out.shapes]
     assert len(keys) == len(set(keys))
+
+
+def test_group_with_no_matching_concept_routes_its_ids_to_overig_instead_of_vanishing():
+    """Onbereikbaar via de normale route (elk lid van een `Group` komt uit
+    `repair_partition`, dat zelf uit `cards`/`concepts` put), maar als die
+    aanname ooit breekt moet de boekhouding heel blijven: een groep zonder een
+    enkele bijpassende Concept moet naar Overig, niet stilzwijgend verdwijnen."""
+    concepts = [valence_concept("A1", "Iets", pos=30)]
+
+    out = build_shapes([group("A1"), group("Onbekend")], concepts, threshold=12)
+
+    assert out.overig_ids == ["Onbekend"]
+    assert len(out.shapes) == 1
 
 
 def test_shape_carries_the_proposed_name_as_umbrella():
@@ -247,6 +289,20 @@ def test_no_consolidation_at_all_is_flagged():
 
 def test_everything_on_one_heap_is_flagged():
     assert "één hoop" in check_degeneration(n_groups=2, n_attributes=66)
+
+
+def test_exact_ceiling_boundary_counts_as_healthy():
+    """De vergelijking is strikt (`>`): exact 90% van de attributen is nog
+    gezond, 90% + 1 groep niet."""
+    assert check_degeneration(n_groups=90, n_attributes=100) is None
+    assert check_degeneration(n_groups=91, n_attributes=100) is not None
+
+
+def test_exact_floor_boundary_counts_as_healthy():
+    """De vergelijking is strikt (`<`): exact 5% van de attributen is nog
+    gezond, 5% - 1 groep niet."""
+    assert check_degeneration(n_groups=5, n_attributes=100) is None
+    assert check_degeneration(n_groups=4, n_attributes=100) is not None
 
 
 def test_bounds_are_relative_so_a_small_tree_is_judged_on_its_own_scale():

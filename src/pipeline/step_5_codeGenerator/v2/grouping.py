@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from .attribute_cards import AttributeCard
+from .prompts_consolidation import ConsolidationResult
 from ..concept_inventory import Concept
 from ..consolidator import CodeShape
 
@@ -28,7 +29,7 @@ def _id_by_tag(cards: List[AttributeCard]) -> Dict[str, str]:
     return {card.tag: card.attribute_id for card in cards}
 
 
-def repair_partition(result, cards: List[AttributeCard],
+def repair_partition(result: ConsolidationResult, cards: List[AttributeCard],
                      concepts: List[Concept], log=None) -> List[Group]:
     """Maakt van het voorstel een echte partitie: elk attribuut precies één keer.
 
@@ -135,6 +136,10 @@ def build_shapes(
     for group in groups:
         members = [concept_by_id[i] for i in group.member_ids if i in concept_by_id]
         if not members:
+            # Onbereikbaar vandaag (elk lid komt uit `repair_partition`, dat
+            # zelf uit `cards`/`concepts` put), maar als de aanname ooit breekt
+            # moet de boekhouding heel blijven: naar Overig, niet stil weg.
+            overig_ids.extend(group.member_ids)
             continue
         poles = {
             "positive": frozenset().union(*(m.resp_pos for m in members)),
@@ -184,7 +189,11 @@ def check_degeneration(n_groups: int, n_attributes: int) -> Optional[str]:
     geen deterministische toets kan vellen — maar of het voorstel is ontaard.
 
     De twee factoren zijn beredeneerd, niet gemeten; ze horen bijgesteld te
-    worden zodra er runs op meer dan één dataset zijn.
+    worden zodra er runs op meer dan één dataset zijn — wie ze verschuift moet
+    weten welke kant gezond is: de vergelijkingen zijn strikt (`>` / `<`), dus
+    het interval is GESLOTEN — exact op `DEGENERATION_FLOOR * n_attributes` of
+    exact op `DEGENERATION_CEILING * n_attributes` telt als gezond, niet als
+    ontaard.
     """
     if n_attributes == 0:
         return None

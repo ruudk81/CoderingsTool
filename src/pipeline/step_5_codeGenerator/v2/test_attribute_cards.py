@@ -1,7 +1,7 @@
 """Tests voor de attribuutkaarten die fase 1 te zien krijgt."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.taxonomy_input import IdeaUnit
-from pipeline.step_5_codeGenerator.v2.attribute_cards import AttributeCard, build_cards
+from pipeline.step_5_codeGenerator.v2.attribute_cards import build_cards
 
 
 def concept(attribute_id, name, pos=0, neg=0, neu=0):

@@ -61,8 +61,16 @@ class GeneratedCodebookV2:
 
 
 async def _generate_async(
-    concepts, idea_units_by_attribute, threshold, survey_question, n_respondents,
-    dimension_diagnostic, language, config, verbose, prompt_printer,
+    concepts: List[Concept],
+    idea_units_by_attribute: Dict[str, List[IdeaUnit]],
+    threshold: int,
+    survey_question: str,
+    n_respondents: int,
+    dimension_diagnostic: str,
+    language: str,
+    config: CodebookConfig,
+    verbose: bool,
+    prompt_printer,
 ) -> GeneratedCodebookV2:
     cards = build_cards(concepts, idea_units_by_attribute)
     proposal = await resolve_consolidation(
@@ -114,8 +122,16 @@ async def _generate_async(
 
 
 def generate_codebook_v2(
-    concepts, idea_units_by_attribute, threshold, survey_question, n_respondents,
-    dimension_diagnostic, language, config, verbose=True, prompt_printer=None,
+    concepts: List[Concept],
+    idea_units_by_attribute: Dict[str, List[IdeaUnit]],
+    threshold: int,
+    survey_question: str,
+    n_respondents: int,
+    dimension_diagnostic: str,
+    language: str,
+    config: CodebookConfig,
+    verbose: bool = True,
+    prompt_printer=None,
 ) -> GeneratedCodebookV2:
     """Sync wrapper — één orchestratie-ingang, zoals `generate_codebook` in v1."""
     return asyncio.run(_generate_async(
@@ -135,8 +151,18 @@ def report_codebook_build_v2(result: GeneratedCodebookV2) -> None:
         # Groepstelling, geen respondent-uniek totaal: build_shapes telt per
         # groep op, dus een respondent die in twee groepen een minderheidspool
         # mist telt twee keer mee.
+        #
+        # Niet "naar Overig": dat klopt alleen wanneer GEEN enkele pool van de
+        # groep de drempel haalt (grouping.py:145-148). Haalt de andere pool
+        # wél de drempel (:153-154), dan blijft het bronattribuut een source
+        # van die overblijvende code — apply_overig_sweep ziet het dus niet als
+        # wees — en komen deze respondenten zonder eigen code terecht bij de
+        # overblijvende, tegengesteld gerichte code.
         print(f"RICHTINGSVERLIES: {result.direction_loss} verloren pool-plaatsing(en) "
-              f"onder de drempel — naar Overig.")
+              f"onder de drempel — geen eigen code. Haalt de andere pool van "
+              f"dezelfde groep wél de drempel, dan belanden deze respondenten bij "
+              f"die overblijvende (tegengesteld gerichte) code; haalt geen enkele "
+              f"pool de drempel, dan gaat de hele groep naar Overig.")
 
     if result.vetoes:
         print(f"WAARSCHUWING: {len(result.vetoes)} pooled code(s) geveto'd "
@@ -148,10 +174,13 @@ def report_codebook_build_v2(result: GeneratedCodebookV2) -> None:
         if entry["action"] == "PARTITION_MISSING":
             print(f"  PARTITIE: '{entry['name']}' ({entry['attribute_id']}) was "
                   f"vergeten — eigen groep gemaakt")
-        else:
+        elif entry["action"] == "PARTITION_DOUBLE":
             print(f"  PARTITIE: {entry['attribute_id']} stond in meerdere groepen — "
                   f"gehouden in '{entry['kept_in']}', verwijderd uit "
                   f"{', '.join(entry['removed_from'])}")
+        else:  # PARTITION_DUPLICATE_IN_GROUP
+            print(f"  PARTITIE: {entry['attribute_id']} stond dubbel in dezelfde "
+                  f"groep '{entry['group']}' — eenmaal geteld")
 
     if result.collisions:
         print(f"WAARSCHUWING: {len(result.collisions)} dubbele codenaam/namen opgelost:")
@@ -255,14 +284,30 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
 
     overig_name = apply_overig_sweep(result.codes, taxonomy.partition_results, language)
     print_codebook_results(result.codes)
-    run_scorecard(result.codes, taxonomy.partition_results, overig_name)
+    scorecard = run_scorecard(result.codes, taxonomy.partition_results, overig_name)
 
+    if result.direction_loss:
+        # De maat die RICHTINGSVERLIES's effect op déze run zichtbaar maakt:
+        # een homeless tegenpool zonder counter-valence code is precies wat
+        # under_split_codes telt.
+        print(f"  (RICHTINGSVERLIES-effect in de scorecard: "
+              f"{len(scorecard.under_split_codes)} under-split code(s))")
+
+    # Degeneratie is een harde FAIL (spec): melden, niet repareren — de codebook-
+    # print en scorecard hierboven blijven dus draaien, alleen de cache-write
+    # niet. Zonder deze afslag zou een ontaard voorstel onder CACHE_STEP landen
+    # en step 6 het stilzwijgend inlezen, terwijl de DEGENERATIE-regel hierboven
+    # al meldde dat het niet deugt.
+    if result.degeneration:
+        print(f"v2-codeboek NIET gecached — degeneratie: {result.degeneration}")
+        return
+
+    print(f"v2-codeboek cachen onder '{CACHE_STEP}' ({len(result.codes)} codes)...")
     cache_mece_results(
         taxonomy.partition_set, taxonomy.partition_results, result.codes,
         filename=filename, variable=var_name, sample_size=sample_size,
         variable_key=variable_key, step=CACHE_STEP,
     )
-    print(f"v2-codeboek gecached ({len(result.codes)} codes) onder '{CACHE_STEP}'")
 
 
 if __name__ == "__main__":

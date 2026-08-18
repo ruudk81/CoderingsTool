@@ -51,6 +51,46 @@ def test_direction_loss_is_reported_when_nonzero(capsys):
     assert "42" in capsys.readouterr().out
 
 
+def test_direction_loss_wording_does_not_claim_everything_goes_to_overig(capsys):
+    """I3: `grouping.py` only routes a group's members into `overig_ids` when
+    NO pole clears the threshold. When one pole clears, the dropped pole is
+    counted into `direction_loss` but the attribute stays a source of the
+    surviving code — those respondents reach the surviving, oppositely-signed
+    code in step 6, not Overig. The message must not claim otherwise."""
+    result = runner.GeneratedCodebookV2(
+        shapes=[], overig_ids=[], codes=[], direction_loss=8, degeneration=None,
+        partition_repairs=[], collisions=[], naming_mismatches=[],
+        duplicate_definitions=[], vetoes=[], concept_by_id={},
+    )
+
+    runner.report_codebook_build_v2(result)
+
+    out = capsys.readouterr().out
+    assert "geen eigen code" in out
+    assert "overblijvende" in out
+
+
+def test_partition_duplicate_in_group_is_reported_not_raised(capsys):
+    """C1: `repair_partition` emits three log actions, but the report used to
+    branch on only two (`PARTITION_MISSING` / else), so a
+    `PARTITION_DUPLICATE_IN_GROUP` entry — which carries `attribute_id` and
+    `group`, not `kept_in`/`removed_from` — fell into the PARTITION_DOUBLE
+    branch and raised `KeyError: 'kept_in'`. Reachable model output: nothing
+    stops the same tag appearing twice in one code's `topics`."""
+    result = runner.GeneratedCodebookV2(
+        shapes=[], overig_ids=[], codes=[], direction_loss=0, degeneration=None,
+        partition_repairs=[{"action": "PARTITION_DUPLICATE_IN_GROUP",
+                            "attribute_id": "A1", "group": "G"}],
+        collisions=[], naming_mismatches=[], duplicate_definitions=[], vetoes=[],
+        concept_by_id={},
+    )
+
+    runner.report_codebook_build_v2(result)
+
+    out = capsys.readouterr().out
+    assert "A1" in out and "G" in out
+
+
 def test_vetoes_are_reported_when_present(capsys):
     """F2: elke samengevoegde groep in v2 is `pooled` — een veto is de normale
     route, niet een randgeval — en zonder deze melding verdwijnt een
@@ -163,3 +203,140 @@ def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
     runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
     assert captured.get("step") == runner.CACHE_STEP
+
+
+def test_degenerate_proposal_is_not_cached(monkeypatch, capsys):
+    """I2: degeneratie is een harde FAIL — een ontaard voorstel mag niet onder
+    CACHE_STEP landen waar step 6 het stilzwijgend zou inlezen. Reporting
+    (codebook + scorecard) blijft draaien; alleen de cache-write wordt
+    overgeslagen, en dat moet met zoveel woorden gemeld worden."""
+    from pipeline.step_5_codeGenerator import run_codeGenerator as v1
+
+    class FakeMetadata:
+        lang = "Dutch"
+        var_lab = "Wat vindt u van dit merk?"
+        primary_dimension = ""
+
+    class FakeTaxonomy:
+        partition_set = object()
+        partition_results = {}
+
+    class FakeCacheManager:
+        def is_metadata_cache_valid(self, *args, **kwargs):
+            return False
+
+    degenerate_result = runner.GeneratedCodebookV2(
+        shapes=[], overig_ids=[], codes=[], direction_loss=0,
+        degeneration="geen consolidatie: 64 groepen op 66 attributen (grens 90%)",
+        partition_repairs=[], collisions=[], naming_mismatches=[],
+        duplicate_definitions=[], vetoes=[], concept_by_id={},
+    )
+
+    cache_calls = []
+
+    monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
+    monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: degenerate_result)
+    monkeypatch.setattr(v1, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
+    monkeypatch.setattr(v1, "load_classified_ideas", lambda *a, **k: [])
+    monkeypatch.setattr(v1, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
+    monkeypatch.setattr(v1, "apply_overig_sweep", lambda codes, results, language: "Overig")
+    monkeypatch.setattr(v1, "print_codebook_results", lambda codes: None)
+    monkeypatch.setattr(v1, "run_scorecard", lambda *a, **k: None)
+    monkeypatch.setattr(v1, "cache_mece_results", lambda *a, **k: cache_calls.append(k))
+
+    runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
+
+    assert cache_calls == []
+    out = capsys.readouterr().out
+    assert "NIET gecached" in out
+    assert "degeneratie" in out
+
+
+def test_richtingsverlies_is_paired_with_the_scorecards_under_split_count(monkeypatch, capsys):
+    """I3: `under_split_codes` is the number that measures RICHTINGSVERLIES's
+    effect on this run — print it alongside, using the scorecard `run_scorecard`
+    (v1) already builds, without touching v1 itself."""
+    from pipeline.step_5_codeGenerator import run_codeGenerator as v1
+
+    class FakeMetadata:
+        lang = "Dutch"
+        var_lab = "Wat vindt u van dit merk?"
+        primary_dimension = ""
+
+    class FakeTaxonomy:
+        partition_set = object()
+        partition_results = {}
+
+    class FakeCacheManager:
+        def is_metadata_cache_valid(self, *args, **kwargs):
+            return False
+
+    class FakeScorecard:
+        under_split_codes = [object(), object(), object()]
+
+    result_with_loss = runner.GeneratedCodebookV2(
+        shapes=[], overig_ids=[], codes=[], direction_loss=8, degeneration=None,
+        partition_repairs=[], collisions=[], naming_mismatches=[],
+        duplicate_definitions=[], vetoes=[], concept_by_id={},
+    )
+
+    monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
+    monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: result_with_loss)
+    monkeypatch.setattr(v1, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
+    monkeypatch.setattr(v1, "load_classified_ideas", lambda *a, **k: [])
+    monkeypatch.setattr(v1, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
+    monkeypatch.setattr(v1, "apply_overig_sweep", lambda codes, results, language: "Overig")
+    monkeypatch.setattr(v1, "print_codebook_results", lambda codes: None)
+    monkeypatch.setattr(v1, "run_scorecard", lambda *a, **k: FakeScorecard())
+    monkeypatch.setattr(v1, "cache_mece_results", lambda *a, **k: None)
+
+    runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
+
+    out = capsys.readouterr().out
+    assert "3 under-split code(s)" in out
+
+
+def test_no_unconditional_success_claim_when_cache_save_fails(monkeypatch, capsys):
+    """I5: `cache_mece_results` prints its own honest ERROR line and returns
+    None on a failed save; `run_codebook_v2` used to print a "v2-codeboek
+    gecached ..." success line right after, unconditionally. The announcement
+    must not claim success when the save failed."""
+    from pipeline.step_5_codeGenerator import run_codeGenerator as v1
+
+    class FakeMetadata:
+        lang = "Dutch"
+        var_lab = "Wat vindt u van dit merk?"
+        primary_dimension = ""
+
+    class FakeTaxonomy:
+        partition_set = object()
+        partition_results = {}
+
+    class FakeCacheManager:
+        def is_metadata_cache_valid(self, *args, **kwargs):
+            return False
+
+    empty_result = runner.GeneratedCodebookV2(
+        shapes=[], overig_ids=[], codes=[], direction_loss=0, degeneration=None,
+        partition_repairs=[], collisions=[], naming_mismatches=[],
+        duplicate_definitions=[], vetoes=[], concept_by_id={},
+    )
+
+    def fake_failed_cache(*args, **kwargs):
+        print("ERROR: codebook NOT cached (0 codes) — downstream steps will regenerate.")
+
+    monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
+    monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: empty_result)
+    monkeypatch.setattr(v1, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
+    monkeypatch.setattr(v1, "load_classified_ideas", lambda *a, **k: [])
+    monkeypatch.setattr(v1, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
+    monkeypatch.setattr(v1, "apply_overig_sweep", lambda codes, results, language: "Overig")
+    monkeypatch.setattr(v1, "print_codebook_results", lambda codes: None)
+    monkeypatch.setattr(v1, "run_scorecard", lambda *a, **k: None)
+    monkeypatch.setattr(v1, "cache_mece_results", fake_failed_cache)
+
+    runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
+
+    out = capsys.readouterr().out
+    assert "NOT cached" in out
+    assert "v2-codeboek gecached" not in out

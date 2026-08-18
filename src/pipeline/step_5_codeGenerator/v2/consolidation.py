@@ -5,7 +5,7 @@ Faalcontract: hard. Zonder groepering is er geen codeboek, precies zoals
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from config import get_reasoning_params
 from utils.smoothRequester import SmoothRequester
