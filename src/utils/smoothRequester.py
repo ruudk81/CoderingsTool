@@ -27,7 +27,6 @@ from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from aiolimiter import AsyncLimiter
 from openai import RateLimitError, APIConnectionError, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from instructor.exceptions import InstructorRetryException
@@ -65,6 +64,7 @@ ADJUSTMENT_INTERVAL = 20  # seconds between PID adjustments (System B)
 DEFAULT_OUTPUT_RATIO = 0.25
 DISPATCH_DELAY_P50_THRESHOLD = 5.0   # seconds — no delay below this P50
 DISPATCH_DELAY_SPREAD_FACTOR = 12    # proportionality: delay = (p50 - threshold) / factor
+ADMIT_RATE_FLOOR = 0.5               # requests/s — the slowest the PID may pace dispatch
 
 
 # =============================================================================
@@ -118,9 +118,24 @@ class TokenBucket:
         raise RuntimeError(f"Failed to acquire {tokens_needed} tokens")
 
     async def reconcile(self, delta_tokens: int):
-        if delta_tokens < 0:
-            async with self.lock:
-                self.available = min(self.tpm, self.available - delta_tokens)
+        """Settle the difference between the estimate debited at acquire and
+        what the call actually cost.
+
+        Both ways. Refunding an over-estimate while never charging an
+        under-estimate makes this ledger drift optimistic by exactly the
+        estimator's error — and this is the only mechanism in the requester that
+        sees real per-call token counts, so it is the only one that can hold TPM
+        exactly. One-sided, it could not: measured usage sat at 106-113% of the
+        headroom budget while the bucket reported no waiting at all, leaving the
+        PID as the sole regulator (2026-08-17, step4_assignment).
+
+        `available` may go negative. That is the debt, and the next acquisition
+        waits it out — which is what backpressure is.
+        """
+        if delta_tokens == 0:
+            return
+        async with self.lock:
+            self.available = min(self.tpm, self.available - delta_tokens)
 
 
 class ConcurrencyGate:
@@ -179,6 +194,93 @@ class ConcurrencyGate:
 
     async def __aexit__(self, *args):
         self.release()
+
+
+class ArrivalPacer:
+    """Paces dispatch to a target rate, retuned in place.
+
+    The sibling of ConcurrencyGate, and for the same reason: a gate whose limit
+    changes has to reach the workers already queued behind it. Its predecessor
+    was an `AsyncLimiter` that was *replaced* on every adjustment
+    (`self.rate_limiter = AsyncLimiter(...)`), which leaves everyone already
+    inside `acquire()` awaiting a future in the old object — draining at the old
+    rate until that object runs dry, however fast the new one is.
+
+    Measured 2026-08-17 on step4_assignment: the PID recovered from its floor to
+    the RPM ceiling within five seconds, and 132 workers still drained at 0.5/s
+    for 158 seconds — 76% of the phase, at 1% of the token budget.
+
+    One timer serves the queue head, so an admission costs O(1) regardless of
+    how many workers are waiting, and `set_rate` reschedules that timer instead
+    of leaving it pointing at a slot the new rate has superseded.
+    """
+
+    def __init__(self, rate: float):
+        self._rate = max(float(rate), ADMIT_RATE_FLOOR)
+        self._next_slot = 0.0
+        self._waiters: deque = deque()
+        self._waker: Optional[asyncio.TimerHandle] = None
+
+    @property
+    def rate(self) -> float:
+        return self._rate
+
+    @property
+    def waiting(self) -> int:
+        return len(self._waiters)
+
+    def set_rate(self, rate: float) -> None:
+        """Retune the gate. Synchronous, like ConcurrencyGate.set_limit()."""
+        new_rate = max(float(rate), ADMIT_RATE_FLOOR)
+        if new_rate == self._rate:
+            return
+        self._rate = new_rate
+        # A slot booked under the old spacing must not outlive the rate that
+        # booked it — that gap is exactly what the queue is waiting out.
+        now = time.monotonic()
+        if self._next_slot > now:
+            self._next_slot = min(self._next_slot, now + 1.0 / new_rate)
+        if self._waker is not None:
+            self._waker.cancel()
+            self._waker = None
+        self._schedule()
+
+    async def acquire(self) -> None:
+        # Fast path: nothing queued and the slot is due, so no future, no timer.
+        if not self._waiters and time.monotonic() >= self._next_slot:
+            self._take_slot()
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self._waiters.append(fut)
+        self._schedule()
+        try:
+            await fut
+        except asyncio.CancelledError:
+            if not fut.done():
+                try:
+                    self._waiters.remove(fut)
+                except ValueError:
+                    pass
+            raise
+
+    def _take_slot(self) -> None:
+        self._next_slot = max(time.monotonic(), self._next_slot) + 1.0 / self._rate
+
+    def _schedule(self) -> None:
+        if self._waker is not None or not self._waiters:
+            return
+        delay = max(0.0, self._next_slot - time.monotonic())
+        self._waker = asyncio.get_running_loop().call_later(delay, self._release_one)
+
+    def _release_one(self) -> None:
+        self._waker = None
+        while self._waiters:
+            fut = self._waiters.popleft()
+            if not fut.done():
+                self._take_slot()
+                fut.set_result(True)
+                break
+        self._schedule()
 
 
 class LatencyTracker:
@@ -980,7 +1082,7 @@ class SmoothRequester:
         )
 
         # Rate limiting components (initialized in _setup)
-        self.rate_limiter = None
+        self.arrival_pacer = None
         self.tpm_bucket = None
         self.semaphore = None
         self.optimal_concurrency = 0
@@ -1002,6 +1104,16 @@ class SmoothRequester:
 
         # State tracking
         self._inflight_starts = {}
+        # Who is standing in which queue. The semaphore is held across both
+        # gates, so `semaphore.active` cannot tell work from waiting — it read
+        # `inflight:81` while 78 of those workers were queued and the token
+        # budget was 99% idle. These two count the queues themselves, which
+        # makes the brake a fact rather than an inference.
+        self._waiting_tokens = 0
+        self._waiting_admit = 0
+        self._admit_floor_seconds = 0.0
+        self._starved_seconds = 0.0
+        self._last_tpm_pct = 0.0
         self._warm_up_calibrated = False
         self._warm_up_target_samples = WARM_UP_SAMPLE_MIN
         self._last_remaining_requests = 0
@@ -1115,13 +1227,13 @@ class SmoothRequester:
         return await llm_fetch_rate_limits(self.model)
 
     def _setup_rate_pacing(self, limits):
-        """Create TokenBucket + AsyncLimiter (always active, both systems)."""
+        """Create TokenBucket + ArrivalPacer (always active, both systems)."""
         headroom = self._headroom
         arrival_rate = min(
             limits.requests_per_minute * headroom / 60,
             limits.tokens_per_minute * headroom / self.avg_tokens / 60
         )
-        self.rate_limiter = AsyncLimiter(1, time_period=1.0 / arrival_rate)
+        self.arrival_pacer = ArrivalPacer(arrival_rate)
         self.current_arrival_rate = arrival_rate
         self.tpm_bucket = TokenBucket(int(limits.tokens_per_minute * headroom))
 
@@ -1269,29 +1381,37 @@ class SmoothRequester:
 
         async with self.semaphore:
             timeout = self.latency_tracker.get_timeout()
-            await self.tpm_bucket.wait_and_acquire(est_tokens)
+            self._waiting_tokens += 1
+            try:
+                await self.tpm_bucket.wait_and_acquire(est_tokens)
+            finally:
+                self._waiting_tokens -= 1
 
             conc_at_dispatch = 0
             try:
                 # Step 2: LLM call (owned by smoothRequester for header access)
                 # api_start is AFTER all gates so latency measures only API time
-                async with self.rate_limiter:
-                    api_start = time.perf_counter()
-                    self._inflight_starts[task_id] = api_start
-                    conc_at_dispatch = len(self._inflight_starts)
-                    response = await asyncio.wait_for(
-                        llm_create_async(
-                            client=self.client,
-                            model=self.model,
-                            prompt=prompt,
-                            response_model=call_params.get('response_model'),
-                            temperature=call_params.get('temperature', 0.0),
-                            max_tokens=call_params.get('max_tokens', 4000),
-                            max_retries=call_params.get('max_retries', 3),
-                            **call_params.get('extra_kwargs', {}),
-                        ),
-                        timeout=timeout
-                    )
+                self._waiting_admit += 1
+                try:
+                    await self.arrival_pacer.acquire()
+                finally:
+                    self._waiting_admit -= 1
+                api_start = time.perf_counter()
+                self._inflight_starts[task_id] = api_start
+                conc_at_dispatch = len(self._inflight_starts)
+                response = await asyncio.wait_for(
+                    llm_create_async(
+                        client=self.client,
+                        model=self.model,
+                        prompt=prompt,
+                        response_model=call_params.get('response_model'),
+                        temperature=call_params.get('temperature', 0.0),
+                        max_tokens=call_params.get('max_tokens', 4000),
+                        max_retries=call_params.get('max_retries', 3),
+                        **call_params.get('extra_kwargs', {}),
+                    ),
+                    timeout=timeout
+                )
 
                 latency = time.perf_counter() - api_start
                 self._inflight_starts.pop(task_id, None)
@@ -1497,13 +1617,13 @@ class SmoothRequester:
         effective = min(self._rate_limit_concurrency, self._server_concurrency, num_tasks)
         effective = max(effective, 2)
         if effective != self.optimal_concurrency:
-            old = self.optimal_concurrency
             self.semaphore.set_limit(effective)
             self.optimal_concurrency = effective
 
         # --- Rate pacing display ---
         tpm_pct = current_tpm / effective_tpm * 100 if effective_tpm else 0
         rpm_pct = current_rpm / effective_rpm * 100 if effective_rpm else 0
+        self._last_tpm_pct = tpm_pct
         if self._rate_bottleneck == "TPM":
             rate_val = current_tpm / 60
             limit_val = effective_tpm / 60
@@ -1512,7 +1632,16 @@ class SmoothRequester:
         else:
             pace_str = f"req:{current_rpm/60:.1f}/{effective_rpm/60:.1f} ({rpm_pct:.0f}%)"
 
-        # --- Concurrency display ---
+        # The admission rate belongs next to the budgets it is derived from. It
+        # was the binding control on 2026-08-17 and the only one the line never
+        # printed, which is why a phase throttled to a standstill still read as
+        # healthy on every number shown.
+        admit = self.current_arrival_rate or 0.0
+        pace_str += f" admit:{admit:.1f}/s" if admit < 10 else f" admit:{admit:.0f}/s"
+
+        # --- Fleet display: working versus queueing ---
+        in_api = len(self._inflight_starts)
+        queued = max(0, active - in_api)
         conc_str = f" conc:{concurrency}" if concurrency != active else ""
 
         # --- Latency display: residual current/baseline (drift%) ---
@@ -1536,19 +1665,50 @@ class SmoothRequester:
             latency_str = f" | thru:{current_ms:.0f}ms/{baseline_ms:.0f}ms ({drift_str})"
 
         # --- Dynamic state: which constraint actually binds ---
-        is_rate_capped = (effective <= self._rate_limit_concurrency
-                          and self._rate_limit_concurrency <= self._server_concurrency)
         if warmup_elapsed < 5.0:
             control_str = "WARM-UP"
-        elif is_rate_capped:
-            control_str = "RATE-CAPPED"
         else:
-            control_str = state_str.strip() if state_str.strip() else "—"
+            control_str = self._binding_brake(active, concurrency, state_str)
 
         timeout_info = f" | deferred:{self.stats['timeouts']}" if self.stats['timeouts'] > 0 else ""
 
-        return (f"[{self.phase_key}] {completed}/{total} | inflight:{active}{conc_str} | {pace_str}"
-                f"{latency_str} | completing:{tick_rate:.0f}/s | {control_str}{timeout_info}")
+        return (f"[{self.phase_key}] {completed}/{total} | api:{in_api} queued:{queued}{conc_str}"
+                f" | {pace_str}{latency_str} | completing:{tick_rate:.0f}/s"
+                f" | {control_str}{timeout_info}")
+
+    def _binding_brake(self, active, concurrency, state_str) -> str:
+        """What is holding this phase back right now.
+
+        Read from where the workers are standing, not from a comparison of two
+        ceilings. `RATE-CAPPED` reported which of the two concurrency arms was
+        smaller — true, and silent about the admission gate that held the fleet
+        parked at 1% of the token budget for 76% of a phase (2026-08-17). A gate
+        only counts as the brake once more workers are queued behind it than are
+        working; a single worker briefly waiting is not a stalled phase.
+        """
+        in_api = len(self._inflight_starts)
+        queued = max(0, active - in_api)
+        if queued > in_api and (self._waiting_tokens or self._waiting_admit):
+            return "TPM" if self._waiting_tokens >= self._waiting_admit else "ADMIT"
+        if active >= concurrency:
+            arm = ("rate" if self._rate_limit_concurrency <= self._server_concurrency
+                   else "server")
+            return f"CONC({arm})"
+        return state_str.strip() or "—"
+
+    def _account_gate_time(self, elapsed: float) -> None:
+        """Book how long this phase spends held up, for the closing summary.
+
+        The tick lines scroll away; what survives is the summary, and it carried
+        no trace of the one thing that mattered. `_starved_seconds` is the number
+        that would have made 2026-08-17 self-evident: queued behind a gate while
+        the token budget sat idle. Waiting on a budget that is genuinely spent is
+        the system working and is deliberately not counted.
+        """
+        if (self.current_arrival_rate or 0.0) <= ADMIT_RATE_FLOOR:
+            self._admit_floor_seconds += elapsed
+        if (self._waiting_tokens or self._waiting_admit) and self._last_tpm_pct < 50.0:
+            self._starved_seconds += elapsed
 
     def _evaluate_concurrency_header_aware(self, sm, throughput, p50, warmup_elapsed):
         """Evaluate header-aware state machine. Updates server_concurrency. Returns state string."""
@@ -1618,7 +1778,7 @@ class SmoothRequester:
             self.rate_limits.requests_per_minute * headroom / 60,
             self.rate_limits.tokens_per_minute * headroom / measured_avg / 60
         )
-        self.rate_limiter = AsyncLimiter(1, time_period=1.0 / new_rate)
+        self.arrival_pacer.set_rate(new_rate)
         self.current_arrival_rate = new_rate
 
         if self.pid_controller:
@@ -1676,13 +1836,13 @@ class SmoothRequester:
         if abs(adjustment - 1.0) < 0.01:
             return
         old_rate = self.current_arrival_rate
-        new_rate = max(0.5, min(
+        new_rate = max(ADMIT_RATE_FLOOR, min(
             self.rate_limits.requests_per_minute * self._headroom / 60,
             old_rate * adjustment
         ))
         if abs(new_rate - old_rate) / max(old_rate, 0.001) < 0.02:
             return
-        self.rate_limiter = AsyncLimiter(1, time_period=1.0 / new_rate)
+        self.arrival_pacer.set_rate(new_rate)
         self.current_arrival_rate = new_rate
 
     # === PROCESS ALL ==========================================================
@@ -1773,9 +1933,12 @@ class SmoothRequester:
         # tail of every phase ran unobserved and unregulated, which is exactly
         # where a phase goes wrong: measured 2026-08-15, step-4 assignment
         # spent 177 of its 207 seconds after this loop had exited.
+        last_account = start_time
         while not queue.empty() or self.semaphore.active > 0:
             await asyncio.sleep(0.1)
             now = time.time()
+            self._account_gate_time(now - last_account)
+            last_account = now
             completed = self.stats['tasks_processed']
             completions_since = completed - (last_report - start_time) if False else (completed - last_tick_successful)  # approximate
 
@@ -1824,8 +1987,17 @@ class SmoothRequester:
                     and len(self.latency_tracker.values) >= self._warm_up_target_samples):
                 self._calibrate_concurrency(num_tasks)
 
-            # Token correction + PID (both always active)
-            if now - last_adjustment >= 0:  # every tick
+            # Token correction + PID. Both read a 60-second sliding window, so
+            # a controller that acts faster than that never sees the result of
+            # its own last move — it repeats it. Ungated (the guard was
+            # `>= 0`, always true) that meant roughly 200 corrections landing
+            # before the first became visible: a steady 6% overshoot walked the
+            # arrival rate from 46 req/s to its floor in fifteen seconds, and
+            # avg_tokens — which sizes the fleet through Little's law — swung
+            # -54% then +96% inside two seconds (2026-08-17). Acting slower than
+            # the signal settles costs no adaptivity: a loop can never adapt
+            # faster than its own measurement.
+            if now - last_adjustment >= ADJUSTMENT_INTERVAL:
                 self._adjust_throughput_if_needed()
                 await self._apply_pid()
                 last_adjustment = now
@@ -1856,12 +2028,12 @@ class SmoothRequester:
                           f"({self._retry_sleep_total:.0f}s backoff)"
                           if self.stats['retries'] else "")
             print(f"⏱ T+{time.time() - start_time:.1f}s: Main batch done — {self.stats['tasks_successful']} succeeded, {self.stats['timeouts']} deferred{retry_note}")
-            is_rate_capped = self._rate_limit_concurrency <= self._server_concurrency
-            if is_rate_capped:
-                print(f"  RATE-CAPPED at {self.optimal_concurrency} (rate_conc={self._rate_limit_concurrency}, server_conc={self._server_concurrency})")
-            else:
-                sm_state = self._concurrency_controller.state.value if self._concurrency_controller and hasattr(self._concurrency_controller, 'state') else "N/A"
-                print(f"  Final concurrency: {self.optimal_concurrency} (state: {sm_state})")
+            arm = ("rate" if self._rate_limit_concurrency <= self._server_concurrency
+                   else "server")
+            sm_state = self._concurrency_controller.state.value if self._concurrency_controller and hasattr(self._concurrency_controller, 'state') else "N/A"
+            print(f"  Final concurrency: {self.optimal_concurrency} (set by {arm} arm; "
+                  f"rate={self._rate_limit_concurrency}, server={self._server_concurrency}, "
+                  f"state: {sm_state})")
 
         # === RETRY PASS ===
         failed_for_retry = []
@@ -1933,7 +2105,6 @@ class SmoothRequester:
         self.stats['wall_time'] = wall_time
 
         if not self._quiet:
-            rate_capped_final = self._rate_limit_concurrency <= self._server_concurrency
             print(f"\nCompleted {num_tasks} tasks in {wall_time:.1f}s")
             print(f"- Successful: {self.stats['tasks_successful']}")
             if recovered > 0:
@@ -1951,10 +2122,17 @@ class SmoothRequester:
                       f"all workers, longest single wait {bucket.longest_wait:.1f}s, "
                       f"{bucket.acquire_attempts / bucket.acquisitions:.1f} attempts "
                       f"per acquisition")
-            if rate_capped_final:
-                print(f"- Rate-capped at concurrency {self.optimal_concurrency}")
-            else:
-                print(f"- Final concurrency: {self.optimal_concurrency}")
+            # Being held up is not news; being held up with the budget idle is.
+            # Without these two lines a phase that throttled itself to a
+            # standstill closes on numbers that all read healthy.
+            if self._starved_seconds >= 1.0:
+                print(f"- Held up with room to spare: {self._starved_seconds:.0f}s "
+                      f"queued behind a gate while under half the token budget "
+                      f"was in use")
+            if self._admit_floor_seconds >= 1.0:
+                print(f"- Admission rate sat at its floor ({ADMIT_RATE_FLOOR}/s) "
+                      f"for {self._admit_floor_seconds:.0f}s")
+            print(f"- Final concurrency: {self.optimal_concurrency}")
 
         # Save stats
         perf_model.save()
