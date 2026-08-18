@@ -57,7 +57,21 @@ class StabilityReport:
         )
 
     def unstable_attributes(self) -> Set[str]:
+        """Elk attribuut dat in minstens één wisselend paar zit. LET OP: op een
+        inventaris met veel wisseling raakt dit vrijwel alles — gebruik
+        `has_unstable_pair_within` om te toetsen of een GROEP intern wiebelt."""
         return {attribute for pair in self.unstable_pairs() for attribute in pair}
+
+    def has_unstable_pair_within(self, attribute_ids) -> bool:
+        """Wisselt er een paar BINNEN deze verzameling? Dat is iets heel anders
+        dan 'bevat een attribuut dat ergens wisselt': een groep kan uit louter
+        attributen bestaan die elders wiebelen terwijl hun onderlinge indeling
+        in elke run identiek was — dan valt er hier niets te heroverwegen."""
+        ids = sorted(attribute_ids)
+        return any(
+            0 < self.together.get(frozenset(pair), 0) < self.runs
+            for pair in combinations(ids, 2)
+        )
 
     def stable_share(self) -> float:
         """Aandeel van alle paren waarover de runs het eens zijn. 1.0 betekent

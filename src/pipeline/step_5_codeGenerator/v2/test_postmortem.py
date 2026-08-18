@@ -169,3 +169,26 @@ def test_verdict_for_an_unknown_group_is_ignored():
 
     assert out == groups
     assert log == []
+
+
+def test_group_is_no_candidate_when_its_own_members_never_wobbled():
+    """De valstrik: een groep kan bestaan uit attributen die elders wiebelen,
+    terwijl hun ONDERLINGE indeling in elke run identiek was. Dan valt er hier
+    niets te heroverwegen. Trigger je op 'bevat een instabiel attribuut', dan is
+    op een inventaris met veel wisseling bijna elke groep kandidaat en legt de
+    post-mortem het hele codeboek open."""
+    concepts = [concept("A1", 10), concept("A2", 10, prefix="q"),
+                concept("A3", 10, prefix="s")]
+    # A1+A2 zitten in elke run samen; A3 wisselt, maar alleen ten opzichte van A2.
+    runs = [
+        [group("A1", "A2"), group("A3")],
+        [group("A1", "A2", "A3")],
+    ]
+    report = measure_stability(runs, ["A1", "A2", "A3"])
+
+    assert "A1" in report.unstable_attributes()
+
+    picked = select_candidates([group("A1", "A2")], concepts, report,
+                               n_respondents=1000, share_threshold=0.20)
+
+    assert picked == []

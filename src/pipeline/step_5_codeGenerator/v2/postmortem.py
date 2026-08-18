@@ -8,9 +8,11 @@ groter dat het geheel verslechtert. Hier krijgt het model per keer één groep e
 
 Wat een kandidaat maakt, zijn twee objectieve triggers, geen doelaantal codes:
   - de groep dekt een onevenredig deel van de steekproef (relatief, nooit absoluut)
-  - de groepering wisselde tussen consolidatieruns (zie stability.py) — dan heeft
-    het model daar zelf geen vast oordeel, en dat is precies waar een tweede blik
-    iets toevoegt
+  - er wisselde een paar BINNEN de groep tussen consolidatieruns (zie
+    stability.py) — dan heeft het model over die indeling zelf geen vast oordeel,
+    en dat is precies waar een tweede blik iets toevoegt. Niet: "de groep bevat
+    een attribuut dat ergens wiebelt" — op een inventaris met veel wisseling is
+    dat vrijwel elke groep, en dan legt de post-mortem het hele codeboek open
 
 Splitsen mag alleen LANGS BESTAANDE ATTRIBUUTGRENZEN. Het model kan niets fijner
 maken dan wat step 4 heeft aangeleverd, en `apply_splits` wijst elk voorstel af
@@ -67,7 +69,6 @@ def select_candidates(
     niet te splitsen langs attribuutgrenzen en komt dus nooit in aanmerking,
     hoe groot hij ook is."""
     concept_by_id = {c.attribute_id: c for c in concepts}
-    unstable = report.unstable_attributes()
 
     picked = []
     for group in groups:
@@ -77,7 +78,7 @@ def select_candidates(
             n_respondents > 0
             and len(group_respondents(group, concept_by_id)) / n_respondents > share_threshold
         )
-        wobbled = any(i in unstable for i in group.member_ids)
+        wobbled = report.has_unstable_pair_within(group.member_ids)
         if oversized or wobbled:
             picked.append(group)
     return picked
