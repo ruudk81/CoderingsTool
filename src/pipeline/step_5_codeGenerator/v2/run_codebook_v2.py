@@ -5,8 +5,8 @@ fase 2  richting       Python elke groep gesplitst in zuivere valentiepolen
 fase 3  bewaking       Python partitie heel, degeneratie gemeld
 fase 4  schrijven      LLM    naam, definitie, diagnostiek, indicatoren
 
-Output is dezelfde `List[ConsolidatedCode]` als v1, onder een eigen cachesleutel,
-zodat beide codeboeken op dezelfde taxonomie naast elkaar te leggen zijn.
+Output is een `List[ConsolidatedCode]` onder de productiesleutel `mece_codes`,
+waar step 6 en step 7 hem lezen.
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from .stability import (
 )
 from .prompts_writer_v2 import build_writer_prompt_v2
 
-CACHE_STEP = "mece_codes_v2"
+CACHE_STEP = "mece_codes"
 
 
 class _RepairLog:
@@ -256,8 +256,8 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
                     sample_size: Optional[int] = None,
                     force_recalc: bool = False,
                     stability_runs: int = 0) -> None:
-    """Productie-ingang van v2. Leest dezelfde cache als v1 en schrijft onder
-    CACHE_STEP, zodat beide codeboeken naast elkaar blijven bestaan.
+    """Productie-ingang van step 5. Leest de taxonomie uit de step-4-cache en
+    schrijft het codeboek onder CACHE_STEP, waar step 6 het opent.
 
     `stability_runs` >= 2 herhaalt fase 1, meet welke groeperingen wisselen en
     zet daarmee de post-mortem aan. De eerste run wordt het codeboek; de rest

@@ -128,8 +128,8 @@ def run_pipeline(
     # --- Step 5: Codebook Generation ---
     if run_until_step >= 5:
         print(f"\n{'='*70}\nStep 5 — {STEP_NAMES[5]}\n{'='*70}")
-        from pipeline.step_5_codeGenerator.run_codeGenerator import run_codebook
-        run_codebook(force_recalc=step_force(5))
+        from pipeline.step_5_codeGenerator.v2.run_codebook_v2 import run_codebook_v2
+        run_codebook_v2(force_recalc=step_force(5))
 
     # --- Step 6: Code Assignment ---
     if run_until_step >= 6:

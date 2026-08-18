@@ -406,7 +406,6 @@ class CacheConfig:
         # Step 5: code generator (dev, P8-P9)
         "mece_codes": "006",
         "mece_codes_metadata": "006",
-        "mece_codes_v2_metadata": "006",  # v2-experiment, naast de v1-cache (task 8)
         # Step 6: code assigner (dev, P10)
         "taxonomy_codes": "007",
     })

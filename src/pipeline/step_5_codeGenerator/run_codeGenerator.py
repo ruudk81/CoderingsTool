@@ -448,8 +448,7 @@ def cache_mece_results(
 ) -> None:
     """Cache codebook results for later use by code assignment (step 6).
 
-    `step` defaults to the v1 cache key; v2 passes "mece_codes_v2" so both
-    codebooks stay loadable side by side on the same taxonomy."""
+    `step` names the cache key step 6 and step 7 read from."""
     filename = FILENAME if filename is None else filename
     variable = VARIABLE if variable is None else variable
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size

@@ -7,13 +7,6 @@ from pipeline.step_5_codeGenerator.v2 import run_codebook_v2 as runner
 from pipeline.step_5_codeGenerator.v2.grouping import ShapingResult
 
 
-def test_cache_step_is_separate_from_v1():
-    """De v1-cache mag nooit overschreven worden — beide codeboeken moeten op
-    dezelfde taxonomie naast elkaar te leggen zijn."""
-    assert runner.CACHE_STEP == "mece_codes_v2"
-    assert runner.CACHE_STEP != "mece_codes"
-
-
 def test_writer_prompt_builder_defaults_to_v1_behaviour():
     """De enige aanpassing in v1-code is een optionele parameter met de
     bestaande builder als default."""
@@ -162,11 +155,10 @@ def test_veto_survivor_is_paired_with_its_own_shape(monkeypatch):
 
 
 def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
-    """M6: de hardste eis van deze taak is dat v2 de v1-cache nooit
-    overschrijft. Dit toetst de daadwerkelijke `cache_mece_results`-aanroep
-    binnen `run_codebook_v2`, niet alleen de `CACHE_STEP`-constante — een
-    wijziging die `step=CACHE_STEP` uit die aanroep haalt zou de constante
-    ongemoeid laten en `test_cache_step_is_separate_from_v1` laten slagen."""
+    """Step 6 en step 7 lezen `mece_codes`. Dit toetst de daadwerkelijke
+    `cache_mece_results`-aanroep op die letterlijke sleutel, niet op de
+    `CACHE_STEP`-constante: een assert tegen de constante zou meebewegen met
+    elke wijziging en dus niets bewaken."""
     from pipeline.step_5_codeGenerator import run_codeGenerator as v1
 
     class FakeMetadata:
@@ -202,7 +194,7 @@ def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
 
     runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
-    assert captured.get("step") == runner.CACHE_STEP
+    assert captured.get("step") == "mece_codes"
 
 
 def test_degenerate_proposal_is_not_cached(monkeypatch, capsys):
