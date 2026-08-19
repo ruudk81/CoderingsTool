@@ -21,7 +21,7 @@ from typing import List, Literal, Tuple
 
 from pydantic import BaseModel, Field, create_model
 
-from ..prompts_common import INSTRUCTOR_HINT, _shuffled
+from .prompts_common import INSTRUCTOR_HINT, _shuffled
 
 
 class TopicPart(BaseModel):

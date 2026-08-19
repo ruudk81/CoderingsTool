@@ -1,7 +1,7 @@
 """Fase 1 — dispatch van de consolidatiecall.
 
 Faalcontract: hard. Zonder groepering is er geen codeboek, precies zoals
-`resolve_relations` in v1 — dit is de enige fase in v2 zonder fallback.
+`resolve_relations` in v1 — dit is de enige fase zonder fallback.
 """
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from typing import List
 from config import get_reasoning_params
 from utils.smoothRequester import SmoothRequester
 
-from ..config_codeGenerator import CodebookConfig
+from .config_codeGenerator import CodebookConfig
 from .attribute_cards import AttributeCard
 from .prompts_consolidation import (
     ConsolidationResult, build_consolidation_prompt, make_consolidation_model,
 )
 
-PHASE = "step5_v2_consolidation"
+PHASE = "step5_consolidation"
 
 
 async def resolve_consolidation(
@@ -67,7 +67,7 @@ async def resolve_consolidation(
     )
     if not results or results[0] is None:
         raise RuntimeError(
-            "Step 5 v2 fase 1 (consolidatie) is mislukt. Zonder groepering is er "
+            "Step 5 fase 1 (consolidatie) is mislukt. Zonder groepering is er "
             "geen codeboek — dit is een harde stop, geen fallback."
         )
     return results[0]

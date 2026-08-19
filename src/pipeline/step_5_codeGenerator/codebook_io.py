@@ -2,7 +2,8 @@
 
 """Wat step 5 rond de keten heen doet: inlezen, wegschrijven, rapporteren.
 
-De keten zelf staat in `v2/`. Hier staat wat elke keten nodig heeft en wat
+De keten zelf staat in `run_codebook.py` en de fasemodules ernaast. Hier
+staat wat elke keten nodig heeft en wat
 niet aan één keten toebehoort:
 
     inlezen      step-3-metadata, step-4-taxonomie, geclassificeerde ideeen
@@ -12,7 +13,8 @@ niet aan één keten toebehoort:
 
 Dit was de bovenhelft van `run_codeGenerator.py`. Die module was twee dingen
 tegelijk — de v1-orkestratie en deze plumbing — waardoor v1 niet met pensioen
-kon zonder v2 mee te nemen. De orkestratie staat nu in `_quarantine_v1/`.
+kon zonder de opvolger mee te nemen. De v1-orkestratie staat nu in
+`_quarantine_v1/`.
 """
 
 import sys

@@ -3,8 +3,8 @@ import asyncio
 import pytest
 
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
-from pipeline.step_5_codeGenerator.v2.attribute_cards import AttributeCard
-from pipeline.step_5_codeGenerator.v2 import consolidation
+from pipeline.step_5_codeGenerator.attribute_cards import AttributeCard
+from pipeline.step_5_codeGenerator import consolidation
 
 
 def card(attribute_id, name):
@@ -40,7 +40,7 @@ def test_prepared_call_carries_prompt_model_and_reasoning_params(monkeypatch):
     assert "V?" in prepared["prompt"]
     assert prepared["max_retries"] == 2
     assert "extra_kwargs" in prepared
-    assert _FakeRequester.captured.kwargs["phase_key"] == "step5_v2_consolidation"
+    assert _FakeRequester.captured.kwargs["phase_key"] == "step5_consolidation"
 
 
 def test_failed_call_is_a_hard_stop(monkeypatch):

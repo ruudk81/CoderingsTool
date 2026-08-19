@@ -3,7 +3,7 @@
 """De v1-keten van step 5 — MET PENSIOEN sinds de v2-promotie (2026-08-18).
 
 Draait niet meer in productie: `run_pipeline.py` en `app_backend.py` roepen
-`v2.run_codebook_v2` aan. Deze module blijft staan omdat v2 op één dataset is
+`run_codebook` aan. Deze module blijft staan omdat v2 op één dataset is
 gemeten; blijkt v2 elders te breken, dan is dit de keten om tegen af te zetten.
 
     taxonomy_input -> concept_inventory -> relations (2 LLM-calls) ->
@@ -48,6 +48,7 @@ from pipeline.step_5_codeGenerator.codebook_io import (
 from pipeline.step_5_codeGenerator.codebook_writer import (
     find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names, write_codebook,
 )
+from pipeline.step_5_codeGenerator._quarantine_v1.prompts_writer_v1 import build_writer_prompt_v1
 from pipeline.step_5_codeGenerator.concept_inventory import Concept, build_inventory, t_keep
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from models import ConsolidatedCode
@@ -152,6 +153,7 @@ async def _generate_codebook_async(
     shapes, overig_ids = consolidate(concepts, relation_map, threshold)
     codes = await write_codebook(
         shapes, concepts, dimension_diagnostic, language, config, verbose=verbose,
+        prompt_builder=build_writer_prompt_v1,
         prompt_printer=prompt_printer,
     )
 
@@ -187,6 +189,7 @@ async def _generate_codebook_async(
     rewritten = await write_codebook(
         [c.shape for c in merged], concepts, dimension_diagnostic, language, config,
         taken_names=untouched_names, verbose=verbose, prompt_printer=prompt_printer,
+        prompt_builder=build_writer_prompt_v1,
     ) if merged else []
     final_shapes = [c.shape for c in untouched] + [c.shape for c in merged]
     final_codes = [code_by_shape_key[c.shape.key] for c in untouched] + rewritten

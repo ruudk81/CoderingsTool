@@ -2,11 +2,11 @@
 import pytest
 
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
-from pipeline.step_5_codeGenerator.v2.grouping import Group
-from pipeline.step_5_codeGenerator.v2.postmortem import (
+from pipeline.step_5_codeGenerator.grouping import Group
+from pipeline.step_5_codeGenerator.postmortem import (
     SplitVerdict, apply_splits, select_candidates,
 )
-from pipeline.step_5_codeGenerator.v2.stability import measure_stability
+from pipeline.step_5_codeGenerator.stability import measure_stability
 
 
 def concept(attribute_id, n_resp, prefix="r"):

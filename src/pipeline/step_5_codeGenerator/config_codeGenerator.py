@@ -1,8 +1,8 @@
 """
 Configuration for Code Generator.
 
-Pipeline: taxonomy_input -> concept_inventory -> v2.attribute_cards ->
-v2.consolidation -> v2.grouping -> codebook_writer.
+Pipeline: taxonomy_input -> concept_inventory -> attribute_cards ->
+consolidation -> grouping -> codebook_writer.
 
 De `umbrella_merge`- en `mece_*`-velden bedienen alleen `_quarantine_v1/`; die
 keten draait niet meer, maar moet wel kunnen blijven importeren.

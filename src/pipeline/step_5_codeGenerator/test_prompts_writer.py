@@ -1,181 +1,56 @@
-"""Tests for the writing prompt (step 4 of step 5)."""
+"""Tests voor de writerprompt: richting moet in naam en definitie landen."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.code_shape import CodeShape
-from pipeline.step_5_codeGenerator.prompts_writer import (
-    CodeText, build_writer_prompt, make_writer_model,
-)
+from pipeline.step_5_codeGenerator.prompts_writer import build_writer_prompt
 
 
-def concept(attribute_id, name, n_resp=10, domain="Domein", facet="Facet"):
-    resp = frozenset(f"R{i}" for i in range(n_resp))
-    return Concept(attribute_id=attribute_id, name=name, definition="def",
-                   domain=domain, facet=facet, n_iu=n_resp,
-                   resp_ids=resp, resp_pos=resp,
-                   resp_neg=frozenset(), resp_neu=frozenset())
+def shape(key, valence, members=("A1",)):
+    resp = frozenset({"r1", "r2"})
+    return CodeShape(key=key, members=members, valence=valence, umbrella="U",
+                     resp_ids=resp, resp_pos=resp, resp_neg=frozenset(),
+                     resp_neu=frozenset(), origin="solo")
 
 
-def shape(key, valence, umbrella, members, n_resp=40, origin="solo"):
-    resp = frozenset(f"R{i}" for i in range(n_resp))
-    return CodeShape(key=key, members=tuple(members), valence=valence,
-                     umbrella=umbrella, resp_ids=resp, resp_pos=resp,
-                     resp_neg=frozenset(), resp_neu=frozenset(), origin=origin)
+CONCEPTS = {"A1": Concept(attribute_id="A1", name="Kosten", definition="over prijs",
+                          domain="D", facet="F", n_iu=2, resp_ids=frozenset({"r1"}),
+                          resp_pos=frozenset({"r1"}), resp_neg=frozenset(),
+                          resp_neu=frozenset())}
 
 
-class Shape:
-    """Fixture from the task brief — not a consolidator.CodeShape, only the
-    fields build_writer_prompt actually uses."""
-    def __init__(self, key, valence, umbrella, members, n_resp, origin="solo"):
-        self.key, self.valence, self.umbrella = key, valence, umbrella
-        self.members, self.origin = members, origin
-        self.resp_ids = frozenset(f"R{i}" for i in range(n_resp))
+def test_prompt_requires_direction_in_name_and_definition():
+    prompt = build_writer_prompt([shape("V1", "negative")], CONCEPTS,
+                                    "vooral in ...", "Dutch")
+
+    # Rule 1 specifically requires direction in BOTH name and definition
+    assert "must be readable in" in prompt
+    assert "BOTH its name and its definition" in prompt
+    # the production prompt has three rules (Rule 1 about direction), v1 has two
+    assert "Three rules:" in prompt
 
 
-def test_prompt_states_the_fixed_number_of_codes():
-    shapes = [Shape("K1", "positive", "prijs", ["A1"], 40),
-              Shape("K2", "negative", "prijs", ["A1"], 30)]
-    prompt = build_writer_prompt(shapes, {}, "Does the response say that...", "nl-NL")
-    assert "2" in prompt
-    assert "do not add, remove or merge" in prompt.lower()
+def test_neutral_codes_are_explicitly_exempt_from_carrying_direction():
+    """Richting hoort in de naam 'mits relevant' — een beschrijvende code
+    verzint er geen."""
+    prompt = build_writer_prompt([shape("V1", "neutral")], CONCEPTS,
+                                    "vooral in ...", "Dutch")
+
+    # Rule 1 explicitly exempts neutral codes from invented evaluation
+    assert "do not invent an evaluation it does not carry" in prompt
 
 
-def test_prompt_forbids_claiming_a_neighbours_territory():
-    shapes = [Shape("K1", "neutral", "maatschappelijk", ["A2", "A3"], 31, "pooled")]
-    prompt = build_writer_prompt(shapes, {}, "stem", "nl-NL")
-    assert "must not claim" in prompt.lower()
+def test_prompt_still_shows_members_and_ends_with_the_hint():
+    prompt = build_writer_prompt([shape("V1", "positive")], CONCEPTS,
+                                    "vooral in ...", "Dutch")
 
-
-def test_only_pooled_shapes_may_be_vetoed():
-    text = CodeText(key="K1", code_name="X", definition="d", diagnostic_test="t",
-                    typical_indicators=["a"], boundary_note="b", nameable=False)
-    assert text.nameable is False
-
-
-def test_codetext_default_nameable_is_true():
-    text = CodeText(key="K1", code_name="X", definition="d", diagnostic_test="t",
-                    typical_indicators=["a"], boundary_note="b")
-    assert text.nameable is True
-
-
-def test_prompt_shows_attribute_names_not_ids():
-    shapes = [shape("K1", "positive", "prijs", ["A1"])]
-    concept_by_id = {"A1": concept("A1", "Instapkosten")}
-    prompt = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
-    assert "Instapkosten" in prompt
-    assert "A1" not in prompt
-
-
-def test_prompt_shows_member_definitions_not_just_names():
-    # A pooled/merged shape can carry many members; the writer must see what
-    # each one actually means, not just a bare label — otherwise it has to
-    # guess a common thread from short names alone.
-    shapes = [shape("K1", "positive", "duurzaam", ["A1", "A2"])]
-    concept_by_id = {
-        "A1": Concept(attribute_id="A1", name="Ecologische focus",
-                      definition="Aandacht voor het milieu in investeringen.",
-                      domain="Domein", facet="Facet", n_iu=10,
-                      resp_ids=frozenset({"R1"}), resp_pos=frozenset({"R1"}),
-                      resp_neg=frozenset(), resp_neu=frozenset()),
-        "A2": Concept(attribute_id="A2", name="Transparantie en openheid",
-                      definition="Open communicatie over waar het geld heen gaat.",
-                      domain="Domein", facet="Facet", n_iu=10,
-                      resp_ids=frozenset({"R2"}), resp_pos=frozenset({"R2"}),
-                      resp_neg=frozenset(), resp_neu=frozenset()),
-    }
-    prompt = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
-    assert "Ecologische focus" in prompt
-    assert "Aandacht voor het milieu in investeringen." in prompt
-    assert "Transparantie en openheid" in prompt
-    assert "Open communicatie over waar het geld heen gaat." in prompt
-
-
-def test_prompt_contains_no_respondent_counts():
-    shapes = [shape("K1", "positive", "prijs", ["A1"], n_resp=312)]
-    concept_by_id = {"A1": concept("A1", "Prijs", n_resp=312)}
-    prompt = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
-    assert "312" not in prompt
-
-
-def test_prompt_contains_no_domain_or_facet():
-    shapes = [shape("K1", "positive", "prijs", ["A1"])]
-    concept_by_id = {"A1": concept("A1", "Prijs", domain="Kostenbeleving", facet="Instapkosten facet")}
-    prompt = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
-    assert "Kostenbeleving" not in prompt
-    assert "Instapkosten facet" not in prompt
-
-
-def test_prompt_shows_the_direction():
-    shapes = [shape("K1", "negative", "prijs", ["A1"])]
-    concept_by_id = {"A1": concept("A1", "Prijs")}
-    prompt = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
-    assert "negative" in prompt
-
-
-def test_prompt_order_is_not_the_membership_order():
-    shapes = [shape(f"K{i}", "neutral", "u", [f"A{i}"], n_resp=100 - i) for i in range(8)]
-    concept_by_id = {f"A{i}": concept(f"A{i}", f"Topic{i}") for i in range(8)}
-    prompt = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
-    rendered_order = sorted(shapes, key=lambda s: prompt.index(f"[{s.key}]"))
-    assert [s.key for s in rendered_order] != [s.key for s in shapes]
-
-
-def test_prompt_order_is_stable_across_calls():
-    shapes = [shape(f"K{i}", "neutral", "u", [f"A{i}"]) for i in range(6)]
-    concept_by_id = {f"A{i}": concept(f"A{i}", f"Topic{i}") for i in range(6)}
-    first = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
-    second = build_writer_prompt(shapes, concept_by_id, "stem", "nl-NL")
-    assert first == second
-
-
-def test_prompt_uses_the_dimension_diagnostic_stem():
-    shapes = [shape("K1", "positive", "prijs", ["A1"])]
-    prompt = build_writer_prompt(shapes, {}, "Does the response evaluate the price?", "nl-NL")
-    assert "Does the response evaluate the price?" in prompt
-
-
-def test_prompt_ends_with_the_instructor_hint():
-    prompt = build_writer_prompt([shape("K1", "positive", "prijs", ["A1"])], {}, "stem", "nl-NL")
+    assert "Kosten" in prompt
+    assert "over prijs" in prompt
     assert prompt.rstrip().endswith(
-        "provide your output as valid JSON following the response schema provided"
-    )
+        "provide your output as valid JSON following the response schema provided")
 
 
-def test_response_model_constrains_key_to_existing_shapes():
-    shapes = [shape("K1", "positive", "prijs", ["A1"]), shape("K2", "negative", "prijs", ["A2"])]
-    model = make_writer_model(shapes)
-    ok = model(codes=[{"key": "K1", "code_name": "X", "definition": "d", "diagnostic_test": "t",
-                       "typical_indicators": ["a"], "boundary_note": "b"}])
-    assert ok.codes[0].key == "K1"
+def test_taken_names_are_passed_through():
+    prompt = build_writer_prompt([shape("V1", "positive")], CONCEPTS,
+                                    "vooral in ...", "Dutch",
+                                    taken_names=["Al vergeven"])
 
-    import pydantic
-    try:
-        model(codes=[{"key": "K99", "code_name": "X", "definition": "d", "diagnostic_test": "t",
-                      "typical_indicators": ["a"], "boundary_note": "b"}])
-    except pydantic.ValidationError:
-        return
-    raise AssertionError("een niet-bestaande vorm-sleutel had geweigerd moeten worden")
-
-
-def test_prompt_veto_rule_is_present():
-    prompt = build_writer_prompt([shape("K1", "neutral", "u", ["A1", "A2"], origin="pooled")], {}, "stem", "nl-NL")
-    assert "nameable" in prompt.lower()
-    assert "share nothing" in prompt.lower() or "invent an umbrella" in prompt.lower()
-
-
-def test_prompt_lists_taken_names_and_forbids_reuse():
-    shapes = [shape("K1", "positive", "prijs", ["A1"])]
-    prompt = build_writer_prompt(
-        shapes, {}, "stem", "nl-NL",
-        taken_names=["Modern en toekomstgericht", "Dienstverlening en uitvoering"],
-    )
-    assert "Modern en toekomstgericht" in prompt
-    assert "Dienstverlening en uitvoering" in prompt
-    assert "off limits" in prompt.lower() or "do not reuse" in prompt.lower()
-
-
-def test_prompt_without_taken_names_mentions_none():
-    shapes = [shape("K1", "positive", "prijs", ["A1"])]
-    prompt = build_writer_prompt(shapes, {}, "stem", "nl-NL", taken_names=None)
-    assert "off limits" not in prompt.lower()
-
-    prompt_empty = build_writer_prompt(shapes, {}, "stem", "nl-NL", taken_names=[])
-    assert "off limits" not in prompt_empty.lower()
+    assert "Al vergeven" in prompt

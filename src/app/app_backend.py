@@ -517,8 +517,8 @@ def _dispatch(step: int, spec: DatasetSpec, force_recalc: bool) -> str:
         return "Taxonomy built (facets, attributes, valence)"
 
     if step == 5:
-        from pipeline.step_5_codeGenerator.v2.run_codebook_v2 import run_codebook_v2
-        run_codebook_v2(filename=f, var_name=vn, sample_size=ss, force_recalc=force_recalc)
+        from pipeline.step_5_codeGenerator.run_codebook import run_codebook
+        run_codebook(filename=f, var_name=vn, sample_size=ss, force_recalc=force_recalc)
         codes = load_codebook(spec)
         n = len(codes.raw_codes) if codes else 0
         return f"Codebook generated ({n} codes)"

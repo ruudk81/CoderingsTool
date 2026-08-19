@@ -27,8 +27,8 @@ from typing import Dict, List, Tuple
 from config import get_reasoning_params
 from utils.smoothRequester import SmoothRequester
 
-from ..concept_inventory import Concept
-from ..config_codeGenerator import CodebookConfig
+from .concept_inventory import Concept
+from .config_codeGenerator import CodebookConfig
 from .attribute_cards import AttributeCard
 from .grouping import Group
 from .stability import StabilityReport
@@ -36,7 +36,7 @@ from .prompts_postmortem import (
     build_postmortem_prompt, make_postmortem_model,
 )
 
-PHASE = "step5_v2_postmortem"
+PHASE = "step5_postmortem"
 
 # Beredeneerde startwaarde, niet gemeten: een groep die meer dan dit aandeel van
 # de respondenten dekt, verdient een tweede blik. Bijstellen zodra er runs op

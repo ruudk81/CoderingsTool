@@ -1,8 +1,8 @@
 """Tests voor de stabiliteitsmeting over herhaalde consolidatieruns."""
 import pytest
 
-from pipeline.step_5_codeGenerator.v2.grouping import Group
-from pipeline.step_5_codeGenerator.v2.stability import (
+from pipeline.step_5_codeGenerator.grouping import Group
+from pipeline.step_5_codeGenerator.stability import (
     StabilityReport, measure_stability, pairs_from_groups,
 )
 

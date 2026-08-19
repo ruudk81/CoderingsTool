@@ -1,9 +1,9 @@
-"""Tests voor de v2-keten: volgorde van de fasen en de cachecontracten."""
+"""Tests voor de keten: volgorde van de fasen en de cachecontracten."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.code_shape import CodeShape
 from models import ConsolidatedCode
-from pipeline.step_5_codeGenerator.v2 import run_codebook_v2 as runner
+from pipeline.step_5_codeGenerator import run_codebook as runner
 
 
 class _NullCostTracker:
@@ -14,12 +14,13 @@ class _NullCostTracker:
 
     def finalize_step(self, *args, **kwargs):
         pass
-from pipeline.step_5_codeGenerator.v2.grouping import ShapingResult
+from pipeline.step_5_codeGenerator.grouping import ShapingResult
 
 
-def test_writer_prompt_builder_defaults_to_v1_behaviour():
-    """De enige aanpassing in v1-code is een optionele parameter met de
-    bestaande builder als default."""
+def test_writer_prompt_builder_defaults_to_the_production_prompt():
+    """De default is de levende prompt. De gepensioneerde v1-keten geeft zijn
+    eigen `build_writer_prompt_v1` expliciet mee; andersom zou een vergeten
+    argument stil uitkomen op de prompt van een keten met pensioen."""
     import inspect
     from pipeline.step_5_codeGenerator import codebook_writer
     from pipeline.step_5_codeGenerator.prompts_writer import build_writer_prompt
@@ -30,26 +31,26 @@ def test_writer_prompt_builder_defaults_to_v1_behaviour():
 
 def test_degeneration_is_reported_not_repaired(capsys):
     """Een stille terugval zou precies verbergen wat je moet weten."""
-    result = runner.GeneratedCodebookV2(
+    result = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=0,
         degeneration="geen consolidatie: 64 groepen op 66 attributen (grens 90%)",
         partition_repairs=[], collisions=[], naming_mismatches=[],
         duplicate_definitions=[], vetoes=[], concept_by_id={},
     )
 
-    runner.report_codebook_build_v2(result)
+    runner.report_codebook_build(result)
 
     assert "DEGENERATIE" in capsys.readouterr().out
 
 
 def test_direction_loss_is_reported_when_nonzero(capsys):
-    result = runner.GeneratedCodebookV2(
+    result = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=42, degeneration=None,
         partition_repairs=[], collisions=[], naming_mismatches=[],
         duplicate_definitions=[], vetoes=[], concept_by_id={},
     )
 
-    runner.report_codebook_build_v2(result)
+    runner.report_codebook_build(result)
 
     assert "42" in capsys.readouterr().out
 
@@ -60,13 +61,13 @@ def test_direction_loss_wording_does_not_claim_everything_goes_to_overig(capsys)
     counted into `direction_loss` but the attribute stays a source of the
     surviving code — those respondents reach the surviving, oppositely-signed
     code in step 6, not Overig. The message must not claim otherwise."""
-    result = runner.GeneratedCodebookV2(
+    result = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=8, degeneration=None,
         partition_repairs=[], collisions=[], naming_mismatches=[],
         duplicate_definitions=[], vetoes=[], concept_by_id={},
     )
 
-    runner.report_codebook_build_v2(result)
+    runner.report_codebook_build(result)
 
     out = capsys.readouterr().out
     assert "geen eigen code" in out
@@ -80,7 +81,7 @@ def test_partition_duplicate_in_group_is_reported_not_raised(capsys):
     `group`, not `kept_in`/`removed_from` — fell into the PARTITION_DOUBLE
     branch and raised `KeyError: 'kept_in'`. Reachable model output: nothing
     stops the same tag appearing twice in one code's `topics`."""
-    result = runner.GeneratedCodebookV2(
+    result = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=0, degeneration=None,
         partition_repairs=[{"action": "PARTITION_DUPLICATE_IN_GROUP",
                             "attribute_id": "A1", "group": "G"}],
@@ -88,18 +89,18 @@ def test_partition_duplicate_in_group_is_reported_not_raised(capsys):
         concept_by_id={},
     )
 
-    runner.report_codebook_build_v2(result)
+    runner.report_codebook_build(result)
 
     out = capsys.readouterr().out
     assert "A1" in out and "G" in out
 
 
 def test_vetoes_are_reported_when_present(capsys):
-    """F2: elke samengevoegde groep in v2 is `pooled` — een veto is de normale
+    """F2: elke samengevoegde groep in deze keten is `pooled` — een veto is de normale
     route, niet een randgeval — en zonder deze melding verdwijnt een
     afgekeurde code stil in de Overig-sweep, ononderscheidbaar van een
     attribuut dat de consolidatie zelf al niet had samengevoegd."""
-    result = runner.GeneratedCodebookV2(
+    result = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=0, degeneration=None,
         partition_repairs=[], collisions=[], naming_mismatches=[],
         duplicate_definitions=[],
@@ -108,7 +109,7 @@ def test_vetoes_are_reported_when_present(capsys):
         concept_by_id={},
     )
 
-    runner.report_codebook_build_v2(result)
+    runner.report_codebook_build(result)
 
     out = capsys.readouterr().out
     assert "1 pooled code" in out
@@ -154,7 +155,7 @@ def test_veto_survivor_is_paired_with_its_own_shape(monkeypatch):
     monkeypatch.setattr(runner, "build_shapes", lambda *a, **k: shaping_result)
     monkeypatch.setattr(runner, "write_codebook", fake_write_codebook)
 
-    result = runner.generate_codebook_v2(
+    result = runner.generate_codebook(
         [concept_a, concept_b], {}, threshold=1, survey_question="q", n_respondents=2,
         dimension_diagnostic="d", language="Dutch", config=CodebookConfig(), verbose=False,
     )
@@ -164,7 +165,7 @@ def test_veto_survivor_is_paired_with_its_own_shape(monkeypatch):
     assert result.codes[0].source_attributes == ["Vorm"]
 
 
-def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
+def test_run_codebook_pins_step_on_cache_call(monkeypatch):
     """Step 6 en step 7 lezen `mece_codes`. Dit toetst de daadwerkelijke
     `cache_mece_results`-aanroep op die letterlijke sleutel, niet op de
     `CACHE_STEP`-constante: een assert tegen de constante zou meebewegen met
@@ -182,7 +183,7 @@ def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
         def is_metadata_cache_valid(self, *args, **kwargs):
             return False
 
-    empty_result = runner.GeneratedCodebookV2(
+    empty_result = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=0, degeneration=None,
         partition_repairs=[], collisions=[], naming_mismatches=[],
         duplicate_definitions=[], vetoes=[], concept_by_id={},
@@ -193,7 +194,7 @@ def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
     monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
     monkeypatch.setattr(runner, "save_prompts_to_json", lambda printer: None)
     monkeypatch.setattr(runner, "CostTracker", lambda **kwargs: _NullCostTracker())
-    monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: empty_result)
+    monkeypatch.setattr(runner, "generate_codebook", lambda *a, **k: empty_result)
     monkeypatch.setattr(runner, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
     monkeypatch.setattr(runner, "load_classified_ideas", lambda *a, **k: [])
     monkeypatch.setattr(runner, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
@@ -202,7 +203,7 @@ def test_run_codebook_v2_pins_step_on_cache_call(monkeypatch):
     monkeypatch.setattr(runner, "run_scorecard", lambda *a, **k: None)
     monkeypatch.setattr(runner, "cache_mece_results", lambda *a, **k: captured.update(k))
 
-    runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
+    runner.run_codebook(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
     assert captured.get("step") == "mece_codes"
 
@@ -225,7 +226,7 @@ def test_degenerate_proposal_is_not_cached(monkeypatch, capsys):
         def is_metadata_cache_valid(self, *args, **kwargs):
             return False
 
-    degenerate_result = runner.GeneratedCodebookV2(
+    degenerate_result = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=0,
         degeneration="geen consolidatie: 64 groepen op 66 attributen (grens 90%)",
         partition_repairs=[], collisions=[], naming_mismatches=[],
@@ -237,7 +238,7 @@ def test_degenerate_proposal_is_not_cached(monkeypatch, capsys):
     monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
     monkeypatch.setattr(runner, "save_prompts_to_json", lambda printer: None)
     monkeypatch.setattr(runner, "CostTracker", lambda **kwargs: _NullCostTracker())
-    monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: degenerate_result)
+    monkeypatch.setattr(runner, "generate_codebook", lambda *a, **k: degenerate_result)
     monkeypatch.setattr(runner, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
     monkeypatch.setattr(runner, "load_classified_ideas", lambda *a, **k: [])
     monkeypatch.setattr(runner, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
@@ -246,7 +247,7 @@ def test_degenerate_proposal_is_not_cached(monkeypatch, capsys):
     monkeypatch.setattr(runner, "run_scorecard", lambda *a, **k: None)
     monkeypatch.setattr(runner, "cache_mece_results", lambda *a, **k: cache_calls.append(k))
 
-    runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
+    runner.run_codebook(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
     assert cache_calls == []
     out = capsys.readouterr().out
@@ -274,7 +275,7 @@ def test_richtingsverlies_is_paired_with_the_scorecards_under_split_count(monkey
     class FakeScorecard:
         under_split_codes = [object(), object(), object()]
 
-    result_with_loss = runner.GeneratedCodebookV2(
+    result_with_loss = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=8, degeneration=None,
         partition_repairs=[], collisions=[], naming_mismatches=[],
         duplicate_definitions=[], vetoes=[], concept_by_id={},
@@ -283,7 +284,7 @@ def test_richtingsverlies_is_paired_with_the_scorecards_under_split_count(monkey
     monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
     monkeypatch.setattr(runner, "save_prompts_to_json", lambda printer: None)
     monkeypatch.setattr(runner, "CostTracker", lambda **kwargs: _NullCostTracker())
-    monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: result_with_loss)
+    monkeypatch.setattr(runner, "generate_codebook", lambda *a, **k: result_with_loss)
     monkeypatch.setattr(runner, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
     monkeypatch.setattr(runner, "load_classified_ideas", lambda *a, **k: [])
     monkeypatch.setattr(runner, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
@@ -292,7 +293,7 @@ def test_richtingsverlies_is_paired_with_the_scorecards_under_split_count(monkey
     monkeypatch.setattr(runner, "run_scorecard", lambda *a, **k: FakeScorecard())
     monkeypatch.setattr(runner, "cache_mece_results", lambda *a, **k: None)
 
-    runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
+    runner.run_codebook(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
     out = capsys.readouterr().out
     assert "3 under-split code(s)" in out
@@ -300,7 +301,7 @@ def test_richtingsverlies_is_paired_with_the_scorecards_under_split_count(monkey
 
 def test_no_unconditional_success_claim_when_cache_save_fails(monkeypatch, capsys):
     """I5: `cache_mece_results` prints its own honest ERROR line and returns
-    None on a failed save; `run_codebook_v2` used to print a "v2-codeboek
+    None on a failed save; `run_codebook` used to print a "codeboek
     gecached ..." success line right after, unconditionally. The announcement
     must not claim success when the save failed."""
     class FakeMetadata:
@@ -316,7 +317,7 @@ def test_no_unconditional_success_claim_when_cache_save_fails(monkeypatch, capsy
         def is_metadata_cache_valid(self, *args, **kwargs):
             return False
 
-    empty_result = runner.GeneratedCodebookV2(
+    empty_result = runner.GeneratedCodebook(
         shapes=[], overig_ids=[], codes=[], direction_loss=0, degeneration=None,
         partition_repairs=[], collisions=[], naming_mismatches=[],
         duplicate_definitions=[], vetoes=[], concept_by_id={},
@@ -328,7 +329,7 @@ def test_no_unconditional_success_claim_when_cache_save_fails(monkeypatch, capsy
     monkeypatch.setattr(runner, "CacheManager", FakeCacheManager)
     monkeypatch.setattr(runner, "save_prompts_to_json", lambda printer: None)
     monkeypatch.setattr(runner, "CostTracker", lambda **kwargs: _NullCostTracker())
-    monkeypatch.setattr(runner, "generate_codebook_v2", lambda *a, **k: empty_result)
+    monkeypatch.setattr(runner, "generate_codebook", lambda *a, **k: empty_result)
     monkeypatch.setattr(runner, "load_extraction_metadata", lambda *a, **k: FakeMetadata())
     monkeypatch.setattr(runner, "load_classified_ideas", lambda *a, **k: [])
     monkeypatch.setattr(runner, "load_taxonomy_cache", lambda *a, **k: FakeTaxonomy())
@@ -337,8 +338,8 @@ def test_no_unconditional_success_claim_when_cache_save_fails(monkeypatch, capsy
     monkeypatch.setattr(runner, "run_scorecard", lambda *a, **k: None)
     monkeypatch.setattr(runner, "cache_mece_results", fake_failed_cache)
 
-    runner.run_codebook_v2(filename="f", var_name="v", sample_size=10, force_recalc=True)
+    runner.run_codebook(filename="f", var_name="v", sample_size=10, force_recalc=True)
 
     out = capsys.readouterr().out
     assert "NOT cached" in out
-    assert "v2-codeboek gecached" not in out
+    assert "codeboek gecached" not in out

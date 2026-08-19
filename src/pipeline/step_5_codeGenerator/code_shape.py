@@ -8,7 +8,7 @@ valentie.
 
 Dit stond in `consolidator.py` en `run_codeGenerator.py`, twee modules die met
 de v1-keten in `_quarantine_v1/` zijn beland. De vorm zelf is niet v1-specifiek:
-v2 bouwt hem in `v2/grouping.py`.
+De productieketen bouwt hem in `grouping.py`.
 """
 from __future__ import annotations
 

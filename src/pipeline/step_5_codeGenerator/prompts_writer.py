@@ -132,13 +132,18 @@ For every code, write:
 - typical indicators: words or phrases that signal this code
 - a boundary note against the nearest competing code in this list
 
-Two rules:
-1. A code name must not claim territory another code already owns — neither
+Three rules:
+1. The direction shown for a code is a fact from the data, not a suggestion. Where
+   a code's direction is positive or negative, that evaluation must be readable in
+   BOTH its name and its definition — someone reading only the name in a report
+   table has to know which way it points. Where the direction is neutral, the code
+   is descriptive: do not invent an evaluation it does not carry.
+2. A code name must not claim territory another code already owns — neither
    another code in the list below, nor one of the already-taken names listed
    further down, if any. If one code covers a specific topic and another
    covers the broader family it belongs to, name the broader one for what is
    left, not for the family.
-2. If the source topics grouped under a code share nothing you can name honestly,
+3. If the source topics grouped under a code share nothing you can name honestly,
    set nameable to false. Do not invent an umbrella term to cover unrelated items.
 
 Codes:

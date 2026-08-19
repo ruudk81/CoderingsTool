@@ -1,7 +1,7 @@
 """Wat fase 1 van het model te zien krijgt: één kaart per attribuut.
 
 Bewust drie dingen erop die v1's groeperingsfase NIET toont — het respondent-
-aantal, de letterlijke antwoorden en (via run_codebook_v2) de onderzoeksvraag.
+aantal, de letterlijke antwoorden en (via run_codebook) de onderzoeksvraag.
 Dat weglaten was de reden dat v1 een taak stelde die ook een mens niet kan doen:
 groeperen zonder te weten waarvoor of hoe groot iets is.
 """
@@ -11,8 +11,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
-from ..concept_inventory import Concept
-from ..taxonomy_input import IdeaUnit
+from .concept_inventory import Concept
+from .taxonomy_input import IdeaUnit
 
 TOP_ANSWERS = 5
 

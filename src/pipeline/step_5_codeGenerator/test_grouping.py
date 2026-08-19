@@ -1,8 +1,8 @@
 """Tests voor fase 2 en 3: partitiereparatie, valentiesplitsing, degeneratie."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
-from pipeline.step_5_codeGenerator.v2.attribute_cards import AttributeCard
-from pipeline.step_5_codeGenerator.v2.grouping import Group, build_shapes, check_degeneration, repair_partition
-from pipeline.step_5_codeGenerator.v2.prompts_consolidation import (
+from pipeline.step_5_codeGenerator.attribute_cards import AttributeCard
+from pipeline.step_5_codeGenerator.grouping import Group, build_shapes, check_degeneration, repair_partition
+from pipeline.step_5_codeGenerator.prompts_consolidation import (
     ConsolidationResult, ProposedCode,
 )
 

@@ -2,8 +2,8 @@
 import pytest
 from pydantic import ValidationError
 
-from pipeline.step_5_codeGenerator.v2.attribute_cards import AttributeCard
-from pipeline.step_5_codeGenerator.v2.prompts_consolidation import (
+from pipeline.step_5_codeGenerator.attribute_cards import AttributeCard
+from pipeline.step_5_codeGenerator.prompts_consolidation import (
     build_consolidation_prompt, make_consolidation_model,
 )
 

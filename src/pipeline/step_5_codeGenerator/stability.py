@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
-from ..concept_inventory import Concept
-from ..config_codeGenerator import CodebookConfig
+from .concept_inventory import Concept
+from .config_codeGenerator import CodebookConfig
 from .attribute_cards import AttributeCard
 from .consolidation import resolve_consolidation
 from .grouping import Group, repair_partition

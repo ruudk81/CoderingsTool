@@ -109,9 +109,9 @@ async def write_codebook(
     deterministic backstop the caller must still run over the full, reassembled
     codebook.
 
-    `prompt_builder` defaults to this module's own prompt — the v2 chain
-    passes `build_writer_prompt_v2` (same five positional params) to reuse
-    this whole dispatch without duplicating it."""
+    `prompt_builder` defaults to the production writing prompt; the retired v1
+    chain passes its own `build_writer_prompt_v1` (same five positional params)
+    to reuse this whole dispatch without duplicating it."""
     if not shapes:
         return []
 

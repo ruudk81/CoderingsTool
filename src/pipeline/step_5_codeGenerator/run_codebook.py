@@ -1,4 +1,4 @@
-"""De v2-keten: twee LLM-calls, met Python ertussen en eromheen.
+"""De keten van step 5: twee LLM-calls, met Python ertussen en eromheen.
 
 fase 1  consolidatie   LLM    welke attributen vormen samen één code
 fase 2  richting       Python elke groep gesplitst in zuivere valentiepolen
@@ -22,21 +22,21 @@ from utils.saveVerbose import VerboseCapture
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
 
-from ..codebook_writer import (
+from .codebook_writer import (
     find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names,
     write_codebook,
 )
-from ..concept_inventory import Concept, build_inventory, t_keep
-from ..config_codeGenerator import CodebookConfig
-from ..code_shape import CodeShape, _match_shape, _shape_lookup
-from ..codebook_io import (
+from .concept_inventory import Concept, build_inventory, t_keep
+from .config_codeGenerator import CodebookConfig
+from .code_shape import CodeShape, _match_shape, _shape_lookup
+from .codebook_io import (
     FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE, apply_overig_sweep,
     cache_mece_results, load_classified_ideas, load_extraction_metadata,
     load_taxonomy_cache, print_codebook_results, run_scorecard,
     save_prompts_to_json,
 )
 from models import ConsolidatedCode
-from ..taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
+from .taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from .attribute_cards import build_cards
 from .consolidation import resolve_consolidation
 from .grouping import Group, build_shapes, check_degeneration, repair_partition
@@ -46,7 +46,6 @@ from .postmortem import (
 from .stability import (
     StabilityReport, format_stability, run_consolidation_repeatedly,
 )
-from .prompts_writer_v2 import build_writer_prompt_v2
 
 CACHE_STEP = "mece_codes"
 
@@ -63,7 +62,7 @@ class _RepairLog:
 
 
 @dataclass
-class GeneratedCodebookV2:
+class GeneratedCodebook:
     shapes: List[CodeShape]
     overig_ids: List[str]
     codes: List[ConsolidatedCode]
@@ -94,7 +93,7 @@ async def _generate_async(
     verbose: bool,
     prompt_printer,
     stability_runs: int = 0,
-) -> GeneratedCodebookV2:
+) -> GeneratedCodebook:
     cards = build_cards(concepts, idea_units_by_attribute)
     repair_log = _RepairLog()
 
@@ -135,10 +134,11 @@ async def _generate_async(
     shaped = build_shapes(groups, concepts, threshold)
 
     # `write_codebook` can veto a `pooled` shape (`nameable: false`) — every
-    # multi-attribute group v2 builds is `pooled` (`grouping.build_shapes`),
+    # multi-attribute group this chain builds is `pooled` (`grouping.build_shapes`),
     # so this is the normal route, not an edge case. The attributes don't get
-    # lost (the Overig sweep in `run_codebook_v2` still routes them), but a
-    # silent veto would make a v1-vs-v2 comparison see a smaller v2 codebook
+    # lost (the Overig sweep in `run_codebook` still routes them), but a
+    # silent veto would make a comparison against the quarantined v1 chain see
+    # a smaller codebook
     # with a bigger Overig and be unable to tell consolidation quality apart
     # from writer vetoes — the same reason degeneration is reported, not
     # absorbed. `veto_log` makes it visible.
@@ -146,7 +146,6 @@ async def _generate_async(
     codes = await write_codebook(
         shaped.shapes, concepts, dimension_diagnostic, language, config,
         log=veto_log, verbose=verbose, prompt_printer=prompt_printer,
-        prompt_builder=build_writer_prompt_v2,
     )
 
     # `codes[i]` must line up with `shapes[i]` for resolve_duplicate_names and
@@ -161,7 +160,7 @@ async def _generate_async(
 
     collision_log = _RepairLog()
     codes = resolve_duplicate_names(codes, shapes, log=collision_log)
-    return GeneratedCodebookV2(
+    return GeneratedCodebook(
         shapes=shapes, overig_ids=shaped.overig_ids, codes=codes,
         direction_loss=shaped.direction_loss, degeneration=degeneration,
         stability=report, postmortem_candidates=len(candidates),
@@ -174,7 +173,7 @@ async def _generate_async(
     )
 
 
-def generate_codebook_v2(
+def generate_codebook(
     concepts: List[Concept],
     idea_units_by_attribute: Dict[str, List[IdeaUnit]],
     threshold: int,
@@ -186,7 +185,7 @@ def generate_codebook_v2(
     verbose: bool = True,
     prompt_printer=None,
     stability_runs: int = 0,
-) -> GeneratedCodebookV2:
+) -> GeneratedCodebook:
     """Sync wrapper — één orchestratie-ingang, zoals `generate_codebook` in v1.
 
     `stability_runs` >= 2 herhaalt fase 1 en zet de post-mortem aan; 0 laat de
@@ -198,7 +197,7 @@ def generate_codebook_v2(
     ))
 
 
-def report_codebook_build_v2(result: GeneratedCodebookV2) -> None:
+def report_codebook_build(result: GeneratedCodebook) -> None:
     """Wat een run zichtbaar moet maken. Degeneratie, richtingsverlies en
     vetoes staan bovenaan: dat zijn de drie dingen die geen enkele bestaande
     check meldt — melden, nooit stil absorberen."""
@@ -263,7 +262,7 @@ def report_codebook_build_v2(result: GeneratedCodebookV2) -> None:
               f"met identieke definitie")
 
 
-def run_codebook_v2(filename: str = None, var_name: str = None,
+def run_codebook(filename: str = None, var_name: str = None,
                     sample_size: Optional[int] = None,
                     force_recalc: bool = False,
                     stability_runs: int = 0) -> None:
@@ -278,7 +277,7 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size
 
     print("=" * 70)
-    print("CODE GENERATOR v2 (loading taxonomy from cache)")
+    print("CODE GENERATOR (loading taxonomy from cache)")
     print("=" * 70)
 
     variable_key = generate_enhanced_variable_key(
@@ -287,7 +286,7 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
     cache_manager = CacheManager()
     if not force_recalc and cache_manager.is_metadata_cache_valid(
             filename, CACHE_STEP, variable_key):
-        print("v2-codeboek cache geldig — overgeslagen (force_recalc=True om te herdraaien).\n")
+        print("codeboek-cache geldig — overgeslagen (force_recalc=True om te herdraaien).\n")
         return
 
     metadata = load_extraction_metadata(filename, var_name, sample_size, variable_key)
@@ -299,15 +298,15 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
 
     # v1's legacy leespad (P9-era over-merge-correctie, van vóór de
     # P7-promotie) vervangt zowel partition_results als classified_ideas door
-    # een gecorrigeerde variant wanneer die cache bestaat. v2 port dat pad
+    # een gecorrigeerde variant wanneer die cache bestaat. Deze keten port dat pad
     # niet — het zou een uitstervend legacy-mechanisme in een experiment
     # repliceren — maar mag er ook niet stilzwijgend aan voorbijgaan: zonder
-    # deze check zou v2 op een andere taxonomie bouwen dan v1 (en daarmee ook
+    # deze check zou step 5 op een andere taxonomie bouwen dan v1 (en daarmee ook
     # een andere drempelbasis), en de vergelijking met v1 zou niet meer
     # opgaan.
     if cache_manager.is_metadata_cache_valid(filename, "taxonomy_corrected", variable_key):
         print("\nERROR: geldige 'taxonomy_corrected'-cache gevonden voor deze dataset. "
-              "v2 ondersteunt dat legacy leespad niet — draai v2 hier niet op, de "
+              "step 5 ondersteunt dat legacy leespad niet — draai step 5 hier niet op, de "
               "vergelijking met v1 zou anders op een andere taxonomie gebeuren.")
         return
 
@@ -321,7 +320,7 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
 
     config = CodebookConfig()
     # Dezelfde drempelbasis als v1 (`run_codeGenerator.py`): het totale aantal
-    # responses, niet het aantal respondenten mét een idee. Wijkt v2 hiervan af,
+    # responses, niet het aantal respondenten mét een idee. Wijkt deze keten hiervan af,
     # dan vergelijkt compare_v1_v2 twee codeboeken op verschillende drempels.
     n_resp_total = len(classified)
     threshold = t_keep(n_resp_total, config)
@@ -344,12 +343,12 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
     snapshot_before = token_tracker.snapshot()
     prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
 
-    result = generate_codebook_v2(
+    result = generate_codebook(
         concepts, by_attribute, threshold, survey_question, n_respondents,
         dimension_diagnostic, language, config, verbose=config.verbose,
         stability_runs=stability_runs, prompt_printer=prompt_printer,
     )
-    report_codebook_build_v2(result)
+    report_codebook_build(result)
 
     # Eén fase voor de hele keten: consolidatie en schrijven staan op dezelfde
     # sport van STEP_MODEL, dus fijner uitsplitsen levert geen ander getal op.
@@ -378,10 +377,10 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
     # en step 6 het stilzwijgend inlezen, terwijl de DEGENERATIE-regel hierboven
     # al meldde dat het niet deugt.
     if result.degeneration:
-        print(f"v2-codeboek NIET gecached — degeneratie: {result.degeneration}")
+        print(f"codeboek NIET gecached — degeneratie: {result.degeneration}")
         return
 
-    print(f"v2-codeboek cachen onder '{CACHE_STEP}' ({len(result.codes)} codes)...")
+    print(f"codeboek cachen onder '{CACHE_STEP}' ({len(result.codes)} codes)...")
     cache_mece_results(
         taxonomy.partition_set, taxonomy.partition_results, result.codes,
         filename=filename, variable=var_name, sample_size=sample_size,
@@ -391,10 +390,10 @@ def run_codebook_v2(filename: str = None, var_name: str = None,
 
 if __name__ == "__main__":
     # stability_runs blijft 0: de post-mortem-splitser staat uit tot zijn
-    # vraagvorm herzien is — zie dev/WORK.md, sectie "v2 post-mortem".
+    # vraagvorm herzien is — zie dev/WORK.md, sectie "post-mortem".
     with VerboseCapture(filename=FILENAME, var_name=VARIABLE,
                         sample_size=SAMPLE_SIZE, step=5):
         token_tracker.reset()
-        run_codebook_v2(force_recalc=True)
+        run_codebook(force_recalc=True)
         if token_tracker.call_count > 0:
             print(token_tracker.get_summary())

@@ -13,8 +13,8 @@ from typing import Dict, List, Optional, Tuple
 
 from .attribute_cards import AttributeCard
 from .prompts_consolidation import ConsolidationResult
-from ..concept_inventory import Concept
-from ..code_shape import CodeShape
+from .concept_inventory import Concept
+from .code_shape import CodeShape
 
 
 @dataclass(frozen=True)
