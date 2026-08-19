@@ -195,12 +195,13 @@ def resolve_duplicate_names(
     Within each group of codes sharing a name, the code with the most
     respondents keeps it (ties broken by `shape.key` for a reproducible
     result); every other code in the group is renamed to its own shape's
-    umbrella term — the constituent group name it climbed from in
-    `consolidator.py` — with a number appended only if even that is already
-    taken. Every rename is reported via `log.add(...)` (duck-typed, like
-    `write_codebook`'s own `log`), so a resolved collision is always visible,
-    never a silent rename. A codebook with no duplicate names is returned
-    unchanged."""
+    umbrella term — the name consolidation proposed for that group
+    (`grouping.py`; the quarantined v1 chain fills the same field with the
+    group name its consolidator climbed to) — with a number appended only if
+    even that is already taken. Every rename is reported via `log.add(...)`
+    (duck-typed, like `write_codebook`'s own `log`), so a resolved collision is
+    always visible, never a silent rename. A codebook with no duplicate names
+    is returned unchanged."""
     if len(codes) != len(shapes):
         raise ValueError("codes and shapes must be positional pairs of equal length")
 
