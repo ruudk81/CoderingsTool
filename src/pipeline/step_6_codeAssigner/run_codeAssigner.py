@@ -27,6 +27,9 @@ from utils.saveVerbose import VerboseCapture
 # Import step_6_codeAssigner components
 from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig
 from pipeline.step_6_codeAssigner.code_assignment import CodeAssigner
+from pipeline.step_6_codeAssigner.valence_filter import (
+    report_filter, route_opposing_poles,
+)
 from models import CodeAssignedModel
 
 # Import step_5_codeGenerator (upstream output types)
@@ -240,6 +243,11 @@ def run_code_assignment(
     )
 
     assigned_results = assigner.assign_all()
+
+    # Opposing-pole filter — runs BEFORE the cache write, so everything
+    # downstream (codebook workbook, .sav matrices, exports) sees one state.
+    if config.filter_opposing_poles:
+        report_filter(route_opposing_poles(assigned_results, codes or []))
 
     # Cache assignment results
     variable_key = generate_enhanced_variable_key(

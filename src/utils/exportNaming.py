@@ -10,7 +10,7 @@ otherwise overwrite each other's output.
 
 Reading a name back needs BOTH the known dataset stems and the doctype
 vocabulary, because a dataset stem (M000003_Tabellenbestand_Casus), a variable
-name (Qd1_combined) and a doctype (taxonomie_fijn) can each contain underscores.
+name (Qd1_combined) and a doctype (prompts_step4) can each contain underscores.
 Splitting on "_" alone is ambiguous, so parse_export_filename() anchors on the
 longest match at each end and takes what is left in the middle.
 """
@@ -28,9 +28,6 @@ DOCTYPES = frozenset({
     "codeboek",                                  # coderingen/ (.sav) + codebook/ (.xlsx, .csv)
     "gecombineerd",
     "taxonomie",
-    "taxonomie_fijn",
-    "taxonomie_grof",
-    "taxonomie_raw",
     "kladblok",                                  # exports/codebook/ scratchpad
     "kosten",                                    # exports/costs/
 })
@@ -84,7 +81,8 @@ def parse_export_filename(
     if not stem or not ext:
         return None
 
-    # Longest doctype wins: "taxonomie_fijn" must not read as "taxonomie".
+    # Longest doctype wins: a doctype ending in another one must not read as
+    # the shorter one.
     doctype = max(
         (d for d in DOCTYPES if stem.endswith(f"_{d}")),
         key=len,

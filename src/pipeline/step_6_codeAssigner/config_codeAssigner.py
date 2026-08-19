@@ -47,6 +47,14 @@ class AssignmentConfig:
     bind_cosine_threshold: float = 0.85     # near-duplicate merge (measured: variants ~0.85-0.91, distinct ≤0.56)
     bind_min_cluster_size: int = 2          # only bind groups of ≥ this size
 
+    # Opposing-pole filter: after assignment, move an idea to Overig when it
+    # landed under a code carrying the OPPOSITE direction (negative idea under a
+    # positive code, or vice versa). Removes the one error a reader cannot
+    # detect — a table row that states the opposite of what respondents said.
+    # Strict by design: a directional idea under a NEUTRAL code stays put.
+    # See valence_filter.py.
+    filter_opposing_poles: bool = True
+
     # Output
     verbose: bool = True
 

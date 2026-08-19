@@ -8,6 +8,7 @@ never use a real file name as a fixture.
 
 import pytest
 
+from utils import exportNaming
 from utils.exportNaming import (
     DOCTYPES,
     ExportName,
@@ -73,11 +74,15 @@ def test_roundtrip_for_every_doctype(doctype):
     )
 
 
-def test_longest_doctype_wins():
-    """'taxonomie_fijn' must not be read as 'taxonomie'."""
-    naam = export_filename("d.sav", "Q1", 100, "taxonomie_fijn", "sav")
-    uit = parse_export_filename(naam, ["d.sav"])
-    assert uit.doctype == "taxonomie_fijn"
+def test_longest_doctype_wins(monkeypatch):
+    """A doctype ending in another doctype must not be read as the shorter one.
+
+    No pair in the live vocabulary overlaps that way today, so the guard is tested
+    against a synthetic pair — it is what keeps adding one from silently breaking
+    every name already on disk."""
+    monkeypatch.setattr(exportNaming, "DOCTYPES", frozenset({"taxonomie", "ruwe_taxonomie"}))
+    uit = parse_export_filename("d_Q1_100_ruwe_taxonomie.sav", ["d.sav"])
+    assert uit.doctype == "ruwe_taxonomie"
     assert uit.var_name == "Q1"
 
 

@@ -1,19 +1,17 @@
 """
 Step 7 — Export.
 
-Four analytical outputs, each as an Excel worksheet AND a .sav file, plus an
-Excel legend sheet (5 sheets, 4 .sav files total):
-  - Output 1 "codeboek"        — per respondent, dichotomous code matrix
-  - Output 2 "taxonomie grof"  — per respondent, dichotomous domain/facet/consolidated-attribute matrix
-  - Output 3 "taxonomie fijn"  — same, but raw (pre-consolidation) attributes
-  - Output 4 "gecombineerd"    — per expressed idea, long (the source for 1-3)
+Three analytical outputs, each as an Excel worksheet AND a .sav file, plus an
+Excel legend sheet (4 sheets, 3 .sav files total):
+  - Output 1 "codeboek"      — per respondent, dichotomous code matrix
+  - Output 2 "taxonomie"     — per respondent, dichotomous domain/facet/attribute matrix
+  - Output 3 "gecombineerd"  — per expressed idea, long (the source for 1-2)
 
 Design + decisions: see dev/WORK.md.
 """
 
 import math
 import re
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, List, Dict, Optional, Tuple
 from pathlib import Path
@@ -151,9 +149,7 @@ class Catalog:
     # structure have no id — they keep the (domain, name) tuple as key; idea
     # lookups try the idea's id first and fall back to the same tuple.
     facets: Dict[Any, Entry] = field(default_factory=dict)           # facet_id | (domain, facet) -> Entry
-    attributes: Dict[Any, Entry] = field(default_factory=dict)       # attribute_id | (domain, attr) -> Entry  [grof]
-    attributes_raw: Dict[Tuple[str, str], Entry] = field(default_factory=dict)  # (domain, raw attr) -> Entry  [fijn, no ids]
-    raw_map: Dict[str, str] = field(default_factory=dict)            # idea_id -> raw attribute name
+    attributes: Dict[Any, Entry] = field(default_factory=dict)       # attribute_id | (domain, attr) -> Entry
     dimension: Tuple[str, str] = ("", "")                            # (name, definition)
 
 
@@ -173,7 +169,6 @@ def build_catalog(
     partition_results: Dict[str, DomainResultModel],
     metadata: Any,
     responses: List[CodeAssignedModel],
-    tax: Any = None,
 ) -> Catalog:
     """Assign canonical numbers to codes / domains / facets / attributes from the cache.
 
@@ -181,9 +176,7 @@ def build_catalog(
     domain number. The union with idea-assigned (domain, facet/attribute) ensures
     every idea maps to a catalog entry.
 
-    Two attribute sets:
-      - attributes      = consolidated (grof), from step-5 partition_results.attributes
-      - attributes_raw  = raw (fijn), from step-4 `tax`.raw_attributes + raw_attribute_assignments
+    Attributes are the consolidated ones, from step-5 partition_results.attributes.
     """
     cat = Catalog()
 
@@ -216,7 +209,7 @@ def build_catalog(
                 seen_facets.add((dn, fname))
                 fnum += 1
                 cat.facets[f.get("facet_id") or (dn, fname)] = Entry(
-                    fnum, fname, f.get("facet_description", ""), dn, dnum)
+                    fnum, fname, f.get("facet_definition", ""), dn, dnum)
         seen_attrs = set()
         for attr_list in (dr.attributes or {}).values():
             for a in (attr_list or []):
@@ -227,7 +220,7 @@ def build_catalog(
                     seen_attrs.add((dn, aname))
                     anum += 1
                     cat.attributes[a.get("attribute_id") or (dn, aname)] = Entry(
-                        anum, aname, a.get("attribute_description", ""), dn, dnum)
+                        anum, aname, a.get("attribute_definition", ""), dn, dnum)
 
     # --- Union: add (domain, facet/attribute) seen on ideas but missing from taxonomy ---
     # Placement identity in the export is (domain, name-in-that-domain): an
@@ -255,31 +248,6 @@ def build_catalog(
                     anum += 1
                     cat.attributes[akey] = Entry(anum, idea.attribute, "", dn, dnum)
 
-    # --- Raw (fijn) attributes: from step-4 tax (raw_attributes desc + raw_attribute_assignments) ---
-    raw_desc: Dict[str, str] = {}
-    if tax is not None:
-        for dr in tax.partition_results.values():
-            for attr_list in dr.raw_attributes.values():
-                for a in (attr_list or []):
-                    if isinstance(a, dict) and a.get("attribute_name"):
-                        raw_desc.setdefault(a["attribute_name"], a.get("attribute_description", ""))
-            cat.raw_map.update(dr.raw_attribute_assignments)
-    # number raw attributes grouped by domain order, sourced from idea (domain, raw attr)
-    raw_by_domain: Dict[str, set] = defaultdict(set)
-    for resp in responses:
-        for idea in (resp.response_ideas or []):
-            dn = idea.partition_name or idea.domain or ""
-            ra = cat.raw_map.get(idea.idea_id)
-            if dn and ra:
-                raw_by_domain[dn].add(ra)
-    rnum = 0
-    for dn_entry in sorted(cat.domains.values(), key=lambda x: x.number):
-        for ra in sorted(raw_by_domain.get(dn_entry.name, [])):
-            if (dn_entry.name, ra) not in cat.attributes_raw:
-                rnum += 1
-                cat.attributes_raw[(dn_entry.name, ra)] = Entry(rnum, ra, raw_desc.get(ra, ""),
-                                                                dn_entry.name, dn_entry.number)
-
     if metadata is not None:
         cat.dimension = (getattr(metadata, "primary_dimension", "") or "",
                          getattr(metadata, "primary_dimension_description", "") or "")
@@ -300,52 +268,44 @@ class ResultsExporter:
                partition_set: DomainSet,
                partition_results: Dict[str, DomainResultModel],
                metadata: Any,
-               tax: Any = None,
                quality_filtered: Optional[List] = None,
                filename: str = "export",
                var_name: str = "VAR",
                sample_size=None,
                var_lab: str = "",
                export_dir: Optional[str] = None) -> Dict[str, str]:
-        """Build the catalog + 4 outputs, write one Excel workbook (5 sheets) and 4 .sav files."""
+        """Build the catalog + 3 outputs, write one Excel workbook (4 sheets) and 3 .sav files."""
         self.reporter.section_header("EXPORT — codeboek / taxonomie / gecombineerd")
         var_lab = _clean_var_lab(var_lab)
 
-        cat = build_catalog(codes, partition_set, partition_results, metadata, responses, tax)
+        cat = build_catalog(codes, partition_set, partition_results, metadata, responses)
         self.reporter.stat_line(
             f"Catalog: {len(cat.codes)} codes, {len(cat.domains)} domains, {len(cat.facets)} facets, "
-            f"{len(cat.attributes)} attributes (grof) / {len(cat.attributes_raw)} (fijn)")
+            f"{len(cat.attributes)} attributes")
+        self._report_missing_definitions(cat)
 
         filtered = [r for r in (quality_filtered or []) if getattr(r, "quality_filter", False)]
         resp_text = {r.respondent_id: _clean_response(r.response) for r in (quality_filtered or [])}
 
         long_df, long_vlabels, long_collabels = self._build_long(responses, filtered, cat, var_name, var_lab, resp_text)
         codes_df, codes_vlabels, codes_collabels = self._build_codes_matrix(responses, filtered, cat, var_name, var_lab, resp_text)
-        grof_df, grof_vlabels, grof_collabels = self._build_taxonomy_matrix(
-            responses, filtered, cat, var_name, var_lab, resp_text,
-            cat.attributes,
-            lambda idea, dn: (placement_key(cat.attributes, idea.attribute_id, dn, idea.attribute)
-                              if idea.attribute else None))
-        fijn_df, fijn_vlabels, fijn_collabels = self._build_taxonomy_matrix(
-            responses, filtered, cat, var_name, var_lab, resp_text,
-            cat.attributes_raw,
-            lambda idea, dn: (dn, cat.raw_map[idea.idea_id]) if cat.raw_map.get(idea.idea_id) else None)
+        tax_df, tax_vlabels, tax_collabels = self._build_taxonomy_matrix(
+            responses, filtered, cat, var_name, var_lab, resp_text)
 
         # output paths — final deliverables go in their own subfolder
         export_dir = results_export_dir(export_dir)
         export_dir.mkdir(parents=True, exist_ok=True)
 
-        # Excel (one workbook, 5 sheets)
+        # Excel (one workbook, 4 sheets)
         xlsx_path = results_xlsx_path(filename, var_name, sample_size, export_dir)
         self._write_excel(xlsx_path, cat, codes_df, codes_collabels,
-                          grof_df, grof_collabels, fijn_df, fijn_collabels, long_df)
+                          tax_df, tax_collabels, long_df)
 
-        # 4 .sav files
+        # 3 .sav files
         paths = {"excel": str(xlsx_path)}
         for suffix, df, vlab, clab in [
             ("codeboek", codes_df, codes_vlabels, codes_collabels),
-            ("taxonomie_grof", grof_df, grof_vlabels, grof_collabels),
-            ("taxonomie_fijn", fijn_df, fijn_vlabels, fijn_collabels),
+            ("taxonomie", tax_df, tax_vlabels, tax_collabels),
             ("gecombineerd", long_df, long_vlabels, long_collabels),
         ]:
             sav_path = export_dir / export_filename(
@@ -354,9 +314,25 @@ class ResultsExporter:
             paths[suffix] = str(sav_path)
 
         self.reporter.stat_line(f"Excel: {xlsx_path.name}  ({len(long_df)} idea-rows, {len(codes_df)} respondents)")
-        for s in ("codeboek", "taxonomie_grof", "taxonomie_fijn", "gecombineerd"):
+        for s in ("codeboek", "taxonomie", "gecombineerd"):
             self.reporter.stat_line(f".sav: {Path(paths[s]).name}")
         return paths
+
+    def _report_missing_definitions(self, cat: Catalog):
+        """Count facets/attributes without a definition and say so.
+
+        The legend's definition column is fed by dict keys from the step-4/5
+        artifact (`facet_definition` / `attribute_definition`). A rename upstream
+        empties that column silently — `.get()` cannot tell a renamed key from an
+        absent one. Union entries (an idea placed outside the structure) legitimately
+        have no definition, so this is a count, not an error."""
+        for level, entries in (("facetten", cat.facets), ("attributen", cat.attributes)):
+            missing = [e for e in entries.values() if not e.definition]
+            if missing:
+                self.reporter.stat_line(
+                    f"Zonder definitie: {len(missing)}/{len(entries)} {level}"
+                    + ("  ← alle: staat het definitieveld nog zo in de cache?"
+                       if len(missing) == len(entries) else ""))
 
     # ---- output 3: long (per idea) — the source ----
     def _build_long(self, responses, filtered, cat: Catalog, var_name, var_lab, resp_text):
@@ -448,12 +424,9 @@ class ResultsExporter:
         value_labels = {c: DICHOTOMOUS_VALUE_LABELS for c, _, _ in (code_cols + filter_cols)}
         return df, value_labels, col_labels
 
-    # ---- output 2: taxonomy per respondent (dichotomous) — grof or fijn ----
-    def _build_taxonomy_matrix(self, responses, filtered, cat: Catalog, var_name, var_lab, resp_text,
-                               attr_catalog: Dict[Any, Entry], attr_key_fn):
-        """Domain + facet (consolidated) + attribute. `attr_catalog`/`attr_key_fn`
-        select consolidated (grof, id-keyed) or raw (fijn, (domain, name)-keyed)
-        attributes; the key fn returns the idea's catalog key. Domain/facet shared."""
+    # ---- output 2: taxonomy per respondent (dichotomous) ----
+    def _build_taxonomy_matrix(self, responses, filtered, cat: Catalog, var_name, var_lab, resp_text):
+        """Domain + facet + attribute, one column each, all consolidated."""
         ideas_by_resp = {r.respondent_id: (r.response_ideas or []) for r in responses}
         resp_response = {r.respondent_id: _clean_response(r.response) for r in responses}
 
@@ -462,7 +435,7 @@ class ResultsExporter:
         fac_cols = [(f"{var_name}facet_{e.number}_{e.domain_number}", f"{e.name}_{e.domain_number}", ("facet", e.number))
                     for e in sorted(cat.facets.values(), key=lambda x: x.number)]
         att_cols = [(f"{var_name}attr_{e.number}_{e.domain_number}", f"{e.name}_{e.domain_number}", ("attribute", e.number))
-                    for e in sorted(attr_catalog.values(), key=lambda x: x.number)]
+                    for e in sorted(cat.attributes.values(), key=lambda x: x.number)]
         all_cols = dom_cols + fac_cols + att_cols
 
         rows = []
@@ -481,9 +454,11 @@ class ResultsExporter:
                         fac = cat.facets.get(placement_key(cat.facets, idea.facet_id, dn, idea.facet))
                         if fac:
                             hit["facet"].add(fac.number)
-                    akey = attr_key_fn(idea, dn)
-                    if akey is not None and akey in attr_catalog:
-                        hit["attribute"].add(attr_catalog[akey].number)
+                    if idea.attribute:
+                        att = cat.attributes.get(
+                            placement_key(cat.attributes, idea.attribute_id, dn, idea.attribute))
+                        if att:
+                            hit["attribute"].add(att.number)
                 for col, _, (kind, num) in all_cols:
                     row[col] = 1 if num in hit[kind] else 0
             rows.append(row)
@@ -506,15 +481,14 @@ class ResultsExporter:
 
     # ---- Excel ----
     def _write_excel(self, path, cat: Catalog, codes_df, codes_labels,
-                     grof_df, grof_labels, fijn_df, fijn_labels, long_df):
+                     tax_df, tax_labels, long_df):
         wb = Workbook()
         self._write_legend_sheet(wb.active, cat)
         wb.active.title = "Legenda"
         # dichotomous sheets: use readable labels as column headers (var names are cryptic)
         for name, df, labels in [
             ("Codeboek", codes_df, codes_labels),
-            ("Taxonomie grof", grof_df, grof_labels),
-            ("Taxonomie fijn", fijn_df, fijn_labels),
+            ("Taxonomie", tax_df, tax_labels),
         ]:
             ws = wb.create_sheet(name)
             self._write_data_sheet(ws, df, cat, kind="matrix", header_labels=labels)
@@ -600,20 +574,10 @@ class ResultsExporter:
             colheader("facet")
             items(sorted(facs, key=lambda x: x.number))
         r += 1
-        # D — Attributen grof (consolidated, grouped by domain)
-        banner("D — Attributen (grof / geconsolideerd)", _SUB_FILL, _SUB_FONT)
+        # D — Attributen (grouped by domain)
+        banner("D — Attributen", _SUB_FILL, _SUB_FONT)
         for dn in sorted(cat.domains.values(), key=lambda x: x.number):
             atts = [e for e in cat.attributes.values() if e.domain_name == dn.name]
-            if not atts:
-                continue
-            banner(dn.name, _COLH_FILL, _COLH_FONT)
-            colheader("attribuut")
-            items(sorted(atts, key=lambda x: x.number))
-        r += 1
-        # E — Attributen fijn (raw, grouped by domain)
-        banner("E — Attributen (fijn / ruw)", _SUB_FILL, _SUB_FONT)
-        for dn in sorted(cat.domains.values(), key=lambda x: x.number):
-            atts = [e for e in cat.attributes_raw.values() if e.domain_name == dn.name]
             if not atts:
                 continue
             banner(dn.name, _COLH_FILL, _COLH_FONT)

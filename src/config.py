@@ -91,20 +91,20 @@ STEP_MODEL: Dict[str, Tuple[str, int]] = {
     # function, not by number: a reordering should not force a rename here or
     # in the perf model.
     "classifier_discovery":               ("5.6", 3),
-    "classifier_facet_consolidation":     ("5.6", 3),
+    "classifier_facet_consolidation":     ("5.4", 5),
     "classifier_facet_assignment":        ("5.6", 3),
-    "classifier_facet_settle":            ("5.6", 3),
-    "classifier_attribute_consolidation": ("5.6", 3),
+    "classifier_facet_settle":            ("5.4", 5),
+    "classifier_attribute_consolidation": ("5.4", 5),
     "classifier_assignment":              ("5.6", 3),
-    "classifier_refinement":              ("5.6", 3),
-    "classifier_cross_domain":            ("5.6", 3),
-    "classifier_valence_merge":           ("5.6", 3),
+    "classifier_refinement":              ("5.4", 5),
+    "classifier_cross_domain":            ("5.4", 5),
+    "classifier_valence_merge":           ("5.4", 5),
     # Step 5: Code Generator
-    "codegen_relations":                  ("5.6", 3),   # relations between attributes
-    "codegen_umbrella_merge":             ("5.6", 3),   # consolidate umbrella names before pooling
-    "codegen_writer":                     ("5.6", 3),   # codebook writing from clusters
-    "codegen_mece_detect":                ("5.6", 3),   # MECE pass A: hardest-to-separate-from per code
-    "codegen_mece_probe":                 ("5.6", 3),   # MECE pass B: blind per-pair idea-assignment probe
+    "codegen_relations":                  ("5.4", 5),   # relations between attributes
+    "codegen_umbrella_merge":             ("5.4", 5),   # consolidate umbrella names before pooling
+    "codegen_writer":                     ("5.4", 5),   # codebook writing from clusters
+    "codegen_mece_detect":                ("5.4", 5),   # MECE pass A: hardest-to-separate-from per code
+    "codegen_mece_probe":                 ("5.4", 5),   # MECE pass B: blind per-pair idea-assignment probe
     # Step 6: Code Assigner
     "code_assignment":                    ("5.6", 3),
 }
@@ -207,15 +207,15 @@ STEP_EFFORT = {
     # the calls are.
     "classifier_discovery": "medium",
     "classifier_facet_consolidation": "medium",
-    "classifier_facet_settle": "medium",
+    "classifier_facet_settle": "high",
     "classifier_attribute_consolidation": "medium",
-    "classifier_refinement": "medium",
+    "classifier_refinement": "high",
     "classifier_cross_domain": "medium",
     "classifier_valence_merge": "medium",
     # Step 5: writing and consolidating the codebook
-    "codegen_relations": "medium",
-    "codegen_umbrella_merge": "medium",
-    "codegen_writer": "medium",
+    "codegen_relations": "high",
+    "codegen_umbrella_merge": "high",
+    "codegen_writer": "high",
     "codegen_mece_detect": "medium",     # same rung as codegen_relations
     "codegen_mece_probe": "medium",
     # All other steps: fall back to REASONING_EFFORT

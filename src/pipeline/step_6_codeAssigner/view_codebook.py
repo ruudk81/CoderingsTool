@@ -3,12 +3,8 @@
 """
 View codebook / taxonomy: step-6 assignments in two readouts (each printed + saved
 to its own CSV):
-  1. CODEBOOK   — codes only                       (_codebook)
-  2. TAXONOMIE  — domain → facet → attribute        (_taxonomie)
-  3. TAXONOMIE  — domain → facet → RAW attribute     (_taxonomie_raw)
-
-Raw attributes are the pre-consolidation (pre-P7/P8) step-4 assignments, read
-from the taxonomy cache's `raw_attribute_assignments`.
+  1. CODEBOOK   — codes only                  (_codeboek)
+  2. TAXONOMIE  — domain → facet → attribute  (_taxonomie)
 
 Per row, two counts:
   - BRUTO = n ideas (mentions) + % of the readout's idea base — a respondent who
@@ -44,7 +40,6 @@ sys.path.insert(0, str(project_root / "src"))
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.exportNaming import export_filename
 from models import CodeAssignedModel
-from models import TaxonomyResultsCache
 from models import CodingResultsCache, ExtractionMetadata, QualityFilteredModel
 from models import ConsolidatedCode
 from pipeline.step_7_export.resultsExporter import build_catalog, ResultsExporter
@@ -77,8 +72,7 @@ _POS_VALENCES = {"+", "+1", "pos", "positive"}
 # =============================================================================
 
 def load_data():
-    """Load step-6 response models, the step-5 codebook, and the step-4 raw
-    attribute assignments (idea_id → raw attribute, pre-consolidation)."""
+    """Load step-6 response models, the step-5 codebook and step-3 metadata."""
     variable_key = generate_enhanced_variable_key(
         selected_variables=[VARIABLE], is_merged=False, sample_size=SAMPLE_SIZE,
     )
@@ -89,13 +83,8 @@ def load_data():
     codebook = cm.load_metadata_from_cache(FILENAME, "mece_codes", variable_key, CodingResultsCache)
     if not codebook:
         raise FileNotFoundError("No mece_codes cache — run step 5 first.")
-    tax = cm.load_metadata_from_cache(FILENAME, "taxonomy", variable_key, TaxonomyResultsCache)
-    raw_map: Dict[str, str] = {}
-    if tax:
-        for dr in tax.partition_results.values():
-            raw_map.update(getattr(dr, "raw_attribute_assignments", {}) or {})
     metadata = cm.load_metadata_from_cache(FILENAME, "extracted_ideas", variable_key, ExtractionMetadata)
-    return results, codebook, raw_map, metadata, tax
+    return results, codebook, metadata
 
 
 def _base_note(n_responses: int) -> str:
@@ -297,12 +286,8 @@ def build_groups(responses, codebook, group_by, show_attrs, fold_tail):
     return _normalize_netto(rows, n_responses), base_n, n_responses, n_unassigned
 
 
-def build_domain_facet_attr(responses, fold_tail, attr_of):
-    """Three-level taxonomy: domain → facet → attribute (pure taxonomy, no codes).
-
-    attr_of(idea) -> the attribute label (consolidated `assigned_attribute`, or the
-    raw pre-consolidation attribute via a idea_id lookup).
-    """
+def build_domain_facet_attr(responses, fold_tail):
+    """Three-level taxonomy: domain → facet → attribute (pure taxonomy, no codes)."""
     dom: Dict[str, _Cell] = defaultdict(_Cell)
     df: Dict[str, Dict[str, _Cell]] = defaultdict(lambda: defaultdict(_Cell))
     dfa: Dict[str, Dict[str, Dict[str, _Cell]]] = \
@@ -315,7 +300,7 @@ def build_domain_facet_attr(responses, fold_tail, attr_of):
             resp_with_ideas.add(rid)
             d = (getattr(idea, "partition_name", "") or idea.domain or "").strip() or _NO_GROUP
             f = (idea.facet or "").strip() or _NO_FACET
-            a = (attr_of(idea) or "").strip() or _NO_ATTR
+            a = (idea.assigned_attribute or "").strip() or _NO_ATTR
             dom[d].add(rid, idea.valence)
             df[d][f].add(rid, idea.valence)
             dfa[d][f][a].add(rid, idea.valence)
@@ -586,9 +571,8 @@ def _append_leeswijzer(ws):
 
 # (title, sheet_name, header_label, builder spec, csv_suffix)
 VERSIONS = [
-    ("CODEBOOK",             "Codeboek",         "code",                          ("groups", "code", False, False), "codeboek"),
-    ("TAXONOMIE",             "Taxonomie (grof)", "domain / facet / attribute",     ("dfa", "consolidated"), "taxonomie"),
-    ("TAXONOMIE (ruwe attr)", "Taxonomie (fijn)", "domain / facet / raw attribute", ("dfa", "raw"),          "taxonomie_raw"),
+    ("CODEBOOK",  "Codeboek",   "code",                       ("groups", "code", False, False), "codeboek"),
+    ("TAXONOMIE", "Taxonomie",  "domain / facet / attribute", ("dfa",),                         "taxonomie"),
 ]
 
 def export_codebook(filename: str = None, var_name: str = None,
@@ -597,8 +581,8 @@ def export_codebook(filename: str = None, var_name: str = None,
                     print_console: bool = False) -> Optional[Path]:
     """Write the codebook/taxonomy readouts (CSV + XLSX) to exports/codebook/.
 
-    Runs AFTER step 6 — reads taxonomy_codes (6) + mece_codes (5) + taxonomy (4) +
-    extracted_ideas (3) from cache. Returns the xlsx path (None if write_xlsx=False).
+    Runs AFTER step 6 — reads taxonomy_codes (6) + mece_codes (5) + extracted_ideas (3)
+    from cache. Returns the xlsx path (None if write_xlsx=False).
 
     Dataset params default to TEST_DATA (so the standalone `python -m ...view_codebook`
     dev run is unchanged); the app passes them explicitly. Rebinds the module globals
@@ -609,20 +593,16 @@ def export_codebook(filename: str = None, var_name: str = None,
     VARIABLE = VARIABLE if var_name is None else var_name
     SAMPLE_SIZE = SAMPLE_SIZE if sample_size is None else sample_size
 
-    responses, codebook, raw_map, metadata, tax = load_data()
-    attr_sources = {
-        "consolidated": lambda i: i.assigned_attribute,
-        "raw": lambda i: raw_map.get(i.idea_id, ""),
-    }
+    responses, codebook, metadata = load_data()
     wb = Workbook() if write_xlsx else None
     if wb is not None:
         wb.remove(wb.active)
-        # Legenda: step 7's canonical catalog legend (Codeboek + taxonomy A-E, with
+        # Legenda: step 7's canonical catalog legend (Codeboek + taxonomy A-D, with
         # definitions) — build_catalog is the single source of truth, so the legend
         # always matches the tabs. A reading guide is appended below it.
         codes = [ConsolidatedCode(**c) if isinstance(c, dict) else c for c in (codebook.raw_codes or [])]
         cat = build_catalog(codes, codebook.partition_set, codebook.partition_results,
-                            metadata, responses, tax)
+                            metadata, responses)
         legend_ws = wb.create_sheet(title="Legenda")
         ResultsExporter(verbose=False)._write_legend_sheet(legend_ws, cat)
         _append_leeswijzer(legend_ws)
@@ -633,8 +613,7 @@ def export_codebook(filename: str = None, var_name: str = None,
                 responses, codebook, group_by, show_attrs, fold)
             compact = not show_attrs
         else:
-            rows, base_n, n_resp, n_una = build_domain_facet_attr(
-                responses, fold_tail=True, attr_of=attr_sources[spec[1]])
+            rows, base_n, n_resp, n_una = build_domain_facet_attr(responses, fold_tail=True)
             compact = False
         if print_console:
             print_readout(title, header, rows, base_n, n_resp, n_una, compact)

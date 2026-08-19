@@ -35,7 +35,6 @@ import models
 from models import CodeAssignedModel
 from models import CodingResultsCache
 from models import ConsolidatedCode
-from models import TaxonomyResultsCache
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.identity import ensure_assignment_ids
@@ -130,14 +129,6 @@ def load_step6_cache(config: StepConfig):
         model_cls=models.ExtractionMetadata,
     )
 
-    # Load step-4 taxonomy cache (for raw/fine attributes: raw_attributes + raw_attribute_assignments)
-    tax = cache_manager.load_metadata_from_cache(
-        filename=config.filename,
-        step="taxonomy",
-        variable_key=variable_key,
-        model_cls=TaxonomyResultsCache,
-    )
-
     # Load quality filtered text (optional)
     quality_filtered_text = None
     try:
@@ -147,7 +138,7 @@ def load_step6_cache(config: StepConfig):
     except Exception:
         pass
 
-    return code_assigned_results, codes, partition_set, partition_results, metadata, tax, quality_filtered_text, variable_key
+    return code_assigned_results, codes, partition_set, partition_results, metadata, quality_filtered_text, variable_key
 
 
 def get_var_lab(config: StepConfig) -> str:
@@ -164,7 +155,7 @@ def run_step(config: StepConfig = None):
     if config is None:
         config = STEP_CONFIG
 
-    code_assigned_results, codes, partition_set, partition_results, metadata, tax, quality_filtered_text, variable_key = load_step6_cache(config)
+    code_assigned_results, codes, partition_set, partition_results, metadata, quality_filtered_text, variable_key = load_step6_cache(config)
     var_lab = get_var_lab(config)
 
     verbose_reporter = VerboseReporter(config.verbose)
@@ -183,7 +174,6 @@ def run_step(config: StepConfig = None):
         partition_set,
         partition_results,
         metadata,
-        tax=tax,
         quality_filtered=quality_filtered_text,
         filename=config.filename,
         var_name=config.var_name,
