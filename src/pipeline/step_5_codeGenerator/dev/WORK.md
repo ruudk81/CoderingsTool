@@ -31,6 +31,20 @@ verwijderd. Maar vergelijk ze niet één-op-één met een nieuwe run: een versch
 kan van het model komen, van de boom, of van allebei — niet noodzakelijk van
 wat er in de tussentijd aan step 5 zelf is veranderd.
 
+## tau is een invoer, geen constante (open — 2026-08-20)
+
+Zolang er op een tweede dataset niets gemeten is, blijft tau een expliciet
+argument van het experiment en komt hij NIET als constante in `config.py`. De
+reden is dat hij er neutraal uitziet en dat niet is: de keuze voor 0,5 werd
+onderweg mede beargumenteerd met het feit dat `Kosten en prijsstelling` er dan
+blijft staan — dat is afstellen op de inhoud van deze dataset, in een vorm die
+de regel over use-case-agnostische prompts niet vangt. Zelfde categorie als
+`DEGENERATION_FLOOR`/`CEILING`: beredeneerd, niet gemeten.
+
+Sinds de facetpool weegt de keuze bovendien veel minder: met pool geven 0,5 en
+0,7 vrijwel hetzelfde codeboek (`direction_loss` 277 tegen 282), terwijl het
+verschil zonder pool 317 tegen 409 was.
+
 ## Consensus over N runs — gemeten, haalde de lat niet (2026-08-20)
 
 Gebouwd en gemeten: deel 1 N keer draaien, per attribuutPAAR tellen hoe vaak

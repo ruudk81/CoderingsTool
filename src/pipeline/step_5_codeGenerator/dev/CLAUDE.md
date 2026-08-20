@@ -32,7 +32,11 @@ more** — a leftover reference to one is stale, not a second chain.
   judgement call: which attributes belong in one code, given the research
   question, the counts and what respondents actually said. Failure is a hard
   `RuntimeError`, never a silent fallback
-- `grouping.py` — phase 2/3, **deterministic, no LLM**: `repair_partition`
+- `grouping.py` — phase 2/3, **deterministic, no LLM**: `valence_poles` (the
+  pole computation two phases share, so they cannot drift),
+  `pool_thin_within_facet` (thin facet-mates become one code — only
+  sub-threshold material, never across a facet boundary, no constant of its
+  own), `repair_partition`
   (every attribute in exactly one group, whatever the model returned),
   `build_shapes` (each group split into pure valence poles → `CodeShape`),
   `check_degeneration` (a proposal that groups nothing, or everything, is
