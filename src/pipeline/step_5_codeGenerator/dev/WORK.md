@@ -31,6 +31,52 @@ verwijderd. Maar vergelijk ze niet één-op-één met een nieuwe run: een versch
 kan van het model komen, van de boom, of van allebei — niet noodzakelijk van
 wat er in de tussentijd aan step 5 zelf is veranderd.
 
+## Consensus over N runs — gemeten, haalde de lat niet (2026-08-20)
+
+Gebouwd en gemeten: deel 1 N keer draaien, per attribuutPAAR tellen hoe vaak
+twee samen zaten, en die co-associatiematrix met volledige koppeling tot een
+indeling snijden. Gereedschap in `dev/experiment_consensus/`, verslag in
+`exports/experiment_logs/consensus_verslag_20260820.md`.
+
+Hoofdmaat = ARI tussen twee onafhankelijke consensusindelingen. Op de vooraf
+vastgelegde τ=0,5: **0,788** tegen de geeiste 0,90. Gefaald. Consensus
+verdubbelt de reproduceerbaarheid wel (losse runs: mediaan ARI 0,42), maar niet
+genoeg, en de uitkomst is niet monotoon in τ: 0,5 → 0,788, 0,7 → 0,900,
+0,9 → 0,693. Daaronder ligt een ruil: de drempel die betekenisvol consolideert
+reproduceert het slechtst.
+
+**Op MERGE-niveau is het beeld gunstiger, en dat is de bruikbare vraag.** Niet
+"reproduceert de hele indeling" maar "welke samenvoegingen komen terug". Op een
+schone attribuutlijst (43, na uitsluiting van de vangnetten hieronder), luna,
+2 x 30 runs, τ=0,7: **5 van de 5 groepen identiek** over twee onafhankelijke
+sets. Ter vergelijking: groepen uit een enkele run kwamen historisch 0 van 84
+keer terug. De ARI mat de verkeerde eenheid — die telt ook de honderden
+beslissingen over attributen die toch alleen blijven.
+
+Schaalcurve (luna, meerdere disjuncte splitsingen, τ=0,7): N=10 geeft 42-63%
+paar-overeenstemming, N=15 53-65%, N=30 73%. Stijgt door tot 30. Uitwisselbaar
+met modelkwaliteit: gpt-5.4 bij N=10 gaf 8 van 9 groepen terug, luna bij N=30
+zeven van negen — en 30 luna-calls kosten ongeveer twee gpt-5.4-calls.
+
+### Zekerheid en betekenis zijn niet hetzelfde (open)
+
+De methode weegt alleen hoe vaak een paar samen zat, niet hoeveel materiaal
+eronder ligt. Daardoor kreeg een merge van twee bakjes met elk een respondent
+29-van-30-zekerheid, terwijl een thematische merge over drie attributen met
+honderden respondenten op 24-van-30 stond. De vangnetten zijn nu uitgesloten,
+maar het onderliggende punt blijft: een volgende versie hoort prevalentie mee
+te wegen, niet alleen recurrentie.
+
+### Vangnetten stonden op de kaarten (opgelost 2026-08-20)
+
+Step 4 markeert zijn `other`-attributen met `drain_key`; step 5 las die sleutel
+nooit en legde ze als volwaardige onderwerpen voor. Het model merkte ze met
+28-29 van 30 samen met hun naamgenoot. Opgelost: `is_drain` op `AttributeRef` en
+`Concept`, `build_cards` slaat ze over. Effect gemeten op de opgeslagen
+partities: paar-overeenstemming 73% → 78%, groepen identiek 7-van-9 → 5-van-5.
+Kosten: 8 respondenten (0,3%) verschuiven naar Overig, ruim binnen het
+10%-plafond.
+
 ## De consolidatiecall reproduceert niet (open — 2026-08-18)
 
 Vier runs op identieke invoer (ASN, 60 attributen) gaven **26, 31, 25 en 28

@@ -22,10 +22,12 @@ more** — a leftover reference to one is stale, not a second chain.
   `AttributeRef`, `build_idea_units`, `build_attribute_refs`); step 4 can change
   underneath this without the rest of step 5 noticing
 - `concept_inventory.py` — `Concept` (one per attribute with ≥1 idea, respondent
-  SETS not counts), `t_keep()` (the prevalence threshold)
+  SETS not counts, and `is_drain` inherited from its ref), `t_keep()` (the
+  prevalence threshold)
 - `attribute_cards.py` — `AttributeCard`: what the model sees per attribute —
   name, definition, domain, facet, respondent count, literal top answers.
-  `.tag` is `[A17] Prijs`, the id-plus-name form used across step 5
+  `.tag` is `[A17] Prijs`, the id-plus-name form used across step 5.
+  `build_cards` skips step 4's catch-alls — see Gotchas
 - `prompts_consolidation.py` + `consolidation.py` — phase 1, the one
   judgement call: which attributes belong in one code, given the research
   question, the counts and what respondents actually said. Failure is a hard
@@ -153,6 +155,18 @@ model, see PROCESSING.md) is a `step5_*` string per call site:
   two attributes of the same group counts once. `weight()` in `grouping.py` and
   `group_respondents()` in `postmortem.py` both take a union; summing `n_resp`
   double-counts and was a real bug in both, caught in review.
+- **Step 4's catch-alls never reach the model.** Step 4 builds an `other`
+  attribute under every facet and marks it with `drain_key`; `AttributeRef` and
+  `Concept` carry that as `is_drain` and `build_cards` skips it. Recognition is
+  on the key and never on the name — the name is in the survey language and may
+  be rewritten (step 4's `drains.py` states the same rule). The reason is not
+  tidiness: a catch-all's definition is literally "responses that belong to this
+  facet but match none of the attributes under it", so asking the model to group
+  it thematically has no answerable form. Measured on the ASN set (2026-08-20):
+  it answered anyway, merging each catch-all with its namesake attribute at
+  28-29 of 30 runs, over buckets holding one or two respondents. The Concepts
+  stay — the respondents on them belong in the bookkeeping — and
+  `apply_overig_sweep` covers them, so nothing is lost.
 - **Concepts only exist for attributes with ≥1 classified idea.** An attribute
   with zero ideas never becomes a `Concept` and is invisible to the chain. The
   actual 100%-coverage guarantee is `apply_overig_sweep` in `codebook_io.py`,

@@ -77,6 +77,7 @@ STAGE 1 — taxonomy_input + concept_inventory + attribute_cards (no LLM):
   classified ideas -> IdeaUnit (flat, per idea)
   taxonomy attributes -> AttributeRef (flat, per attribute)
   -> Concept per attribute with ≥1 idea (respondent SETS, not counts)
+  -> step 4's catch-alls (drain_key) keep their Concept but get no card
   -> t_keep(n_resp_total) = max(t_keep_min_respondents, round(t_keep_share * n))
   -> AttributeCard per concept: name, definition, domain, facet, n_resp,
      top literal answers
@@ -173,7 +174,8 @@ The rule is not "show the model as little as possible" — it is **show what
 supports the judgement, withhold what would answer it for the model.**
 
 - Stage 2 (consolidation) sees name, definition, domain, facet, respondent count
-  and literal answers. Counts are shown deliberately: a code's size is part of
+  and literal answers — for every attribute except step 4's catch-alls, which
+  are residue by construction and carry no groupable meaning. Counts are shown deliberately: a code's size is part of
   what makes it worth a table row. What it does not see is any suggestion of how
   many codes there should be, and list order carries no signal (`_shuffled`).
 - Stage 4 (writer) sees each shape's already-decided direction — a fact to
