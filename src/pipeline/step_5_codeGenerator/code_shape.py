@@ -18,6 +18,20 @@ from typing import Dict, List, Optional, Tuple
 from .concept_inventory import Concept
 from models import ConsolidatedCode
 
+# `ConsolidatedCode.valence` kent drie waarden; `build_shapes(two_pole=True)`
+# levert er een vierde. Die wordt vertaald in plaats van het model te
+# verruimen — `models.py` is het contract over stapgrenzen. De vertaling hoort
+# hier omdat BEIDE kanten van de vorm↔code-match hem moeten gebruiken: de
+# sleutel die `_shape_lookup` legt en de valentie die de geschreven code
+# draagt. Spreken ze niet dezelfde vocabulaire, dan vindt `_match_shape` niets
+# terug.
+STORED_VALENCE = {"non_negative": "neutral"}
+
+
+def stored_valence(valence: str) -> str:
+    """De valentie zoals een geschreven code hem draagt."""
+    return STORED_VALENCE.get(valence, valence)
+
 
 @dataclass(frozen=True)
 class CodeShape:
@@ -44,7 +58,7 @@ def _shape_lookup(
     lookup = {}
     for shape in shapes:
         names = frozenset(concept_by_id[m].name for m in shape.members if m in concept_by_id)
-        lookup[(names, shape.valence)] = shape
+        lookup[(names, stored_valence(shape.valence))] = shape
     return lookup
 
 

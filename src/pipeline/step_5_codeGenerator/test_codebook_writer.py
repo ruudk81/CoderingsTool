@@ -3,7 +3,7 @@ import asyncio
 
 from utils.smoothRequester import SmoothRequester
 
-from pipeline.step_5_codeGenerator import codebook_writer
+from pipeline.step_5_codeGenerator import code_shape, codebook_writer
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.code_shape import CodeShape
@@ -107,6 +107,30 @@ def test_non_negative_valence_is_stored_as_neutral(monkeypatch):
     assert codes[1].valence == "neutral"  # K2: neutral -> neutral (unchanged)
     assert codes[2].valence == "positive"  # K3: unchanged
     assert codes[3].valence == "negative"  # K4: unchanged
+
+
+def test_match_shape_finds_a_non_negative_shape_via_its_stored_valence():
+    """The regression `db65b203` introduced: `_shape_lookup` keyed shapes on
+    the RAW valence while `_match_shape` probes with the STORED valence a
+    written code carries, so a two-pole shape could never be found again once
+    `_to_consolidated_code` started translating `non_negative` to `neutral`."""
+    a_shape = shape("K1", "non_negative", "prijs", ["A1"])
+    concept_by_id = {"A1": concept("A1", "Prijs")}
+    written = codebook_writer._to_consolidated_code(text("K1"), a_shape, concept_by_id)
+
+    lookup = code_shape._shape_lookup([a_shape], concept_by_id)
+    assert code_shape._match_shape(written, lookup) is a_shape
+
+
+def test_match_shape_finds_a_neutral_shape_via_its_stored_valence():
+    """Mirror case for the three-pole path, where the valence is already an
+    identity translation."""
+    a_shape = shape("K1", "neutral", "prijs", ["A1"])
+    concept_by_id = {"A1": concept("A1", "Prijs")}
+    written = codebook_writer._to_consolidated_code(text("K1"), a_shape, concept_by_id)
+
+    lookup = code_shape._shape_lookup([a_shape], concept_by_id)
+    assert code_shape._match_shape(written, lookup) is a_shape
 
 
 def test_source_attributes_are_names_filled_in_code_not_by_the_model(monkeypatch):

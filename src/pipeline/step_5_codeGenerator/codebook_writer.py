@@ -29,7 +29,7 @@ from utils.smoothRequester import SmoothRequester
 
 from .concept_inventory import Concept
 from .config_codeGenerator import CodebookConfig
-from .code_shape import CodeShape
+from .code_shape import CodeShape, stored_valence
 from models import ConsolidatedCode
 from .prompts_writer import CodeText, build_writer_prompt, make_writer_model
 
@@ -60,22 +60,13 @@ def _fallback_text(shape: CodeShape, concept_by_id: Dict[str, Concept],
     )
 
 
-# `ConsolidatedCode.valence` kent drie waarden; de tweedeling van `build_shapes`
-# levert er een vierde (`non_negative`). Die wordt hier vertaald in plaats van
-# het model te verruimen: `models.py` is het contract over stapgrenzen, en
-# binnen een tweedelingsrun bestaat er geen andere neutrale categorie — daar
-# betekent `neutral` dus ondubbelzinnig niet-negatief. De schrijfprompt blijft
-# `non_negative` tonen; alleen de opslagvocabulaire blijft de bestaande drie.
-_STORED_VALENCE = {"non_negative": "neutral"}
-
-
 def _to_consolidated_code(text: CodeText, shape: CodeShape,
                           concept_by_id: Dict[str, Concept]) -> ConsolidatedCode:
     return ConsolidatedCode(
         code_name=text.code_name,
         definition=text.definition,
         diagnostic_test=text.diagnostic_test,
-        valence=_STORED_VALENCE.get(shape.valence, shape.valence),
+        valence=stored_valence(shape.valence),
         typical_indicators=text.typical_indicators,
         source_attributes=_topic_names(shape, concept_by_id),
     )
