@@ -35,15 +35,25 @@ from pipeline.step_5_codeGenerator.codebook_io import (  # noqa: E402
     FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE,
     load_classified_ideas, load_extraction_metadata, load_taxonomy_cache,
 )
-from pipeline.step_5_codeGenerator.concept_inventory import build_inventory  # noqa: E402
+from pipeline.step_5_codeGenerator.code_shape import _match_shape, _shape_lookup  # noqa: E402
+from pipeline.step_5_codeGenerator.codebook_io import (  # noqa: E402
+    apply_overig_sweep, print_codebook_results, run_scorecard,
+)
+from pipeline.step_5_codeGenerator.codebook_writer import (  # noqa: E402
+    resolve_duplicate_names, write_codebook,
+)
+from pipeline.step_5_codeGenerator.concept_inventory import build_inventory, t_keep  # noqa: E402
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig  # noqa: E402
 from pipeline.step_5_codeGenerator.consolidation import resolve_consolidation  # noqa: E402
-from pipeline.step_5_codeGenerator.grouping import repair_partition  # noqa: E402
+from pipeline.step_5_codeGenerator.grouping import (  # noqa: E402
+    Group, build_shapes, check_degeneration, repair_partition,
+)
 from pipeline.step_5_codeGenerator.taxonomy_input import (  # noqa: E402
     build_attribute_refs, build_idea_units,
 )
 
 from analysis import histogram, pairwise_ari, tau_sweep  # noqa: E402
+from consensus import consensus_partition, dominant_member  # noqa: E402
 from stability_bridge import together_from_runs  # noqa: E402
 from storage import RunSet, load_runset, save_runset  # noqa: E402
 
@@ -180,6 +190,81 @@ def analyse(config_name: str, set_index: int) -> None:
               f"{row['largest']:>9d}  {row['n_solo']:>5d}")
 
 
+class _Log:
+    """Duck-typed log, zoals `_RepairLog` in run_codebook.py."""
+    def __init__(self):
+        self.entries: List[dict] = []
+
+    def add(self, **kwargs):
+        self.entries.append(kwargs)
+
+
+async def codebook(config_name: str, set_index: int, tau: float,
+                   source: str, poles: str) -> None:
+    """Fase 6 (basislijn uit één losse run) en fase 7 (consensus), elk in
+    driedeling of tweedeling. Schrijft NIETS naar de cache."""
+    runset = load_runset(OUT_DIR / f"consensus_{config_name}_set{set_index}.json")
+    material = load_material()
+    codebook_config = CodebookConfig(model_relations=CONFIGS[config_name]["model"])
+    two_pole = poles == "two"
+    concepts = material["concepts"]
+    concept_by_id = {c.attribute_id: c for c in concepts}
+
+    if source == "consensus":
+        together = together_from_runs(runset.runs, runset.attribute_ids)
+        clusters = consensus_partition(together, runset.attribute_ids,
+                                       len(runset.runs), tau)
+        label = f"consensus tau={tau}"
+    else:
+        clusters = runset.runs[0]
+        label = "basislijn (run 1)"
+
+    # `proposed_name` vult `CodeShape.umbrella`, de hernoemkandidaat bij een
+    # naambotsing. Een consensusgroep heeft er geen, dus: het zwaarste lid.
+    weight_by_id = {c.attribute_id: c.n_resp for c in concepts}
+    groups = []
+    for cluster in clusters:
+        known = [m for m in cluster if m in concept_by_id]
+        umbrella = (concept_by_id[dominant_member(known, weight_by_id)].name
+                    if known else "")
+        groups.append(Group(member_ids=tuple(cluster), proposed_name=umbrella,
+                            explanation=""))
+
+    degeneration = check_degeneration(len(groups), len(runset.attribute_ids))
+    if degeneration:
+        print(f"DEGENERATIE: {degeneration}")
+
+    threshold = t_keep(material["n_classified"], codebook_config)
+    shaping = build_shapes(groups, concepts, threshold, two_pole=two_pole)
+
+    veto_log = _Log()
+    codes = await write_codebook(
+        shaping.shapes, concepts, material["dimension_diagnostic"],
+        material["language"], codebook_config, log=veto_log,
+    )
+
+    # `codes` kan korter zijn dan `shaping.shapes` (een veto laat een vorm
+    # vallen), dus matchen op vorm, nooit zippen — zie code_shape.py.
+    lookup = _shape_lookup(shaping.shapes, concept_by_id)
+    shapes = [_match_shape(code, lookup) for code in codes]
+    codes = resolve_duplicate_names(codes, shapes, log=_Log())
+
+    overig_name = apply_overig_sweep(codes, material["partition_results"],
+                                     material["language"])
+    print_codebook_results(codes)
+    scorecard = run_scorecard(codes, material["partition_results"], overig_name)
+
+    print(f"\n{'=' * 78}\n{label} — {poles}deling — {runset.model}/{runset.effort}"
+          f"\n{'=' * 78}")
+    print(f"  groepen:          {len(groups)}")
+    print(f"  vormen:           {len(shaping.shapes)}")
+    print(f"  direction_loss:   {shaping.direction_loss}")
+    print(f"  codes geschreven: {len(codes)}")
+    print(f"  nameable-veto's:  {len(veto_log.entries)}")
+    print(f"  degeneratie:      {degeneration or 'nee'}")
+    print(f"  scorecard:        {'PASS' if scorecard.passed else 'FAIL'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="consensus over N consolidatieruns")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -193,11 +278,22 @@ def main() -> None:
     analyse_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
     analyse_parser.add_argument("--set", type=int, default=1, dest="set_index")
 
+    codebook_parser = sub.add_parser("codebook", help="bouw een codeboek")
+    codebook_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
+    codebook_parser.add_argument("--set", type=int, default=1, dest="set_index")
+    codebook_parser.add_argument("--tau", type=float, default=0.8)
+    codebook_parser.add_argument("--source", choices=("consensus", "baseline"),
+                                 default="consensus")
+    codebook_parser.add_argument("--poles", choices=("three", "two"), default="three")
+
     args = parser.parse_args()
     if args.command == "collect":
         asyncio.run(collect(args.config, args.runs, args.set_index))
     elif args.command == "analyse":
         analyse(args.config, args.set_index)
+    elif args.command == "codebook":
+        asyncio.run(codebook(args.config, args.set_index, args.tau,
+                             args.source, args.poles))
 
 
 if __name__ == "__main__":
