@@ -20,6 +20,11 @@ sindsdien zijn veranderd:
   domeinen** — niet de 60 attributen / 1236 respondenten waarop onderstaande
   cijfers zijn gemeten (step 4 is sindsdien opnieuw gedraaid en heeft een
   andere boom opgeleverd).
+- **"1236 respondenten" is hierboven vermoedelijk fout — onzeker, niet
+  gecorrigeerd.** Het projectlogboek elders onderscheidt 1236 *responses* van
+  1092 *respondenten* mét een idee. Welke van de twee hier bedoeld is, is niet
+  nagekeken; behandel het getal als onzeker tot dat wel gebeurd is, ook waar
+  het verderop in dit bestand terugkomt ("Eén dataset").
 
 Deze cijfers blijven de enige meting die er is en worden hieronder niet
 verwijderd. Maar vergelijk ze niet één-op-één met een nieuwe run: een verschil
@@ -207,6 +212,24 @@ keuze opnieuw gemaakt worden: blijven vertalen (en dus het onderscheid tussen
 "positief" en "niet-negatief" verliezen zodra een code wordt opgeslagen), of
 `models.py`'s contract verruimen naar vier waarden — dat raakt steps 6 en 7,
 die `valence` ook lezen.
+
+## `CodeShape.resp_pos`/`resp_neg`/`resp_neu` zijn write-only (open, low — 2026-08-20)
+
+Buiten `grouping.py` en de tests leest niets deze drie velden; alleen
+`resp_ids` wordt gebruikt. Ze waren al write-only vóór deze branch — dit is
+geen regressie van het consensus-experiment, alleen een constatering ervan.
+De opruimregel van dit project verbiedt dode velden, maar verwijderen raakt
+`grouping.py` en valt buiten deze branch.
+
+## `or non_negative` in de schrijfprompt is dode tekst zodra de tweedeling sneuvelt (open — 2026-08-20)
+
+Regel 1 van de schrijfprompt (`prompts_writer.py`) noemt `neutral or
+non_negative` als de twee waarden waarbij een code beschrijvend blijft, niet
+richtinggevend. `non_negative` bestaat alleen via `build_shapes(two_pole=True)`
+— zie "Two-pole valence" hierboven. Promoveert `dev/experiment_consensus/` de
+tweedeling niet, dan noemt de prompt een waarde die nooit meer kan voorkomen.
+Opruimen hangt af van die uitkomst; de promptregel zelf blijft voorlopig
+ongewijzigd.
 
 ---
 
