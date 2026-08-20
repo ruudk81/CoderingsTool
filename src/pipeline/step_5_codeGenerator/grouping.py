@@ -115,6 +115,7 @@ class ShapingResult:
 
 def build_shapes(
     groups: List[Group], concepts: List[Concept], threshold: int,
+    two_pole: bool = False,
 ) -> ShapingResult:
     """Elke groep wordt gesplitst in zijn valentiepolen; elke pool die de drempel
     zelfstandig haalt wordt één code.
@@ -127,6 +128,11 @@ def build_shapes(
     Een pool die de drempel niet haalt gaat naar Overig en telt mee in
     `direction_loss`. Haalt geen enkele pool van een groep de drempel, dan gaan
     de attributen zelf naar Overig.
+
+    `two_pole` vervangt de driedeling door niet-negatief (positief ∪ neutraal)
+    tegenover negatief. De +/0-grens is gemeten ruis bij kale associaties, en
+    een samengevoegde pool haalt `t_keep` vaker, dus `direction_loss` daalt.
+    Experimenteel — de productieketen draait op de driedeling.
     """
     concept_by_id = {c.attribute_id: c for c in concepts}
     shapes: List[CodeShape] = []
@@ -141,11 +147,20 @@ def build_shapes(
             # moet de boekhouding heel blijven: naar Overig, niet stil weg.
             overig_ids.extend(group.member_ids)
             continue
-        poles = {
-            "positive": frozenset().union(*(m.resp_pos for m in members)),
-            "negative": frozenset().union(*(m.resp_neg for m in members)),
-            "neutral": frozenset().union(*(m.resp_neu for m in members)),
-        }
+        if two_pole:
+            poles = {
+                "non_negative": frozenset().union(
+                    *(m.resp_pos for m in members), *(m.resp_neu for m in members)),
+                "negative": frozenset().union(*(m.resp_neg for m in members)),
+            }
+            order = ("non_negative", "negative")
+        else:
+            poles = {
+                "positive": frozenset().union(*(m.resp_pos for m in members)),
+                "negative": frozenset().union(*(m.resp_neg for m in members)),
+                "neutral": frozenset().union(*(m.resp_neu for m in members)),
+            }
+            order = ("positive", "negative", "neutral")
         kept = {v: r for v, r in poles.items() if len(r) >= threshold}
         if not kept:
             overig_ids.extend(group.member_ids)
@@ -157,19 +172,27 @@ def build_shapes(
         # meetellen als beide polen onder de drempel blijven.
         dropped = (r for v, r in poles.items() if v not in kept)
         direction_loss += len(frozenset().union(*dropped))
-        for valence in ("positive", "negative", "neutral"):
+        for valence in order:
             if valence not in kept:
                 continue
             resp = kept[valence]
+            if valence == "non_negative":
+                resp_pos = frozenset().union(*(m.resp_pos for m in members))
+                resp_neu = frozenset().union(*(m.resp_neu for m in members))
+                resp_neg = frozenset()
+            else:
+                resp_pos = resp if valence == "positive" else frozenset()
+                resp_neg = resp if valence == "negative" else frozenset()
+                resp_neu = resp if valence == "neutral" else frozenset()
             shapes.append(CodeShape(
                 key=f"V{len(shapes) + 1}",
                 members=group.member_ids,
                 valence=valence,
                 umbrella=group.proposed_name,
                 resp_ids=resp,
-                resp_pos=resp if valence == "positive" else frozenset(),
-                resp_neg=resp if valence == "negative" else frozenset(),
-                resp_neu=resp if valence == "neutral" else frozenset(),
+                resp_pos=resp_pos,
+                resp_neg=resp_neg,
+                resp_neu=resp_neu,
                 origin="pooled" if len(group.member_ids) > 1 else "solo",
             ))
     return ShapingResult(shapes=shapes, overig_ids=overig_ids,

@@ -315,3 +315,57 @@ def test_bounds_are_relative_so_a_small_tree_is_judged_on_its_own_scale():
 
 def test_no_attributes_is_not_a_degeneration_verdict():
     assert check_degeneration(n_groups=0, n_attributes=0) is None
+
+
+def pooled_concept(attribute_id, pos=(), neg=(), neu=()):
+    """Concept met expliciet gevulde valentiepolen."""
+    pos, neg, neu = frozenset(pos), frozenset(neg), frozenset(neu)
+    return Concept(attribute_id=attribute_id, name=attribute_id, definition="d",
+                   domain="D", facet="F", n_iu=len(pos | neg | neu),
+                   resp_ids=pos | neg | neu,
+                   resp_pos=pos, resp_neg=neg, resp_neu=neu)
+
+
+def test_driedeling_laat_een_te_kleine_pool_vallen():
+    """Vandaag: pos=2 en neu=1 halen de drempel van 3 niet en gaan verloren."""
+    c = pooled_concept("A1", pos={"r1", "r2"}, neu={"r3"}, neg={"r4", "r5", "r6"})
+    groups = [Group(member_ids=("A1",), proposed_name="G", explanation="e")]
+
+    result = build_shapes(groups, [c], threshold=3)
+
+    assert [s.valence for s in result.shapes] == ["negative"]
+    assert result.direction_loss == 3
+
+
+def test_tweedeling_redt_dezelfde_pool():
+    """pos ∪ neu = 3 haalt de drempel wel, dus er gaat niets verloren."""
+    c = pooled_concept("A1", pos={"r1", "r2"}, neu={"r3"}, neg={"r4", "r5", "r6"})
+    groups = [Group(member_ids=("A1",), proposed_name="G", explanation="e")]
+
+    result = build_shapes(groups, [c], threshold=3, two_pole=True)
+
+    assert sorted(s.valence for s in result.shapes) == ["negative", "non_negative"]
+    assert result.direction_loss == 0
+
+
+def test_tweedeling_telt_een_respondent_met_twee_ideeen_een_keer():
+    """r1 heeft zowel een positief als een neutraal idee: unie, geen som."""
+    c = pooled_concept("A1", pos={"r1", "r2"}, neu={"r1", "r3"})
+    groups = [Group(member_ids=("A1",), proposed_name="G", explanation="e")]
+
+    result = build_shapes(groups, [c], threshold=3, two_pole=True)
+
+    shape = next(s for s in result.shapes if s.valence == "non_negative")
+    assert len(shape.resp_ids) == 3
+
+
+def test_tweedeling_bewaart_de_onderverdeling_op_de_shape():
+    """De samengevoegde pool moet nog steeds laten zien wat + en 0 was."""
+    c = pooled_concept("A1", pos={"r1", "r2", "r3"}, neu={"r4"})
+    groups = [Group(member_ids=("A1",), proposed_name="G", explanation="e")]
+
+    shape = build_shapes(groups, [c], threshold=3, two_pole=True).shapes[0]
+
+    assert shape.resp_pos == frozenset({"r1", "r2", "r3"})
+    assert shape.resp_neu == frozenset({"r4"})
+    assert shape.resp_neg == frozenset()
