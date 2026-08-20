@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from analysis import histogram, pairwise_ari, tau_sweep
+from analysis import consensus_ari, histogram, pairwise_ari, tau_sweep
 
 
 def matrix(pairs):
@@ -46,3 +46,22 @@ def test_tau_sweep_geeft_per_drempel_de_vorm_van_de_indeling():
     assert streng["n_solo"] == 1
     assert streng["largest"] == 2
     assert los["n_groups"] == 1         # alles haalt 5/10
+
+
+def test_consensus_ari_is_1_voor_twee_identieke_indelingen():
+    a = [("A", "B"), ("C",)]
+    b = [("A", "B"), ("C",)]
+
+    assert consensus_ari(a, b) == 1.0
+
+
+def test_consensus_ari_is_ook_1_voor_twee_indelingen_van_louter_solos():
+    """Louter solo's is geen NaN maar een vals perfecte score: maximum en
+    kansverwachting vallen samen (zie `adjusted_rand_index`), dus ARI is 1.0.
+    Dat is exact de reden dat `compare` de degeneratieverdict naast de ARI
+    moet drukken — het getal alleen kan een gedegenereerde indeling niet
+    verraden."""
+    a = [("A",), ("B",), ("C",)]
+    b = [("A",), ("B",), ("C",)]
+
+    assert consensus_ari(a, b) == 1.0

@@ -8,6 +8,7 @@ deterministisch tot één indeling.
     python run_experiment.py collect --config luna  --runs 10 --set 1
     python run_experiment.py collect --config gpt54 --runs 10 --set 1
     python run_experiment.py analyse --config luna  --set 1
+    python run_experiment.py compare --config luna  --tau 0.8
 
 Raakt de productiecache niet aan: er wordt niets weggeschreven onder
 `mece_codes`.
@@ -33,12 +34,10 @@ from pipeline.step_3_ideaExtractor.dimension_data import get_dimension  # noqa: 
 from pipeline.step_5_codeGenerator.attribute_cards import build_cards  # noqa: E402
 from pipeline.step_5_codeGenerator.codebook_io import (  # noqa: E402
     FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE,
-    load_classified_ideas, load_extraction_metadata, load_taxonomy_cache,
+    apply_overig_sweep, load_classified_ideas, load_extraction_metadata,
+    load_taxonomy_cache, print_codebook_results, run_scorecard,
 )
 from pipeline.step_5_codeGenerator.code_shape import _match_shape, _shape_lookup  # noqa: E402
-from pipeline.step_5_codeGenerator.codebook_io import (  # noqa: E402
-    apply_overig_sweep, print_codebook_results, run_scorecard,
-)
 from pipeline.step_5_codeGenerator.codebook_writer import (  # noqa: E402
     resolve_duplicate_names, write_codebook,
 )
@@ -52,7 +51,7 @@ from pipeline.step_5_codeGenerator.taxonomy_input import (  # noqa: E402
     build_attribute_refs, build_idea_units,
 )
 
-from analysis import histogram, pairwise_ari, tau_sweep  # noqa: E402
+from analysis import consensus_ari, histogram, pairwise_ari, tau_sweep  # noqa: E402
 from consensus import consensus_partition, dominant_member  # noqa: E402
 from stability_bridge import together_from_runs  # noqa: E402
 from storage import RunSet, load_runset, save_runset  # noqa: E402
@@ -108,8 +107,10 @@ def load_material():
     }
 
 
-async def collect(config_name: str, runs: int, set_index: int) -> Path:
-    """N keer deel 1, elke run met een eigen salt. Schrijft de partities weg."""
+async def collect(config_name: str, runs: int, set_index: int, salted: bool = True) -> Path:
+    """N keer deel 1, elke run met een eigen salt — of, met `salted=False`,
+    N identieke aanroepen die de kale servervariatie blootleggen. Schrijft de
+    partities weg."""
     spec = CONFIGS[config_name]
     material = load_material()
     codebook_config = CodebookConfig(model_relations=spec["model"])
@@ -119,8 +120,8 @@ async def collect(config_name: str, runs: int, set_index: int) -> Path:
     try:
         partitions: List[List[Tuple[str, ...]]] = []
         for index in range(runs):
-            salt = f"set{set_index}run{index}"
-            print(f"  run {index + 1}/{runs}  (salt={salt})")
+            salt = f"set{set_index}run{index}" if salted else ""
+            print(f"  run {index + 1}/{runs}  (salt={salt!r})")
             proposal = await resolve_consolidation(
                 material["cards"], material["question"], material["n_respondents"],
                 material["language"], codebook_config, salt=salt,
@@ -138,6 +139,7 @@ async def collect(config_name: str, runs: int, set_index: int) -> Path:
         attribute_names={c.attribute_id: c.name for c in material["cards"]},
         n_respondents=material["n_respondents"],
         runs=partitions,
+        salted=salted,
     )
     path = OUT_DIR / f"consensus_{config_name}_set{set_index}.json"
     save_runset(runset, path)
@@ -155,7 +157,8 @@ def analyse(config_name: str, set_index: int) -> None:
     n_runs = len(runset.runs)
 
     print(f"\n{'=' * 78}\n{runset.model} / {runset.effort} — {n_runs} runs, "
-          f"{len(runset.attribute_ids)} attributen\n{'=' * 78}")
+          f"{len(runset.attribute_ids)} attributen, salted={runset.salted}"
+          f"\n{'=' * 78}")
 
     print("\nAantal groepen per run:")
     print("  " + ", ".join(str(len(run)) for run in runset.runs))
@@ -188,6 +191,45 @@ def analyse(config_name: str, set_index: int) -> None:
     for row in tau_sweep(together, runset.attribute_ids, n_runs, TAUS):
         print(f"  {row['tau']:>5.2f}  {row['n_groups']:>8d}  "
               f"{row['largest']:>9d}  {row['n_solo']:>5d}")
+
+
+def compare(config_name: str, tau: float) -> None:
+    """Fase 5 — de hoofdmaat: ARI tussen de consensusindeling van set 1 en die
+    van set 2. Kost geen enkele LLM-call — beide sets staan al op schijf."""
+    path_a = OUT_DIR / f"consensus_{config_name}_set1.json"
+    path_b = OUT_DIR / f"consensus_{config_name}_set2.json"
+    a = load_runset(path_a)
+    b = load_runset(path_b)
+
+    # `adjusted_rand_index` beperkt zich stil tot de doorsnede van de twee
+    # eenhedenverzamelingen. Een step-4-herberekening tussen de twee sets zou de
+    # hoofdmaat dan op een deelverzameling berekenen zonder waarschuwing — hier
+    # weigeren in plaats van dat risico te lopen.
+    if a.attribute_ids != b.attribute_ids:
+        raise SystemExit(
+            "de attribuutuniversa van set 1 en set 2 verschillen — ARI zou "
+            "stilzwijgend op de doorsnede berekend worden. Verzamel beide sets "
+            "opnieuw tegen dezelfde step-4-cache."
+        )
+
+    together_a = together_from_runs(a.runs, a.attribute_ids)
+    together_b = together_from_runs(b.runs, b.attribute_ids)
+    clusters_a = consensus_partition(together_a, a.attribute_ids, len(a.runs), tau)
+    clusters_b = consensus_partition(together_b, b.attribute_ids, len(b.runs), tau)
+
+    print(f"\n{'=' * 78}\nFASE 5 — set 1 vs set 2  ({config_name}, tau={tau})"
+          f"\n{'=' * 78}")
+    for label, runset, clusters in (("set 1", a, clusters_a), ("set 2", b, clusters_b)):
+        n_solo = sum(1 for cluster in clusters if len(cluster) == 1)
+        degeneration = check_degeneration(len(clusters), len(runset.attribute_ids))
+        print(f"  {label}: {len(clusters)} groepen, {n_solo} solo's"
+              f"  — {degeneration or 'geen degeneratie'}")
+
+    # Louter solo's scoort hier 1.0, niet NaN — een vals perfecte score omdat
+    # maximum en kansverwachting samenvallen (zie `consensus_ari`). Daarom staat
+    # de degeneratieverdict hierboven altijd naast dit getal, nooit zonder.
+    ari = consensus_ari(clusters_a, clusters_b)
+    print(f"\n  ARI(set 1, set 2) = {ari:.3f}")
 
 
 class _Log:
@@ -254,13 +296,20 @@ async def codebook(config_name: str, set_index: int, tau: float,
     print_codebook_results(codes)
     scorecard = run_scorecard(codes, material["partition_results"], overig_name)
 
+    # Alleen een `pooled` vorm is vetobaar (zie `write_codebook`'s docstring) —
+    # `solo`/`synonym` niet, want die zijn per definitie nameable. Bij een hogere
+    # tau zijn er minder gepoolde vormen en dus minder om te vetoën; het absolute
+    # aantal veto's beweegt dan mee met precies de faalvorm die het moet
+    # betrappen. De noemer maakt het getal normaliseerbaar over tau's.
+    n_pooled = sum(1 for shape in shaping.shapes if shape.origin == "pooled")
+
     print(f"\n{'=' * 78}\n{label} — {poles}deling — {runset.model}/{runset.effort}"
           f"\n{'=' * 78}")
     print(f"  groepen:          {len(groups)}")
-    print(f"  vormen:           {len(shaping.shapes)}")
+    print(f"  vormen:           {len(shaping.shapes)} (waarvan {n_pooled} gepoold)")
     print(f"  direction_loss:   {shaping.direction_loss}")
     print(f"  codes geschreven: {len(codes)}")
-    print(f"  nameable-veto's:  {len(veto_log.entries)}")
+    print(f"  nameable-veto's:  {len(veto_log.entries)} van {n_pooled} gepoolde vormen")
     print(f"  degeneratie:      {degeneration or 'nee'}")
     print(f"  scorecard:        {'PASS' if scorecard.passed else 'FAIL'}")
 
@@ -273,10 +322,20 @@ def main() -> None:
     collect_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
     collect_parser.add_argument("--runs", type=int, default=10)
     collect_parser.add_argument("--set", type=int, default=1, dest="set_index")
+    collect_parser.add_argument(
+        "--no-salt", action="store_true", dest="no_salt",
+        help="draai alle N runs met salt=\"\" — identieke aanroepen. Dat is de "
+             "bedoeling, geen bug: de gemeten spreiding is dan kale "
+             "servervariatie, ontdaan van volgordegevoeligheid.")
 
     analyse_parser = sub.add_parser("analyse", help="analyseer opgeslagen runs")
     analyse_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
     analyse_parser.add_argument("--set", type=int, default=1, dest="set_index")
+
+    compare_parser = sub.add_parser(
+        "compare", help="ARI tussen de consensusindeling van set 1 en set 2")
+    compare_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
+    compare_parser.add_argument("--tau", type=float, default=0.8)
 
     codebook_parser = sub.add_parser("codebook", help="bouw een codeboek")
     codebook_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
@@ -288,9 +347,12 @@ def main() -> None:
 
     args = parser.parse_args()
     if args.command == "collect":
-        asyncio.run(collect(args.config, args.runs, args.set_index))
+        asyncio.run(collect(args.config, args.runs, args.set_index,
+                            salted=not args.no_salt))
     elif args.command == "analyse":
         analyse(args.config, args.set_index)
+    elif args.command == "compare":
+        compare(args.config, args.tau)
     elif args.command == "codebook":
         asyncio.run(codebook(args.config, args.set_index, args.tau,
                              args.source, args.poles))

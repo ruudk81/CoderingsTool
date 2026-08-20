@@ -21,6 +21,10 @@ class RunSet:
     attribute_names: Dict[str, str]
     n_respondents: int
     runs: List[List[Tuple[str, ...]]]
+    # Standaardwaarde omdat `consensus_luna_set0.json` (geschreven vóór dit veld
+    # bestond) `salted` niet in zijn payload heeft — `load_runset` moet dat
+    # bestand blijven laden, en elke run vóór de `--no-salt`-vlag was gezouten.
+    salted: bool = True
 
 
 def save_runset(runset: RunSet, path: Path) -> None:

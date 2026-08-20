@@ -1,6 +1,6 @@
 """Wat er uit de runs af te lezen valt — pure functies, geen LLM, geen IO.
 
-Drie metingen, elk met een eigen doel:
+Vier metingen, elk met een eigen doel:
 - `pairwise_ari`: hoe onstabiel is deel 1 op deze configuratie? Tien runs geven
   45 vergelijkingen, dus een verdeling in plaats van één punt.
 - `histogram`: heeft de matrix de goede vorm? Bijna-binair betekent dat
@@ -8,6 +8,8 @@ Drie metingen, elk met een eigen doel:
   koppelen valt. Consensus werkt alleen bij een duidelijke kern met een dunne
   onzekere schil.
 - `tau_sweep`: welke drempel levert een bruikbare indeling?
+- `consensus_ari`: de hoofdmaat — hoe goed komt de consensusindeling van de ene
+  set overeen met die van de andere?
 """
 from __future__ import annotations
 
@@ -44,6 +46,18 @@ def histogram(together: Dict[FrozenSet[str], int], runs: int) -> List[int]:
     for n in together.values():
         counts[n] += 1
     return counts
+
+
+def consensus_ari(a: Sequence[Sequence[str]], b: Sequence[Sequence[str]]) -> float:
+    """ARI tussen twee consensusindelingen — het getal waar `compare` om draait.
+
+    Let op: een indeling van louter solo's scoort hier 1.0, niet NaN. Dat is
+    geen bug van `adjusted_rand_index` — bij louter solo's vallen het maximum
+    en de kansverwachting samen, dus is 1.0 wiskundig de uitkomst. Het is wél
+    een vals perfecte score, en precies waarom `compare` de degeneratieverdict
+    naast de ARI moet drukken in plaats van het getal op zichzelf te tonen.
+    """
+    return adjusted_rand_index(labels_from_clusters(a), labels_from_clusters(b))
 
 
 def tau_sweep(
