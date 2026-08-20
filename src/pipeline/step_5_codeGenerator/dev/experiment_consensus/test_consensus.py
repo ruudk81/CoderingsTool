@@ -28,14 +28,16 @@ def test_een_paar_dat_altijd_samen_zat_wordt_een_groep():
 
 def test_ketenvorming_kan_niet_ontstaan():
     """A-B en B-C liggen vast, A-C ligt vast op APART. Enkelvoudige koppeling
-    zou hier {A,B,C} maken — een groep die geen enkele run voorstelde."""
+    zou hier {A,B,C} maken — een groep die geen enkele run voorstelde.
+
+    A-B en B-C zijn hier gelijk sterk (10/10); de tie-break (kleinste
+    lexicografische eerste lid) legt de uitkomst vast op ("A","B") + ("C",),
+    dus de hele partitie is asserteerbaar in plaats van "één van beide"."""
     together = matrix({("A", "B"): 10, ("B", "C"): 10, ("A", "C"): 0})
 
     clusters = consensus_partition(together, ["A", "B", "C"], runs=10, tau=0.8)
 
-    assert len(clusters) == 2
-    assert ("A", "B") in clusters or ("B", "C") in clusters
-    assert ("A", "B", "C") not in clusters
+    assert clusters == [("A", "B"), ("C",)]
 
 
 def test_een_attribuut_dat_nergens_de_drempel_haalt_blijft_alleen():
