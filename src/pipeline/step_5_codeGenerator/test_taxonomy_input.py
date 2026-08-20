@@ -84,3 +84,37 @@ def test_attribute_refs_read_new_and_old_definition_field():
     assert refs["A1"].definition == "nieuw veld"
     assert refs["A2"].definition == "oud veld"
     assert refs["A1"].domain == "Domein A" and refs["A1"].facet == "Facet X"
+
+
+def _structure(attribute):
+    return {"Domein": {"attributes": {"Facet": [attribute]}}}
+
+
+def test_vangnet_wordt_herkend_op_de_sleutel():
+    """Step 4 bouwt zijn vangnetten deterministisch en markeert ze met
+    `drain_key`. Herkennen op de naam mag niet: die staat in de enquetetaal en
+    is herschrijfbaar (zie step 4's drains.py)."""
+    refs = build_attribute_refs(_structure({
+        "attribute_id": "A9", "attribute_name": "Overig — Politieke richting",
+        "attribute_definition": "Responsen die nergens pasten.",
+        "is_drain": True, "drain_key": "other_in_facet"}))
+
+    assert refs["A9"].is_drain is True
+
+
+def test_gewoon_attribuut_is_geen_vangnet():
+    refs = build_attribute_refs(_structure({
+        "attribute_id": "A1", "attribute_name": "Prijs",
+        "attribute_definition": "Wat het kost."}))
+
+    assert refs["A1"].is_drain is False
+
+
+def test_een_naam_die_op_overig_lijkt_maakt_nog_geen_vangnet():
+    """De tegenproef bij de vorige test: zonder sleutel geen vangnet, hoe de
+    naam er ook uitziet."""
+    refs = build_attribute_refs(_structure({
+        "attribute_id": "A2", "attribute_name": "Overige kosten",
+        "attribute_definition": "Kosten die apart genoemd worden."}))
+
+    assert refs["A2"].is_drain is False

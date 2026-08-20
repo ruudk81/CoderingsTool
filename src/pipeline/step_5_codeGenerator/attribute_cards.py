@@ -39,9 +39,20 @@ def build_cards(
     idea_units_by_attribute: Dict[str, List[IdeaUnit]],
     top_n: int = TOP_ANSWERS,
 ) -> List[AttributeCard]:
-    """Eén kaart per Concept, in de volgorde waarin de concepten binnenkomen."""
+    """Eén kaart per Concept, in de volgorde waarin de concepten binnenkomen.
+
+    Behalve voor step 4's vangnetten: die zijn per constructie restant en geen
+    onderwerp. Hun definitie luidt letterlijk "responsen die bij dit facet horen
+    maar bij geen van de attributen eronder", dus het model vragen ze thematisch
+    te groeperen is een onbeantwoordbare vraag — en op de ASN-set leverde dat
+    merges met 28-van-30-zekerheid over bakjes met een enkele respondent. De
+    ideeen erop blijven gedekt: `apply_overig_sweep` veegt elk attribuut op dat
+    geen code claimde.
+    """
     cards = []
     for concept in concepts:
+        if concept.is_drain:
+            continue
         answers = Counter(
             unit.instance
             for unit in idea_units_by_attribute.get(concept.attribute_id, [])

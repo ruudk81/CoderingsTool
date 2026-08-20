@@ -26,6 +26,10 @@ class Concept:
     resp_pos: frozenset[str]
     resp_neg: frozenset[str]
     resp_neu: frozenset[str]
+    # Overgenomen uit `AttributeRef`. Een vangnet houdt zijn Concept — de
+    # respondenten erop horen in de boekhouding — maar `build_cards` slaat hem
+    # over, zodat hij nooit als onderwerp aan het model wordt voorgelegd.
+    is_drain: bool = False
 
     @property
     def n_resp(self) -> int:
@@ -82,6 +86,7 @@ def build_inventory(units: List[IdeaUnit],
             resp_pos=frozenset(bucket["pos"]),
             resp_neg=frozenset(bucket["neg"]),
             resp_neu=frozenset(bucket["neu"]),
+            is_drain=ref.is_drain,
         ))
     concepts.sort(key=lambda c: (-c.n_resp, c.name))
     return concepts

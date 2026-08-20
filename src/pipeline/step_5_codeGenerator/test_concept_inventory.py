@@ -59,3 +59,26 @@ def test_t_keep_uses_the_floor_for_small_samples():
         t_keep_share = 0.01
         t_keep_min_respondents = 3
     assert t_keep(80, Cfg) == 3
+
+
+def test_concept_erft_de_vangnetmarkering_van_zijn_ref():
+    """Een vangnet houdt zijn Concept — de respondenten erop moeten in de
+    boekhouding blijven — maar draagt de markering mee, zodat de kaartenfase
+    hem kan overslaan."""
+    from pipeline.step_5_codeGenerator.taxonomy_input import AttributeRef, IdeaUnit
+    refs = {
+        "A1": AttributeRef(attribute_id="A1", name="Prijs", definition="d",
+                           domain="D", facet="F"),
+        "A9": AttributeRef(attribute_id="A9", name="Overig — F", definition="d",
+                           domain="D", facet="F", is_drain=True),
+    }
+    units = [IdeaUnit(idea_id="i1", respondent_id="r1", attribute_id="A1",
+                      valence="+", instance="x", interpretation="y"),
+             IdeaUnit(idea_id="i2", respondent_id="r2", attribute_id="A9",
+                      valence="0", instance="x", interpretation="y")]
+
+    by_id = {c.attribute_id: c for c in build_inventory(units, refs)}
+
+    assert by_id["A9"].is_drain is True
+    assert by_id["A1"].is_drain is False
+    assert by_id["A9"].resp_ids == frozenset({"r2"})

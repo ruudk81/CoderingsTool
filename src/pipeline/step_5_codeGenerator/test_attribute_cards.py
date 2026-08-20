@@ -71,3 +71,21 @@ def test_attribute_without_ideas_still_gets_a_card_without_answers():
     cards = build_cards([concept("A1", "Iets", pos=2)], {})
 
     assert cards[0].top_answers == ()
+
+
+def test_vangnetten_komen_niet_op_een_kaart():
+    """Een vangnet is per constructie restant, geen onderwerp. Zijn definitie
+    luidt letterlijk 'responsen die nergens pasten', dus het model vragen om
+    hem thematisch te groeperen is een onbeantwoordbare vraag — en hij kreeg
+    daar gemeten 28-van-30-zekerheid op, over een bakje met een respondent.
+    De ideeen erop vallen in de Overig-sweep, die 100% dekking garandeert."""
+    gewoon = concept("A1", "Prijs", pos=3)
+    vangnet = Concept(attribute_id="A9", name="Overig — F", definition="rest",
+                      domain="D", facet="F", n_iu=1,
+                      resp_ids=frozenset({"r9"}), resp_pos=frozenset(),
+                      resp_neg=frozenset(), resp_neu=frozenset({"r9"}),
+                      is_drain=True)
+
+    cards = build_cards([gewoon, vangnet], {})
+
+    assert [c.attribute_id for c in cards] == ["A1"]

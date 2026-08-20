@@ -36,6 +36,12 @@ class AttributeRef:
     facet: str
     boundary_test: str = ""
     exclusions: tuple = ()
+    # Step 4 bouwt onder elk facet een vangnet-attribuut en markeert dat met
+    # `drain_key`. Herkennen gebeurt op die sleutel en nooit op de naam: die
+    # staat in de enquetetaal en mag hernoemd worden (step 4's drains.py legt
+    # die afspraak vast). Afwezigheid van de sleutel IS hier de betekenis, dus
+    # `.get` is juist — dezelfde uitzondering als bij de definitie hieronder.
+    is_drain: bool = False
 
 
 def build_idea_units(classified: List[Any]) -> List[IdeaUnit]:
@@ -76,5 +82,6 @@ def build_attribute_refs(partition_results: Dict[str, Any]) -> Dict[str, Attribu
                     facet=facet_name,
                     boundary_test=attribute.get("boundary_test", ""),
                     exclusions=tuple(attribute.get("exclusions", []) or []),
+                    is_drain=bool(attribute.get("drain_key")),
                 )
     return refs
