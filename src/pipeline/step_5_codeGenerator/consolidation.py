@@ -27,12 +27,13 @@ async def resolve_consolidation(
     config: CodebookConfig,
     verbose: bool = False,
     prompt_printer=None,
+    salt: str = "",
 ) -> ConsolidationResult:
     """Eén call over de hele attribuutinventaris."""
 
     def prepare_fn(task):
         prompt = build_consolidation_prompt(
-            task["cards"], survey_question, n_respondents, language)
+            task["cards"], survey_question, n_respondents, language, salt)
         if prompt_printer is not None:
             prompt_printer.capture_prompt(
                 step_name="code_generator_v2",
@@ -45,11 +46,12 @@ async def resolve_consolidation(
                     "card_ids": [c.attribute_id for c in task["cards"]],
                     "card_names": [c.name for c in task["cards"]],
                     "language": language,
+                    "salt": salt,
                 },
             )
         return {
             "prompt": prompt,
-            "response_model": make_consolidation_model(task["cards"]),
+            "response_model": make_consolidation_model(task["cards"], salt),
             "temperature": config.temperature_relations,
             "max_tokens": config.max_tokens_relations,
             "max_retries": 2,

@@ -17,7 +17,7 @@ INSTRUCTOR_HINT = (
 )
 
 
-def _shuffled(concepts):
+def _shuffled(concepts, salt: str = ""):
     """Concepts in a deterministic order unrelated to prevalence OR domain.
 
     Both the prompt text and the response model's enum must use this instead of
@@ -29,5 +29,13 @@ def _shuffled(concepts):
     domains into contiguous blocks — visible structure of exactly the kind this
     step exists to stop handing the model. Sorting by a hash of the id keeps the
     order reproducible across runs (the hash is a pure function of a stable id)
-    while carrying neither signal."""
-    return sorted(concepts, key=lambda c: hashlib.md5(c.attribute_id.encode()).hexdigest())
+    while carrying neither signal.
+
+    `salt` verschuift die volgorde reproduceerbaar. Dat is er voor het
+    consensus-experiment, dat dezelfde vraag meermaals stelt en waarvoor de
+    aanbiedingsvolgorde de enige beschikbare variatiebron is: redeneermodellen
+    krijgen geen temperature-parameter. Zonder salt is het resultaat identiek
+    aan de ongesalte versie.
+    """
+    return sorted(concepts,
+                  key=lambda c: hashlib.md5((salt + c.attribute_id).encode()).hexdigest())

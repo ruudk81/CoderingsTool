@@ -73,3 +73,37 @@ def test_model_accepts_only_offered_tags():
     with pytest.raises(ValidationError):
         model(codes=[{"code_name": "Verzonnen", "explanation": "e",
                       "topics": ["[A9] Bestaat niet"]}])
+
+
+def test_zonder_salt_is_de_volgorde_onveranderd():
+    """De standaardwaarde moet byte-identiek zijn aan het gedrag van vandaag."""
+    assert (build_consolidation_prompt(CARDS, "V", 100, "Dutch")
+            == build_consolidation_prompt(CARDS, "V", 100, "Dutch", salt=""))
+
+
+def test_salt_verandert_de_volgorde_van_de_kaarten():
+    zonder = build_consolidation_prompt(CARDS, "V", 100, "Dutch")
+    met = build_consolidation_prompt(CARDS, "V", 100, "Dutch", salt="run7")
+
+    assert zonder != met
+    for c in CARDS:  # inhoud blijft volledig, alleen de volgorde verschilt
+        assert f"[{c.attribute_id}] {c.name}" in met
+
+
+def test_salt_is_reproduceerbaar():
+    eerst = build_consolidation_prompt(CARDS, "V", 100, "Dutch", salt="run7")
+    nogmaals = build_consolidation_prompt(CARDS, "V", 100, "Dutch", salt="run7")
+
+    assert eerst == nogmaals
+
+
+def test_responsemodel_volgt_dezelfde_salt_als_de_prompt():
+    """Prompt en enum moeten dezelfde volgorde gebruiken, anders wijzen ze
+    naar een andere lijst dan het model leest."""
+    model = make_consolidation_model(CARDS, salt="run7")
+    veld = model.model_fields["codes"].annotation.__args__[0]
+    tags = veld.model_fields["topics"].annotation.__args__[0].__args__
+
+    prompt = build_consolidation_prompt(CARDS, "V", 100, "Dutch", salt="run7")
+    posities = [prompt.index(f'"{tag}"') for tag in tags]
+    assert posities == sorted(posities)

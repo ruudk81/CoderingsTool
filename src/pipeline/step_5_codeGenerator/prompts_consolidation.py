@@ -10,6 +10,7 @@ vaststaan (grouping.py).
 """
 from __future__ import annotations
 
+import hashlib
 from typing import List, Literal, Tuple
 
 from pydantic import BaseModel, Field, create_model
@@ -32,30 +33,35 @@ class ConsolidationResult(BaseModel):
     codes: List[ProposedCode] = Field(..., description="The proposed codebook")
 
 
-def make_consolidation_model(cards) -> type:
+def make_consolidation_model(cards, salt: str = "") -> type:
     """`topics` beperkt tot de getoonde tags, zodat het model er geen kan
     verzinnen. De enum bewaakt het vocabulaire, niet de volledigheid — een
     vergeten of dubbel geplaatst attribuut vangt `repair_partition` af."""
-    tags: Tuple[str, ...] = tuple(card.tag for card in _shuffled(cards))
+    tags: Tuple[str, ...] = tuple(card.tag for card in _shuffled(cards, salt))
+    # Force unique model name based on the actual tags to prevent Pydantic caching
+    tags_signature = hashlib.md5("".join(tags).encode()).hexdigest()
+    unique_module = f"__dynamic_models__.{tags_signature}"
     constrained_code = create_model(
-        "ConstrainedProposedCode",
-        __base__=ProposedCode,
-        topics=(List[Literal[tags]], Field(
-            ..., description=ProposedCode.model_fields["topics"].description)),
+        f"ConstrainedProposedCode_{tags_signature}",
+        __module__=unique_module,
+        code_name=(str, Field(..., description="Short name for this code, as it would appear in a report table")),
+        explanation=(str, Field(..., description="The one sentence that explains what this code covers")),
+        topics=(List[Literal[tags]], Field(..., description="The topics that belong in this code")),
     )
     return create_model(
-        "ConstrainedConsolidationResult",
-        __base__=ConsolidationResult,
-        codes=(List[constrained_code], Field(
-            ..., description=ConsolidationResult.model_fields["codes"].description)),
+        f"ConstrainedConsolidationResult_{tags_signature}",
+        __module__=unique_module,
+        scratchpad=(str, Field(default="", description="Brief reasoning before the codes")),
+        codes=(List[constrained_code], Field(..., description="The proposed codebook")),
     )
 
 
 def build_consolidation_prompt(
     cards, survey_question: str, n_respondents: int, language: str,
+    salt: str = "",
 ) -> str:
     blocks = []
-    for card in _shuffled(cards):
+    for card in _shuffled(cards, salt):
         answers = ", ".join(f"{text} ({n})" for text, n in card.top_answers) or "—"
         blocks.append(
             f'"{card.tag}" — {card.n_resp} respondents\n'
