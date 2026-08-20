@@ -35,7 +35,7 @@ def test_neutral_codes_are_explicitly_exempt_from_carrying_direction():
                                     "vooral in ...", "Dutch")
 
     # Rule 1 explicitly exempts neutral codes from invented evaluation
-    assert "do not invent an evaluation it does not carry" in prompt
+    assert "do not invent\n   an evaluation it does not carry" in prompt
 
 
 def test_prompt_still_shows_members_and_ends_with_the_hint():
@@ -54,3 +54,20 @@ def test_taken_names_are_passed_through():
                                     taken_names=["Al vergeven"])
 
     assert "Al vergeven" in prompt
+
+
+def test_richtingsregel_noemt_non_negative_als_beschrijvend():
+    from pipeline.step_5_codeGenerator.prompts_writer import build_writer_prompt
+
+    prompt = build_writer_prompt([], {}, "Dit merk is X omdat", "Dutch")
+
+    assert "neutral or\n   non_negative, the code is descriptive" in prompt
+
+
+def test_richtingsregel_laat_de_eis_voor_positive_en_negative_staan():
+    from pipeline.step_5_codeGenerator.prompts_writer import build_writer_prompt
+
+    prompt = build_writer_prompt([], {}, "Dit merk is X omdat", "Dutch")
+
+    assert "direction is positive or negative" in prompt
+    assert "readable in\n   BOTH its name and its definition" in prompt
