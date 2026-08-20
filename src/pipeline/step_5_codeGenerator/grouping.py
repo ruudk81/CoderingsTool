@@ -106,6 +106,99 @@ def repair_partition(result: ConsolidationResult, cards: List[AttributeCard],
     return groups
 
 
+def valence_poles(members: List[Concept], two_pole: bool) -> Dict[str, frozenset]:
+    """De valentiepolen van een groep leden — de eenheid waarin een code bestaat.
+
+    Staat apart omdat TWEE fasen hem nodig hebben en ze anders uit elkaar
+    lopen: `build_shapes` laat een code alleen bestaan als een POOL de drempel
+    haalt, dus `pool_thin_within_facet` moet op diezelfde grootheid oordelen.
+    Toetste die op het groepstotaal, dan poolde hij groepen die daarna alsnog
+    omvielen — gemeten, en precies waarom deze functie bestaat.
+    """
+    if two_pole:
+        return {
+            "non_negative": frozenset().union(
+                *(m.resp_pos for m in members), *(m.resp_neu for m in members)),
+            "negative": frozenset().union(*(m.resp_neg for m in members)),
+        }
+    return {
+        "positive": frozenset().union(*(m.resp_pos for m in members)),
+        "negative": frozenset().union(*(m.resp_neg for m in members)),
+        "neutral": frozenset().union(*(m.resp_neu for m in members)),
+    }
+
+
+def pool_thin_within_facet(
+    groups: List[Group], concepts: List[Concept], threshold: int,
+    two_pole: bool = False,
+) -> Tuple[List[Group], List[dict]]:
+    """Groepen die de drempel niet halen gaan samen met hun facetgenoten.
+
+    Een attribuut dat te dun is voor een eigen code, en dat de consolidatie bij
+    niemand heeft ondergebracht, verdwijnt vandaag in Overig — ook wanneer het
+    facet ernaast nog twee even dunne buren heeft die er samen wél komen. Deze
+    fase pakt dat op, en doet dat op step 4's eigen structuur in plaats van er
+    een nieuwe te verzinnen.
+
+    Drie grenzen, alle drie per constructie en niet per instructie:
+
+    - **Alleen materiaal onder de drempel.** Een groep die het op eigen kracht
+      haalt wordt niet aangeraakt, dus deze fase kan nooit een dikke code maken.
+    - **Nooit over een facetgrens.** Groeperen over facetten heen is het werk
+      van de consolidatiecall; hier wordt alleen samengeraapt wat step 4 al
+      onder één noemer had staan. Een groep die zelf al twee facetten omvat
+      heeft geen eenduidig facet en blijft daarom zoals hij is.
+    - **Geen eigen knop.** De enige grens is `threshold`, dezelfde `t_keep` die
+      de rest van de fase gebruikt en die met de steekproef meeschaalt. Had
+      deze fase een eigen getal nodig, dan zou dat een getal zijn dat op één
+      dataset is afgesteld.
+
+    Haalt een facetpool het samen ook niet, dan gebeurt er niets: de groepen
+    blijven los en `build_shapes` stuurt ze naar Overig, zoals nu.
+
+    Respondenten worden VERENIGD, nooit opgeteld — wie op twee attributen van
+    hetzelfde facet antwoordde telt één keer.
+    """
+    concept_by_id = {concept.attribute_id: concept for concept in concepts}
+    facet_by_id = {concept.attribute_id: concept.facet for concept in concepts}
+
+    def best_pole(member_ids) -> int:
+        """De sterkste valentiepool — exact wat `build_shapes` straks eist."""
+        members = [concept_by_id[m] for m in member_ids if m in concept_by_id]
+        if not members:
+            return 0
+        return max(len(r) for r in valence_poles(members, two_pole).values())
+
+    def reach(member_ids) -> frozenset:
+        sets = [concept_by_id[m].resp_ids for m in member_ids if m in concept_by_id]
+        return frozenset().union(*sets) if sets else frozenset()
+
+    def sole_facet(member_ids) -> Optional[str]:
+        facets = {facet_by_id[m] for m in member_ids if m in facet_by_id}
+        return facets.pop() if len(facets) == 1 else None
+
+    kept: List[Group] = []
+    thin: Dict[str, List[Group]] = {}
+    for group in groups:
+        facet = sole_facet(group.member_ids)
+        if facet is None or best_pole(group.member_ids) >= threshold:
+            kept.append(group)
+        else:
+            thin.setdefault(facet, []).append(group)
+
+    log: List[dict] = []
+    for facet, members in sorted(thin.items()):
+        ids = tuple(m for group in members for m in group.member_ids)
+        if len(members) < 2 or best_pole(ids) < threshold:
+            kept.extend(members)
+            continue
+        kept.append(Group(member_ids=tuple(sorted(ids)),
+                          proposed_name=facet, explanation=""))
+        log.append({"action": "THIN_POOLED_IN_FACET", "facet": facet,
+                    "members": sorted(ids), "n_resp": len(reach(ids))})
+    return kept, log
+
+
 @dataclass(frozen=True)
 class ShapingResult:
     shapes: List[CodeShape]
@@ -147,20 +240,9 @@ def build_shapes(
             # moet de boekhouding heel blijven: naar Overig, niet stil weg.
             overig_ids.extend(group.member_ids)
             continue
-        if two_pole:
-            poles = {
-                "non_negative": frozenset().union(
-                    *(m.resp_pos for m in members), *(m.resp_neu for m in members)),
-                "negative": frozenset().union(*(m.resp_neg for m in members)),
-            }
-            order = ("non_negative", "negative")
-        else:
-            poles = {
-                "positive": frozenset().union(*(m.resp_pos for m in members)),
-                "negative": frozenset().union(*(m.resp_neg for m in members)),
-                "neutral": frozenset().union(*(m.resp_neu for m in members)),
-            }
-            order = ("positive", "negative", "neutral")
+        poles = valence_poles(members, two_pole)
+        order = (("non_negative", "negative") if two_pole
+                 else ("positive", "negative", "neutral"))
         kept = {v: r for v, r in poles.items() if len(r) >= threshold}
         if not kept:
             overig_ids.extend(group.member_ids)

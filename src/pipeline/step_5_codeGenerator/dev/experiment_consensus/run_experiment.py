@@ -252,13 +252,23 @@ async def codebook(config_name: str, set_index: int, tau: float,
     concepts = material["concepts"]
     concept_by_id = {c.attribute_id: c for c in concepts}
 
+    # Vangnetten horen niet in de groepering. `build_cards` sluit ze sinds
+    # 2026-08-20 uit, dus een runset die er nog wel op is verzameld moet hier
+    # bijgetrokken worden — anders bouwt dit commando een codeboek op een
+    # indeling die de productieketen niet meer maakt.
+    drains = {c.attribute_id for c in concepts if c.is_drain}
+    ids = [i for i in runset.attribute_ids if i not in drains]
+
+    def _schoon(runs):
+        return [[g for g in ([tuple(x for x in c if x not in drains) for c in r]) if g]
+                for r in runs]
+
     if source == "consensus":
-        together = together_from_runs(runset.runs, runset.attribute_ids)
-        clusters = consensus_partition(together, runset.attribute_ids,
-                                       len(runset.runs), tau)
+        together = together_from_runs(_schoon(runset.runs), ids)
+        clusters = consensus_partition(together, ids, len(runset.runs), tau)
         label = f"consensus tau={tau}"
     else:
-        clusters = runset.runs[0]
+        clusters = _schoon([runset.runs[0]])[0]
         label = "basislijn (run 1)"
 
     # `proposed_name` vult `CodeShape.umbrella`, de hernoemkandidaat bij een
@@ -277,6 +287,11 @@ async def codebook(config_name: str, set_index: int, tau: float,
         print(f"DEGENERATIE: {degeneration}")
 
     threshold = t_keep(material["n_classified"], codebook_config)
+    groups, pool_log = pool_thin_within_facet(groups, concepts, threshold,
+                                              two_pole=two_pole)
+    for entry in pool_log:
+        leden = ", ".join(concept_by_id[m].name for m in entry["members"])
+        print(f"  FACETPOOL {entry['facet']}: {leden}  ({entry['n_resp']} resp)")
     shaping = build_shapes(groups, concepts, threshold, two_pole=two_pole)
 
     veto_log = _Log()

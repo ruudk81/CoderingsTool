@@ -1,7 +1,9 @@
 """Tests voor fase 2 en 3: partitiereparatie, valentiesplitsing, degeneratie."""
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.attribute_cards import AttributeCard
-from pipeline.step_5_codeGenerator.grouping import Group, build_shapes, check_degeneration, repair_partition
+from pipeline.step_5_codeGenerator.grouping import (
+    Group, build_shapes, check_degeneration, pool_thin_within_facet, repair_partition,
+)
 from pipeline.step_5_codeGenerator.prompts_consolidation import (
     ConsolidationResult, ProposedCode,
 )
@@ -369,3 +371,106 @@ def test_tweedeling_bewaart_de_onderverdeling_op_de_shape():
     assert shape.resp_pos == frozenset({"r1", "r2", "r3"})
     assert shape.resp_neu == frozenset({"r4"})
     assert shape.resp_neg == frozenset()
+
+
+def facet_concept(attribute_id, facet, resp, valence="neu"):
+    """Concept met een expliciet facet en al zijn respondenten op een pool."""
+    ids = frozenset(resp)
+    return Concept(attribute_id=attribute_id, name=attribute_id, definition="d",
+                   domain="D", facet=facet, n_iu=len(ids), resp_ids=ids,
+                   resp_pos=ids if valence == "pos" else frozenset(),
+                   resp_neg=ids if valence == "neg" else frozenset(),
+                   resp_neu=ids if valence == "neu" else frozenset())
+
+
+def solo(attribute_id):
+    return Group(member_ids=(attribute_id,), proposed_name=attribute_id, explanation="e")
+
+
+def test_dunne_facetgenoten_worden_een_groep():
+    """Twee attributen die elk te dun zijn maar hetzelfde facet delen, halen
+    de drempel samen wel. Vandaag verdwijnen ze allebei in Overig."""
+    concepts = [facet_concept("A1", "Bancair", {"r1", "r2"}),
+                facet_concept("A2", "Bancair", {"r3", "r4"})]
+
+    groups, log = pool_thin_within_facet([solo("A1"), solo("A2")], concepts, threshold=4)
+
+    assert [g.member_ids for g in groups] == [("A1", "A2")]
+    assert log[0]["facet"] == "Bancair"
+
+
+def test_een_groep_boven_de_drempel_blijft_ongemoeid():
+    concepts = [facet_concept("A1", "Bancair", {"r1", "r2", "r3", "r4"}),
+                facet_concept("A2", "Bancair", {"r5"})]
+
+    groups, _ = pool_thin_within_facet([solo("A1"), solo("A2")], concepts, threshold=4)
+
+    assert ("A1",) in [g.member_ids for g in groups]
+    assert ("A2",) in [g.member_ids for g in groups]
+
+
+def test_dunne_attributen_uit_verschillende_facetten_blijven_apart():
+    """De pool mag nooit een facetgrens oversteken — hij erft step 4's
+    structuur en verzint er geen nieuwe."""
+    concepts = [facet_concept("A1", "Bancair", {"r1", "r2"}),
+                facet_concept("A2", "Merkbeeld", {"r3", "r4"})]
+
+    groups, log = pool_thin_within_facet([solo("A1"), solo("A2")], concepts, threshold=4)
+
+    assert sorted(g.member_ids for g in groups) == [("A1",), ("A2",)]
+    assert log == []
+
+
+def test_een_pool_die_ook_samen_te_dun_blijft_wordt_niet_gevormd():
+    concepts = [facet_concept("A1", "Bancair", {"r1"}),
+                facet_concept("A2", "Bancair", {"r2"})]
+
+    groups, log = pool_thin_within_facet([solo("A1"), solo("A2")], concepts, threshold=9)
+
+    assert sorted(g.member_ids for g in groups) == [("A1",), ("A2",)]
+    assert log == []
+
+
+def test_respondenten_worden_verenigd_niet_opgeteld():
+    """r1 antwoordde op beide attributen: samen zijn het er drie, niet vier."""
+    concepts = [facet_concept("A1", "Bancair", {"r1", "r2"}),
+                facet_concept("A2", "Bancair", {"r1", "r3"})]
+
+    groups, _ = pool_thin_within_facet([solo("A1"), solo("A2")], concepts, threshold=4)
+
+    assert [g.member_ids for g in groups] == [("A1",), ("A2",)]
+
+
+def test_een_groep_over_twee_facetten_wordt_niet_gepoold():
+    """Een dunne groep die zelf al twee facetten omvat heeft geen eenduidig
+    facet om bij te horen; die blijft zoals hij is."""
+    concepts = [facet_concept("A1", "Bancair", {"r1"}),
+                facet_concept("A2", "Merkbeeld", {"r2"}),
+                facet_concept("A3", "Bancair", {"r3", "r4"})]
+    gemengd = Group(member_ids=("A1", "A2"), proposed_name="g", explanation="e")
+
+    groups, _ = pool_thin_within_facet([gemengd, solo("A3")], concepts, threshold=4)
+
+    assert ("A1", "A2") in [g.member_ids for g in groups]
+
+
+def gemengd_concept(attribute_id, facet, pos, neg):
+    p, n = frozenset(pos), frozenset(neg)
+    return Concept(attribute_id=attribute_id, name=attribute_id, definition="d",
+                   domain="D", facet=facet, n_iu=len(p | n), resp_ids=p | n,
+                   resp_pos=p, resp_neg=n, resp_neu=frozenset())
+
+
+def test_een_groep_die_alleen_op_het_TOTAAL_de_drempel_haalt_telt_als_dun():
+    """De regressietest op een gemeten ontwerpfout: deze fase oordeelde eerst
+    op het groepstotaal, terwijl `build_shapes` een POOL eist. Een groep met
+    vier respondenten verdeeld over twee polen van twee haalt de drempel van
+    vier dus niet, en moet gepoold worden in plaats van blijven staan."""
+    concepts = [gemengd_concept("A1", "F", {"r1", "r2"}, {"r3", "r4"}),
+                gemengd_concept("A2", "F", {"r5", "r6"}, {"r7", "r8"})]
+
+    groups, log = pool_thin_within_facet([solo("A1"), solo("A2")], concepts,
+                                         threshold=4, two_pole=True)
+
+    assert [g.member_ids for g in groups] == [("A1", "A2")]
+    assert log[0]["facet"] == "F"
