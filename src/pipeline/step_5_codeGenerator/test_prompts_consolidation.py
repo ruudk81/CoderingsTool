@@ -97,13 +97,36 @@ def test_salt_is_reproduceerbaar():
     assert eerst == nogmaals
 
 
+def _enum_tags(model):
+    veld = model.model_fields["codes"].annotation.__args__[0]
+    return list(veld.model_fields["topics"].annotation.__args__[0].__args__)
+
+
+def _prompt_volgorde(prompt, tags):
+    return [prompt.index(f'"{tag}"') for tag in tags]
+
+
 def test_responsemodel_volgt_dezelfde_salt_als_de_prompt():
     """Prompt en enum moeten dezelfde volgorde gebruiken, anders wijzen ze
     naar een andere lijst dan het model leest."""
-    model = make_consolidation_model(CARDS, salt="run7")
-    veld = model.model_fields["codes"].annotation.__args__[0]
-    tags = veld.model_fields["topics"].annotation.__args__[0].__args__
-
+    tags = _enum_tags(make_consolidation_model(CARDS, salt="run7"))
     prompt = build_consolidation_prompt(CARDS, "V", 100, "Dutch", salt="run7")
-    posities = [prompt.index(f'"{tag}"') for tag in tags]
-    assert posities == sorted(posities)
+
+    assert _prompt_volgorde(prompt, tags) == sorted(_prompt_volgorde(prompt, tags))
+
+
+def test_twee_salts_in_een_proces_geven_twee_enum_volgordes():
+    """Regressietest op een echte val: `Literal` vergelijkt
+    volgorde-onafhankelijk en `typing.List` cachet daarop, dus met
+    `typing.List[Literal[...]]` kreeg de tweede salt de volgorde van de eerste
+    terug. Het experiment biedt dezelfde tags tien keer in een andere volgorde
+    aan binnen één proces, dus dit moet vastliggen."""
+    eerst = _enum_tags(make_consolidation_model(CARDS, salt="runA"))
+    tweede = _enum_tags(make_consolidation_model(CARDS, salt="runB"))
+
+    assert eerst != tweede
+    assert sorted(eerst) == sorted(tweede)   # zelfde woordenschat, andere volgorde
+    for salt, tags in (("runA", eerst), ("runB", tweede)):
+        prompt = build_consolidation_prompt(CARDS, "V", 100, "Dutch", salt=salt)
+        posities = _prompt_volgorde(prompt, tags)
+        assert posities == sorted(posities)

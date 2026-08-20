@@ -10,7 +10,6 @@ vaststaan (grouping.py).
 """
 from __future__ import annotations
 
-import hashlib
 from typing import List, Literal, Tuple
 
 from pydantic import BaseModel, Field, create_model
@@ -36,23 +35,27 @@ class ConsolidationResult(BaseModel):
 def make_consolidation_model(cards, salt: str = "") -> type:
     """`topics` beperkt tot de getoonde tags, zodat het model er geen kan
     verzinnen. De enum bewaakt het vocabulaire, niet de volledigheid — een
-    vergeten of dubbel geplaatst attribuut vangt `repair_partition` af."""
+    vergeten of dubbel geplaatst attribuut vangt `repair_partition` af.
+
+    `list[...]` in plaats van `typing.List[...]` is nodig, niet cosmetisch:
+    `Literal` vergelijkt volgorde-onafhankelijk en `typing.List` cachet op
+    gelijkheid, dus twee permutaties van dezelfde tags zouden hetzelfde
+    geannoteerde type delen — en de tweede aanroep zou de volgorde van de
+    eerste terugkrijgen. Dat breekt de afspraak dat prompt en enum dezelfde
+    volgorde tonen zodra één proces meerdere salts gebruikt.
+    """
     tags: Tuple[str, ...] = tuple(card.tag for card in _shuffled(cards, salt))
-    # Force unique model name based on the actual tags to prevent Pydantic caching
-    tags_signature = hashlib.md5("".join(tags).encode()).hexdigest()
-    unique_module = f"__dynamic_models__.{tags_signature}"
     constrained_code = create_model(
-        f"ConstrainedProposedCode_{tags_signature}",
-        __module__=unique_module,
-        code_name=(str, Field(..., description="Short name for this code, as it would appear in a report table")),
-        explanation=(str, Field(..., description="The one sentence that explains what this code covers")),
-        topics=(List[Literal[tags]], Field(..., description="The topics that belong in this code")),
+        "ConstrainedProposedCode",
+        __base__=ProposedCode,
+        topics=(list[Literal[tags]], Field(
+            ..., description=ProposedCode.model_fields["topics"].description)),
     )
     return create_model(
-        f"ConstrainedConsolidationResult_{tags_signature}",
-        __module__=unique_module,
-        scratchpad=(str, Field(default="", description="Brief reasoning before the codes")),
-        codes=(List[constrained_code], Field(..., description="The proposed codebook")),
+        "ConstrainedConsolidationResult",
+        __base__=ConsolidationResult,
+        codes=(List[constrained_code], Field(
+            ..., description=ConsolidationResult.model_fields["codes"].description)),
     )
 
 
