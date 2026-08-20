@@ -19,6 +19,7 @@ import asyncio
 import sys
 from collections import defaultdict
 from pathlib import Path
+from statistics import median
 from typing import Dict, List, Tuple
 
 SRC = Path(__file__).resolve().parents[4]
@@ -42,7 +43,9 @@ from pipeline.step_5_codeGenerator.taxonomy_input import (  # noqa: E402
     build_attribute_refs, build_idea_units,
 )
 
-from storage import RunSet, save_runset  # noqa: E402
+from analysis import histogram, pairwise_ari, tau_sweep  # noqa: E402
+from stability_bridge import together_from_runs  # noqa: E402
+from storage import RunSet, load_runset, save_runset  # noqa: E402
 
 OUT_DIR = SRC.parent / "exports" / "experiment_logs"
 
@@ -132,6 +135,51 @@ async def collect(config_name: str, runs: int, set_index: int) -> Path:
     return path
 
 
+TAUS = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5)
+
+
+def analyse(config_name: str, set_index: int) -> None:
+    """Fase 2 t/m 4 — kost geen enkele LLM-call."""
+    path = OUT_DIR / f"consensus_{config_name}_set{set_index}.json"
+    runset = load_runset(path)
+    n_runs = len(runset.runs)
+
+    print(f"\n{'=' * 78}\n{runset.model} / {runset.effort} — {n_runs} runs, "
+          f"{len(runset.attribute_ids)} attributen\n{'=' * 78}")
+
+    print("\nAantal groepen per run:")
+    print("  " + ", ".join(str(len(run)) for run in runset.runs))
+
+    if n_runs < 2:
+        # Zowel `pairwise_ari` als `measure_stability` hebben twee runs nodig;
+        # bij één is er geen paar om te vergelijken en geen matrix om te vullen.
+        print("\nMinstens twee runs nodig voor een ARI-vergelijking en een "
+              "co-associatiematrix — verzamel er meer met `collect`.")
+        return
+
+    aris = pairwise_ari(runset.runs)
+    print(f"\nFASE 2 — ARI tussen de runs ({len(aris)} vergelijkingen)")
+    print(f"  laagste {min(aris):.3f}   mediaan {median(aris):.3f}   "
+          f"hoogste {max(aris):.3f}")
+
+    together = together_from_runs(runset.runs, runset.attribute_ids)
+    counts = histogram(together, n_runs)
+    total = sum(counts)
+    print(f"\nFASE 2 — vorm van de matrix ({total} paren)")
+    for n, aantal in enumerate(counts):
+        if aantal:
+            print(f"  {n:2d}/{n_runs} samen: {aantal:5d}  ({aantal / total:5.1%})")
+    kern = counts[n_runs]
+    schil = total - counts[0] - kern
+    print(f"  kern (altijd samen): {kern}   schil (wisselend): {schil}")
+
+    print("\nFASE 4 — tau-sweep")
+    print(f"  {'tau':>5}  {'groepen':>8}  {'grootste':>9}  {'solo':>5}")
+    for row in tau_sweep(together, runset.attribute_ids, n_runs, TAUS):
+        print(f"  {row['tau']:>5.2f}  {row['n_groups']:>8d}  "
+              f"{row['largest']:>9d}  {row['n_solo']:>5d}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="consensus over N consolidatieruns")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -141,9 +189,15 @@ def main() -> None:
     collect_parser.add_argument("--runs", type=int, default=10)
     collect_parser.add_argument("--set", type=int, default=1, dest="set_index")
 
+    analyse_parser = sub.add_parser("analyse", help="analyseer opgeslagen runs")
+    analyse_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
+    analyse_parser.add_argument("--set", type=int, default=1, dest="set_index")
+
     args = parser.parse_args()
     if args.command == "collect":
         asyncio.run(collect(args.config, args.runs, args.set_index))
+    elif args.command == "analyse":
+        analyse(args.config, args.set_index)
 
 
 if __name__ == "__main__":

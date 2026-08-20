@@ -36,3 +36,17 @@ def test_clusters_komen_terug_als_tuples(tmp_path):
 
     assert geladen.runs[0][0] == ("A1", "A2")
     assert isinstance(geladen.runs[0][0], tuple)
+
+
+def test_brug_telt_paren_over_runs():
+    from stability_bridge import together_from_runs
+
+    runs = [[("A1", "A2"), ("A3",)],
+            [("A1", "A2"), ("A3",)],
+            [("A1",), ("A2", "A3")]]
+
+    together = together_from_runs(runs, ["A1", "A2", "A3"])
+
+    assert together[frozenset({"A1", "A2"})] == 2
+    assert together[frozenset({"A2", "A3"})] == 1
+    assert together[frozenset({"A1", "A3"})] == 0
