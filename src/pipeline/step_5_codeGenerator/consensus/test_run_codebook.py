@@ -52,3 +52,15 @@ def test_de_verboselognaam_botst_niet_met_die_van_productie():
     kandidaat = build_log_filename("d.sav", "v", 100, "5c")
 
     assert productie != kandidaat
+
+
+def test_de_promptexportnaam_botst_niet_met_die_van_productie():
+    """`save_prompts` opent zijn doel in 'w'-modus, zonder merge — delen de
+    twee ketens één doctype, dan overschrijft wie als laatste draait stil het
+    promptexport van de ander."""
+    from utils.exportNaming import export_filename
+
+    productie = export_filename("d.sav", "v", 100, "prompts_step5", "json")
+    kandidaat = export_filename("d.sav", "v", 100, "prompts_step5c", "json")
+
+    assert productie != kandidaat

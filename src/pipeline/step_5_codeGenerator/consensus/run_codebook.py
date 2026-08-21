@@ -339,7 +339,11 @@ def run_codebook(filename: str = None, var_name: str = None,
     )
     cost_tracker.finalize_step(COST_STEP)
 
-    save_prompts_to_json(prompt_printer)
+    # Eigen doctype, anders overschrijft deze run stil het promptexport van de
+    # productieketen (`.save_prompts` opent in 'w'-modus, geen merge) — en de
+    # vergelijking tussen de twee ketens' promptcapture is precies wat dit
+    # codeboek moet mogelijk maken.
+    save_prompts_to_json(prompt_printer, doctype="prompts_step5c")
 
     overig_name = apply_overig_sweep(result.codes, taxonomy.partition_results, language)
     print_codebook_results(result.codes)

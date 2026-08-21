@@ -25,6 +25,7 @@ DOCTYPES = frozenset({
     *(f"log_step{n}" for n in range(8)),        # exports/verbose_logs/
     "log_step5c",                                # step 5 consensuskandidaat, naast log_step5
     *(f"prompts_step{n}" for n in range(1, 7)),  # exports/prompts/
+    "prompts_step5c",                             # step 5 consensuskandidaat, naast prompts_step5
     "codering",                                  # exports/coderingen/
     "codeboek",                                  # coderingen/ (.sav) + codebook/ (.xlsx, .csv)
     "gecombineerd",

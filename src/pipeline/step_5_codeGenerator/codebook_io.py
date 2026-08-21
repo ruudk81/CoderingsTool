@@ -317,11 +317,17 @@ def run_scorecard(
 # PROMPTS BEWAREN
 # =============================================================================
 
-def save_prompts_to_json(prompt_printer):
+def save_prompts_to_json(prompt_printer, doctype: str = "prompts_step5"):
     """Save captured prompts to JSON file.
 
     Everything the runner captured goes in, unfiltered — no doctype whitelist
     here (see run_classifier.py's save_prompts_to_json for why).
+
+    `doctype` defaults to production's own export name, so this call site does
+    not change. The consensus runner passes `"prompts_step5c"` — without a
+    distinct name it would silently overwrite production's export (`.save_prompts`
+    opens the target in `'w'` mode, no merge), and the two chains' prompt
+    captures are exactly what a comparison between them needs intact.
     """
     if not prompt_printer or not prompt_printer.prompts:
         return
@@ -330,4 +336,4 @@ def save_prompts_to_json(prompt_printer):
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
     prompt_printer.save_prompts(str(prompts_dir / export_filename(
-        FILENAME, VARIABLE, SAMPLE_SIZE, "prompts_step5", "json")))
+        FILENAME, VARIABLE, SAMPLE_SIZE, doctype, "json")))
