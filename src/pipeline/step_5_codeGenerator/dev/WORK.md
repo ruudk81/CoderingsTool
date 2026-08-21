@@ -86,16 +86,17 @@ Die merge-meting staat sinds 2026-08-21 in het gereedschap in plaats van in een
 losse berekening: `analysis.merge_recurrence` telt identieke samenvoegingen plus
 de paarovereenstemming over ALLEEN samengevoegd materiaal (paren die in beide
 indelingen apart zitten vallen uit de noemer — dat is wat de 89-90% hierboven
-misleidend maakte), en `compare` drukt het naast de ARI af. `compare` neemt
-daarvoor `--set-a` / `--set-b`, want de 30-runssets zijn 3 en 4 en luna heeft
-geen set 2. Reproduceren: `compare --config luna --set-a 3 --set-b 4 --tau 0.7`
-geeft ARI 0,844, 7 van 9 samenvoegingen identiek, 73,3% paarovereenstemming.
+misleidend maakte), en `vergelijk` drukt het naast de ARI af. `vergelijk` neemt
+daarvoor SET / SET_B, want de 30-runssets zijn 3 en 4 en luna heeft geen set 2.
+Reproduceren: in het instellingenblok van `run_codebook.py` ACTIE = "vergelijk",
+CONFIG = "luna", SET = 3, SET_B = 4, TAU = 0.7 zetten en op Run klikken — geeft
+ARI 0,844, 7 van 9 samenvoegingen identiek, 73,3% paarovereenstemming.
 
 **Nog niet reproduceerbaar: de 5-van-5 hierboven** (open). Dat cijfer is gemeten
 op een vangnetvrije attribuutlijst, en dat filter zit alleen in `_codebook_body`
-(`_schoon`), niet in `compare` — de opgeslagen sets 3 en 4 zijn nog mét
+(`_schoon`), niet in `vergelijk` — de opgeslagen sets 3 en 4 zijn nog mét
 vangnetten verzameld. Wie het cijfer wil narekenen moet de vangnetten er in
-`compare` uit filteren; dat vraagt de step-4-cache (`load_material`), geen
+`vergelijk` uit filteren; dat vraagt de step-4-cache (`load_material`), geen
 LLM-call.
 
 ### Zekerheid en betekenis zijn niet hetzelfde (open)

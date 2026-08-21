@@ -9,10 +9,11 @@ import config as project_config
 from ..config_codeGenerator import CodebookConfig
 
 # De twee beproefde configuraties: welk model draait, en met welke reasoning
-# effort. Dit was tot 2026-08-21 een tweede defaultlijst in `run_experiment.py`
-# (argparse-vlaggen), los van deze dataclass — dezelfde keten gaf dan een
-# ander antwoord (tau 0,7 tegen 0,8, twee polen tegen drie) afhankelijk van
-# welke deur je binnenkwam. Nu is `ConsensusConfig` de enige plek.
+# effort. Dit was tot 2026-08-21 een tweede defaultlijst in de losse
+# argparse-runner die dit pakket toen nog had, los van deze dataclass —
+# dezelfde keten gaf dan een ander antwoord (tau 0,7 tegen 0,8, twee polen
+# tegen drie) afhankelijk van welke deur je binnenkwam. Nu is
+# `ConsensusConfig` de enige plek.
 CONFIGS = {
     "luna":  {"model": project_config.MODELS[("5.6", 3)].name, "effort": "medium"},
     "gpt54": {"model": project_config.MODELS[("5.4", 5)].name, "effort": "high"},

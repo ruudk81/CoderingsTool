@@ -4,11 +4,41 @@ van de draaiende acties draaien geen LLM-calls en zijn dus goedkoop om te
 toetsen: het materiaal komt van schijf, niet van een call. `verzamelen` en het
 LLM-gedeelte van `codeboek`/`alles` vragen een gevulde cache en draaien hier
 niet."""
+import builtins
+import symtable
+from pathlib import Path
+
 import pytest
 
 from pipeline.step_5_codeGenerator.consensus import run_codebook as runner
 from pipeline.step_5_codeGenerator.consensus.config_consensus import ConsensusConfig
 from pipeline.step_5_codeGenerator.consensus.storage import RunSet, save_runset
+
+RUNNER = Path(runner.__file__)
+
+
+def _vrije_namen(table):
+    """Elke naam die in dit bereik uit de module-globals of de builtins moet
+    komen, plus dezelfde vraag voor alle geneste bereiken."""
+    namen = {symbol.get_name() for symbol in table.get_symbols()
+             if symbol.is_global() and not symbol.is_assigned()}
+    for child in table.get_children():
+        namen |= _vrije_namen(child)
+    return namen
+
+
+def test_elke_gebruikte_naam_in_de_runner_bestaat():
+    """Een aanroep zonder import faalt pas op de regel zelf, en de dure paden
+    van deze runner draaien niet in een test — dus wordt zo'n gat nooit
+    gevangen. Dat is precies wat er gebeurde: `pool_thin_within_facet` kwam
+    binnen met de facetpool, de import bleef achter, en het `codebook`-commando
+    viel om na het laden van het materiaal maar vóór de schrijfcall."""
+    beschikbaar = set(vars(runner)) | set(dir(builtins))
+
+    gebruikt = _vrije_namen(symtable.symtable(
+        RUNNER.read_text(encoding="utf-8"), str(RUNNER), "exec"))
+
+    assert sorted(gebruikt - beschikbaar) == []
 
 
 def test_setpad_draagt_configuratie_en_nummer():

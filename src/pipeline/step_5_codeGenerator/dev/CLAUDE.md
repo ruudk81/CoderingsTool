@@ -85,18 +85,27 @@ more** — a leftover reference to one is stale, not a second chain.
   any more, since 2026-08-21). It owns `config_consensus.py`,
   `prompts_consolidation.py`, `consolidation.py` (N runs in one
   `SmoothRequester`, `phase_key` `step5c_consolidation`), `consensus.py`,
-  `analysis.py`, `storage.py`, `run_codebook.py`, `run_experiment.py`,
-  `view_prompts.py`, `view_codebook.py` and its own tests; it borrows
-  everything from `build_shapes` onward via relative imports
-  (`taxonomy_input.py`, `concept_inventory.py`, `attribute_cards.py`,
-  `code_shape.py`, `grouping.py`, `codebook_writer.py`, `prompts_writer.py`,
-  `prompts_common.py`, `codebook_io.py`, `codebook_verifier.py`). It writes
-  under `mece_codes` — the SAME cache key as production, so steps 6 and 7 can
-  run on consensus codes — which means the cache holds one codebook at a time
-  and the last chain to run wins. Its cost sits under its own step,
-  `step_5_consensus`; its verbose log is `log_step5c.txt`; its prompt export
-  doctype is `prompts_step5c`. Not promoted: the consensus measurement itself
-  missed its own bar (ARI 0.788 against a required 0.90) — see WORK.md
+  `analysis.py`, `storage.py`, `run_codebook.py`, `view_prompts.py`,
+  `view_codebook.py` and its own tests; it borrows everything from
+  `build_shapes` onward via relative imports (`taxonomy_input.py`,
+  `concept_inventory.py`, `attribute_cards.py`, `code_shape.py`,
+  `grouping.py`, `codebook_writer.py`, `prompts_writer.py`,
+  `prompts_common.py`, `codebook_io.py`, `codebook_verifier.py`). Since
+  2026-08-21 it has one clickable runner: `consensus/run_codebook.py` carries
+  a settings block at the top (`ACTIE`, `CONFIG`, `RUNS`, `TAU`, `SET`, ...)
+  and dispatches on click to one of five actions — `alles`, `verzamelen`,
+  `codeboek`, `analyse`, `vergelijk`. `codeboek` (and `alles`, which ends
+  with one) produces the same five deliverables production does: the
+  codebook cached under `mece_codes` — the SAME cache key as production, so
+  steps 6 and 7 can run on consensus codes, which means the cache holds one
+  codebook at a time and the last chain to run wins — cost under its own
+  step `step_5_consensus`, prompt export under doctype `prompts_step5c`,
+  perf stats under `phase_key` `step5c_consolidation`, and `log_step5c.txt`.
+  That log is written on any click, `verzamelen` alone only adds the perf
+  stats and its own partitions file, and `analyse`/`vergelijk` are read-only
+  (no LLM calls, no deliverable beyond the log). Not promoted: the consensus
+  measurement itself missed its own bar (ARI 0.788 against a required 0.90)
+  — see WORK.md
 - `CodingResultsCache` (cache model) lives in `src/models.py` — the single
   source of truth for all cross-step models
 - `ConsolidatedCode` lives in `src/models.py` alongside `CodingResultsCache` —

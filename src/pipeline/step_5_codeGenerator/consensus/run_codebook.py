@@ -24,8 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Absolute imports, geen relatieve — dit bestand moet met een enkele klik (VS
 # Code Code Runner, `python run_codebook.py`) blijven draaien, en dan is
 # `__package__` leeg: `from ..attribute_cards import ...` zou stuklopen op
-# "attempted relative import with no known parent package". Zelfde route als
-# `run_experiment.py` koos, voor dezelfde reden.
+# "attempted relative import with no known parent package".
 SRC = Path(__file__).resolve().parents[3]
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
