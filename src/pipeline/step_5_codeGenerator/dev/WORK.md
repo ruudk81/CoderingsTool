@@ -81,15 +81,25 @@ honderden respondenten op 24-van-30 stond. De vangnetten zijn nu uitgesloten,
 maar het onderliggende punt blijft: een volgende versie hoort prevalentie mee
 te wegen, niet alleen recurrentie.
 
-### Vangnetten stonden op de kaarten (opgelost 2026-08-20)
+### Vangnetten op de kaarten (mechanisme klaar, vlag UIT — 2026-08-21)
 
 Step 4 markeert zijn `other`-attributen met `drain_key`; step 5 las die sleutel
 nooit en legde ze als volwaardige onderwerpen voor. Het model merkte ze met
-28-29 van 30 samen met hun naamgenoot. Opgelost: `is_drain` op `AttributeRef` en
-`Concept`, `build_cards` slaat ze over. Effect gemeten op de opgeslagen
-partities: paar-overeenstemming 73% → 78%, groepen identiek 7-van-9 → 5-van-5.
-Kosten: 8 respondenten (0,3%) verschuiven naar Overig, ruim binnen het
-10%-plafond.
+28-29 van 30 samen met hun naamgenoot. Mechanisme staat: `is_drain` op `AttributeRef` en `Concept`,
+`build_cards(exclude_drains=True)` slaat ze over. Effect gemeten op de
+opgeslagen partities: paar-overeenstemming 73% → 78%, groepen identiek
+7-van-9 → 5-van-5. Kosten: 8 respondenten (0,3%) verschuiven naar Overig, ruim
+binnen het 10%-plafond.
+
+**De vlag staat UIT in productie** (2026-08-21, op verzoek): het experiment moet
+eerst als geheel gepromoveerd of verworpen worden, en tot dat besluit valt hoort
+er geen enkele gedragswijziging ongemerkt mee te liften. `run_codebook.py` geeft
+de vlag niet mee; alleen `dev/experiment_consensus/` zet hem aan.
+
+Los daarvan blijft dit een gemiste contractregel en geen experimentele feature:
+step 4 documenteert dat je vangnetten op `drain_key` herkent en step 5 keek er
+nooit naar. Bij een verwerping van het experiment hoort deze vlag alsnog
+afzonderlijk gewogen te worden.
 
 ## De consolidatiecall reproduceert niet (open — 2026-08-18)
 

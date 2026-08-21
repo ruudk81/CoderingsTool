@@ -86,6 +86,21 @@ def test_vangnetten_komen_niet_op_een_kaart():
                       resp_neg=frozenset(), resp_neu=frozenset({"r9"}),
                       is_drain=True)
 
-    cards = build_cards([gewoon, vangnet], {})
+    cards = build_cards([gewoon, vangnet], {}, exclude_drains=True)
 
     assert [c.attribute_id for c in cards] == ["A1"]
+
+
+def test_zonder_de_vlag_staan_vangnetten_gewoon_op_een_kaart():
+    """De standaard is het gedrag van voor 2026-08-20, tot het promotiebesluit
+    over het consensus-experiment valt."""
+    gewoon = concept("A1", "Prijs", pos=3)
+    vangnet = Concept(attribute_id="A9", name="Overig — F", definition="rest",
+                      domain="D", facet="F", n_iu=1,
+                      resp_ids=frozenset({"r9"}), resp_pos=frozenset(),
+                      resp_neg=frozenset(), resp_neu=frozenset({"r9"}),
+                      is_drain=True)
+
+    cards = build_cards([gewoon, vangnet], {})
+
+    assert [c.attribute_id for c in cards] == ["A1", "A9"]

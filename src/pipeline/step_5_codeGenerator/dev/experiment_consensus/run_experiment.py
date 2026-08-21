@@ -89,7 +89,9 @@ def load_material():
 
     dimension_name = getattr(metadata, "primary_dimension", "") or ""
     return {
-        "cards": build_cards(concepts, by_attribute),
+        # Het experiment zet de vangnetuitsluiting AAN; productie niet,
+        # tot het promotiebesluit valt.
+        "cards": build_cards(concepts, by_attribute, exclude_drains=True),
         "concepts": concepts,
         "question": (getattr(metadata, "var_lab", "") or "").strip(),
         "language": getattr(metadata, "lang", "") or "Dutch",

@@ -38,20 +38,26 @@ def build_cards(
     concepts: List[Concept],
     idea_units_by_attribute: Dict[str, List[IdeaUnit]],
     top_n: int = TOP_ANSWERS,
+    exclude_drains: bool = False,
 ) -> List[AttributeCard]:
     """Eén kaart per Concept, in de volgorde waarin de concepten binnenkomen.
 
-    Behalve voor step 4's vangnetten: die zijn per constructie restant en geen
-    onderwerp. Hun definitie luidt letterlijk "responsen die bij dit facet horen
-    maar bij geen van de attributen eronder", dus het model vragen ze thematisch
-    te groeperen is een onbeantwoordbare vraag — en op de ASN-set leverde dat
-    merges met 28-van-30-zekerheid over bakjes met een enkele respondent. De
-    ideeen erop blijven gedekt: `apply_overig_sweep` veegt elk attribuut op dat
-    geen code claimde.
+    `exclude_drains` laat step 4's vangnetten weg. Die zijn per constructie
+    restant en geen onderwerp: hun definitie luidt letterlijk "responsen die bij
+    dit facet horen maar bij geen van de attributen eronder", dus het model
+    vragen ze thematisch te groeperen is een onbeantwoordbare vraag. Op de
+    ASN-set antwoordde het toch, en merde elk vangnet met 28-29 van 30 runs
+    samen met zijn naamgenoot-attribuut — over bakjes met een of twee
+    respondenten. De ideeen erop blijven hoe dan ook gedekt: `apply_overig_sweep`
+    veegt elk attribuut op dat geen code claimde.
+
+    **Staat standaard UIT tot het promotiebesluit over het consensus-experiment
+    valt.** Zonder de vlag is het gedrag identiek aan voor 2026-08-20. Het
+    experiment zet hem aan; `run_codebook.py` niet.
     """
     cards = []
     for concept in concepts:
-        if concept.is_drain:
+        if exclude_drains and concept.is_drain:
             continue
         answers = Counter(
             unit.instance

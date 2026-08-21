@@ -27,7 +27,7 @@ more** — a leftover reference to one is stale, not a second chain.
 - `attribute_cards.py` — `AttributeCard`: what the model sees per attribute —
   name, definition, domain, facet, respondent count, literal top answers.
   `.tag` is `[A17] Prijs`, the id-plus-name form used across step 5.
-  `build_cards` skips step 4's catch-alls — see Gotchas
+  `build_cards(exclude_drains=True)` skips step 4's catch-alls — see Gotchas
 - `prompts_consolidation.py` + `consolidation.py` — phase 1, the one
   judgement call: which attributes belong in one code, given the research
   question, the counts and what respondents actually said. Failure is a hard
@@ -159,9 +159,12 @@ model, see PROCESSING.md) is a `step5_*` string per call site:
   two attributes of the same group counts once. `weight()` in `grouping.py` and
   `group_respondents()` in `postmortem.py` both take a union; summing `n_resp`
   double-counts and was a real bug in both, caught in review.
-- **Step 4's catch-alls never reach the model.** Step 4 builds an `other`
-  attribute under every facet and marks it with `drain_key`; `AttributeRef` and
-  `Concept` carry that as `is_drain` and `build_cards` skips it. Recognition is
+- **Step 4's catch-alls can be kept off the cards — opt-in, off by default.**
+  Step 4 builds an `other` attribute under every facet and marks it with
+  `drain_key`; `AttributeRef` and `Concept` carry that as `is_drain`, and
+  `build_cards(exclude_drains=True)` skips it. `run_codebook.py` does NOT pass
+  the flag: production still shows catch-alls to the model, pending the
+  promotion decision on the consensus experiment. Recognition is
   on the key and never on the name — the name is in the survey language and may
   be rewritten (step 4's `drains.py` states the same rule). The reason is not
   tidiness: a catch-all's definition is literally "responses that belong to this
