@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -152,6 +153,36 @@ async def collect(config_name: str, runs: int, set_index: int, salted: bool = Tr
 TAUS = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5)
 
 
+class _Tee:
+    """Schrijft tegelijk naar het scherm en naar het verslagbestand.
+
+    Niet achteraf opvangen en dan wegschrijven: de schrijfcall duurt minuten en
+    je wilt ondertussen zien dat er iets gebeurt.
+    """
+
+    def __init__(self, stream, handle):
+        self._stream = stream
+        self._handle = handle
+
+    def write(self, text: str) -> int:
+        self._handle.write(text)
+        return self._stream.write(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
+        self._handle.flush()
+
+
+def report_path(config_name: str, set_index: int, source: str,
+                tau: float, poles: str) -> Path:
+    """De naam draagt de instellingen, zodat twee varianten nooit op elkaar
+    landen en je achteraf weet waar een codeboek vandaan komt."""
+    stem = f"codeboek_{config_name}_set{set_index}_{source}"
+    if source == "consensus":
+        stem += "_tau" + f"{tau:g}".replace(".", "")
+    return OUT_DIR / f"{stem}_{poles}polen.txt"
+
+
 def analyse(config_name: str, set_index: int) -> None:
     """Fase 2 t/m 4 — kost geen enkele LLM-call."""
     path = OUT_DIR / f"consensus_{config_name}_set{set_index}.json"
@@ -246,7 +277,19 @@ class _Log:
 async def codebook(config_name: str, set_index: int, tau: float,
                    source: str, poles: str) -> None:
     """Fase 6 (basislijn uit één losse run) en fase 7 (consensus), elk in
-    driedeling of tweedeling. Schrijft NIETS naar de cache."""
+    driedeling of tweedeling. Schrijft NIETS naar de cache — wel het volledige
+    codeboek naar `exports/experiment_logs/`, want een codeboek dat alleen in
+    de terminal staat is er geen."""
+    path = report_path(config_name, set_index, source, tau, poles)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        with contextlib.redirect_stdout(_Tee(sys.stdout, handle)):
+            await _codebook_body(config_name, set_index, tau, source, poles)
+    print(f"\nCodeboek weggeschreven naar {path}")
+
+
+async def _codebook_body(config_name: str, set_index: int, tau: float,
+                         source: str, poles: str) -> None:
     runset = load_runset(OUT_DIR / f"consensus_{config_name}_set{set_index}.json")
     material = load_material()
     codebook_config = CodebookConfig(model_relations=CONFIGS[config_name]["model"])
