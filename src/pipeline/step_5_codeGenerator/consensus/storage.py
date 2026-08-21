@@ -23,8 +23,8 @@ class RunSet:
     runs: List[List[Tuple[str, ...]]]
     # Standaardwaarde omdat `consensus_luna_set0.json` (geschreven vóór dit
     # veld bestond) `salted` niet in zijn payload heeft — `load_runset` moet
-    # dat bestand blijven laden, en elke run vóór de `--no-salt`-vlag was
-    # gezouten.
+    # dat bestand blijven laden, en elke run vóór het bestaan van de `SALT`-
+    # instelling (`ConsensusConfig.salted`) was gezouten.
     salted: bool = True
     # Hoeveel van de gevraagde runs geen resultaat opleverden. Zonder dit veld
     # leest een latere analyse `len(runs)` als het aantal gevraagde runs, en

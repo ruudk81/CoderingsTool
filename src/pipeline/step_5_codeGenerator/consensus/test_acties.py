@@ -7,6 +7,7 @@ niet."""
 import builtins
 import symtable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,6 +106,9 @@ def test_de_codeboekactie_draait_geen_deel_1(monkeypatch, tmp_path):
         salted=True, n_failed=0,
     )
     save_runset(runset, runner.runset_path("luna", 9))
+    monkeypatch.setattr(runner, "load_material",
+                        lambda config: {"cards": [SimpleNamespace(attribute_id="A1"),
+                                                  SimpleNamespace(attribute_id="A2")]})
 
     aangeroepen = {}
 
@@ -135,11 +139,37 @@ def test_codeboek_weigert_een_lege_partitieset(monkeypatch, tmp_path):
         runner.codeboek(ConsensusConfig(config_name="luna"), 9, "consensus")
 
 
+def test_codeboek_weigert_afwijkend_attribuutuniversum(monkeypatch, tmp_path):
+    """`generate_codebook` telt paren alleen over de attributen van de HUIDIGE
+    step-4-cache. Is de set tegen een andere boom verzameld, dan zouden
+    verdwenen attributen stil uit de telling vallen en nieuwe automatisch solo
+    worden — in het codeboek dat onder `mece_codes` belandt. `vergelijk`
+    weigert dit al tussen twee sets; `codeboek` moet het weigeren tussen de
+    set en de cache van nu, want dit is de actie die de gedeelde cache
+    schrijft."""
+    monkeypatch.setattr(runner, "OUT_DIR", tmp_path)
+    runset = RunSet(
+        model="gpt-5.6-luna", effort="medium",
+        attribute_ids=["A1", "A2"], attribute_names={"A1": "x", "A2": "y"},
+        n_respondents=10, runs=[[("A1", "A2")], [("A1",), ("A2",)]],
+        salted=True, n_failed=0,
+    )
+    save_runset(runset, runner.runset_path("luna", 9))
+    # De huidige step-4-cache heeft A2 niet meer en een nieuwe A3 wél.
+    monkeypatch.setattr(runner, "load_material",
+                        lambda config: {"cards": [SimpleNamespace(attribute_id="A1"),
+                                                  SimpleNamespace(attribute_id="A3")]})
+
+    with pytest.raises(SystemExit):
+        runner.codeboek(ConsensusConfig(config_name="luna"), 9, "consensus")
+
+
 def test_het_blok_levert_een_geldige_config():
     """Het blok is de enige plek waar knoppen staan; hij moet exact op
     ConsensusConfig passen, anders bestaat er alsnog een tweede tabel."""
     config = runner.config_uit_instellingen()
 
+    assert config.config_name == runner.CONFIG
     assert config.runs == runner.RUNS
     assert config.tau == runner.TAU
     assert config.two_pole == (runner.POLES == "two")
@@ -147,7 +177,26 @@ def test_het_blok_levert_een_geldige_config():
     assert config.salted == (runner.SALT == "aan")
 
 
-def test_elke_actie_in_het_blok_heeft_een_afhandeling():
-    """Een tikfout in ACTIE moet een nette melding geven, geen stille no-op."""
+def test_elke_actie_in_het_blok_heeft_een_afhandeling(monkeypatch):
+    """Een tikfout in ACTIE moet een nette melding geven, geen stille no-op —
+    en elke geldige naam moet daadwerkelijk zijn EIGEN functie bereiken. Een
+    vergelijking van `ACTIES` tegen een letterlijke set zou nog steeds slagen
+    als een tak uit `_draai_actie`'s if/elif-ketting zou verdwijnen; hier wordt
+    daadwerkelijk dispatch getoetst."""
     assert set(runner.ACTIES) == {"alles", "verzamelen", "codeboek",
                                   "analyse", "vergelijk"}
+
+    bereikt = {}
+    for naam in runner.ACTIES:
+        def spion(*args, _naam=naam, **kwargs):
+            bereikt["actie"] = _naam
+        monkeypatch.setattr(runner, naam, spion)
+
+        monkeypatch.setattr(runner, "SET", 1)
+        monkeypatch.setattr(runner, "SET_B", 2)
+        monkeypatch.setattr(runner, "SOURCE", "consensus")
+
+        bereikt.clear()
+        runner._draai_actie(naam)
+        assert bereikt.get("actie") == naam, \
+            f"ACTIE {naam!r} bereikte niet zijn eigen functie"

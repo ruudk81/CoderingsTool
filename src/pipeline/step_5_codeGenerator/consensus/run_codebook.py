@@ -145,7 +145,7 @@ def analyse(config: ConsensusConfig, set_index: int) -> None:
         # Zowel `pairwise_ari` als `measure_stability` hebben twee runs nodig;
         # bij één is er geen paar om te vergelijken en geen matrix om te vullen.
         print("\nMinstens twee runs nodig voor een ARI-vergelijking en een "
-              "co-associatiematrix — verzamel er meer met `collect`.")
+              "co-associatiematrix — verzamel er meer met `verzamelen`.")
         return
 
     aris = pairwise_ari(runset.runs)
@@ -236,12 +236,9 @@ class _PijplijnMateriaal:
     is aan de aanroeper, dus deze klasse beslist dat niet zelf; de overige
     velden zijn dan leeg/`0` in plaats van een keuze te forceren.
     """
-    variable_key: str
     metadata: Any
     classified: List[Any]
     taxonomy: Any
-    refs: Dict[str, Any]
-    units: List[IdeaUnit]
     concepts: List[Concept]
     by_attribute: Dict[str, List[IdeaUnit]]
     language: str
@@ -264,8 +261,8 @@ def _laad_pijplijnmateriaal(filename: str, var_name: str, sample_size: int) -> _
     taxonomy = load_taxonomy_cache(filename, var_name, sample_size, variable_key)
     if taxonomy is None:
         return _PijplijnMateriaal(
-            variable_key=variable_key, metadata=metadata, classified=classified,
-            taxonomy=None, refs={}, units=[], concepts=[], by_attribute={},
+            metadata=metadata, classified=classified,
+            taxonomy=None, concepts=[], by_attribute={},
             language="", dimension_diagnostic="", n_respondents=0)
 
     refs = build_attribute_refs(taxonomy.partition_results)
@@ -283,8 +280,8 @@ def _laad_pijplijnmateriaal(filename: str, var_name: str, sample_size: int) -> _
     n_respondents = len({u.respondent_id for u in units})
 
     return _PijplijnMateriaal(
-        variable_key=variable_key, metadata=metadata, classified=classified,
-        taxonomy=taxonomy, refs=refs, units=units, concepts=concepts,
+        metadata=metadata, classified=classified,
+        taxonomy=taxonomy, concepts=concepts,
         by_attribute=by_attribute, language=language,
         dimension_diagnostic=dimension_diagnostic, n_respondents=n_respondents)
 
@@ -324,8 +321,20 @@ def verzamelen(config: ConsensusConfig, set_index: int) -> Path:
     requesters die elk één taak zien, en dan heeft de adaptieve
     doorvoerregeling waar die component voor bestaat niets te regelen (zie
     `consolidation.py`).
+
+    Dit is de actie die betaalt — RUNS calls, de dure kant van de keten — dus
+    hij krijgt zijn eigen kostenregistratie en promptexport, net als
+    `run_codebook()` verderop doet voor de schrijfcall. Zonder deze twee
+    boekte een volledige `alles`-ronde alleen de ene schrijfcall onder
+    `COST_STEP`, terwijl de consolidatiecalls — de meerderheid van de kosten —
+    nergens stonden.
     """
     material = load_material(config)
+
+    cost_tracker = CostTracker(filename=FILENAME, var_name=VARIABLE,
+                               sample_size=SAMPLE_SIZE)
+    snapshot_before = token_tracker.snapshot()
+    prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
 
     with effort_van(config):
         salts = [f"set{set_index}run{i}" if config.salted else ""
@@ -333,6 +342,7 @@ def verzamelen(config: ConsensusConfig, set_index: int) -> Path:
         proposals, mislukt = asyncio.run(resolve_consolidations(
             material["cards"], material["question"], material["n_respondents"],
             material["language"], config, salts,
+            verbose=config.verbose, prompt_printer=prompt_printer,
         ))
         partitions = [[tuple(sorted(g.member_ids))
                        for g in repair_partition(p, material["cards"],
@@ -340,6 +350,13 @@ def verzamelen(config: ConsensusConfig, set_index: int) -> Path:
                       for p in proposals]
         if mislukt:
             print(f"  LET OP: {mislukt} van de {config.runs} runs kwam niet terug")
+
+    cost_tracker.record_phase(
+        COST_STEP, "consolidation",
+        snapshot_before, token_tracker.snapshot(), model=config.model_relations,
+    )
+    cost_tracker.finalize_step(COST_STEP)
+    save_prompts_to_json(prompt_printer, doctype="prompts_step5c")
 
     runset = RunSet(
         model=config.model_relations,
@@ -422,6 +439,15 @@ async def generate_codebook(
     prompt_printer=None,
     partitions: Optional[List[List[Tuple[str, ...]]]] = None,
 ) -> GeneratedCodebook:
+    """De herbruikbare kern van de keten (fase 1 t/m 5), zonder cache, kosten,
+    prompts of verbose-log — die zitten in `run_codebook()` eromheen.
+
+    `partitions=None` is de productieroute: deel 1 draait hier zelf, N verse
+    consolidatiecalls. Een gevulde `partitions` is de meetroute: de runs staan
+    al op schijf (`verzamelen` heeft ze al door `repair_partition` gehaald),
+    dus deel 1 en de reparatie slaan hier over — dat voorkomt zowel een tweede
+    reparatie op al gerepareerd materiaal als N overbodige herhaalde calls.
+    """
     cards = build_cards(concepts, idea_units_by_attribute,
                         exclude_drains=config.exclude_drains)
 
@@ -433,12 +459,17 @@ async def generate_codebook(
     repair_log = _RepairLog()
 
     if partitions is None:
-        # Productieroute: draai deel 1 zelf.
-        salts = [f"run{i}" for i in range(config.runs)] if config.salted else [""] * config.runs
-        proposals, runs_failed = await resolve_consolidations(
-            cards, survey_question, n_respondents, language, config, salts,
-            verbose=verbose, prompt_printer=prompt_printer,
-        )
+        # Productieroute: draai deel 1 zelf. Zelfde `effort_van`-omhulling als
+        # `verzamelen()` gebruikt voor dezelfde call — zonder deze wikkel liep
+        # deze route altijd op `STEP_EFFORT`'s ongewijzigde waarde (`high`),
+        # ongeacht welke `CONFIG` (bijv. luna/`medium`) was gekozen: twee
+        # deuren naar dezelfde fase die een ander antwoord gaven.
+        with effort_van(config):
+            salts = [f"run{i}" for i in range(config.runs)] if config.salted else [""] * config.runs
+            proposals, runs_failed = await resolve_consolidations(
+                cards, survey_question, n_respondents, language, config, salts,
+                verbose=verbose, prompt_printer=prompt_printer,
+            )
         partities = [
             [tuple(sorted(group.member_ids))
              for group in repair_partition(proposal, cards, concepts, log=repair_log)]
@@ -636,6 +667,22 @@ def codeboek(config: ConsensusConfig, set_index: int, source: str) -> None:
             f"set {set_index} ({config.config_name}) bevat geen partities — "
             "verzamel eerst met `verzamelen`.")
 
+    # `generate_codebook` telt paren alleen over `ids` uit de HUIDIGE
+    # step-4-cache. Is die sinds het verzamelen van deze set veranderd, dan
+    # verdwijnen attributen die niet meer bestaan stilzwijgend uit de telling
+    # en worden nieuwe attributen automatisch solo — en dit is de actie die
+    # het resultaat onder `mece_codes` wegschrijft, waar step 6 en 7 het
+    # zonder waarschuwing overnemen. `vergelijk` weigert precies dit tussen
+    # twee sets; hier geldt dezelfde weigering tussen de set en de cache van nu.
+    huidige_ids = [c.attribute_id for c in load_material(config)["cards"]]
+    if huidige_ids != runset.attribute_ids:
+        raise SystemExit(
+            f"het attribuutuniversum van set {set_index} ({config.config_name}) "
+            "wijkt af van de huidige step-4-cache — het codeboek zou stilzwijgend "
+            "op de doorsnede gebouwd worden, met verdwenen attributen en nieuwe "
+            "solo's als gevolg. Verzamel de set opnieuw tegen de huidige "
+            "step-4-cache.")
+
     # Bij 'baseline' gaat er ÉÉN partitie in. Er valt dan niets te middelen en
     # de consensusstap geeft precies die ene indeling terug — dat is gewenst,
     # want dit is de referentie waar de consensusversie tegen afgezet wordt.
@@ -818,15 +865,22 @@ def config_uit_instellingen() -> ConsensusConfig:
 
 
 ACTIES = {"alles", "verzamelen", "codeboek", "analyse", "vergelijk"}
+SOURCES = {"consensus", "baseline"}
 
 
 def _draai_actie(actie: str) -> None:
     """Dispatcht op ACTIE. Een tikfout hoort een nette melding te geven —
     geen stille no-op — dus een onbekende actie stopt hier hard, met de vijf
-    geldige namen erbij."""
+    geldige namen erbij. SOURCE geldt alleen bij `codeboek` en krijgt daar
+    dezelfde behandeling: zonder deze wacht betekent elke waarde die niet
+    letterlijk `"consensus"` is stilzwijgend `baseline`, en draagt
+    `report_path` die tikfout dan door in de bestandsnaam."""
     if actie not in ACTIES:
         raise SystemExit(
             f"onbekende ACTIE {actie!r} — kies uit {', '.join(sorted(ACTIES))}")
+    if actie == "codeboek" and SOURCE not in SOURCES:
+        raise SystemExit(
+            f"onbekende SOURCE {SOURCE!r} — kies uit {', '.join(sorted(SOURCES))}")
 
     config = config_uit_instellingen()
     if actie == "alles":
