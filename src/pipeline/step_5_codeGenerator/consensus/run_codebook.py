@@ -21,41 +21,88 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.cacheManager import CacheManager, generate_enhanced_variable_key
-from utils.costTracker import CostTracker
-from utils.llm import token_tracker
-from utils.promptPrinter import PromptPrinter
-from utils.saveVerbose import VerboseCapture
+# Absolute imports, geen relatieve — dit bestand moet met een enkele klik (VS
+# Code Code Runner, `python run_codebook.py`) blijven draaien, en dan is
+# `__package__` leeg: `from ..attribute_cards import ...` zou stuklopen op
+# "attempted relative import with no known parent package". Zelfde route als
+# `run_experiment.py` koos, voor dezelfde reden.
+SRC = Path(__file__).resolve().parents[3]
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-from pipeline.step_3_ideaExtractor.dimension_data import get_dimension
+from utils.cacheManager import CacheManager, generate_enhanced_variable_key  # noqa: E402
+from utils.costTracker import CostTracker  # noqa: E402
+from utils.llm import token_tracker  # noqa: E402
+from utils.promptPrinter import PromptPrinter  # noqa: E402
+from utils.saveVerbose import VerboseCapture  # noqa: E402
 
-from ..attribute_cards import build_cards
-from ..code_shape import CodeShape, _match_shape, _shape_lookup
-from ..codebook_io import (
+from pipeline.step_3_ideaExtractor.dimension_data import get_dimension  # noqa: E402
+
+from pipeline.step_5_codeGenerator.attribute_cards import build_cards  # noqa: E402
+from pipeline.step_5_codeGenerator.code_shape import (  # noqa: E402
+    CodeShape, _match_shape, _shape_lookup,
+)
+from pipeline.step_5_codeGenerator.codebook_io import (  # noqa: E402
     FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE, apply_overig_sweep,
     cache_mece_results, load_classified_ideas, load_extraction_metadata,
     load_taxonomy_cache, print_codebook_results, run_scorecard,
     save_prompts_to_json,
 )
-from ..codebook_writer import (
+from pipeline.step_5_codeGenerator.codebook_writer import (  # noqa: E402
     find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names,
     write_codebook,
 )
-from ..concept_inventory import Concept, build_inventory, t_keep
-from ..grouping import (
+from pipeline.step_5_codeGenerator.concept_inventory import (  # noqa: E402
+    Concept, build_inventory, t_keep,
+)
+from pipeline.step_5_codeGenerator.grouping import (  # noqa: E402
     Group, build_shapes, check_degeneration, pool_thin_within_facet,
     repair_partition,
 )
-from ..taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
-from models import ConsolidatedCode
+from pipeline.step_5_codeGenerator.taxonomy_input import (  # noqa: E402
+    IdeaUnit, build_attribute_refs, build_idea_units,
+)
+from models import ConsolidatedCode  # noqa: E402
 
-from .analysis import (
+from pipeline.step_5_codeGenerator.consensus.analysis import (  # noqa: E402
     consensus_ari, histogram, merge_recurrence, pairwise_ari, tau_sweep,
 )
-from .config_consensus import ConsensusConfig, effort_van
-from .consensus import consensus_partition, dominant_member, together_from_runs
-from .consolidation import resolve_consolidations
-from .storage import RunSet, load_runset, save_runset
+from pipeline.step_5_codeGenerator.consensus.config_consensus import (  # noqa: E402
+    ConsensusConfig, effort_van,
+)
+from pipeline.step_5_codeGenerator.consensus.consensus import (  # noqa: E402
+    consensus_partition, dominant_member, together_from_runs,
+)
+from pipeline.step_5_codeGenerator.consensus.consolidation import (  # noqa: E402
+    resolve_consolidations,
+)
+from pipeline.step_5_codeGenerator.consensus.storage import (  # noqa: E402
+    RunSet, load_runset, save_runset,
+)
+
+# =============================================================================
+# INSTELLINGEN — dit is wat een klik op Run doet
+# =============================================================================
+# Verander deze regels en druk op Run. `run_pipeline.py` roept de functie
+# `run_codebook()` aan en ziet ACTIE nooit; die krijgt de standaardwaarden
+# hieronder via ConsensusConfig.
+
+ACTIE   = "alles"      # alles | verzamelen | codeboek | analyse | vergelijk
+CONFIG  = "luna"       # luna (goedkoop) | gpt54 (12,5x duurder)
+RUNS    = 30           # hoe vaak deel 1 draait
+TAU     = 0.7          # hoe vaak twee attributen samen moeten hebben gezeten
+SET     = 5            # onder welk nummer de partities worden weggeschreven
+SET_B   = 6            # alleen bij 'vergelijk' en 'alles': de tweede set
+SOURCE  = "consensus"  # alleen bij 'codeboek': consensus | baseline
+POLES   = "two"        # two (niet-negatief/negatief) | three (pos/neu/neg)
+DRAINS  = "uit"        # vangnetten op de kaarten: uit | aan
+SALT    = "aan"        # aan = volgorde varieert per run; uit = kale servervariatie
+
+#   alles        verzamelen x2 -> analyse -> vergelijk -> codeboek   RUNS*2+1 calls
+#   verzamelen   alleen deel 1, partities naar schijf                RUNS calls
+#   codeboek     uit de partities van SET                            1 call
+#   analyse      een set lezen: ARI, matrixvorm, tau-sweep           0 calls
+#   vergelijk    SET tegen SET_B: hoofdmaat en merge-recurrentie     0 calls
 
 CACHE_STEP = "mece_codes"
 # Eigen stapnaam in het kostenregister, zodat je kunt zien wat een route kost.
@@ -739,10 +786,49 @@ def run_codebook(filename: str = None, var_name: str = None,
     )
 
 
+def config_uit_instellingen() -> ConsensusConfig:
+    """Vertaalt het blok naar de ene knoppentabel. POLES/DRAINS/SALT lezen als
+    tekst prettiger bij een klik op Run; `ConsensusConfig` zelf kent alleen
+    booleans — die vertaling gebeurt hier en nergens anders, anders ontstaat
+    er een tweede plek waar knoppen staan."""
+    return ConsensusConfig(
+        config_name=CONFIG,
+        runs=RUNS,
+        tau=TAU,
+        two_pole=(POLES == "two"),
+        exclude_drains=(DRAINS == "uit"),
+        salted=(SALT == "aan"),
+    )
+
+
+ACTIES = {"alles", "verzamelen", "codeboek", "analyse", "vergelijk"}
+
+
+def _draai_actie(actie: str) -> None:
+    """Dispatcht op ACTIE. Een tikfout hoort een nette melding te geven —
+    geen stille no-op — dus een onbekende actie stopt hier hard, met de vijf
+    geldige namen erbij."""
+    if actie not in ACTIES:
+        raise SystemExit(
+            f"onbekende ACTIE {actie!r} — kies uit {', '.join(sorted(ACTIES))}")
+
+    config = config_uit_instellingen()
+    if actie == "alles":
+        alles(config, SET, SET_B)
+    elif actie == "verzamelen":
+        verzamelen(config, SET)
+    elif actie == "codeboek":
+        codeboek(config, SET, SOURCE)
+    elif actie == "analyse":
+        analyse(config, SET)
+    elif actie == "vergelijk":
+        vergelijk(config, SET, SET_B)
+
+
 if __name__ == "__main__":
     with VerboseCapture(filename=FILENAME, var_name=VARIABLE,
                         sample_size=SAMPLE_SIZE, step="5c"):
         token_tracker.reset()
-        run_codebook(force_recalc=True)
+        _draai_actie(ACTIE)
         if token_tracker.call_count > 0:
             print(token_tracker.get_summary())

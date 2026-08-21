@@ -103,3 +103,21 @@ def test_codeboek_weigert_een_lege_partitieset(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit):
         runner.codeboek(ConsensusConfig(config_name="luna"), 9, "consensus")
+
+
+def test_het_blok_levert_een_geldige_config():
+    """Het blok is de enige plek waar knoppen staan; hij moet exact op
+    ConsensusConfig passen, anders bestaat er alsnog een tweede tabel."""
+    config = runner.config_uit_instellingen()
+
+    assert config.runs == runner.RUNS
+    assert config.tau == runner.TAU
+    assert config.two_pole == (runner.POLES == "two")
+    assert config.exclude_drains == (runner.DRAINS == "uit")
+    assert config.salted == (runner.SALT == "aan")
+
+
+def test_elke_actie_in_het_blok_heeft_een_afhandeling():
+    """Een tikfout in ACTIE moet een nette melding geven, geen stille no-op."""
+    assert set(runner.ACTIES) == {"alles", "verzamelen", "codeboek",
+                                  "analyse", "vergelijk"}
