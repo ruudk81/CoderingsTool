@@ -197,10 +197,14 @@ def cache_mece_results(
     sample_size: Optional[int] = None,
     variable_key: Optional[str] = None,
     step: str = "mece_codes",
+    narrative: str = "",
 ) -> None:
     """Cache codebook results for later use by code assignment (step 6).
 
-    `step` names the cache key step 6 and step 7 read from."""
+    `step` names the cache key step 6 and step 7 read from. `narrative` is
+    additive and defaults to empty, so production's call site is untouched;
+    only the consensus chain passes it, to stamp its provenance into the
+    shared cache key (see `consensus.run_codebook.provenance`)."""
     filename = FILENAME if filename is None else filename
     variable = VARIABLE if variable is None else variable
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size
@@ -220,6 +224,7 @@ def cache_mece_results(
         },
         total_categories=n_codes,
         raw_codes=[c.model_dump() for c in codes],
+        codebook_narrative=narrative,
     )
 
     # Mint K# (list order: written codes, then Overig) and fill any

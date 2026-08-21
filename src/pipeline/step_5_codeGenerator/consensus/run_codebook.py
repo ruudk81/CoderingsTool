@@ -783,7 +783,24 @@ def run_codebook(filename: str = None, var_name: str = None,
         taxonomy.partition_set, taxonomy.partition_results, result.codes,
         filename=filename, variable=var_name, sample_size=sample_size,
         variable_key=variable_key, step=CACHE_STEP,
+        # `result.runs_used` (niet `config.runs`): op de meetroute kunnen runs
+        # mislukken, en de herkomstregel moet zeggen hoeveel er echt in de
+        # matrix zaten, niet hoeveel er aangevraagd waren.
+        narrative=provenance(config, result.runs_used),
     )
+
+
+def provenance(config: ConsensusConfig, runs_used: int) -> str:
+    """Eén regel die zegt waar dit codeboek vandaan komt.
+
+    Gaat mee in `codebook_narrative`, een veld dat deze keten verder niet
+    gebruikt. Licht misbruik van een legacy-veld, en dat is de ruil: het
+    alternatief is `models.py` verruimen, en dat raakt step 6 en 7 voor iets
+    wat alleen documentatie is.
+    """
+    polen = "twee polen" if config.two_pole else "drie polen"
+    return (f"consensus over {runs_used} runs, tau={config.tau}, {polen}, "
+            f"vangnetten {'uitgesloten' if config.exclude_drains else 'inbegrepen'}")
 
 
 def config_uit_instellingen() -> ConsensusConfig:

@@ -134,3 +134,39 @@ def test_partities_meegeven_slaat_deel_1_over(monkeypatch):
 
     assert result.runs_used == 2
     assert result.runs_failed == 0
+
+
+def test_de_cache_zegt_waar_de_codes_vandaan_komen():
+    """Zonder dit draait step 6 een week later op codes waarvan niet meer af te
+    lezen is met welke tau of welke poolindeling ze gemaakt zijn — terwijl de
+    cachesleutel gedeeld is met productie en dus ook door de andere keten
+    beschreven kan zijn."""
+    regel = runner.provenance(ConsensusConfig(tau=0.7, two_pole=True), runs_used=30)
+
+    assert "consensus" in regel and "tau=0.7" in regel and "30 runs" in regel
+
+
+def test_de_herkomst_landt_op_het_gecachte_codeboek(monkeypatch):
+    """Niet genoeg dat `provenance()` een regel teruggeeft: die regel moet ook
+    echt op het object staan dat `CacheManager` bewaart, anders bouwt de
+    aanroep de herkomst en laat hem toch vallen."""
+    from models import DomainSet
+    from pipeline.step_5_codeGenerator import codebook_io
+
+    captured = {}
+
+    class FakeCacheManager:
+        def save_metadata_to_cache(self, metadata, **kwargs):
+            captured["metadata"] = metadata
+            return True
+
+    monkeypatch.setattr(codebook_io, "CacheManager", FakeCacheManager)
+
+    regel = runner.provenance(ConsensusConfig(tau=0.7, two_pole=True), runs_used=30)
+    runner.cache_mece_results(
+        partition_set=DomainSet(partitions=[]), pydantic_results={}, codes=[],
+        filename="f", variable="v", sample_size=10, variable_key="k",
+        narrative=regel,
+    )
+
+    assert captured["metadata"].codebook_narrative == regel
