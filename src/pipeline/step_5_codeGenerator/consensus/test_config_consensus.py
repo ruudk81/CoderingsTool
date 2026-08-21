@@ -28,3 +28,22 @@ def test_standaard_is_dertig_runs_en_tau_zeven():
 
     assert config.runs == 30
     assert config.tau == 0.7
+
+
+def test_salted_hoort_bij_de_config_en_niet_bij_de_aanroep():
+    """De volgordesalt is een knop van de consolidatie, geen argument dat elke
+    aanroeper opnieuw moet doorgeven. Zonder salt meet je kale servervariatie;
+    dat is een geldige meting, maar het moet een keuze in het blok zijn."""
+    assert ConsensusConfig().salted is True
+    assert ConsensusConfig(salted=False).salted is False
+
+
+def test_alle_vijf_de_knoppen_staan_op_een_plek():
+    """De enige knoppentabel. Stond er een tweede defaultlijst naast — zoals de
+    argparse-vlaggen deden — dan geeft dezelfde keten een ander antwoord
+    afhankelijk van welke deur je binnenkomt (tau 0,7 tegen 0,8, twee polen
+    tegen drie)."""
+    config = ConsensusConfig()
+
+    assert (config.runs, config.tau) == (30, 0.7)
+    assert (config.two_pole, config.exclude_drains, config.salted) == (True, True, True)
