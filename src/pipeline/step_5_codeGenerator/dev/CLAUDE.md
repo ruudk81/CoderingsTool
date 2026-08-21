@@ -101,11 +101,18 @@ more** — a leftover reference to one is stale, not a second chain.
   codebook at a time and the last chain to run wins — cost under its own
   step `step_5_consensus`, prompt export under doctype `prompts_step5c`,
   perf stats under `phase_key` `step5c_consolidation`, and `log_step5c.txt`.
-  That log is written on any click, `verzamelen` alone only adds the perf
-  stats and its own partitions file, and `analyse`/`vergelijk` are read-only
-  (no LLM calls, no deliverable beyond the log). Not promoted: the consensus
-  measurement itself missed its own bar (ARI 0.788 against a required 0.90)
-  — see WORK.md
+  That log is written on any click. `verzamelen` alone — the action that makes
+  the RUNS consolidation calls, the expensive side of the chain — records its
+  own cost (`step_5_consensus`, phase `"consolidation"`) and its own prompt
+  export (`prompts_step5c`) too, plus the perf stats and its partitions file;
+  it does not touch `mece_codes`, that write stays exclusive to `codeboek`/
+  `alles`. `codeboek` also refuses to run when the set's attribute universe no
+  longer matches the current step-4 cache — the same guard `vergelijk` uses
+  between two sets, applied here between one set and the live cache, since
+  `codeboek` is the action that writes the shared cache. `analyse`/`vergelijk`
+  stay read-only (no LLM calls, no deliverable beyond the log). Not promoted:
+  the consensus measurement itself missed its own bar (ARI 0.788 against a
+  required 0.90) — see WORK.md
 - `CodingResultsCache` (cache model) lives in `src/models.py` — the single
   source of truth for all cross-step models
 - `ConsolidatedCode` lives in `src/models.py` alongside `CodingResultsCache` —

@@ -93,11 +93,23 @@ CONFIG = "luna", SET = 3, SET_B = 4, TAU = 0.7 zetten en op Run klikken — geef
 ARI 0,844, 7 van 9 samenvoegingen identiek, 73,3% paarovereenstemming.
 
 **Nog niet reproduceerbaar: de 5-van-5 hierboven** (open). Dat cijfer is gemeten
-op een vangnetvrije attribuutlijst, en dat filter zit alleen in `_codebook_body`
-(`_schoon`), niet in `vergelijk` — de opgeslagen sets 3 en 4 zijn nog mét
-vangnetten verzameld. Wie het cijfer wil narekenen moet de vangnetten er in
-`vergelijk` uit filteren; dat vraagt de step-4-cache (`load_material`), geen
-LLM-call.
+op een vangnetvrije attribuutlijst. Het filter dat dat toen deed —
+`_codebook_body`'s `_schoon` — bestaat nergens meer: het verdween met
+`run_experiment.py` op 2026-08-21, en `vergelijk` heeft nooit een eigen
+vangnetfilter gehad. De opgeslagen sets 3 en 4 zijn bovendien nog mét
+vangnetten verzameld, van vóór `exclude_drains` bestond.
+
+De enige uitsluiting die vandaag bestaat, zit vóór het verzamelen, niet erna:
+`ConsensusConfig.exclude_drains` (het instellingenblok z'n `DRAINS`, standaard
+`"uit"` = uitgesloten) stuurt `build_cards(exclude_drains=True)`, dus een
+NIEUWE `verzamelen`-ronde onder de huidige standaardinstelling laat vangnetten
+al buiten de kaarten. Niets filtert een al opgeslagen `RunSet` achteraf. Om
+5-van-5 na te rekenen zijn er dus twee wegen, geen van beide gebouwd: (a) twee
+verse sets van 30 runs verzamelen onder de huidige standaard en die door
+`vergelijk` halen, of (b) een achteraf-filter aan `vergelijk`/`analyse`
+toevoegen dat vangnet-attributen (via `is_drain` op de step-4-cache,
+`load_material`) uit een geladen `RunSet` haalt vóór `together_from_runs` —
+geen LLM-call, wel nieuwe code.
 
 ### Zekerheid en betekenis zijn niet hetzelfde (open)
 
