@@ -13,6 +13,9 @@ tegelijk en de laatst gedraaide keten wint.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
@@ -49,10 +52,10 @@ from models import ConsolidatedCode
 from .analysis import (
     consensus_ari, histogram, merge_recurrence, pairwise_ari, tau_sweep,
 )
-from .config_consensus import ConsensusConfig
+from .config_consensus import ConsensusConfig, effort_van
 from .consensus import consensus_partition, dominant_member, together_from_runs
 from .consolidation import resolve_consolidations
-from .storage import load_runset
+from .storage import RunSet, load_runset, save_runset
 
 CACHE_STEP = "mece_codes"
 # Eigen stapnaam in het kostenregister, zodat je kunt zien wat een route kost.
@@ -173,6 +176,98 @@ def vergelijk(config: ConsensusConfig, set_a: int = 1, set_b: int = 2) -> None:
     print("  paarovereenstemming over samengevoegd materiaal: "
           + ("n.v.t. — geen van beide indelingen voegt iets samen"
              if overeenstemming is None else f"{overeenstemming:.1%}"))
+
+
+def load_material(config: ConsensusConfig) -> Dict:
+    """Kaarten en concepten uit de step-4-cache. Zelfde route als de
+    productiestap hieronder, alleen zonder iets weg te schrijven — dit voedt
+    alleen `verzamelen`."""
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[VARIABLE], is_merged=False, sample_size=SAMPLE_SIZE)
+
+    metadata = load_extraction_metadata(FILENAME, VARIABLE, SAMPLE_SIZE, variable_key)
+    classified = load_classified_ideas(FILENAME, VARIABLE, SAMPLE_SIZE, variable_key)
+    taxonomy = load_taxonomy_cache(FILENAME, VARIABLE, SAMPLE_SIZE, variable_key)
+    if taxonomy is None:
+        raise SystemExit("geen taxonomie in cache — draai eerst step 4")
+
+    refs = build_attribute_refs(taxonomy.partition_results)
+    units = [u for u in build_idea_units(classified) if u.attribute_id in refs]
+    concepts = build_inventory(units, refs)
+
+    by_attribute: Dict[str, list] = defaultdict(list)
+    for unit in units:
+        by_attribute[unit.attribute_id].append(unit)
+
+    dimension_name = getattr(metadata, "primary_dimension", "") or ""
+    return {
+        # Komt uit de config, niet hardgecodeerd: zo verzamelt deze actie op
+        # dezelfde uitsluiting als waarmee het codeboek er straks uit gebouwd
+        # wordt, in plaats van een vaste aanname die van de configuratie kan
+        # afwijken.
+        "cards": build_cards(concepts, by_attribute, exclude_drains=config.exclude_drains),
+        "concepts": concepts,
+        "question": (getattr(metadata, "var_lab", "") or "").strip(),
+        "language": getattr(metadata, "lang", "") or "Dutch",
+        "dimension_diagnostic": (get_dimension(dimension_name).criterion
+                                 if dimension_name else FALLBACK_DIAGNOSTIC),
+        "n_respondents": len({u.respondent_id for u in units}),
+        # `t_keep` gebruikt in productie het aantal RESPONSES, niet het aantal
+        # respondenten mét een idee. Zelfde basis aanhouden, anders draait
+        # deze route op een andere drempel dan de keten waarmee vergeleken
+        # wordt.
+        "n_classified": len(classified),
+        # `apply_overig_sweep` en `run_scorecard` werken op de taxonomiestructuur,
+        # niet op de concepten.
+        "partition_results": taxonomy.partition_results,
+    }
+
+
+def verzamelen(config: ConsensusConfig, set_index: int) -> Path:
+    """N keer deel 1, elke run met een eigen salt — of, met `config.salted=False`,
+    N identieke aanroepen die de kale servervariatie blootleggen. Schrijft de
+    partities weg.
+
+    Synchroon, met een eigen `asyncio.run()` — net als `run_codebook()`
+    verderop — zodat elke actie in dit bestand dezelfde vorm heeft en
+    `__main__` geen losse async-tak nodig heeft.
+
+    Eén `resolve_consolidations`-aanroep met alle salts, in plaats van een
+    `for`-lus met een `await` per run: N losse aanroepen bouwen N losse
+    requesters die elk één taak zien, en dan heeft de adaptieve
+    doorvoerregeling waar die component voor bestaat niets te regelen (zie
+    `consolidation.py`).
+    """
+    material = load_material(config)
+
+    with effort_van(config):
+        salts = [f"set{set_index}run{i}" if config.salted else ""
+                 for i in range(config.runs)]
+        proposals, mislukt = asyncio.run(resolve_consolidations(
+            material["cards"], material["question"], material["n_respondents"],
+            material["language"], config, salts,
+        ))
+        partitions = [[tuple(sorted(g.member_ids))
+                       for g in repair_partition(p, material["cards"],
+                                                 material["concepts"])]
+                      for p in proposals]
+        if mislukt:
+            print(f"  LET OP: {mislukt} van de {config.runs} runs kwam niet terug")
+
+    runset = RunSet(
+        model=config.model_relations,
+        effort=config.effort,
+        attribute_ids=[c.attribute_id for c in material["cards"]],
+        attribute_names={c.attribute_id: c.name for c in material["cards"]},
+        n_respondents=material["n_respondents"],
+        runs=partitions,
+        salted=config.salted,
+        n_failed=mislukt,
+    )
+    path = runset_path(config.config_name, set_index)
+    save_runset(runset, path)
+    print(f"\n{len(partitions)} van de {config.runs} runs weggeschreven naar {path}")
+    return path
 
 
 class _RepairLog:
@@ -387,6 +482,109 @@ def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) ->
     if result.duplicate_definitions:
         print(f"WAARSCHUWING: {len(result.duplicate_definitions)} groep(en) codes "
               f"met identieke definitie")
+
+
+class _Tee:
+    """Schrijft tegelijk naar het scherm en naar het verslagbestand.
+
+    Niet achteraf opvangen en dan wegschrijven: de schrijfcall duurt minuten en
+    je wilt ondertussen zien dat er iets gebeurt.
+    """
+
+    def __init__(self, stream, handle):
+        self._stream = stream
+        self._handle = handle
+
+    def write(self, text: str) -> int:
+        self._handle.write(text)
+        return self._stream.write(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
+        self._handle.flush()
+
+
+def report_path(config_name: str, set_index: int, source: str,
+                tau: float, poles: str) -> Path:
+    """De naam draagt de instellingen, zodat twee varianten nooit op elkaar
+    landen en je achteraf weet waar een codeboek vandaan komt."""
+    stem = f"codeboek_{config_name}_set{set_index}_{source}"
+    if source == "consensus":
+        stem += "_tau" + f"{tau:g}".replace(".", "")
+    return OUT_DIR / f"{stem}_{poles}polen.txt"
+
+
+def bezette_sets(config_name: str, *indices: int) -> List[int]:
+    """Welke van deze setnummers al op schijf staan.
+
+    `verzamelen` overschrijft zonder waarschuwing, en een set is RUNS LLM-calls
+    die je niet terugkrijgt. Een ronde die per ongeluk op een bezet nummer
+    landt wist dus het materiaal van een eerdere meting.
+    """
+    return [index for index in indices if runset_path(config_name, index).exists()]
+
+
+def codeboek(config: ConsensusConfig, set_index: int, source: str) -> None:
+    """Codeboek uit de partities die al op schijf staan — geen nieuwe deel-1-calls.
+
+    Gaat door `run_codebook()`, niet door `generate_codebook()`: de cache-write,
+    de kostenpost, de promptexport en de degeneratiepoort zitten in de eerste.
+    Dat is het hele punt van deze taak — er stond hier een tweede kopie van de
+    keten die dertig regels uit elkaar was gelopen en geen van de vijf
+    deliverables schreef.
+
+    Schrijft daarnaast het volledige verslag naar `exports/experiment_logs/`
+    (via `_Tee`): `log_step5c.txt` (een van de vijf deliverables) wordt bij
+    elke klik overschreven, terwijl deze bestandsnaam de instellingen draagt
+    en dus achteraf nog zegt welke configuratie dit codeboek maakte. Ze
+    vervangen elkaar niet, ze documenteren allebei iets anders.
+    """
+    runset = load_runset(runset_path(config.config_name, set_index))
+    if not runset.runs:
+        # `partitions=[]` zou hier ongemerkt doorstromen (zie taak 2's review)
+        # tot diep in de consensusstap — hier weigeren, vóór de keten, met een
+        # duidelijke reden, in plaats van daar op een onherkenbaar mankement
+        # te stuiten.
+        raise SystemExit(
+            f"set {set_index} ({config.config_name}) bevat geen partities — "
+            "verzamel eerst met `verzamelen`.")
+
+    # Bij 'baseline' gaat er ÉÉN partitie in. Er valt dan niets te middelen en
+    # de consensusstap geeft precies die ene indeling terug — dat is gewenst,
+    # want dit is de referentie waar de consensusversie tegen afgezet wordt.
+    # Zonder deze regel leest het als een bug.
+    partities = runset.runs if source == "consensus" else [runset.runs[0]]
+
+    poles = "two" if config.two_pole else "three"
+    path = report_path(config.config_name, set_index, source, config.tau, poles)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        with contextlib.redirect_stdout(_Tee(sys.stdout, handle)):
+            run_codebook(force_recalc=True, config=config, partitions=partities)
+    print(f"\nCodeboek weggeschreven naar {path}")
+
+
+def alles(config: ConsensusConfig, set_index: int, set_b: int) -> None:
+    """De hele ronde achter elkaar: twee sets verzamelen, meten, en het
+    consensuscodeboek bouwen.
+
+    De losse acties bestaan om een ronde te kunnen onderbreken of om een
+    opgeslagen set later opnieuw te bevragen. Wie de meting gewoon wil
+    uitvoeren hoort dat niet in vijf losse stappen te hoeven doen.
+    """
+    bezet = bezette_sets(config.config_name, set_index, set_b)
+    if bezet:
+        raise SystemExit(
+            f"set {' en '.join(map(str, bezet))} bestaat al voor "
+            f"{config.config_name} en zou overschreven worden — dat is "
+            f"{config.runs} LLM-calls per set die je kwijt bent. Kies vrije "
+            f"setnummers.")
+
+    verzamelen(config, set_index)
+    verzamelen(config, set_b)
+    analyse(config, set_index)
+    vergelijk(config, set_index, set_b)
+    codeboek(config, set_index, "consensus")
 
 
 def run_codebook(filename: str = None, var_name: str = None,

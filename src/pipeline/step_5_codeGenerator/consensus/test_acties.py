@@ -1,6 +1,11 @@
-"""Tests voor de lezende acties — `analyse` en `vergelijk`. Ze draaien geen
-LLM-calls en schrijven niets weg, dus zijn goedkoop om te toetsen: het
-materiaal komt van schijf, niet van een call."""
+"""Tests voor de lezende acties (`analyse`, `vergelijk`) en de draaiende
+acties (`verzamelen`, `codeboek`, `alles`). De lezende acties en de bedrading
+van de draaiende acties draaien geen LLM-calls en zijn dus goedkoop om te
+toetsen: het materiaal komt van schijf, niet van een call. `verzamelen` en het
+LLM-gedeelte van `codeboek`/`alles` vragen een gevulde cache en draaien hier
+niet."""
+import pytest
+
 from pipeline.step_5_codeGenerator.consensus import run_codebook as runner
 from pipeline.step_5_codeGenerator.consensus.config_consensus import ConsensusConfig
 from pipeline.step_5_codeGenerator.consensus.storage import RunSet, save_runset
@@ -29,3 +34,72 @@ def test_analyse_meldt_mislukte_runs(tmp_path, monkeypatch, capsys):
     runner.analyse(ConsensusConfig(config_name="luna"), 9)
 
     assert "3 mislukt" in capsys.readouterr().out
+
+
+def test_verslagnaam_draagt_de_instellingen():
+    """Twee varianten mogen nooit op hetzelfde bestand landen."""
+    a = runner.report_path("luna", 3, "consensus", 0.6, "two")
+    b = runner.report_path("luna", 3, "consensus", 0.7, "two")
+    c = runner.report_path("luna", 3, "consensus", 0.6, "three")
+
+    assert a.name == "codeboek_luna_set3_consensus_tau06_twopolen.txt"
+    assert len({a.name, b.name, c.name}) == 3
+
+
+def test_basislijn_krijgt_geen_tau_in_de_naam():
+    """Zonder consensus doet tau niets, dus hij hoort niet in de naam."""
+    assert runner.report_path("luna", 1, "baseline", 0.7, "three").name == \
+        "codeboek_luna_set1_baseline_threepolen.txt"
+
+
+def test_alles_weigert_bestaande_sets_te_overschrijven(tmp_path, monkeypatch):
+    """`verzamelen` overschrijft zonder waarschuwing, en een set is 30 LLM-calls
+    die je niet terugkrijgt. Een ronde die per ongeluk op set 3 landt wist het
+    materiaal van gisteren."""
+    monkeypatch.setattr(runner, "OUT_DIR", tmp_path)
+    (tmp_path / "consensus_luna_set3.json").write_text("{}", encoding="utf-8")
+
+    assert runner.bezette_sets("luna", 3, 6) == [3]
+    assert runner.bezette_sets("luna", 5, 6) == []
+
+
+def test_de_codeboekactie_draait_geen_deel_1(monkeypatch, tmp_path):
+    """De partities zijn al betaald. Draaide deze actie deel 1 opnieuw, dan
+    kost een codeboek uit bestaand materiaal dertig calls in plaats van één —
+    en meet je bovendien een andere consensus dan je net analyseerde."""
+    monkeypatch.setattr(runner, "OUT_DIR", tmp_path)
+    runset = RunSet(
+        model="gpt-5.6-luna", effort="medium",
+        attribute_ids=["A1", "A2"], attribute_names={"A1": "x", "A2": "y"},
+        n_respondents=10, runs=[[("A1", "A2")], [("A1",), ("A2",)]],
+        salted=True, n_failed=0,
+    )
+    save_runset(runset, runner.runset_path("luna", 9))
+
+    aangeroepen = {}
+
+    def spion(**kwargs):
+        aangeroepen.update(kwargs)
+
+    monkeypatch.setattr(runner, "run_codebook", spion)
+
+    runner.codeboek(ConsensusConfig(config_name="luna"), 9, "consensus")
+
+    assert aangeroepen["force_recalc"] is True
+    assert aangeroepen["partitions"] == runset.runs
+
+
+def test_codeboek_weigert_een_lege_partitieset(monkeypatch, tmp_path):
+    """`partitions=[]` zou zonder deze wacht ongemerkt doorstromen (taak 2's
+    review) tot diep in de consensusstap. Deze actie is de eerste echte
+    aanroeper en hoort de weigering dus hier, met een duidelijke reden."""
+    monkeypatch.setattr(runner, "OUT_DIR", tmp_path)
+    runset = RunSet(
+        model="gpt-5.6-luna", effort="medium",
+        attribute_ids=["A1"], attribute_names={"A1": "x"},
+        n_respondents=1, runs=[], salted=True, n_failed=1,
+    )
+    save_runset(runset, runner.runset_path("luna", 9))
+
+    with pytest.raises(SystemExit):
+        runner.codeboek(ConsensusConfig(config_name="luna"), 9, "consensus")

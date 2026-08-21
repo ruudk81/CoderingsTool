@@ -58,22 +58,6 @@ def test_compare_vergelijkt_zonder_vlaggen_nog_steeds_set_1_en_2():
     assert (args.set_a, args.set_b) == (1, 2)
 
 
-def test_verslagnaam_draagt_de_instellingen():
-    """Twee varianten mogen nooit op hetzelfde bestand landen."""
-    a = run_experiment.report_path("luna", 3, "consensus", 0.6, "two")
-    b = run_experiment.report_path("luna", 3, "consensus", 0.7, "two")
-    c = run_experiment.report_path("luna", 3, "consensus", 0.6, "three")
-
-    assert a.name == "codeboek_luna_set3_consensus_tau06_twopolen.txt"
-    assert len({a.name, b.name, c.name}) == 3
-
-
-def test_basislijn_krijgt_geen_tau_in_de_naam():
-    """Zonder consensus doet tau niets, dus hij hoort niet in de naam."""
-    assert run_experiment.report_path("luna", 1, "baseline", 0.7, "three").name == \
-        "codeboek_luna_set1_baseline_threepolen.txt"
-
-
 def test_een_klik_op_run_draait_de_instellingen_bovenaan_het_bestand():
     """Code Runner geeft geen argumenten mee. Zonder terugval faalt het bestand
     dan op een verplicht subcommando — en dit project draait zijn runners door
@@ -103,14 +87,3 @@ def test_alles_draait_de_hele_ronde_met_een_actie():
 
     assert args.command == "alles"
     assert (args.runs, args.set_a, args.set_b, args.tau) == (30, 5, 6, 0.7)
-
-
-def test_alles_weigert_bestaande_sets_te_overschrijven(tmp_path, monkeypatch):
-    """`collect` overschrijft zonder waarschuwing, en een set is 30 LLM-calls
-    die je niet terugkrijgt. Een ronde die per ongeluk op set 3 landt wist het
-    materiaal van gisteren."""
-    monkeypatch.setattr(run_experiment, "OUT_DIR", tmp_path)
-    (tmp_path / "consensus_luna_set3.json").write_text("{}", encoding="utf-8")
-
-    assert run_experiment.bezette_sets("luna", 3, 6) == [3]
-    assert run_experiment.bezette_sets("luna", 5, 6) == []
