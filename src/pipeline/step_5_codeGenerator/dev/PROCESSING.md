@@ -158,13 +158,21 @@ from `perf_model.predict()`, retry with backoff, stats persistence via
 `data/perf_model.json` keys every ring buffer `(provider:model, phase)`,
 where `phase` is the `step5_*` `phase_key` string each `SmoothRequester`
 instance passes (see ARCHITECTURE.md's Concurrency & Rate Limiting for the
-values). **Step 5 never warms its own perf-model buffers.**
+values). **The production chain never warms its own perf-model buffers.**
 `perfModel.MIN_PHASE_N = 5` — a phase needs five observations before its own
 ring buffer is trusted over the pool/cold-default waterfall — and one run of
-this chain supplies exactly one observation for `step5_consolidation` and one
-for `step5_writer`. Five runs on the same phase key are needed before either
-buffer counts, so in practice both phases always start from the pool. This is a
-property of a two-call chain, not a gap to fix.
+the two-call chain supplies exactly one observation for `step5_consolidation`
+and one for `step5_writer`. Five runs on the same phase key are needed before
+either buffer counts, so in practice both of *that* chain's phases always
+start from the pool.
+
+The consensus candidate (`consensus/`) does not share this property: its
+consolidation phase dispatches `config.runs` (default 30) tasks through one
+`SmoothRequester` under its own `phase_key`, `step5c_consolidation` — one run
+of the chain supplies 30 observations to that buffer in a single call, past
+`MIN_PHASE_N`. Its buffer warms on the FIRST run, not the fifth. `step5_writer`
+is unaffected — the candidate reuses that phase key for its single writer
+call, which still supplies one observation per run.
 
 ## Divergent Paths
 

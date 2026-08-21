@@ -36,7 +36,7 @@ the one the cache advertises is worse than not building at all.
 
 | Step name | Prefix | Model class | Type | Method | Contents |
 |-----------|--------|-------------|------|--------|----------|
-| `"mece_codes"` | 006 | `CodingResultsCache` | Metadata (single) | `save_metadata_to_cache()` | partition_set, partition_results, label_counts, total_categories, raw_codes. Written by `run_codebook.py`; **not** written when `GeneratedCodebook.degeneration` is set — see Gotchas in `CLAUDE.md`. |
+| `"mece_codes"` | 006 | `CodingResultsCache` | Metadata (single) | `save_metadata_to_cache()` | partition_set, partition_results, label_counts, total_categories, raw_codes. Written by `run_codebook.py` **or** `consensus/run_codebook.py` — same key, see "Eén cachesleutel, twee schrijvers" below; **not** written when `GeneratedCodebook.degeneration` is set — see Gotchas in `CLAUDE.md`. |
 
 ### CodingResultsCache Contents
 
@@ -118,7 +118,7 @@ Step 5 cache (prefix 006)
 - **Step 7** reads the same `raw_codes` (via `ConsolidatedCode`) for export,
   plus `ensure_assignment_ids(code_assigned_results, mece_cache, mece_cache.raw_codes)`.
 
-## Eén cachesleutel, één keten
+## Eén cachesleutel, twee schrijvers
 
 `mece_codes` is de enige step-5-uitvoersleutel. Tijdens het experiment dat de
 huidige keten opleverde schreef die onder `mece_codes_v2`, zodat beide
@@ -127,7 +127,12 @@ sleutel, en met hem het vergelijkingsgereedschap dat erop leunde.
 
 Dat betekent ook: de v1-keten in `_quarantine_v1/` schrijft, als je hem draait,
 onder diezelfde `mece_codes`. Twee ketens náást elkaar draaien kan niet meer
-zonder een van de twee een eigen sleutel te geven.
+zonder een van de twee een eigen sleutel te geven — en sinds 2026-08-21 heeft
+`consensus/run_codebook.py` diezelfde beperking, met opzet: hij schrijft
+eveneens onder `mece_codes`, zodat step 6 en 7 zonder aanpassing op
+consensus-codes kunnen draaien. De cache houdt dus op elk moment het codeboek
+van de LAATST gedraaide keten — productie, v1 of consensus — en niet meer dan
+dat ene.
 
 **Niet geschreven bij degeneratie.** `run_codebook()` slaat de
 `cache_mece_results`-aanroep over zodra `GeneratedCodebook.degeneration` is

@@ -160,10 +160,6 @@ meetartefact en blijft de facetbetekenis staan. Geen LLM-vraag, Python.
 Gevolg voor het promotiebesluit: de keuze is niet "vlag aan of uit" maar
 drie-weg. De vlag blijft UIT tot die derde weg gewogen is.
 
-De refuted motivering staat op nog twee plaatsen en is daar NIET gecorrigeerd:
-de docstring van `build_cards` (`attribute_cards.py`) en de Gotcha in
-`dev/CLAUDE.md`. Beide zeggen dat de vraag "geen beantwoordbare vorm" heeft.
-
 ## De consolidatiecall reproduceert niet (open — 2026-08-18)
 
 Vier runs op identieke invoer (ASN, 60 attributen) gaven **26, 31, 25 en 28

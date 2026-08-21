@@ -138,6 +138,7 @@ model, see PROCESSING.md) is a `step5_*` string per call site:
 | `codegen_relations` | `step5_consolidation` | `consolidation.py` |
 | `codegen_writer` | `step5_writer` | `codebook_writer.py` |
 | `codegen_relations` | `step5_postmortem` | `postmortem.py` (off) |
+| `codegen_relations` | `step5c_consolidation` | `consensus/consolidation.py` — its own key because its VORM differs (N parallel tasks, not one); its writer call keeps `step5_writer`, see the `consensus/` bullet above |
 
 ## Shared Utils
 - `utils/smoothRequester.py` — `SmoothRequester` for every LLM call
