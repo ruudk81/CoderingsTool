@@ -11,11 +11,15 @@ from pipeline.step_5_codeGenerator.attribute_cards import AttributeCard
 from pipeline.step_5_codeGenerator.consensus import consolidation
 from pipeline.step_5_codeGenerator.consensus.config_consensus import ConsensusConfig
 from pipeline.step_5_codeGenerator.consensus.consolidation import build_tasks
+from pipeline.step_5_codeGenerator.consensus.prompts_consolidation import build_consolidation_prompt
 
 
 def kaart(attribute_id, naam):
     return AttributeCard(attribute_id=attribute_id, name=naam, definition="d",
                          domain="D", facet="F", n_resp=5, top_answers=())
+
+
+CARDS = [kaart("A1", "Prijs"), kaart("A2", "Service"), kaart("A3", "Levertijd")]
 
 
 def test_elke_run_krijgt_zijn_eigen_salt_in_de_taak():
@@ -41,9 +45,11 @@ def test_alle_taken_delen_dezelfde_kaarten():
 
 
 class _FakeRequester:
-    """Vervangt SmoothRequester: geeft `canned` terug zonder netwerk en vangt
-    de constructor-kwargs op, want `num_tasks` is precies wat deze taak moet
-    aantonen."""
+    """Vervangt SmoothRequester: geeft `canned` terug zonder netwerk, vangt de
+    constructor-kwargs op (`num_tasks`, `phase_key`) en roept `prepare_fn` op
+    elke taak aan — precies zoals de echte requester dat vóór elke call doet —
+    zodat `prepared` per taak het eigen prompt/model draagt in plaats van het
+    laatst gebouwde."""
     captured = None
 
     def __init__(self, **kwargs):
@@ -51,6 +57,7 @@ class _FakeRequester:
         _FakeRequester.captured = self
 
     async def process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
+        self.prepared = [prepare_fn(task) for task in tasks]
         return self.canned
 
 
@@ -62,7 +69,7 @@ def test_een_enkele_geslaagde_run_is_een_harde_stop(monkeypatch):
 
     with pytest.raises(RuntimeError, match="minstens twee"):
         asyncio.run(consolidation.resolve_consolidations(
-            [], "vraag", 100, "Dutch", ConsensusConfig(), ["a", "b", "c"]))
+            CARDS, "vraag", 100, "Dutch", ConsensusConfig(), ["a", "b", "c"]))
 
 
 def test_mislukte_runs_worden_geteld_en_niet_verzwegen(monkeypatch):
@@ -72,7 +79,7 @@ def test_mislukte_runs_worden_geteld_en_niet_verzwegen(monkeypatch):
     monkeypatch.setattr(consolidation, "SmoothRequester", _FakeRequester)
 
     geslaagd, mislukt = asyncio.run(consolidation.resolve_consolidations(
-        [], "vraag", 100, "Dutch", ConsensusConfig(), ["a", "b", "c"]))
+        CARDS, "vraag", 100, "Dutch", ConsensusConfig(), ["a", "b", "c"]))
 
     assert (len(geslaagd), mislukt) == (2, 1)
 
@@ -84,6 +91,27 @@ def test_alle_runs_gaan_als_een_partij_naar_de_requester(monkeypatch):
     monkeypatch.setattr(consolidation, "SmoothRequester", _FakeRequester)
 
     asyncio.run(consolidation.resolve_consolidations(
-        [], "vraag", 100, "Dutch", ConsensusConfig(), ["a", "b", "c", "d", "e"]))
+        CARDS, "vraag", 100, "Dutch", ConsensusConfig(), ["a", "b", "c", "d", "e"]))
 
     assert _FakeRequester.captured.kwargs["num_tasks"] == 5
+
+
+def test_elke_taak_krijgt_zijn_eigen_prompt_op_de_eigen_phase_key(monkeypatch):
+    """Zat de salt weer in een closure, dan zouden alle taken de laatst
+    gebouwde prompt delen — hier wordt élk taak-prompt-paar apart nagerekend
+    tegen de directe aanroep met diezelfde salt, dus een omwisseling of een
+    stale closure-waarde faalt hier zichtbaar. `phase_key` is de andere helft
+    van het contract: zonder eigen sleutel meet het ringbuffer de verkeerde
+    call-vorm."""
+    salts = ["run-a", "run-b", "run-c"]
+    _FakeRequester.canned = ["ok"] * len(salts)
+    monkeypatch.setattr(consolidation, "SmoothRequester", _FakeRequester)
+
+    asyncio.run(consolidation.resolve_consolidations(
+        CARDS, "Wat vond u van de service?", 100, "Dutch", ConsensusConfig(), salts))
+
+    assert _FakeRequester.captured.kwargs["phase_key"] == "step5c_consolidation"
+    for index, salt in enumerate(salts):
+        verwacht_prompt = build_consolidation_prompt(
+            CARDS, "Wat vond u van de service?", 100, "Dutch", salt)
+        assert _FakeRequester.captured.prepared[index]["prompt"] == verwacht_prompt
