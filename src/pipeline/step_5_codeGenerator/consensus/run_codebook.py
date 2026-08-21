@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
+from statistics import median
 from typing import Dict, List, Optional, Tuple
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -44,9 +46,13 @@ from ..grouping import (
 from ..taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from models import ConsolidatedCode
 
+from .analysis import (
+    consensus_ari, histogram, merge_recurrence, pairwise_ari, tau_sweep,
+)
 from .config_consensus import ConsensusConfig
 from .consensus import consensus_partition, dominant_member, together_from_runs
 from .consolidation import resolve_consolidations
+from .storage import load_runset
 
 CACHE_STEP = "mece_codes"
 # Eigen stapnaam in het kostenregister, zodat je kunt zien wat een route kost.
@@ -54,6 +60,119 @@ CACHE_STEP = "mece_codes"
 COST_STEP = "step_5_consensus"
 
 PRINT_PROMPTS = False  # True zet de prompts realtime op de console
+
+# `run_codebook.py` zit een map dieper dan `run_classifier.py` (in
+# `consensus/`, niet direct in de stap), dus één `parents`-index meer om
+# hetzelfde projectroot te bereiken.
+OUT_DIR = Path(__file__).resolve().parents[4] / "exports" / "experiment_logs"
+
+# Alleen gebruikt door `analyse`'s tau-sweep — hoe vaak twee attributen samen
+# moeten hebben gezeten om te mogen koppelen, over het hele bereik heen zodat
+# je in één oogopslag ziet welke drempel een bruikbare indeling oplevert.
+TAUS = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5)
+
+
+def runset_path(config_name: str, set_index: int) -> Path:
+    """De bestandsnaam draagt de configuratie en het setnummer, zodat twee
+    configuraties nooit op hetzelfde bestand landen."""
+    return OUT_DIR / f"consensus_{config_name}_set{set_index}.json"
+
+
+def analyse(config: ConsensusConfig, set_index: int) -> None:
+    """Fase 2 t/m 4 — kost geen enkele LLM-call."""
+    path = runset_path(config.config_name, set_index)
+    runset = load_runset(path)
+    n_runs = len(runset.runs)
+
+    print(f"\n{'=' * 78}\n{runset.model} / {runset.effort} — {n_runs} runs, "
+          f"{len(runset.attribute_ids)} attributen, salted={runset.salted}"
+          + (f", {runset.n_failed} mislukt" if runset.n_failed else "")
+          + f"\n{'=' * 78}")
+
+    print("\nAantal groepen per run:")
+    print("  " + ", ".join(str(len(run)) for run in runset.runs))
+
+    if n_runs < 2:
+        # Zowel `pairwise_ari` als `measure_stability` hebben twee runs nodig;
+        # bij één is er geen paar om te vergelijken en geen matrix om te vullen.
+        print("\nMinstens twee runs nodig voor een ARI-vergelijking en een "
+              "co-associatiematrix — verzamel er meer met `collect`.")
+        return
+
+    aris = pairwise_ari(runset.runs)
+    print(f"\nFASE 2 — ARI tussen de runs ({len(aris)} vergelijkingen)")
+    print(f"  laagste {min(aris):.3f}   mediaan {median(aris):.3f}   "
+          f"hoogste {max(aris):.3f}")
+
+    together = together_from_runs(runset.runs, runset.attribute_ids)
+    counts = histogram(together, n_runs)
+    total = sum(counts)
+    print(f"\nFASE 2 — vorm van de matrix ({total} paren)")
+    for n, aantal in enumerate(counts):
+        if aantal:
+            print(f"  {n:2d}/{n_runs} samen: {aantal:5d}  ({aantal / total:5.1%})")
+    kern = counts[n_runs]
+    schil = total - counts[0] - kern
+    print(f"  kern (altijd samen): {kern}   schil (wisselend): {schil}")
+
+    print("\nFASE 4 — tau-sweep")
+    print(f"  {'tau':>5}  {'groepen':>8}  {'grootste':>9}  {'solo':>5}")
+    for row in tau_sweep(together, runset.attribute_ids, n_runs, TAUS):
+        print(f"  {row['tau']:>5.2f}  {row['n_groups']:>8d}  "
+              f"{row['largest']:>9d}  {row['n_solo']:>5d}")
+
+
+def vergelijk(config: ConsensusConfig, set_a: int = 1, set_b: int = 2) -> None:
+    """Fase 5 — de hoofdmaat: ARI tussen twee onafhankelijke consensusindelingen.
+    Kost geen enkele LLM-call — beide sets staan al op schijf.
+
+    Welke twee sets is een argument en geen aanname: de sets op schijf zijn niet
+    altijd 1 en 2 (de 30-runsmeting draaide op 3 en 4, en luna heeft geen set 2).
+    """
+    a = load_runset(runset_path(config.config_name, set_a))
+    b = load_runset(runset_path(config.config_name, set_b))
+
+    # `adjusted_rand_index` beperkt zich stil tot de doorsnede van de twee
+    # eenhedenverzamelingen. Een step-4-herberekening tussen de twee sets zou de
+    # hoofdmaat dan op een deelverzameling berekenen zonder waarschuwing — hier
+    # weigeren in plaats van dat risico te lopen.
+    if a.attribute_ids != b.attribute_ids:
+        raise SystemExit(
+            f"de attribuutuniversa van set {set_a} en set {set_b} verschillen — "
+            "ARI zou stilzwijgend op de doorsnede berekend worden. Verzamel "
+            "beide sets opnieuw tegen dezelfde step-4-cache.")
+
+    together_a = together_from_runs(a.runs, a.attribute_ids)
+    together_b = together_from_runs(b.runs, b.attribute_ids)
+    clusters_a = consensus_partition(together_a, a.attribute_ids, len(a.runs), config.tau)
+    clusters_b = consensus_partition(together_b, b.attribute_ids, len(b.runs), config.tau)
+
+    print(f"\n{'=' * 78}\nFASE 5 — set {set_a} vs set {set_b}  "
+          f"({config.config_name}, {len(a.runs)}+{len(b.runs)} runs, tau={config.tau})"
+          f"\n{'=' * 78}")
+    for index, runset, clusters in ((set_a, a, clusters_a), (set_b, b, clusters_b)):
+        n_solo = sum(1 for cluster in clusters if len(cluster) == 1)
+        degeneration = check_degeneration(len(clusters), len(runset.attribute_ids))
+        print(f"  set {index}: {len(clusters)} groepen, {n_solo} solo's"
+              f"  — {degeneration or 'geen degeneratie'}")
+
+    # Louter solo's scoort hier 1.0, niet NaN — een vals perfecte score omdat
+    # maximum en kansverwachting samenvallen (zie `consensus_ari`). Daarom staat
+    # de degeneratieverdict hierboven altijd naast dit getal, nooit zonder.
+    ari = consensus_ari(clusters_a, clusters_b)
+    print(f"\n  ARI(set {set_a}, set {set_b}) = {ari:.3f}")
+
+    # ARI weegt élke paarbeslissing even zwaar en gaat op een dunne indeling dus
+    # vooral over attributen die toch alleen blijven. De samenvoegingen zijn wat
+    # het codeboek bepaalt, dus die staan er als aparte maat naast.
+    merges = merge_recurrence(clusters_a, clusters_b)
+    overeenstemming = merges["pair_agreement"]
+    print(f"  samenvoegingen: {merges['identical']} identiek "
+          f"(van {merges['merges_a']} in set {set_a}, "
+          f"{merges['merges_b']} in set {set_b})")
+    print("  paarovereenstemming over samengevoegd materiaal: "
+          + ("n.v.t. — geen van beide indelingen voegt iets samen"
+             if overeenstemming is None else f"{overeenstemming:.1%}"))
 
 
 class _RepairLog:
