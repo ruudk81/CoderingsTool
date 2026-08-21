@@ -36,6 +36,19 @@ def test_clusters_komen_terug_als_tuples(tmp_path):
     assert isinstance(geladen.runs[0][0], tuple)
 
 
+def test_n_failed_overleeft_een_rondje_json(tmp_path):
+    """Zonder deze round-trip zou een niet-standaard `n_failed` stil op 0
+    kunnen terugvallen — en dan leest een latere analyse `len(runs)` als het
+    gevraagde aantal, precies het gat dat het veld moet dichten."""
+    runset = RunSet(model="m", effort="high", attribute_ids=["A1", "A2"],
+                    attribute_names={"A1": "x", "A2": "y"}, n_respondents=10,
+                    runs=[[("A1", "A2")]], n_failed=3)
+    path = tmp_path / "runs.json"
+    save_runset(runset, path)
+
+    assert load_runset(path).n_failed == 3
+
+
 def test_oude_bestanden_zonder_n_failed_laden_nog(tmp_path):
     """De sets van 2026-08-20 kennen dit veld niet; ze moeten leesbaar blijven,
     anders is al het verzamelde materiaal weg."""

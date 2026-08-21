@@ -1,4 +1,10 @@
-"""Van co-associatiematrix naar één indeling — deterministisch, geen LLM.
+"""Van N partities naar één indeling — deterministisch, geen LLM.
+
+`together_from_runs` bouwt de co-associatiematrix (per attribuutpaar, in
+hoeveel runs de twee samen zaten); `consensus_partition` snijdt haar. Beide
+horen in deze module, niet slechts de tweede: de paartelling IS de claim van
+de kandidaat, dus lenen uit `../stability.py` zou de kern van deze keten laten
+steunen op de module die een consensusindeling juist afwijst.
 
 `stability.py` wijst een consensusindeling af omdat transitieve sluiting A-B-C
 aan elkaar plakt zodra A-B en B-C vastliggen, ook wanneer A-C juist vast op
@@ -11,7 +17,42 @@ valentiesplitsing in `build_shapes`.
 from __future__ import annotations
 
 import math
+from collections import Counter
+from itertools import combinations
 from typing import Dict, FrozenSet, List, Sequence, Tuple
+
+
+def together_from_runs(
+    runs: Sequence[Sequence[Sequence[str]]],
+    attribute_ids: Sequence[str],
+) -> Dict[FrozenSet[str], int]:
+    """Co-associatiematrix uit opgeslagen partities: per attribuutpaar, in
+    hoeveel runs de twee samen in één cluster zaten.
+
+    Dit IS stage 2 van de kandidaat — de paartelling is precies de claim die
+    `consensus_partition` hierboven snijdt — en hoort daarom hier, niet
+    geleend uit `../stability.py`. Die module telt hetzelfde soort paar, maar
+    wijst een consensusindeling juist AF (zie haar eigen docstring); haar
+    rekenkern gebruiken zou deze indeling laten steunen op de module die
+    beargumenteert waarom zo'n indeling niet volstaat, en zou bij promotie
+    meteen een probleem geven — `stability.py` gaat dan met de rest van de
+    huidige keten met pensioen naar `_quarantine_v1/`.
+
+    `attribute_ids` bepaalt welke paren geteld worden, zodat een attribuut dat
+    in één run ontbreekt als "niet samen" meetelt in plaats van uit de meting
+    te verdwijnen — dezelfde zorgvuldigheid als `stability.measure_stability`.
+    """
+    counts: Counter = Counter()
+    for clusters in runs:
+        counts.update(
+            frozenset(pair)
+            for cluster in clusters
+            for pair in combinations(sorted(cluster), 2)
+        )
+    return {
+        frozenset(pair): counts.get(frozenset(pair), 0)
+        for pair in combinations(sorted(set(attribute_ids)), 2)
+    }
 
 
 def min_together(tau: float, runs: int) -> int:

@@ -31,7 +31,7 @@ def build_log_filename(
     filename: str,
     var_name: str,
     sample_size: Optional[int],
-    step: int,
+    step: int | str,
 ) -> str:
     """The canonical name of a verbose log: the step number as a doctype."""
     return export_filename(filename, var_name, sample_size, f"log_step{step}", "txt")
@@ -66,7 +66,9 @@ class VerboseCapture:
         filename: Data filename (e.g., "M000000 Associatiemonitor Merk X.sav")
         var_name: Variable identifier (e.g., "Qd1_combined")
         sample_size: Sample size (int or None for full dataset)
-        step: Pipeline step (0-9)
+        step: Pipeline step (0-9), or a candidate's own label (e.g. "5c" for
+            step 5's consensus candidate) so its log never overwrites
+            production's
         output_dir: Output directory (defaults to exports/verbose_logs/)
     """
 
@@ -75,7 +77,7 @@ class VerboseCapture:
         filename: str,
         var_name: str,
         sample_size: Optional[int],
-        step: int,
+        step: int | str,
         output_dir: Optional[Path] = None,
     ):
         self.filename = filename
@@ -162,7 +164,7 @@ class VerboseCapture:
         filename: str,
         var_name: str,
         sample_size: Optional[int],
-        step: int,
+        step: int | str,
         output_dir: Optional[Path] = None,
     ) -> Optional[Path]:
         """The log file for this step, or None.

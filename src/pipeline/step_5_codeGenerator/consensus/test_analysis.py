@@ -1,7 +1,6 @@
 """Tests voor de analysefuncties van het consensus-experiment."""
 from pipeline.step_5_codeGenerator.consensus.analysis import (
-    consensus_ari, histogram, merge_recurrence, pairwise_ari, tau_sweep,
-    together_from_runs)
+    consensus_ari, histogram, merge_recurrence, pairwise_ari, tau_sweep)
 
 
 def matrix(pairs):
@@ -113,15 +112,3 @@ def test_zonder_enige_samenvoeging_is_paarovereenstemming_ongedefinieerd():
     b = [("A",), ("B",)]
 
     assert merge_recurrence(a, b)["pair_agreement"] is None
-
-
-def test_brug_telt_paren_over_runs():
-    runs = [[("A1", "A2"), ("A3",)],
-            [("A1", "A2"), ("A3",)],
-            [("A1",), ("A2", "A3")]]
-
-    together = together_from_runs(runs, ["A1", "A2", "A3"])
-
-    assert together[frozenset({"A1", "A2"})] == 2
-    assert together[frozenset({"A2", "A3"})] == 1
-    assert together[frozenset({"A1", "A3"})] == 0

@@ -18,12 +18,10 @@ Vier metingen, elk met een eigen doel:
 from __future__ import annotations
 
 from itertools import combinations
-from typing import Dict, FrozenSet, List, Sequence, Set, Tuple
+from typing import Dict, FrozenSet, List, Sequence, Set
 
 from pipeline.step_3_ideaExtractor.measure_stability import adjusted_rand_index
 
-from ..grouping import Group
-from ..stability import measure_stability
 from .consensus import consensus_partition, labels_from_clusters
 
 
@@ -124,23 +122,3 @@ def tau_sweep(
             "n_solo": sum(1 for c in clusters if len(c) == 1),
         })
     return rows
-
-
-def together_from_runs(
-    runs: Sequence[Sequence[Tuple[str, ...]]],
-    attribute_ids: Sequence[str],
-) -> Dict[FrozenSet[str], int]:
-    """Co-associatiematrix uit opgeslagen partities.
-
-    `measure_stability` telt per attribuutpaar in hoeveel runs de twee samen
-    zaten — precies deze matrix — inclusief de zorgvuldigheid dat een attribuut
-    dat in één run ontbreekt als "niet samen" meetelt in plaats van uit de
-    meting te verdwijnen. Het verwacht `Group`-objecten en op schijf staan
-    tuples; die vertaling is alles wat hier gebeurt.
-    """
-    as_groups = [
-        [Group(member_ids=tuple(cluster), proposed_name="", explanation="")
-         for cluster in run]
-        for run in runs
-    ]
-    return measure_stability(as_groups, list(attribute_ids)).together

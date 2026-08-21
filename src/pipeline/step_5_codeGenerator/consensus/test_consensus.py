@@ -1,6 +1,7 @@
 """Tests voor de consensusindeling: volledige koppeling op de paartelling."""
 from pipeline.step_5_codeGenerator.consensus.consensus import (
-    consensus_partition, dominant_member, labels_from_clusters, min_together)
+    consensus_partition, dominant_member, labels_from_clusters, min_together,
+    together_from_runs)
 
 
 def matrix(pairs):
@@ -88,3 +89,18 @@ def test_dominant_lid_is_het_zwaarste_attribuut():
 
 def test_dominant_lid_breekt_gelijkspel_deterministisch():
     assert dominant_member(("B", "A"), {"A": 10, "B": 10}) == "A"
+
+
+def test_paartelling_telt_over_alle_runs_en_negeert_ontbrekende_leden():
+    """Een attribuut dat in één run ontbreekt telt daar als 'niet samen' mee
+    in plaats van uit de meting te verdwijnen — dezelfde zorgvuldigheid als
+    `stability.measure_stability`, waarvan deze functie niet meer leent."""
+    runs = [[("A1", "A2"), ("A3",)],
+            [("A1", "A2"), ("A3",)],
+            [("A1",), ("A2", "A3")]]
+
+    together = together_from_runs(runs, ["A1", "A2", "A3"])
+
+    assert together[frozenset({"A1", "A2"})] == 2
+    assert together[frozenset({"A2", "A3"})] == 1
+    assert together[frozenset({"A1", "A3"})] == 0

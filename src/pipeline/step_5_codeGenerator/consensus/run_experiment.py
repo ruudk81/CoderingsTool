@@ -52,8 +52,7 @@ from pipeline.step_5_codeGenerator.codebook_writer import (  # noqa: E402
 from pipeline.step_5_codeGenerator.concept_inventory import build_inventory, t_keep  # noqa: E402
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig  # noqa: E402
 from pipeline.step_5_codeGenerator.grouping import (  # noqa: E402
-    Group, build_shapes, check_degeneration, pool_thin_within_facet,
-    repair_partition,
+    build_shapes, check_degeneration, pool_thin_within_facet, repair_partition,
 )
 from pipeline.step_5_codeGenerator.taxonomy_input import (  # noqa: E402
     build_attribute_refs, build_idea_units,
@@ -61,14 +60,16 @@ from pipeline.step_5_codeGenerator.taxonomy_input import (  # noqa: E402
 
 from pipeline.step_5_codeGenerator.consensus.analysis import (  # noqa: E402
     consensus_ari, histogram, merge_recurrence, pairwise_ari, tau_sweep,
-    together_from_runs,
 )
 from pipeline.step_5_codeGenerator.consensus.config_consensus import ConsensusConfig  # noqa: E402
 from pipeline.step_5_codeGenerator.consensus.consensus import (  # noqa: E402
-    consensus_partition, dominant_member,
+    consensus_partition, together_from_runs,
 )
 from pipeline.step_5_codeGenerator.consensus.consolidation import (  # noqa: E402
     resolve_consolidations,
+)
+from pipeline.step_5_codeGenerator.consensus.run_codebook import (  # noqa: E402
+    groups_from_clusters,
 )
 from pipeline.step_5_codeGenerator.consensus.storage import (  # noqa: E402
     RunSet, load_runset, save_runset,
@@ -268,7 +269,8 @@ def analyse(config_name: str, set_index: int) -> None:
 
     print(f"\n{'=' * 78}\n{runset.model} / {runset.effort} — {n_runs} runs, "
           f"{len(runset.attribute_ids)} attributen, salted={runset.salted}"
-          f"\n{'=' * 78}")
+          + (f", {runset.n_failed} mislukt" if runset.n_failed else "")
+          + f"\n{'=' * 78}")
 
     print("\nAantal groepen per run:")
     print("  " + ", ".join(str(len(run)) for run in runset.runs))
@@ -459,18 +461,17 @@ async def _codebook_body(config_name: str, set_index: int, tau: float,
         clusters = _schoon([runset.runs[0]])[0]
         label = "basislijn (run 1)"
 
-    # `proposed_name` vult `CodeShape.umbrella`, de hernoemkandidaat bij een
-    # naambotsing. Een consensusgroep heeft er geen, dus: het zwaarste lid.
-    weight_by_id = {c.attribute_id: c.n_resp for c in concepts}
-    groups = []
-    for cluster in clusters:
-        known = [m for m in cluster if m in concept_by_id]
-        umbrella = (concept_by_id[dominant_member(known, weight_by_id)].name
-                    if known else "")
-        groups.append(Group(member_ids=tuple(cluster), proposed_name=umbrella,
-                            explanation=""))
+    # Dezelfde clusters-naar-groepen-vertaling als `run_codebook.py` — niet
+    # opnieuw opgebouwd, want twee kopieën van dezelfde logica kunnen stil uit
+    # elkaar lopen.
+    groups = groups_from_clusters(clusters, concepts)
 
-    degeneration = check_degeneration(len(groups), len(runset.attribute_ids))
+    # Op `ids` (drainvrij), niet op `runset.attribute_ids`: die laatste bevat
+    # nog de vangnetten die hierboven al uit de clusters zijn geknipt (~49
+    # tegenover ~43 op de opgeslagen sets), dus teller en noemer zouden anders
+    # over verschillende verzamelingen gaan en de degeneratiedrempel een paar
+    # groepen verschuiven.
+    degeneration = check_degeneration(len(groups), len(ids))
     if degeneration:
         print(f"DEGENERATIE: {degeneration}")
 

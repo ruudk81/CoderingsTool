@@ -44,9 +44,8 @@ from ..grouping import (
 from ..taxonomy_input import IdeaUnit, build_attribute_refs, build_idea_units
 from models import ConsolidatedCode
 
-from .analysis import together_from_runs
 from .config_consensus import ConsensusConfig
-from .consensus import consensus_partition, dominant_member
+from .consensus import consensus_partition, dominant_member, together_from_runs
 from .consolidation import resolve_consolidations
 
 CACHE_STEP = "mece_codes"
@@ -73,7 +72,10 @@ class GeneratedCodebook:
     codes: List[ConsolidatedCode]
     direction_loss: int
     degeneration: Optional[str]
-    partition_repairs: List[dict]
+    # Aantal, niet de lijst: bij N=30 runs is elke reparatie een normaal
+    # onderdeel van één los voorstel, en de reparatielijst van 30 runs samen
+    # zou het signaal verdrinken. Zie `report_codebook_build`.
+    partition_repairs: int
     collisions: List[dict]
     naming_mismatches: List[dict]
     duplicate_definitions: List[dict]
@@ -125,9 +127,15 @@ async def generate_codebook(
         cards, survey_question, n_respondents, language, config, salts,
         verbose=verbose, prompt_printer=prompt_printer,
     )
+    # Eén log over alle N runs heen, niet één per run: een repareerbeurt per
+    # run is hier de normale gang van zaken (elke run is een los voorstel),
+    # dus wat aggregeert is bruikbaar diagnostiek — een model dat structureel
+    # attributen vergeet — en een lijst van 30 runs' individuele reparaties
+    # zou dat juist verdrinken.
+    repair_log = _RepairLog()
     partities = [
         [tuple(sorted(group.member_ids))
-         for group in repair_partition(proposal, cards, concepts)]
+         for group in repair_partition(proposal, cards, concepts, log=repair_log)]
         for proposal in proposals
     ]
 
@@ -174,7 +182,7 @@ async def generate_codebook(
     return GeneratedCodebook(
         shapes=shapes, overig_ids=shaped.overig_ids, codes=codes,
         direction_loss=shaped.direction_loss, degeneration=degeneration,
-        partition_repairs=[], collisions=collision_log.entries,
+        partition_repairs=len(repair_log.entries), collisions=collision_log.entries,
         naming_mismatches=find_naming_mismatches(codes, shapes, concept_by_id),
         duplicate_definitions=find_duplicate_definitions(codes, shapes),
         vetoes=veto_log.entries,
@@ -223,17 +231,17 @@ def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) ->
         for v in result.vetoes:
             print(f"  '{v['umbrella']}' — leden: {', '.join(v['members'])}")
 
-    for entry in result.partition_repairs:
-        if entry["action"] == "PARTITION_MISSING":
-            print(f"  PARTITIE: '{entry['name']}' ({entry['attribute_id']}) was "
-                  f"vergeten — eigen groep gemaakt")
-        elif entry["action"] == "PARTITION_DOUBLE":
-            print(f"  PARTITIE: {entry['attribute_id']} stond in meerdere groepen — "
-                  f"gehouden in '{entry['kept_in']}', verwijderd uit "
-                  f"{', '.join(entry['removed_from'])}")
-        else:  # PARTITION_DUPLICATE_IN_GROUP
-            print(f"  PARTITIE: {entry['attribute_id']} stond dubbel in dezelfde "
-                  f"groep '{entry['group']}' — eenmaal geteld")
+    if result.partition_repairs:
+        # Geaggregeerd, niet per entry: bij N runs is elke reparatie een
+        # normaal onderdeel van één los voorstel — de volledige lijst van
+        # productie's report_codebook_build zou hier drukken wat gewoon is.
+        # Wat wél diagnostisch is: HOEVEEL reparaties er over alle runs samen
+        # nodig waren. Zonder deze telling duikt een model dat structureel
+        # attributen vergeet alleen indirect op, als extra solo's.
+        print(f"  PARTITIE: {result.partition_repairs} reparatie(s) over "
+              f"{result.runs_used} runs — vergeten, dubbel geplaatste of "
+              f"dubbel genoemde attributen die repair_partition per run "
+              f"rechttrok")
 
     if result.collisions:
         print(f"WAARSCHUWING: {len(result.collisions)} dubbele codenaam/namen opgelost:")

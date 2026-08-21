@@ -11,6 +11,7 @@ import symtable
 from pathlib import Path
 
 from pipeline.step_5_codeGenerator.consensus import run_experiment
+from pipeline.step_5_codeGenerator.consensus.storage import RunSet, save_runset
 
 RUNNER = Path(run_experiment.__file__)
 
@@ -114,3 +115,22 @@ def test_alles_weigert_bestaande_sets_te_overschrijven(tmp_path, monkeypatch):
 
     assert run_experiment.bezette_sets("luna", 3, 6) == [3]
     assert run_experiment.bezette_sets("luna", 5, 6) == []
+
+
+def test_analyse_meldt_mislukte_runs(tmp_path, monkeypatch, capsys):
+    """`n_failed` wordt bewaard maar tot deze fix nergens gelezen — een latere
+    analyse zou dan `len(runs)` voor het gevraagde aantal aanzien en elke
+    drempel stil laten verschuiven. Het hoort in de kop van `analyse` te staan,
+    waar deze meting hem daadwerkelijk leest."""
+    monkeypatch.setattr(run_experiment, "OUT_DIR", tmp_path)
+    runset = RunSet(
+        model="gpt-5.6-luna", effort="medium",
+        attribute_ids=["A1", "A2"], attribute_names={"A1": "x", "A2": "y"},
+        n_respondents=10, runs=[[("A1", "A2")], [("A1",), ("A2",)]],
+        salted=True, n_failed=3,
+    )
+    save_runset(runset, tmp_path / "consensus_luna_set9.json")
+
+    run_experiment.analyse("luna", 9)
+
+    assert "3 mislukt" in capsys.readouterr().out

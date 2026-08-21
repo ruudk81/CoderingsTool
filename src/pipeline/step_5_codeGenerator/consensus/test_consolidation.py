@@ -4,6 +4,7 @@ De dispatch zelf (het netwerk) wordt hier niet gedraaid — wat te toetsen valt
 is dat de N taken correct gebouwd worden en dat het faalcontract klopt.
 """
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -115,3 +116,53 @@ def test_elke_taak_krijgt_zijn_eigen_prompt_op_de_eigen_phase_key(monkeypatch):
         verwacht_prompt = build_consolidation_prompt(
             CARDS, "Wat vond u van de service?", 100, "Dutch", salt)
         assert _FakeRequester.captured.prepared[index]["prompt"] == verwacht_prompt
+
+
+# De docstring-alinea die de kopie zelf toevoegt aan die van productie — de
+# ENIGE tekstuele afwijking naast de eigen relatieve import. Staat hier
+# letterlijk, zodat een wijziging aan de alinea in het bronbestand deze test
+# laat falen in plaats van hem stilzwijgend te laten slagen op een string die
+# niet meer bestaat.
+_TOEGEVOEGDE_ALINEA = (
+    "\n\nDeze kopie is op 2026-08-21 byte-identiek begonnen aan die van de\n"
+    "productieketen. Dat is met opzet en het is een MEETVOORWAARDE: wijkt hij af\n"
+    "zonder dat dat een besluit was, dan schrijf je een winst toe aan consensus die\n"
+    "van de prompt kwam. Elke afwijking hoort een expliciet besluit te zijn met een\n"
+    "tekstuele vóór→na, zoals de promptregel van dit project voorschrijft."
+)
+
+
+def test_prompt_is_byte_identiek_aan_productie_op_import_en_docstring_na():
+    """MEETVOORWAARDE, niet stijl: wijkt deze kopie af zonder dat dat een
+    besluit was, dan schrijf je een winst toe aan consensus die eigenlijk van
+    de prompt kwam. Deze test is het mechanische alternatief voor de `diff` uit
+    het uitvoeringsplan, dat na afloop is verwijderd.
+
+    Bij een BEWUSTE promptwijziging: werk deze test bij met een tekstuele
+    vóór→na van de wijziging (zie de promptregel in het project-CLAUDE.md).
+    Verwijder de test niet — dat is precies het stille-afwijking-risico dat
+    hij moet vangen."""
+    productie = (Path(__file__).parent.parent / "prompts_consolidation.py").read_text(
+        encoding="utf-8")
+    kandidaat = (Path(__file__).parent / "prompts_consolidation.py").read_text(
+        encoding="utf-8")
+
+    kandidaat = kandidaat.replace(
+        "from ..prompts_common import INSTRUCTOR_HINT, _shuffled",
+        "from .prompts_common import INSTRUCTOR_HINT, _shuffled",
+    )
+    assert _TOEGEVOEGDE_ALINEA in kandidaat, (
+        "de docstring-alinea die de MEETVOORWAARDE vastlegt is weg of "
+        "gewijzigd in consensus/prompts_consolidation.py — werk "
+        "_TOEGEVOEGDE_ALINEA in deze test bij met de nieuwe tekst"
+    )
+    kandidaat = kandidaat.replace(_TOEGEVOEGDE_ALINEA, "")
+
+    assert kandidaat == productie, (
+        "consensus/prompts_consolidation.py is afgeweken van "
+        "../prompts_consolidation.py buiten de eigen import en docstring-alinea "
+        "om. Is dit een bewust besluit: werk deze test bij met een tekstuele "
+        "vóór→na van de wijziging (de promptregel in CLAUDE.md verplicht dat) "
+        "— verwijder de test niet, anders schrijft de volgende meting een "
+        "winst toe aan consensus die van de prompt kwam."
+    )
