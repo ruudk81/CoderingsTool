@@ -118,7 +118,7 @@ Step 5 cache (prefix 006)
 - **Step 7** reads the same `raw_codes` (via `ConsolidatedCode`) for export,
   plus `ensure_assignment_ids(code_assigned_results, mece_cache, mece_cache.raw_codes)`.
 
-## Eén cachesleutel, twee schrijvers
+## Eén cachesleutel, drie schrijvers
 
 `mece_codes` is de enige step-5-uitvoersleutel. Tijdens het experiment dat de
 huidige keten opleverde schreef die onder `mece_codes_v2`, zodat beide
