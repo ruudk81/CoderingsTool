@@ -149,7 +149,7 @@ def render_file(path: Path, models: dict, show_all: bool = False) -> None:
                      counts[entry.get("prompt_type", "unknown")])
 
 
-def _print_alternatives(step: int, wanted: Path) -> None:
+def _print_alternatives(step: int | str, wanted: Path) -> None:
     """After a miss, show which prompt files do exist — and for which run."""
     print(f"\nNo prompts file at: {wanted}")
 
@@ -172,7 +172,7 @@ def _print_alternatives(step: int, wanted: Path) -> None:
               f"use the old convention and are not read back.")
 
 
-def render(step: int, models: dict, test_data, show_all: bool = False) -> None:
+def render(step: int | str, models: dict, test_data, show_all: bool = False) -> None:
     """Render the prompts the given step sent for the run in test_data."""
     name = export_filename(
         test_data.filename,
