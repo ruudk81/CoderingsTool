@@ -140,12 +140,12 @@ valence becomes a stored code's valence; `_shape_lookup` applies the same
 translation on the shape side of the shape↔code match, so both sides speak one
 vocabulary.
 
-This exists for `dev/experiment_consensus/` (see CLAUDE.md's Key Files).
-`run_codebook()` never passes `two_pole=True`, so the production chain still
-runs three poles — this is live code in `grouping.py`, `code_shape.py`,
-`codebook_writer.py` and `prompts_writer.py`, not a dead branch, but it has no
-production caller today. See WORK.md for what a promotion to production would
-have to resolve.
+This exists for `consensus/` (see CLAUDE.md's Key Files and "The consensus
+candidate chain" below). `run_codebook()` never passes `two_pole=True`, so the
+production chain still runs three poles — this is live code in `grouping.py`,
+`code_shape.py`, `codebook_writer.py` and `prompts_writer.py`, not a dead
+branch, but it has no production caller today. See WORK.md for what a
+promotion to production would have to resolve.
 
 ## Prompt Builders & Response Models
 
@@ -261,3 +261,37 @@ It is kept, not deleted: the current chain is measured on one dataset. Its
 modules still import and its tests still run, so it can be run against the
 current chain on a second dataset. Why it
 lost, with the numbers: `.superpowers/specs/2026-08-18-step5-v2-promotienotitie.md`.
+
+## The consensus candidate chain
+
+`consensus/` is a second full chain beside this one, not a variant of it.
+Where the two differ:
+
+- **Stage 2 runs N times, not once.** `consensus/consolidation.py` builds one
+  `SmoothRequester` over N consolidation tasks (`num_tasks=N`, `phase_key`
+  `step5c_consolidation`) instead of production's `num_tasks=1`.
+- **A deterministic consensus stage sits between consolidation and grouping.**
+  `consensus/consensus.py` builds a co-association matrix over the N proposed
+  partitions (how often two attributes sat together) and cuts it at a fixed
+  `tau` (complete linkage) into one partition. Production has no such stage —
+  its single consolidation call's output goes straight to `grouping.py`.
+- **`build_shapes` runs with `two_pole=True`.** The candidate splits every
+  group into two poles (`negative` / `non_negative`) instead of three
+  (positive / negative / neutral) — see "Two-pole valence" above for the
+  mechanism both chains share.
+- **`exclude_drains=True`.** The candidate keeps step 4's catch-alls off the
+  consolidation cards; production shows them (see WORK.md, "Vangnetten op de
+  kaarten").
+
+Where they do not differ: everything from `build_shapes` onward — grouping's
+partition repair and degeneration check, `codebook_writer.py`'s single writer
+call, the three deterministic naming/definition guards, the Overig sweep, the
+scorecard — is the same code, imported via relative import, not copied. Both
+chains write `mece_codes`; whichever runs last is what steps 6 and 7 read.
+
+**Status: not promoted.** The consensus measurement this chain exists to
+support missed its own bar — ARI 0.788 between two independent consensus
+partitions against a required 0.90 (see WORK.md, "Consensus over N runs").
+Becoming a full candidate chain on 2026-08-21 changed the form the experiment
+lives in (a package tracked like `_quarantine_v1/` instead of a script under
+`git add -f`), not that result.

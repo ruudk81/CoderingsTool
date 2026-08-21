@@ -17,7 +17,7 @@ voorgesteld. Het codeboek blijft van één run; deze meting stuurt alleen de
 aandacht.
 
 Dat bezwaar is inmiddels wél beantwoord, alleen niet in deze module: zie
-`dev/experiment_consensus/consensus.py`, dat volledige in plaats van
+`consensus/consensus.py`, dat volledige in plaats van
 enkelvoudige koppeling gebruikt — een groep ontstaat daar alleen als élk paar
 erin de drempel haalt, dus de A-C-op-apart-situatie hierboven sluit {A,B,C}
 juist uit.

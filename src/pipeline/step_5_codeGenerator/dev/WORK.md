@@ -49,8 +49,18 @@ verschil zonder pool 317 tegen 409 was.
 
 Gebouwd en gemeten: deel 1 N keer draaien, per attribuutPAAR tellen hoe vaak
 twee samen zaten, en die co-associatiematrix met volledige koppeling tot een
-indeling snijden. Gereedschap in `dev/experiment_consensus/`, verslag in
+indeling snijden. Gereedschap in `consensus/`, verslag in
 `exports/experiment_logs/consensus_verslag_20260820.md`.
+
+Sinds 2026-08-21 is dat gereedschap geen los script meer maar een volwaardige
+kandidaatketen (`consensus/`, getrackt naast `_quarantine_v1/` in plaats van
+onder `dev/`): eigen runner, eigen consolidatiedispatch (N runs in één
+`SmoothRequester`), eigen cache-write onder de gedeelde `mece_codes`-sleutel,
+eigen kosten-/log-/prompt-identiteit. De meting hieronder verandert daardoor
+niet — het is dezelfde 0,788 op dezelfde vraag. Wat wel verandert is wat een
+promotiebesluit vraagt: geen herbouw meer, maar een verhuizing (modules
+omhoog de stapmap in, de huidige productieketen naar `_quarantine_v1/`),
+precies zoals `v2/` dat op 2026-08-19 deed.
 
 Hoofdmaat = ARI tussen twee onafhankelijke consensusindelingen. Op de vooraf
 vastgelegde τ=0,5: **0,788** tegen de geeiste 0,90. Gefaald. Consensus
@@ -110,7 +120,7 @@ binnen het 10%-plafond.
 **De vlag staat UIT in productie** (2026-08-21, op verzoek): het experiment moet
 eerst als geheel gepromoveerd of verworpen worden, en tot dat besluit valt hoort
 er geen enkele gedragswijziging ongemerkt mee te liften. `run_codebook.py` geeft
-de vlag niet mee; alleen `dev/experiment_consensus/` zet hem aan.
+de vlag niet mee; alleen `consensus/` zet hem aan.
 
 Los daarvan blijft dit een gemiste contractregel en geen experimentele feature:
 step 4 documenteert dat je vangnetten op `drain_key` herkent en step 5 keek er
@@ -330,7 +340,7 @@ die `code_shape.stored_valence()` vertaalt naar `neutral` omdat
 `ConsolidatedCode.valence` (`models.py`) een drie-waardige `Literal` is (zie
 ARCHITECTURE.md voor het mechanisme). Dat is vandaag onproblematisch — de
 productieketen roept `build_shapes` nooit met `two_pole=True`, dit dient alleen
-`dev/experiment_consensus/`. Wordt de tweedeling ooit productie, dan moet de
+`consensus/`. Wordt de tweedeling ooit productie, dan moet de
 keuze opnieuw gemaakt worden: blijven vertalen (en dus het onderscheid tussen
 "positief" en "niet-negatief" verliezen zodra een code wordt opgeslagen), of
 `models.py`'s contract verruimen naar vier waarden — dat raakt steps 6 en 7,
@@ -349,7 +359,7 @@ De opruimregel van dit project verbiedt dode velden, maar verwijderen raakt
 Regel 1 van de schrijfprompt (`prompts_writer.py`) noemt `neutral or
 non_negative` als de twee waarden waarbij een code beschrijvend blijft, niet
 richtinggevend. `non_negative` bestaat alleen via `build_shapes(two_pole=True)`
-— zie "Two-pole valence" hierboven. Promoveert `dev/experiment_consensus/` de
+— zie "Two-pole valence" hierboven. Promoveert `consensus/` de
 tweedeling niet, dan noemt de prompt een waarde die nooit meer kan voorkomen.
 Opruimen hangt af van die uitkomst; de promptregel zelf blijft voorlopig
 ongewijzigd.

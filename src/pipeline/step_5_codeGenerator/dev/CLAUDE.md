@@ -80,11 +80,23 @@ more** — a leftover reference to one is stale, not a second chain.
 - `_quarantine_v1/` — the retired v1 chain; nothing in it runs in production.
   Its `prompts_writer_v1.py` is the one thing it does NOT share with the live
   chain, and `run_codeGenerator.py` passes it explicitly to `write_codebook`
-- `dev/experiment_consensus/` — consensus-over-N-runs experiment
-  (`consensus.py`, `analysis.py`, `storage.py`, `stability_bridge.py`,
-  `run_experiment.py`). Read-only against the pipeline cache — writes nothing
-  under `mece_codes`. Not run beyond smoke tests. Design:
-  `.superpowers/specs/2026-08-20-step5-consensus-experiment-design.md`
+- `consensus/` — the consensus candidate: a full second chain beside this one,
+  tracked in git next to `_quarantine_v1/` (not `git add -f`'d under `dev/`
+  any more, since 2026-08-21). It owns `config_consensus.py`,
+  `prompts_consolidation.py`, `consolidation.py` (N runs in one
+  `SmoothRequester`, `phase_key` `step5c_consolidation`), `consensus.py`,
+  `analysis.py`, `storage.py`, `run_codebook.py`, `run_experiment.py`,
+  `view_prompts.py`, `view_codebook.py` and its own tests; it borrows
+  everything from `build_shapes` onward via relative imports
+  (`taxonomy_input.py`, `concept_inventory.py`, `attribute_cards.py`,
+  `code_shape.py`, `grouping.py`, `codebook_writer.py`, `prompts_writer.py`,
+  `prompts_common.py`, `codebook_io.py`, `codebook_verifier.py`). It writes
+  under `mece_codes` — the SAME cache key as production, so steps 6 and 7 can
+  run on consensus codes — which means the cache holds one codebook at a time
+  and the last chain to run wins. Its cost sits under its own step,
+  `step_5_consensus`; its verbose log is `log_step5c.txt`; its prompt export
+  doctype is `prompts_step5c`. Not promoted: the consensus measurement itself
+  missed its own bar (ARI 0.788 against a required 0.90) — see WORK.md
 - `CodingResultsCache` (cache model) lives in `src/models.py` — the single
   source of truth for all cross-step models
 - `ConsolidatedCode` lives in `src/models.py` alongside `CodingResultsCache` —
