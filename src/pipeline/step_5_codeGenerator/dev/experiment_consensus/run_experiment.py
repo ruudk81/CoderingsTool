@@ -10,6 +10,9 @@ deterministisch tot één indeling.
     python run_experiment.py analyse --config luna  --set 1
     python run_experiment.py compare --config luna  --tau 0.8
 
+Of, zonder commandoregel: zet de INSTELLINGEN hieronder goed en druk op Run.
+Een aanroep met argumenten wint altijd van die instellingen.
+
 Raakt de productiecache niet aan: er wordt niets weggeschreven onder
 `mece_codes`.
 """
@@ -46,18 +49,73 @@ from pipeline.step_5_codeGenerator.concept_inventory import build_inventory, t_k
 from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig  # noqa: E402
 from pipeline.step_5_codeGenerator.consolidation import resolve_consolidation  # noqa: E402
 from pipeline.step_5_codeGenerator.grouping import (  # noqa: E402
-    Group, build_shapes, check_degeneration, repair_partition,
+    Group, build_shapes, check_degeneration, pool_thin_within_facet,
+    repair_partition,
 )
 from pipeline.step_5_codeGenerator.taxonomy_input import (  # noqa: E402
     build_attribute_refs, build_idea_units,
 )
 
-from analysis import consensus_ari, histogram, pairwise_ari, tau_sweep  # noqa: E402
+from analysis import (  # noqa: E402
+    consensus_ari, histogram, merge_recurrence, pairwise_ari, tau_sweep,
+)
 from consensus import consensus_partition, dominant_member  # noqa: E402
 from stability_bridge import together_from_runs  # noqa: E402
 from storage import RunSet, load_runset, save_runset  # noqa: E402
 
 OUT_DIR = SRC.parent / "exports" / "experiment_logs"
+
+# =============================================================================
+# INSTELLINGEN — dit is wat een klik op Run doet
+# =============================================================================
+# Verander deze regels, druk op Run, klaar. Wie liever de commandoregel
+# gebruikt: argumenten winnen hiervan, dus de commando's in het verslag blijven
+# werken.
+#
+# Wat de vier acties doen, en wat ze kosten:
+#   alles     de hele ronde achter elkaar               2xRUNS + 2 calls  <-- kost geld
+#   analyse   lees een opgeslagen set: hoe onstabiel is deel 1?     0 calls
+#   compare   twee sets tegen elkaar: reproduceert de consensus?    0 calls
+#   codebook  bouw een codeboek uit een set                         1 call
+#   collect   draai deel 1 opnieuw, N keer                          N calls  <-- kost geld
+
+ACTIE = "alles"       # alles | analyse | compare | codebook | collect
+CONFIG = "luna"         # luna (goedkoop) | gpt54 (12,5x duurder)
+SET = 5                 # welke opgeslagen set. luna: 0,1,3,4  |  gpt54: 1,2
+SET_B = 6               # bij 'compare' en 'alles': de tweede set
+TAU = 0.7               # alleen bij compare/codebook: hoe vaak twee attributen
+                        # samen moeten hebben gezeten om te mogen koppelen
+RUNS = 30               # alleen bij 'collect': hoeveel keer deel 1 draait
+SOURCE = "consensus"    # alleen bij 'codebook': consensus | baseline (1 losse run)
+POLES = "two"         # alleen bij 'codebook': three (pos/neu/neg) | two (niet-negatief/neg)
+
+
+def settings_argv() -> List[str]:
+    """De instellingen hierboven als commandoregel.
+
+    Zo loopt een klik op Run door exact dezelfde parser als een aanroep uit de
+    terminal — één code-pad, dus de knop kan nooit iets anders doen dan het
+    commando dat ernaast in het verslag staat.
+    """
+    argv = [ACTIE, "--config", CONFIG]
+    if ACTIE == "alles":
+        argv += ["--runs", str(RUNS), "--set-a", str(SET), "--set-b", str(SET_B),
+                 "--tau", str(TAU), "--poles", POLES]
+    elif ACTIE == "collect":
+        argv += ["--runs", str(RUNS), "--set", str(SET)]
+    elif ACTIE == "analyse":
+        argv += ["--set", str(SET)]
+    elif ACTIE == "compare":
+        argv += ["--tau", str(TAU), "--set-a", str(SET), "--set-b", str(SET_B)]
+    elif ACTIE == "codebook":
+        argv += ["--set", str(SET), "--tau", str(TAU),
+                 "--source", SOURCE, "--poles", POLES]
+    return argv
+
+
+def gekozen_argv(argv: List[str]) -> List[str]:
+    """Argumenten van de commandoregel, of anders de instellingen hierboven."""
+    return argv if argv else settings_argv()
 
 # De twee configuraties die fase 1 tegen elkaar zet. De sleutel van STEP_EFFORT
 # is de fase, niet het model, dus de effort wordt tijdelijk omgezet en in een
@@ -226,13 +284,15 @@ def analyse(config_name: str, set_index: int) -> None:
               f"{row['largest']:>9d}  {row['n_solo']:>5d}")
 
 
-def compare(config_name: str, tau: float) -> None:
-    """Fase 5 — de hoofdmaat: ARI tussen de consensusindeling van set 1 en die
-    van set 2. Kost geen enkele LLM-call — beide sets staan al op schijf."""
-    path_a = OUT_DIR / f"consensus_{config_name}_set1.json"
-    path_b = OUT_DIR / f"consensus_{config_name}_set2.json"
-    a = load_runset(path_a)
-    b = load_runset(path_b)
+def compare(config_name: str, tau: float, set_a: int = 1, set_b: int = 2) -> None:
+    """Fase 5 — de hoofdmaat: ARI tussen twee onafhankelijke consensusindelingen.
+    Kost geen enkele LLM-call — beide sets staan al op schijf.
+
+    Welke twee sets is een argument en geen aanname: de sets op schijf zijn niet
+    altijd 1 en 2 (de 30-runsmeting draaide op 3 en 4, en luna heeft geen set 2).
+    """
+    a = load_runset(OUT_DIR / f"consensus_{config_name}_set{set_a}.json")
+    b = load_runset(OUT_DIR / f"consensus_{config_name}_set{set_b}.json")
 
     # `adjusted_rand_index` beperkt zich stil tot de doorsnede van de twee
     # eenhedenverzamelingen. Een step-4-herberekening tussen de twee sets zou de
@@ -240,9 +300,9 @@ def compare(config_name: str, tau: float) -> None:
     # weigeren in plaats van dat risico te lopen.
     if a.attribute_ids != b.attribute_ids:
         raise SystemExit(
-            "de attribuutuniversa van set 1 en set 2 verschillen — ARI zou "
-            "stilzwijgend op de doorsnede berekend worden. Verzamel beide sets "
-            "opnieuw tegen dezelfde step-4-cache."
+            f"de attribuutuniversa van set {set_a} en set {set_b} verschillen — "
+            "ARI zou stilzwijgend op de doorsnede berekend worden. Verzamel "
+            "beide sets opnieuw tegen dezelfde step-4-cache."
         )
 
     together_a = together_from_runs(a.runs, a.attribute_ids)
@@ -250,19 +310,83 @@ def compare(config_name: str, tau: float) -> None:
     clusters_a = consensus_partition(together_a, a.attribute_ids, len(a.runs), tau)
     clusters_b = consensus_partition(together_b, b.attribute_ids, len(b.runs), tau)
 
-    print(f"\n{'=' * 78}\nFASE 5 — set 1 vs set 2  ({config_name}, tau={tau})"
+    print(f"\n{'=' * 78}\nFASE 5 — set {set_a} vs set {set_b}  "
+          f"({config_name}, {len(a.runs)}+{len(b.runs)} runs, tau={tau})"
           f"\n{'=' * 78}")
-    for label, runset, clusters in (("set 1", a, clusters_a), ("set 2", b, clusters_b)):
+    for index, runset, clusters in ((set_a, a, clusters_a), (set_b, b, clusters_b)):
         n_solo = sum(1 for cluster in clusters if len(cluster) == 1)
         degeneration = check_degeneration(len(clusters), len(runset.attribute_ids))
-        print(f"  {label}: {len(clusters)} groepen, {n_solo} solo's"
+        print(f"  set {index}: {len(clusters)} groepen, {n_solo} solo's"
               f"  — {degeneration or 'geen degeneratie'}")
 
     # Louter solo's scoort hier 1.0, niet NaN — een vals perfecte score omdat
     # maximum en kansverwachting samenvallen (zie `consensus_ari`). Daarom staat
     # de degeneratieverdict hierboven altijd naast dit getal, nooit zonder.
     ari = consensus_ari(clusters_a, clusters_b)
-    print(f"\n  ARI(set 1, set 2) = {ari:.3f}")
+    print(f"\n  ARI(set {set_a}, set {set_b}) = {ari:.3f}")
+
+    # ARI weegt élke paarbeslissing even zwaar en gaat op een dunne indeling dus
+    # vooral over attributen die toch alleen blijven. De samenvoegingen zijn wat
+    # het codeboek bepaalt, dus die staan er als aparte maat naast.
+    merges = merge_recurrence(clusters_a, clusters_b)
+    overeenstemming = merges["pair_agreement"]
+    print(f"  samenvoegingen: {merges['identical']} identiek "
+          f"(van {merges['merges_a']} in set {set_a}, "
+          f"{merges['merges_b']} in set {set_b})")
+    print("  paarovereenstemming over samengevoegd materiaal: "
+          + ("n.v.t. — geen van beide indelingen voegt iets samen"
+             if overeenstemming is None else f"{overeenstemming:.1%}"))
+
+
+def bezette_sets(config_name: str, *indices: int) -> List[int]:
+    """Welke van deze setnummers al op schijf staan.
+
+    `collect` overschrijft zonder waarschuwing, en een set is RUNS LLM-calls
+    die je niet terugkrijgt. Een ronde die per ongeluk op een bezet nummer
+    landt wist dus het materiaal van een eerdere meting.
+    """
+    return [index for index in indices
+            if (OUT_DIR / f"consensus_{config_name}_set{index}.json").exists()]
+
+
+async def alles(config_name: str, runs: int, set_a: int, set_b: int,
+                tau: float, poles: str) -> None:
+    """De hele ronde achter elkaar: verzamelen, meten, en twee codeboeken.
+
+    De losse acties bestaan om een ronde te kunnen onderbreken of om een
+    opgeslagen set later opnieuw te bevragen. Wie de meting gewoon wil
+    uitvoeren hoort dat niet in zes stappen te hoeven doen.
+
+    De twee codeboeken zijn er allebei omdat een codeboek op zichzelf niets
+    zegt: de basislijn uit een losse run is waar de consensusversie tegen
+    afgezet wordt.
+    """
+    bezet = bezette_sets(config_name, set_a, set_b)
+    if bezet:
+        raise SystemExit(
+            f"set {' en '.join(map(str, bezet))} bestaat al voor {config_name} "
+            f"en zou overschreven worden — dat is {runs} LLM-calls per set die "
+            f"je kwijt bent. Kies vrije nummers via SET / SET_B.")
+
+    print(f"\n{'=' * 78}\nVOLLEDIGE RONDE — {config_name}, {runs} runs per set, "
+          f"tau={tau}, {poles} polen\n  kosten: {2 * runs} + 2 = "
+          f"{2 * runs + 2} LLM-calls\n{'=' * 78}")
+
+    print(f"\n[1/6] set {set_a} verzamelen ({runs} calls)")
+    await collect(config_name, runs, set_a)
+    print(f"\n[2/6] set {set_b} verzamelen ({runs} calls)")
+    await collect(config_name, runs, set_b)
+    print(f"\n[3/6] hoe onstabiel is deel 1 (gratis)")
+    analyse(config_name, set_a)
+    print(f"\n[4/6] de hoofdmaat: reproduceert de consensus (gratis)")
+    compare(config_name, tau, set_a, set_b)
+    print(f"\n[5/6] basislijncodeboek uit een losse run (1 call)")
+    await codebook(config_name, set_a, tau, "baseline", poles)
+    print(f"\n[6/6] consensuscodeboek (1 call)")
+    await codebook(config_name, set_a, tau, "consensus", poles)
+
+    print(f"\n{'=' * 78}\nRONDE KLAAR — beide codeboeken staan in {OUT_DIR}"
+          f"\n{'=' * 78}")
 
 
 class _Log:
@@ -374,9 +498,19 @@ async def _codebook_body(config_name: str, set_index: int, tau: float,
     print(f"  scorecard:        {'PASS' if scorecard.passed else 'FAIL'}")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Apart van `main()` zodat de CLI zonder uitvoering te toetsen is."""
     parser = argparse.ArgumentParser(description="consensus over N consolidatieruns")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    alles_parser = sub.add_parser(
+        "alles", help="de hele ronde: verzamelen, meten, twee codeboeken")
+    alles_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
+    alles_parser.add_argument("--runs", type=int, default=30)
+    alles_parser.add_argument("--set-a", type=int, default=5, dest="set_a")
+    alles_parser.add_argument("--set-b", type=int, default=6, dest="set_b")
+    alles_parser.add_argument("--tau", type=float, default=0.7)
+    alles_parser.add_argument("--poles", choices=("three", "two"), default="three")
 
     collect_parser = sub.add_parser("collect", help="draai deel 1 N keer")
     collect_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
@@ -396,6 +530,8 @@ def main() -> None:
         "compare", help="ARI tussen de consensusindeling van set 1 en set 2")
     compare_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
     compare_parser.add_argument("--tau", type=float, default=0.8)
+    compare_parser.add_argument("--set-a", type=int, default=1, dest="set_a")
+    compare_parser.add_argument("--set-b", type=int, default=2, dest="set_b")
 
     codebook_parser = sub.add_parser("codebook", help="bouw een codeboek")
     codebook_parser.add_argument("--config", choices=sorted(CONFIGS), required=True)
@@ -405,14 +541,21 @@ def main() -> None:
                                  default="consensus")
     codebook_parser.add_argument("--poles", choices=("three", "two"), default="three")
 
-    args = parser.parse_args()
-    if args.command == "collect":
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args(gekozen_argv(sys.argv[1:]))
+    if args.command == "alles":
+        asyncio.run(alles(args.config, args.runs, args.set_a, args.set_b,
+                          args.tau, args.poles))
+    elif args.command == "collect":
         asyncio.run(collect(args.config, args.runs, args.set_index,
                             salted=not args.no_salt))
     elif args.command == "analyse":
         analyse(args.config, args.set_index)
     elif args.command == "compare":
-        compare(args.config, args.tau)
+        compare(args.config, args.tau, args.set_a, args.set_b)
     elif args.command == "codebook":
         asyncio.run(codebook(args.config, args.set_index, args.tau,
                              args.source, args.poles))

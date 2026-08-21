@@ -166,14 +166,20 @@ model, see PROCESSING.md) is a `step5_*` string per call site:
   the flag: production still shows catch-alls to the model, pending the
   promotion decision on the consensus experiment. Recognition is
   on the key and never on the name — the name is in the survey language and may
-  be rewritten (step 4's `drains.py` states the same rule). The reason is not
-  tidiness: a catch-all's definition is literally "responses that belong to this
-  facet but match none of the attributes under it", so asking the model to group
-  it thematically has no answerable form. Measured on the ASN set (2026-08-20):
-  it answered anyway, merging each catch-all with its namesake attribute at
-  28-29 of 30 runs, over buckets holding one or two respondents. The Concepts
-  stay — the respondents on them belong in the bookkeeping — and
-  `apply_overig_sweep` covers them, so nothing is lost.
+  be rewritten (step 4's `drains.py` states the same rule). **The reason is
+  NOT that a catch-all has no subject** — that motivation was refuted on
+  2026-08-21 and removed here. A catch-all is facet-scoped: "the rest within
+  Political direction" has a subject, merely an unspecified one, and putting it
+  with its facet's main code is defensible. The reason is what such a merge does
+  to a MEASUREMENT: on the ASN set (2026-08-20) each catch-all merged with its
+  namesake attribute at 28-29 of 30 runs — a facet-and-name match, so near
+  automatic — and therefore topped the co-association matrix over buckets holding
+  one or two respondents. That is recurrence without prevalence. The Concepts
+  stay (their respondents belong in the bookkeeping) and `apply_overig_sweep`
+  covers them, but note the price: that sweep emits ONE global `Overig`, so with
+  the flag on those respondents lose their facet context. A third way — off the
+  cards, but routed deterministically to their own facet's code, as
+  `pool_thin_within_facet` already does — is open in WORK.md.
 - **Concepts only exist for attributes with ≥1 classified idea.** An attribute
   with zero ideas never becomes a `Concept` and is invisible to the chain. The
   actual 100%-coverage guarantee is `apply_overig_sweep` in `codebook_io.py`,

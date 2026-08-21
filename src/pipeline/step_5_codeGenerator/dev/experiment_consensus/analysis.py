@@ -10,13 +10,17 @@ Vier metingen, elk met een eigen doel:
 - `tau_sweep`: welke drempel levert een bruikbare indeling?
 - `consensus_ari`: de hoofdmaat — hoe goed komt de consensusindeling van de ene
   set overeen met die van de andere?
+- `merge_recurrence`: dezelfde vergelijking op de eenheid die het codeboek
+  bepaalt — welke SAMENVOEGINGEN komen terug. ARI en ruwe paarovereenstemming
+  tellen ook de honderden beslissingen over attributen die toch alleen blijven,
+  en op dit materiaal domineren die het getal.
 """
 from __future__ import annotations
 
 import sys
 from itertools import combinations
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Sequence
+from typing import Dict, FrozenSet, List, Sequence, Set
 
 SRC = Path(__file__).resolve().parents[4]
 if str(SRC) not in sys.path:
@@ -58,6 +62,54 @@ def consensus_ari(a: Sequence[Sequence[str]], b: Sequence[Sequence[str]]) -> flo
     naast de ARI moet drukken in plaats van het getal op zichzelf te tonen.
     """
     return adjusted_rand_index(labels_from_clusters(a), labels_from_clusters(b))
+
+
+def _merges(clusters: Sequence[Sequence[str]]) -> Set[FrozenSet[str]]:
+    """De groepen die daadwerkelijk iets samenvoegen. Een solo is er geen."""
+    return {frozenset(cluster) for cluster in clusters if len(cluster) >= 2}
+
+
+def _together_pairs(clusters: Sequence[Sequence[str]]) -> Set[FrozenSet[str]]:
+    """Elk paar dat in deze indeling in dezelfde groep zit."""
+    return {frozenset(pair)
+            for cluster in clusters
+            for pair in combinations(sorted(cluster), 2)}
+
+
+def merge_recurrence(a: Sequence[Sequence[str]],
+                     b: Sequence[Sequence[str]]) -> dict:
+    """Welke samenvoegingen komen in beide indelingen terug.
+
+    Dit is de vraag waar het codeboek van afhangt, en het is niet de vraag die
+    ARI beantwoordt. ARI weegt élke paarbeslissing even zwaar, dus op een dunne
+    indeling — 49 attributen, 26 groepen, 13 solo's — gaat het getal vooral
+    over attributen die toch alleen blijven. Dezelfde verwarring zat in de
+    ruwe paarovereenstemming van 89-90% in `WORK.md`: bijna volledig te danken
+    aan paren die in béíde runs apart zaten.
+
+    Twee getallen, beide met alleen samengevoegd materiaal in de noemer:
+
+    - `identical`: hoeveel samenvoegingen letterlijk in allebei staan. Streng —
+      {A,B,C} tegenover {A,B} telt niet mee, want dat is een andere code.
+    - `pair_agreement`: van alle paren die minstens één van de twee samenvoegde,
+      welk deel voegden ze allebei samen. Dit vangt de gedeeltelijke overlap die
+      `identical` per definitie mist.
+
+    `pair_agreement` is `None` wanneer geen van beide indelingen ook maar iets
+    samenvoegt. Dat is geen 1.0: twee verzamelingen solo's zijn het nergens
+    oneens omdat er niets te beslissen viel — dezelfde vals perfecte score die
+    `consensus_ari` daar wel afdrukt, en die daar alleen te verdragen is omdat
+    `compare` de degeneratieverdict ernaast zet.
+    """
+    pairs_a, pairs_b = _together_pairs(a), _together_pairs(b)
+    beide = pairs_a & pairs_b
+    minstens_een = pairs_a | pairs_b
+    return {
+        "merges_a": len(_merges(a)),
+        "merges_b": len(_merges(b)),
+        "identical": len(_merges(a) & _merges(b)),
+        "pair_agreement": len(beide) / len(minstens_een) if minstens_een else None,
+    }
 
 
 def tau_sweep(

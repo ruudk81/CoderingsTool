@@ -42,14 +42,22 @@ def build_cards(
 ) -> List[AttributeCard]:
     """Eén kaart per Concept, in de volgorde waarin de concepten binnenkomen.
 
-    `exclude_drains` laat step 4's vangnetten weg. Die zijn per constructie
-    restant en geen onderwerp: hun definitie luidt letterlijk "responsen die bij
-    dit facet horen maar bij geen van de attributen eronder", dus het model
-    vragen ze thematisch te groeperen is een onbeantwoordbare vraag. Op de
-    ASN-set antwoordde het toch, en merde elk vangnet met 28-29 van 30 runs
-    samen met zijn naamgenoot-attribuut — over bakjes met een of twee
-    respondenten. De ideeen erop blijven hoe dan ook gedekt: `apply_overig_sweep`
-    veegt elk attribuut op dat geen code claimde.
+    `exclude_drains` laat step 4's vangnetten weg. Niet omdat ze onderwerploos
+    zijn — dat is een weerlegde motivering die hier tot 2026-08-21 stond. Een
+    vangnet is FACET-GEBONDEN: "de rest binnen Politieke richting" heeft een
+    onderwerp, alleen niet gespecificeerd, en het bij de hoofdcode van dat facet
+    zetten is verdedigbaar.
+
+    De reden is wat zo'n merge met een METING doet. Op de ASN-set kwam elk
+    vangnet 28-29 van 30 runs samen met zijn naamgenoot-attribuut — een facet-
+    en naamovereenkomst, dus bijna automatisch — en stond daarmee bovenaan de
+    co-associatiematrix over bakjes met een of twee respondenten. Dat is
+    recurrentie zonder prevalentie, niet een eigenschap van vangnetten.
+
+    Let op de prijs: `apply_overig_sweep` maakt EEN globale `Overig` voor de hele
+    dataset, dus met deze vlag aan verliezen die respondenten hun facetcontext.
+    Er is een derde weg (van de kaarten af, maar deterministisch naar de code van
+    het eigen facet, zoals `pool_thin_within_facet` het al doet) — zie WORK.md.
 
     **Staat standaard UIT tot het promotiebesluit over het consensus-experiment
     valt.** Zonder de vlag is het gedrag identiek aan voor 2026-08-20. Het

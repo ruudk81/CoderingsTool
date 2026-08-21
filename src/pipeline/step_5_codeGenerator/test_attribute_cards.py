@@ -74,11 +74,12 @@ def test_attribute_without_ideas_still_gets_a_card_without_answers():
 
 
 def test_vangnetten_komen_niet_op_een_kaart():
-    """Een vangnet is per constructie restant, geen onderwerp. Zijn definitie
-    luidt letterlijk 'responsen die nergens pasten', dus het model vragen om
-    hem thematisch te groeperen is een onbeantwoordbare vraag — en hij kreeg
-    daar gemeten 28-van-30-zekerheid op, over een bakje met een respondent.
-    De ideeen erop vallen in de Overig-sweep, die 100% dekking garandeert."""
+    """Niet omdat een vangnet onderwerploos zou zijn — die motivering is op
+    2026-08-21 weerlegd: hij is facet-gebonden en heeft dus wel degelijk een
+    onderwerp. Maar omdat de merge met zijn naamgenoot een facet- en
+    naamovereenkomst is en daarmee bijna automatisch: gemeten 28-van-30-
+    zekerheid over een bakje met een respondent, bovenaan de matrix. De ideeen
+    erop vallen in de Overig-sweep, die 100% dekking garandeert."""
     gewoon = concept("A1", "Prijs", pos=3)
     vangnet = Concept(attribute_id="A9", name="Overig — F", definition="rest",
                       domain="D", facet="F", n_iu=1,

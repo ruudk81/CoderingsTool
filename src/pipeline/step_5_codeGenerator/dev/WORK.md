@@ -72,6 +72,22 @@ paar-overeenstemming, N=15 53-65%, N=30 73%. Stijgt door tot 30. Uitwisselbaar
 met modelkwaliteit: gpt-5.4 bij N=10 gaf 8 van 9 groepen terug, luna bij N=30
 zeven van negen — en 30 luna-calls kosten ongeveer twee gpt-5.4-calls.
 
+Die merge-meting staat sinds 2026-08-21 in het gereedschap in plaats van in een
+losse berekening: `analysis.merge_recurrence` telt identieke samenvoegingen plus
+de paarovereenstemming over ALLEEN samengevoegd materiaal (paren die in beide
+indelingen apart zitten vallen uit de noemer — dat is wat de 89-90% hierboven
+misleidend maakte), en `compare` drukt het naast de ARI af. `compare` neemt
+daarvoor `--set-a` / `--set-b`, want de 30-runssets zijn 3 en 4 en luna heeft
+geen set 2. Reproduceren: `compare --config luna --set-a 3 --set-b 4 --tau 0.7`
+geeft ARI 0,844, 7 van 9 samenvoegingen identiek, 73,3% paarovereenstemming.
+
+**Nog niet reproduceerbaar: de 5-van-5 hierboven** (open). Dat cijfer is gemeten
+op een vangnetvrije attribuutlijst, en dat filter zit alleen in `_codebook_body`
+(`_schoon`), niet in `compare` — de opgeslagen sets 3 en 4 zijn nog mét
+vangnetten verzameld. Wie het cijfer wil narekenen moet de vangnetten er in
+`compare` uit filteren; dat vraagt de step-4-cache (`load_material`), geen
+LLM-call.
+
 ### Zekerheid en betekenis zijn niet hetzelfde (open)
 
 De methode weegt alleen hoe vaak een paar samen zat, niet hoeveel materiaal
@@ -100,6 +116,43 @@ Los daarvan blijft dit een gemiste contractregel en geen experimentele feature:
 step 4 documenteert dat je vangnetten op `drain_key` herkent en step 5 keek er
 nooit naar. Bij een verwerping van het experiment hoort deze vlag alsnog
 afzonderlijk gewogen te worden.
+
+#### De motivering klopt niet, en er is een betere derde weg (open — 2026-08-21)
+
+De reden die overal bij deze uitsluiting staat — een vangnet zou "geen
+beantwoordbare vorm" hebben omdat het per definitie restant is — **is onjuist**.
+Een vangnet is niet onderwerploos maar FACET-GEBONDEN: `Overig — Politieke
+richting` betekent "de rest binnen Politieke richting", en dat is een onderwerp,
+alleen niet gespecificeerd. Het model dat zo'n vangnet bij de hoofdcode van zijn
+eigen facet zet doet dus iets verdedigbaars, geen onzin.
+
+Wat er wél mis is, is wat die merge met de METING doet. De 28-29 van 30 komt uit
+een facet- en naamovereenkomst en is daarmee bijna automatisch, dus hij staat
+bovenaan de co-associatiematrix terwijl er een of twee respondenten onder zitten.
+Dat is exact het gat dat hierboven onder "Zekerheid en betekenis zijn niet
+hetzelfde" staat — recurrentie zonder prevalentie — en niet een eigenschap van
+vangnetten.
+
+**Nagemeten kostenpost, groter dan eerder genoteerd.** `apply_overig_sweep`
+maakt EEN globale `Overig`-code voor de hele dataset, niet een per facet. Met de
+vlag aan verliezen die 8 respondenten dus hun facetcontext volledig: "de rest van
+Politieke richting" wordt "de rest van alles". Het onderscheid dat een vangnet
+draagt gaat weg, niet alleen het meetartefact.
+
+**Derde weg, niet gebouwd:** haal vangnetten van de consolidatiekaarten (het
+model hoeft er geen oordeel over te vellen) maar route ze deterministisch naar de
+code van hun EIGEN FACET in plaats van naar de globale `Overig`. Die redenering
+staat al in de code: `pool_thin_within_facet` behandelt het facet als legitieme
+groepeereenheid en steekt nooit een facetgrens over, en een vangnet is per
+definitie sub-drempelig materiaal binnen een facet. Dan verdwijnt het
+meetartefact en blijft de facetbetekenis staan. Geen LLM-vraag, Python.
+
+Gevolg voor het promotiebesluit: de keuze is niet "vlag aan of uit" maar
+drie-weg. De vlag blijft UIT tot die derde weg gewogen is.
+
+De refuted motivering staat op nog twee plaatsen en is daar NIET gecorrigeerd:
+de docstring van `build_cards` (`attribute_cards.py`) en de Gotcha in
+`dev/CLAUDE.md`. Beide zeggen dat de vraag "geen beantwoordbare vorm" heeft.
 
 ## De consolidatiecall reproduceert niet (open — 2026-08-18)
 

@@ -4,7 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from analysis import consensus_ari, histogram, pairwise_ari, tau_sweep
+from analysis import (consensus_ari, histogram, merge_recurrence, pairwise_ari,
+                      tau_sweep)
 
 
 def matrix(pairs):
@@ -65,3 +66,54 @@ def test_consensus_ari_is_ook_1_voor_twee_indelingen_van_louter_solos():
     b = [("A",), ("B",), ("C",)]
 
     assert consensus_ari(a, b) == 1.0
+
+
+def test_merge_recurrentie_telt_alleen_samenvoegingen():
+    """Een solo is geen samenvoeging. Telt hij mee, dan meet je vooral hoeveel
+    attributen alleen bleven — en dat is precies het bezwaar tegen ARI op dit
+    materiaal."""
+    a = [("A", "B"), ("C", "D"), ("E",)]
+    b = [("A", "B"), ("C",), ("D",), ("E",)]
+
+    uitkomst = merge_recurrence(a, b)
+
+    assert uitkomst["merges_a"] == 2      # {A,B} en {C,D}
+    assert uitkomst["merges_b"] == 1      # alleen {A,B}
+    assert uitkomst["identical"] == 1
+
+
+def test_een_deels_overlappende_groep_telt_niet_als_identiek():
+    """Identiek is identiek. {A,B,C} tegenover {A,B} is een andere code, geen
+    reproductie ervan — de paarovereenstemming vangt de gedeeltelijke
+    overlap."""
+    a = [("A", "B", "C")]
+    b = [("A", "B"), ("C",)]
+
+    uitkomst = merge_recurrence(a, b)
+
+    assert uitkomst["identical"] == 0
+    assert uitkomst["pair_agreement"] == 1 / 3   # A-B van de drie paren
+
+
+def test_paarovereenstemming_negeert_wat_in_beide_apart_zit():
+    """De maat die in WORK.md misleidde telde apart-apart mee en kwam daardoor
+    op 89-90% terwijl de indelingen nauwelijks op elkaar leken. Hier staat
+    alleen wat minstens één van de twee samenvoegde in de noemer."""
+    a = [("A", "B"), ("C",), ("D",), ("E",), ("F",)]
+    b = [("A", "B"), ("C",), ("D",), ("E",), ("F",)]
+
+    uitkomst = merge_recurrence(a, b)
+
+    # Er zijn 15 paren; 14 zitten in beide apart en tellen niet mee.
+    assert uitkomst["pair_agreement"] == 1.0
+
+
+def test_zonder_enige_samenvoeging_is_paarovereenstemming_ongedefinieerd():
+    """Twee indelingen van louter solo's zijn het overal 'eens', maar er valt
+    niets overeen te stemmen. 1.0 zou hier dezelfde vals perfecte score zijn
+    die `consensus_ari` bij louter solo's geeft — daarom None, zodat de
+    aanroeper het moet benoemen in plaats van het te kunnen aflezen."""
+    a = [("A",), ("B",)]
+    b = [("A",), ("B",)]
+
+    assert merge_recurrence(a, b)["pair_agreement"] is None

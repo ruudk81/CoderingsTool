@@ -51,22 +51,3 @@ def test_brug_telt_paren_over_runs():
     assert together[frozenset({"A2", "A3"})] == 1
     assert together[frozenset({"A1", "A3"})] == 0
 
-
-def test_verslagnaam_draagt_de_instellingen():
-    """Twee varianten mogen nooit op hetzelfde bestand landen."""
-    from run_experiment import report_path
-
-    a = report_path("luna", 3, "consensus", 0.6, "two")
-    b = report_path("luna", 3, "consensus", 0.7, "two")
-    c = report_path("luna", 3, "consensus", 0.6, "three")
-
-    assert a.name == "codeboek_luna_set3_consensus_tau06_twopolen.txt"
-    assert len({a.name, b.name, c.name}) == 3
-
-
-def test_basislijn_krijgt_geen_tau_in_de_naam():
-    """Zonder consensus doet tau niets, dus hij hoort niet in de naam."""
-    from run_experiment import report_path
-
-    assert report_path("luna", 1, "baseline", 0.7, "three").name == \
-        "codeboek_luna_set1_baseline_threepolen.txt"
