@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.costTracker import CostTracker
@@ -119,25 +119,35 @@ async def generate_codebook(
     config: ConsensusConfig,
     verbose: bool = True,
     prompt_printer=None,
+    partitions: Optional[List[List[Tuple[str, ...]]]] = None,
 ) -> GeneratedCodebook:
     cards = build_cards(concepts, idea_units_by_attribute,
                         exclude_drains=config.exclude_drains)
-    salts = [f"run{i}" for i in range(config.runs)]
-    proposals, runs_failed = await resolve_consolidations(
-        cards, survey_question, n_respondents, language, config, salts,
-        verbose=verbose, prompt_printer=prompt_printer,
-    )
+
     # Eén log over alle N runs heen, niet één per run: een repareerbeurt per
     # run is hier de normale gang van zaken (elke run is een los voorstel),
     # dus wat aggregeert is bruikbaar diagnostiek — een model dat structureel
     # attributen vergeet — en een lijst van 30 runs' individuele reparaties
     # zou dat juist verdrinken.
     repair_log = _RepairLog()
-    partities = [
-        [tuple(sorted(group.member_ids))
-         for group in repair_partition(proposal, cards, concepts, log=repair_log)]
-        for proposal in proposals
-    ]
+
+    if partitions is None:
+        # Productieroute: draai deel 1 zelf.
+        salts = [f"run{i}" for i in range(config.runs)] if config.salted else [""] * config.runs
+        proposals, runs_failed = await resolve_consolidations(
+            cards, survey_question, n_respondents, language, config, salts,
+            verbose=verbose, prompt_printer=prompt_printer,
+        )
+        partities = [
+            [tuple(sorted(group.member_ids))
+             for group in repair_partition(proposal, cards, concepts, log=repair_log)]
+            for proposal in proposals
+        ]
+    else:
+        # Meetroute: de runs zijn al betaald en staan op schijf. `repair_partition`
+        # is er al overheen geweest toen ze werden weggeschreven, dus hier niet
+        # nog eens — dat zou een tweede reparatie op gerepareerd materiaal zijn.
+        partities, runs_failed = list(partitions), 0
 
     ids = [card.attribute_id for card in cards]
     together = together_from_runs(partities, ids)
@@ -263,10 +273,16 @@ def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) ->
 def run_codebook(filename: str = None, var_name: str = None,
                     sample_size: Optional[int] = None,
                     force_recalc: bool = False,
-                    config: ConsensusConfig = None) -> None:
+                    config: ConsensusConfig = None,
+                    partitions: Optional[List[List[Tuple[str, ...]]]] = None) -> None:
     """Ingang van de consensuskandidaat. Leest de taxonomie uit de step-4-cache
     — dezelfde als productie — en schrijft het codeboek onder CACHE_STEP, waar
-    step 6 het opent."""
+    step 6 het opent.
+
+    `partitions` geeft door aan `generate_codebook`: gevuld slaat deel 1 over
+    (de meetroute — de runs staan al op schijf), zodat de meetkant hier
+    binnenkomt en de vijf leveringen (cache, kosten, prompts, perf, verbose)
+    alsnog krijgt in plaats van zijn eigen kopie van de keten te onderhouden."""
     filename = FILENAME if filename is None else filename
     var_name = VARIABLE if var_name is None else var_name
     sample_size = SAMPLE_SIZE if sample_size is None else sample_size
@@ -337,7 +353,7 @@ def run_codebook(filename: str = None, var_name: str = None,
     result = asyncio.run(generate_codebook(
         concepts, by_attribute, threshold, survey_question, n_respondents,
         dimension_diagnostic, language, config, verbose=config.verbose,
-        prompt_printer=prompt_printer,
+        prompt_printer=prompt_printer, partitions=partitions,
     ))
     report_codebook_build(result, config)
 

@@ -1,11 +1,14 @@
 """Tests voor de runner. De LLM-fasen draaien hier niet; wat te toetsen valt is
 de deterministische bedrading tussen consensus en de bestaande keten."""
+import asyncio
+
 from pipeline.step_5_codeGenerator.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.consensus import run_codebook as runner
 from pipeline.step_5_codeGenerator.consensus.config_consensus import ConsensusConfig
 from pipeline.step_5_codeGenerator.consensus.run_codebook import (
     GeneratedCodebook, groups_from_clusters, report_codebook_build,
 )
+from models import ConsolidatedCode
 
 
 def concept(attribute_id, naam, n):
@@ -98,3 +101,36 @@ def test_de_promptexportnaam_botst_niet_met_die_van_productie():
     kandidaat = export_filename("d.sav", "v", 100, "prompts_step5c", "json")
 
     assert productie != kandidaat
+
+
+def test_partities_meegeven_slaat_deel_1_over(monkeypatch):
+    """De meetroute: je hebt de dertig runs al betaald en wilt er een codeboek
+    uit, niet nog dertig calls. Zonder deze ingang moet de meetkant zijn eigen
+    kopie van de keten onderhouden — en daar liepen er dertig regels uit
+    elkaar."""
+    async def nooit(*args, **kwargs):
+        raise AssertionError("deel 1 had niet mogen draaien")
+
+    concepts = [concept("A1", "Prijs", 40), concept("A2", "Service", 40)]
+    concept_by_id = {c.attribute_id: c for c in concepts}
+
+    async def stub_writer(shapes, *args, **kwargs):
+        # `_match_shape` zoekt op (bronnaam-verzameling, valentie) — dus de
+        # namen van ALLE leden van de vorm, niet alleen de eerste, en de naam
+        # (niet het attribute_id) omdat `shape.members` id's zijn.
+        return [ConsolidatedCode(
+            code_name="X", definition="d", diagnostic_test="t",
+            valence="neutral", typical_indicators=[],
+            source_attributes=[concept_by_id[m].name for m in shapes[0].members])]
+
+    monkeypatch.setattr(runner, "resolve_consolidations", nooit)
+    monkeypatch.setattr(runner, "write_codebook", stub_writer)
+    partities = [[("A1", "A2")], [("A1", "A2")]]
+
+    result = asyncio.run(runner.generate_codebook(
+        concepts, {}, threshold=1, survey_question="V?", n_respondents=80,
+        dimension_diagnostic="d", language="Dutch", config=ConsensusConfig(),
+        verbose=False, prompt_printer=None, partitions=partities))
+
+    assert result.runs_used == 2
+    assert result.runs_failed == 0

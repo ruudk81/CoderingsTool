@@ -1,4 +1,6 @@
 """De kandidaat heeft vier knoppen die productie niet heeft."""
+import pytest
+
 from pipeline.step_5_codeGenerator.consensus.config_consensus import ConsensusConfig
 
 
@@ -47,3 +49,9 @@ def test_alle_vijf_de_knoppen_staan_op_een_plek():
 
     assert (config.runs, config.tau) == (30, 0.7)
     assert (config.two_pole, config.exclude_drains, config.salted) == (True, True, True)
+
+
+def test_onbekende_config_naam_faalt_hard():
+    """Een stille verkeerde route (bv. een tikfout) mag geen default worden."""
+    with pytest.raises(ValueError):
+        ConsensusConfig(config_name="nope")
