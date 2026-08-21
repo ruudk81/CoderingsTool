@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.costTracker import CostTracker
@@ -178,48 +178,89 @@ def vergelijk(config: ConsensusConfig, set_a: int = 1, set_b: int = 2) -> None:
              if overeenstemming is None else f"{overeenstemming:.1%}"))
 
 
-def load_material(config: ConsensusConfig) -> Dict:
-    """Kaarten en concepten uit de step-4-cache. Zelfde route als de
-    productiestap hieronder, alleen zonder iets weg te schrijven — dit voedt
-    alleen `verzamelen`."""
-    variable_key = generate_enhanced_variable_key(
-        selected_variables=[VARIABLE], is_merged=False, sample_size=SAMPLE_SIZE)
+@dataclass
+class _PijplijnMateriaal:
+    """Wat beide ingangen — `load_material()` en `run_codebook()` — uit de
+    step-3/4-cache nodig hebben, vóórdat elk zijn eigen laatste stap zet:
+    `load_material()` de kaarten, `run_codebook()` de cachegeldigheid en de
+    drempel.
 
-    metadata = load_extraction_metadata(FILENAME, VARIABLE, SAMPLE_SIZE, variable_key)
-    classified = load_classified_ideas(FILENAME, VARIABLE, SAMPLE_SIZE, variable_key)
-    taxonomy = load_taxonomy_cache(FILENAME, VARIABLE, SAMPLE_SIZE, variable_key)
+    `taxonomy` kan `None` zijn (geen step-4-cache in de cache). Welke melding
+    daarbij hoort — een `SystemExit` of een `print` en een stille `return` —
+    is aan de aanroeper, dus deze klasse beslist dat niet zelf; de overige
+    velden zijn dan leeg/`0` in plaats van een keuze te forceren.
+    """
+    variable_key: str
+    metadata: Any
+    classified: List[Any]
+    taxonomy: Any
+    refs: Dict[str, Any]
+    units: List[IdeaUnit]
+    concepts: List[Concept]
+    by_attribute: Dict[str, List[IdeaUnit]]
+    language: str
+    dimension_diagnostic: str
+    n_respondents: int
+
+
+def _laad_pijplijnmateriaal(filename: str, var_name: str, sample_size: int) -> _PijplijnMateriaal:
+    """Inlezen en de conceptinventaris bouwen — het stuk dat `load_material()`
+    en `run_codebook()` vóór deze samenvoeging allebei apart deden, twintig
+    regels voor twintig regel identiek maar een paar honderd regels uit elkaar
+    in hetzelfde bestand. Nu op één plek; elke aanroeper voegt zijn eigen
+    laatste stap toe.
+    """
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=[var_name], is_merged=False, sample_size=sample_size)
+
+    metadata = load_extraction_metadata(filename, var_name, sample_size, variable_key)
+    classified = load_classified_ideas(filename, var_name, sample_size, variable_key)
+    taxonomy = load_taxonomy_cache(filename, var_name, sample_size, variable_key)
     if taxonomy is None:
-        raise SystemExit("geen taxonomie in cache — draai eerst step 4")
+        return _PijplijnMateriaal(
+            variable_key=variable_key, metadata=metadata, classified=classified,
+            taxonomy=None, refs={}, units=[], concepts=[], by_attribute={},
+            language="", dimension_diagnostic="", n_respondents=0)
 
     refs = build_attribute_refs(taxonomy.partition_results)
     units = [u for u in build_idea_units(classified) if u.attribute_id in refs]
     concepts = build_inventory(units, refs)
 
-    by_attribute: Dict[str, list] = defaultdict(list)
+    by_attribute: Dict[str, List[IdeaUnit]] = defaultdict(list)
     for unit in units:
         by_attribute[unit.attribute_id].append(unit)
 
+    language = getattr(metadata, "lang", "") or "Dutch"
     dimension_name = getattr(metadata, "primary_dimension", "") or ""
+    dimension_diagnostic = (get_dimension(dimension_name).criterion
+                            if dimension_name else FALLBACK_DIAGNOSTIC)
+    n_respondents = len({u.respondent_id for u in units})
+
+    return _PijplijnMateriaal(
+        variable_key=variable_key, metadata=metadata, classified=classified,
+        taxonomy=taxonomy, refs=refs, units=units, concepts=concepts,
+        by_attribute=by_attribute, language=language,
+        dimension_diagnostic=dimension_diagnostic, n_respondents=n_respondents)
+
+
+def load_material(config: ConsensusConfig) -> Dict:
+    """Kaarten en concepten uit de step-4-cache. Zelfde route als de
+    productiestap hieronder, alleen zonder iets weg te schrijven — dit voedt
+    alleen `verzamelen`."""
+    m = _laad_pijplijnmateriaal(FILENAME, VARIABLE, SAMPLE_SIZE)
+    if m.taxonomy is None:
+        raise SystemExit("geen taxonomie in cache — draai eerst step 4")
+
     return {
         # Komt uit de config, niet hardgecodeerd: zo verzamelt deze actie op
         # dezelfde uitsluiting als waarmee het codeboek er straks uit gebouwd
         # wordt, in plaats van een vaste aanname die van de configuratie kan
         # afwijken.
-        "cards": build_cards(concepts, by_attribute, exclude_drains=config.exclude_drains),
-        "concepts": concepts,
-        "question": (getattr(metadata, "var_lab", "") or "").strip(),
-        "language": getattr(metadata, "lang", "") or "Dutch",
-        "dimension_diagnostic": (get_dimension(dimension_name).criterion
-                                 if dimension_name else FALLBACK_DIAGNOSTIC),
-        "n_respondents": len({u.respondent_id for u in units}),
-        # `t_keep` gebruikt in productie het aantal RESPONSES, niet het aantal
-        # respondenten mét een idee. Zelfde basis aanhouden, anders draait
-        # deze route op een andere drempel dan de keten waarmee vergeleken
-        # wordt.
-        "n_classified": len(classified),
-        # `apply_overig_sweep` en `run_scorecard` werken op de taxonomiestructuur,
-        # niet op de concepten.
-        "partition_results": taxonomy.partition_results,
+        "cards": build_cards(m.concepts, m.by_attribute, exclude_drains=config.exclude_drains),
+        "concepts": m.concepts,
+        "question": (getattr(m.metadata, "var_lab", "") or "").strip(),
+        "language": m.language,
+        "n_respondents": m.n_respondents,
     }
 
 
@@ -618,12 +659,11 @@ def run_codebook(filename: str = None, var_name: str = None,
         print("codeboek-cache geldig — overgeslagen (force_recalc=True om te herdraaien).\n")
         return
 
-    metadata = load_extraction_metadata(filename, var_name, sample_size, variable_key)
-    classified = load_classified_ideas(filename, var_name, sample_size, variable_key)
-    taxonomy = load_taxonomy_cache(filename, var_name, sample_size, variable_key)
-    if taxonomy is None:
+    m = _laad_pijplijnmateriaal(filename, var_name, sample_size)
+    if m.taxonomy is None:
         print("\nERROR: geen taxonomie in cache. Draai eerst step 4.")
         return
+    metadata, classified, taxonomy = m.metadata, m.classified, m.taxonomy
 
     # Zelfde afslag als productie, om dezelfde reden: zonder deze check zou
     # deze keten op een andere taxonomie bouwen dan de productieketen (en
@@ -636,30 +676,15 @@ def run_codebook(filename: str = None, var_name: str = None,
               "taxonomie gebeuren.")
         return
 
-    refs = build_attribute_refs(taxonomy.partition_results)
-    units = [u for u in build_idea_units(classified) if u.attribute_id in refs]
-    concepts = build_inventory(units, refs)
-
-    by_attribute: Dict[str, List[IdeaUnit]] = {}
-    for unit in units:
-        by_attribute.setdefault(unit.attribute_id, []).append(unit)
-
     # Dezelfde drempelbasis als productie: het totale aantal responses, niet
     # het aantal respondenten mét een idee. Wijkt deze keten hiervan af, dan
     # vergelijkt een codeboek-vergelijking twee codeboeken op verschillende
     # drempels.
     n_resp_total = len(classified)
     threshold = t_keep(n_resp_total, config)
-
-    language = getattr(metadata, "lang", "") or "Dutch"
     survey_question = (getattr(metadata, "var_lab", "") or "").strip()
-    dimension_name = getattr(metadata, "primary_dimension", "") or ""
-    dimension_diagnostic = (
-        get_dimension(dimension_name).criterion if dimension_name else FALLBACK_DIAGNOSTIC
-    )
-    n_respondents = len({u.respondent_id for u in units})
 
-    print(f"  {len(concepts)} attributen, {n_respondents} met een idee, "
+    print(f"  {len(m.concepts)} attributen, {m.n_respondents} met een idee, "
           f"T_keep = {threshold} over {n_resp_total} responses")
 
     cost_tracker = CostTracker(filename=filename, var_name=var_name,
@@ -668,8 +693,8 @@ def run_codebook(filename: str = None, var_name: str = None,
     prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
 
     result = asyncio.run(generate_codebook(
-        concepts, by_attribute, threshold, survey_question, n_respondents,
-        dimension_diagnostic, language, config, verbose=config.verbose,
+        m.concepts, m.by_attribute, threshold, survey_question, m.n_respondents,
+        m.dimension_diagnostic, m.language, config, verbose=config.verbose,
         prompt_printer=prompt_printer, partitions=partitions,
     ))
     report_codebook_build(result, config)
@@ -686,7 +711,7 @@ def run_codebook(filename: str = None, var_name: str = None,
     # codeboek moet mogelijk maken.
     save_prompts_to_json(prompt_printer, doctype="prompts_step5c")
 
-    overig_name = apply_overig_sweep(result.codes, taxonomy.partition_results, language)
+    overig_name = apply_overig_sweep(result.codes, taxonomy.partition_results, m.language)
     print_codebook_results(result.codes)
     scorecard = run_scorecard(result.codes, taxonomy.partition_results, overig_name)
 
