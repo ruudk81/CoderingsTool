@@ -402,7 +402,7 @@ def build_shapes(
     overig_ids = list(dict.fromkeys(overig_ids))
 
     hersteld = frozenset().union(
-        frozenset(), *(resp for _valence, resp, _leden in hoofd + kinderen))
+        *(resp for _valence, resp, _leden in hoofd + kinderen))
     return ShapingResult(shapes=shapes, overig_ids=overig_ids,
                          coverage_recovered=len(hersteld))
 

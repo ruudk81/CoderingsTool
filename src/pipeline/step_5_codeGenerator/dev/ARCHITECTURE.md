@@ -301,11 +301,16 @@ Where the two differ:
   the pole, and its attribute stays a source of the surviving, opposite-facing
   sibling code.
 
-Where they do not differ: the rest from `build_shapes` onward — grouping's
-partition repair and degeneration check, `codebook_writer.py`'s single writer
+Where they no longer differ only in phase 1: `build_shapes` itself diverged on
+2026-08-22, when the candidate learned to pool fallen valence poles per facet
+(`pool_minority_poles`, `origin="child"`, `coverage_recovered` in place of
+`direction_loss`). Three of the eleven modules — `grouping.py`, `code_shape.py`
+and `test_grouping.py` — stopped being copies that day and are now consensus's
+own versions, listed in `test_zelfstandigheid.py`'s `EIGEN_VERSIE` with the
+reason. The rest from the writer onward — `codebook_writer.py`'s single writer
 call, the three deterministic naming/definition guards, the Overig sweep, the
-scorecard — is the same code. Since 2026-08-22 it is not shared by import: each
-of the eleven modules involved lives as its own copy inside `consensus/` (see
+scorecard — is still the same code. Since 2026-08-22 none of it is shared by
+import: each of the eleven modules involved lives as its own copy inside `consensus/` (see
 CLAUDE.md's Key Files), so `consensus/` imports nothing from outside itself
 within step 5. Three guards in `consensus/test_zelfstandigheid.py` keep that
 true — an import guard, a drift guard that fails the moment a copy stops
