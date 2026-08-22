@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import math
 from itertools import combinations
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -59,28 +59,52 @@ def _pole_clears(count: int, total: int) -> bool:
     return count >= min_count
 
 
-# Welke valentiepolen een code van die valentie bezit. Wat hier niet in staat
-# — `neutral`, en elke onbekende waarde — claimt het hele attribuut.
+# Welke valentiepolen een code van die valentie bezit. Alle vier de waarden
+# van `ConsolidatedCode.valence` staan erin; alleen een ONBEKENDE waarde valt
+# terug op het hele attribuut, want dan is er niets bekend om op te snijden.
 _POLES = {
     "positive": ("positive",),
     "negative": ("negative",),
     "non_negative": ("positive", "neutral"),
+    "neutral": ("neutral",),
 }
+_ALLE_POLEN = ("positive", "neutral", "negative")
 
 
 def _pole_ideas(valence: str, counts: Dict[str, int]) -> int:
-    """Het aantal ideeën van één attribuut dat bij de valentie van een code hoort.
+    """De ideeën van één attribuut die bij de POOL van een code horen — strikt.
 
-    Een gerichte code bezit niet zijn bronattribuut maar één POOL ervan:
-    hetzelfde attribuut voedt in de regel ook de code van de tegenpool. Het
-    attribuut zelf tellen is daarom geen benadering maar een andere grootheid —
-    op set 7 gaf dat voor de kinderen onder Overig 55,5% van alle ideeën tegen
-    3,6% valentiebewust, omdat 12 van hun 17 bronattributen ook een hoofdcode
-    voeden. `neutral` claimt wél het hele attribuut: die code sluit geen
-    richting uit, en dat is precies wat Overig is.
+    Voor de KINDEREN onder Overig. Een kind bezit niet zijn bronattribuut maar
+    één pool ervan: hetzelfde attribuut voedt in de regel ook een hoofdcode.
+    Het attribuut zelf tellen is geen benadering maar een andere grootheid — op
+    set 7 gaf dat voor de kinderen 55,5% van alle ideeën tegen 3,6%
+    valentiebewust, omdat 12 van hun 17 bronattributen ook een hoofdcode voeden.
+
+    Dat geldt óók voor een NEUTRAAL kind, en die uitzondering is duur betaald:
+    zolang `neutral` hier het hele attribuut claimde, viel `POLES="three"` (een
+    instelling die de runner aanbiedt, en die neutrale polen oplevert die kind
+    kunnen worden) op set 7 uit op 22,6% en FAIL, tegen 6,2% en PASS met de
+    strikte pool. De redenering "neutraal sluit geen richting uit" gaat over
+    Overig de OUDER — en die loopt hier niet langs: hij wordt op zijn
+    bronattributen geteld, wat klopt omdat de sweep hem alleen attributen geeft
+    die geen enkele code noemt.
     """
-    polen = _POLES.get(valence, ("positive", "neutral", "negative"))
-    return sum(counts.get(p, 0) for p in polen)
+    return sum(counts.get(p, 0) for p in _POLES.get(valence, _ALLE_POLEN))
+
+
+def _expected_ideas(valence: str, counts: Dict[str, int]) -> int:
+    """Wat een code naar verwachting uit één attribuut draagt.
+
+    Voor de MINI-CODEWAARSCHUWING, en daar wijkt precies één valentie af van
+    `_pole_ideas`. Een neutrale HOOFDcode is per `models.py` dimensioneel — geen
+    pool haalde de poort — en dekt zijn attribuut dus ongeacht richting; strikt
+    op zijn neutrale pool tellen zou hem als over-gedifferentieerd melden
+    terwijl hij het hele onderwerp draagt. Bij een kind is dat andersom, want
+    daar staan de gerichte codes ernaast; vandaar twee functies en niet één.
+    """
+    if valence == "neutral":
+        return sum(counts.get(p, 0) for p in _ALLE_POLEN)
+    return _pole_ideas(valence, counts)
 
 
 # =============================================================================
@@ -247,7 +271,7 @@ def build_scorecard(
     codes: List[Any],
     partition_results: Dict[str, Any],
     overig_code_name: Optional[str] = None,
-    child_code_ids: Optional[set] = None,
+    child_code_ids: Optional[Set[str]] = None,
 ) -> CodebookScorecard:
     """Build a deterministic scorecard for a codebook against its taxonomy.
 
@@ -256,11 +280,32 @@ def build_scorecard(
         partition_results: step-4 partition_results (DomainResultModel objects or dicts)
         overig_code_name: name of the catch-all code, if one was added by the Overig sweep
         child_code_ids: de `K#`'s die de keten als KIND bedoelde (uit de vormen,
-            `origin == "child"`). Twee voorstellingen van dezelfde afspraak: de
-            bedoeling hier, en het `parent_code_id`-veld op de code zelf. Lopen
-            ze uiteen, dan telt een kind stil als hoofdcode mee — en `models.py`
-            negeert een verkeerd gespelde init-kwarg zonder enige fout, dus
-            zonder deze kruiscontrole is er niets dat het meldt.
+            `origin == "child"`), gelegd naast het `parent_code_id`-veld op de
+            code zelf. Lopen ze uiteen, dan telt een kind stil als hoofdcode mee
+            en valt het buiten het Overig-plafond.
+
+            EXPLICIET EEN STRUIKELDRAAD, geen dekking: op geen enkel pad dat
+            vandaag bestaat kunnen de twee verschillen. `models.py` negeert een
+            verkeerd gespelde init-KWARG stilzwijgend
+            (`ConsolidatedCode(parent_code=...)` → `parent_code_id is None`),
+            maar een verkeerd gespelde ATTRIBUUTtoekenning is luid
+            (`code.parent_code = ...` → ValueError). `link_children_to_overig`
+            doet het tweede, dus die kan het defect niet maken; en een code die
+            elders met de foute kwarg gebouwd wordt, staat om dezelfde reden ook
+            niet in deze lijst. Een tweede afleiding uit de vormen
+            (`_shape_lookup`/`_match_shape`) helpt niet: dát is de afleiding die
+            `result.shapes` al opleverde, en `codebook_writer` bouwt elke code's
+            bronnamen en valentie ÚIT zijn vorm, dus hermatchen geeft per
+            constructie dezelfde vorm terug. Een afleiding die het niet oneens
+            kan zijn is geen tweede mening; er een kopen zou een tweede bron van
+            waarheid voor kindschap betekenen, en de hiërarchie hoort in één
+            veld te leven.
+
+            Wat hij wél vangt, en dat is niet niets: een kind dat zijn ouder
+            KWIJTRAAKT tussen koppelen en beoordelen — een latere mutatie, een
+            herbouwde lijst, een cache-rondgang die het veld laat vallen, of een
+            toekomstig bouwpad dat de ouder zelf zet. Kosten: één
+            verzamelingsvergelijking.
     """
     idea_assignments = collect_idea_assignments(partition_results)
     attr_valence = collect_attribute_valence(partition_results)
@@ -369,6 +414,11 @@ def build_scorecard(
         overig_id = (_attr(overig_code, "code_id") or "") if overig_code is not None else ""
         parent_ideas = sum(1 for attr in idea_assignments.values()
                            if any(k in overig_keys for k in idea_keys(attr)))
+        # `overig_id` leeg betekent niet stil terugvallen op de zwakkere regel:
+        # `mint_code_ids` mint het hele boek of niets, dus zonder id op Overig
+        # draagt geen enkele code een ouder (nul kinderen is dan het juiste
+        # antwoord) óf wijst een ouder naar een id dat niet bestaat — en dat
+        # meldt `dangling_parent_refs` hieronder als defect dat de poort faalt.
         for code in codes:
             if overig_id and (_attr(code, "parent_code_id") or "") == overig_id:
                 child_names.append(_attr(code, "code_name") or "")
@@ -469,12 +519,14 @@ def build_scorecard(
 
     # --- Mini-code detection (over-differentiation) ---
     # Advisory counterweight to under-split. Expected volume = the matching
-    # pole of the code's source attributes — dezelfde `_pole_ideas` die het
-    # Overig-plafond gebruikt, want het is dezelfde vraag: welke ideeën horen
-    # bij de valentie van deze code. Een `non_negative` code kreeg hier tot
-    # 2026-08-22 al zijn negatieve ideeën meegeteld, waardoor hij nooit als
-    # mini-code opviel. Onder de bevolkingsbodem floor(log(assigned)) kan een
-    # code zichzelf waarschijnlijk niet dragen.
+    # pole of the code's source attributes (`_expected_ideas`). Een
+    # `non_negative` code kreeg hier tot 2026-08-22 al zijn negatieve ideeën
+    # meegeteld, waardoor hij nooit onder de bodem kon uitkomen: de
+    # waarschuwing zweeg juist bij de codes die hem nodig hadden. Op set 7
+    # verandert de gemelde LIJST niet, maar 25 van de 43 codes krijgen een
+    # andere verwachting — de lijst is daar stabiel met marge, niet per
+    # constructie. Onder de bevolkingsbodem floor(log(assigned)) kan een code
+    # zichzelf waarschijnlijk niet dragen.
     mini_floor = max(2, int(math.log(assigned))) if assigned > 0 else 2
     mini_codes: List[MiniCode] = []
     for code in codes:
@@ -482,7 +534,7 @@ def build_scorecard(
         if code_name == overig_code_name:
             continue
         code_valence = _attr(code, "valence") or ""
-        expected = sum(_pole_ideas(code_valence, attr_valence.get(attr, {}))
+        expected = sum(_expected_ideas(code_valence, attr_valence.get(attr, {}))
                        for attr in (_attr(code, "source_attributes") or []))
         if expected < mini_floor:
             mini_codes.append(MiniCode(

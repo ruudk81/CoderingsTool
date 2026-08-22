@@ -322,17 +322,28 @@ Where the two differ:
 - **The Overig ceiling counts the parent AND its children.** Both sit outside
   the main codebook, which is what the 10% cap guards; counting the bare parent
   only would let any move from Overig into a child lower the reading without
-  anything being placed better. A child is counted VALENCE-AWARE (`_pole_ideas`):
-  it owns one pole of its source attributes, not the attribute — 12 of set 7's
-  17 child attributes also feed a main code, so counting attributes gives 55.5%
-  where the pole gives 3.6%. Both halves are always printed separately, because
+  anything being placed better. A child is counted VALENCE-AWARE (`_pole_ideas`,
+  strict for all four valences): it owns one pole of its source attributes, not
+  the attribute — 12 of set 7's 17 child attributes also feed a main code, so
+  counting attributes gives 55.5% where the pole gives 3.6%. That holds for a
+  NEUTRAL child too: under `POLES="three"` (`two_pole=False`, offered by the
+  runner) build_shapes produces neutral poles that can become children, and
+  letting them claim the whole attribute reads 22.6% (FAIL) against 6.2% (PASS)
+  on set 7. The mini-code warning keeps the permissive reading for a neutral
+  MAIN code through a second function, `_expected_ideas`: per `models.py` that
+  is a dimensional code covering its attribute regardless of direction.
+  Both halves are always printed separately, because
   a single total cannot tell an undifferentiated catch-all from the same volume
   in named, directional children. Set 7: 3.8% = 0.2% parent + 3.6% in 11
   children, PASS. Two hierarchy defects also fail the gate: a code the chain
   meant as a child (`child_code_ids`, from the shapes) that carries no
   `parent_code_id`, and a `parent_code_id` pointing at a code that does not
-  exist. `models.py` silently ignores an unknown init kwarg, so nothing else
-  reports a parentless child.
+  exist. The parentless-child check is an explicit TRIPWIRE, not coverage: an
+  unknown init kwarg is silently ignored but an unknown attribute assignment
+  raises, and `link_children_to_overig` does the latter — so no path that exists
+  today can make the two disagree (see its docstring for why no second
+  derivation can). It fires on a child that LOSES its parent between linking and
+  judging. `dangling_parent_refs` is independent and needs no such caveat.
 
 Where they no longer differ only in phase 1: everything from `build_shapes` to
 the Overig sweep diverged on 2026-08-22. `grouping.py`, `code_shape.py`,

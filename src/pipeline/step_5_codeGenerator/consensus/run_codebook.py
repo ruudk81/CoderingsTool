@@ -591,12 +591,10 @@ def link_children_to_overig(codes: List[ConsolidatedCode], shapes: List[CodeShap
 
     Geeft de `K#`'s terug van de codes die volgens hun VORM een kind zijn. Dat
     is de bedoeling, en die gaat naar de scorecard, die hem tegen het
-    `parent_code_id`-veld legt. Vandaag zet dezelfde lus dat veld, dus de toets
-    kan alleen vuren als de koppeling daarna verloren gaat of als een kind
-    ergens anders wordt gemaakt — en dát is precies het geval dat niets anders
-    meldt: `models.py` negeert een verkeerd gespelde init-kwarg (`parent_code=`)
-    stilzwijgend, waarna er een ouderloos kind in het boek staat dat als gewone
-    hoofdcode meetelt.
+    `parent_code_id`-veld legt. Die toets is een struikeldraad en geen dekking:
+    dezelfde lus zet hier het veld, dus hij kan alleen vuren als een kind zijn
+    ouder daarna kwijtraakt. Zie `build_scorecard`'s `child_code_ids` voor
+    waarom er geen afleiding bestaat die het er wél mee oneens kan zijn.
 
     Kan niet eerder dan hier. De ouder wordt door `apply_overig_sweep` gemaakt
     en krijgt daar zijn `K#`; vóór die sweep bestaat er geen id om naar te

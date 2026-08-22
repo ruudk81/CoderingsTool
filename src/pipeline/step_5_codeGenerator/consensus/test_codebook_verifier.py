@@ -157,3 +157,86 @@ def test_zonder_kinderen_telt_de_poort_wat_hij_altijd_telde():
     assert sc.overig_idea_share_pct == 10.0
     assert sc.overig_child_idea_count == 0
     assert sc.passed
+
+
+def _drie_polen():
+    """Wat `POLES="three"` oplevert: één onderwerp met drie polen.
+
+    `build_shapes(two_pole=False)` splitst een groep in positief/neutraal/
+    negatief, en élke pool kan onder de drempel zakken en kind worden. Hier is
+    de neutrale pool het kind, naast twee hoofdcodes op hetzelfde attribuut.
+    """
+    t1, v1 = _ideeen("p", "Groot onderwerp", 200, "+")
+    t2, v2 = _ideeen("n", "Groot onderwerp", 6, "-")
+    t3, v3 = _ideeen("u", "Groot onderwerp", 5, "")
+    t4, v4 = _ideeen("w", "Wees", 2, "")
+    taxonomie = _taxonomie(
+        [("A1", "Groot onderwerp"), ("A2", "Wees")],
+        {**t1, **t2, **t3, **t4}, {**v1, **v2, **v3, **v4})
+    codes = [
+        _code("Lof", "positive", ["Groot onderwerp"], "K1"),
+        _code("Kritiek", "negative", ["Groot onderwerp"], "K2"),
+        _code("Overige opmerkingen", "neutral", ["Groot onderwerp"], "K3", parent="K4"),
+        _code(OVERIG, "neutral", ["Wees"], "K4"),
+    ]
+    return codes, taxonomie
+
+
+def test_een_neutraal_kind_telt_alleen_zijn_neutrale_pool():
+    """De poort mag een neutraal KIND niet zijn hele attribuut laten claimen.
+
+    `POLES="three"` staat in de runner en levert neutrale polen op die kind
+    kunnen worden. Claimt zo'n kind het attribuut, dan sleept het de ideeën van
+    de positieve en negatieve hoofdcode ernaast mee — precies de fout die deze
+    taak bij de attribuuttelling verwierp. Op de set-7-runset met `POLES="three"`
+    scheelt dat 22,6% (FAIL) tegen 6,2% (PASS).
+    """
+    codes, taxonomie = _drie_polen()
+    sc = build_scorecard(codes, taxonomie, OVERIG)
+
+    assert sc.overig_child_idea_count == 5, (
+        "het neutrale kind claimt de ideeën van de codes naast zich")
+    assert sc.overig_idea_share_pct == round(7 / 213 * 100, 1)
+    assert sc.passed, sc.failure_reasons()
+
+
+def test_een_non_negative_code_verwacht_zijn_negatieve_ideeen_niet():
+    """De mini-codetelling is een levend mechanisme en verandert hier van gedrag.
+
+    Een `non_negative` code dekt positief plus neutraal. Telde zijn verwachting
+    ook de negatieve ideeën van zijn bronattribuut mee, dan kon zo'n code nooit
+    onder de bodem uitkomen — de waarschuwing die over-differentiatie moet
+    aanwijzen zweeg dan juist bij de codes die hem nodig hadden.
+    """
+    t1, v1 = _ideeen("p", "Onderwerp", 1, "+")
+    t2, v2 = _ideeen("u", "Onderwerp", 1, "")
+    t3, v3 = _ideeen("n", "Onderwerp", 50, "-")
+    t4, v4 = _ideeen("w", "Wees", 2, "")
+    taxonomie = _taxonomie([("A1", "Onderwerp"), ("A2", "Wees")],
+                           {**t1, **t2, **t3, **t4}, {**v1, **v2, **v3, **v4})
+    codes = [_code("Positieve kant", "non_negative", ["Onderwerp"], "K1"),
+             _code("Negatieve kant", "negative", ["Onderwerp"], "K2"),
+             _code(OVERIG, "neutral", ["Wees"], "K3")]
+    sc = build_scorecard(codes, taxonomie, OVERIG)
+
+    mini = {m.code_name: m.expected_ideas for m in sc.mini_codes}
+    assert mini.get("Positieve kant") == 2, sc.mini_codes
+
+
+def test_een_neutrale_hoofdcode_verwacht_wel_zijn_hele_attribuut():
+    """De andere helft van dezelfde splitsing, en de reden dat er twee regels
+    zijn. Een neutrale HOOFDcode is per `models.py` dimensioneel — geen pool
+    haalde de poort — en dekt zijn attribuut ongeacht richting. Zou hij hier
+    strikt op zijn neutrale pool geteld worden, dan meldde de scorecard hem als
+    mini-code terwijl hij 52 ideeën draagt."""
+    t1, v1 = _ideeen("p", "Onderwerp", 1, "+")
+    t2, v2 = _ideeen("u", "Onderwerp", 1, "")
+    t3, v3 = _ideeen("n", "Onderwerp", 50, "-")
+    t4, v4 = _ideeen("w", "Wees", 2, "")
+    taxonomie = _taxonomie([("A1", "Onderwerp"), ("A2", "Wees")],
+                           {**t1, **t2, **t3, **t4}, {**v1, **v2, **v3, **v4})
+    codes = [_code("Dimensionele code", "neutral", ["Onderwerp"], "K1"),
+             _code(OVERIG, "neutral", ["Wees"], "K2")]
+    sc = build_scorecard(codes, taxonomie, OVERIG)
+
+    assert [m.code_name for m in sc.mini_codes] == []

@@ -444,3 +444,46 @@ def test_geen_echt_overig_regel_zonder_gevallen_unies(capsys):
     report_true_overig(result, overig)
 
     assert "ECHT-OVERIG" not in capsys.readouterr().out
+
+
+def test_echt_overig_meldt_het_gat_in_respondenten(capsys):
+    """De kopregel, en de eenheid waarin het besluit valt. Een attribuuttelling
+    zegt niets over omvang: op set 7 staan 9 attributen onder de bodem terwijl
+    er 5 van 2317 respondenten werkelijk in geen enkele code voorkomen."""
+    concepts = [concept("A1", "Prijs", 40)]
+    concept_by_id = {c.attribute_id: c for c in concepts}
+    codes = [ConsolidatedCode(code_name="Hoofd", definition="d",
+                              diagnostic_test="t", valence="non_negative",
+                              typical_indicators=[], source_attributes=["Prijs"])]
+    overig = apply_overig_sweep(codes, {}, "Dutch")
+    gedekt = vorm("v1", ["A1"], "non_negative", "solo",
+                  resp=[f"rA1{i}" for i in range(38)])
+    result = _leeg_codeboek(overig_ids=["A1"], shapes=[gedekt],
+                            concept_by_id=concept_by_id)
+
+    report_true_overig(result, overig)
+
+    uit = capsys.readouterr().out
+    assert "ECHT-OVERIG: 2 van 40 respondent(en) komen in geen enkele code voor" in uit
+    assert "IN ATTRIBUTEN: 1 attribuut(en)" in uit
+
+
+def test_het_respondentengat_wordt_ook_zonder_gevallen_unies_gemeld(capsys):
+    """Zwijgen mag alleen als er niets te melden is. Een respondent die nergens
+    staat is iets te melden, ook als geen enkel attribuut onder de bodem bleef —
+    anders zou de zwijgregel het getal verbergen dat hij moest opleveren."""
+    concepts = [concept("A1", "Prijs", 40)]
+    codes = [ConsolidatedCode(code_name="Hoofd", definition="d",
+                              diagnostic_test="t", valence="non_negative",
+                              typical_indicators=[], source_attributes=["Prijs"])]
+    overig = apply_overig_sweep(codes, {}, "Dutch")
+    gedekt = vorm("v1", ["A1"], "non_negative", "solo",
+                  resp=[f"rA1{i}" for i in range(38)])
+    result = _leeg_codeboek(overig_ids=[], shapes=[gedekt],
+                            concept_by_id={c.attribute_id: c for c in concepts})
+
+    report_true_overig(result, overig)
+
+    uit = capsys.readouterr().out
+    assert "ECHT-OVERIG: 2 van 40 respondent(en)" in uit
+    assert "IN ATTRIBUTEN" not in uit

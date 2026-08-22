@@ -132,12 +132,30 @@ altijd apart af.
 Een kind telt VALENTIEBEWUST mee — het bezit één pool van zijn bronattributen,
 niet het attribuut. Op set 7 is 12 van de 17 kindattributen óók bron van een
 hoofdcode; het attribuut tellen gaf 55,5% van alle ideeën tegen 3,6% voor de
-pool. Dezelfde `_pole_ideas` bedient nu ook de mini-code-waarschuwing, die een
-`non_negative` code tot dan toe al zijn negatieve ideeën meetelde (op set 7
-verandert die lijst niet).
+pool. Dat geldt ook voor een NEUTRAAL kind: `POLES="three"` levert neutrale
+polen op die kind kunnen worden, en het hele attribuut laten claimen leest daar
+22,6% (FAIL) tegen 6,2% (PASS).
+
+De mini-code-waarschuwing houdt de ruime lezing voor een neutrale HOOFDcode, via
+een tweede functie (`_expected_ideas`): die is per `models.py` dimensioneel en
+dekt zijn attribuut ongeacht richting. Wat er wél veranderde is de
+`non_negative` code, die al zijn negatieve ideeën meetelde en daardoor nooit
+onder de bodem kon uitkomen. **De gemelde lijst is op set 7 identiek (3 codes),
+maar 25 van de 43 codes krijgen een andere verwachting** — 110→84, 43→32, 32→25,
+154→144 — en negen zitten nu onder 20 bij een bodem van 8. Stabiel met marge,
+niet per constructie; op een andere dataset kan die lijst dus wél schuiven.
 
 `report_true_overig` meldt sindsdien in RESPONDENTEN: 5 van 2317 komen in geen
 enkele code voor. De attribuutregel blijft eronder staan als detail.
+
+De toets "kind zonder ouder" is een STRUIKELDRAAD, geen dekking, en dat staat zo
+in de docstrings. `models.py` negeert een foute init-kwarg stil maar gooit op
+een foute attribuuttoekenning, en `link_children_to_overig` doet het tweede —
+dus geen bestaand pad kan de bedoeling en het veld laten verschillen. Een tweede
+afleiding uit de vormen zou niet helpen: `codebook_writer` bouwt bronnamen en
+valentie ÚIT de vorm, dus hermatchen geeft per constructie dezelfde vorm.
+Wat de toets wél vangt is een kind dat zijn ouder kwijtraakt tussen koppelen en
+beoordelen. `dangling_parent_refs` is wél onafhankelijk.
 
 ## tau is een invoer, geen constante (open — 2026-08-20)
 

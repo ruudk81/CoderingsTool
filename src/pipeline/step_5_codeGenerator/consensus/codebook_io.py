@@ -19,7 +19,7 @@ kon zonder de opvolger mee te nemen. De v1-orkestratie staat nu in
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 # Add parent paths for imports
 # Vastgelegde afwijking van het origineel: dit bestand ligt in `consensus/`,
@@ -334,7 +334,7 @@ def run_scorecard(
     codes: List[ConsolidatedCode],
     pydantic_results: Dict[str, DomainResultModel],
     overig_code_name: Optional[str] = None,
-    child_code_ids: Optional[set] = None,
+    child_code_ids: Optional[Set[str]] = None,
 ):
     """Build the post-generation verification scorecard (PASS/FAIL) and print it.
 

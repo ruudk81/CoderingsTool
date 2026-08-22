@@ -144,8 +144,9 @@ EIGEN_VERSIE = {
     # kent geen kinderen en heeft aan de naam genoeg.
     "codebook_io",
     # Telt sinds 2026-08-22 in `overig_idea_share_pct` ook de codes die ONDER
-    # Overig hangen, valentiebewust (`_pole_ideas`), en rapporteert de twee
-    # helften apart. Draagt daarnaast twee poortregels die productie niet kan
+    # Overig hangen, valentiebewust en strikt per pool (`_pole_ideas`, met
+    # `_expected_ideas` als ruimere tweelingregel voor de mini-codetelling), en
+    # rapporteert de twee helften apart. Draagt daarnaast twee poortregels die productie niet kan
     # hebben: een kind zonder `parent_code_id` (via `child_code_ids`) en een
     # `parent_code_id` dat nergens op uitkomt. Productie kent geen kinderen, dus
     # daar is dat plafond per definitie de kale Overig-code.
