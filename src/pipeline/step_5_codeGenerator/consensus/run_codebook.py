@@ -49,7 +49,7 @@ from pipeline.step_5_codeGenerator.consensus.codebook_io import (  # noqa: E402
 )
 from pipeline.step_5_codeGenerator.consensus.codebook_writer import (  # noqa: E402
     find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names,
-    write_codebook,
+    write_codebook, write_miscellaneous,
 )
 from pipeline.step_5_codeGenerator.consensus.concept_inventory import (  # noqa: E402
     Concept, build_inventory, t_keep,
@@ -102,9 +102,9 @@ POLES   = "two"        # two (niet-negatief/negatief) | three (pos/neu/neg)
 DRAINS  = "uit"        # vangnetten op de kaarten: uit | aan
 SALT    = "aan"        # aan = volgorde varieert per run; uit = kale servervariatie
 
-#   alles        verzamelen x2 -> analyse -> vergelijk -> codeboek   RUNS*2+1 calls
+#   alles        verzamelen x2 -> analyse -> vergelijk -> codeboek   RUNS*2+2 calls
 #   verzamelen   alleen deel 1, partities naar schijf                RUNS calls
-#   codeboek     uit de partities van SET                            1 call
+#   codeboek     uit de partities van SET                            2 calls
 #   analyse      een set lezen: ARI, matrixvorm, tau-sweep           0 calls
 #   vergelijk    SET tegen SET_B: hoofdmaat en merge-recurrentie     0 calls
 
@@ -409,7 +409,8 @@ class GeneratedCodebook:
     shapes: List[CodeShape]
     overig_ids: List[str]
     codes: List[ConsolidatedCode]
-    direction_loss: int
+    coverage_recovered: int
+    first_time_covered: int
     degeneration: Optional[str]
     # Aantal, niet de lijst: bij N=30 runs is elke reparatie een normaal
     # onderdeel van één los voorstel, en de reparatielijst van 30 runs samen
@@ -514,20 +515,45 @@ async def generate_codebook(
     degeneration = check_degeneration(len(groups), len(ids))
     groups, pool_log = pool_thin_within_facet(groups, concepts, threshold,
                                               two_pole=config.two_pole)
-    shaped = build_shapes(groups, concepts, threshold, two_pole=config.two_pole)
+    shaped = build_shapes(groups, concepts, threshold, two_pole=config.two_pole,
+                          floor=config.t_keep_min_respondents)
 
-    # `write_codebook` can veto a `pooled` shape (`nameable: false`) — every
-    # multi-attribute group this chain builds is `pooled` (`grouping.build_shapes`),
-    # so this is the normal route, not an edge case. The attributes don't get
-    # lost (the Overig sweep in `run_codebook` still routes them), but a
-    # silent veto would make a comparison against the production chain see
-    # a smaller codebook with a bigger Overig and be unable to tell
-    # consolidation quality apart from writer vetoes — the same reason
-    # degeneration is reported, not absorbed. `veto_log` makes it visible.
+    # Twee schrijfcalls, gesplitst op HERKOMST. Een kind is een restcategorie
+    # binnen één onderwerp en mag geen eigen kop claimen; de hoofdcodeprompt
+    # vraagt juist wél om een kop. Zonder deze splitsing zou `write_codebook`
+    # álle vormen krijgen — kinderen inbegrepen — en dan zouden ze twee keer in
+    # het boek staan zodra de tweede call erbij komt: één keer met de verkeerde
+    # instructie geschreven.
+    hoofdvormen = [s for s in shaped.shapes if s.origin != "child"]
+    kindvormen = [s for s in shaped.shapes if s.origin == "child"]
+
+    # `write_codebook` can veto a `pooled` shape (`nameable: false`) — that is
+    # the shape a consolidation call proposed, and this chain proposes them by
+    # the dozen (`grouping.build_shapes`), so this is the normal route, not an
+    # edge case. `recovered` en `child` blijven er buiten: die zijn step 4's
+    # eigen structuur, geen modelvoorstel, en een veto zou hun respondenten in
+    # de regel terugzetten onder de zusterpool die het tegenovergestelde beweert
+    # — en anders ononderscheiden in Overig (zie de vetotoets in
+    # `codebook_writer`). De attributen van een geveto'de `pooled`
+    # vorm gaan niet verloren (de Overig-sweep in `run_codebook` routeert ze),
+    # maar een stil veto zou een vergelijking met de productieketen een kleiner
+    # codeboek met een grotere Overig laten zien zonder consolidatiekwaliteit
+    # van schrijversvetos te kunnen scheiden — dezelfde reden waarom degeneratie
+    # wordt gemeld en niet geabsorbeerd. `veto_log` maakt het zichtbaar.
     veto_log = _RepairLog()
     codes = await write_codebook(
-        shaped.shapes, concepts, dimension_diagnostic, language, config,
+        hoofdvormen, concepts, dimension_diagnostic, language, config,
         log=veto_log, verbose=verbose, prompt_printer=prompt_printer,
+    )
+    # `taken_names` zijn de namen die de eerste call zojuist vastlegde. De
+    # kinderen zien die vormen niet, dus zonder deze lijst kan een kind precies
+    # de naam kiezen die een hoofdcode al draagt. Een promptregel is hier de
+    # vraag, niet de garantie: `resolve_duplicate_names` draait hieronder over
+    # de HERENIGDE lijst en is de deterministische achtervang.
+    kindcodes = await write_miscellaneous(
+        kindvormen, concepts, dimension_diagnostic, language, config,
+        verbose=verbose, prompt_printer=prompt_printer,
+        taken_names=[code.code_name for code in codes],
     )
 
     # `codes[i]` must line up with `shapes[i]` for resolve_duplicate_names and
@@ -536,15 +562,22 @@ async def generate_codebook(
     # each written code back to its own shape rather than assuming the two
     # lists still walk in lockstep — the same technique v1's
     # `_generate_codebook_async` uses for the same reason.
+    #
+    # ÉÉN lookup over ALLE vormen, en de match op (bronnamen, valentie) — niet
+    # twee lookups en niet zippen. De twee calls geven hun codes in hun eigen
+    # volgorde terug, en volgorde is geen identiteit.
     concept_by_id = {c.attribute_id: c for c in concepts}
     shape_lookup = _shape_lookup(shaped.shapes, concept_by_id)
+    codes = codes + kindcodes
     shapes = [_match_shape(code, shape_lookup) for code in codes]
 
     collision_log = _RepairLog()
-    codes = resolve_duplicate_names(codes, shapes, log=collision_log)
+    codes = resolve_duplicate_names(codes, shapes, log=collision_log,
+                                    language=language)
     return GeneratedCodebook(
         shapes=shapes, overig_ids=shaped.overig_ids, codes=codes,
-        direction_loss=shaped.direction_loss, degeneration=degeneration,
+        coverage_recovered=shaped.coverage_recovered,
+        first_time_covered=shaped.first_time_covered, degeneration=degeneration,
         partition_repairs=len(repair_log.entries), collisions=collision_log.entries,
         naming_mismatches=find_naming_mismatches(codes, shapes, concept_by_id),
         duplicate_definitions=find_duplicate_definitions(codes, shapes),
@@ -554,10 +587,114 @@ async def generate_codebook(
     )
 
 
+def link_children_to_overig(codes: List[ConsolidatedCode], shapes: List[CodeShape],
+                            parent: ConsolidatedCode) -> List[str]:
+    """Hang elk kind aan de Overig-code — in een VELD, nooit in een naam.
+
+    Geeft de `K#`'s terug van de codes die volgens hun VORM een kind zijn. Dat
+    is de bedoeling, en die gaat naar de scorecard, die hem tegen het
+    `parent_code_id`-veld legt. Die toets is een struikeldraad en geen dekking:
+    dezelfde lus zet hier het veld, dus hij kan alleen vuren als een kind zijn
+    ouder daarna kwijtraakt. Zie `build_scorecard`'s `child_code_ids` voor
+    waarom er geen afleiding bestaat die het er wél mee oneens kan zijn.
+
+    Kan niet eerder dan hier. De ouder wordt door `apply_overig_sweep` gemaakt
+    en krijgt daar zijn `K#`; vóór die sweep bestaat er geen id om naar te
+    wijzen. `codes` draagt op dit moment precies één element méér dan `shapes` —
+    Overig zelf, achteraan aangeplakt — en de rest is nog steeds de positionele
+    afspraak die `resolve_duplicate_names` en de twee vinders ook hanteren:
+    `codes[i]` is de tekst van `shapes[i]`. Die afspraak wordt hier getoetst in
+    plaats van aangenomen, want een verschoven index zou de verkeerde codes
+    onder Overig hangen zonder ergens te falen.
+    """
+    if len(codes) != len(shapes) + 1:
+        raise ValueError(
+            "codes moet shapes plus precies de Overig-code lang zijn — "
+            f"{len(codes)} tegen {len(shapes)} + 1")
+
+    kind_ids: List[str] = []
+    for code, shape in zip(codes, shapes):
+        if shape is not None and shape.origin == "child":
+            code.parent_code_id = parent.code_id
+            kind_ids.append(code.code_id)
+    return kind_ids
+
+
+def report_true_overig(result: GeneratedCodebook, overig: ConsolidatedCode) -> None:
+    """Wat "echt-overig" vandaag écht betekent, in twee getallen.
+
+    `build_shapes` verzamelt in `overig_ids` de attributen wier facetunie onder
+    de bodem bleef. `apply_overig_sweep` leidt Overig daar NIET uit af: die
+    neemt de taxonomie-attributen die geen enkele code noemt. Voor een attribuut
+    wiens ene pool in een code landde en wiens andere pool door de bodem zakte
+    is dat verschil beslissend — die code noemt het attribuut, dus het is geen
+    wees, dus die respondenten worden nergens geteld.
+
+    Sinds de verbreding van 2026-08-22 wordt dat getal GROTER in plaats van
+    kleiner, en dat is geen regressie maar hetzelfde gat op een breder vlak:
+    doordat élke groep nu polen aanlevert, houdt een attribuut vaker érgens een
+    code over. Op set 7 (luna, tau=0,7, drempel 23) bleven 9 attributen onder de
+    bodem en werden ze alle 9 nog door een code genoemd — onder de smalle regel
+    waren dat er 14, waarvan 5.
+
+    Gemeld en niet gerepareerd, en dat is een besluit met een reden. Overig die
+    namen laten claimen zet hetzelfde attribuut TWEE keer in het codeboek: één
+    keer onder zijn eigen hoofdcode en één keer onder Overig. Wat er nodig is,
+    is een Overig die één VALENTIE van een attribuut opneemt, en dat kan
+    `ConsolidatedCode` niet uitdrukken — één code draagt één valentie over al
+    zijn bronattributen. Dat is een wijziging aan het gedeelde contract in
+    `models.py` en aan step 6's toewijzing, niet aan de bedrading van deze
+    keten. Zolang dat er niet is, is dit getal het verschil tussen wat het plan
+    belooft en wat de keten levert — en een getal dat op de console staat is
+    geen stille aanname meer.
+
+    Dat verschil wordt in RESPONDENTEN gemeld en niet alleen in attributen. Een
+    attribuuttelling zegt niets over de omvang: op set 7 staan 9 attributen
+    onder de bodem terwijl er 5 respondenten van 2317 werkelijk in geen enkele
+    code voorkomen. Twee keer in dit plan is een besluit bijna genomen op een
+    getal dat iets anders telde dan zijn naam beloofde; dit is de eenheid
+    waarin het besluit valt.
+    """
+    # Nergens = in geen enkele vorm, en ook niet via een bronattribuut van
+    # Overig. Vormen, niet codes: een geveto'de vorm heeft geen code, dus zijn
+    # respondenten staan er terecht niet in.
+    alle: set = set()
+    resp_per_naam: Dict[str, set] = {}
+    for concept in result.concept_by_id.values():
+        alle |= concept.resp_ids
+        resp_per_naam.setdefault(concept.name, set()).update(concept.resp_ids)
+    in_vorm = frozenset().union(*(s.resp_ids for s in result.shapes if s is not None))
+    in_overig: set = set()
+    for naam in (overig.source_attributes or []):
+        in_overig |= resp_per_naam.get(naam, set())
+    nergens = alle - in_vorm - in_overig
+    if not nergens and not result.overig_ids:
+        # Geen gat in respondenten en geen attribuut onder de bodem: er is
+        # niets te melden, en een regel die dat toch afdrukt is ruis.
+        return
+    print(f"ECHT-OVERIG: {len(nergens)} van {len(alle)} respondent(en) komen in geen "
+          f"enkele code voor — geen vorm, en ook niet via een bronattribuut van "
+          f"'{overig.code_name}'.")
+
+    if not result.overig_ids:
+        return
+
+    namen = [result.concept_by_id[i].name for i in result.overig_ids
+             if i in result.concept_by_id]
+    bronnen = set(overig.source_attributes or [])
+    zwevend = [n for n in namen if n not in bronnen]
+    print(f"  IN ATTRIBUTEN: {len(namen)} attribuut(en) bleven onder de bodem; "
+          f"{len(namen) - len(zwevend)} daarvan staan in '{overig.code_name}'.")
+    if zwevend:
+        print(f"  LET OP: {len(zwevend)} niet, omdat een overlevende code ze nog "
+              f"noemt — hun afgevallen pool wordt nergens geteld: "
+              f"{', '.join(sorted(zwevend))}")
+
+
 def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) -> None:
     """Wat een run zichtbaar moet maken. Eerst wat geen enkele bestaande check
     meldt — hoeveel runs meetelden en wat de facetpool samenvoegde — daarna
-    dezelfde diagnostiek als productie: degeneratie, richtingsverlies, vetoes,
+    dezelfde diagnostiek als productie: degeneratie, herstelde dekking, vetoes,
     partitiereparaties, botsingen en naam-/definitieafwijkingen."""
     print(f"CONSENSUS: {result.runs_used} runs gebruikt, tau={config.tau}")
     if result.runs_failed:
@@ -571,22 +708,32 @@ def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) ->
     if result.degeneration:
         print(f"DEGENERATIE (harde FAIL): {result.degeneration}")
 
-    if result.direction_loss:
-        # Groepstelling, geen respondent-uniek totaal: build_shapes telt per
-        # groep op, dus een respondent die in twee groepen een minderheidspool
-        # mist telt twee keer mee.
-        #
-        # Niet "naar Overig": dat klopt alleen wanneer GEEN enkele pool van de
-        # groep de drempel haalt (grouping.py:145-148). Haalt de andere pool
-        # wél de drempel (:153-154), dan blijft het bronattribuut een source
-        # van die overblijvende code — apply_overig_sweep ziet het dus niet als
-        # wees — en komen deze respondenten zonder eigen code terecht bij de
-        # overblijvende, tegengesteld gerichte code.
-        print(f"RICHTINGSVERLIES: {result.direction_loss} verloren pool-plaatsing(en) "
-              f"onder de drempel — geen eigen code. Haalt de andere pool van "
-              f"dezelfde groep wél de drempel, dan belanden deze respondenten bij "
-              f"die overblijvende (tegengesteld gerichte) code; haalt geen enkele "
-              f"pool de drempel, dan gaat de hele groep naar Overig.")
+    kinderen = [s for s in result.shapes if s is not None and s.origin == "child"]
+    kind_resp = frozenset().union(*(s.resp_ids for s in kinderen)) if kinderen else frozenset()
+    # De hoofdmaat van deze bouw, en de enige die zonder rekenwerk te vergelijken
+    # is met een codeboek van vóór de kinderen: hoeveel codes een eigen kop
+    # dragen, en hoeveel eronder hangen. Overig zelf zit hier nog niet bij — die
+    # maakt `apply_overig_sweep` pas na deze rapportage.
+    print(f"CODES: {len(result.codes) - len(kinderen)} hoofdcode(s) + "
+          f"{len(kinderen)} kind(eren) onder Overig, samen {len(kind_resp)} "
+          f"respondent(en) in de kinderen")
+
+    if result.coverage_recovered:
+        # Respondent-uniek, geen groepstelling: wie in twee groepen van hetzelfde
+        # facet een afgevallen pool had telt één keer. `coverage_recovered` is de
+        # OMVANG van die vormen, geen reddingstelling — een respondent erin kan
+        # al eerder een code hebben gehad via een solo/pooled vorm van hetzelfde
+        # of een ander attribuut in het facet. `first_time_covered` is het
+        # verzamelingsverschil dat dát wél meet. De voorganger (RICHTINGSVERLIES)
+        # telde het omgekeerde — verloren pool-plaatsingen — en dat getal zakt
+        # sinds `pool_minority_poles` naar bijna nul omdat er niets meer wegvalt,
+        # niet omdat het codeboek beter werd.
+        print(f"DEKKING HERSTELD: {result.coverage_recovered} respondent(en) in "
+              f"een hoofdcode of kind uit de facetpool van afgevallen polen — "
+              f"polen uit élke groep, ook uit groepen waar geen enkele pool de "
+              f"drempel haalde. Daarvan kregen {result.first_time_covered} voor "
+              f"het eerst een code; de rest stond al ergens via een solo/pooled "
+              f"vorm. Wat ook samengenomen onder de bodem bleef is echt-overig.")
 
     if result.vetoes:
         print(f"WAARSCHUWING: {len(result.vetoes)} pooled code(s) geveto'd "
@@ -907,15 +1054,24 @@ def run_codebook(filename: str = None, var_name: str = None,
     if eigen_boekhouding:
         save_prompts_to_json(prompt_printer, doctype="prompts_step5c")
 
-    overig_name = apply_overig_sweep(result.codes, taxonomy.partition_results, m.language)
+    # De sweep maakt de ouder en mint de K#'s; pas dáárna kunnen de kinderen
+    # eraan hangen. Andersom zou een kind naar een lege id wijzen.
+    overig = apply_overig_sweep(result.codes, taxonomy.partition_results, m.language)
+    kind_ids = link_children_to_overig(result.codes, result.shapes, overig)
+    if kind_ids:
+        print(f"HIËRARCHIE: {len(kind_ids)} kind(eren) hangen onder "
+              f"'{overig.code_name}' ({overig.code_id})")
+    report_true_overig(result, overig)
     print_codebook_results(result.codes)
-    scorecard = run_scorecard(result.codes, taxonomy.partition_results, overig_name)
+    scorecard = run_scorecard(result.codes, taxonomy.partition_results,
+                              overig.code_name, child_code_ids=set(kind_ids))
 
-    if result.direction_loss:
-        # De maat die RICHTINGSVERLIES's effect op déze run zichtbaar maakt:
-        # een homeless tegenpool zonder counter-valence code is precies wat
-        # under_split_codes telt.
-        print(f"  (RICHTINGSVERLIES-effect in de scorecard: "
+    if result.coverage_recovered:
+        # De tegenmetriek, niet de bevestiging: `under_split_codes` telt een
+        # dakloze tegenpool zonder counter-valence code. Werkt de facetpool,
+        # dan hoort dit getal te DALEN — stijgt het, dan zijn er polen
+        # bijgekomen zonder hun tegenhanger.
+        print(f"  (tegenmetriek in de scorecard: "
               f"{len(scorecard.under_split_codes)} under-split code(s))")
 
     # Degeneratie is een harde FAIL: melden, niet repareren — de codebook-

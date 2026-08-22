@@ -54,6 +54,13 @@ CodingResultsCache:
 The `raw_codes` field stores serialized `ConsolidatedCode` objects. Downstream
 consumers reconstruct them via `ConsolidatedCode(**d)`.
 
+`ConsolidatedCode` gained `parent_code_id` on 2026-08-22 — the K# of the code
+this one hangs under, `None` for a top-level code. It is additive with a
+default, so every existing cache loads unchanged, and it is the ONLY carrier of
+the hierarchy: the nesting is never spelled in a code name. The candidate chain
+in `consensus/` sets it on Overig's children; the production chain leaves it
+`None` on every code.
+
 **No idea embeddings, cached or otherwise.** This chain never computes an
 embedding — `synonym_of`/`umbrella_name` grouping (stage 2) and the MECE blind
 probe (stage 5) both work on raw idea text and LLM judgment, not vectors. (The
@@ -115,8 +122,17 @@ Step 5 cache (prefix 006)
   `partition_set` and `partition_results` for domain context. It computes its
   own embeddings independently; it never took anything embedding-related from
   this cache, before or after the rebuild.
+  Since 2026-08-22 it also reads `parent_code_id`: a child is an ordinary
+  candidate, is claimed as a home code only in a second pass, is never the
+  Overig parent, and is the preferred destination of the counter-pole router
+  (step 6's ARCHITECTURE.md § *Children under Overig*).
 - **Step 7** reads the same `raw_codes` (via `ConsolidatedCode`) for export,
   plus `ensure_assignment_ids(code_assigned_results, mece_cache, mece_cache.raw_codes)`.
+  It reads **neither** `parent_code_id` nor `valence`: the export numbers the
+  codebook flat, in cache order, so a child becomes an ordinary code — its own
+  legend row, its own dichotomous column, its own value label in the long
+  output. Nothing breaks and no respondent is lost; what is lost is the nesting
+  itself (step 7's WORK.md, "Children under Overig are flat in the deliverable").
 
 ## Eén cachesleutel, drie schrijvers
 

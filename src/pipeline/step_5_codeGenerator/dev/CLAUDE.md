@@ -87,17 +87,31 @@ more** — a leftover reference to one is stale, not a second chain.
   `prompts_consolidation.py`, `consolidation.py` (N runs in one
   `SmoothRequester`, `phase_key` `step5c_consolidation`), `consensus.py`,
   `analysis.py`, `storage.py`, `run_codebook.py`, `view_prompts.py`,
-  `view_codebook.py` and its own tests; since 2026-08-22 it does not import
+  `view_codebook.py`, `prompts_miscellaneous.py` (new on 2026-08-22 and
+  consensus-only — the second writing call's prompt, which names the children
+  under Overig; it has no production counterpart, so it is neither a copy nor
+  an `EIGEN_VERSIE` entry, and `test_prompts_miscellaneous.py` /
+  `test_miscellaneous_writer.py` cover it) and its own tests;
+  since 2026-08-22 it does not import
   everything from `build_shapes` onward from production, it OWNS a copy of it
   — eleven modules: `taxonomy_input.py`, `concept_inventory.py`,
   `attribute_cards.py`, `code_shape.py`, `grouping.py`, `codebook_writer.py`,
   `prompts_writer.py`, `prompts_common.py`, `codebook_io.py`,
-  `codebook_verifier.py`, `config_codeGenerator.py`. `test_zelfstandigheid.py`
+  `codebook_verifier.py`, `config_codeGenerator.py`. Five of those — plus
+  `test_grouping.py` — stopped being copies on 2026-08-22 and are listed in
+  `EIGEN_VERSIE`: `grouping.py` and `code_shape.py` (the candidate pools fallen
+  valence poles per facet — `pool_minority_poles`, `origin == "child"`,
+  `coverage_recovered` — where production drops them), `codebook_writer.py` (a
+  second writing call, `write_miscellaneous`, for the children),
+  `codebook_io.py` (`apply_overig_sweep` returns the Overig CODE and mints the
+  K# there, so a child can point at its parent's id) and `codebook_verifier.py`
+  (the Overig ceiling counts the parent AND its children, valence-aware, and
+  two hierarchy defects fail the gate).
+  `test_zelfstandigheid.py`
   holds three guards over that ownership: an import guard (AST over both
   `ast.ImportFrom` and `ast.Import` — nothing in `consensus/` may reach outside
-  itself within step 5), a drift guard (each of the eleven copies must still
-  match its production original — `codebook_io.py`'s `project_root` line is
-  normalised away, not the whole file, so its other 344 lines stay covered),
+  itself within step 5), a drift guard (each remaining copy must still
+  match its production original),
   and a `project_root` guard, added after the 2026-08-22 promotion rehearsal
   (asserts where `project_root` resolves rather than how many `.parent` steps
   it has, so it holds at both the pre- and post-promotion depth). Since
@@ -164,7 +178,8 @@ model, see PROCESSING.md) is a `step5_*` string per call site:
 | `codegen_relations` | `step5_consolidation` | `consolidation.py` |
 | `codegen_writer` | `step5_writer` | `codebook_writer.py` |
 | `codegen_relations` | `step5_postmortem` | `postmortem.py` (off) |
-| `codegen_relations` | `step5c_consolidation` | `consensus/consolidation.py` — its own key because its VORM differs (N parallel tasks, not one); its writer call keeps `step5_writer`, see the `consensus/` bullet above |
+| `codegen_relations` | `step5c_consolidation` | `consensus/consolidation.py` — its own key because its VORM differs (N parallel tasks, not one); its main-code writer call keeps `step5_writer`, see the `consensus/` bullet above |
+| `codegen_writer` | `step5c_miscellaneous` | `consensus/codebook_writer.py`'s second call (`write_miscellaneous`) — its own key because the child prompt is shorter and yields shorter texts; sharing `step5_writer` would pollute that warm start |
 
 ## Shared Utils
 - `utils/smoothRequester.py` — `SmoothRequester` for every LLM call

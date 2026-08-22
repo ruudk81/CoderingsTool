@@ -31,6 +31,172 @@ verwijderd. Maar vergelijk ze niet één-op-één met een nieuwe run: een versch
 kan van het model komen, van de boom, of van allebei — niet noodzakelijk van
 wat er in de tussentijd aan step 5 zelf is veranderd.
 
+## "Echt-overig" betekent gedropt, niet geveegd (open — 2026-08-22)
+
+`grouping.build_shapes` verzamelt in `overig_ids` de attributen wier facetunie
+onder de bodem (`t_keep_min_respondents`) bleef. `codebook_io.apply_overig_sweep`
+leidt Overig daar NIET uit af: die neemt de taxonomie-attributen die geen enkele
+code noemt. Voor een attribuut wiens ene pool hoofdcode werd en wiens andere pool
+door de bodem zakte is dat verschil beslissend — de overlevende code noemt het
+attribuut, dus het is geen wees, dus de respondenten van die afgevallen pool
+worden nergens geteld.
+
+Gemeten op set 7 (luna, tau=0,7, drempel 23): **9 attributen bleven onder de
+bodem, 0 belandden in Overig, 9 niet.** Onder de smalle verzamelregel waren dat
+er 14, waarvan 9 in Overig en 5 niet. Het gat is dus mét de verbreding van
+2026-08-22 groter geworden en niet kleiner — geen regressie, maar hetzelfde
+mechanisme op een breder vlak: doordat élke groep nu polen aanlevert, houdt een
+attribuut vaker érgens een code over en is het dus geen wees meer. Zelfde
+gedrag als de productieketen; het blijft het verschil tussen wat het plan van
+2026-08-22 belooft en wat de keten levert. `run_codebook.report_true_overig` zet
+het getal op de console, zodat het geen stille aanname meer is.
+
+Niet gerepareerd, en waarom niet: Overig die namen laten claimen zet hetzelfde
+attribuut TWEE keer in het codeboek (één keer onder zijn hoofdcode, één keer
+onder Overig). Wat nodig is, is een Overig die één VALENTIE van een attribuut
+opneemt, en dat kan `ConsolidatedCode` niet uitdrukken — één code draagt één
+valentie over al zijn bronattributen. Dat is een wijziging aan `models.py` en aan
+step 6's toewijzing, niet aan step 5.
+
+## Élke groep levert aan de facetpool (besloten — 2026-08-22)
+
+De spec van 2026-08-22 rekende op set 7 voor: 29 → **32** hoofdcodes, **12**
+kinderen, **118** respondenten in kinderen. De eerst gebouwde, smallere keten
+leverde op exact dezelfde set, drempel en tau: **30** hoofdcodes, **8**
+kinderen, **74** respondenten. Twee oorzaken, allebei een besluit en geen
+defect:
+
+1. `build_shapes` verzamelde afgevallen polen ALLEEN uit groepen waar een
+   zusterpool overleeft (`if not kept: continue`). De simulatie deed het uit
+   álle groepen. Kostte 2 hoofdcodes en 3 kinderen, en maakte de overlevende
+   unies kleiner (Koersprofilering 24 → 7, Klantcontact 25 → 20,
+   Presentatiestijl 27 → 25), want de polen van die weggevallen groepen zouden
+   zich erbij hebben gevoegd.
+2. Een afgevallen pool zonder eenduidig facet gaat rechtstreeks naar Overig. De
+   spec-PROZA schrijft dat zelf voor; de spec-SIMULATIE telde hem toch als kind
+   ("8 negative (meerdere facetten)"). Kost 1 kind. Dat blijft zo: het facet is
+   de enige groeperingsgrens, dus 118 was nooit haalbaar en 113 is het cijfer
+   dat bij de spec-PROZA hoort.
+
+**Oorzaak 1 is opgeheven; oorzaak 2 blijft.** Het argument voor de smalle regel
+was dat het scherpste defect zit waar een zusterpool overleeft — daar telt
+kritiek mee onder een positieve code, terwijl een groep die in zijn geheel naar
+Overig gaat niets tegengestelds beweert. Doorslaggevend was het omgekeerde: zo'n
+groep laat zijn minderheidsmateriaal ononderscheiden in Overig liggen, en het
+doel van deze operatie is dat zulk materiaal een eigen naam krijgt — hoofdcode
+als de facetunie de drempel haalt, anders een kind ónder Overig. De vier
+`non_negative`-unies die onder de smalle regel in Overig verdwenen (21, 15, 14,
+14 respondenten) dragen nu een naam.
+
+Gemeten offline op set 7 (dezelfde set, drempel 23, tau 0,7 — de hele keten tot
+`build_shapes` is zuiver, dus zonder LLM-call na te rekenen):
+
+| | smal | breed |
+|---|---|---|
+| hoofdcodes | 30 | **32** |
+| kinderen | 8 | **11** |
+| respondenten in kinderen | 74 | **113** |
+| `coverage_recovered` | 98 | **175** |
+| attributen in `overig_ids` | 14 | **9** |
+
+Beide kolommen blijven staan: ze zijn het bewijs onder het besluit.
+
+**Lees 113 niet als 113 geredde respondenten.** Het is de omvang van het
+kindbakje, niet een reddingstelling. Van de 64 nieuwkomers was élk al ergens
+geteld, en 25 van de oorspronkelijke 74 verhuisden juist omhóóg naar een
+`recovered` hoofdcode. De eerlijke formulering van de winst is: **17
+respondenten kregen voor het eerst een code, en 91 zijn niet langer alleen
+vertegenwoordigd door de ongedifferentieerde Overig maar zitten nu onder een
+benoemde code die een richting draagt.** Niemand verloor een code.
+
+**Die 17 meet iets anders dan `ShapingResult.first_time_covered` (bijgevoegd
+2026-08-22, dezelfde fixronde die `coverage_recovered`'s docstring eerlijk
+maakte).** Deze 17 is het verschil TUSSEN de smalle en de brede verzamelregel
+(2311 − 2294 respondenten-in-een-vorm, zie de rekenkolom hierboven). Het
+codeveld meet iets anders: BINNEN de huidige (brede) regel, hoeveel
+respondenten in `coverage_recovered` in geen enkele solo/pooled vorm zaten —
+dus vergeleken met "geen facetpool", niet met "de smalle facetpool". Op set 7
+is dat getal **51**, niet 17. Beide zijn eerlijke reddingstellingen; ze
+beantwoorden alleen een andere vraag. Zie ook `ARCHITECTURE.md`.
+
+**Het echt-overig-gat groeit mee, en dat valt in respondenten mee.** Gemeten op
+set 7: het aantal respondenten dat NERGENS geteld wordt is 5 van 2317 — vóór én
+na de verbreding, en aantoonbaar dezelfde vijf. De valentiebewuste variant (in
+een sub-bodemunie zonder enige vorm van dezelfde richting) gaat van 7 naar 8.
+De eerder genoteerde 12 was een bottom-up telling, geen nergens-telling: 7 van
+die 12 stonden wel degelijk ergens, via een ander attribuut of de andere pool.
+De verbreding kost dus één respondent aan richtingsrepresentatie, tegenover 17
+eerste-keer-coderingen. Zie "Echt-overig betekent gedropt, niet geveegd".
+
+**Open vraag 1 van de spec is beslist (2026-08-22): het plafond telt ALLEBEI.**
+Overig zelf houdt bij generatie nog 8 respondenten over in plaats van 99, dus
+"allebei" en "alleen de ouder" zijn geen bijna-gelijke antwoorden meer: op set 7
+leest de poort 3,8% tegen 0,2%. Doorslag gaf niet het proza maar het gevolg —
+telt de poort alleen de kale ouder, dan verlaagt élke verhuizing van Overig naar
+een kind het cijfer zonder dat er iets beter geplaatst is, en wordt het plafond
+omzeilbaar door te nestelen. Het tegenargument (een kind is juist wél
+onderscheiden, dus tellen als Overig straft de verbetering af) is beantwoord met
+rapportage in plaats van met het totaal: de scorecard drukt de twee helften
+altijd apart af.
+
+Een kind telt VALENTIEBEWUST mee — het bezit één pool van zijn bronattributen,
+niet het attribuut. Op set 7 is 12 van de 17 kindattributen óók bron van een
+hoofdcode; het attribuut tellen gaf 55,5% van alle ideeën tegen 3,6% voor de
+pool. Dat geldt ook voor een NEUTRAAL kind: `POLES="three"` levert neutrale
+polen op die kind kunnen worden, en het hele attribuut laten claimen leest daar
+22,6% (FAIL) tegen 6,2% (PASS).
+
+De mini-code-waarschuwing houdt de ruime lezing voor een neutrale HOOFDcode, via
+een tweede functie (`_expected_ideas`): die is per `models.py` dimensioneel en
+dekt zijn attribuut ongeacht richting. Wat er wél veranderde is de
+`non_negative` code, die al zijn negatieve ideeën meetelde en daardoor nooit
+onder de bodem kon uitkomen. **De gemelde lijst is op set 7 identiek (3 codes),
+maar 25 van de 43 codes krijgen een andere verwachting** — 110→84, 43→32, 32→25,
+154→144 — en negen zitten nu onder 20 bij een bodem van 8. Stabiel met marge,
+niet per constructie; op een andere dataset kan die lijst dus wél schuiven.
+
+`report_true_overig` meldt sindsdien in RESPONDENTEN: 5 van 2317 komen in geen
+enkele code voor. De attribuutregel blijft eronder staan als detail.
+
+De toets "kind zonder ouder" is een STRUIKELDRAAD, geen dekking, en dat staat zo
+in de docstrings. `models.py` negeert een foute init-kwarg stil maar gooit op
+een foute attribuuttoekenning, en `link_children_to_overig` doet het tweede —
+dus geen bestaand pad kan de bedoeling en het veld laten verschillen. Een tweede
+afleiding uit de vormen zou niet helpen: `codebook_writer` bouwt bronnamen en
+valentie ÚIT de vorm, dus hermatchen geeft per constructie dezelfde vorm.
+Wat de toets wél vangt is een kind dat zijn ouder kwijtraakt tussen koppelen en
+beoordelen. `dangling_parent_refs` is wél onafhankelijk.
+
+## De kinderen zijn gebouwd en gemeten, maar niet GEFALSIFIEERD (open — 2026-08-22)
+
+Alles hierboven is gemeten op step 5: 32 hoofdcodes, 11 kinderen, 113
+respondenten in het kindbakje, plafond op 3,8%. Dat zijn cijfers over de
+BOUW van het codeboek. De spec stelt daarnaast een falsificatiecriterium dat
+alleen step 6 kan beantwoorden:
+
+> Krijgen de kinderen in step 6 nauwelijks toewijzingen, dan is het facet niet
+> de juiste groepeereenheid voor restmateriaal — en gaat het ontwerp van tafel,
+> de tuning niet in.
+
+**Die toets is niet uitgevoerd.** Er is geen enkele step-6-run over een
+codeboek mét kinderen gedaan; wat er is, is bewijs dat step 6 een KINDERLOOS
+codeboek nog exact hetzelfde behandelt (`test_kinderloos_codeboek_*`). Het
+meetgereedschap staat wel klaar: `report_children()` drukt élk kind af mét zijn
+nul (`← ZERO — this child caught nothing`), na de tegenpoolfilter, zodat een
+kind dat niets vangt niet als afwezigheid uit een lijst te lezen valt.
+
+Wat de run kost, geschat bij het plan: één step-6-run over de volle set
+(~4,1k ideeën), ≈1294 calls, ≈$0,45, 75-90 seconden. Uitgesteld in afwachting
+van de beslissing van de gebruiker — dit plan is dus gebouwd, getest en
+gemeten, maar niet gefalsifieerd.
+
+Twee dingen hangen eraan. Slaagt de toets, dan is de volgende vraag de promotie
+(zie "De promotie is geoefend"). Faalt hij, dan vervalt met het ontwerp ook het
+enige open punt in step 7 dat over kinderen gaat.
+
+Let op de cache-skip bij het draaien: `run_codebook()` heeft
+`force_recalc=False` als default en slaat op een geldige cache over.
+
 ## tau is een invoer, geen constante (open — 2026-08-20)
 
 Zolang er op een tweede dataset niets gemeten is, blijft tau een expliciet

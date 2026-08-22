@@ -460,3 +460,26 @@ def test_find_duplicate_definitions_rejects_mismatched_list_lengths():
     except ValueError:
         return
     raise AssertionError("een lengteverschil tussen codes en shapes had geweigerd moeten worden")
+
+
+def test_een_code_kan_een_ouder_dragen():
+    """De hiërarchie leeft in een veld, niet in een naam. Step 4 herkent zijn
+    vangnetten op `drain_key` en nooit op de naam, omdat een naam in de
+    enquêtetaal staat en herschreven kan worden; een hiërarchie op
+    naamconventie is dezelfde fout, één laag hoger."""
+    kind = ConsolidatedCode(
+        code_name="Kritiek op toegang", definition="d", diagnostic_test="t",
+        valence="negative", typical_indicators=[], source_attributes=["A1"],
+        parent_code_id="K99")
+
+    assert kind.parent_code_id == "K99"
+
+
+def test_een_gewone_code_heeft_geen_ouder():
+    """Additief met een default, dus elke bestaande cache laadt door en step 6
+    en 7 mogen het veld negeren tot ze het leren lezen."""
+    code = ConsolidatedCode(
+        code_name="Prijs", definition="d", diagnostic_test="t",
+        valence="neutral", typical_indicators=[], source_attributes=["A1"])
+
+    assert code.parent_code_id is None

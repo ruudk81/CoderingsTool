@@ -10,7 +10,10 @@ Definition of done (PASS):
   - idea coverage = 100%        (every answer lands in a code)
   - attribute coverage = 100%   (every attribute is used by ≥1 code)
   - every code has ≥1 attribute (Overig exempt — always emitted, may be empty)
-  - Overig ≤ 10% of ideas       (the catch-all stays small)
+  - Overig ≤ 10% of ideas       (the catch-all stays small — the bare Overig
+    code AND the codes nested under it, see `build_scorecard`)
+  - hierarchy is intact         (no code the chain calls a child without a
+    parent, no parent_code_id pointing at a code that does not exist)
   - no invalid sources          (provenance is real)
   - no taxonomy-level overlap   (no two same-valence codes with an identical
     source set)
@@ -40,7 +43,7 @@ from __future__ import annotations
 
 import math
 from itertools import combinations
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -54,6 +57,54 @@ def _pole_clears(count: int, total: int) -> bool:
         return False
     min_count = max(2, int(math.log(total)))
     return count >= min_count
+
+
+# Welke valentiepolen een code van die valentie bezit. Alle vier de waarden
+# van `ConsolidatedCode.valence` staan erin; alleen een ONBEKENDE waarde valt
+# terug op het hele attribuut, want dan is er niets bekend om op te snijden.
+_POLES = {
+    "positive": ("positive",),
+    "negative": ("negative",),
+    "non_negative": ("positive", "neutral"),
+    "neutral": ("neutral",),
+}
+_ALLE_POLEN = ("positive", "neutral", "negative")
+
+
+def _pole_ideas(valence: str, counts: Dict[str, int]) -> int:
+    """De ideeën van één attribuut die bij de POOL van een code horen — strikt.
+
+    Voor de KINDEREN onder Overig. Een kind bezit niet zijn bronattribuut maar
+    één pool ervan: hetzelfde attribuut voedt in de regel ook een hoofdcode.
+    Het attribuut zelf tellen is geen benadering maar een andere grootheid — op
+    set 7 gaf dat voor de kinderen 55,5% van alle ideeën tegen 3,6%
+    valentiebewust, omdat 12 van hun 17 bronattributen ook een hoofdcode voeden.
+
+    Dat geldt óók voor een NEUTRAAL kind, en die uitzondering is duur betaald:
+    zolang `neutral` hier het hele attribuut claimde, viel `POLES="three"` (een
+    instelling die de runner aanbiedt, en die neutrale polen oplevert die kind
+    kunnen worden) op set 7 uit op 22,6% en FAIL, tegen 6,2% en PASS met de
+    strikte pool. De redenering "neutraal sluit geen richting uit" gaat over
+    Overig de OUDER — en die loopt hier niet langs: hij wordt op zijn
+    bronattributen geteld, wat klopt omdat de sweep hem alleen attributen geeft
+    die geen enkele code noemt.
+    """
+    return sum(counts.get(p, 0) for p in _POLES.get(valence, _ALLE_POLEN))
+
+
+def _expected_ideas(valence: str, counts: Dict[str, int]) -> int:
+    """Wat een code naar verwachting uit één attribuut draagt.
+
+    Voor de MINI-CODEWAARSCHUWING, en daar wijkt precies één valentie af van
+    `_pole_ideas`. Een neutrale HOOFDcode is per `models.py` dimensioneel — geen
+    pool haalde de poort — en dekt zijn attribuut dus ongeacht richting; strikt
+    op zijn neutrale pool tellen zou hem als over-gedifferentieerd melden
+    terwijl hij het hele onderwerp draagt. Bij een kind is dat andersom, want
+    daar staan de gerichte codes ernaast; vandaar twee functies en niet één.
+    """
+    if valence == "neutral":
+        return sum(counts.get(p, 0) for p in _ALLE_POLEN)
+    return _pole_ideas(valence, counts)
 
 
 # =============================================================================
@@ -102,13 +153,20 @@ class CodebookScorecard(BaseModel):
     orphan_idea_count: int = 0
     assigned_idea_count: int = 0
 
-    # Catch-all
+    # Catch-all. `overig_idea_share_pct` is de som van de twee helften
+    # eronder — de poort telt ze allebei, en beide staan er los bij zodat een
+    # lezer ononderscheiden materiaal van benoemde kinderen kan onderscheiden.
     overig_code_name: Optional[str] = None
     overig_idea_share_pct: float = 0.0
+    overig_parent_idea_count: int = 0
+    overig_child_idea_count: int = 0
+    overig_child_code_names: List[str] = Field(default_factory=list)
 
     # Structural
     codes_without_attributes: List[str] = Field(default_factory=list)
     unknown_source_names: List[str] = Field(default_factory=list)
+    children_without_parent: List[str] = Field(default_factory=list)
+    dangling_parent_refs: List[str] = Field(default_factory=list)
 
     # Overlap (Mutual Exclusivity)
     overlap_attributes: List[AttributeOverlap] = Field(default_factory=list)
@@ -129,6 +187,8 @@ class CodebookScorecard(BaseModel):
             and self.idea_coverage_pct == 100.0
             and not self.codes_without_attributes
             and not self.unknown_source_names
+            and not self.children_without_parent
+            and not self.dangling_parent_refs
             and self.overig_idea_share_pct <= 10.0
             and not self.taxonomy_level_pairs
         )
@@ -143,6 +203,10 @@ class CodebookScorecard(BaseModel):
             reasons.append(f"{len(self.codes_without_attributes)} code(s) without attributes")
         if self.unknown_source_names:
             reasons.append(f"{len(self.unknown_source_names)} invalid source name(s)")
+        if self.children_without_parent:
+            reasons.append(f"{len(self.children_without_parent)} child code(s) without a parent")
+        if self.dangling_parent_refs:
+            reasons.append(f"{len(self.dangling_parent_refs)} dangling parent reference(s)")
         if self.overig_idea_share_pct > 10.0:
             reasons.append(f"Overig {self.overig_idea_share_pct}% > 10%")
         if self.taxonomy_level_pairs:
@@ -207,6 +271,7 @@ def build_scorecard(
     codes: List[Any],
     partition_results: Dict[str, Any],
     overig_code_name: Optional[str] = None,
+    child_code_ids: Optional[Set[str]] = None,
 ) -> CodebookScorecard:
     """Build a deterministic scorecard for a codebook against its taxonomy.
 
@@ -214,6 +279,33 @@ def build_scorecard(
         codes: List of ConsolidatedCode (or dicts) with code_name, valence, source_attributes
         partition_results: step-4 partition_results (DomainResultModel objects or dicts)
         overig_code_name: name of the catch-all code, if one was added by the Overig sweep
+        child_code_ids: de `K#`'s die de keten als KIND bedoelde (uit de vormen,
+            `origin == "child"`), gelegd naast het `parent_code_id`-veld op de
+            code zelf. Lopen ze uiteen, dan telt een kind stil als hoofdcode mee
+            en valt het buiten het Overig-plafond.
+
+            EXPLICIET EEN STRUIKELDRAAD, geen dekking: op geen enkel pad dat
+            vandaag bestaat kunnen de twee verschillen. `models.py` negeert een
+            verkeerd gespelde init-KWARG stilzwijgend
+            (`ConsolidatedCode(parent_code=...)` → `parent_code_id is None`),
+            maar een verkeerd gespelde ATTRIBUUTtoekenning is luid
+            (`code.parent_code = ...` → ValueError). `link_children_to_overig`
+            doet het tweede, dus die kan het defect niet maken; en een code die
+            elders met de foute kwarg gebouwd wordt, staat om dezelfde reden ook
+            niet in deze lijst. Een tweede afleiding uit de vormen
+            (`_shape_lookup`/`_match_shape`) helpt niet: dát is de afleiding die
+            `result.shapes` al opleverde, en `codebook_writer` bouwt elke code's
+            bronnamen en valentie ÚIT zijn vorm, dus hermatchen geeft per
+            constructie dezelfde vorm terug. Een afleiding die het niet oneens
+            kan zijn is geen tweede mening; er een kopen zou een tweede bron van
+            waarheid voor kindschap betekenen, en de hiërarchie hoort in één
+            veld te leven.
+
+            Wat hij wél vangt, en dat is niet niets: een kind dat zijn ouder
+            KWIJTRAAKT tussen koppelen en beoordelen — een latere mutatie, een
+            herbouwde lijst, een cache-rondgang die het veld laat vallen, of een
+            toekomstig bouwpad dat de ouder zelf zet. Kosten: één
+            verzamelingsvergelijking.
     """
     idea_assignments = collect_idea_assignments(partition_results)
     attr_valence = collect_attribute_valence(partition_results)
@@ -291,17 +383,63 @@ def build_scorecard(
                         if any(k in covered_any for k in idea_keys(attr)))
     idea_coverage = (covered_ideas / assigned) if assigned else 1.0
 
-    # --- Overig share ---
+    # --- Overig share: de kale ouder ÉN de codes die eronder hangen ---
+    # Het plafond bewaakt hoeveel materiaal het HOOFDcodeboek niet plaatste, en
+    # een kind staat daar net zo goed buiten als de ouder. Zou de poort alleen
+    # de kale ouder tellen, dan verlaagt elke verhuizing van Overig naar een
+    # kind het cijfer zonder dat er iets beter geplaatst is — het plafond wordt
+    # dan omzeilbaar door te nestelen. Op set 7 leest de ouder alleen 0,2% en
+    # ouder plus kinderen 3,8%; de ouder hield vóór de kinderen 99 respondenten
+    # en houdt er nu 8, dus de eerste lezing meet die verhuizing weg terwijl er
+    # niets beter geplaatst is.
+    #
+    # Het tegenargument is echt en wordt hier NIET met het totaal beantwoord
+    # maar met de rapportage: een kind is geen ononderscheiden materiaal, het
+    # draagt een naam, een richting en een facet. Daarom staan de twee helften
+    # er altijd los bij — wie het cijfer ziet naderen kan zien welke helft het
+    # drijft, en dat is precies wat één samengesteld getal niet kon.
+    #
+    # De twee helften mogen opgeteld worden omdat ze per constructie disjunct
+    # zijn: de sweep vult Overig met attributen die GEEN code noemt, en een
+    # kind is een code.
     overig_share = 0.0
+    parent_ideas = 0
+    child_ideas = 0
+    child_names: List[str] = []
     if overig_code_name:
-        overig_keys: set = set()
-        for code in codes:
-            if (_attr(code, "code_name") or "") == overig_code_name:
-                overig_keys = {k for k, _ in source_keys(code)}
-                break
-        overig_ideas = sum(1 for attr in idea_assignments.values()
+        overig_code = next((c for c in codes
+                            if (_attr(c, "code_name") or "") == overig_code_name), None)
+        overig_keys = ({k for k, _ in source_keys(overig_code)}
+                       if overig_code is not None else set())
+        overig_id = (_attr(overig_code, "code_id") or "") if overig_code is not None else ""
+        parent_ideas = sum(1 for attr in idea_assignments.values()
                            if any(k in overig_keys for k in idea_keys(attr)))
-        overig_share = (overig_ideas / assigned * 100) if assigned else 0.0
+        # `overig_id` leeg betekent niet stil terugvallen op de zwakkere regel:
+        # `mint_code_ids` mint het hele boek of niets, dus zonder id op Overig
+        # draagt geen enkele code een ouder (nul kinderen is dan het juiste
+        # antwoord) óf wijst een ouder naar een id dat niet bestaat — en dat
+        # meldt `dangling_parent_refs` hieronder als defect dat de poort faalt.
+        for code in codes:
+            if overig_id and (_attr(code, "parent_code_id") or "") == overig_id:
+                child_names.append(_attr(code, "code_name") or "")
+                child_ideas += sum(
+                    _pole_ideas(_attr(code, "valence") or "", attr_valence.get(a, {}))
+                    for a in (_attr(code, "source_attributes") or []))
+        overig_share = ((parent_ideas + child_ideas) / assigned * 100) if assigned else 0.0
+
+    # --- Hiërarchie: de bedoeling tegen het veld ---
+    all_code_ids = {_attr(c, "code_id") or "" for c in codes}
+    bedoelde_kinderen = child_code_ids or set()
+    children_without_parent: List[str] = []
+    dangling_parent_refs: List[str] = []
+    for code in codes:
+        name = _attr(code, "code_name") or ""
+        parent = _attr(code, "parent_code_id") or ""
+        code_id = _attr(code, "code_id") or ""
+        if code_id and code_id in bedoelde_kinderen and not parent:
+            children_without_parent.append(name)
+        if parent and parent not in all_code_ids:
+            dangling_parent_refs.append(name)
 
     # --- Attribute-level overlap ---
     overlaps: List[AttributeOverlap] = []
@@ -381,9 +519,14 @@ def build_scorecard(
 
     # --- Mini-code detection (over-differentiation) ---
     # Advisory counterweight to under-split. Expected volume = the matching
-    # pole of the code's source attributes (positive code → + counts,
-    # negative → − counts, neutral → totals); below the population floor
-    # floor(log(assigned)) the code likely cannot carry itself.
+    # pole of the code's source attributes (`_expected_ideas`). Een
+    # `non_negative` code kreeg hier tot 2026-08-22 al zijn negatieve ideeën
+    # meegeteld, waardoor hij nooit onder de bodem kon uitkomen: de
+    # waarschuwing zweeg juist bij de codes die hem nodig hadden. Op set 7
+    # verandert de gemelde LIJST niet, maar 25 van de 43 codes krijgen een
+    # andere verwachting — de lijst is daar stabiel met marge, niet per
+    # constructie. Onder de bevolkingsbodem floor(log(assigned)) kan een code
+    # zichzelf waarschijnlijk niet dragen.
     mini_floor = max(2, int(math.log(assigned))) if assigned > 0 else 2
     mini_codes: List[MiniCode] = []
     for code in codes:
@@ -391,16 +534,8 @@ def build_scorecard(
         if code_name == overig_code_name:
             continue
         code_valence = _attr(code, "valence") or ""
-        expected = 0
-        for attr in (_attr(code, "source_attributes") or []):
-            c = attr_valence.get(attr, {})
-            if code_valence == "positive":
-                expected += c.get("positive", 0)
-            elif code_valence == "negative":
-                expected += c.get("negative", 0)
-            else:
-                expected += (c.get("positive", 0) + c.get("neutral", 0)
-                             + c.get("negative", 0))
+        expected = sum(_expected_ideas(code_valence, attr_valence.get(attr, {}))
+                       for attr in (_attr(code, "source_attributes") or []))
         if expected < mini_floor:
             mini_codes.append(MiniCode(
                 code_name=code_name, valence=code_valence, expected_ideas=expected))
@@ -415,8 +550,13 @@ def build_scorecard(
         assigned_idea_count=assigned,
         overig_code_name=overig_code_name,
         overig_idea_share_pct=round(overig_share, 1),
+        overig_parent_idea_count=parent_ideas,
+        overig_child_idea_count=child_ideas,
+        overig_child_code_names=child_names,
         codes_without_attributes=codes_without_attributes,
         unknown_source_names=unknown,
+        children_without_parent=children_without_parent,
+        dangling_parent_refs=dangling_parent_refs,
         overlap_attributes=overlaps,
         taxonomy_level_pairs=taxonomy_pairs,
         partial_overlap_pairs=review_pairs,
@@ -443,7 +583,18 @@ def format_scorecard(sc: CodebookScorecard) -> str:
         f"({sc.orphan_idea_count}/{sc.assigned_idea_count} uncovered)",
     ]
     if sc.overig_code_name:
-        lines.append(f"  Overig share:        {sc.overig_idea_share_pct}%  (cap 10%)")
+        # Altijd beide helften, ook als er nul kinderen zijn: welke helft de
+        # poort ook telt, een lezer moet ze los kunnen zien. Het totaal alleen
+        # kan een ononderscheiden catch-all niet onderscheiden van evenveel
+        # materiaal in benoemde, gerichte kinderen.
+        lines.append(f"  Overig share:        {sc.overig_idea_share_pct}%  (cap 10%)"
+                     f"  — parent + children")
+        lines.append(f"      in '{sc.overig_code_name}' itself: "
+                     f"{sc.overig_parent_idea_count} idea(s)")
+        lines.append(f"      in {len(sc.overig_child_code_names)} child code(s): "
+                     f"{sc.overig_child_idea_count} idea(s)")
+        for naam in sc.overig_child_code_names:
+            lines.append(f"          - {naam}")
 
     if not sc.passed:
         lines.append(f"\n  ✗ FAIL — {'; '.join(sc.failure_reasons())}")
@@ -462,6 +613,20 @@ def format_scorecard(sc: CodebookScorecard) -> str:
         lines.append(f"\n  ⚠ UNKNOWN SOURCE NAMES ({len(sc.unknown_source_names)}):")
         for a in sc.unknown_source_names:
             lines.append(f"      - {a}")
+
+    if sc.children_without_parent:
+        lines.append(f"\n  ⚠ CHILD CODES WITHOUT A PARENT "
+                     f"({len(sc.children_without_parent)}) — the chain built these as "
+                     f"children but they carry no parent_code_id, so they count as "
+                     f"ordinary top-level codes:")
+        for c in sc.children_without_parent:
+            lines.append(f"      - {c}")
+
+    if sc.dangling_parent_refs:
+        lines.append(f"\n  ⚠ DANGLING PARENT REFERENCES ({len(sc.dangling_parent_refs)}) — "
+                     f"parent_code_id points at a code that does not exist:")
+        for c in sc.dangling_parent_refs:
+            lines.append(f"      - {c}")
 
     if sc.taxonomy_level_pairs:
         lines.append(f"\n  ⚠ TAXONOMY-LEVEL OVERLAP — identical source set "

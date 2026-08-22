@@ -290,12 +290,74 @@ Where the two differ:
 - **`exclude_drains=True`.** The candidate keeps step 4's catch-alls off the
   consolidation cards; production shows them (see WORK.md, "Vangnetten op de
   kaarten").
+- **A pole that misses `t_keep` is not dropped.** Since 2026-08-22 the
+  candidate's `build_shapes` hands every fallen pole to `pool_minority_poles`,
+  which unions them per (facet, valence): a union that clears `t_keep` becomes
+  a main code, one between `t_keep_min_respondents` and `t_keep` becomes a
+  child of Overig (`CodeShape.origin == "child"`, never vetoable), one below
+  the floor becomes true-Overig. Poles are collected from EVERY group. The
+  narrower rule shipped first — collect only where a sibling pole survived,
+  since that is where material is counted under an opposite-facing code — and
+  was broadened on 2026-08-22: a group that went to Overig whole left its
+  minority material undifferentiated there, and the goal is that such material
+  gets a name of its own. Measured on set 7 (luna, tau=0.7, `t_keep` 23):
+  32 main codes / 11 children / 113 respondents in children, against 30 / 8 / 74
+  under the narrow rule. The old
+  `direction_loss` metric counted what fell away and is replaced by two
+  `ShapingResult` fields: `coverage_recovered` — the unique respondents in a
+  main code or child that exists only because of the facet pool, i.e. the size
+  of those shapes, not a rescue tally, since a respondent in there can already
+  sit in a solo/pooled shape of the same or another attribute in the facet —
+  and `first_time_covered`, the set difference that IS the rescue count: of
+  `coverage_recovered`'s respondents, how many were in no solo/pooled shape at
+  all. Measured on set 7: 175 and 51. Production still drops the pole, and its
+  attribute stays a source of the surviving, opposite-facing sibling code.
+- **Two writing calls, split on origin.** `child` shapes go to
+  `write_miscellaneous` (own prompt in `prompts_miscellaneous.py`, own phase
+  `step5c_miscellaneous`, no veto and no `nameable` field); everything else goes
+  to `write_codebook`. The main-code names travel along as `taken_names`, and
+  `resolve_duplicate_names` runs over the REUNITED list. Both result lists are
+  matched back to their shapes through ONE `_shape_lookup` over all shapes —
+  never zipped, since order is not identity.
+- **The hierarchy lives in a field.** `apply_overig_sweep` returns the Overig
+  CODE (not its name) and mints the K# there, after which
+  `run_codebook.link_children_to_overig` sets each child's `parent_code_id` and
+  returns their K#'s. Ordering is forced: the parent has no id before the sweep.
+  Production's sweep returns a name and knows no children.
+- **The Overig ceiling counts the parent AND its children.** Both sit outside
+  the main codebook, which is what the 10% cap guards; counting the bare parent
+  only would let any move from Overig into a child lower the reading without
+  anything being placed better. A child is counted VALENCE-AWARE (`_pole_ideas`,
+  strict for all four valences): it owns one pole of its source attributes, not
+  the attribute — 12 of set 7's 17 child attributes also feed a main code, so
+  counting attributes gives 55.5% where the pole gives 3.6%. That holds for a
+  NEUTRAL child too: under `POLES="three"` (`two_pole=False`, offered by the
+  runner) build_shapes produces neutral poles that can become children, and
+  letting them claim the whole attribute reads 22.6% (FAIL) against 6.2% (PASS)
+  on set 7. The mini-code warning keeps the permissive reading for a neutral
+  MAIN code through a second function, `_expected_ideas`: per `models.py` that
+  is a dimensional code covering its attribute regardless of direction.
+  Both halves are always printed separately, because
+  a single total cannot tell an undifferentiated catch-all from the same volume
+  in named, directional children. Set 7: 3.8% = 0.2% parent + 3.6% in 11
+  children, PASS. Two hierarchy defects also fail the gate: a code the chain
+  meant as a child (`child_code_ids`, from the shapes) that carries no
+  `parent_code_id`, and a `parent_code_id` pointing at a code that does not
+  exist. The parentless-child check is an explicit TRIPWIRE, not coverage: an
+  unknown init kwarg is silently ignored but an unknown attribute assignment
+  raises, and `link_children_to_overig` does the latter — so no path that exists
+  today can make the two disagree (see its docstring for why no second
+  derivation can). It fires on a child that LOSES its parent between linking and
+  judging. `dangling_parent_refs` is independent and needs no such caveat.
 
-Where they do not differ: everything from `build_shapes` onward — grouping's
-partition repair and degeneration check, `codebook_writer.py`'s single writer
-call, the three deterministic naming/definition guards, the Overig sweep, the
-scorecard — is the same code. Since 2026-08-22 it is not shared by import: each
-of the eleven modules involved lives as its own copy inside `consensus/` (see
+Where they no longer differ only in phase 1: everything from `build_shapes` to
+the Overig sweep diverged on 2026-08-22. `grouping.py`, `code_shape.py`,
+`codebook_writer.py`, `codebook_io.py`, `codebook_verifier.py` and
+`test_grouping.py` stopped being copies that day and are now consensus's own versions, listed in
+`test_zelfstandigheid.py`'s `EIGEN_VERSIE` with the reason per file. What is
+still the same code: the three deterministic naming/definition guards and
+everything upstream of grouping. Since 2026-08-22 none of it is shared by
+import: each of the eleven modules involved lives as its own copy inside `consensus/` (see
 CLAUDE.md's Key Files), so `consensus/` imports nothing from outside itself
 within step 5. Three guards in `consensus/test_zelfstandigheid.py` keep that
 true — an import guard, a drift guard that fails the moment a copy stops

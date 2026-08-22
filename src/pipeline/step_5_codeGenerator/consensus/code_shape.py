@@ -57,6 +57,27 @@ class CodeShape:
     resp_pos: frozenset[str]
     resp_neg: frozenset[str]
     resp_neu: frozenset[str]
+    # Vier waarden, en het verschil is niet cosmetisch — `codebook_writer` mag
+    # alleen een `pooled`-vorm weigeren als het model hem niet kan benoemen:
+    #   "solo"      — één attribuut, op eigen kracht boven de drempel.
+    #   "pooled"    — meerdere attributen onder één noemer, zoals het model ze
+    #                 voorstelde. Vetobaar: is de groep niet te benoemen, dan
+    #                 was de samenvoeging geen code. Zijn attributen blijven
+    #                 dan los over en worden naar Overig geveegd.
+    #   "recovered" — een facetunie van afgevallen polen die de drempel alsnog
+    #                 haalt en dus hoofdcode wordt. NIET vetobaar: hij is geen
+    #                 modelvoorstel maar step 4's eigen structuur, dus het veto
+    #                 zou iets beoordelen waar het niet over gaat. Vaak — niet
+    #                 altijd, sinds de pool op 2026-08-22 ook polen uit groepen
+    #                 zonder overlevende zusterpool opneemt — blijven zijn
+    #                 attributen bovendien bron van die zusterpool, en dan
+    #                 belanden zijn respondenten bij veto niet in Overig maar
+    #                 weer onder een code die het tegenovergestelde beweert.
+    #                 Zie `pool_minority_poles`.
+    #   "child"     — dezelfde facetunie, maar onder de drempel en boven de
+    #                 bodem, en die als kind onder Overig hangt. Om dezelfde
+    #                 reden niet vetobaar: een kind bestaat omdat deze
+    #                 respondenten anders nergens staan.
     origin: str
 
 

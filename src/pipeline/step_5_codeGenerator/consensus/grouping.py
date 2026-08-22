@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from .attribute_cards import AttributeCard
+from .config_codeGenerator import CodebookConfig
 from .prompts_consolidation import ConsolidationResult
 from .concept_inventory import Concept
 from .code_shape import CodeShape
@@ -203,12 +204,104 @@ def pool_thin_within_facet(
 class ShapingResult:
     shapes: List[CodeShape]
     overig_ids: List[str]
-    direction_loss: int
+    # Het aantal UNIEKE respondenten in een hoofdcode of kind die uit de
+    # facetpool van `pool_minority_poles` komt — de omvang van die vormen, geen
+    # reddingstelling: een respondent hierin kan al eerder een code hebben
+    # gehad, via de solo/pooled vorm van hetzelfde of een ander attribuut in
+    # het facet. Zie `first_time_covered` voor wie dat niet had. De voorganger
+    # heette `direction_loss` en telde het omgekeerde — wat er wegviel. Sinds
+    # een afgevallen pool niet meer wegvalt telt die maat bijna niets meer.
+    coverage_recovered: int
+    # Van diezelfde respondenten: hoeveel zaten daarvóór NERGENS — geen enkele
+    # solo/pooled vorm. Dit IS de reddingstelling die `coverage_recovered` niet
+    # is: een verzamelingsverschil (`coverage_recovered`-vormen minus
+    # solo/pooled-vormen), niet de omvang van de emmer zelf.
+    first_time_covered: int
+
+
+def _pole_split(valence: str, members: List[Concept]) -> Tuple[frozenset, frozenset, frozenset]:
+    """De pos/neg/neu-onderverdeling die een vorm van deze pool meedraagt.
+
+    Staat apart omdat TWEE plaatsen hem nodig hebben — de vorm van een groep en
+    de vorm van een facetunie — en ze anders uit elkaar lopen. Voor elke
+    valentie is de uitkomst per definitie gelijk aan de pool zelf
+    (`valence_poles` bouwt hem uit dezelfde velden), dus de vorm kan niet
+    respondenten dragen die niet in `resp_ids` zitten.
+    """
+    pos = frozenset().union(*(m.resp_pos for m in members))
+    neg = frozenset().union(*(m.resp_neg for m in members))
+    neu = frozenset().union(*(m.resp_neu for m in members))
+    if valence == "non_negative":
+        return pos, frozenset(), neu
+    return (pos if valence == "positive" else frozenset(),
+            neg if valence == "negative" else frozenset(),
+            neu if valence == "neutral" else frozenset())
+
+
+def pool_minority_poles(
+    gevallen: List[Tuple[Optional[str], str, frozenset, Tuple[str, ...]]],
+    threshold: int,
+    floor: int,
+) -> Tuple[List[Tuple[str, frozenset, Tuple[str, ...]]],
+           List[Tuple[str, frozenset, Tuple[str, ...]]],
+           List[str]]:
+    """(facet, valentie, respondenten, leden) in; (hoofd, kinderen, overig) uit.
+
+    Een pool die de drempel niet haalde verdween tot 2026-08-22 als vorm. Waar
+    een zusterpool overleefde bleef zijn attribuut bron van die code — die vaak
+    het tegenovergestelde beweert, zodat kritiek onder een positieve code werd
+    geteld. Waar geen enkele pool overleefde ging de hele groep naar Overig en
+    lag het materiaal daar ononderscheiden. De drempel deed in beide gevallen
+    twee dingen tegelijk: beslissen wat een eigen kop verdient, en beslissen
+    waar respondenten worden geteld. Het tweede antwoord was fout. Deze functie
+    scheidt ze, voor afgevallen polen uit élke groep.
+
+    Drie uitkomsten, één drempel:
+
+    - **Haalt de unie `threshold`** — dan is het een hoofdcode, precies zoals
+      `pool_thin_within_facet` vandaag al hoofdcodes uit een facetpool levert.
+      Een tweede getal voor dezelfde constructie zou twee regels maken voor één
+      vraag.
+    - **Zit de unie tussen `floor` en `threshold`** — dan verdient hij geen
+      eigen kop maar wel een plaats: een kind onder Overig.
+    - **Zit de unie onder `floor`** — dan is het echt-overig. `floor` is
+      `t_keep_min_respondents`, een bestaande constante; geen nieuwe knop.
+
+    De facetgrens is de enige groeperingsgrens. Nooit erover heen, en geen LLM
+    die de restanten hergroepeert: een onbegrensde structuurvraag loopt naar een
+    uiterste, en step 5 heeft dat twee keer bewezen. Wat geen eenduidig facet
+    heeft (`facet is None`) gaat daarom rechtstreeks naar overig, net zoals
+    `pool_thin_within_facet` zo'n groep met rust laat.
+
+    Respondenten worden VERENIGD, nooit opgeteld — wie in twee groepen van
+    hetzelfde facet een negatief idee had telt één keer.
+    """
+    per_sleutel: Dict[Tuple[str, str], Tuple[frozenset, List[str]]] = {}
+    overig_ids: List[str] = []
+    for facet, valence, resp, member_ids in gevallen:
+        if facet is None:
+            overig_ids.extend(member_ids)
+            continue
+        verzameld, leden = per_sleutel.get((facet, valence), (frozenset(), []))
+        per_sleutel[(facet, valence)] = (verzameld | resp, leden + list(member_ids))
+
+    hoofd: List[Tuple[str, frozenset, Tuple[str, ...]]] = []
+    kinderen: List[Tuple[str, frozenset, Tuple[str, ...]]] = []
+    for (_facet, valence), (resp, leden) in sorted(per_sleutel.items(),
+                                                   key=lambda kv: kv[0]):
+        unie = (valence, resp, tuple(sorted(set(leden))))
+        if len(resp) >= threshold:
+            hoofd.append(unie)
+        elif len(resp) >= floor:
+            kinderen.append(unie)
+        else:
+            overig_ids.extend(unie[2])
+    return hoofd, kinderen, overig_ids
 
 
 def build_shapes(
     groups: List[Group], concepts: List[Concept], threshold: int,
-    two_pole: bool = False,
+    two_pole: bool = False, floor: Optional[int] = None,
 ) -> ShapingResult:
     """Elke groep wordt gesplitst in zijn valentiepolen; elke pool die de drempel
     zelfstandig haalt wordt één code.
@@ -218,19 +311,54 @@ def build_shapes(
     meedroeg zodra maar één pool de drempel haalde — het gat waardoor 17 codes
     een richting claimden die hun inhoud niet had.
 
-    Een pool die de drempel niet haalt gaat naar Overig en telt mee in
-    `direction_loss`. Haalt geen enkele pool van een groep de drempel, dan gaan
-    de attributen zelf naar Overig.
+    Een pool die de drempel niet haalt valt niet weg: hij gaat naar
+    `pool_minority_poles`, die de afgevallen polen van hetzelfde facet en
+    dezelfde valentie samenneemt. Dat geldt sinds 2026-08-22 voor ELKE groep,
+    ook voor een groep waar geen enkele pool de drempel haalt. Die ging tot dan
+    in zijn geheel naar Overig, waar niets het tegenovergestelde beweert — het
+    scherpste defect zat dus elders. Maar zulk materiaal bleef daarmee
+    ononderscheiden in Overig liggen, terwijl het doel is dat het een eigen naam
+    krijgt: hoofdcode als de facetunie de drempel haalt, anders een kind onder
+    Overig. Alleen een groep zonder respondenten heeft niets te leveren en gaat
+    nog steeds als geheel naar Overig.
+
+    `floor` is de bodem waaronder een unie echt-overig wordt. Blijft hij leeg,
+    dan geldt `t_keep_min_respondents` uit `CodebookConfig` — de bestaande
+    constante, zodat er geen getal in deze module staat. De aanroeper geeft hem
+    expliciet mee, want een configuratie die de bodem verzet moet gevolgd
+    worden en niet stil op de default terugvallen.
 
     `two_pole` vervangt de driedeling door niet-negatief (positief ∪ neutraal)
     tegenover negatief. De +/0-grens is gemeten ruis bij kale associaties, en
-    een samengevoegde pool haalt `t_keep` vaker, dus `direction_loss` daalt.
-    Experimenteel — de productieketen draait op de driedeling.
+    een samengevoegde pool haalt `t_keep` vaker.
     """
+    if floor is None:
+        floor = CodebookConfig().t_keep_min_respondents
+
     concept_by_id = {c.attribute_id: c for c in concepts}
     shapes: List[CodeShape] = []
     overig_ids: List[str] = []
-    direction_loss = 0
+    gevallen: List[Tuple[Optional[str], str, frozenset, Tuple[str, ...]]] = []
+
+    def sole_facet(member_ids: Tuple[str, ...]) -> Optional[str]:
+        facetten = {concept_by_id[i].facet for i in member_ids if i in concept_by_id}
+        return facetten.pop() if len(facetten) == 1 else None
+
+    def add_shape(valence: str, resp: frozenset, member_ids: Tuple[str, ...],
+                  umbrella: str, origin: str) -> None:
+        members = [concept_by_id[i] for i in member_ids if i in concept_by_id]
+        resp_pos, resp_neg, resp_neu = _pole_split(valence, members)
+        shapes.append(CodeShape(
+            key=f"V{len(shapes) + 1}",
+            members=member_ids,
+            valence=valence,
+            umbrella=umbrella,
+            resp_ids=resp,
+            resp_pos=resp_pos,
+            resp_neg=resp_neg,
+            resp_neu=resp_neu,
+            origin=origin,
+        ))
 
     for group in groups:
         members = [concept_by_id[i] for i in group.member_ids if i in concept_by_id]
@@ -244,41 +372,79 @@ def build_shapes(
         order = (("non_negative", "negative") if two_pole
                  else ("positive", "negative", "neutral"))
         kept = {v: r for v, r in poles.items() if len(r) >= threshold}
-        if not kept:
+
+        # De afgevallen polen worden verzameld in plaats van geteld — sinds
+        # 2026-08-22 uit ÉLKE groep, ook uit een groep waar geen enkele pool de
+        # drempel haalt. Tot dan gold de smalle regel (alleen waar een
+        # zusterpool overleefde), omdat het scherpste defect daar zit: het
+        # attribuut blijft bron van een code die het tegenovergestelde beweert.
+        # Maar een groep die in zijn geheel naar Overig ging liet zijn materiaal
+        # ononderscheiden achter, en het doel is dat minderheidsmateriaal een
+        # eigen naam krijgt — desnoods als kind onder Overig. De facetgrens
+        # blijft de enige grens; alleen de herkomst van de pool telt niet meer.
+        facet = sole_facet(group.member_ids)
+        afgevallen = [(facet, valence, resp, group.member_ids)
+                      for valence, resp in poles.items()
+                      if valence not in kept and resp]
+        gevallen.extend(afgevallen)
+        if not kept and not afgevallen:
+            # Onbereikbaar vandaag, net als de tak hierboven: `build_inventory`
+            # maakt alleen een Concept voor een attribuut mét ideeën en legt elke
+            # eenheid in precies één van pos/neg/neu, dus `valence_poles` geeft
+            # nooit uitsluitend lege polen. Maar als die aanname ooit breekt moet
+            # de boekhouding heel blijven: naar Overig, niet stil weg.
             overig_ids.extend(group.member_ids)
-            direction_loss += len(frozenset().union(*poles.values()))
             continue
 
-        # Unie, niet som: een respondent kan zowel een positief als een
-        # negatief idee bij hetzelfde attribuut hebben, en zou anders dubbel
-        # meetellen als beide polen onder de drempel blijven.
-        dropped = (r for v, r in poles.items() if v not in kept)
-        direction_loss += len(frozenset().union(*dropped))
         for valence in order:
             if valence not in kept:
                 continue
-            resp = kept[valence]
-            if valence == "non_negative":
-                resp_pos = frozenset().union(*(m.resp_pos for m in members))
-                resp_neu = frozenset().union(*(m.resp_neu for m in members))
-                resp_neg = frozenset()
-            else:
-                resp_pos = resp if valence == "positive" else frozenset()
-                resp_neg = resp if valence == "negative" else frozenset()
-                resp_neu = resp if valence == "neutral" else frozenset()
-            shapes.append(CodeShape(
-                key=f"V{len(shapes) + 1}",
-                members=group.member_ids,
-                valence=valence,
-                umbrella=group.proposed_name,
-                resp_ids=resp,
-                resp_pos=resp_pos,
-                resp_neg=resp_neg,
-                resp_neu=resp_neu,
-                origin="pooled" if len(group.member_ids) > 1 else "solo",
-            ))
+            add_shape(valence, kept[valence], group.member_ids,
+                      group.proposed_name,
+                      "pooled" if len(group.member_ids) > 1 else "solo")
+
+    hoofd, kinderen, pool_overig = pool_minority_poles(gevallen, threshold, floor)
+    for valence, resp, member_ids in hoofd:
+        # Een unie die de drempel haalt is een hoofdcode als elke andere — één
+        # drempel, één regel — maar draagt een eigen HERKOMST, en dat is geen
+        # cosmetiek. Tot 2026-08-22 kreeg hij `pooled` zodra hij meer dan één
+        # attribuut omvatte, en daarmee het vetorecht van `codebook_writer`.
+        # Bij veto stonden zijn respondenten wéér nergens: het attribuut blijft
+        # bron van de overlevende zusterpool, dus `apply_overig_sweep` ziet het
+        # niet als wees. Dat is precies het defect dat deze pool opheft. Een
+        # facetunie is bovendien geen modelvoorstel maar step 4's eigen
+        # structuur, en het veto beoordeelt juist modelvoorstellen.
+        #
+        # Geen `solo`/`pooled`-onderscheid meer, en dat kost niets: een unie
+        # die de drempel haalt omvat per constructie meer dan één groep — een
+        # enkele pool die de drempel niet haalde is in zijn eentje nooit een
+        # unie die hem wél haalt. De oude `else "solo"`-tak was onbereikbaar.
+        add_shape(valence, resp, member_ids, sole_facet(member_ids) or "",
+                  "recovered")
+    for valence, resp, member_ids in kinderen:
+        # `origin="child"` maakt een kind NIET vetobaar: `codebook_writer` kan
+        # alleen een `pooled`-vorm weigeren. Dat is een besluit, geen bijvangst.
+        # Een kind is een dekkingsconstructie — hij bestaat omdat deze
+        # respondenten anders nergens staan. Wie hem alsnog kan weigeren zet ze
+        # weer nergens, en dat is precies wat hier wordt opgeheven. Een
+        # onnoembaar kind krijgt zijn fallbacktekst en blijft staan.
+        add_shape(valence, resp, member_ids, sole_facet(member_ids) or "", "child")
+
+    overig_ids.extend(pool_overig)
+    # Eén attribuut kan langs twee routes binnenkomen — twee van zijn polen
+    # kunnen los echt-overig worden — en Overig is een verzameling, geen telling.
+    overig_ids = list(dict.fromkeys(overig_ids))
+
+    hersteld = frozenset().union(
+        *(resp for _valence, resp, _leden in hoofd + kinderen))
+    # Wie stond al ergens vóór de facetpool? Alleen `solo`/`pooled` — de vormen
+    # die zonder `pool_minority_poles` ook hadden bestaan. `recovered`/`child`
+    # zíjn de facetpool, dus die tellen hier niet mee als "al eerder".
+    bestond_al = frozenset().union(
+        *(s.resp_ids for s in shapes if s.origin in ("solo", "pooled")))
     return ShapingResult(shapes=shapes, overig_ids=overig_ids,
-                         direction_loss=direction_loss)
+                         coverage_recovered=len(hersteld),
+                         first_time_covered=len(hersteld - bestond_al))
 
 
 DEGENERATION_FLOOR = 0.05

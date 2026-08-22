@@ -26,7 +26,7 @@ from utils.saveVerbose import VerboseCapture
 
 # Import step_6_codeAssigner components
 from pipeline.step_6_codeAssigner.config_codeAssigner import AssignmentConfig
-from pipeline.step_6_codeAssigner.code_assignment import CodeAssigner
+from pipeline.step_6_codeAssigner.code_assignment import CodeAssigner, report_children
 from pipeline.step_6_codeAssigner.valence_filter import (
     report_filter, route_opposing_poles,
 )
@@ -248,6 +248,12 @@ def run_code_assignment(
     # downstream (codebook workbook, .sav matrices, exports) sees one state.
     if config.filter_opposing_poles:
         report_filter(route_opposing_poles(assigned_results, codes or []))
+
+    # And only now the children of Overig, counted on the FINAL state: a child
+    # can be filled by the LLM or by the filter above, so any tally taken
+    # earlier would call a child empty that is not. Silent without children.
+    if config.verbose:
+        report_children(codes or [], assigned_results)
 
     # Cache assignment results
     variable_key = generate_enhanced_variable_key(

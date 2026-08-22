@@ -323,6 +323,21 @@ class ConsolidatedCode(BaseModel):
     # cache-save (K#), or lazily at load for pre-id codebooks. source_attribute_ids
     # mirrors source_attributes as attribute ids (A#), resolved at cache-save/load.
     code_id: SkipJsonSchema[str] = ""
+    # De hiërarchie leeft in dit veld, nooit in de naam — dezelfde les als step 4's
+    # drain_key, één laag hoger: een naam staat in de enquêtetaal en kan herschreven
+    # worden, een veld niet. Additief met een default, dus bestaande caches laden
+    # door en step 6/7 mogen het negeren tot ze het leren lezen. Net als `code_id`
+    # hierboven wordt dit veld gemint (`link_children_to_overig`), nooit door het
+    # LLM ingevuld — dus hoort het net zo min in de responseschema als `code_id`
+    # en `source_attribute_ids`, ook al is dat verschil vandaag onzichtbaar omdat
+    # `ConsolidatedCode` nergens als response model dient.
+    parent_code_id: SkipJsonSchema[Optional[str]] = Field(
+        default=None,
+        description=(
+            "The K# of the code this one is nested under, or None for a "
+            "top-level code. Only Overig's children carry this today."
+        ),
+    )
     source_attribute_ids: SkipJsonSchema[List[str]] = Field(default_factory=list)
 
 

@@ -10,20 +10,18 @@ waar blijven, en niemand controleert dat met het blote oog:
 2. Elke kopie is en blijft inhoudelijk gelijk aan haar origineel in step 5,
    op de imports na — anders staat er straks een meetuitkomst op naam van de
    verkeerde keten (test_de_kopie_is_gelijk_aan_het_origineel).
-3. De kopie van `codebook_io.py` rekent zijn `project_root` naar dezelfde map
-   uit als het origineel. Bewaker 2 normaliseert die ene regel juist weg (de
-   kopie ligt bewust één map dieper en draagt daarom één `.parent` méér), dus
-   ziet een afwijking daarin niet — dat is waar bewaker 3 op toetst: niet HOEVEEL
-   `.parent`-stappen er staan, maar WAAR ze uitkomen, en dat klopt zo op beide
-   dieptes (test_project_root_wijst_naar_de_repo_root).
+3. `codebook_io.py` rekent zijn `project_root` naar de repo-root uit. Bewaker 2
+   ziet dat niet: dat bestand is sinds 2026-08-22 een eigen versie en wordt dus
+   niet meer met het origineel vergeleken. Bewaker 3 toetst daarom niet HOEVEEL
+   `.parent`-stappen er staan, maar WAAR ze uitkomen — en dat klopt zowel hier
+   als na de verhuizing (test_project_root_wijst_naar_de_repo_root).
 
 Zonder deze drie tests is de afspraak een voornemen; met deze drie is hij een
-test die faalt zodra iemand een import, een kopie, of die ene genormaliseerde
-regel laat afwijken.
+test die faalt zodra iemand een import, een kopie, of het anker van de
+promptexport laat afwijken.
 """
 import ast
 import pathlib
-import re
 
 import pytest
 
@@ -106,7 +104,7 @@ def test_consensus_leent_niets_meer_uit_step_5():
 
 # Bestandsnamen die consensus/ met step 5 DEELT, maar die welbewust EIGEN zijn
 # — consensus' eigen versie van een productiebestand, geen kopie ervan. Elk
-# van deze acht hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
+# van deze veertien hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
 # hieronder; dat maakt de uitsluiting een geschreven claim in plaats van een
 # stilzwijgende omissie.
 EIGEN_VERSIE = {
@@ -122,6 +120,37 @@ EIGEN_VERSIE = {
     "__init__",
     # Testen van de drie bovenstaande eigen modules, dus zelf ook eigen.
     "test_consolidation", "test_run_codebook",
+    # Vangt sinds 2026-08-22 de afgevallen valentiepolen op: `pool_minority_poles`
+    # neemt ze per (facet, valentie) samen, `build_shapes` kreeg er een `floor`
+    # bij, en `direction_loss` is vervangen door `coverage_recovered`. Productie
+    # laat een afgevallen pool nog steeds vallen — dat is het verschil dat deze
+    # keten moet meten, dus geen kopie meer.
+    "grouping", "test_grouping",
+    # `CodeShape.origin` kent hier twee extra waarden, "recovered" en "child",
+    # die productie niet kent; het vetorecht van `codebook_writer` hangt eraan.
+    "code_shape",
+    # Draagt sinds 2026-08-22 een TWEEDE schrijfcall, `write_miscellaneous`, die
+    # de kinderen onder Overig schrijft met een eigen prompt, een eigen fase
+    # (`step5c_miscellaneous`) en zonder veto. Bovendien is de veto-toets zelf
+    # verscherpt: alleen `pooled` is nog vetobaar, want een `recovered` facetunie
+    # weigeren zet zijn respondenten in de regel weer onder de zusterpool die het
+    # tegenovergestelde beweert, en anders ononderscheiden in Overig. Productie
+    # kent geen kinderen en geen facetunie.
+    "codebook_writer",
+    # `apply_overig_sweep` geeft sinds 2026-08-22 de Overig-CODE terug in plaats
+    # van zijn naam, en munt daar de K#'s. Nodig omdat een kind onder Overig
+    # hangt via `parent_code_id` en dus de id van zijn ouder moet kennen vóór de
+    # cache-write — de hiërarchie leeft in een veld, nooit in een naam. Productie
+    # kent geen kinderen en heeft aan de naam genoeg.
+    "codebook_io",
+    # Telt sinds 2026-08-22 in `overig_idea_share_pct` ook de codes die ONDER
+    # Overig hangen, valentiebewust en strikt per pool (`_pole_ideas`, met
+    # `_expected_ideas` als ruimere tweelingregel voor de mini-codetelling), en
+    # rapporteert de twee helften apart. Draagt daarnaast twee poortregels die productie niet kan
+    # hebben: een kind zonder `parent_code_id` (via `child_code_ids`) en een
+    # `parent_code_id` dat nergens op uitkomt. Productie kent geen kinderen, dus
+    # daar is dat plafond per definitie de kale Overig-code.
+    "codebook_verifier",
 }
 
 
@@ -131,22 +160,24 @@ def _module_stammen(map_: pathlib.Path) -> set[str]:
 
 # Afgeleid, niet met de hand bijgehouden: alles wat consensus/ met step 5 DEELT
 # (zelfde bestandsnaam) en niet welbewust eigen is, is een kopie en hoort dus
-# bewaakt te worden. Een twaalfde module die ooit wordt overgekopieerd komt
-# hier vanzelf bij; een module die verdwijnt valt er vanzelf uit — geen van
-# beide vereist dat iemand deze lijst met de hand bijwerkt.
+# bewaakt te worden. Een module die ooit wordt overgekopieerd komt hier vanzelf
+# bij; een module die verdwijnt valt er vanzelf uit — geen van beide vereist dat
+# iemand deze lijst met de hand bijwerkt.
 GEKOPIEERD = sorted(
     (_module_stammen(pathlib.Path(__file__).parent)
      & _module_stammen(pathlib.Path(__file__).parent.parent))
     - EIGEN_VERSIE
 )
 
-# Modules waarvan een afwijking een vastgelegd besluit is, in plaats van
-# ruis: naam -> reden (commit). Leeg bij aanvang — dit is geen skip-lijst
-# voor codebook_io, want die afwijking wordt hieronder genormaliseerd in
-# plaats van overgeslagen (zie _normaliseer_project_root). Een module komt
-# hier pas bij als de vergelijking zelf niet kan worden gered door
-# normalisatie, bijvoorbeeld wanneer `grouping.py` op een dag inhoudelijk
-# uiteenloopt van het origineel.
+# Modules die een KOPIE blijven maar één vastgelegd, onvermijdelijk verschil
+# dragen: naam -> reden (commit). Denk aan een positieafhankelijke constante,
+# die per definitie niet byte-identiek kan zijn op een andere diepte.
+#
+# Leeg, en dat is geen toeval: elke afwijking tot nu toe was een echte
+# vertakking — de module hield op een kopie te zijn en hoort dan in
+# EIGEN_VERSIE, niet hier. Het verschil doet ertoe, want een naam hier
+# slaat het HELE bestand over en verliest dus ook de dekking op de regels
+# die wél gelijk hadden moeten blijven.
 AFGEWEKEN = {}
 
 
@@ -155,42 +186,6 @@ def _zonder_imports(tekst: str) -> str:
     hun imports — daar gaat deze test niet over."""
     return "\n".join(r for r in tekst.splitlines()
                      if not r.lstrip().startswith(("import ", "from ")))
-
-
-_PROJECT_ROOT_BLOK = re.compile(
-    r"(?:^#.*\n)*^project_root = Path\(__file__\)((?:\.parent)+)\s*$",
-    re.MULTILINE,
-)
-
-
-def _normaliseer_project_root(tekst: str, *, is_kopie: bool) -> str:
-    """`codebook_io.py` berekent `project_root` als `Path(__file__)` plus een
-    vaste keten `.parent`-stappen. Dat is een positieafhankelijke constante:
-    de kopie in `consensus/` ligt één map dieper dan het origineel in
-    `step_5_codeGenerator/`, dus heeft daar terecht één `.parent` méér nodig
-    om dezelfde map (de repo-root) te bereiken. Vastgelegd in commit
-    f43c3969.
-
-    De byte-identiteitsregel gaat over logica, niet over positie — dus
-    normaliseren we hier alleen die ene regel (en de toelichting die erboven
-    staat) naar een kanonieke vorm, in plaats van het hele bestand van de
-    vergelijking uit te sluiten. Alle 344 andere regels blijven gewoon
-    vergeleken: een échte inhoudelijke afwijking in codebook_io.py valt hier
-    nog steeds doorheen."""
-    def vervang(match: re.Match) -> str:
-        aantal = match.group(1).count(".parent")
-        if is_kopie:
-            aantal -= 1  # de kopie ligt één map dieper dan het origineel
-        return f"project_root = Path(__file__){'.parent' * aantal}"
-
-    return _PROJECT_ROOT_BLOK.sub(vervang, tekst)
-
-
-def _genormaliseerd(naam: str, tekst: str, *, is_kopie: bool) -> str:
-    tekst = _zonder_imports(tekst)
-    if naam == "codebook_io":
-        tekst = _normaliseer_project_root(tekst, is_kopie=is_kopie)
-    return tekst
 
 
 @pytest.mark.parametrize("naam", GEKOPIEERD)
@@ -203,12 +198,9 @@ def test_de_kopie_is_gelijk_aan_het_origineel(naam):
     if naam in AFGEWEKEN:
         pytest.skip(f"bewuste afwijking: {AFGEWEKEN[naam]}")
 
-    kopie = _genormaliseerd(
-        naam, (hier / f"{naam}.py").read_text(encoding="utf-8"), is_kopie=True
-    )
-    origineel = _genormaliseerd(
-        naam, (hier.parent / f"{naam}.py").read_text(encoding="utf-8"), is_kopie=False
-    )
+    kopie = _zonder_imports((hier / f"{naam}.py").read_text(encoding="utf-8"))
+    origineel = _zonder_imports(
+        (hier.parent / f"{naam}.py").read_text(encoding="utf-8"))
 
     verschil = [] if kopie == origineel else [naam]
 
@@ -234,26 +226,25 @@ def test_afgeleide_lijst_is_compleet():
     kortere testrun.
     """
     verwachte_kopieen = {
-        "attribute_cards", "code_shape", "codebook_io", "codebook_verifier",
-        "codebook_writer", "concept_inventory", "config_codeGenerator",
-        "grouping", "prompts_common", "prompts_writer", "taxonomy_input",
+        "attribute_cards", "concept_inventory", "config_codeGenerator",
+        "prompts_common", "prompts_writer", "taxonomy_input",
     }
     verwachte_testkopieen = {
         "test_attribute_cards", "test_codebook_writer", "test_concept_inventory",
-        "test_grouping", "test_prompts_writer", "test_taxonomy_input",
+        "test_prompts_writer", "test_taxonomy_input",
     }
     verwacht = verwachte_kopieen | verwachte_testkopieen
 
     assert set(GEKOPIEERD) == verwacht, (
         f"GEKOPIEERD is {sorted(set(GEKOPIEERD) - verwacht)} te veel en "
         f"{sorted(verwacht - set(GEKOPIEERD))} te weinig t.o.v. de verwachte "
-        "elf ketenmodules plus zes testkopieën. Ontbreekt er iets: is een "
+        "zes ketenmodules plus vijf testkopieën. Ontbreekt er iets: is een "
         "kopie verwijderd, of hoort de nieuwe naam in EIGEN_VERSIE? Staat er "
         "iets te veel in: is er een nieuwe kopie bijgekomen die deze lijst "
         "(en de verwachting hier) terecht moet zien groeien."
     )
-    assert len(verwachte_kopieen) == 11
-    assert len(verwachte_testkopieen) == 6
+    assert len(verwachte_kopieen) == 6
+    assert len(verwachte_testkopieen) == 5
 
 
 def test_pakketgrens_wordt_op_de_punt_getrokken():
@@ -276,14 +267,13 @@ def test_pakketgrens_wordt_op_de_punt_getrokken():
 
 
 def test_project_root_wijst_naar_de_repo_root():
-    """De ene regel die bewaker 2 per constructie niet kan zien.
+    """De ene regel die bewaker 2 niet dekt.
 
-    `codebook_io.project_root` telt `.parent`-stappen vanaf `__file__`. De
-    kopie draagt er bewust één extra omdat ze een map dieper ligt, en bewaker 2
-    normaliseert precies die regel weg — anders zou een vastgelegde afwijking
-    als drift tellen. Gevolg: het aantal stappen is het enige aan dit bestand
-    dat GEEN enkele toets dekt, terwijl het bij de promotie met de hand terug
-    moet naar vier.
+    `codebook_io.project_root` telt `.parent`-stappen vanaf `__file__` — een
+    positieafhankelijke constante, die bij de promotie met de hand terug moet
+    naar vier omdat het bestand dan een map hoger ligt. Bewaker 2 komt er niet
+    aan toe: `codebook_io` is sinds 2026-08-22 een eigen versie en wordt niet
+    meer regel voor regel met het origineel vergeleken.
 
     De repetitie van 2026-08-22 vond dat als losse ingreep in het verhuisrecept.
     Een recept is een voornemen; deze toets is een test. Hij vraagt niet hoeveel
