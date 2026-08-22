@@ -284,6 +284,34 @@ hieronder) begint met een terugzet uit git, niet met een bestand in de boom.
    ná de verhuizing. De stap blijft nodig; hij faalt nu zichtbaar als hij
    vergeten wordt.
 
+### Een vondst ná de repetitie: nog een bestand dat op dezelfde breuk stuk zou lopen
+
+`dev/experiment_consolidatie_runs/run_experiment.py:75` doet
+`from pipeline.step_5_codeGenerator.consolidation import resolve_consolidation`
+— dezelfde enkelvoud/meervoud-breuk als `stability.py`: na promotie is
+`consolidation.py` consensus' eigen versie en die levert `resolve_consolidations`
+(meervoud), geen `resolve_consolidation`. De repetitie zag dit niet: het
+bestand heet niet `test_*`, dus pytest verzamelt het nooit; de drie bewakers
+zien het ook niet, want ze kijken naar buiten vanuit `consensus/`, nooit naar
+binnen naar wat productie nog gebruikt.
+
+Dit is **geen vijfde stap voor het verhuisrecept**. `dev/` is gitignored, dus
+dit bestand is untracked en lokaal — het staat niet in git en verhuist met
+niemand mee. Het dateert van 2026-08-19, vóór het experiment op 2026-08-21
+in `consensus/` opging; het is een fossiel van het ontwerp van vóór die
+verhuizing, ingehaald door `consensus/run_codebook.py`, dat hetzelfde werk
+doet via zijn `ACTIE`-instelling. Noteer het dus als **opruimwerk bij
+promotie** (verwijderen), niet als gereedschap dat mee moet. Verwijderen is
+aan de gebruiker — dit bestand is lokaal van hem, niet van deze sessie.
+
+**De blinde vlek die dit blootlegt geldt breder dan dit ene bestand.**
+Zowel `stability.py` als dit fossiel breken op dezelfde manier, en geen van
+de drie bewakers kan het zien: ze inspecteren wat `consensus/` importeert,
+nooit wat overlevende productiecode nog van `consensus/` (of van wat
+`consensus/` bij promotie vervangt) verwacht. Bij een volgende promotiepoging
+moet die inwaartse richting met de hand gecontroleerd worden — er is geen
+bewaker die hem dekt.
+
 ### Wat de repetitie juist NIET nodig bleek te hebben
 
 - **De quarantainetests hoeven niet weg.** Stap 3b van de taakbrief ging ervan
