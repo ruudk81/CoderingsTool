@@ -133,8 +133,9 @@ EIGEN_VERSIE = {
     # de kinderen onder Overig schrijft met een eigen prompt, een eigen fase
     # (`step5c_miscellaneous`) en zonder veto. Bovendien is de veto-toets zelf
     # verscherpt: alleen `pooled` is nog vetobaar, want een `recovered` facetunie
-    # weigeren zet zijn respondenten weer onder de zusterpool die het
-    # tegenovergestelde beweert. Productie kent geen kinderen en geen facetunie.
+    # weigeren zet zijn respondenten in de regel weer onder de zusterpool die het
+    # tegenovergestelde beweert, en anders ononderscheiden in Overig. Productie
+    # kent geen kinderen en geen facetunie.
     "codebook_writer",
     # `apply_overig_sweep` geeft sinds 2026-08-22 de Overig-CODE terug in plaats
     # van zijn naam, en munt daar de K#'s. Nodig omdat een kind onder Overig

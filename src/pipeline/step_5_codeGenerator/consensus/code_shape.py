@@ -66,11 +66,14 @@ class CodeShape:
     #                 dan los over en worden naar Overig geveegd.
     #   "recovered" — een facetunie van afgevallen polen die de drempel alsnog
     #                 haalt en dus hoofdcode wordt. NIET vetobaar: hij is geen
-    #                 modelvoorstel maar step 4's eigen structuur, en zijn
-    #                 attributen blijven bron van de overlevende zusterpool —
-    #                 bij veto belanden zijn respondenten dus niet in Overig
-    #                 maar weer onder een code die het tegenovergestelde
-    #                 beweert. Zie `pool_minority_poles`.
+    #                 modelvoorstel maar step 4's eigen structuur, dus het veto
+    #                 zou iets beoordelen waar het niet over gaat. Vaak — niet
+    #                 altijd, sinds de pool op 2026-08-22 ook polen uit groepen
+    #                 zonder overlevende zusterpool opneemt — blijven zijn
+    #                 attributen bovendien bron van die zusterpool, en dan
+    #                 belanden zijn respondenten bij veto niet in Overig maar
+    #                 weer onder een code die het tegenovergestelde beweert.
+    #                 Zie `pool_minority_poles`.
     #   "child"     — dezelfde facetunie, maar onder de drempel en boven de
     #                 bodem, en die als kind onder Overig hangt. Om dezelfde
     #                 reden niet vetobaar: een kind bestaat omdat deze

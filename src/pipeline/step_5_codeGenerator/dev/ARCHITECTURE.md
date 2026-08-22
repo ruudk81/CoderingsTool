@@ -295,9 +295,14 @@ Where the two differ:
   which unions them per (facet, valence): a union that clears `t_keep` becomes
   a main code, one between `t_keep_min_respondents` and `t_keep` becomes a
   child of Overig (`CodeShape.origin == "child"`, never vetoable), one below
-  the floor becomes true-Overig. Only poles from a group whose SIBLING pole
-  survived are collected — a group where nothing clears `t_keep` goes to Overig
-  whole, and nothing there claims the opposite direction. The old
+  the floor becomes true-Overig. Poles are collected from EVERY group. The
+  narrower rule shipped first — collect only where a sibling pole survived,
+  since that is where material is counted under an opposite-facing code — and
+  was broadened on 2026-08-22: a group that went to Overig whole left its
+  minority material undifferentiated there, and the goal is that such material
+  gets a name of its own. Measured on set 7 (luna, tau=0.7, `t_keep` 23):
+  32 main codes / 11 children / 113 respondents in children, against 30 / 8 / 74
+  under the narrow rule. The old
   `direction_loss` metric counted what fell away and is replaced by
   `coverage_recovered` — the unique respondents who gained a code they would not
   otherwise have had. Production still drops the pole, and its attribute stays a

@@ -262,11 +262,15 @@ async def write_codebook(
         #
         # Voor een facetunie uit `pool_minority_poles` (`recovered`) klopt geen
         # van beide. Hij is geen modelvoorstel maar step 4's eigen structuur,
-        # en zijn attributen zijn ook bron van de OVERLEVENDE zusterpool — die
-        # vaak het tegenovergestelde beweert. De sweep ziet ze daarom niet als
-        # wees, dus een veto zet deze respondenten wéér onder een code die iets
-        # anders zegt: precies het defect dat de facetunie opheft. Een `child`
-        # valt om dezelfde reden buiten het veto (zie `code_shape.CodeShape`).
+        # en zijn attributen zijn in de regel ook bron van de OVERLEVENDE
+        # zusterpool — die vaak het tegenovergestelde beweert. De sweep ziet ze
+        # daarom niet als wees, dus een veto zet deze respondenten wéér onder
+        # een code die iets anders zegt: precies het defect dat de facetunie
+        # opheft. Sinds de verbreding van 2026-08-22 kan een unie ook volledig
+        # uit groepen zonder overlevende zusterpool bestaan; die attributen
+        # zouden bij veto wél naar Overig gaan, maar dan ononderscheiden — ook
+        # dat is precies wat de pool opheft. Een `child` valt om dezelfde reden
+        # buiten het veto (zie `code_shape.CodeShape`).
         #
         # Daar hangt ook een telling aan: `ShapingResult.coverage_recovered`
         # wordt in `build_shapes` berekend, vóór deze call. Dat getal is alleen

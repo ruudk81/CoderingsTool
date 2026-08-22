@@ -530,9 +530,10 @@ async def generate_codebook(
     # the shape a consolidation call proposed, and this chain proposes them by
     # the dozen (`grouping.build_shapes`), so this is the normal route, not an
     # edge case. `recovered` en `child` blijven er buiten: die zijn step 4's
-    # eigen structuur, geen modelvoorstel, en een veto zou hun respondenten
-    # terugzetten onder de zusterpool die het tegenovergestelde beweert (zie de
-    # vetotoets in `codebook_writer`). De attributen van een geveto'de `pooled`
+    # eigen structuur, geen modelvoorstel, en een veto zou hun respondenten in
+    # de regel terugzetten onder de zusterpool die het tegenovergestelde beweert
+    # — en anders ononderscheiden in Overig (zie de vetotoets in
+    # `codebook_writer`). De attributen van een geveto'de `pooled`
     # vorm gaan niet verloren (de Overig-sweep in `run_codebook` routeert ze),
     # maar een stil veto zou een vergelijking met de productieketen een kleiner
     # codeboek met een grotere Overig laten zien zonder consolidatiekwaliteit
@@ -616,9 +617,16 @@ def report_true_overig(result: GeneratedCodebook, overig: ConsolidatedCode) -> N
     `build_shapes` verzamelt in `overig_ids` de attributen wier facetunie onder
     de bodem bleef. `apply_overig_sweep` leidt Overig daar NIET uit af: die
     neemt de taxonomie-attributen die geen enkele code noemt. Voor een attribuut
-    wiens ene pool hoofdcode werd en wiens andere pool door de bodem zakte is
-    dat verschil beslissend — de overlevende code noemt het attribuut, dus het
-    is geen wees, dus die respondenten worden nergens geteld.
+    wiens ene pool in een code landde en wiens andere pool door de bodem zakte
+    is dat verschil beslissend — die code noemt het attribuut, dus het is geen
+    wees, dus die respondenten worden nergens geteld.
+
+    Sinds de verbreding van 2026-08-22 wordt dat getal GROTER in plaats van
+    kleiner, en dat is geen regressie maar hetzelfde gat op een breder vlak:
+    doordat élke groep nu polen aanlevert, houdt een attribuut vaker érgens een
+    code over. Op set 7 (luna, tau=0,7, drempel 23) bleven 9 attributen onder de
+    bodem en werden ze alle 9 nog door een code genoemd — onder de smalle regel
+    waren dat er 14, waarvan 5.
 
     Gemeld en niet gerepareerd, en dat is een besluit met een reden. Overig die
     namen laten claimen zet hetzelfde attribuut TWEE keer in het codeboek: één
@@ -681,8 +689,9 @@ def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) ->
         # niets meer wegvalt, niet omdat het codeboek beter werd.
         print(f"DEKKING HERSTELD: {result.coverage_recovered} respondent(en) kregen "
               f"een hoofdcode of kind uit de facetpool van afgevallen polen, die ze "
-              f"zonder die pool niet hadden gehad. Wat ook samengenomen onder de "
-              f"bodem bleef is echt-overig.")
+              f"zonder die pool niet hadden gehad — polen uit élke groep, ook uit "
+              f"groepen waar geen enkele pool de drempel haalde. Wat ook "
+              f"samengenomen onder de bodem bleef is echt-overig.")
 
     if result.vetoes:
         print(f"WAARSCHUWING: {len(result.vetoes)} pooled code(s) geveto'd "

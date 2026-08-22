@@ -41,11 +41,15 @@ door de bodem zakte is dat verschil beslissend — de overlevende code noemt het
 attribuut, dus het is geen wees, dus de respondenten van die afgevallen pool
 worden nergens geteld.
 
-Gemeten op set 7 (luna, tau=0,7, drempel 23): 14 attributen bleven onder de
-bodem, 9 belandden in Overig, **5 niet**. Zelfde gedrag als de productieketen,
-dus geen regressie — maar wel het verschil tussen wat het plan van 2026-08-22
-belooft en wat de keten levert. `run_codebook.report_true_overig` zet het getal
-op de console, zodat het geen stille aanname meer is.
+Gemeten op set 7 (luna, tau=0,7, drempel 23): **9 attributen bleven onder de
+bodem, 0 belandden in Overig, 9 niet.** Onder de smalle verzamelregel waren dat
+er 14, waarvan 9 in Overig en 5 niet. Het gat is dus mét de verbreding van
+2026-08-22 groter geworden en niet kleiner — geen regressie, maar hetzelfde
+mechanisme op een breder vlak: doordat élke groep nu polen aanlevert, houdt een
+attribuut vaker érgens een code over en is het dus geen wees meer. Zelfde
+gedrag als de productieketen; het blijft het verschil tussen wat het plan van
+2026-08-22 belooft en wat de keten levert. `run_codebook.report_true_overig` zet
+het getal op de console, zodat het geen stille aanname meer is.
 
 Niet gerepareerd, en waarom niet: Overig die namen laten claimen zet hetzelfde
 attribuut TWEE keer in het codeboek (één keer onder zijn hoofdcode, één keer
@@ -54,32 +58,51 @@ opneemt, en dat kan `ConsolidatedCode` niet uitdrukken — één code draagt é�
 valentie over al zijn bronattributen. Dat is een wijziging aan `models.py` en aan
 step 6's toewijzing, niet aan step 5.
 
-## De facetunie is smaller dan de simulatie in de spec (open besluit — 2026-08-22)
+## Élke groep levert aan de facetpool (besloten — 2026-08-22)
 
 De spec van 2026-08-22 rekende op set 7 voor: 29 → **32** hoofdcodes, **12**
-kinderen, **118** respondenten in kinderen. De gebouwde keten levert op exact
-dezelfde set, drempel en tau: **30** hoofdcodes, **8** kinderen, **74**
-respondenten. Twee oorzaken, allebei een besluit en geen defect — nagerekend
-door de ruimere regel naast de gebouwde te draaien, wat de spec-cijfers exact
-reproduceert (32 / 11 / 113):
+kinderen, **118** respondenten in kinderen. De eerst gebouwde, smallere keten
+leverde op exact dezelfde set, drempel en tau: **30** hoofdcodes, **8**
+kinderen, **74** respondenten. Twee oorzaken, allebei een besluit en geen
+defect:
 
-1. `build_shapes` verzamelt afgevallen polen ALLEEN uit groepen waar een
+1. `build_shapes` verzamelde afgevallen polen ALLEEN uit groepen waar een
    zusterpool overleeft (`if not kept: continue`). De simulatie deed het uit
-   álle groepen. Een groep waar geen enkele pool de drempel haalt gaat in zijn
-   geheel naar Overig, en daar beweert niets het tegenovergestelde — dat is het
-   defect niet dat deze operatie opheft. Kost 2 hoofdcodes en 3 kinderen, en
-   maakt de overlevende unies kleiner (Koersprofilering 24 → 7, Klantcontact
-   25 → 20, Presentatiestijl 27 → 25), want de polen van die weggevallen groepen
-   zouden zich erbij hebben gevoegd.
+   álle groepen. Kostte 2 hoofdcodes en 3 kinderen, en maakte de overlevende
+   unies kleiner (Koersprofilering 24 → 7, Klantcontact 25 → 20,
+   Presentatiestijl 27 → 25), want de polen van die weggevallen groepen zouden
+   zich erbij hebben gevoegd.
 2. Een afgevallen pool zonder eenduidig facet gaat rechtstreeks naar Overig. De
    spec-PROZA schrijft dat zelf voor; de spec-SIMULATIE telde hem toch als kind
-   ("8 negative (meerdere facetten)"). Kost 1 kind.
+   ("8 negative (meerdere facetten)"). Kost 1 kind. Dat blijft zo: het facet is
+   de enige groeperingsgrens, dus 118 was nooit haalbaar en 113 is het cijfer
+   dat bij de spec-PROZA hoort.
 
-Het open besluit is oorzaak 1: de vier `non_negative`-unies die nu in Overig
-verdwijnen (21, 15, 14, 14 respondenten) zouden onder de ruimere regel een eigen
-naam krijgen. Dat is een leesbaarder Overig, maar het is een ander voorstel dan
-"tel kritiek niet onder een positieve code" — en het raakt open vraag 1 van de
-spec (telt het Overig-plafond de ouder, de kinderen, of allebei?).
+**Oorzaak 1 is opgeheven; oorzaak 2 blijft.** Het argument voor de smalle regel
+was dat het scherpste defect zit waar een zusterpool overleeft — daar telt
+kritiek mee onder een positieve code, terwijl een groep die in zijn geheel naar
+Overig gaat niets tegengestelds beweert. Doorslaggevend was het omgekeerde: zo'n
+groep laat zijn minderheidsmateriaal ononderscheiden in Overig liggen, en het
+doel van deze operatie is dat zulk materiaal een eigen naam krijgt — hoofdcode
+als de facetunie de drempel haalt, anders een kind ónder Overig. De vier
+`non_negative`-unies die onder de smalle regel in Overig verdwenen (21, 15, 14,
+14 respondenten) dragen nu een naam.
+
+Gemeten offline op set 7 (dezelfde set, drempel 23, tau 0,7 — de hele keten tot
+`build_shapes` is zuiver, dus zonder LLM-call na te rekenen):
+
+| | smal | breed |
+|---|---|---|
+| hoofdcodes | 30 | **32** |
+| kinderen | 8 | **11** |
+| respondenten in kinderen | 74 | **113** |
+| `coverage_recovered` | 98 | **175** |
+| attributen in `overig_ids` | 14 | **9** |
+
+Beide kolommen blijven staan: ze zijn het bewijs onder het besluit. Wat hierbij
+hoort en apart genoteerd staat, is dat het echt-overig-gat mee-groeit (zie
+"Echt-overig betekent gedropt, niet geveegd" hierboven) en open vraag 1 van de
+spec — telt het Overig-plafond de ouder, de kinderen, of allebei?
 
 ## tau is een invoer, geen constante (open — 2026-08-20)
 
