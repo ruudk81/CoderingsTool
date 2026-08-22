@@ -99,10 +99,29 @@ Gemeten offline op set 7 (dezelfde set, drempel 23, tau 0,7 — de hele keten to
 | `coverage_recovered` | 98 | **175** |
 | attributen in `overig_ids` | 14 | **9** |
 
-Beide kolommen blijven staan: ze zijn het bewijs onder het besluit. Wat hierbij
-hoort en apart genoteerd staat, is dat het echt-overig-gat mee-groeit (zie
-"Echt-overig betekent gedropt, niet geveegd" hierboven) en open vraag 1 van de
-spec — telt het Overig-plafond de ouder, de kinderen, of allebei?
+Beide kolommen blijven staan: ze zijn het bewijs onder het besluit.
+
+**Lees 113 niet als 113 geredde respondenten.** Het is de omvang van het
+kindbakje, niet een reddingstelling. Van de 64 nieuwkomers was élk al ergens
+geteld, en 25 van de oorspronkelijke 74 verhuisden juist omhóóg naar een
+`recovered` hoofdcode. De eerlijke formulering van de winst is: **17
+respondenten kregen voor het eerst een code, en 91 zijn niet langer alleen
+vertegenwoordigd door de ongedifferentieerde Overig maar zitten nu onder een
+benoemde code die een richting draagt.** Niemand verloor een code.
+
+**Het echt-overig-gat groeit mee, en dat valt in respondenten mee.** Gemeten op
+set 7: het aantal respondenten dat NERGENS geteld wordt is 5 van 2317 — vóór én
+na de verbreding, en aantoonbaar dezelfde vijf. De valentiebewuste variant (in
+een sub-bodemunie zonder enige vorm van dezelfde richting) gaat van 7 naar 8.
+De eerder genoteerde 12 was een bottom-up telling, geen nergens-telling: 7 van
+die 12 stonden wel degelijk ergens, via een ander attribuut of de andere pool.
+De verbreding kost dus één respondent aan richtingsrepresentatie, tegenover 17
+eerste-keer-coderingen. Zie "Echt-overig betekent gedropt, niet geveegd".
+
+**Nieuw gevolg voor open vraag 1 van de spec** — telt het Overig-plafond de
+ouder, de kinderen, of allebei? Overig zelf houdt bij generatie nu nog **8**
+respondenten over in plaats van 99. Met 11 kinderen naast een ouder van 8 zijn
+"allebei" en "alleen de ouder" geen bijna-gelijke antwoorden meer.
 
 ## tau is een invoer, geen constante (open — 2026-08-20)
 

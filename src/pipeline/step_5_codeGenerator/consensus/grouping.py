@@ -382,9 +382,11 @@ def build_shapes(
                       if valence not in kept and resp]
         gevallen.extend(afgevallen)
         if not kept and not afgevallen:
-            # Geen vorm én geen pool om te verzamelen — een groep zonder
-            # respondenten. De boekhouding moet heel blijven: naar Overig, niet
-            # stil weg.
+            # Onbereikbaar vandaag, net als de tak hierboven: `build_inventory`
+            # maakt alleen een Concept voor een attribuut mét ideeën en legt elke
+            # eenheid in precies één van pos/neg/neu, dus `valence_poles` geeft
+            # nooit uitsluitend lege polen. Maar als die aanname ooit breekt moet
+            # de boekhouding heel blijven: naar Overig, niet stil weg.
             overig_ids.extend(group.member_ids)
             continue
 
