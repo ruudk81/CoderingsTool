@@ -106,7 +106,7 @@ def test_consensus_leent_niets_meer_uit_step_5():
 
 # Bestandsnamen die consensus/ met step 5 DEELT, maar die welbewust EIGEN zijn
 # — consensus' eigen versie van een productiebestand, geen kopie ervan. Elk
-# van deze acht hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
+# van deze elf hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
 # hieronder; dat maakt de uitsluiting een geschreven claim in plaats van een
 # stilzwijgende omissie.
 EIGEN_VERSIE = {
@@ -122,6 +122,15 @@ EIGEN_VERSIE = {
     "__init__",
     # Testen van de drie bovenstaande eigen modules, dus zelf ook eigen.
     "test_consolidation", "test_run_codebook",
+    # Vangt sinds 2026-08-22 de afgevallen valentiepolen op: `pool_minority_poles`
+    # neemt ze per (facet, valentie) samen, `build_shapes` kreeg er een `floor`
+    # bij, en `direction_loss` is vervangen door `coverage_recovered`. Productie
+    # laat een afgevallen pool nog steeds vallen — dat is het verschil dat deze
+    # keten moet meten, dus geen kopie meer.
+    "grouping", "test_grouping",
+    # `CodeShape.origin` kent hier een derde waarde, "child", die productie niet
+    # kent; het vetorecht van `codebook_writer` hangt eraan.
+    "code_shape",
 }
 
 
@@ -234,26 +243,26 @@ def test_afgeleide_lijst_is_compleet():
     kortere testrun.
     """
     verwachte_kopieen = {
-        "attribute_cards", "code_shape", "codebook_io", "codebook_verifier",
+        "attribute_cards", "codebook_io", "codebook_verifier",
         "codebook_writer", "concept_inventory", "config_codeGenerator",
-        "grouping", "prompts_common", "prompts_writer", "taxonomy_input",
+        "prompts_common", "prompts_writer", "taxonomy_input",
     }
     verwachte_testkopieen = {
         "test_attribute_cards", "test_codebook_writer", "test_concept_inventory",
-        "test_grouping", "test_prompts_writer", "test_taxonomy_input",
+        "test_prompts_writer", "test_taxonomy_input",
     }
     verwacht = verwachte_kopieen | verwachte_testkopieen
 
     assert set(GEKOPIEERD) == verwacht, (
         f"GEKOPIEERD is {sorted(set(GEKOPIEERD) - verwacht)} te veel en "
         f"{sorted(verwacht - set(GEKOPIEERD))} te weinig t.o.v. de verwachte "
-        "elf ketenmodules plus zes testkopieën. Ontbreekt er iets: is een "
+        "negen ketenmodules plus vijf testkopieën. Ontbreekt er iets: is een "
         "kopie verwijderd, of hoort de nieuwe naam in EIGEN_VERSIE? Staat er "
         "iets te veel in: is er een nieuwe kopie bijgekomen die deze lijst "
         "(en de verwachting hier) terecht moet zien groeien."
     )
-    assert len(verwachte_kopieen) == 11
-    assert len(verwachte_testkopieen) == 6
+    assert len(verwachte_kopieen) == 9
+    assert len(verwachte_testkopieen) == 5
 
 
 def test_pakketgrens_wordt_op_de_punt_getrokken():

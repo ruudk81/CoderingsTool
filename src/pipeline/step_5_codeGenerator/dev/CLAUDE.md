@@ -92,10 +92,15 @@ more** — a leftover reference to one is stale, not a second chain.
   — eleven modules: `taxonomy_input.py`, `concept_inventory.py`,
   `attribute_cards.py`, `code_shape.py`, `grouping.py`, `codebook_writer.py`,
   `prompts_writer.py`, `prompts_common.py`, `codebook_io.py`,
-  `codebook_verifier.py`, `config_codeGenerator.py`. `test_zelfstandigheid.py`
+  `codebook_verifier.py`, `config_codeGenerator.py`. Three of those eleven —
+  `grouping.py`, `code_shape.py` and their `test_grouping.py` — stopped being
+  copies on 2026-08-22 and are listed in `EIGEN_VERSIE`: the candidate pools
+  fallen valence poles per facet (`pool_minority_poles`, `origin == "child"`,
+  `coverage_recovered`) where production drops them.
+  `test_zelfstandigheid.py`
   holds three guards over that ownership: an import guard (AST over both
   `ast.ImportFrom` and `ast.Import` — nothing in `consensus/` may reach outside
-  itself within step 5), a drift guard (each of the eleven copies must still
+  itself within step 5), a drift guard (each remaining copy must still
   match its production original — `codebook_io.py`'s `project_root` line is
   normalised away, not the whole file, so its other 344 lines stay covered),
   and a `project_root` guard, added after the 2026-08-22 promotion rehearsal

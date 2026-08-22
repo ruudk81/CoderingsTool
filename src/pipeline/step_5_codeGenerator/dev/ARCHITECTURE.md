@@ -290,8 +290,18 @@ Where the two differ:
 - **`exclude_drains=True`.** The candidate keeps step 4's catch-alls off the
   consolidation cards; production shows them (see WORK.md, "Vangnetten op de
   kaarten").
+- **A pole that misses `t_keep` is not dropped.** Since 2026-08-22 the
+  candidate's `build_shapes` hands every fallen pole to `pool_minority_poles`,
+  which unions them per (facet, valence): a union that clears `t_keep` becomes
+  a main code, one between `t_keep_min_respondents` and `t_keep` becomes a
+  child of Overig (`CodeShape.origin == "child"`, never vetoable), one below
+  the floor becomes true-Overig. The old `direction_loss` metric counted what
+  fell away and is replaced by `coverage_recovered` — the unique respondents
+  who gained a code they would not otherwise have had. Production still drops
+  the pole, and its attribute stays a source of the surviving, opposite-facing
+  sibling code.
 
-Where they do not differ: everything from `build_shapes` onward — grouping's
+Where they do not differ: the rest from `build_shapes` onward — grouping's
 partition repair and degeneration check, `codebook_writer.py`'s single writer
 call, the three deterministic naming/definition guards, the Overig sweep, the
 scorecard — is the same code. Since 2026-08-22 it is not shared by import: each

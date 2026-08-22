@@ -62,7 +62,7 @@ def test_de_verboselognaam_botst_niet_met_die_van_productie():
 
 def _leeg_codeboek(**overrides) -> GeneratedCodebook:
     velden = dict(
-        shapes=[], overig_ids=[], codes=[], direction_loss=0, degeneration=None,
+        shapes=[], overig_ids=[], codes=[], coverage_recovered=0, degeneration=None,
         partition_repairs=0, collisions=[], naming_mismatches=[],
         duplicate_definitions=[], vetoes=[], concept_by_id={}, runs_used=5,
         runs_failed=0, pool_log=[],

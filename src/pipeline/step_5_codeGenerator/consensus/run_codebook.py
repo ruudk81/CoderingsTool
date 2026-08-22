@@ -409,7 +409,7 @@ class GeneratedCodebook:
     shapes: List[CodeShape]
     overig_ids: List[str]
     codes: List[ConsolidatedCode]
-    direction_loss: int
+    coverage_recovered: int
     degeneration: Optional[str]
     # Aantal, niet de lijst: bij N=30 runs is elke reparatie een normaal
     # onderdeel van één los voorstel, en de reparatielijst van 30 runs samen
@@ -514,7 +514,8 @@ async def generate_codebook(
     degeneration = check_degeneration(len(groups), len(ids))
     groups, pool_log = pool_thin_within_facet(groups, concepts, threshold,
                                               two_pole=config.two_pole)
-    shaped = build_shapes(groups, concepts, threshold, two_pole=config.two_pole)
+    shaped = build_shapes(groups, concepts, threshold, two_pole=config.two_pole,
+                          floor=config.t_keep_min_respondents)
 
     # `write_codebook` can veto a `pooled` shape (`nameable: false`) — every
     # multi-attribute group this chain builds is `pooled` (`grouping.build_shapes`),
@@ -544,7 +545,7 @@ async def generate_codebook(
     codes = resolve_duplicate_names(codes, shapes, log=collision_log)
     return GeneratedCodebook(
         shapes=shapes, overig_ids=shaped.overig_ids, codes=codes,
-        direction_loss=shaped.direction_loss, degeneration=degeneration,
+        coverage_recovered=shaped.coverage_recovered, degeneration=degeneration,
         partition_repairs=len(repair_log.entries), collisions=collision_log.entries,
         naming_mismatches=find_naming_mismatches(codes, shapes, concept_by_id),
         duplicate_definitions=find_duplicate_definitions(codes, shapes),
@@ -557,7 +558,7 @@ async def generate_codebook(
 def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) -> None:
     """Wat een run zichtbaar moet maken. Eerst wat geen enkele bestaande check
     meldt — hoeveel runs meetelden en wat de facetpool samenvoegde — daarna
-    dezelfde diagnostiek als productie: degeneratie, richtingsverlies, vetoes,
+    dezelfde diagnostiek als productie: degeneratie, herstelde dekking, vetoes,
     partitiereparaties, botsingen en naam-/definitieafwijkingen."""
     print(f"CONSENSUS: {result.runs_used} runs gebruikt, tau={config.tau}")
     if result.runs_failed:
@@ -571,22 +572,17 @@ def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) ->
     if result.degeneration:
         print(f"DEGENERATIE (harde FAIL): {result.degeneration}")
 
-    if result.direction_loss:
-        # Groepstelling, geen respondent-uniek totaal: build_shapes telt per
-        # groep op, dus een respondent die in twee groepen een minderheidspool
-        # mist telt twee keer mee.
-        #
-        # Niet "naar Overig": dat klopt alleen wanneer GEEN enkele pool van de
-        # groep de drempel haalt (grouping.py:145-148). Haalt de andere pool
-        # wél de drempel (:153-154), dan blijft het bronattribuut een source
-        # van die overblijvende code — apply_overig_sweep ziet het dus niet als
-        # wees — en komen deze respondenten zonder eigen code terecht bij de
-        # overblijvende, tegengesteld gerichte code.
-        print(f"RICHTINGSVERLIES: {result.direction_loss} verloren pool-plaatsing(en) "
-              f"onder de drempel — geen eigen code. Haalt de andere pool van "
-              f"dezelfde groep wél de drempel, dan belanden deze respondenten bij "
-              f"die overblijvende (tegengesteld gerichte) code; haalt geen enkele "
-              f"pool de drempel, dan gaat de hele groep naar Overig.")
+    if result.coverage_recovered:
+        # Respondent-uniek, geen groepstelling: wie in twee groepen van hetzelfde
+        # facet een afgevallen pool had telt één keer. De voorganger
+        # (RICHTINGSVERLIES) telde het omgekeerde — verloren pool-plaatsingen —
+        # en dat getal zakt sinds `pool_minority_poles` naar bijna nul omdat er
+        # niets meer wegvalt, niet omdat het codeboek beter werd.
+        kinderen = sum(1 for s in result.shapes if s is not None and s.origin == "child")
+        print(f"DEKKING HERSTELD: {result.coverage_recovered} respondent(en) kregen "
+              f"een hoofdcode of kind uit de facetpool van afgevallen polen, die ze "
+              f"zonder die pool niet hadden gehad ({kinderen} kind(eren) onder "
+              f"Overig). Wat ook samengenomen onder de bodem bleef is echt-overig.")
 
     if result.vetoes:
         print(f"WAARSCHUWING: {len(result.vetoes)} pooled code(s) geveto'd "
@@ -911,11 +907,12 @@ def run_codebook(filename: str = None, var_name: str = None,
     print_codebook_results(result.codes)
     scorecard = run_scorecard(result.codes, taxonomy.partition_results, overig_name)
 
-    if result.direction_loss:
-        # De maat die RICHTINGSVERLIES's effect op déze run zichtbaar maakt:
-        # een homeless tegenpool zonder counter-valence code is precies wat
-        # under_split_codes telt.
-        print(f"  (RICHTINGSVERLIES-effect in de scorecard: "
+    if result.coverage_recovered:
+        # De tegenmetriek, niet de bevestiging: `under_split_codes` telt een
+        # dakloze tegenpool zonder counter-valence code. Werkt de facetpool,
+        # dan hoort dit getal te DALEN — stijgt het, dan zijn er polen
+        # bijgekomen zonder hun tegenhanger.
+        print(f"  (tegenmetriek in de scorecard: "
               f"{len(scorecard.under_split_codes)} under-split code(s))")
 
     # Degeneratie is een harde FAIL: melden, niet repareren — de codebook-

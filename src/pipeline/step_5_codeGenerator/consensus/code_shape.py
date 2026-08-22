@@ -57,6 +57,15 @@ class CodeShape:
     resp_pos: frozenset[str]
     resp_neg: frozenset[str]
     resp_neu: frozenset[str]
+    # Drie waarden, en het verschil is niet cosmetisch — `codebook_writer` mag
+    # alleen een `pooled`-vorm weigeren als het model hem niet kan benoemen:
+    #   "solo"   — één attribuut, op eigen kracht boven de drempel.
+    #   "pooled" — meerdere attributen onder één noemer. Vetobaar: is de groep
+    #              niet te benoemen, dan was de samenvoeging geen code.
+    #   "child"  — een facetunie van afgevallen polen die de drempel niet haalt
+    #              maar de bodem wel, en die als kind onder Overig hangt. NIET
+    #              vetobaar, en dat is een besluit: een kind bestaat omdat deze
+    #              respondenten anders nergens staan. Zie `pool_minority_poles`.
     origin: str
 
 

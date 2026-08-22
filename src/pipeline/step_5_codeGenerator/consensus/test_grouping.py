@@ -1,4 +1,6 @@
 """Tests voor fase 2 en 3: partitiereparatie, valentiesplitsing, degeneratie."""
+from dataclasses import replace
+
 from pipeline.step_5_codeGenerator.consensus.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.consensus.attribute_cards import AttributeCard
 from pipeline.step_5_codeGenerator.consensus.grouping import (
@@ -178,17 +180,27 @@ def test_both_poles_above_threshold_become_two_pure_codes():
     assert by_valence["negative"].resp_pos == frozenset()
 
 
-def test_minority_pole_below_threshold_goes_to_overig_not_into_the_code():
+def test_minority_pole_below_threshold_stays_out_of_the_majority_code():
     """Dit is de eis die v1 stilzwijgend overtrad: een code die 'positive' heet
-    en de negatieve respondenten meedraagt."""
+    en de negatieve respondenten meedraagt.
+
+    De afgevallen pool verdwijnt sinds 2026-08-22 niet meer: hij is de enige
+    van zijn facet en valentie, haalt de drempel van 12 niet maar wel de bodem
+    van 3, en wordt daarmee een kind. De eis hierboven staat los daarvan — de
+    positieve code draagt die acht respondenten nog steeds niet."""
     concepts = [valence_concept("A1", "Iets", pos=30, neg=8)]
 
     out = build_shapes([group("A1")], concepts, threshold=12)
 
-    assert [s.valence for s in out.shapes] == ["positive"]
-    assert out.shapes[0].resp_neg == frozenset()
-    assert len(out.shapes[0].resp_ids) == 30
-    assert out.direction_loss == 8
+    positief = out.shapes[0]
+    assert positief.valence == "positive"
+    assert positief.resp_neg == frozenset()
+    assert len(positief.resp_ids) == 30
+
+    kind = out.shapes[1]
+    assert (kind.valence, kind.origin) == ("negative", "child")
+    assert len(kind.resp_ids) == 8
+    assert out.coverage_recovered == 8
 
 
 def test_group_where_no_pole_clears_the_threshold_lands_entirely_in_overig():
@@ -198,7 +210,7 @@ def test_group_where_no_pole_clears_the_threshold_lands_entirely_in_overig():
 
     assert out.shapes == []
     assert out.overig_ids == ["A1"]
-    assert out.direction_loss == 12
+    assert out.coverage_recovered == 0
 
 
 def test_members_of_a_group_are_unioned_by_respondent_not_summed():
@@ -219,12 +231,13 @@ def test_members_of_a_group_are_unioned_by_respondent_not_summed():
     assert len(out.shapes[0].resp_ids) == 2
 
 
-def test_direction_loss_unions_dropped_poles_instead_of_summing_them():
-    """De unie-niet-som-fix in `direction_loss` (regel 154) had geen test die
-    een terugval op `sum()` zou opmerken — elke bestaande fixture gebruikt
-    onderling disjuncte respondenten per pool. Hier deelt dezelfde respondent
-    twee gedropte polen van dezelfde groep (negatief via A1, neutraal via A2):
-    naief opgeteld (3 + 3) zou 6 zijn, de unie is 5."""
+def test_coverage_recovered_unions_recovered_poles_instead_of_summing_them():
+    """De unie-niet-som-eis had geen test die een terugval op `sum()` zou
+    opmerken — elke bestaande fixture gebruikt onderling disjuncte respondenten
+    per pool. Hier deelt dezelfde respondent twee AFGEVALLEN polen van dezelfde
+    groep (negatief via A1, neutraal via A2). Beide worden een kind, en de
+    respondent die in allebei zit telt in de dekkingsmaat één keer: naief
+    opgeteld (3 + 3) zou 6 zijn, de unie is 5."""
     shared = "shared1"
     concept_a1 = Concept(
         attribute_id="A1", name="Een", definition="d", domain="D", facet="F",
@@ -243,9 +256,10 @@ def test_direction_loss_unions_dropped_poles_instead_of_summing_them():
 
     out = build_shapes([group("A1", "A2")], [concept_a1, concept_a2], threshold=12)
 
-    assert len(out.shapes) == 1
     assert out.shapes[0].valence == "positive"
-    assert out.direction_loss == 5
+    assert sorted((s.valence, s.origin) for s in out.shapes[1:]) == [
+        ("negative", "child"), ("neutral", "child")]
+    assert out.coverage_recovered == 5
 
 
 def test_shape_keys_are_unique_across_all_groups_and_poles():
@@ -336,7 +350,8 @@ def test_driedeling_laat_een_te_kleine_pool_vallen():
     result = build_shapes(groups, [c], threshold=3)
 
     assert [s.valence for s in result.shapes] == ["negative"]
-    assert result.direction_loss == 3
+    # pos=2 en neu=1 halen ook samengenomen de bodem van 3 niet: echt-overig.
+    assert result.coverage_recovered == 0
 
 
 def test_tweedeling_redt_dezelfde_pool():
@@ -347,7 +362,7 @@ def test_tweedeling_redt_dezelfde_pool():
     result = build_shapes(groups, [c], threshold=3, two_pole=True)
 
     assert sorted(s.valence for s in result.shapes) == ["negative", "non_negative"]
-    assert result.direction_loss == 0
+    assert result.coverage_recovered == 0
 
 
 def test_tweedeling_telt_een_respondent_met_twee_ideeen_een_keer():
@@ -474,3 +489,145 @@ def test_een_groep_die_alleen_op_het_TOTAAL_de_drempel_haalt_telt_als_dun():
 
     assert [g.member_ids for g in groups] == [("A1", "A2")]
     assert log[0]["facet"] == "F"
+
+
+# ---------------------------------------------------------------------------
+# De afgevallen polen: per facet samengenomen in plaats van weggevallen.
+# ---------------------------------------------------------------------------
+
+def minderheids_concept(attribute_id, naam, facet, pos=0, neg=0):
+    """Concept met een expliciet facet en een pos/neg-verdeling.
+
+    Heet niet `concept`: die naam is in deze module al bezet (regel 19) en een
+    tweede definitie zou de eerste stil overschrijven — inclusief
+    `concepts_for`, dat er tien tests eerder op leunt.
+    """
+    p = frozenset(f"p{attribute_id}{i}" for i in range(pos))
+    n = frozenset(f"n{attribute_id}{i}" for i in range(neg))
+    return Concept(attribute_id=attribute_id, name=naam, definition="d",
+                   domain="D", facet=facet, n_iu=pos + neg,
+                   resp_ids=p | n, resp_pos=p, resp_neg=n,
+                   resp_neu=frozenset(), is_drain=False)
+
+
+def losse_groep(attribute_id):
+    return Group(member_ids=(attribute_id,), proposed_name="", explanation="")
+
+
+def test_afgevallen_polen_van_hetzelfde_facet_worden_samengenomen():
+    """Het materiaal ligt over groepen, niet in één groep. Op de ASN-set had
+    één facet drie groepen met 3, 9 en 15 negatieve respondenten — elk te dun,
+    samen 27 en dus ruim boven de drempel van 23."""
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=5),
+          minderheids_concept("A2", "Twee", "F", pos=30, neg=5)]
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    # beide niet-negatieve polen halen 30 en worden hoofdcode; de twee
+    # negatieve polen van 5 halen los niets, samen 10 en dus wel
+    hoofd = [s for s in res.shapes if s.origin != "child"]
+    assert len(hoofd) == 3
+    assert sum(1 for s in hoofd if s.valence == "negative") == 1
+
+
+def test_een_unie_die_de_drempel_haalt_wordt_een_HOOFDcode():
+    """Eén drempel, één regel. `pool_thin_within_facet` levert vandaag al
+    hoofdcodes op uit een facetpool; twee verschillende regels voor dezelfde
+    constructie zou inconsistent zijn."""
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=5),
+          minderheids_concept("A2", "Twee", "F", pos=30, neg=5)]
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    unie = next(s for s in res.shapes if s.valence == "negative")
+    assert unie.origin != "child"
+    assert unie.members == ("A1", "A2")
+    assert len(unie.resp_ids) == 10
+    assert res.coverage_recovered == 10
+
+
+def test_een_unie_eronder_wordt_een_kind():
+    """origin == "child", en de vorm draagt de gepoolde respondenten."""
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=2),
+          minderheids_concept("A2", "Twee", "F", pos=30, neg=2)]
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    # unie = 4: boven de bodem (3), onder de drempel (8)
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    kind = next(s for s in res.shapes if s.valence == "negative")
+    assert kind.origin == "child"
+    assert len(kind.resp_ids) == 4
+    assert kind.resp_neg == kind.resp_ids
+    assert res.coverage_recovered == 4
+
+
+def test_een_unie_onder_de_bodem_wordt_echt_overig():
+    """Bodem is t_keep_min_respondents — bestaande constante, geen nieuwe knop."""
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=1),
+          minderheids_concept("A2", "Twee", "F", pos=30, neg=1)]
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    # unie = 2, onder de bodem van 3
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    assert [s.valence for s in res.shapes] == ["non_negative", "non_negative"]
+    assert res.overig_ids == ["A1", "A2"]
+    assert res.coverage_recovered == 0
+
+
+def test_de_unie_telt_een_gedeelde_respondent_een_keer():
+    """Wie in twee groepen van hetzelfde facet een negatief idee had telt één
+    keer. Op de ASN-set was de som 29 en de unie 27.
+
+    Heet niet `test_respondenten_worden_verenigd_niet_opgeteld`, zoals de
+    taakopdracht schetste: die naam draagt in deze module al de gelijknamige
+    eis voor `pool_thin_within_facet`, en een tweede definitie zou de eerste
+    stil vervangen.
+    """
+    gedeeld = frozenset({"r1", "r2", "r3"})
+    a = minderheids_concept("A1", "Een", "F", pos=30)
+    b = minderheids_concept("A2", "Twee", "F", pos=30)
+    a = replace(a, resp_neg=gedeeld, resp_ids=a.resp_ids | gedeeld)
+    b = replace(b, resp_neg=gedeeld, resp_ids=b.resp_ids | gedeeld)
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    res = build_shapes(groepen, [a, b], threshold=8, two_pole=True)
+
+    kind = next(s for s in res.shapes if s.valence == "negative")
+    assert len(kind.resp_ids) == 3      # niet 6
+    assert kind.origin == "child"
+
+
+def test_een_groep_zonder_eenduidig_facet_gaat_rechtstreeks_naar_overig():
+    """`pool_thin_within_facet` laat zo'n groep met rust omdat er geen facet is
+    om op te groeperen; dezelfde regel geldt hier."""
+    # neg=3 per attribuut: samen 6, dus de negatieve pool van de groep valt af
+    # (drempel 8). Zou hij het halen, dan was er niets om te poolen.
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=3),
+          minderheids_concept("A2", "Twee", "G", pos=30, neg=3)]
+    groepen = [Group(member_ids=("A1", "A2"), proposed_name="", explanation="")]
+
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    assert [s.valence for s in res.shapes] == ["non_negative"]
+    assert res.overig_ids == ["A1", "A2"]
+    assert res.coverage_recovered == 0
+
+
+def test_de_bestaande_groepen_blijven_ongemoeid():
+    """Deze operatie voegt vormen toe en verandert de indeling NIET. De groepen
+    waarvan we de minderheidspool oppakken zijn op hun andere kant een
+    volwaardige hoofdcode."""
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=5),
+          minderheids_concept("A2", "Twee", "F", pos=30, neg=5)]
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    eigen = [s for s in res.shapes if s.valence == "non_negative"]
+    assert [s.members for s in eigen] == [("A1",), ("A2",)]
+    assert [len(s.resp_ids) for s in eigen] == [30, 30]
+    assert all(s.resp_neg == frozenset() for s in eigen)
