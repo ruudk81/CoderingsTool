@@ -224,11 +224,36 @@ breekt de hele suite af — 24 tests (10 + 14) komen niet eens aan de start. Bei
 modules zijn het meetgereedschap achter "De consolidatiecall reproduceert niet"
 en "Post-mortem" hieronder; ze horen dus niet zomaar met de oude keten mee weg.
 
-Drie wegen, geen ervan gekozen: `consensus/consolidation.py` een
-`resolve_consolidation` laten houden voor N=1; `stability.py`/`postmortem.py`
-meeverhuizen naar de consensusvorm; of beide bij de oude keten in
-`_quarantine_v1/` zetten en accepteren dat het meetgereedschap met v2 met
-pensioen gaat. Zolang die keuze niet gemaakt is, kan de promotie niet doorgaan.
+**Besluit (2026-08-22): de promotie verwijdert `stability.py`, `postmortem.py`,
+`prompts_postmortem.py`, `test_stability.py` en `test_postmortem.py`.** Geen
+shim in `consensus/` ervoor, en ze verhuizen ook niet mee. Drie dingen dragen
+dat besluit:
+
+1. **Niets importeert ze behalve productie's eigen `run_codebook.py`** —
+   precies het bestand dat `consensus/` vervangt. `postmortem.py` importeert
+   `StabilityReport` uit `stability.py`, en verder importeert niemand van
+   beide binnen step 5: `consensus/consensus.py` NOEMT `stability.py` alleen
+   in commentaar (het legt uit waarom het er bewust NIET uit leent), en
+   `consensus/analysis.py`/`test_consensus.py` lenen van `step_3` resp. een
+   docstring-verwijzing, niet van deze twee modules. Na promotie zijn ze dus
+   wezen.
+2. **Ze zijn slapend, niet levend.** `stability_runs` staat overal op 0,
+   inclusief `run_codebook.py`'s eigen `__main__`, met het commentaar erbij:
+   "de post-mortem-splitser staat uit tot zijn vraagvorm herzien is."
+3. **`stability.py`'s eigen docstring zegt al dat zijn kernbezwaar elders is
+   beantwoord** — door `consensus/consensus.py`, dat volledige in plaats van
+   enkelvoudige koppeling gebruikt. De paar-stabiliteitsmeting wordt dus NIET
+   opgeheven; ze is al verhuisd naar `consensus/analysis.py` en is daar beter
+   geworden (zie "Consensus over N runs" hierboven: complete linkage sluit
+   precies de A-C-op-apart-situatie uit die `stability.py` als reden gaf om
+   geen consensusindeling af te leiden).
+
+**Kosten, en dit is het enige oordeel in dit besluit dat een afweging is in
+plaats van een constatering**: de geparkeerde LLM-post-mortem-splitser
+verlaat de boom. Hij is terug te halen uit de git-historie (commit `79a6843a`
+en ervoor), maar er blijft geen code voor achter — wie de vraagvorm ooit
+herziet ("welke twee onderwerpen horen het minst bij elkaar?", zie "Post-mortem"
+hieronder) begint met een terugzet uit git, niet met een bestand in de boom.
 
 ### De verhuisrecept vraagt vier ingrepen, niet één
 
@@ -251,7 +276,13 @@ pensioen gaat. Zolang die keuze niet gemaakt is, kan de promotie niet doorgaan.
    `project_root` is een positieafhankelijke constante; de kopie draagt bewust
    één `.parent` extra omdat ze een map dieper ligt. Na de verhuizing moet die
    er weer af, anders wijst de repo-root een niveau te hoog en schrijven
-   promptexport en logs naast de repo.
+   promptexport en logs naast de repo. Dit is niet langer een handmatige stap
+   zonder toets erachter: `test_project_root_wijst_naar_de_repo_root`
+   (`consensus/test_zelfstandigheid.py`, toegevoegd na deze repetitie, commit
+   `d4f118bf`) bevraagt waar `project_root` uitkomt in plaats van hoeveel
+   `.parent`-stappen ervoor staan, en klopt daarom op beide dieptes — vóór en
+   ná de verhuizing. De stap blijft nodig; hij faalt nu zichtbaar als hij
+   vergeten wordt.
 
 ### Wat de repetitie juist NIET nodig bleek te hebben
 
