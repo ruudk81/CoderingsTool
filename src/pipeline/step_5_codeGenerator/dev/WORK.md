@@ -62,6 +62,30 @@ promotiebesluit vraagt: geen herbouw meer, maar een verhuizing (modules
 omhoog de stapmap in, de huidige productieketen naar `_quarantine_v1/`),
 precies zoals `v2/` dat op 2026-08-19 deed.
 
+Op 2026-08-22 is die keten in één draaibestand samengetrokken: `consensus/
+run_codebook.py` draagt alle vijf de acties (`alles`, `verzamelen`, `codeboek`,
+`analyse`, `vergelijk`) achter een instellingenblok, en `run_experiment.py`
+bestaat niet meer. `SET = AUTO` telt zelf door naar het volgende vrije nummer,
+zodat een ronde geen handmatige edit meer vraagt. Drie dingen die daarbij zijn
+rechtgezet en die als open punt genoteerd stonden:
+
+- **Promptexport en kostenpost werden binnen één ronde overschreven.** Elke
+  actie maakte zijn eigen `PromptPrinter` en `CostTracker`; `save_prompts_to_json`
+  opent in `'w'` en `record_phase` WIJST TOE op (stap, fase). Gemeten op de ronde
+  van 2026-08-22: 0 van de 60 consolidatieprompts bewaard, en 30 van de 60 calls
+  geboekt — gerapporteerd $0,19 waar het ≈ $0,31 was. `alles` bezit nu één
+  printer en één teller voor de hele ronde.
+- **De drempel telde in responses, niet in respondenten.** `build_shapes` toetst
+  tegen `len(pool.resp_ids)` (unieke respondenten) terwijl `t_keep` rekende met
+  `len(classified)` (responses): 1% van 2728 is 27, 1% van 2317 is 23. Omgezet
+  naar respondenten. **Nog niet gemeten** — verwacht meer codes en een lagere
+  `direction_loss`. Productie's `run_codebook.py` rekent nog met responses, dus
+  de twee ketens liggen sindsdien NIET meer op dezelfde drempel.
+- **`codeboek` had geen bewaking op een verschoven attribuutuniversum**, terwijl
+  `vergelijk` die wel had — de actie die het artefact naar de gedeelde cache
+  schrijft was dus permissiever dan de actie die alleen een getal print.
+  Rechtgezet.
+
 Hoofdmaat = ARI tussen twee onafhankelijke consensusindelingen. Op de vooraf
 vastgelegde τ=0,5: **0,788** tegen de geeiste 0,90. Gefaald. Consensus
 verdubbelt de reproduceerbaarheid wel (losse runs: mediaan ARI 0,42), maar niet
