@@ -2,7 +2,7 @@
 
 De afspraak (zie dev/WORK.md en de SDD-taken 1-3 van 2026-08-22): verwijder
 step 5's ketenmodules, verhuis consensus/ naar hun plek, en run_pipeline
-draait door zonder wijziging. Dat houdt alleen stand als twee dingen tegelijk
+draait door zonder wijziging. Dat houdt alleen stand als drie dingen tegelijk
 waar blijven, en niemand controleert dat met het blote oog:
 
 1. Niets in consensus/ importeert iets van buiten consensus/ binnen step 5
@@ -10,9 +10,16 @@ waar blijven, en niemand controleert dat met het blote oog:
 2. Elke kopie is en blijft inhoudelijk gelijk aan haar origineel in step 5,
    op de imports na — anders staat er straks een meetuitkomst op naam van de
    verkeerde keten (test_de_kopie_is_gelijk_aan_het_origineel).
+3. De kopie van `codebook_io.py` rekent zijn `project_root` naar dezelfde map
+   uit als het origineel. Bewaker 2 normaliseert die ene regel juist weg (de
+   kopie ligt bewust één map dieper en draagt daarom één `.parent` méér), dus
+   ziet een afwijking daarin niet — dat is waar bewaker 3 op toetst: niet HOEVEEL
+   `.parent`-stappen er staan, maar WAAR ze uitkomen, en dat klopt zo op beide
+   dieptes (test_project_root_wijst_naar_de_repo_root).
 
-Zonder deze twee tests is de afspraak een voornemen; met deze twee is hij een
-test die faalt zodra iemand een import of een kopie laat afwijken.
+Zonder deze drie tests is de afspraak een voornemen; met deze drie is hij een
+test die faalt zodra iemand een import, een kopie, of die ene genormaliseerde
+regel laat afwijken.
 """
 import ast
 import pathlib
@@ -97,11 +104,41 @@ def test_consensus_leent_niets_meer_uit_step_5():
 # Guard 2: elke kopie blijft gelijk aan haar origineel.
 # ---------------------------------------------------------------------------
 
-GEKOPIEERD = [
-    "prompts_common", "code_shape", "taxonomy_input", "attribute_cards",
-    "concept_inventory", "prompts_writer", "grouping", "codebook_io",
-    "codebook_writer", "codebook_verifier", "config_codeGenerator",
-]
+# Bestandsnamen die consensus/ met step 5 DEELT, maar die welbewust EIGEN zijn
+# — consensus' eigen versie van een productiebestand, geen kopie ervan. Elk
+# van deze acht hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
+# hieronder; dat maakt de uitsluiting een geschreven claim in plaats van een
+# stilzwijgende omissie.
+EIGEN_VERSIE = {
+    # Draagt de VORM van deze opzet (N runs, eigen dispatch/cache/log-identiteit)
+    # — dat is precies wat consensus/ toevoegt aan productie, geen kopie ervan.
+    "run_codebook", "consolidation", "prompts_consolidation",
+    # Lezen het codeboek resp. de prompts terug; die van consensus/ moeten de
+    # eigen cache- en promptexport-namen kennen (`step5c_consolidation`,
+    # `prompts_step5c`) die productie's versie niet kent.
+    "view_codebook", "view_prompts",
+    # Pakket-docstring: beschrijft de submap zelf, niet een ketenstap — heeft
+    # dus geen zinnig productie-origineel om tegen te vergelijken.
+    "__init__",
+    # Testen van de drie bovenstaande eigen modules, dus zelf ook eigen.
+    "test_consolidation", "test_run_codebook",
+}
+
+
+def _module_stammen(map_: pathlib.Path) -> set[str]:
+    return {p.stem for p in map_.glob("*.py")}
+
+
+# Afgeleid, niet met de hand bijgehouden: alles wat consensus/ met step 5 DEELT
+# (zelfde bestandsnaam) en niet welbewust eigen is, is een kopie en hoort dus
+# bewaakt te worden. Een twaalfde module die ooit wordt overgekopieerd komt
+# hier vanzelf bij; een module die verdwijnt valt er vanzelf uit — geen van
+# beide vereist dat iemand deze lijst met de hand bijwerkt.
+GEKOPIEERD = sorted(
+    (_module_stammen(pathlib.Path(__file__).parent)
+     & _module_stammen(pathlib.Path(__file__).parent.parent))
+    - EIGEN_VERSIE
+)
 
 # Modules waarvan een afwijking een vastgelegd besluit is, in plaats van
 # ruis: naam -> reden (commit). Leeg bij aanvang — dit is geen skip-lijst
@@ -183,6 +220,40 @@ def test_de_kopie_is_gelijk_aan_het_origineel(naam):
         "meetuitkomst aan het ontwerp wordt toegeschreven terwijl hij van de "
         "kopie kwam."
     )
+
+
+def test_afgeleide_lijst_is_compleet():
+    """Bewaakt de afleiding zelf, niet alleen wat ze afleidt.
+
+    `GEKOPIEERD` wordt berekend uit de bestanden die op schijf staan; wie een
+    kopie verwijdert (of `EIGEN_VERSIE` te ruim maakt) krijgt daardoor een
+    KORTERE lijst, geen falende test — `test_de_kopie_is_gelijk_aan_het_origineel`
+    parametriseert immers over wat er ook is, en een module die er niet meer in
+    zit wordt simpelweg niet meer getoetst. Deze test legt vast wat er hoort te
+    staan, zodat een stillere lijst zichtbaar wordt als FOUT in plaats van als
+    kortere testrun.
+    """
+    verwachte_kopieen = {
+        "attribute_cards", "code_shape", "codebook_io", "codebook_verifier",
+        "codebook_writer", "concept_inventory", "config_codeGenerator",
+        "grouping", "prompts_common", "prompts_writer", "taxonomy_input",
+    }
+    verwachte_testkopieen = {
+        "test_attribute_cards", "test_codebook_writer", "test_concept_inventory",
+        "test_grouping", "test_prompts_writer", "test_taxonomy_input",
+    }
+    verwacht = verwachte_kopieen | verwachte_testkopieen
+
+    assert set(GEKOPIEERD) == verwacht, (
+        f"GEKOPIEERD is {sorted(set(GEKOPIEERD) - verwacht)} te veel en "
+        f"{sorted(verwacht - set(GEKOPIEERD))} te weinig t.o.v. de verwachte "
+        "elf ketenmodules plus zes testkopieën. Ontbreekt er iets: is een "
+        "kopie verwijderd, of hoort de nieuwe naam in EIGEN_VERSIE? Staat er "
+        "iets te veel in: is er een nieuwe kopie bijgekomen die deze lijst "
+        "(en de verwachting hier) terecht moet zien groeien."
+    )
+    assert len(verwachte_kopieen) == 11
+    assert len(verwachte_testkopieen) == 6
 
 
 def test_pakketgrens_wordt_op_de_punt_getrokken():
