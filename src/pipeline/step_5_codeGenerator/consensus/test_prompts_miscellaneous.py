@@ -103,10 +103,12 @@ def test_al_vergeven_namen_gaan_mee():
 def test_het_instructieraamwerk_draagt_geen_dataset_vocabulaire():
     """Twee totaal verschillende datasets moeten hetzelfde raamwerk opleveren.
 
-    Dit is de mechanische versie van de huisregel: prompts blijven
-    use-case-agnostisch. Zodra iemand een diagnose op één dataset als
-    vuistregel in de instructie schrijft, gaan de twee raamwerken uit elkaar
-    lopen óf duikt het woord op in het raamwerk van de ander.
+    Dit vangt vocabulaire dat via de BOUWER binnenkomt: dataset-woorden die
+    in het raamwerk terechtkomen in plaats van in de codelijst.
+
+    Het vangt NIET het lekpad dat de huisregel vreest — een met de hand in het
+    sjabloon geschreven voorbeeld staat in béide renders identiek en glipt hier
+    dus langs. Daarvoor is de toets hieronder.
     """
     een = build_miscellaneous_prompt(
         [kindvorm("V1", "negative", ("A1",), umbrella="Bereikbaarheid")],
@@ -125,6 +127,31 @@ def test_het_instructieraamwerk_draagt_geen_dataset_vocabulaire():
     for woord in ("Wachttijd", "Openingstijden", "Bereikbaarheid",
                   "Rentestand", "Voorwaarden"):
         assert woord not in raamwerk_een
+
+
+def test_het_statische_raamwerk_leent_geen_onderwerpvocabulaire():
+    """Het lekpad uit de huisregel: je diagnosticeert een slechte uitkomst op
+    één dataset, schrijft dat geval als vuistregel in het sjabloon, en het
+    blijft staan. Zo'n voorbeeld staat in élke render identiek, dus de toets
+    hierboven ziet het niet — deze scant het raamwerk zelf.
+
+    GEEN bewijs van agnosticisme, maar een grendel op wat dit huis werkelijk
+    heeft ingecodeerd: de dertien voorbeelden die op 2026-07-28 uit de stappen
+    3, 4 en 5 zijn gehaald. Komt er een nieuw geval bij, breid de lijst uit in
+    plaats van hem te laten verwateren. Zelfde vorm als step 4's
+    `test_prompts_discovery.py`.
+    """
+    ontleend = [
+        "sustainab", "green", "environmental", "social responsibility",
+        "climate", "bank", "financial", "insurance", "mortgage",
+        "festival", "supermarket", "hypocritical",
+    ]
+    raamwerk = build_miscellaneous_prompt(
+        [kindvorm("V1", "negative", ("A1",), umbrella="Bereikbaarheid")],
+        CONCEPTS, "vooral in ...", "Dutch").split("Codes:")[0].lower()
+
+    gevonden = [w for w in ontleend if w in raamwerk]
+    assert not gevonden, f"geleend vocabulaire in het statische raamwerk: {gevonden}"
 
 
 def test_het_responsemodel_kent_geen_veto():
