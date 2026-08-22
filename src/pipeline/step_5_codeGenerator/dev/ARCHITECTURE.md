@@ -133,19 +133,27 @@ call per run.
 
 `build_shapes(two_pole=True)` (`grouping.py`) replaces the three-way positive /
 negative / neutral split with two poles: `non_negative` (positive ∪ neutral)
-and `negative`. `ConsolidatedCode.valence` (`models.py`) is a three-value
-`Literal` and does not accept a fourth value, so `code_shape.stored_valence()`
-translates `non_negative` to `neutral` at the one point where a shape's
-valence becomes a stored code's valence; `_shape_lookup` applies the same
-translation on the shape side of the shape↔code match, so both sides speak one
-vocabulary.
+and `negative`. Since 2026-08-22 `ConsolidatedCode.valence` (`models.py`) is a
+FOUR-value `Literal` that accepts `non_negative` directly, and
+`code_shape.stored_valence()` translates nothing.
+
+It translated `non_negative` to `neutral` until then, and that was not a
+rounding but a loss of meaning: `neutral` means "descriptive, no direction"
+while `non_negative` means "explicitly not a complaint". Step 6's `opposes()`
+deliberately leaves `neutral` out of its opposites table — descriptive material
+has no counter-pole — so the direction guard never fired on a codebook built
+with two poles. That was the path being run daily. See WORK.md.
+
+`stored_valence()` still exists and is still called on both sides of the
+shape↔code match, so the two sides cannot drift apart if a translation is ever
+reintroduced.
 
 This exists for `consensus/` (see CLAUDE.md's Key Files and "The consensus
 candidate chain" below). `run_codebook()` never passes `two_pole=True`, so the
 production chain still runs three poles — this is live code in `grouping.py`,
 `code_shape.py`, `codebook_writer.py` and `prompts_writer.py`, not a dead
-branch, but it has no production caller today. See WORK.md for what a
-promotion to production would have to resolve.
+branch, but it has no production caller today — the candidate chain in
+`consensus/` does, and it writes under the same `mece_codes` key.
 
 ## Prompt Builders & Response Models
 

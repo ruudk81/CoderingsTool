@@ -301,7 +301,7 @@ class ConsolidatedCode(BaseModel):
             "must be unique per code and must not overlap with other codes."
         )
     )
-    valence: Literal["positive", "negative", "neutral"] = Field(
+    valence: Literal["positive", "negative", "neutral", "non_negative"] = Field(
         ...,
         description=(
             "The code's evaluative direction. A code whose ideas span a "

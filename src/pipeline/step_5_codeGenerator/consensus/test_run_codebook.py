@@ -120,7 +120,7 @@ def test_partities_meegeven_slaat_deel_1_over(monkeypatch):
         # (niet het attribute_id) omdat `shape.members` id's zijn.
         return [ConsolidatedCode(
             code_name="X", definition="d", diagnostic_test="t",
-            valence="neutral", typical_indicators=[],
+            valence="non_negative", typical_indicators=[],
             source_attributes=[concept_by_id[m].name for m in shapes[0].members])]
 
     monkeypatch.setattr(runner, "resolve_consolidations", nooit)

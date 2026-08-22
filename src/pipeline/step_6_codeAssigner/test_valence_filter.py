@@ -209,3 +209,34 @@ def test_lege_invoer():
     rapport = route_opposing_poles([], CODES)
     assert rapport.moved == 0
     assert rapport.overig_share_after == 0.0
+
+
+def test_een_negatief_idee_botst_met_een_niet_negatieve_code():
+    """De tweedeling maakt `non_negative` (positief ∪ neutraal). Zo'n code zegt
+    letterlijk dat een klacht er niet in hoort, dus een negatief idee is daar
+    wél een conflict — anders dan bij een echt neutrale code.
+
+    Tot 2026-08-22 werd `non_negative` als `neutral` opgeslagen omdat het
+    contract maar drie waarden kende, en dan vuurde deze bewaking nooit. Dat is
+    het pad dat in de praktijk gedraaid werd."""
+    assert opposes("non_negative", "-") is True
+
+
+def test_een_niet_negatieve_code_botst_niet_met_positief_of_beschrijvend():
+    assert opposes("non_negative", "+") is False
+    assert opposes("non_negative", "0") is False
+
+
+def test_een_echt_neutrale_code_botst_met_niets():
+    """Beschrijvend materiaal heeft geen tegenpool. Dat `neutral` buiten de
+    tabel valt is dus correct en moet zo blijven — het onderscheid met
+    `non_negative` is precies waarom er een vierde waarde nodig was."""
+    assert opposes("neutral", "-") is False
+    assert opposes("neutral", "+") is False
+
+
+def test_een_negatieve_code_botst_ook_zonder_positieve_code_in_het_boek():
+    """Er wordt vergeleken met de POOL van het idee, niet met de valentie van
+    een andere code. In een tweedelingscodeboek bestaat geen positieve code, en
+    toch hoort een positief idee niet onder een negatieve."""
+    assert opposes("negative", "+") is True

@@ -25,12 +25,24 @@ from models import ConsolidatedCode
 # sleutel die `_shape_lookup` legt en de valentie die de geschreven code
 # draagt. Spreken ze niet dezelfde vocabulaire, dan vindt `_match_shape` niets
 # terug.
-STORED_VALENCE = {"non_negative": "neutral"}
-
-
 def stored_valence(valence: str) -> str:
-    """De valentie zoals een geschreven code hem draagt."""
-    return STORED_VALENCE.get(valence, valence)
+    """De valentie zoals een geschreven code hem draagt.
+
+    Tot 2026-08-22 vertaalde deze functie `non_negative` naar `neutral`, omdat
+    `ConsolidatedCode.valence` maar drie waarden kende. Dat was geen afronding
+    maar betekenisverlies: `neutral` betekent "beschrijvend, geen richting" en
+    `non_negative` betekent "expliciet geen klacht". Step 6's `opposes()` laat
+    `neutral` bewust buiten zijn tabel — beschrijvend materiaal heeft geen
+    tegenpool — en dus vuurde de richtingsbewaking nooit op een codeboek dat
+    met twee polen was gemaakt. Precies het pad dat dagelijks draaide.
+
+    Het contract kent nu vier waarden en er valt niets meer te vertalen. De
+    functie blijft bestaan omdat `_shape_lookup` en `codebook_writer` hem aan
+    weerszijden van de hermontage aanroepen: zolang beide kanten dezelfde
+    functie gebruiken kunnen ze niet uit elkaar lopen, ook niet als hier ooit
+    weer een vertaling bij komt.
+    """
+    return valence
 
 
 @dataclass(frozen=True)

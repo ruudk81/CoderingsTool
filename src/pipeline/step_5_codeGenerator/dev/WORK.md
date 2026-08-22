@@ -366,18 +366,40 @@ botsen. Zodra één van beide fasen binnen één proces herhaald wordt — bijvo
 voor een consensus-achtige meting over de writer-stap — wordt dit een echte
 bug, en is dezelfde omzetting naar `list[...]` nodig.
 
-## Two-pole valence: vertalen of contract verruimen (open, alleen relevant bij promotie — 2026-08-20)
+## Two-pole valence: contract verruimd naar vier waarden (gesloten — 2026-08-22)
 
-`build_shapes(two_pole=True)` levert een vierde valentiewaarde, `non_negative`,
-die `code_shape.stored_valence()` vertaalt naar `neutral` omdat
-`ConsolidatedCode.valence` (`models.py`) een drie-waardige `Literal` is (zie
-ARCHITECTURE.md voor het mechanisme). Dat is vandaag onproblematisch — de
-productieketen roept `build_shapes` nooit met `two_pole=True`, dit dient alleen
-`consensus/`. Wordt de tweedeling ooit productie, dan moet de
-keuze opnieuw gemaakt worden: blijven vertalen (en dus het onderscheid tussen
-"positief" en "niet-negatief" verliezen zodra een code wordt opgeslagen), of
-`models.py`'s contract verruimen naar vier waarden — dat raakt steps 6 en 7,
-die `valence` ook lezen.
+`ConsolidatedCode.valence` kent nu `non_negative` naast de drie oude waarden, en
+`code_shape.stored_valence()` vertaalt niets meer.
+
+**Waarom dit geen promotievraag bleek maar een bug.** De notitie hier zei tot
+2026-08-22 dat de vertaling "vandaag onproblematisch" was omdat de
+productieketen `two_pole` nooit aanzet. Dat klopte niet meer: de kandidaat in
+`consensus/` draait er dagelijks op, en die schrijft onder dezelfde
+`mece_codes`-sleutel. Het gevolg was dat step 6's richtingsbewaking uit stond in
+het pad dat feitelijk gedraaid werd — `opposes()` laat `neutral` bewust buiten
+zijn tabel (beschrijvend materiaal heeft geen tegenpool), dus een negatief idee
+onder een als `neutral` opgeslagen niet-negatieve code botste nergens mee.
+
+Wat er is veranderd: de `Literal` in `models.py`, het weghalen van de vertaling,
+en `non_negative: "negative"` in `_OPPOSITE` (`step_6_codeAssigner/
+valence_filter.py`). Step 7 leest `code.valence` niet, dus die bleef ongemoeid.
+
+Verbreden van een `Literal` is achterwaarts compatibel voor lezen: elke
+bestaande cache draagt een van de drie oude waarden en die blijven geldig.
+
+Wat de bewaking nu doet:
+
+| code | `+` | `-` | `0` |
+|---|---|---|---|
+| `non_negative` | — | **botst** | — |
+| `neutral` | — | — | — |
+| `negative` | **botst** | — | — |
+| `positive` | — | **botst** | — |
+
+Merk op dat er wordt vergeleken met de POOL van het idee en niet met de valentie
+van een andere code: in een tweedelingscodeboek bestaat geen positieve code, en
+toch botst een positief idee met een negatieve. Step 6 hoeft dus nooit te weten
+met welke modus een codeboek gemaakt is.
 
 ## `CodeShape.resp_pos`/`resp_neg`/`resp_neu` zijn write-only (open, low — 2026-08-20)
 

@@ -38,7 +38,15 @@ UNASSIGNED_SENTINEL = "__UNASSIGNED__"
 # 'positive' / 'negative' / 'neutral'. Alles wat hier niet in staat heeft geen
 # pool en kan dus nooit een tegenpool zijn — geen else-tak die de rest opveegt.
 _IDEA_POLE = {"+": "positive", "-": "negative"}
-_OPPOSITE = {"positive": "negative", "negative": "positive"}
+# `neutral` staat hier bewust NIET in: beschrijvend materiaal heeft geen
+# tegenpool. `non_negative` (positief u neutraal, uit de tweedeling van
+# `build_shapes`) wel — die code zegt letterlijk dat een klacht er niet in
+# hoort, dus een negatief idee is daar een conflict.
+_OPPOSITE = {
+    "positive": "negative",
+    "negative": "positive",
+    "non_negative": "negative",
+}
 
 _OVERIG_NAMES = {v.strip().lower() for v in MISCELLANEOUS_CODE_LABELS.values()} | {"overig"}
 

@@ -85,11 +85,14 @@ def test_shape_count_and_valence_are_preserved_not_asked(monkeypatch):
     assert sorted(c.valence for c in codes) == ["negative", "positive"]
 
 
-def test_non_negative_valence_is_stored_as_neutral(monkeypatch):
-    """`build_shapes(two_pole=True)` produces `non_negative`, a value
-    `ConsolidatedCode.valence` does not accept — `_to_consolidated_code`
-    translates it to `neutral`. The other three values must pass through
-    unchanged."""
+def test_alle_vier_de_valenties_gaan_ongewijzigd_de_cache_in(monkeypatch):
+    """Sinds 2026-08-22 kent `ConsolidatedCode.valence` vier waarden en wordt
+    er niets meer vertaald.
+
+    `non_negative` werd tot dan als `neutral` opgeslagen, en dat was
+    betekenisverlies: step 6's `opposes()` laat `neutral` bewust buiten zijn
+    tabel, dus de richtingsbewaking vuurde nooit op een codeboek dat met twee
+    polen was gemaakt — het pad dat dagelijks draaide."""
     async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
         return [WriterResult(codes=[text("K1"), text("K2"), text("K3"), text("K4")])]
 
@@ -103,7 +106,7 @@ def test_non_negative_valence_is_stored_as_neutral(monkeypatch):
     codes = asyncio.run(
         codebook_writer.write_codebook(shapes, concepts, "stem", "nl-NL", CodebookConfig())
     )
-    assert codes[0].valence == "neutral"  # K1: non_negative -> neutral
+    assert codes[0].valence == "non_negative"  # K1: non_negative -> neutral
     assert codes[1].valence == "neutral"  # K2: neutral -> neutral (unchanged)
     assert codes[2].valence == "positive"  # K3: unchanged
     assert codes[3].valence == "negative"  # K4: unchanged
