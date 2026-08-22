@@ -87,7 +87,12 @@ more** — a leftover reference to one is stale, not a second chain.
   `prompts_consolidation.py`, `consolidation.py` (N runs in one
   `SmoothRequester`, `phase_key` `step5c_consolidation`), `consensus.py`,
   `analysis.py`, `storage.py`, `run_codebook.py`, `view_prompts.py`,
-  `view_codebook.py` and its own tests; since 2026-08-22 it does not import
+  `view_codebook.py`, `prompts_miscellaneous.py` (new on 2026-08-22 and
+  consensus-only — the second writing call's prompt, which names the children
+  under Overig; it has no production counterpart, so it is neither a copy nor
+  an `EIGEN_VERSIE` entry, and `test_prompts_miscellaneous.py` /
+  `test_miscellaneous_writer.py` cover it) and its own tests;
+  since 2026-08-22 it does not import
   everything from `build_shapes` onward from production, it OWNS a copy of it
   — eleven modules: `taxonomy_input.py`, `concept_inventory.py`,
   `attribute_cards.py`, `code_shape.py`, `grouping.py`, `codebook_writer.py`,

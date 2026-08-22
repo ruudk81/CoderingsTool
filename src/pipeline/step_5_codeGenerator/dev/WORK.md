@@ -157,6 +157,36 @@ valentie ÚIT de vorm, dus hermatchen geeft per constructie dezelfde vorm.
 Wat de toets wél vangt is een kind dat zijn ouder kwijtraakt tussen koppelen en
 beoordelen. `dangling_parent_refs` is wél onafhankelijk.
 
+## De kinderen zijn gebouwd en gemeten, maar niet GEFALSIFIEERD (open — 2026-08-22)
+
+Alles hierboven is gemeten op step 5: 32 hoofdcodes, 11 kinderen, 113
+respondenten in het kindbakje, plafond op 3,8%. Dat zijn cijfers over de
+BOUW van het codeboek. De spec stelt daarnaast een falsificatiecriterium dat
+alleen step 6 kan beantwoorden:
+
+> Krijgen de kinderen in step 6 nauwelijks toewijzingen, dan is het facet niet
+> de juiste groepeereenheid voor restmateriaal — en gaat het ontwerp van tafel,
+> de tuning niet in.
+
+**Die toets is niet uitgevoerd.** Er is geen enkele step-6-run over een
+codeboek mét kinderen gedaan; wat er is, is bewijs dat step 6 een KINDERLOOS
+codeboek nog exact hetzelfde behandelt (`test_kinderloos_codeboek_*`). Het
+meetgereedschap staat wel klaar: `report_children()` drukt élk kind af mét zijn
+nul (`← ZERO — this child caught nothing`), na de tegenpoolfilter, zodat een
+kind dat niets vangt niet als afwezigheid uit een lijst te lezen valt.
+
+Wat de run kost, geschat bij het plan: één step-6-run over de volle set
+(~4,1k ideeën), ≈1294 calls, ≈$0,45, 75-90 seconden. Uitgesteld in afwachting
+van de beslissing van de gebruiker — dit plan is dus gebouwd, getest en
+gemeten, maar niet gefalsifieerd.
+
+Twee dingen hangen eraan. Slaagt de toets, dan is de volgende vraag de promotie
+(zie "De promotie is geoefend"). Faalt hij, dan vervalt met het ontwerp ook het
+enige open punt in step 7 dat over kinderen gaat.
+
+Let op de cache-skip bij het draaien: `run_codebook()` heeft
+`force_recalc=False` als default en slaat op een geldige cache over.
+
 ## tau is een invoer, geen constante (open — 2026-08-20)
 
 Zolang er op een tweede dataset niets gemeten is, blijft tau een expliciet
