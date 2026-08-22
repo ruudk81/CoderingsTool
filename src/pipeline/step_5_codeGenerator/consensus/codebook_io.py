@@ -35,7 +35,7 @@ import models
 from config import MISCELLANEOUS_CODE_LABELS
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.exportNaming import export_filename
-from utils.identity import ensure_codebook_ids
+from utils.identity import ensure_codebook_ids, mint_code_ids
 
 from .codebook_verifier import (
     build_scorecard, collect_idea_assignments, collect_taxonomy_attributes, format_scorecard,
@@ -261,15 +261,35 @@ def cache_mece_results(
 # AFRONDEN
 # =============================================================================
 
+def rest_label(language: str) -> str:
+    """De naam van de restcategorie in de enquêtetaal.
+
+    Eén plek, want twee dingen moeten hem noemen en ze mogen niet uit elkaar
+    lopen: de Overig-code zelf en de noodnaam van een kind eronder (zie
+    `codebook_writer._miscellaneous_fallback_text`). Sprak de ene Nederlands en
+    de andere Engels, dan zou een kind een ouder aanwijzen die anders heet.
+    """
+    return MISCELLANEOUS_CODE_LABELS.get(language, "Overig")
+
+
 def apply_overig_sweep(
     codes: List[ConsolidatedCode],
     pydantic_results: Dict[str, DomainResultModel],
     language: str,
-) -> Optional[str]:
+) -> ConsolidatedCode:
     """Route attributes no code placed into a single catch-all 'Overig' code.
 
     Guarantees 100% attribute/idea coverage by construction. Mutates `codes`
-    in place. Returns the Overig code name.
+    in place.
+
+    Geeft de Overig-CODE terug, niet zijn naam. Sinds 2026-08-22 kan een code
+    onder Overig hangen (`ConsolidatedCode.parent_code_id`), en dan heeft de
+    aanroeper de `code_id` van de ouder nodig — niet alleen zijn naam, want de
+    hiërarchie leeft in een veld en nooit in een naam. Daarom worden de K#'s
+    hier gemunt in plaats van pas bij de cache-write: op dit punt is het boek
+    compleet (alle geschreven codes plus Overig), dus de lijstvolgorde is
+    dezelfde die `ensure_codebook_ids` zou aanhouden, en die functie slaat later
+    over wat hier al een id kreeg.
     """
     # Referenced = taxonomy attributes AND attributes ideas were actually assigned to
     # (the latter catches step-4 dangling assignments → guarantees 100% idea coverage).
@@ -295,9 +315,8 @@ def apply_overig_sweep(
                     if a["attribute_id"] not in ids:
                         ids.append(a["attribute_id"])
 
-    label = MISCELLANEOUS_CODE_LABELS.get(language, "Overig")
-    codes.append(ConsolidatedCode(
-        code_name=label,
+    overig = ConsolidatedCode(
+        code_name=rest_label(language),
         definition="Catch-all voor antwoorden die geen specifieke code kregen "
                    "(o.a. diffuus of algemeen oordeel zonder concreet onderwerp).",
         diagnostic_test="valt buiten alle specifieke codes",
@@ -305,8 +324,10 @@ def apply_overig_sweep(
         typical_indicators=[],
         source_attributes=orphans,  # may be empty list
         source_attribute_ids=[i for name in orphans for i in name_to_ids.get(name, [])],
-    ))
-    return label
+    )
+    codes.append(overig)
+    mint_code_ids(codes)
+    return overig
 
 
 def run_scorecard(

@@ -95,6 +95,39 @@ def _effective_attributes(dr) -> Dict[str, List[dict]]:
     return dr.corrected_attributes if dr.corrected_attributes else dr.attributes
 
 
+def _read_code_id(code) -> str:
+    return code.get("code_id") if isinstance(code, dict) else code.code_id
+
+
+def _write_code_id(code, value: str) -> None:
+    if isinstance(code, dict):
+        code["code_id"] = value
+    else:
+        code.code_id = value
+
+
+def mint_code_ids(codes) -> None:
+    """K# in list order for every entry that does not carry one yet (in place).
+
+    Twee vormen delen deze ene regel. De dictvorm op schijf
+    (`CodingResultsCache.raw_codes`) is de oorspronkelijke; sinds step 5 een
+    hiërarchie kent moet ook een `ConsolidatedCode`-object zijn id al kennen
+    vóór het codeboek naar de cache gaat — een kind draagt de K# van zijn ouder
+    in `parent_code_id`, en die ouder wordt gemaakt ná de schrijfcalls maar vóór
+    de cache-write. Zou step 5 daar zijn eigen nummering voor schrijven, dan
+    bestaan er twee plaatsen die K# uitdelen en kan een kind in een ander
+    schema landen dan de rest van het boek.
+
+    Idempotent: wie al een id draagt wordt overgeslagen en de teller loopt door
+    boven het hoogste bestaande nummer.
+    """
+    knum = _next_counter("K", (_read_code_id(c) for c in codes))
+    for c in codes:
+        if not _read_code_id(c):
+            knum += 1
+            _write_code_id(c, f"K{knum}")
+
+
 def ensure_codebook_ids(cache: CodingResultsCache) -> CodingResultsCache:
     """Mint taxonomy ids plus K# on raw_codes (in place).
 
@@ -104,7 +137,7 @@ def ensure_codebook_ids(cache: CodingResultsCache) -> CodingResultsCache:
     the documented legacy tolerance (new codebooks resolve per domain, Phase 3).
     """
     ensure_taxonomy_ids(cache)
-    knum = _next_counter("K", (c.get("code_id") for c in cache.raw_codes))
+    mint_code_ids(cache.raw_codes)
     name_to_ids: Dict[str, List[str]] = {}
     for d in _domain_order(cache):
         for attrs in _effective_attributes(cache.partition_results[d]).values():
@@ -114,9 +147,6 @@ def ensure_codebook_ids(cache: CodingResultsCache) -> CodingResultsCache:
                     if a["attribute_id"] not in ids:
                         ids.append(a["attribute_id"])
     for c in cache.raw_codes:
-        if not c.get("code_id"):
-            knum += 1
-            c["code_id"] = f"K{knum}"
         if not c.get("source_attribute_ids"):
             c["source_attribute_ids"] = [i for name in c.get("source_attributes", [])
                                          for i in name_to_ids.get(name, [])]

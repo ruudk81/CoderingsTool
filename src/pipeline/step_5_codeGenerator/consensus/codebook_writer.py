@@ -36,6 +36,7 @@ from config import get_reasoning_params
 from utils.llm import RateLimits
 from utils.smoothRequester import SmoothRequester
 
+from .codebook_io import rest_label
 from .concept_inventory import Concept
 from .config_codeGenerator import CodebookConfig
 from .code_shape import CodeShape, stored_valence
@@ -79,20 +80,35 @@ def _fallback_text(shape: CodeShape, concept_by_id: Dict[str, Concept],
     )
 
 
+def _miscellaneous_name(umbrella: str, language: str) -> str:
+    """De noodnaam van een kind: de restaanduiding ÉN zijn onderwerp.
+
+    Niet het kale onderwerp. `shape.umbrella` is het facet, en dat is precies
+    wat regel 1 van de kinderprompt verbiedt — een kale onderwerpsnaam claimt
+    de kop van dat hele facet, terwijl een kind juist draagt wat daar buiten de
+    hoofdcodes viel. Niet de kale restaanduiding evenmin: dan is niet te zien
+    bij welk onderwerp hij hoort, en er zijn er meerdere.
+    """
+    return f"{rest_label(language)} — {umbrella}"
+
+
 def _miscellaneous_fallback_text(shape: CodeShape, concept_by_id: Dict[str, Concept],
-                                 dimension_diagnostic: str) -> MiscellaneousText:
+                                 dimension_diagnostic: str,
+                                 language: str) -> MiscellaneousText:
     """Deterministische noodtekst voor een kind dat het model oversloeg.
 
-    De noodnaam is het ONDERWERP (`shape.umbrella`, door `build_shapes` gevuld
-    met het facet), waar `_fallback_text` de naam van het eerste lid neemt. Dat
-    verschil is de reden dat deze functie bestaat: een kind is per constructie
-    de restcategorie van één facet, en de naam van één lid zou de kop van dat
-    hele facet claimen — precies wat de kinderprompt verbiedt. Alleen als het
-    onderwerp ontbreekt (per constructie onbereikbaar) valt hij terug op het
-    eerste lid, want een naamloze code is erger dan een te specifieke.
+    De noodnaam is de restaanduiding plus het ONDERWERP (`shape.umbrella`, door
+    `build_shapes` gevuld met het facet), waar `_fallback_text` de naam van het
+    eerste lid neemt. Dat verschil is de reden dat deze functie bestaat: een
+    kind is per constructie de restcategorie van één facet, en de naam van één
+    lid zou de kop van dat hele facet claimen — precies wat de kinderprompt
+    verbiedt. Alleen als het onderwerp ontbreekt (per constructie onbereikbaar)
+    valt hij terug op het eerste lid, want een naamloze code is erger dan een te
+    specifieke.
     """
     names = _topic_names(shape, concept_by_id)
-    code_name = shape.umbrella or (names[0] if names else "")
+    code_name = (_miscellaneous_name(shape.umbrella, language) if shape.umbrella
+                 else (names[0] if names else ""))
     return MiscellaneousText(
         key=shape.key,
         code_name=code_name,
@@ -356,7 +372,8 @@ async def write_miscellaneous(
     return [
         _to_consolidated_code(
             text_by_key.get(shape.key)
-            or _miscellaneous_fallback_text(shape, concept_by_id, dimension_diagnostic),
+            or _miscellaneous_fallback_text(shape, concept_by_id,
+                                            dimension_diagnostic, language),
             shape, concept_by_id,
         )
         for shape in shapes
@@ -365,6 +382,7 @@ async def write_miscellaneous(
 
 def resolve_duplicate_names(
     codes: List[ConsolidatedCode], shapes: List[CodeShape], log=None,
+    language: str = "",
 ) -> List[ConsolidatedCode]:
     """Deterministic backstop for `taken_names`: the prompt asks the model not
     to reuse a name, but nothing here depends on it having obeyed. `codes[i]`
@@ -382,7 +400,15 @@ def resolve_duplicate_names(
     even that is already taken. Every rename is reported via `log.add(...)`
     (duck-typed, like `write_codebook`'s own `log`), so a resolved collision is
     always visible, never a silent rename. A codebook with no duplicate names
-    is returned unchanged."""
+    is returned unchanged.
+
+    Voor een KIND is de kale umbrella geen geldige naam — dat is het facet, en
+    regel 1 van de kinderprompt verbiedt juist dat een restcategorie de kop van
+    haar onderwerp claimt. Een verliezend kind valt daarom terug op dezelfde
+    naamvorm als zijn noodtekst (`_miscellaneous_name`), en daarvoor is
+    `language` nodig. Blijft die leeg, dan zijn er per constructie ook geen
+    kinderen: alleen de aanroeper die de tweede schrijfcall bedraadt levert ze,
+    en die geeft de taal mee."""
     if len(codes) != len(shapes):
         raise ValueError("codes and shapes must be positional pairs of equal length")
 
@@ -401,10 +427,12 @@ def resolve_duplicate_names(
         )
         for loser_idx in loser_indices:
             shape = shapes[loser_idx]
-            candidate = shape.umbrella
+            basis = (_miscellaneous_name(shape.umbrella, language)
+                     if shape.origin == "child" and shape.umbrella else shape.umbrella)
+            candidate = basis
             suffix = 2
             while candidate in taken:
-                candidate = f"{shape.umbrella} ({suffix})"
+                candidate = f"{basis} ({suffix})"
                 suffix += 1
             taken.add(candidate)
             resolved[loser_idx] = resolved[loser_idx].model_copy(update={"code_name": candidate})

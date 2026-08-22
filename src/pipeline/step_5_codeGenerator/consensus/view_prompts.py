@@ -16,6 +16,9 @@ from pipeline.step_5_codeGenerator.consensus.prompts_writer import WriterResult,
 from pipeline.step_5_codeGenerator.consensus.prompts_consolidation import (
     ConsolidationResult, make_consolidation_model,
 )
+from pipeline.step_5_codeGenerator.consensus.prompts_miscellaneous import (
+    MiscellaneousResult, make_miscellaneous_model,
+)
 
 SHOW_ALL = False
 
@@ -52,9 +55,21 @@ def _writer_model(metadata: dict):
     return make_writer_model([_ShapeRef(key=k) for k in keys])
 
 
+def _miscellaneous_model(metadata: dict):
+    """De tweede schrijfcall (`write_miscellaneous`) legt dezelfde
+    `shape_keys`-metadata vast als de eerste, maar heeft een eigen
+    responsemodel — zonder deze ingang toont de viewer de prompt wél en het
+    schema waarop hij wordt afgedwongen niet."""
+    keys = metadata.get("shape_keys") or []
+    if not keys:
+        return MiscellaneousResult
+    return make_miscellaneous_model([_ShapeRef(key=k) for k in keys])
+
+
 PROMPT_MODELS = {
     "consolidation": _consolidation_model,
     "codebook_writer": _writer_model,
+    "miscellaneous_writer": _miscellaneous_model,
 }
 
 

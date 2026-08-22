@@ -10,20 +10,18 @@ waar blijven, en niemand controleert dat met het blote oog:
 2. Elke kopie is en blijft inhoudelijk gelijk aan haar origineel in step 5,
    op de imports na — anders staat er straks een meetuitkomst op naam van de
    verkeerde keten (test_de_kopie_is_gelijk_aan_het_origineel).
-3. De kopie van `codebook_io.py` rekent zijn `project_root` naar dezelfde map
-   uit als het origineel. Bewaker 2 normaliseert die ene regel juist weg (de
-   kopie ligt bewust één map dieper en draagt daarom één `.parent` méér), dus
-   ziet een afwijking daarin niet — dat is waar bewaker 3 op toetst: niet HOEVEEL
-   `.parent`-stappen er staan, maar WAAR ze uitkomen, en dat klopt zo op beide
-   dieptes (test_project_root_wijst_naar_de_repo_root).
+3. `codebook_io.py` rekent zijn `project_root` naar de repo-root uit. Bewaker 2
+   ziet dat niet: dat bestand is sinds 2026-08-22 een eigen versie en wordt dus
+   niet meer met het origineel vergeleken. Bewaker 3 toetst daarom niet HOEVEEL
+   `.parent`-stappen er staan, maar WAAR ze uitkomen — en dat klopt zowel hier
+   als na de verhuizing (test_project_root_wijst_naar_de_repo_root).
 
 Zonder deze drie tests is de afspraak een voornemen; met deze drie is hij een
-test die faalt zodra iemand een import, een kopie, of die ene genormaliseerde
-regel laat afwijken.
+test die faalt zodra iemand een import, een kopie, of het anker van de
+promptexport laat afwijken.
 """
 import ast
 import pathlib
-import re
 
 import pytest
 
@@ -106,7 +104,7 @@ def test_consensus_leent_niets_meer_uit_step_5():
 
 # Bestandsnamen die consensus/ met step 5 DEELT, maar die welbewust EIGEN zijn
 # — consensus' eigen versie van een productiebestand, geen kopie ervan. Elk
-# van deze twaalf hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
+# van deze dertien hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
 # hieronder; dat maakt de uitsluiting een geschreven claim in plaats van een
 # stilzwijgende omissie.
 EIGEN_VERSIE = {
@@ -138,6 +136,12 @@ EIGEN_VERSIE = {
     # weigeren zet zijn respondenten weer onder de zusterpool die het
     # tegenovergestelde beweert. Productie kent geen kinderen en geen facetunie.
     "codebook_writer",
+    # `apply_overig_sweep` geeft sinds 2026-08-22 de Overig-CODE terug in plaats
+    # van zijn naam, en munt daar de K#'s. Nodig omdat een kind onder Overig
+    # hangt via `parent_code_id` en dus de id van zijn ouder moet kennen vóór de
+    # cache-write — de hiërarchie leeft in een veld, nooit in een naam. Productie
+    # kent geen kinderen en heeft aan de naam genoeg.
+    "codebook_io",
 }
 
 
@@ -147,9 +151,9 @@ def _module_stammen(map_: pathlib.Path) -> set[str]:
 
 # Afgeleid, niet met de hand bijgehouden: alles wat consensus/ met step 5 DEELT
 # (zelfde bestandsnaam) en niet welbewust eigen is, is een kopie en hoort dus
-# bewaakt te worden. Een twaalfde module die ooit wordt overgekopieerd komt
-# hier vanzelf bij; een module die verdwijnt valt er vanzelf uit — geen van
-# beide vereist dat iemand deze lijst met de hand bijwerkt.
+# bewaakt te worden. Een module die ooit wordt overgekopieerd komt hier vanzelf
+# bij; een module die verdwijnt valt er vanzelf uit — geen van beide vereist dat
+# iemand deze lijst met de hand bijwerkt.
 GEKOPIEERD = sorted(
     (_module_stammen(pathlib.Path(__file__).parent)
      & _module_stammen(pathlib.Path(__file__).parent.parent))
@@ -173,42 +177,6 @@ def _zonder_imports(tekst: str) -> str:
                      if not r.lstrip().startswith(("import ", "from ")))
 
 
-_PROJECT_ROOT_BLOK = re.compile(
-    r"(?:^#.*\n)*^project_root = Path\(__file__\)((?:\.parent)+)\s*$",
-    re.MULTILINE,
-)
-
-
-def _normaliseer_project_root(tekst: str, *, is_kopie: bool) -> str:
-    """`codebook_io.py` berekent `project_root` als `Path(__file__)` plus een
-    vaste keten `.parent`-stappen. Dat is een positieafhankelijke constante:
-    de kopie in `consensus/` ligt één map dieper dan het origineel in
-    `step_5_codeGenerator/`, dus heeft daar terecht één `.parent` méér nodig
-    om dezelfde map (de repo-root) te bereiken. Vastgelegd in commit
-    f43c3969.
-
-    De byte-identiteitsregel gaat over logica, niet over positie — dus
-    normaliseren we hier alleen die ene regel (en de toelichting die erboven
-    staat) naar een kanonieke vorm, in plaats van het hele bestand van de
-    vergelijking uit te sluiten. Alle 344 andere regels blijven gewoon
-    vergeleken: een échte inhoudelijke afwijking in codebook_io.py valt hier
-    nog steeds doorheen."""
-    def vervang(match: re.Match) -> str:
-        aantal = match.group(1).count(".parent")
-        if is_kopie:
-            aantal -= 1  # de kopie ligt één map dieper dan het origineel
-        return f"project_root = Path(__file__){'.parent' * aantal}"
-
-    return _PROJECT_ROOT_BLOK.sub(vervang, tekst)
-
-
-def _genormaliseerd(naam: str, tekst: str, *, is_kopie: bool) -> str:
-    tekst = _zonder_imports(tekst)
-    if naam == "codebook_io":
-        tekst = _normaliseer_project_root(tekst, is_kopie=is_kopie)
-    return tekst
-
-
 @pytest.mark.parametrize("naam", GEKOPIEERD)
 def test_de_kopie_is_gelijk_aan_het_origineel(naam):
     """Zolang beide ketens naast elkaar draaien staat deze code dubbel. Een
@@ -219,12 +187,9 @@ def test_de_kopie_is_gelijk_aan_het_origineel(naam):
     if naam in AFGEWEKEN:
         pytest.skip(f"bewuste afwijking: {AFGEWEKEN[naam]}")
 
-    kopie = _genormaliseerd(
-        naam, (hier / f"{naam}.py").read_text(encoding="utf-8"), is_kopie=True
-    )
-    origineel = _genormaliseerd(
-        naam, (hier.parent / f"{naam}.py").read_text(encoding="utf-8"), is_kopie=False
-    )
+    kopie = _zonder_imports((hier / f"{naam}.py").read_text(encoding="utf-8"))
+    origineel = _zonder_imports(
+        (hier.parent / f"{naam}.py").read_text(encoding="utf-8"))
 
     verschil = [] if kopie == origineel else [naam]
 
@@ -250,7 +215,7 @@ def test_afgeleide_lijst_is_compleet():
     kortere testrun.
     """
     verwachte_kopieen = {
-        "attribute_cards", "codebook_io", "codebook_verifier",
+        "attribute_cards", "codebook_verifier",
         "concept_inventory", "config_codeGenerator",
         "prompts_common", "prompts_writer", "taxonomy_input",
     }
@@ -263,12 +228,12 @@ def test_afgeleide_lijst_is_compleet():
     assert set(GEKOPIEERD) == verwacht, (
         f"GEKOPIEERD is {sorted(set(GEKOPIEERD) - verwacht)} te veel en "
         f"{sorted(verwacht - set(GEKOPIEERD))} te weinig t.o.v. de verwachte "
-        "acht ketenmodules plus vijf testkopieën. Ontbreekt er iets: is een "
+        "zeven ketenmodules plus vijf testkopieën. Ontbreekt er iets: is een "
         "kopie verwijderd, of hoort de nieuwe naam in EIGEN_VERSIE? Staat er "
         "iets te veel in: is er een nieuwe kopie bijgekomen die deze lijst "
         "(en de verwachting hier) terecht moet zien groeien."
     )
-    assert len(verwachte_kopieen) == 8
+    assert len(verwachte_kopieen) == 7
     assert len(verwachte_testkopieen) == 5
 
 
@@ -292,14 +257,13 @@ def test_pakketgrens_wordt_op_de_punt_getrokken():
 
 
 def test_project_root_wijst_naar_de_repo_root():
-    """De ene regel die bewaker 2 per constructie niet kan zien.
+    """De ene regel die bewaker 2 niet dekt.
 
-    `codebook_io.project_root` telt `.parent`-stappen vanaf `__file__`. De
-    kopie draagt er bewust één extra omdat ze een map dieper ligt, en bewaker 2
-    normaliseert precies die regel weg — anders zou een vastgelegde afwijking
-    als drift tellen. Gevolg: het aantal stappen is het enige aan dit bestand
-    dat GEEN enkele toets dekt, terwijl het bij de promotie met de hand terug
-    moet naar vier.
+    `codebook_io.project_root` telt `.parent`-stappen vanaf `__file__` — een
+    positieafhankelijke constante, die bij de promotie met de hand terug moet
+    naar vier omdat het bestand dan een map hoger ligt. Bewaker 2 komt er niet
+    aan toe: `codebook_io` is sinds 2026-08-22 een eigen versie en wordt niet
+    meer regel voor regel met het origineel vergeleken.
 
     De repetitie van 2026-08-22 vond dat als losse ingreep in het verhuisrecept.
     Een recept is een voornemen; deze toets is een test. Hij vraagt niet hoeveel

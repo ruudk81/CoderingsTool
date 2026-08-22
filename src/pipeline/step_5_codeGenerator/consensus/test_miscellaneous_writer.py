@@ -84,12 +84,14 @@ def test_de_bronattributen_worden_door_de_code_gevuld_niet_door_het_model(monkey
     assert codes[0].valence == "negative"
 
 
-def test_een_overgeslagen_vorm_valt_terug_op_zijn_onderwerp(monkeypatch):
+def test_een_overgeslagen_vorm_valt_terug_op_rest_plus_onderwerp(monkeypatch):
     """De schrijver mag een sleutel overslaan; het kind verdwijnt dan niet.
 
-    Anders dan bij `write_codebook` is de noodnaam het ONDERWERP en niet de
-    naam van het eerste lid: een kind is per constructie een restcategorie van
-    één facet, en de naam van één lid zou dat facet claimen.
+    Anders dan bij `write_codebook` bouwt de noodnaam op het ONDERWERP en niet
+    op de naam van het eerste lid: een kind is per constructie een
+    restcategorie van één facet, en de naam van één lid zou dat facet claimen.
+    Het kale onderwerp evenmin — dat is precies wat regel 1 van de kinderprompt
+    verbiedt — dus de restaanduiding staat ervoor.
     """
     async def fake_process_all(self, tasks, prepare_fn, parse_fn, fallback_fn=None):
         return [MiscellaneousResult(codes=[])]
@@ -102,7 +104,7 @@ def test_een_overgeslagen_vorm_valt_terug_op_zijn_onderwerp(monkeypatch):
         shapes, concepts, "stem", "nl-NL", CodebookConfig()))
 
     assert len(codes) == 1
-    assert codes[0].code_name == "Bereikbaarheid"
+    assert codes[0].code_name == "Overig — Bereikbaarheid"
 
 
 def test_een_lege_lijst_kost_geen_call(monkeypatch):
@@ -143,7 +145,7 @@ def test_een_mislukte_call_levert_alsnog_elk_kind_op(monkeypatch):
         [vorm("V1", ["A1"], "child", umbrella="Bereikbaarheid")],
         [concept_voor("A1", "Wachttijd")], "stem", "nl-NL", CodebookConfig()))
 
-    assert [c.code_name for c in codes] == ["Bereikbaarheid"]
+    assert [c.code_name for c in codes] == ["Overig — Bereikbaarheid"]
 
 
 # ---------------------------------------------------------------------------
