@@ -631,3 +631,45 @@ def test_de_bestaande_groepen_blijven_ongemoeid():
     assert [s.members for s in eigen] == [("A1",), ("A2",)]
     assert [len(s.resp_ids) for s in eigen] == [30, 30]
     assert all(s.resp_neg == frozenset() for s in eigen)
+
+
+def test_een_herstelde_hoofdcode_draagt_een_eigen_herkomst():
+    """`origin == "recovered"`, en dus niet `"pooled"`.
+
+    Taak 2 gaf een unie die de drempel haalde `"pooled"` — dezelfde herkomst
+    als een door het model voorgestelde samenvoeging, en daarmee vetobaar in
+    `codebook_writer`. Bij veto stonden de respondenten wéér nergens, want het
+    attribuut blijft bron van zijn overlevende zusterpool. Een facetunie is
+    geen modelvoorstel maar step 4's eigen structuur; het veto beoordeelt
+    daarmee iets wat het niet beoordeelt.
+    """
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=5),
+          minderheids_concept("A2", "Twee", "F", pos=30, neg=5)]
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    unie = next(s for s in res.shapes if s.valence == "negative")
+    assert unie.origin == "recovered"
+
+
+def test_geen_enkele_vorm_uit_de_facetpool_is_vetobaar():
+    """De unie wordt hoofdcode óf kind; geen van beide mag `"pooled"` heten,
+    want dat is de enige herkomst die `codebook_writer` mag weigeren.
+
+    Toetst de eigenschap en niet één tak ervan: een vorm uit deze pool bestaat
+    omdat zijn respondenten anders onder een code met de tegengestelde richting
+    geteld worden, en dat geldt aan beide kanten van de drempel.
+    """
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=5),
+          minderheids_concept("A2", "Twee", "F", pos=30, neg=5),
+          minderheids_concept("A3", "Drie", "G", pos=30, neg=2),
+          minderheids_concept("A4", "Vier", "G", pos=30, neg=2)]
+    groepen = [losse_groep(i) for i in ("A1", "A2", "A3", "A4")]
+
+    # facet F: unie 10, boven de drempel → hoofdcode
+    # facet G: unie 4, boven de bodem (3) en onder de drempel → kind
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    uit_de_pool = [s for s in res.shapes if s.valence == "negative"]
+    assert sorted(s.origin for s in uit_de_pool) == ["child", "recovered"]

@@ -16,12 +16,21 @@ can land on a name a non-rewritten code already carries: `write_codebook`'s
 `resolve_duplicate_names` is the deterministic backstop the caller runs over the
 COMPLETE, reunited codebook after rewriting — a prompt rule is never trusted here
 as the only guarantee.
+
+Sinds 2026-08-22 staan hier TWEE schrijfcalls naast elkaar. `write_codebook`
+schrijft de hoofdcodes; `write_miscellaneous` schrijft de kinderen — de
+facetunies van afgevallen valentiepolen die onder Overig komen te hangen. Twee
+calls en niet één, omdat de instructie verschilt: een kind is een restcategorie
+binnen een onderwerp en mag geen eigen kop claimen. De aanroeper splitst de
+vormen op `origin` en geeft elke helft aan zijn eigen call; geen van beide
+functies filtert zelf, want een call die stil vormen laat vallen is precies de
+faalvorm die deze module elders met een fallbacktekst voorkomt.
 """
 from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 
 from config import get_reasoning_params
 from utils.llm import RateLimits
@@ -31,9 +40,19 @@ from .concept_inventory import Concept
 from .config_codeGenerator import CodebookConfig
 from .code_shape import CodeShape, stored_valence
 from models import ConsolidatedCode
+from .prompts_miscellaneous import (
+    MiscellaneousText, build_miscellaneous_prompt, make_miscellaneous_model,
+)
 from .prompts_writer import CodeText, build_writer_prompt, make_writer_model
 
 PHASE = "step5_writer"
+# Een eigen fase, en niet `PHASE`: `perfModel` houdt zijn ringbuffer per
+# (model, fase) bij, en de kinderprompt is korter en levert kortere teksten op
+# dan de schrijverprompt. Op één sleutel zouden ze elkaars warmtestart
+# vervuilen. De `c` volgt `consolidation.PHASE` (`step5c_consolidation`): in
+# deze kandidaatketen draagt elke eigen fase die letter, zodat een meting nooit
+# op naam van de productieketen komt te staan.
+MISCELLANEOUS_PHASE = "step5c_miscellaneous"
 
 
 def _topic_names(shape: CodeShape, concept_by_id: Dict[str, Concept]) -> List[str]:
@@ -60,8 +79,41 @@ def _fallback_text(shape: CodeShape, concept_by_id: Dict[str, Concept],
     )
 
 
-def _to_consolidated_code(text: CodeText, shape: CodeShape,
+def _miscellaneous_fallback_text(shape: CodeShape, concept_by_id: Dict[str, Concept],
+                                 dimension_diagnostic: str) -> MiscellaneousText:
+    """Deterministische noodtekst voor een kind dat het model oversloeg.
+
+    De noodnaam is het ONDERWERP (`shape.umbrella`, door `build_shapes` gevuld
+    met het facet), waar `_fallback_text` de naam van het eerste lid neemt. Dat
+    verschil is de reden dat deze functie bestaat: een kind is per constructie
+    de restcategorie van één facet, en de naam van één lid zou de kop van dat
+    hele facet claimen — precies wat de kinderprompt verbiedt. Alleen als het
+    onderwerp ontbreekt (per constructie onbereikbaar) valt hij terug op het
+    eerste lid, want een naamloze code is erger dan een te specifieke.
+    """
+    names = _topic_names(shape, concept_by_id)
+    code_name = shape.umbrella or (names[0] if names else "")
+    return MiscellaneousText(
+        key=shape.key,
+        code_name=code_name,
+        definition=f"Responses about {', '.join(names) if names else code_name}.",
+        diagnostic_test=dimension_diagnostic,
+        typical_indicators=names or [code_name],
+        boundary_note="",
+    )
+
+
+def _to_consolidated_code(text: Union[CodeText, MiscellaneousText], shape: CodeShape,
                           concept_by_id: Dict[str, Concept]) -> ConsolidatedCode:
+    """Gedeeld door beide schrijfcalls: de velden die hier worden uitgelezen
+    dragen de twee teksten allebei. `nameable` staat er niet bij — dat veld is
+    een oordeel over de vorm, geen tekst van de code, en het wordt afgehandeld
+    waar het veto valt.
+
+    `parent_code_id` blijft leeg, ook voor een kind: de ouder is de
+    Overig-code, en die bestaat pas nadat `apply_overig_sweep` hem heeft
+    gemaakt. De aanroeper hangt de kinderen daarna aan hun ouder.
+    """
     return ConsolidatedCode(
         code_name=text.code_name,
         definition=text.definition,
@@ -83,6 +135,24 @@ def _record_veto(log, shape: CodeShape, concept_by_id: Dict[str, Concept]) -> No
     )
 
 
+def _writing_requester(config: CodebookConfig, phase: str, verbose: bool,
+                       known_limits: Optional[RateLimits],
+                       has_server_headers: Optional[bool]) -> SmoothRequester:
+    """De opstelling die beide schrijfcalls delen: één taak, hetzelfde model,
+    stil. Alleen de fase verschilt. Staat apart zodat de twee calls niet elk
+    hun eigen kopie van deze zeven regels dragen — dan zou een aanpassing aan
+    de ene stil langs de andere gaan."""
+    return SmoothRequester(
+        model=config.model_writer,
+        phase_key=phase,
+        num_tasks=1,
+        verbose=verbose,
+        known_limits=known_limits,
+        has_server_headers=has_server_headers,
+        quiet=True,
+    )
+
+
 async def write_codebook(
     shapes: List[CodeShape],
     concepts: List[Concept],
@@ -100,7 +170,8 @@ async def write_codebook(
     """One call across all fixed code shapes. A `nameable: false` verdict on a
     `pooled` shape drops it (recorded in `log` as a VETO); the same verdict on
     a `solo` or `synonym` shape is ignored — those are single attributes and
-    are by definition nameable.
+    are by definition nameable. `recovered` en `child` zijn evenmin vetobaar;
+    de reden staat bij de veto-toets zelf.
 
     `taken_names` is for a re-write that only sees a SUBSET of the book (e.g.
     the MECE-merged codes) — the names already committed for the codes NOT in
@@ -152,15 +223,8 @@ async def write_codebook(
     def fallback_fn(_task, _reason):
         return None
 
-    requester = SmoothRequester(
-        model=config.model_writer,
-        phase_key=PHASE,
-        num_tasks=1,
-        verbose=verbose,
-        known_limits=known_limits,
-        has_server_headers=has_server_headers,
-        quiet=True,
-    )
+    requester = _writing_requester(config, PHASE, verbose, known_limits,
+                                   has_server_headers)
     tasks = [{
         "shapes": shapes, "concept_by_id": concept_by_id,
         "dimension_diagnostic": dimension_diagnostic, "language": language,
@@ -175,11 +239,128 @@ async def write_codebook(
         text = text_by_key.get(shape.key) or _fallback_text(
             shape, concept_by_id, dimension_diagnostic
         )
+        # Alleen `pooled` — en dat is sinds 2026-08-22 een scherpere grens dan
+        # "meer dan één attribuut". Het veto beoordeelt of een door het MODEL
+        # voorgestelde samenvoeging een code was; valt hij weg, dan blijven de
+        # attributen los over en veegt `apply_overig_sweep` ze naar Overig.
+        #
+        # Voor een facetunie uit `pool_minority_poles` (`recovered`) klopt geen
+        # van beide. Hij is geen modelvoorstel maar step 4's eigen structuur,
+        # en zijn attributen zijn ook bron van de OVERLEVENDE zusterpool — die
+        # vaak het tegenovergestelde beweert. De sweep ziet ze daarom niet als
+        # wees, dus een veto zet deze respondenten wéér onder een code die iets
+        # anders zegt: precies het defect dat de facetunie opheft. Een `child`
+        # valt om dezelfde reden buiten het veto (zie `code_shape.CodeShape`).
+        #
+        # Daar hangt ook een telling aan: `ShapingResult.coverage_recovered`
+        # wordt in `build_shapes` berekend, vóór deze call. Dat getal is alleen
+        # waar zolang geen enkele vorm uit `pool_minority_poles` hier nog kan
+        # sneuvelen. Wie het veto ooit tot `recovered` uitbreidt, moet die
+        # telling ná de schrijfcall opnieuw bepalen — anders claimt hij dekking
+        # die er niet is.
         if not text.nameable and shape.origin == "pooled":
             _record_veto(log, shape, concept_by_id)
             continue
         codes.append(_to_consolidated_code(text, shape, concept_by_id))
     return codes
+
+
+async def write_miscellaneous(
+    shapes: List[CodeShape],
+    concepts: List[Concept],
+    dimension_diagnostic: str,
+    language: str,
+    config: CodebookConfig,
+    known_limits: Optional[RateLimits] = None,
+    has_server_headers: Optional[bool] = None,
+    verbose: bool = False,
+    taken_names: Optional[List[str]] = None,
+    prompt_printer=None,
+) -> List[ConsolidatedCode]:
+    """Eén call over de kindvormen: de restcategorieën die onder Overig hangen.
+
+    Dezelfde vorm als `write_codebook` — één call over alle vormen tegelijk,
+    tekst teruggevonden op `shape.key`, een deterministische noodtekst voor een
+    vorm die het model oversloeg — met drie bewuste verschillen:
+
+    - **Een andere prompt.** Een kind is een restcategorie binnen een
+      onderwerp; de naam mag geen hoofdthema suggereren. Zie
+      `prompts_miscellaneous.py`.
+    - **Geen veto, en dus geen `log`.** Een kind bestaat omdat zijn
+      respondenten anders nergens staan; het mogen weigeren zou ze daar weer
+      neerzetten. Het responsemodel kent daarom geen `nameable`-veld.
+    - **Een eigen noodnaam.** Het onderwerp, niet het eerste lid — zie
+      `_miscellaneous_fallback_text`.
+
+    De aanroeper bepaalt WELKE vormen hier binnenkomen (`origin == "child"`);
+    deze functie filtert niet. Hij zet ook `parent_code_id`: de ouder is de
+    Overig-code en die bestaat op dit moment nog niet. Om de teruggegeven codes
+    aan hun vorm te koppelen gebruikt de aanroeper `_shape_lookup`/
+    `_match_shape` uit `code_shape.py`, net als na `write_codebook` — nooit
+    zippen, want de volgorde is geen identiteit.
+    """
+    if not shapes:
+        return []
+
+    concept_by_id = {concept.attribute_id: concept for concept in concepts}
+
+    def prepare_fn(task):
+        prompt = build_miscellaneous_prompt(
+            task["shapes"], task["concept_by_id"],
+            task["dimension_diagnostic"], task["language"], task["taken_names"],
+        )
+        if prompt_printer is not None:
+            prompt_printer.capture_prompt(
+                step_name="code_generator",
+                utility_name="write_miscellaneous",
+                prompt_content=prompt,
+                prompt_type="miscellaneous_writer",
+                metadata={
+                    "model": config.model_writer,
+                    "temperature": config.temperature_writer,
+                    "max_tokens": config.max_tokens_writer,
+                    "language": task["language"],
+                    "n_shapes": len(task["shapes"]),
+                    "shape_keys": [shape.key for shape in task["shapes"]],
+                },
+            )
+        return {
+            "prompt": prompt,
+            "response_model": make_miscellaneous_model(task["shapes"]),
+            "temperature": config.temperature_writer,
+            "max_tokens": config.max_tokens_writer,
+            "max_retries": 2,
+            # Dezelfde fase-instelling als de schrijver: het is hetzelfde
+            # model dat hetzelfde soort werk doet. Een eigen `STEP_EFFORT`-
+            # sleutel zou een knop zijn die op één dataset is afgesteld.
+            "extra_kwargs": get_reasoning_params(config.model_writer, phase="codegen_writer"),
+        }
+
+    def parse_fn(_task, response):
+        return response
+
+    def fallback_fn(_task, _reason):
+        return None
+
+    requester = _writing_requester(config, MISCELLANEOUS_PHASE, verbose,
+                                   known_limits, has_server_headers)
+    tasks = [{
+        "shapes": shapes, "concept_by_id": concept_by_id,
+        "dimension_diagnostic": dimension_diagnostic, "language": language,
+        "taken_names": taken_names,
+    }]
+    results = await requester.process_all(tasks, prepare_fn, parse_fn, fallback_fn)
+    result = results[0] if results else None
+    text_by_key = {text.key: text for text in result.codes} if result is not None else {}
+
+    return [
+        _to_consolidated_code(
+            text_by_key.get(shape.key)
+            or _miscellaneous_fallback_text(shape, concept_by_id, dimension_diagnostic),
+            shape, concept_by_id,
+        )
+        for shape in shapes
+    ]
 
 
 def resolve_duplicate_names(

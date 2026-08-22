@@ -382,11 +382,22 @@ def build_shapes(
 
     hoofd, kinderen, pool_overig = pool_minority_poles(gevallen, threshold, floor)
     for valence, resp, member_ids in hoofd:
-        # Een unie die de drempel haalt is een hoofdcode als elke andere, dus
-        # ook `pooled` als hij meer dan één attribuut omvat — en daarmee even
-        # vetobaar. Eén drempel, één regel.
+        # Een unie die de drempel haalt is een hoofdcode als elke andere — één
+        # drempel, één regel — maar draagt een eigen HERKOMST, en dat is geen
+        # cosmetiek. Tot 2026-08-22 kreeg hij `pooled` zodra hij meer dan één
+        # attribuut omvatte, en daarmee het vetorecht van `codebook_writer`.
+        # Bij veto stonden zijn respondenten wéér nergens: het attribuut blijft
+        # bron van de overlevende zusterpool, dus `apply_overig_sweep` ziet het
+        # niet als wees. Dat is precies het defect dat deze pool opheft. Een
+        # facetunie is bovendien geen modelvoorstel maar step 4's eigen
+        # structuur, en het veto beoordeelt juist modelvoorstellen.
+        #
+        # Geen `solo`/`pooled`-onderscheid meer, en dat kost niets: een unie
+        # die de drempel haalt omvat per constructie meer dan één groep — een
+        # enkele pool die de drempel niet haalde is in zijn eentje nooit een
+        # unie die hem wél haalt. De oude `else "solo"`-tak was onbereikbaar.
         add_shape(valence, resp, member_ids, sole_facet(member_ids) or "",
-                  "pooled" if len(member_ids) > 1 else "solo")
+                  "recovered")
     for valence, resp, member_ids in kinderen:
         # `origin="child"` maakt een kind NIET vetobaar: `codebook_writer` kan
         # alleen een `pooled`-vorm weigeren. Dat is een besluit, geen bijvangst.

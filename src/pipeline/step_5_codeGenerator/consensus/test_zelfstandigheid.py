@@ -106,7 +106,7 @@ def test_consensus_leent_niets_meer_uit_step_5():
 
 # Bestandsnamen die consensus/ met step 5 DEELT, maar die welbewust EIGEN zijn
 # — consensus' eigen versie van een productiebestand, geen kopie ervan. Elk
-# van deze elf hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
+# van deze twaalf hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
 # hieronder; dat maakt de uitsluiting een geschreven claim in plaats van een
 # stilzwijgende omissie.
 EIGEN_VERSIE = {
@@ -128,9 +128,16 @@ EIGEN_VERSIE = {
     # laat een afgevallen pool nog steeds vallen — dat is het verschil dat deze
     # keten moet meten, dus geen kopie meer.
     "grouping", "test_grouping",
-    # `CodeShape.origin` kent hier een derde waarde, "child", die productie niet
-    # kent; het vetorecht van `codebook_writer` hangt eraan.
+    # `CodeShape.origin` kent hier twee extra waarden, "recovered" en "child",
+    # die productie niet kent; het vetorecht van `codebook_writer` hangt eraan.
     "code_shape",
+    # Draagt sinds 2026-08-22 een TWEEDE schrijfcall, `write_miscellaneous`, die
+    # de kinderen onder Overig schrijft met een eigen prompt, een eigen fase
+    # (`step5c_miscellaneous`) en zonder veto. Bovendien is de veto-toets zelf
+    # verscherpt: alleen `pooled` is nog vetobaar, want een `recovered` facetunie
+    # weigeren zet zijn respondenten weer onder de zusterpool die het
+    # tegenovergestelde beweert. Productie kent geen kinderen en geen facetunie.
+    "codebook_writer",
 }
 
 
@@ -244,7 +251,7 @@ def test_afgeleide_lijst_is_compleet():
     """
     verwachte_kopieen = {
         "attribute_cards", "codebook_io", "codebook_verifier",
-        "codebook_writer", "concept_inventory", "config_codeGenerator",
+        "concept_inventory", "config_codeGenerator",
         "prompts_common", "prompts_writer", "taxonomy_input",
     }
     verwachte_testkopieen = {
@@ -256,12 +263,12 @@ def test_afgeleide_lijst_is_compleet():
     assert set(GEKOPIEERD) == verwacht, (
         f"GEKOPIEERD is {sorted(set(GEKOPIEERD) - verwacht)} te veel en "
         f"{sorted(verwacht - set(GEKOPIEERD))} te weinig t.o.v. de verwachte "
-        "negen ketenmodules plus vijf testkopieën. Ontbreekt er iets: is een "
+        "acht ketenmodules plus vijf testkopieën. Ontbreekt er iets: is een "
         "kopie verwijderd, of hoort de nieuwe naam in EIGEN_VERSIE? Staat er "
         "iets te veel in: is er een nieuwe kopie bijgekomen die deze lijst "
         "(en de verwachting hier) terecht moet zien groeien."
     )
-    assert len(verwachte_kopieen) == 9
+    assert len(verwachte_kopieen) == 8
     assert len(verwachte_testkopieen) == 5
 
 

@@ -57,15 +57,24 @@ class CodeShape:
     resp_pos: frozenset[str]
     resp_neg: frozenset[str]
     resp_neu: frozenset[str]
-    # Drie waarden, en het verschil is niet cosmetisch — `codebook_writer` mag
+    # Vier waarden, en het verschil is niet cosmetisch — `codebook_writer` mag
     # alleen een `pooled`-vorm weigeren als het model hem niet kan benoemen:
-    #   "solo"   — één attribuut, op eigen kracht boven de drempel.
-    #   "pooled" — meerdere attributen onder één noemer. Vetobaar: is de groep
-    #              niet te benoemen, dan was de samenvoeging geen code.
-    #   "child"  — een facetunie van afgevallen polen die de drempel niet haalt
-    #              maar de bodem wel, en die als kind onder Overig hangt. NIET
-    #              vetobaar, en dat is een besluit: een kind bestaat omdat deze
-    #              respondenten anders nergens staan. Zie `pool_minority_poles`.
+    #   "solo"      — één attribuut, op eigen kracht boven de drempel.
+    #   "pooled"    — meerdere attributen onder één noemer, zoals het model ze
+    #                 voorstelde. Vetobaar: is de groep niet te benoemen, dan
+    #                 was de samenvoeging geen code. Zijn attributen blijven
+    #                 dan los over en worden naar Overig geveegd.
+    #   "recovered" — een facetunie van afgevallen polen die de drempel alsnog
+    #                 haalt en dus hoofdcode wordt. NIET vetobaar: hij is geen
+    #                 modelvoorstel maar step 4's eigen structuur, en zijn
+    #                 attributen blijven bron van de overlevende zusterpool —
+    #                 bij veto belanden zijn respondenten dus niet in Overig
+    #                 maar weer onder een code die het tegenovergestelde
+    #                 beweert. Zie `pool_minority_poles`.
+    #   "child"     — dezelfde facetunie, maar onder de drempel en boven de
+    #                 bodem, en die als kind onder Overig hangt. Om dezelfde
+    #                 reden niet vetobaar: een kind bestaat omdat deze
+    #                 respondenten anders nergens staan.
     origin: str
 
 
