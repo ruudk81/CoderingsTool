@@ -43,9 +43,10 @@ more** — a leftover reference to one is stale, not a second chain.
   reported and blocks the cache write)
 - `code_shape.py` — `CodeShape` plus `_shape_lookup`/`_match_shape`: the form of
   a code, and how a written code is matched back to the form it came from.
-  `stored_valence()` also translates `two_pole`'s fourth valence value
-  (`non_negative`) to `neutral` for `models.py`'s three-value contract —
-  experiment-only today, see ARCHITECTURE.md
+  `stored_valence()` returns its argument unchanged: the contract carries
+  four valence values since 2026-08-22, so there is nothing left to translate.
+  It stays because `_shape_lookup` and `codebook_writer` call it on both sides
+  of the reassembly — see ARCHITECTURE.md
 - `prompts_writer.py` + `codebook_writer.py` — phase 4: one LLM call
   writes name/definition/diagnostic_test/indicators/boundary_note for every
   fixed `CodeShape`; also the three deterministic guards over the full
