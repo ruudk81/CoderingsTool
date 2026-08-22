@@ -5,7 +5,7 @@ from utils.smoothRequester import SmoothRequester
 
 from pipeline.step_5_codeGenerator.consensus import code_shape, codebook_writer
 from pipeline.step_5_codeGenerator.consensus.concept_inventory import Concept
-from pipeline.step_5_codeGenerator.config_codeGenerator import CodebookConfig
+from pipeline.step_5_codeGenerator.consensus.config_codeGenerator import CodebookConfig
 from pipeline.step_5_codeGenerator.consensus.code_shape import CodeShape
 from models import ConsolidatedCode
 from pipeline.step_5_codeGenerator.consensus.prompts_writer import CodeText, WriterResult

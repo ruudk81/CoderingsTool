@@ -28,7 +28,7 @@ from utils.llm import RateLimits
 from utils.smoothRequester import SmoothRequester
 
 from .concept_inventory import Concept
-from ..config_codeGenerator import CodebookConfig
+from .config_codeGenerator import CodebookConfig
 from .code_shape import CodeShape, stored_valence
 from models import ConsolidatedCode
 from .prompts_writer import CodeText, build_writer_prompt, make_writer_model

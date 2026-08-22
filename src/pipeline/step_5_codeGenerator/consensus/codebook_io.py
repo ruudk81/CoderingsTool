@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 # Add parent paths for imports
-project_root = Path(__file__).parent.parent.parent.parent
+# Vastgelegde afwijking van het origineel: dit bestand ligt in `consensus/`,
+# één map dieper dan `step_5_codeGenerator/codebook_io.py`, dus wijst hetzelfde
+# aantal `.parent`-stappen hier een niveau te hoog. Eén extra `.parent` houdt
+# `project_root` op dezelfde map (de repo-root) als in het origineel — een
+# positieafhankelijke constante kan niet byte-identiek zijn op een andere
+# diepte. Zie test-1-report.md, Concern 2 (2026-08-22).
+project_root = Path(__file__).parent.parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 import models
