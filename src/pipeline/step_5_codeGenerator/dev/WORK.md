@@ -362,6 +362,13 @@ codeboek, de rest dient de meting.
 
 ## Post-mortem: mechanisme staat, vraagvorm levert het null-antwoord (open — 2026-08-18)
 
+**Let op bij promotie**: het besluit onder "De promotie is geoefend" hierboven
+verwijdert `stability.py`, `postmortem.py`, `prompts_postmortem.py` en hun
+tests. Dit item beschrijft werk aan modules die dan niet meer in de boom
+staan — geparkeerd, niet vervallen; zie dat besluit voor het waarom en voor
+hoe je de code na promotie terugvindt (git-historie, commit `79a6843a` en
+ervoor).
+
 `stability.py` en `postmortem.py` draaien. De meting werkt en reproduceert.
 
 De post-mortem zelf niet. Twee live runs splitsten 9 van de 10 kandidaatgroepen
@@ -512,6 +519,12 @@ dus er is nooit een tweede permutatie van dezelfde sleutelverzameling om mee te
 botsen. Zodra één van beide fasen binnen één proces herhaald wordt — bijvoorbeeld
 voor een consensus-achtige meting over de writer-stap — wordt dit een echte
 bug, en is dezelfde omzetting naar `list[...]` nodig.
+
+**`make_postmortem_model`-helft vervalt bij promotie.** Het besluit onder "De
+promotie is geoefend" hierboven verwijdert `prompts_postmortem.py` (en
+`postmortem.py`, dat het aanroept) met de rest van de post-mortem-splitser.
+Wat hier openstaat blijft dan alleen relevant voor `make_writer_model`, tenzij
+iemand de post-mortem ooit uit git terughaalt (zie dat besluit).
 
 ## Two-pole valence: contract verruimd naar vier waarden (gesloten — 2026-08-22)
 
