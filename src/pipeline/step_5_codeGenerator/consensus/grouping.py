@@ -241,12 +241,14 @@ def pool_minority_poles(
            List[str]]:
     """(facet, valentie, respondenten, leden) in; (hoofd, kinderen, overig) uit.
 
-    Een pool die de drempel niet haalde verdween tot 2026-08-22 als vorm, maar
-    zijn attribuut bleef bron van de OVERLEVENDE zusterpool — die vaak het
-    tegenovergestelde beweert. Kritiek werd zo geteld onder een positieve code.
-    De drempel deed daarmee twee dingen tegelijk: beslissen wat een eigen kop
-    verdient, en beslissen waar respondenten worden geteld. Het tweede antwoord
-    was fout. Deze functie scheidt ze.
+    Een pool die de drempel niet haalde verdween tot 2026-08-22 als vorm. Waar
+    een zusterpool overleefde bleef zijn attribuut bron van die code — die vaak
+    het tegenovergestelde beweert, zodat kritiek onder een positieve code werd
+    geteld. Waar geen enkele pool overleefde ging de hele groep naar Overig en
+    lag het materiaal daar ononderscheiden. De drempel deed in beide gevallen
+    twee dingen tegelijk: beslissen wat een eigen kop verdient, en beslissen
+    waar respondenten worden geteld. Het tweede antwoord was fout. Deze functie
+    scheidt ze, voor afgevallen polen uit élke groep.
 
     Drie uitkomsten, één drempel:
 
@@ -305,10 +307,14 @@ def build_shapes(
 
     Een pool die de drempel niet haalt valt niet weg: hij gaat naar
     `pool_minority_poles`, die de afgevallen polen van hetzelfde facet en
-    dezelfde valentie samenneemt. Haalt geen enkele pool van een groep de
-    drempel, dan gaan de attributen zelf naar Overig — die respondenten belanden
-    onder Overig, dat niets tegengestelds beweert, en dat is precies het
-    probleem niet dat deze pool oplost.
+    dezelfde valentie samenneemt. Dat geldt sinds 2026-08-22 voor ELKE groep,
+    ook voor een groep waar geen enkele pool de drempel haalt. Die ging tot dan
+    in zijn geheel naar Overig, waar niets het tegenovergestelde beweert — het
+    scherpste defect zat dus elders. Maar zulk materiaal bleef daarmee
+    ononderscheiden in Overig liggen, terwijl het doel is dat het een eigen naam
+    krijgt: hoofdcode als de facetunie de drempel haalt, anders een kind onder
+    Overig. Alleen een groep zonder respondenten heeft niets te leveren en gaat
+    nog steeds als geheel naar Overig.
 
     `floor` is de bodem waaronder een unie echt-overig wordt. Blijft hij leeg,
     dan geldt `t_keep_min_respondents` uit `CodebookConfig` — de bestaande
@@ -360,18 +366,27 @@ def build_shapes(
         order = (("non_negative", "negative") if two_pole
                  else ("positive", "negative", "neutral"))
         kept = {v: r for v, r in poles.items() if len(r) >= threshold}
-        if not kept:
+
+        # De afgevallen polen worden verzameld in plaats van geteld — sinds
+        # 2026-08-22 uit ÉLKE groep, ook uit een groep waar geen enkele pool de
+        # drempel haalt. Tot dan gold de smalle regel (alleen waar een
+        # zusterpool overleefde), omdat het scherpste defect daar zit: het
+        # attribuut blijft bron van een code die het tegenovergestelde beweert.
+        # Maar een groep die in zijn geheel naar Overig ging liet zijn materiaal
+        # ononderscheiden achter, en het doel is dat minderheidsmateriaal een
+        # eigen naam krijgt — desnoods als kind onder Overig. De facetgrens
+        # blijft de enige grens; alleen de herkomst van de pool telt niet meer.
+        facet = sole_facet(group.member_ids)
+        afgevallen = [(facet, valence, resp, group.member_ids)
+                      for valence, resp in poles.items()
+                      if valence not in kept and resp]
+        gevallen.extend(afgevallen)
+        if not kept and not afgevallen:
+            # Geen vorm én geen pool om te verzamelen — een groep zonder
+            # respondenten. De boekhouding moet heel blijven: naar Overig, niet
+            # stil weg.
             overig_ids.extend(group.member_ids)
             continue
-
-        # De afgevallen polen worden verzameld in plaats van geteld. Alleen van
-        # groepen waar een zusterpool overleeft: juist daar blijft het attribuut
-        # bron van een code die het tegenovergestelde beweert.
-        facet = sole_facet(group.member_ids)
-        for valence, resp in poles.items():
-            if valence in kept or not resp:
-                continue
-            gevallen.append((facet, valence, resp, group.member_ids))
 
         for valence in order:
             if valence not in kept:

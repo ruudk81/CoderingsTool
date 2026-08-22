@@ -203,14 +203,29 @@ def test_minority_pole_below_threshold_stays_out_of_the_majority_code():
     assert out.coverage_recovered == 8
 
 
-def test_group_where_no_pole_clears_the_threshold_lands_entirely_in_overig():
+def test_group_where_no_pole_clears_the_threshold_still_feeds_the_facet_pool():
+    """Deze test heette tot 2026-08-22 `..._lands_entirely_in_overig` en eiste
+    het omgekeerde: geen enkele vorm, alle attributen naar Overig.
+
+    Dat was de smalle regel van taak 2 — afgevallen polen alleen oppakken waar
+    een zusterpool overleefde, want juist daar telt materiaal mee onder een code
+    die het tegenovergestelde beweert. De regel is verbreed omdat een groep die
+    in zijn geheel in Overig verdween zijn minderheidsmateriaal ononderscheiden
+    achterliet: het doel is dat zulk materiaal een eigen naam krijgt, desnoods
+    als kind onder Overig. Dit is dus geen aangepaste verwachting maar een
+    gewijzigd besluit.
+
+    Alle drie de polen (5, 4, 3) halen de drempel van 12 niet en blijven boven
+    de bodem van 3, dus ze worden alle drie een kind — en Overig blijft leeg.
+    """
     concepts = [valence_concept("A1", "Iets", pos=5, neg=4, neu=3)]
 
     out = build_shapes([group("A1")], concepts, threshold=12)
 
-    assert out.shapes == []
-    assert out.overig_ids == ["A1"]
-    assert out.coverage_recovered == 0
+    assert sorted((s.valence, s.origin) for s in out.shapes) == [
+        ("negative", "child"), ("neutral", "child"), ("positive", "child")]
+    assert out.overig_ids == []
+    assert out.coverage_recovered == 12
 
 
 def test_members_of_a_group_are_unioned_by_respondent_not_summed():
@@ -565,16 +580,26 @@ def test_een_unie_eronder_wordt_een_kind():
 
 
 def test_een_unie_onder_de_bodem_wordt_echt_overig():
-    """Bodem is t_keep_min_respondents — bestaande constante, geen nieuwe knop."""
-    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=1),
-          minderheids_concept("A2", "Twee", "F", pos=30, neg=1)]
-    groepen = [losse_groep("A1"), losse_groep("A2")]
+    """Bodem is t_keep_min_respondents — bestaande constante, geen nieuwe knop.
 
-    # unie = 2, onder de bodem van 3
+    Dekt sinds 2026-08-22 BEIDE routes naar echt-overig, want de verbreding gaf
+    er een tweede bij. A1/A2 hebben een overlevende zusterpool; A3 heeft er geen
+    en kwam onder de smalle regel als hele groep in Overig terecht. Nu levert
+    ook A3 zijn pool aan de facetpool, en dan is Overig geen vanzelfsprekendheid
+    meer maar het gevolg van de bodem — precies het gat waar een attribuut stil
+    zou kunnen verdwijnen. Eigen facet, anders zou A3's ene respondent de unie
+    van F op de bodem tillen en er een kind van maken.
+    """
+    cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=1),
+          minderheids_concept("A2", "Twee", "F", pos=30, neg=1),
+          minderheids_concept("A3", "Drie", "G", neg=1)]
+    groepen = [losse_groep("A1"), losse_groep("A2"), losse_groep("A3")]
+
+    # unie F = 2 en unie G = 1, allebei onder de bodem van 3
     res = build_shapes(groepen, cs, threshold=8, two_pole=True)
 
     assert [s.valence for s in res.shapes] == ["non_negative", "non_negative"]
-    assert res.overig_ids == ["A1", "A2"]
+    assert res.overig_ids == ["A1", "A2", "A3"]
     assert res.coverage_recovered == 0
 
 
@@ -638,10 +663,12 @@ def test_een_herstelde_hoofdcode_draagt_een_eigen_herkomst():
 
     Taak 2 gaf een unie die de drempel haalde `"pooled"` — dezelfde herkomst
     als een door het model voorgestelde samenvoeging, en daarmee vetobaar in
-    `codebook_writer`. Bij veto stonden de respondenten wéér nergens, want het
-    attribuut blijft bron van zijn overlevende zusterpool. Een facetunie is
-    geen modelvoorstel maar step 4's eigen structuur; het veto beoordeelt
-    daarmee iets wat het niet beoordeelt.
+    `codebook_writer`. Bij veto stonden de respondenten wéér nergens: in de
+    regel blijft het attribuut bron van zijn overlevende zusterpool, en anders
+    — sinds de verbreding van 2026-08-22 levert ook een groep zonder overlevende
+    pool aan — ononderscheiden in Overig. Een facetunie is bovendien geen
+    modelvoorstel maar step 4's eigen structuur; het veto beoordeelt daarmee
+    iets wat het niet beoordeelt.
     """
     cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=5),
           minderheids_concept("A2", "Twee", "F", pos=30, neg=5)]
@@ -673,3 +700,58 @@ def test_geen_enkele_vorm_uit_de_facetpool_is_vetobaar():
 
     uit_de_pool = [s for s in res.shapes if s.valence == "negative"]
     assert sorted(s.origin for s in uit_de_pool) == ["child", "recovered"]
+
+
+def test_een_groep_zonder_overlevende_pool_levert_zijn_polen_ook_aan_de_pool():
+    """Ook een groep waar GEEN pool de drempel haalt draagt bij aan de facetpool.
+
+    Taak 2 verzamelde afgevallen polen alleen uit groepen waar een zusterpool
+    overleefde: daar telt kritiek mee onder een code die het tegenovergestelde
+    beweert, en dat is het scherpste defect. Op 2026-08-22 is dat besluit
+    verbreed. Een groep die in zijn geheel in Overig verdween liet zijn
+    minderheidsmateriaal ononderscheiden achter, terwijl het doel is dat zulk
+    materiaal een eigen naam krijgt — desnoods als kind onder Overig. De grens
+    blijft het facet; alleen de herkomst van de afgevallen pool telt niet meer
+    mee.
+
+    Hier haalt geen van beide groepen iets: elk attribuut heeft alleen een
+    negatieve pool van 5, onder de drempel van 8. Samen halen ze 10 en worden
+    ze één herstelde hoofdcode in plaats van twee naamloze Overig-attributen.
+    """
+    cs = [minderheids_concept("A1", "Een", "F", neg=5),
+          minderheids_concept("A2", "Twee", "F", neg=5)]
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    unie = next(s for s in res.shapes if s.valence == "negative")
+    assert unie.origin == "recovered"
+    assert unie.members == ("A1", "A2")
+    assert len(unie.resp_ids) == 10
+    assert res.overig_ids == []
+    assert res.coverage_recovered == 10
+
+
+def test_zonder_overlevende_pool_blijft_de_facetgrens_toch_de_grens():
+    """De verbreding van 2026-08-22 raakt WELKE polen worden verzameld, niet
+    waar ze samen mogen komen. Het facet blijft de enige groeperingsgrens.
+
+    Deze groep omvat twee facetten en heeft geen enkele overlevende pool — het
+    geval dat onder de smalle regel niet bestond, want zo'n groep ging in zijn
+    geheel naar Overig zonder ooit langs `pool_minority_poles` te komen. Ook nu
+    gaat hij daarheen, maar via de andere route: geen eenduidig facet, dus
+    rechtstreeks naar overig in plaats van gepoold. De boekhouding blijft heel.
+
+    neg=3 per attribuut: de negatieve pool van de GROEP is 6 en haalt de drempel
+    van 8 niet. Haalde hij hem wel, dan was het een gewone `pooled` hoofdcode en
+    viel er niets te poolen.
+    """
+    cs = [minderheids_concept("A1", "Een", "F", neg=3),
+          minderheids_concept("A2", "Twee", "G", neg=3)]
+    groepen = [Group(member_ids=("A1", "A2"), proposed_name="", explanation="")]
+
+    res = build_shapes(groepen, cs, threshold=8, two_pole=True)
+
+    assert res.shapes == []
+    assert res.overig_ids == ["A1", "A2"]
+    assert res.coverage_recovered == 0
