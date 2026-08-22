@@ -334,13 +334,20 @@ def run_scorecard(
     codes: List[ConsolidatedCode],
     pydantic_results: Dict[str, DomainResultModel],
     overig_code_name: Optional[str] = None,
+    child_code_ids: Optional[set] = None,
 ):
     """Build the post-generation verification scorecard (PASS/FAIL) and print it.
 
     Console only — the PASS/FAIL readout is captured in the verbose log (which is
     auto-pruned); no separate JSON file is written.
+
+    `child_code_ids` zijn de `K#`'s die de keten als kind onder Overig bedoelde
+    (`link_children_to_overig`). De scorecard legt die bedoeling naast het
+    `parent_code_id`-veld; zonder die tweede voorstelling zou een ouderloos kind
+    stil als hoofdcode meetellen.
     """
-    scorecard = build_scorecard(codes, pydantic_results, overig_code_name)
+    scorecard = build_scorecard(codes, pydantic_results, overig_code_name,
+                                child_code_ids=child_code_ids)
     print("\n" + format_scorecard(scorecard))
     return scorecard
 

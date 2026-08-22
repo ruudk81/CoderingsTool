@@ -118,10 +118,26 @@ die 12 stonden wel degelijk ergens, via een ander attribuut of de andere pool.
 De verbreding kost dus één respondent aan richtingsrepresentatie, tegenover 17
 eerste-keer-coderingen. Zie "Echt-overig betekent gedropt, niet geveegd".
 
-**Nieuw gevolg voor open vraag 1 van de spec** — telt het Overig-plafond de
-ouder, de kinderen, of allebei? Overig zelf houdt bij generatie nu nog **8**
-respondenten over in plaats van 99. Met 11 kinderen naast een ouder van 8 zijn
-"allebei" en "alleen de ouder" geen bijna-gelijke antwoorden meer.
+**Open vraag 1 van de spec is beslist (2026-08-22): het plafond telt ALLEBEI.**
+Overig zelf houdt bij generatie nog 8 respondenten over in plaats van 99, dus
+"allebei" en "alleen de ouder" zijn geen bijna-gelijke antwoorden meer: op set 7
+leest de poort 3,8% tegen 0,2%. Doorslag gaf niet het proza maar het gevolg —
+telt de poort alleen de kale ouder, dan verlaagt élke verhuizing van Overig naar
+een kind het cijfer zonder dat er iets beter geplaatst is, en wordt het plafond
+omzeilbaar door te nestelen. Het tegenargument (een kind is juist wél
+onderscheiden, dus tellen als Overig straft de verbetering af) is beantwoord met
+rapportage in plaats van met het totaal: de scorecard drukt de twee helften
+altijd apart af.
+
+Een kind telt VALENTIEBEWUST mee — het bezit één pool van zijn bronattributen,
+niet het attribuut. Op set 7 is 12 van de 17 kindattributen óók bron van een
+hoofdcode; het attribuut tellen gaf 55,5% van alle ideeën tegen 3,6% voor de
+pool. Dezelfde `_pole_ideas` bedient nu ook de mini-code-waarschuwing, die een
+`non_negative` code tot dan toe al zijn negatieve ideeën meetelde (op set 7
+verandert die lijst niet).
+
+`report_true_overig` meldt sindsdien in RESPONDENTEN: 5 van 2317 komen in geen
+enkele code voor. De attribuutregel blijft eronder staan als detail.
 
 ## tau is een invoer, geen constante (open — 2026-08-20)
 

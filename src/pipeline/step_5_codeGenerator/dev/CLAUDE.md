@@ -97,9 +97,11 @@ more** — a leftover reference to one is stale, not a second chain.
   `EIGEN_VERSIE`: `grouping.py` and `code_shape.py` (the candidate pools fallen
   valence poles per facet — `pool_minority_poles`, `origin == "child"`,
   `coverage_recovered` — where production drops them), `codebook_writer.py` (a
-  second writing call, `write_miscellaneous`, for the children) and
+  second writing call, `write_miscellaneous`, for the children),
   `codebook_io.py` (`apply_overig_sweep` returns the Overig CODE and mints the
-  K# there, so a child can point at its parent's id).
+  K# there, so a child can point at its parent's id) and `codebook_verifier.py`
+  (the Overig ceiling counts the parent AND its children, valence-aware, and
+  two hierarchy defects fail the gate).
   `test_zelfstandigheid.py`
   holds three guards over that ownership: an import guard (AST over both
   `ast.ImportFrom` and `ast.Import` — nothing in `consensus/` may reach outside

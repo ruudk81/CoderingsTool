@@ -586,8 +586,17 @@ async def generate_codebook(
 
 
 def link_children_to_overig(codes: List[ConsolidatedCode], shapes: List[CodeShape],
-                            parent: ConsolidatedCode) -> int:
+                            parent: ConsolidatedCode) -> List[str]:
     """Hang elk kind aan de Overig-code — in een VELD, nooit in een naam.
+
+    Geeft de `K#`'s terug van de codes die volgens hun VORM een kind zijn. Dat
+    is de bedoeling, en die gaat naar de scorecard, die hem tegen het
+    `parent_code_id`-veld legt. Vandaag zet dezelfde lus dat veld, dus de toets
+    kan alleen vuren als de koppeling daarna verloren gaat of als een kind
+    ergens anders wordt gemaakt — en dát is precies het geval dat niets anders
+    meldt: `models.py` negeert een verkeerd gespelde init-kwarg (`parent_code=`)
+    stilzwijgend, waarna er een ouderloos kind in het boek staat dat als gewone
+    hoofdcode meetelt.
 
     Kan niet eerder dan hier. De ouder wordt door `apply_overig_sweep` gemaakt
     en krijgt daar zijn `K#`; vóór die sweep bestaat er geen id om naar te
@@ -603,12 +612,12 @@ def link_children_to_overig(codes: List[ConsolidatedCode], shapes: List[CodeShap
             "codes moet shapes plus precies de Overig-code lang zijn — "
             f"{len(codes)} tegen {len(shapes)} + 1")
 
-    aantal = 0
+    kind_ids: List[str] = []
     for code, shape in zip(codes, shapes):
         if shape is not None and shape.origin == "child":
             code.parent_code_id = parent.code_id
-            aantal += 1
-    return aantal
+            kind_ids.append(code.code_id)
+    return kind_ids
 
 
 def report_true_overig(result: GeneratedCodebook, overig: ConsolidatedCode) -> None:
@@ -638,15 +647,43 @@ def report_true_overig(result: GeneratedCodebook, overig: ConsolidatedCode) -> N
     keten. Zolang dat er niet is, is dit getal het verschil tussen wat het plan
     belooft en wat de keten levert — en een getal dat op de console staat is
     geen stille aanname meer.
+
+    Dat verschil wordt in RESPONDENTEN gemeld en niet alleen in attributen. Een
+    attribuuttelling zegt niets over de omvang: op set 7 staan 9 attributen
+    onder de bodem terwijl er 5 respondenten van 2317 werkelijk in geen enkele
+    code voorkomen. Twee keer in dit plan is een besluit bijna genomen op een
+    getal dat iets anders telde dan zijn naam beloofde; dit is de eenheid
+    waarin het besluit valt.
     """
+    # Nergens = in geen enkele vorm, en ook niet via een bronattribuut van
+    # Overig. Vormen, niet codes: een geveto'de vorm heeft geen code, dus zijn
+    # respondenten staan er terecht niet in.
+    alle: set = set()
+    resp_per_naam: Dict[str, set] = {}
+    for concept in result.concept_by_id.values():
+        alle |= concept.resp_ids
+        resp_per_naam.setdefault(concept.name, set()).update(concept.resp_ids)
+    in_vorm = frozenset().union(*(s.resp_ids for s in result.shapes if s is not None))
+    in_overig: set = set()
+    for naam in (overig.source_attributes or []):
+        in_overig |= resp_per_naam.get(naam, set())
+    nergens = alle - in_vorm - in_overig
+    if not nergens and not result.overig_ids:
+        # Geen gat in respondenten en geen attribuut onder de bodem: er is
+        # niets te melden, en een regel die dat toch afdrukt is ruis.
+        return
+    print(f"ECHT-OVERIG: {len(nergens)} van {len(alle)} respondent(en) komen in geen "
+          f"enkele code voor — geen vorm, en ook niet via een bronattribuut van "
+          f"'{overig.code_name}'.")
+
     if not result.overig_ids:
         return
 
     namen = [result.concept_by_id[i].name for i in result.overig_ids
              if i in result.concept_by_id]
-    in_overig = set(overig.source_attributes or [])
-    zwevend = [n for n in namen if n not in in_overig]
-    print(f"ECHT-OVERIG: {len(namen)} attribuut(en) bleven onder de bodem; "
+    bronnen = set(overig.source_attributes or [])
+    zwevend = [n for n in namen if n not in bronnen]
+    print(f"  IN ATTRIBUTEN: {len(namen)} attribuut(en) bleven onder de bodem; "
           f"{len(namen) - len(zwevend)} daarvan staan in '{overig.code_name}'.")
     if zwevend:
         print(f"  LET OP: {len(zwevend)} niet, omdat een overlevende code ze nog "
@@ -1015,13 +1052,14 @@ def run_codebook(filename: str = None, var_name: str = None,
     # De sweep maakt de ouder en mint de K#'s; pas dáárna kunnen de kinderen
     # eraan hangen. Andersom zou een kind naar een lege id wijzen.
     overig = apply_overig_sweep(result.codes, taxonomy.partition_results, m.language)
-    kinderen = link_children_to_overig(result.codes, result.shapes, overig)
-    if kinderen:
-        print(f"HIËRARCHIE: {kinderen} kind(eren) hangen onder "
+    kind_ids = link_children_to_overig(result.codes, result.shapes, overig)
+    if kind_ids:
+        print(f"HIËRARCHIE: {len(kind_ids)} kind(eren) hangen onder "
               f"'{overig.code_name}' ({overig.code_id})")
     report_true_overig(result, overig)
     print_codebook_results(result.codes)
-    scorecard = run_scorecard(result.codes, taxonomy.partition_results, overig.code_name)
+    scorecard = run_scorecard(result.codes, taxonomy.partition_results,
+                              overig.code_name, child_code_ids=set(kind_ids))
 
     if result.coverage_recovered:
         # De tegenmetriek, niet de bevestiging: `under_split_codes` telt een

@@ -316,17 +316,31 @@ Where the two differ:
   never zipped, since order is not identity.
 - **The hierarchy lives in a field.** `apply_overig_sweep` returns the Overig
   CODE (not its name) and mints the K# there, after which
-  `run_codebook.link_children_to_overig` sets each child's `parent_code_id`.
-  Ordering is forced: the parent has no id before the sweep. Production's sweep
-  returns a name and knows no children.
+  `run_codebook.link_children_to_overig` sets each child's `parent_code_id` and
+  returns their K#'s. Ordering is forced: the parent has no id before the sweep.
+  Production's sweep returns a name and knows no children.
+- **The Overig ceiling counts the parent AND its children.** Both sit outside
+  the main codebook, which is what the 10% cap guards; counting the bare parent
+  only would let any move from Overig into a child lower the reading without
+  anything being placed better. A child is counted VALENCE-AWARE (`_pole_ideas`):
+  it owns one pole of its source attributes, not the attribute — 12 of set 7's
+  17 child attributes also feed a main code, so counting attributes gives 55.5%
+  where the pole gives 3.6%. Both halves are always printed separately, because
+  a single total cannot tell an undifferentiated catch-all from the same volume
+  in named, directional children. Set 7: 3.8% = 0.2% parent + 3.6% in 11
+  children, PASS. Two hierarchy defects also fail the gate: a code the chain
+  meant as a child (`child_code_ids`, from the shapes) that carries no
+  `parent_code_id`, and a `parent_code_id` pointing at a code that does not
+  exist. `models.py` silently ignores an unknown init kwarg, so nothing else
+  reports a parentless child.
 
 Where they no longer differ only in phase 1: everything from `build_shapes` to
 the Overig sweep diverged on 2026-08-22. `grouping.py`, `code_shape.py`,
-`codebook_writer.py`, `codebook_io.py` and `test_grouping.py` stopped being
-copies that day and are now consensus's own versions, listed in
+`codebook_writer.py`, `codebook_io.py`, `codebook_verifier.py` and
+`test_grouping.py` stopped being copies that day and are now consensus's own versions, listed in
 `test_zelfstandigheid.py`'s `EIGEN_VERSIE` with the reason per file. What is
-still the same code: the three deterministic naming/definition guards, the
-scorecard, and everything upstream of grouping. Since 2026-08-22 none of it is shared by
+still the same code: the three deterministic naming/definition guards and
+everything upstream of grouping. Since 2026-08-22 none of it is shared by
 import: each of the eleven modules involved lives as its own copy inside `consensus/` (see
 CLAUDE.md's Key Files), so `consensus/` imports nothing from outside itself
 within step 5. Three guards in `consensus/test_zelfstandigheid.py` keep that

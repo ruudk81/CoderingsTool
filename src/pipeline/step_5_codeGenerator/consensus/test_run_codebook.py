@@ -332,9 +332,11 @@ def test_een_kind_wijst_met_een_veld_naar_de_overig_code():
     codes, shapes = _boek_met_een_kind()
 
     overig = apply_overig_sweep(codes, {}, "Dutch")
-    aantal = link_children_to_overig(codes, shapes, overig)
+    kind_ids = link_children_to_overig(codes, shapes, overig)
 
-    assert aantal == 1
+    # De ids, niet een telling: de scorecard legt deze bedoeling naast het
+    # `parent_code_id`-veld en heeft daar de `K#`'s zelf voor nodig.
+    assert kind_ids == ["K2"]
     assert overig.code_id == "K3"
     assert codes[1].parent_code_id == "K3"
     assert codes[0].parent_code_id is None
@@ -429,7 +431,7 @@ def test_echt_overig_meldt_wat_niet_in_overig_belandde(capsys):
     report_true_overig(result, overig)
 
     uit = capsys.readouterr().out
-    assert "ECHT-OVERIG: 1 attribuut(en) bleven onder de bodem; 0 daarvan" in uit
+    assert "IN ATTRIBUTEN: 1 attribuut(en) bleven onder de bodem; 0 daarvan" in uit
     assert "LET OP: 1 niet" in uit and "Prijs" in uit
 
 

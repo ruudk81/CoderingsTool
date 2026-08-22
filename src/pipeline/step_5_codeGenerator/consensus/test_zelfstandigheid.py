@@ -104,7 +104,7 @@ def test_consensus_leent_niets_meer_uit_step_5():
 
 # Bestandsnamen die consensus/ met step 5 DEELT, maar die welbewust EIGEN zijn
 # — consensus' eigen versie van een productiebestand, geen kopie ervan. Elk
-# van deze dertien hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
+# van deze veertien hoort dus NIET in GEKOPIEERD, en het waarom staat per bestand
 # hieronder; dat maakt de uitsluiting een geschreven claim in plaats van een
 # stilzwijgende omissie.
 EIGEN_VERSIE = {
@@ -143,6 +143,13 @@ EIGEN_VERSIE = {
     # cache-write — de hiërarchie leeft in een veld, nooit in een naam. Productie
     # kent geen kinderen en heeft aan de naam genoeg.
     "codebook_io",
+    # Telt sinds 2026-08-22 in `overig_idea_share_pct` ook de codes die ONDER
+    # Overig hangen, valentiebewust (`_pole_ideas`), en rapporteert de twee
+    # helften apart. Draagt daarnaast twee poortregels die productie niet kan
+    # hebben: een kind zonder `parent_code_id` (via `child_code_ids`) en een
+    # `parent_code_id` dat nergens op uitkomt. Productie kent geen kinderen, dus
+    # daar is dat plafond per definitie de kale Overig-code.
+    "codebook_verifier",
 }
 
 
@@ -218,8 +225,7 @@ def test_afgeleide_lijst_is_compleet():
     kortere testrun.
     """
     verwachte_kopieen = {
-        "attribute_cards", "codebook_verifier",
-        "concept_inventory", "config_codeGenerator",
+        "attribute_cards", "concept_inventory", "config_codeGenerator",
         "prompts_common", "prompts_writer", "taxonomy_input",
     }
     verwachte_testkopieen = {
@@ -231,12 +237,12 @@ def test_afgeleide_lijst_is_compleet():
     assert set(GEKOPIEERD) == verwacht, (
         f"GEKOPIEERD is {sorted(set(GEKOPIEERD) - verwacht)} te veel en "
         f"{sorted(verwacht - set(GEKOPIEERD))} te weinig t.o.v. de verwachte "
-        "zeven ketenmodules plus vijf testkopieën. Ontbreekt er iets: is een "
+        "zes ketenmodules plus vijf testkopieën. Ontbreekt er iets: is een "
         "kopie verwijderd, of hoort de nieuwe naam in EIGEN_VERSIE? Staat er "
         "iets te veel in: is er een nieuwe kopie bijgekomen die deze lijst "
         "(en de verwachting hier) terecht moet zien groeien."
     )
-    assert len(verwachte_kopieen) == 7
+    assert len(verwachte_kopieen) == 6
     assert len(verwachte_testkopieen) == 5
 
 
