@@ -235,10 +235,11 @@ def test_auto_kiest_vrije_nummers_in_plaats_van_te_weigeren(tmp_path, monkeypatc
     monkeypatch.setattr(runner, "OUT_DIR", tmp_path)
     (tmp_path / "consensus_luna_set0.json").write_text("{}", encoding="utf-8")
     gebruikt = []
-    monkeypatch.setattr(runner, "verzamelen", lambda c, n: gebruikt.append(n))
+    monkeypatch.setattr(runner, "verzamelen",
+                        lambda c, n, **kw: gebruikt.append(n))
     monkeypatch.setattr(runner, "analyse", lambda c, n: None)
     monkeypatch.setattr(runner, "vergelijk", lambda c, a, b: None)
-    monkeypatch.setattr(runner, "codeboek", lambda c, n, s: None)
+    monkeypatch.setattr(runner, "codeboek", lambda c, n, s, **kw: None)
 
     runner.alles(ConsensusConfig(), "auto", "auto")
 
@@ -251,3 +252,66 @@ def test_een_lezende_actie_weigert_auto():
     en één woord met twee betekenissen is precies wat later bijt."""
     with pytest.raises(SystemExit, match="auto"):
         runner._eis_bestaand_setnummer("auto", "analyse")
+
+
+class _NepPrinter:
+    """Telt captures per soort, zoals PromptPrinter dat doet."""
+    def __init__(self, **kwargs):
+        self.prompts = []
+
+    def capture_prompt(self, **kwargs):
+        self.prompts.append(kwargs.get("prompt_type", "?"))
+
+
+def test_een_ronde_deelt_een_printer_en_schrijft_hem_een_keer_weg(monkeypatch):
+    """`save_prompts_to_json` opent in 'w' zonder merge, dus drie schrijvers in
+    één ronde betekent dat alleen de laatste overleeft. Op de echte run van
+    2026-08-22 bleven zo 0 van de 60 consolidatieprompts over."""
+    bewaard = []
+    monkeypatch.setattr(runner, "verzamelen",
+                        lambda c, n, prompt_printer=None, **kw:
+                            prompt_printer.capture_prompt(prompt_type="consolidation"))
+    monkeypatch.setattr(runner, "analyse", lambda c, n: None)
+    monkeypatch.setattr(runner, "vergelijk", lambda c, a, b: None)
+    monkeypatch.setattr(runner, "codeboek",
+                        lambda c, n, s, prompt_printer=None, **kw:
+                            prompt_printer.capture_prompt(prompt_type="codebook_writer"))
+    monkeypatch.setattr(runner, "PromptPrinter", _NepPrinter)
+    monkeypatch.setattr(runner, "save_prompts_to_json",
+                        lambda printer, doctype=None: bewaard.append(list(printer.prompts)))
+
+    runner.alles(ConsensusConfig(), 90, 91)
+
+    assert len(bewaard) == 1, "één ronde hoort één keer weg te schrijven"
+    assert bewaard[0] == ["consolidation", "consolidation", "codebook_writer"]
+
+
+def test_een_ronde_boekt_alle_consolidatiecalls_op_een_post(monkeypatch):
+    """De kostensleutel is (stap, fase) en `record_phase` WIJST TOE. Twee
+    `verzamelen`-aanroepen op dezelfde fasenaam betekent dus dat de eerste
+    verdwijnt — gemeten op de echte run: 30 calls geboekt waar er 60 waren."""
+    geboekt = []
+
+    class _NepTracker:
+        def __init__(self, **kwargs):
+            pass
+
+        def record_phase(self, stap, fase, voor, na, model=None):
+            geboekt.append((stap, fase))
+
+        def finalize_step(self, stap):
+            pass
+
+    monkeypatch.setattr(runner, "CostTracker", _NepTracker)
+    monkeypatch.setattr(runner, "PromptPrinter", _NepPrinter)
+    monkeypatch.setattr(runner, "save_prompts_to_json", lambda p, doctype=None: None)
+    monkeypatch.setattr(runner, "verzamelen", lambda c, n, **kw: None)
+    monkeypatch.setattr(runner, "analyse", lambda c, n: None)
+    monkeypatch.setattr(runner, "vergelijk", lambda c, a, b: None)
+    monkeypatch.setattr(runner, "codeboek", lambda c, n, s, **kw: None)
+
+    runner.alles(ConsensusConfig(), 90, 91)
+
+    fasen = [f for _, f in geboekt]
+    assert fasen.count("consolidation") == 1, (
+        "twee keer boeken op dezelfde fasenaam overschrijft de eerste")

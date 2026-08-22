@@ -312,7 +312,8 @@ def load_material(config: ConsensusConfig) -> Dict:
     }
 
 
-def verzamelen(config: ConsensusConfig, set_index) -> Path:
+def verzamelen(config: ConsensusConfig, set_index, prompt_printer=None,
+               cost_tracker=None) -> Path:
     """N keer deel 1, elke run met een eigen salt — of, met `config.salted=False`,
     N identieke aanroepen die de kale servervariatie blootleggen. Schrijft de
     partities weg.
@@ -340,10 +341,19 @@ def verzamelen(config: ConsensusConfig, set_index) -> Path:
 
     material = load_material(config)
 
-    cost_tracker = CostTracker(filename=FILENAME, var_name=VARIABLE,
+    # Een aangereikte printer/teller betekent: je bent onderdeel van een ronde,
+    # en die schrijft aan het eind één keer weg. Zelf wegschrijven zou de
+    # export van de vorige stap overschrijven — `save_prompts.py` opent in
+    # 'w'-modus en `record_phase` WIJST TOE op (stap, fase). Op de ronde van
+    # 2026-08-22 kostte dat 60 van de 60 consolidatieprompts en de helft van de
+    # geboekte calls.
+    eigen_boekhouding = cost_tracker is None
+    if prompt_printer is None:
+        prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
+    if eigen_boekhouding:
+        cost_tracker = CostTracker(filename=FILENAME, var_name=VARIABLE,
                                sample_size=SAMPLE_SIZE)
     snapshot_before = token_tracker.snapshot()
-    prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
 
     with effort_van(config):
         salts = [f"set{set_index}run{i}" if config.salted else ""
@@ -360,12 +370,14 @@ def verzamelen(config: ConsensusConfig, set_index) -> Path:
         if mislukt:
             print(f"  LET OP: {mislukt} van de {config.runs} runs kwam niet terug")
 
-    cost_tracker.record_phase(
-        COST_STEP, "consolidation",
-        snapshot_before, token_tracker.snapshot(), model=config.model_relations,
-    )
-    cost_tracker.finalize_step(COST_STEP)
-    save_prompts_to_json(prompt_printer, doctype="prompts_step5c")
+    if eigen_boekhouding:
+        cost_tracker.record_phase(
+            COST_STEP, "consolidation",
+            snapshot_before, token_tracker.snapshot(),
+            model=config.model_relations,
+        )
+        cost_tracker.finalize_step(COST_STEP)
+        save_prompts_to_json(prompt_printer, doctype="prompts_step5c")
 
     runset = RunSet(
         model=config.model_relations,
@@ -686,7 +698,8 @@ def _eis_bestaand_setnummer(waarde, actie: str) -> int:
     return waarde
 
 
-def codeboek(config: ConsensusConfig, set_index: int, source: str) -> None:
+def codeboek(config: ConsensusConfig, set_index: int, source: str,
+             prompt_printer=None, cost_tracker=None) -> None:
     """Codeboek uit de partities die al op schijf staan — geen nieuwe deel-1-calls.
 
     Gaat door `run_codebook()`, niet door `generate_codebook()`: de cache-write,
@@ -738,7 +751,8 @@ def codeboek(config: ConsensusConfig, set_index: int, source: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         with contextlib.redirect_stdout(_Tee(sys.stdout, handle)):
-            run_codebook(force_recalc=True, config=config, partitions=partities)
+            run_codebook(force_recalc=True, config=config, partitions=partities,
+                 prompt_printer=prompt_printer, cost_tracker=cost_tracker)
     print(f"\nCodeboek weggeschreven naar {path}")
 
 
@@ -763,18 +777,42 @@ def alles(config: ConsensusConfig, set_index: int, set_b: int) -> None:
             f"{config.runs} LLM-calls per set die je kwijt bent. Vrij zijn "
             f"{vrij[0]} en {vrij[1]}, of zet SET = {AUTO!r}.")
 
-    verzamelen(config, set_index)
-    verzamelen(config, set_b)
+    # Eén printer en één teller voor de hele ronde. Lieten de acties dat zelf
+    # doen, dan overschrijft elke volgende de vorige: `save_prompts` opent in
+    # 'w'-modus en `record_phase` wijst toe op (stap, fase). Gemeten op de ronde
+    # van 2026-08-22: 0 van de 60 consolidatieprompts bewaard, 30 van de 60
+    # calls geboekt.
+    printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
+    teller = CostTracker(filename=FILENAME, var_name=VARIABLE,
+                         sample_size=SAMPLE_SIZE)
+    voor_consolidatie = token_tracker.snapshot()
+
+    verzamelen(config, set_index, prompt_printer=printer, cost_tracker=teller)
+    verzamelen(config, set_b, prompt_printer=printer, cost_tracker=teller)
+
+    # Beide verzamelrondes in één post: de fasenaam is de sleutel, dus twee
+    # keer boeken zou de eerste wissen in plaats van optellen.
+    na_consolidatie = token_tracker.snapshot()
+    teller.record_phase(COST_STEP, "consolidation", voor_consolidatie,
+                        na_consolidatie, model=config.model_relations)
+
     analyse(config, set_index)
     vergelijk(config, set_index, set_b)
-    codeboek(config, set_index, "consensus")
+    codeboek(config, set_index, "consensus",
+             prompt_printer=printer, cost_tracker=teller)
+
+    teller.record_phase(COST_STEP, "codebook_generation", na_consolidatie,
+                        token_tracker.snapshot(), model=config.model_writer)
+    teller.finalize_step(COST_STEP)
+    save_prompts_to_json(printer, doctype="prompts_step5c")
 
 
 def run_codebook(filename: str = None, var_name: str = None,
                     sample_size: Optional[int] = None,
                     force_recalc: bool = False,
                     config: ConsensusConfig = None,
-                    partitions: Optional[List[List[Tuple[str, ...]]]] = None) -> None:
+                    partitions: Optional[List[List[Tuple[str, ...]]]] = None,
+                    prompt_printer=None, cost_tracker=None) -> None:
     """Ingang van de consensuskandidaat. Leest de taxonomie uit de step-4-cache
     — dezelfde als productie — en schrijft het codeboek onder CACHE_STEP, waar
     step 6 het opent.
@@ -829,10 +867,15 @@ def run_codebook(filename: str = None, var_name: str = None,
     print(f"  {len(m.concepts)} attributen, {m.n_respondents} met een idee, "
           f"T_keep = {threshold} over {n_resp_total} responses")
 
-    cost_tracker = CostTracker(filename=filename, var_name=var_name,
+    # Aangereikt betekent: je bent onderdeel van een ronde die zelf afsluit.
+    # Zie de toelichting in `verzamelen`.
+    eigen_boekhouding = cost_tracker is None
+    if prompt_printer is None:
+        prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
+    if eigen_boekhouding:
+        cost_tracker = CostTracker(filename=filename, var_name=var_name,
                                sample_size=sample_size)
     snapshot_before = token_tracker.snapshot()
-    prompt_printer = PromptPrinter(enabled=True, print_realtime=PRINT_PROMPTS)
 
     result = asyncio.run(generate_codebook(
         m.concepts, m.by_attribute, threshold, survey_question, m.n_respondents,
@@ -841,17 +884,20 @@ def run_codebook(filename: str = None, var_name: str = None,
     ))
     report_codebook_build(result, config)
 
-    cost_tracker.record_phase(
-        COST_STEP, "codebook_generation",
-        snapshot_before, token_tracker.snapshot(), model=config.model_writer,
-    )
-    cost_tracker.finalize_step(COST_STEP)
+    if eigen_boekhouding:
+        cost_tracker.record_phase(
+            COST_STEP, "codebook_generation",
+            snapshot_before, token_tracker.snapshot(),
+            model=config.model_writer,
+        )
+        cost_tracker.finalize_step(COST_STEP)
 
     # Eigen doctype, anders overschrijft deze run stil het promptexport van de
     # productieketen (`.save_prompts` opent in 'w'-modus, geen merge) — en de
     # vergelijking tussen de twee ketens' promptcapture is precies wat dit
     # codeboek moet mogelijk maken.
-    save_prompts_to_json(prompt_printer, doctype="prompts_step5c")
+    if eigen_boekhouding:
+        save_prompts_to_json(prompt_printer, doctype="prompts_step5c")
 
     overig_name = apply_overig_sweep(result.codes, taxonomy.partition_results, m.language)
     print_codebook_results(result.codes)
