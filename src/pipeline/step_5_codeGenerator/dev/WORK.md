@@ -178,21 +178,47 @@ alleen step 6 kan beantwoorden:
 > de juiste groepeereenheid voor restmateriaal — en gaat het ontwerp van tafel,
 > de tuning niet in.
 
-**Die toets is niet uitgevoerd.** Er is geen enkele step-6-run over een
-codeboek mét kinderen gedaan; wat er is, is bewijs dat step 6 een KINDERLOOS
-codeboek nog exact hetzelfde behandelt (`test_kinderloos_codeboek_*`). Het
-meetgereedschap staat wel klaar: `report_children()` drukt élk kind af mét zijn
-nul (`← ZERO — this child caught nothing`), na de tegenpoolfilter, zodat een
-kind dat niets vangt niet als afwezigheid uit een lijst te lezen valt.
+**De toets is op 2026-08-22 uitgevoerd en DOORSTAAN.** Eén step-6-run over de
+volle ASN-set (2728 responses, 4677 ideeën, alle 4677 toegewezen). Kosten
+achteraf: 1294 calls, 1.743.328 tokens, $0,4411 — de schatting vooraf was
+1294 calls en $0,45.
 
-Wat de run kost, geschat bij het plan: één step-6-run over de volle set
-(~4,1k ideeën), ≈1294 calls, ≈$0,45, 75-90 seconden. Uitgesteld in afwachting
-van de beslissing van de gebruiker — dit plan is dus gebouwd, getest en
-gemeten, maar niet gefalsifieerd.
+**Alle elf kinderen kregen ideeën; géén enkele nul.** Van veel naar weinig:
 
-Twee dingen hangen eraan. Slaagt de toets, dan is de volgende vraag de promotie
-(zie "De promotie is geoefend"). Faalt hij, dan vervalt met het ontwerp ook het
-enige open punt in step 7 dat over kinderen gaat.
+| kind | richting | ideeën |
+|---|---|---|
+| Lenen en hypotheekzaken | non_negative | 35 |
+| Contact en dienstverleningsaspecten | non_negative | 35 |
+| Lastige toegang en kanalen | negative | 31 |
+| Moeizame klantrelatievoorwaarden | negative | 21 |
+| Ongunstige financiële randuitkomsten | negative | 20 |
+| Negatief waardenkader ASN | negative | 17 |
+| Links-progressieve richting | non_negative | 17 |
+| Negatieve herkomstverbondenheid | negative | 11 |
+| Kosten en prijsaspecten | non_negative | 9 |
+| Negatief financieel aanbodbeeld | negative | 6 |
+| Negatieve merktekenbeelden | negative | 2 |
+
+Samen **204 ideeën**, waarvan **24 door de tegenpoolfilter** — dat is het
+mechanisme waar dit hele plan om begon: een idee waarvan de richting botst met
+zijn code gaat nu naar het kind dat die richting draagt, in plaats van naar de
+ongedifferentieerde Overig.
+
+Let op bij het lezen van dat cijfer: de filter meldt per kind óók nullen
+(`Contact en dienstverleningsaspecten: 0`, `Kosten en prijsaspecten: 0`,
+`Lenen en hypotheekzaken: 0`, `Links-progressieve richting: 0`). Dat zijn de
+vier `non_negative` kinderen — een tegenpool-idee dat bij hén hoort is
+zeldzaam, terwijl ze via de gewone toewijzing juist volop materiaal krijgen.
+De twee kolommen meten dus verschillende dingen en moeten niet worden opgeteld.
+
+`report_children()` drukt élk kind af mét zijn nul (`← ZERO — this child caught
+nothing`), na de tegenpoolfilter — daardoor was een mislukking hier zichtbaar
+geweest in plaats van een afwezigheid in een lijst.
+
+Daarmee is dit plan gebouwd, getest, gemeten én gefalsifieerd. De volgende
+vraag is de promotie van de kandidaatketen (zie "De promotie is geoefend");
+zolang die niet valt, levert productie step 5 geen kinderen en is al het
+werk in step 6 aantoonbaar gedragsneutraal.
 
 Let op de cache-skip bij het draaien: `run_codebook()` heeft
 `force_recalc=False` als default en slaat op een geldige cache over.
