@@ -25,6 +25,25 @@ import pytest
 # Guard 1: consensus leent niets uit step 5.
 # ---------------------------------------------------------------------------
 
+STAP5 = "pipeline.step_5_codeGenerator"
+EIGEN = f"{STAP5}.consensus"
+
+
+def _leent_buiten_consensus(doel: str) -> bool:
+    """Wijst deze modulenaam naar step 5 maar buiten consensus/?
+
+    Vergelijkt op PAKKETGRENS, niet op tekenprefix. `doel.startswith(EIGEN)`
+    alleen zou een toekomstige zustermap `consensus_experiment_2` als "eigen"
+    aanzien en er stil langs laten; dezelfde fout aan de buitenkant zou
+    `step_5_codeGeneratorX` binnenhalen. Een naam telt pas als binnen een
+    pakket wanneer hij dat pakket IS of erop volgt met een punt.
+    """
+    def binnen(pakket: str) -> bool:
+        return doel == pakket or doel.startswith(pakket + ".")
+
+    return binnen(STAP5) and not binnen(EIGEN)
+
+
 def test_consensus_leent_niets_meer_uit_step_5():
     """De afspraak: verwijder step 5's ketenmodules, verplaats consensus/
     omhoog, en run_pipeline draait door. Dat kan alleen als consensus/ niets
@@ -58,16 +77,12 @@ def test_consensus_leent_niets_meer_uit_step_5():
                         f"{f.name}: relatieve import buiten het pakket "
                         f"({'.' * node.level}{node.module or ''})"
                     )
-                doel = node.module or ""
-                if (doel.startswith("pipeline.step_5_codeGenerator")
-                        and not doel.startswith("pipeline.step_5_codeGenerator.consensus")):
-                    fouten.append(f"{f.name}: leent {doel}")
+                if _leent_buiten_consensus(node.module or ""):
+                    fouten.append(f"{f.name}: leent {node.module}")
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    doel = alias.name
-                    if (doel.startswith("pipeline.step_5_codeGenerator")
-                            and not doel.startswith("pipeline.step_5_codeGenerator.consensus")):
-                        fouten.append(f"{f.name}: leent {doel}")
+                    if _leent_buiten_consensus(alias.name):
+                        fouten.append(f"{f.name}: leent {alias.name}")
 
     assert fouten == [], (
         "consensus/ leent iets van buiten zichzelf binnen step 5 — dat breekt "
@@ -168,3 +183,22 @@ def test_de_kopie_is_gelijk_aan_het_origineel(naam):
         "meetuitkomst aan het ontwerp wordt toegeschreven terwijl hij van de "
         "kopie kwam."
     )
+
+
+def test_pakketgrens_wordt_op_de_punt_getrokken():
+    """De grens tussen 'eigen' en 'geleend' loopt op een punt, niet op tekens.
+
+    Zonder deze toets zou een tekenprefix volstaan, en dan glipt een
+    toekomstige zustermap (`consensus_experiment_2`) langs bewaker 1 omdat
+    zijn naam toevallig met `consensus` begint. Datzelfde geldt aan de
+    buitenkant voor een map die met `step_5_codeGenerator` begint maar het
+    niet is.
+    """
+    assert _leent_buiten_consensus(f"{STAP5}.grouping")
+    assert _leent_buiten_consensus(STAP5)
+    assert _leent_buiten_consensus(f"{STAP5}.consensus_experiment_2.grouping")
+
+    assert not _leent_buiten_consensus(f"{EIGEN}.grouping")
+    assert not _leent_buiten_consensus(EIGEN)
+    assert not _leent_buiten_consensus("pipeline.step_4_classifier.classifier")
+    assert not _leent_buiten_consensus("pipeline.step_5_codeGeneratorX.iets")
