@@ -303,10 +303,15 @@ Where the two differ:
   gets a name of its own. Measured on set 7 (luna, tau=0.7, `t_keep` 23):
   32 main codes / 11 children / 113 respondents in children, against 30 / 8 / 74
   under the narrow rule. The old
-  `direction_loss` metric counted what fell away and is replaced by
-  `coverage_recovered` — the unique respondents who gained a code they would not
-  otherwise have had. Production still drops the pole, and its attribute stays a
-  source of the surviving, opposite-facing sibling code.
+  `direction_loss` metric counted what fell away and is replaced by two
+  `ShapingResult` fields: `coverage_recovered` — the unique respondents in a
+  main code or child that exists only because of the facet pool, i.e. the size
+  of those shapes, not a rescue tally, since a respondent in there can already
+  sit in a solo/pooled shape of the same or another attribute in the facet —
+  and `first_time_covered`, the set difference that IS the rescue count: of
+  `coverage_recovered`'s respondents, how many were in no solo/pooled shape at
+  all. Measured on set 7: 175 and 51. Production still drops the pole, and its
+  attribute stays a source of the surviving, opposite-facing sibling code.
 - **Two writing calls, split on origin.** `child` shapes go to
   `write_miscellaneous` (own prompt in `prompts_miscellaneous.py`, own phase
   `step5c_miscellaneous`, no veto and no `nameable` field); everything else goes

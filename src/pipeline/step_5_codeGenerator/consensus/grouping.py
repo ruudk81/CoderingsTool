@@ -204,13 +204,19 @@ def pool_thin_within_facet(
 class ShapingResult:
     shapes: List[CodeShape]
     overig_ids: List[str]
-    # Het aantal UNIEKE respondenten dat aan een hoofdcode of een kind kwam dat
-    # het zonder de facetpool van `pool_minority_poles` niet had gehad. De
-    # voorganger heette `direction_loss` en telde het omgekeerde — wat er
-    # wegviel. Sinds een afgevallen pool niet meer wegvalt telt die maat bijna
-    # niets meer, en een maat die naar nul zakt omdat de operatie werkt meet
-    # geen kwaliteit maar zijn eigen aanwezigheid.
+    # Het aantal UNIEKE respondenten in een hoofdcode of kind die uit de
+    # facetpool van `pool_minority_poles` komt — de omvang van die vormen, geen
+    # reddingstelling: een respondent hierin kan al eerder een code hebben
+    # gehad, via de solo/pooled vorm van hetzelfde of een ander attribuut in
+    # het facet. Zie `first_time_covered` voor wie dat niet had. De voorganger
+    # heette `direction_loss` en telde het omgekeerde — wat er wegviel. Sinds
+    # een afgevallen pool niet meer wegvalt telt die maat bijna niets meer.
     coverage_recovered: int
+    # Van diezelfde respondenten: hoeveel zaten daarvóór NERGENS — geen enkele
+    # solo/pooled vorm. Dit IS de reddingstelling die `coverage_recovered` niet
+    # is: een verzamelingsverschil (`coverage_recovered`-vormen minus
+    # solo/pooled-vormen), niet de omvang van de emmer zelf.
+    first_time_covered: int
 
 
 def _pole_split(valence: str, members: List[Concept]) -> Tuple[frozenset, frozenset, frozenset]:
@@ -431,8 +437,14 @@ def build_shapes(
 
     hersteld = frozenset().union(
         *(resp for _valence, resp, _leden in hoofd + kinderen))
+    # Wie stond al ergens vóór de facetpool? Alleen `solo`/`pooled` — de vormen
+    # die zonder `pool_minority_poles` ook hadden bestaan. `recovered`/`child`
+    # zíjn de facetpool, dus die tellen hier niet mee als "al eerder".
+    bestond_al = frozenset().union(
+        *(s.resp_ids for s in shapes if s.origin in ("solo", "pooled")))
     return ShapingResult(shapes=shapes, overig_ids=overig_ids,
-                         coverage_recovered=len(hersteld))
+                         coverage_recovered=len(hersteld),
+                         first_time_covered=len(hersteld - bestond_al))
 
 
 DEGENERATION_FLOOR = 0.05

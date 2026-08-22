@@ -410,6 +410,7 @@ class GeneratedCodebook:
     overig_ids: List[str]
     codes: List[ConsolidatedCode]
     coverage_recovered: int
+    first_time_covered: int
     degeneration: Optional[str]
     # Aantal, niet de lijst: bij N=30 runs is elke reparatie een normaal
     # onderdeel van één los voorstel, en de reparatielijst van 30 runs samen
@@ -575,7 +576,8 @@ async def generate_codebook(
                                     language=language)
     return GeneratedCodebook(
         shapes=shapes, overig_ids=shaped.overig_ids, codes=codes,
-        coverage_recovered=shaped.coverage_recovered, degeneration=degeneration,
+        coverage_recovered=shaped.coverage_recovered,
+        first_time_covered=shaped.first_time_covered, degeneration=degeneration,
         partition_repairs=len(repair_log.entries), collisions=collision_log.entries,
         naming_mismatches=find_naming_mismatches(codes, shapes, concept_by_id),
         duplicate_definitions=find_duplicate_definitions(codes, shapes),
@@ -718,15 +720,20 @@ def report_codebook_build(result: GeneratedCodebook, config: ConsensusConfig) ->
 
     if result.coverage_recovered:
         # Respondent-uniek, geen groepstelling: wie in twee groepen van hetzelfde
-        # facet een afgevallen pool had telt één keer. De voorganger
-        # (RICHTINGSVERLIES) telde het omgekeerde — verloren pool-plaatsingen —
-        # en dat getal zakt sinds `pool_minority_poles` naar bijna nul omdat er
-        # niets meer wegvalt, niet omdat het codeboek beter werd.
-        print(f"DEKKING HERSTELD: {result.coverage_recovered} respondent(en) kregen "
-              f"een hoofdcode of kind uit de facetpool van afgevallen polen, die ze "
-              f"zonder die pool niet hadden gehad — polen uit élke groep, ook uit "
-              f"groepen waar geen enkele pool de drempel haalde. Wat ook "
-              f"samengenomen onder de bodem bleef is echt-overig.")
+        # facet een afgevallen pool had telt één keer. `coverage_recovered` is de
+        # OMVANG van die vormen, geen reddingstelling — een respondent erin kan
+        # al eerder een code hebben gehad via een solo/pooled vorm van hetzelfde
+        # of een ander attribuut in het facet. `first_time_covered` is het
+        # verzamelingsverschil dat dát wél meet. De voorganger (RICHTINGSVERLIES)
+        # telde het omgekeerde — verloren pool-plaatsingen — en dat getal zakt
+        # sinds `pool_minority_poles` naar bijna nul omdat er niets meer wegvalt,
+        # niet omdat het codeboek beter werd.
+        print(f"DEKKING HERSTELD: {result.coverage_recovered} respondent(en) in "
+              f"een hoofdcode of kind uit de facetpool van afgevallen polen — "
+              f"polen uit élke groep, ook uit groepen waar geen enkele pool de "
+              f"drempel haalde. Daarvan kregen {result.first_time_covered} voor "
+              f"het eerst een code; de rest stond al ergens via een solo/pooled "
+              f"vorm. Wat ook samengenomen onder de bodem bleef is echt-overig.")
 
     if result.vetoes:
         print(f"WAARSCHUWING: {len(result.vetoes)} pooled code(s) geveto'd "

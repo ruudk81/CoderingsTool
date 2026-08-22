@@ -563,6 +563,43 @@ def test_een_unie_die_de_drempel_haalt_wordt_een_HOOFDcode():
     assert res.coverage_recovered == 10
 
 
+def test_first_time_covered_is_a_set_difference_not_the_bucket_size():
+    """`coverage_recovered` is de omvang van de unie; `first_time_covered` is
+    ervan AFGETROKKEN wie al ergens stond. Vijf van de tien respondenten in de
+    negatieve unie zijn dezelfde mensen als vijf die de niet-negatieve pool van
+    hetzelfde attribuut al `solo` maakte — diezelfde persoon prees en
+    bekritiseerde hetzelfde attribuut. Werd `first_time_covered` per ongeluk
+    gelijk aan `coverage_recovered` (de emmer in plaats van het verschil), dan
+    zou dit 10 zijn in plaats van 5."""
+    a1 = Concept(
+        attribute_id="A1", name="Een", definition="d", domain="D", facet="F",
+        n_iu=35,
+        resp_pos=frozenset(f"p1_{i}" for i in range(30)),
+        resp_neg=frozenset(["p1_0", "p1_1", "p1_2", "n1_0", "n1_1"]),
+        resp_neu=frozenset(),
+        resp_ids=frozenset(f"p1_{i}" for i in range(30)) | {"n1_0", "n1_1"},
+        is_drain=False,
+    )
+    a2 = Concept(
+        attribute_id="A2", name="Twee", definition="d", domain="D", facet="F",
+        n_iu=35,
+        resp_pos=frozenset(f"p2_{i}" for i in range(30)),
+        resp_neg=frozenset(["p2_0", "p2_1", "n2_0", "n2_1", "n2_2"]),
+        resp_neu=frozenset(),
+        resp_ids=frozenset(f"p2_{i}" for i in range(30)) | {"n2_0", "n2_1", "n2_2"},
+        is_drain=False,
+    )
+    groepen = [losse_groep("A1"), losse_groep("A2")]
+
+    res = build_shapes(groepen, [a1, a2], threshold=8, two_pole=True)
+
+    unie = next(s for s in res.shapes if s.valence == "negative")
+    assert unie.origin != "child"
+    assert len(unie.resp_ids) == 10          # p1_0/1/2, p2_0/1, n1_0/1, n2_0/1/2
+    assert res.coverage_recovered == 10
+    assert res.first_time_covered == 5       # alleen de n1_*/n2_* zijn nieuw
+
+
 def test_een_unie_eronder_wordt_een_kind():
     """origin == "child", en de vorm draagt de gepoolde respondenten."""
     cs = [minderheids_concept("A1", "Een", "F", pos=30, neg=2),

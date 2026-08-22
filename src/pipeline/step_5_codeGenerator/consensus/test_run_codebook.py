@@ -66,7 +66,8 @@ def test_de_verboselognaam_botst_niet_met_die_van_productie():
 
 def _leeg_codeboek(**overrides) -> GeneratedCodebook:
     velden = dict(
-        shapes=[], overig_ids=[], codes=[], coverage_recovered=0, degeneration=None,
+        shapes=[], overig_ids=[], codes=[], coverage_recovered=0,
+        first_time_covered=0, degeneration=None,
         partition_repairs=0, collisions=[], naming_mismatches=[],
         duplicate_definitions=[], vetoes=[], concept_by_id={}, runs_used=5,
         runs_failed=0, pool_log=[],
@@ -210,7 +211,8 @@ def bedraad(monkeypatch, vormen, concepts, hoofdnaam="Hoofd", kindnaam="Kind"):
         raise AssertionError("deel 1 had niet mogen draaien")
 
     def stub_shapes(*args, **kwargs):
-        return ShapingResult(shapes=vormen, overig_ids=[], coverage_recovered=0)
+        return ShapingResult(shapes=vormen, overig_ids=[], coverage_recovered=0,
+                             first_time_covered=0)
 
     async def stub_hoofd(shapes, *args, **kwargs):
         gezien["hoofd"] = list(shapes)

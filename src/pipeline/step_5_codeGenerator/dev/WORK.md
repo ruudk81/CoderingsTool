@@ -109,6 +109,16 @@ respondenten kregen voor het eerst een code, en 91 zijn niet langer alleen
 vertegenwoordigd door de ongedifferentieerde Overig maar zitten nu onder een
 benoemde code die een richting draagt.** Niemand verloor een code.
 
+**Die 17 meet iets anders dan `ShapingResult.first_time_covered` (bijgevoegd
+2026-08-22, dezelfde fixronde die `coverage_recovered`'s docstring eerlijk
+maakte).** Deze 17 is het verschil TUSSEN de smalle en de brede verzamelregel
+(2311 − 2294 respondenten-in-een-vorm, zie de rekenkolom hierboven). Het
+codeveld meet iets anders: BINNEN de huidige (brede) regel, hoeveel
+respondenten in `coverage_recovered` in geen enkele solo/pooled vorm zaten —
+dus vergeleken met "geen facetpool", niet met "de smalle facetpool". Op set 7
+is dat getal **51**, niet 17. Beide zijn eerlijke reddingstellingen; ze
+beantwoorden alleen een andere vraag. Zie ook `ARCHITECTURE.md`.
+
 **Het echt-overig-gat groeit mee, en dat valt in respondenten mee.** Gemeten op
 set 7: het aantal respondenten dat NERGENS geteld wordt is 5 van 2317 — vóór én
 na de verbreding, en aantoonbaar dezelfde vijf. De valentiebewuste variant (in
