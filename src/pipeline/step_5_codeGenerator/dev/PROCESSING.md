@@ -148,6 +148,27 @@ This path is **off**. Two live runs split 9 of 10 candidates into single
 attributes — the null answer. The degeneration gate caught both and wrote
 nothing. See WORK.md.
 
+### The consensus candidate's eleven copies change nothing above
+
+Since 2026-08-21 `consensus/` owns eleven copies of the processing modules
+this file describes — `taxonomy_input.py`, `concept_inventory.py`,
+`attribute_cards.py`, `grouping.py`, `codebook_writer.py`,
+`codebook_verifier.py`, `codebook_io.py`, `code_shape.py`,
+`config_codeGenerator.py`, `prompts_writer.py`, `prompts_common.py` — instead
+of importing them. `test_zelfstandigheid.py`'s drift guard holds every copy
+byte-identical to its production original (imports aside), so Steps 1, 3, 4,
+5 and 6 above (concept inventory, grouping's three deterministic checks, the
+writer, the three guards, the Overig sweep) run the exact same processing on
+either chain. Nothing in this document's Processing Strategy differs between
+them.
+
+What differs is orchestration, not processing: the candidate runs under its
+own runner (`consensus/run_codebook.py`) rather than production's
+`run_codebook.py`, and its consolidation phase (step 2 above) dispatches
+`config.runs` parallel tasks instead of one — a difference in HOW MANY times
+the one judgement call runs, covered under Rate-Limiting Machinery below, not
+in what any of the calls does.
+
 ## Rate-Limiting Machinery
 
 Standard `SmoothRequester` stack, no step-5-specific behavior:
