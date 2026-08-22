@@ -86,12 +86,17 @@ from pipeline.step_5_codeGenerator.consensus.storage import (  # noqa: E402
 # `run_codebook()` aan en ziet ACTIE nooit; die krijgt de standaardwaarden
 # hieronder via ConsensusConfig.
 
+AUTO = "auto"   # SET-waarde die zegt: kies zelf het volgende vrije nummer
+MAX_SET = 999   # bovengrens van de setnummerscan; een ronde is 2 sets, dus ruim
+
 ACTIE   = "alles"      # alles | verzamelen | codeboek | analyse | vergelijk
 CONFIG  = "luna"       # luna (goedkoop) | gpt54 (12,5x duurder)
 RUNS    = 30           # hoe vaak deel 1 draait
 TAU     = 0.7          # hoe vaak twee attributen samen moeten hebben gezeten
-SET     = 5            # onder welk nummer de partities worden weggeschreven
-SET_B   = 6            # alleen bij 'vergelijk' en 'alles': de tweede set
+SET     = AUTO         # nummer om naar te schrijven, of AUTO (= doortellen).
+                       #   Bij 'analyse', 'vergelijk' en 'codeboek' MOET je een
+                       #   nummer invullen: die lezen een bestaande set.
+SET_B   = AUTO         # tweede set bij 'vergelijk' en 'alles'
 SOURCE  = "consensus"  # alleen bij 'codeboek': consensus | baseline
 POLES   = "two"        # two (niet-negatief/negatief) | three (pos/neu/neg)
 DRAINS  = "uit"        # vangnetten op de kaarten: uit | aan
@@ -307,7 +312,7 @@ def load_material(config: ConsensusConfig) -> Dict:
     }
 
 
-def verzamelen(config: ConsensusConfig, set_index: int) -> Path:
+def verzamelen(config: ConsensusConfig, set_index) -> Path:
     """N keer deel 1, elke run met een eigen salt — of, met `config.salted=False`,
     N identieke aanroepen die de kale servervariatie blootleggen. Schrijft de
     partities weg.
@@ -329,6 +334,10 @@ def verzamelen(config: ConsensusConfig, set_index: int) -> Path:
     `COST_STEP`, terwijl de consolidatiecalls — de meerderheid van de kosten —
     nergens stonden.
     """
+    if set_index == AUTO:
+        set_index = vrije_sets(config.config_name, 1)[0]
+        print(f"SET = {AUTO!r}: deze run schrijft naar set {set_index}")
+
     material = load_material(config)
 
     cost_tracker = CostTracker(filename=FILENAME, var_name=VARIABLE,
@@ -642,6 +651,41 @@ def bezette_sets(config_name: str, *indices: int) -> List[int]:
     return [index for index in indices if runset_path(config_name, index).exists()]
 
 
+def vrije_sets(config_name: str, hoeveel: int) -> List[int]:
+    """De volgende `hoeveel` setnummers voor deze configuratie, doortellend
+    boven het hoogste dat al bestaat.
+
+    Bestaat omdat `SET` de enige knop in het blok was die bij ELKE ronde moest
+    veranderen, met een weigering als faalmodus — dat is geen instelling maar
+    een teller die de gebruiker zelf bijhield.
+
+    Doortellen, en nadrukkelijk NIET het laagste gat vullen. Een gat betekent
+    meestal dat daar een set is weggegooid; hergebruik je dat nummer, dan wijst
+    "set 2" in aantekeningen van vorige week naar ander materiaal dan "set 2"
+    van vandaag. Een setnummer moet één ding blijven aanwijzen.
+
+    Per configuratie geteld: luna en gpt54 hebben hun eigen reeks.
+    """
+    hoogste = -1
+    for nummer in range(MAX_SET + 1):
+        if runset_path(config_name, nummer).exists():
+            hoogste = nummer
+    return list(range(hoogste + 1, hoogste + 1 + hoeveel))
+
+
+def _eis_bestaand_setnummer(waarde, actie: str) -> int:
+    """`"auto"` betekent "kies vrije nummers om NAAR te schrijven", en dat is
+    betekenisloos voor een actie die van een set LEEST — die zou dan een set
+    aanwijzen die per definitie niet bestaat. Eén woord met twee betekenissen
+    is precies wat later bijt, dus hier stopt het."""
+    if waarde == AUTO:
+        raise SystemExit(
+            f"SET = {AUTO!r} kan niet bij '{actie}': die leest een bestaande "
+            f"set, en 'auto' kiest juist een nog ONgebruikt nummer. Vul het "
+            f"nummer in van de set die je wilt bekijken.")
+    return waarde
+
+
 def codeboek(config: ConsensusConfig, set_index: int, source: str) -> None:
     """Codeboek uit de partities die al op schijf staan — geen nieuwe deel-1-calls.
 
@@ -706,13 +750,18 @@ def alles(config: ConsensusConfig, set_index: int, set_b: int) -> None:
     opgeslagen set later opnieuw te bevragen. Wie de meting gewoon wil
     uitvoeren hoort dat niet in vijf losse stappen te hoeven doen.
     """
+    if set_index == AUTO or set_b == AUTO:
+        set_index, set_b = vrije_sets(config.config_name, 2)
+        print(f"SET = {AUTO!r}: deze ronde schrijft naar set {set_index} en {set_b}")
+
     bezet = bezette_sets(config.config_name, set_index, set_b)
     if bezet:
+        vrij = vrije_sets(config.config_name, 2)
         raise SystemExit(
             f"set {' en '.join(map(str, bezet))} bestaat al voor "
             f"{config.config_name} en zou overschreven worden — dat is "
-            f"{config.runs} LLM-calls per set die je kwijt bent. Kies vrije "
-            f"setnummers.")
+            f"{config.runs} LLM-calls per set die je kwijt bent. Vrij zijn "
+            f"{vrij[0]} en {vrij[1]}, of zet SET = {AUTO!r}.")
 
     verzamelen(config, set_index)
     verzamelen(config, set_b)
@@ -888,11 +937,12 @@ def _draai_actie(actie: str) -> None:
     elif actie == "verzamelen":
         verzamelen(config, SET)
     elif actie == "codeboek":
-        codeboek(config, SET, SOURCE)
+        codeboek(config, _eis_bestaand_setnummer(SET, actie), SOURCE)
     elif actie == "analyse":
-        analyse(config, SET)
+        analyse(config, _eis_bestaand_setnummer(SET, actie))
     elif actie == "vergelijk":
-        vergelijk(config, SET, SET_B)
+        vergelijk(config, _eis_bestaand_setnummer(SET, actie),
+                  _eis_bestaand_setnummer(SET_B, actie))
 
 
 if __name__ == "__main__":

@@ -200,3 +200,54 @@ def test_elke_actie_in_het_blok_heeft_een_afhandeling(monkeypatch):
         runner._draai_actie(naam)
         assert bereikt.get("actie") == naam, \
             f"ACTIE {naam!r} bereikte niet zijn eigen functie"
+
+
+def test_vrije_sets_telt_door_en_hergebruikt_geen_gaten(tmp_path, monkeypatch):
+    """`alles` is de enige actie waarvan een knop bij ELKE run moest veranderen,
+    met een weigering als faalmodus. Dat is geen instelling maar een teller die
+    de gebruiker bijhield.
+
+    Doortellen boven het hoogste nummer, NIET het laagste gat vullen. Een gat
+    betekent meestal dat daar een set is weggegooid; hergebruik je dat nummer,
+    dan verwijst "set 2" in je aantekeningen van vorige week naar ander
+    materiaal dan "set 2" van vandaag. Nummers moeten één ding blijven
+    aanwijzen."""
+    monkeypatch.setattr(runner, "OUT_DIR", tmp_path)
+    for n in (0, 1, 3):
+        (tmp_path / f"consensus_luna_set{n}.json").write_text("{}", encoding="utf-8")
+
+    assert runner.vrije_sets("luna", 2) == [4, 5]
+    assert runner.vrije_sets("luna", 1) == [4]
+
+
+def test_vrije_sets_kijkt_per_configuratie(tmp_path, monkeypatch):
+    """luna en gpt54 hebben hun eigen nummerreeks; een bezette luna-set mag geen
+    gpt54-nummer blokkeren."""
+    monkeypatch.setattr(runner, "OUT_DIR", tmp_path)
+    (tmp_path / "consensus_luna_set0.json").write_text("{}", encoding="utf-8")
+
+    assert runner.vrije_sets("gpt54", 1) == [0]
+
+
+def test_auto_kiest_vrije_nummers_in_plaats_van_te_weigeren(tmp_path, monkeypatch):
+    """Met SET = "auto" hoort een tweede klik naast de vorige ronde te landen in
+    plaats van op de klep te stuiten."""
+    monkeypatch.setattr(runner, "OUT_DIR", tmp_path)
+    (tmp_path / "consensus_luna_set0.json").write_text("{}", encoding="utf-8")
+    gebruikt = []
+    monkeypatch.setattr(runner, "verzamelen", lambda c, n: gebruikt.append(n))
+    monkeypatch.setattr(runner, "analyse", lambda c, n: None)
+    monkeypatch.setattr(runner, "vergelijk", lambda c, a, b: None)
+    monkeypatch.setattr(runner, "codeboek", lambda c, n, s: None)
+
+    runner.alles(ConsensusConfig(), "auto", "auto")
+
+    assert gebruikt == [1, 2]
+
+
+def test_een_lezende_actie_weigert_auto():
+    """"auto" betekent "kies vrije nummers om NAAR te schrijven". Een set die nog
+    niet bestaat valt niet te analyseren, dus daar is het woord betekenisloos —
+    en één woord met twee betekenissen is precies wat later bijt."""
+    with pytest.raises(SystemExit, match="auto"):
+        runner._eis_bestaand_setnummer("auto", "analyse")
