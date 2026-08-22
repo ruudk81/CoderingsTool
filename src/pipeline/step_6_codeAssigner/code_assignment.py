@@ -51,6 +51,7 @@ from .prompts_codeAssigner import (
 )
 from models import ConsolidatedCode
 from models import CodeAssignment, CodeAssignmentBatch
+from .valence_filter import find_overig_code
 
 # Enable nested event loops (for VS Code interactive / notebook compatibility)
 nest_asyncio.apply()
@@ -76,6 +77,46 @@ _ARTICLES = {
     "fr": {"le", "la", "les", "un", "une", "des", "l"},
     "es": {"el", "la", "los", "las", "un", "una", "unos", "unas"},
 }
+
+
+def report_children(codes, responses) -> None:
+    """Print every child of Overig with the number of ideas it ends up carrying,
+    including zero. Silent on a codebook without children.
+
+    This belongs AFTER the opposing-pole filter, and therefore not in
+    `_print_assignment_summary`, which runs from `assign_all()`. A child fills
+    along two paths: the LLM picks it, or `route_opposing_poles` routes material
+    to it. Printed before that second path, a child receiving its entire inflow
+    from the filter would show a zero with "caught nothing" behind it — a claim
+    the assignment pass is not entitled to make at that moment. Whatever prints
+    the word ZERO must be allowed to say it.
+
+    That zero is the falsification signal from the spec: a child exists because
+    its respondents would otherwise lie undifferentiated in Overig, so catching
+    nothing means the construction did not pay off. And a zero that exists only
+    as an absence from a list cannot be read, so it is named explicitly.
+    """
+    overig = find_overig_code(codes)
+    children = [c for c in codes
+                if overig is not None
+                and getattr(c, 'parent_code_id', None) == overig.code_id]
+    if not children:
+        return
+
+    counts: Dict[str, int] = {}
+    for resp in responses:
+        for idea in (getattr(resp, 'response_ideas', None) or []):
+            naam = (getattr(idea, 'assigned_code', '') or '').strip()
+            if naam:
+                counts[naam] = counts.get(naam, 0) + 1
+
+    print(f"\n  {'─'*60}")
+    print(f"  CHILDREN OF {overig.code_name!r} ({len(children)})")
+    print(f"  {'─'*60}")
+    for c in children:
+        n = counts.get(c.code_name, 0)
+        tail = "   ← ZERO — this child caught nothing" if n == 0 else ""
+        print(f"    {c.code_name} ({getattr(c, 'valence', '')}): {n} ideas{tail}")
 
 
 class CodeAssigner:
@@ -532,28 +573,36 @@ class CodeAssigner:
         cache (structure ↔ source_attribute_ids), so the id space is consistent
         even for legacy per-artifact minting.
 
-        Codes carrying a `parent_code_id` are skipped here. Such a code is a
-        child under Overig: a residual pole that did not clear the prevalence
-        gate. It is a full code and takes part in the candidate menu, but it may
-        never become an idea's GUARANTEED fallback — the seeded home code is
-        meant to be coverage, and a residual bucket is the opposite of that.
-        Both loops below apply the rule, and both look at the field, never at
-        the name: a child's name is written by an LLM and could land on a
-        catch-all word, so the parent is only ever the code that carries no
-        parent itself. Same discipline as step 4's `drain_key`.
+        Codes carrying a `parent_code_id` — children under Overig, each a
+        residual pole that did not clear the prevalence gate — are claimed in a
+        SECOND pass, so a child can only ever fill a gap and never displace a
+        head code. The rule reads on the field, never on the name: a child's
+        name is written by an LLM and could land on a catch-all word. Same
+        discipline as step 4's `drain_key`.
 
-        An attribute claimed ONLY by a child therefore gets no home code and no
-        seeding. That is intended, and the idea is not stranded: the child is
-        still reachable through the embedding pre-filter, and the no-fit option
-        resolves to that same child's parent — the bucket it hangs under.
+        Why two passes and not a blanket skip. The thing that must never happen
+        is a child becoming the guaranteed fallback for an attribute that a head
+        code already covers — the seeded home code is *coverage*, and a residual
+        bucket is the opposite of that. Ordering the passes gets exactly that,
+        independent of list order. But blanket-skipping children went further
+        than the argument: for an attribute that NO head code claims (measured:
+        3 of them, 42 of 4677 ideas — facet groups where not one pole cleared
+        the gate), it left no seed at all. The child is then the only code step 5
+        built for that material, so it IS its coverage. Worse, the safeguard
+        distorted the very measurement it is judged by: with no seed, such a
+        child depends entirely on the top-8 surfacing it, and a resulting zero
+        would say something about the pre-filter rather than about whether the
+        child was worth constructing. The narrow rule keeps the guarantee and
+        drops the confound.
         """
         self._attr_to_code_idx = {}
-        for i, code in enumerate(self._codes):
-            if getattr(code, 'parent_code_id', None):
-                continue
-            for attr_id in (getattr(code, 'source_attribute_ids', None) or []):
-                if attr_id and attr_id not in self._attr_to_code_idx:
-                    self._attr_to_code_idx[attr_id] = i
+        for children_pass in (False, True):
+            for i, code in enumerate(self._codes):
+                if bool(getattr(code, 'parent_code_id', None)) != children_pass:
+                    continue
+                for attr_id in (getattr(code, 'source_attribute_ids', None) or []):
+                    if attr_id and attr_id not in self._attr_to_code_idx:
+                        self._attr_to_code_idx[attr_id] = i
 
         # name→A# resolver from the mece structure (normalized domain keys)
         self._attr_id_scoped = {}
@@ -970,21 +1019,3 @@ class CodeAssigner:
             ):
                 print(f"        {attr}: {count}")
 
-        # Children of the Overig code, listed WITH their zeros. A child is a
-        # residual pole that was given its own name precisely so its respondents
-        # stop lying under a code with the opposite direction. A child that
-        # catches nothing means that construction did not pay off — and an
-        # absence from the list above is not something a reader can see, so the
-        # zero has to be printed. Silent on a codebook without children.
-        overig_id, overig_name = self._no_fit_resolves_to
-        children = [c for c in self._codes
-                    if getattr(c, 'parent_code_id', None) == overig_id]
-        if children:
-            print(f"\n  {'─'*60}")
-            print(f"  CHILDREN OF {overig_name!r} ({len(children)})")
-            print(f"  {'─'*60}")
-            for c in children:
-                n = code_stats.get(c.code_name, {}).get("count", 0)
-                tail = "   ← ZERO — this child caught nothing" if n == 0 else ""
-                print(f"    {c.code_name} ({getattr(c, 'valence', '')}): "
-                      f"{n} ideas{tail}")

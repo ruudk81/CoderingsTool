@@ -343,12 +343,19 @@ def test_idee_zonder_attribuut_id_gaat_naar_de_ouder():
 
 def test_een_idee_onder_een_kind_met_de_verkeerde_richting_verhuist_ook():
     """Een kind is een volwaardige code en dus even goed een plek waar de
-    verkeerde richting kan landen."""
+    verkeerde richting kan landen.
+
+    Dit is ook het enige pad waarop `overig_after` NIET
+    `overig_before + moved` is: het idee zat al in de familie (het telt mee in
+    `overig_before`) én het verhuist (het telt mee in `moved`), maar het komt
+    binnen de familie terecht. De oude optelling zou het dus twee keer tellen.
+    Daarom wordt de eindtoestand per idee geteld en niet achteraf opgeteld."""
     resp = [respondent(idee_met_attribuut(
         "i1", "+", "Negatieve overige klantrelatie", "K31", "A1"))]
     rapport = route_opposing_poles(resp, CODES_MET_KIND)
     assert resp[0].response_ideas[0].assigned_code_id == "K9"
     assert rapport.moved == 1
+    assert (rapport.overig_before, rapport.overig_after) == (1, 1)
 
 
 def test_overig_aandeel_telt_de_kinderen_mee():
