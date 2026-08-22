@@ -160,13 +160,15 @@ GEKOPIEERD = sorted(
     - EIGEN_VERSIE
 )
 
-# Modules waarvan een afwijking een vastgelegd besluit is, in plaats van
-# ruis: naam -> reden (commit). Leeg bij aanvang — dit is geen skip-lijst
-# voor codebook_io, want die afwijking wordt hieronder genormaliseerd in
-# plaats van overgeslagen (zie _normaliseer_project_root). Een module komt
-# hier pas bij als de vergelijking zelf niet kan worden gered door
-# normalisatie, bijvoorbeeld wanneer `grouping.py` op een dag inhoudelijk
-# uiteenloopt van het origineel.
+# Modules die een KOPIE blijven maar één vastgelegd, onvermijdelijk verschil
+# dragen: naam -> reden (commit). Denk aan een positieafhankelijke constante,
+# die per definitie niet byte-identiek kan zijn op een andere diepte.
+#
+# Leeg, en dat is geen toeval: elke afwijking tot nu toe was een echte
+# vertakking — de module hield op een kopie te zijn en hoort dan in
+# EIGEN_VERSIE, niet hier. Het verschil doet ertoe, want een naam hier
+# slaat het HELE bestand over en verliest dus ook de dekking op de regels
+# die wél gelijk hadden moeten blijven.
 AFGEWEKEN = {}
 
 
