@@ -37,6 +37,7 @@ import nest_asyncio
 
 from utils.llm import token_tracker
 from utils.smoothRequester import SmoothRequester
+from utils.verboseReporter import VerboseReporter
 from config import get_reasoning_params, MISCELLANEOUS_CODE_LABELS
 
 import models
@@ -79,7 +80,7 @@ _ARTICLES = {
 }
 
 
-def report_children(codes, responses) -> None:
+def report_children(codes, responses, reporter: Optional[VerboseReporter] = None) -> None:
     """Print every child of Overig with the number of ideas it ends up carrying,
     including zero. Silent on a codebook without children.
 
@@ -94,7 +95,9 @@ def report_children(codes, responses) -> None:
     That zero is the falsification signal from the spec: a child exists because
     its respondents would otherwise lie undifferentiated in Overig, so catching
     nothing means the construction did not pay off. And a zero that exists only
-    as an absence from a list cannot be read, so it is named explicitly.
+    as an absence from a list cannot be read, so it is named explicitly — through
+    the same `VerboseReporter` block vocabulary its neighbour `report_filter`
+    (`valence_filter.py`) already uses, not a bare `print()` outside it.
     """
     overig = find_overig_code(codes)
     children = [c for c in codes
@@ -110,13 +113,12 @@ def report_children(codes, responses) -> None:
             if naam:
                 counts[naam] = counts.get(naam, 0) + 1
 
-    print(f"\n  {'─'*60}")
-    print(f"  CHILDREN OF {overig.code_name!r} ({len(children)})")
-    print(f"  {'─'*60}")
+    reporter = reporter or VerboseReporter(True)
+    reporter.section_header(f"Children of {overig.code_name!r} ({len(children)})")
     for c in children:
         n = counts.get(c.code_name, 0)
         tail = "   ← ZERO — this child caught nothing" if n == 0 else ""
-        print(f"    {c.code_name} ({getattr(c, 'valence', '')}): {n} ideas{tail}")
+        reporter.stat_line(f"{c.code_name} ({getattr(c, 'valence', '')}): {n} ideas{tail}")
 
 
 class CodeAssigner:

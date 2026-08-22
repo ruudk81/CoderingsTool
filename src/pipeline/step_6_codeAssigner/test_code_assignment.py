@@ -256,11 +256,11 @@ def _responses(toewijzingen):
         for n, (naam, valentie, attr) in enumerate(toewijzingen)])]
 
 
-def _kindblok(codes, toewijzingen, capsys, filteren=False):
+def _kindblok(codes, toewijzingen, capsys, filteren=False, reporter=None):
     responses = _responses(toewijzingen)
     if filteren:
         route_opposing_poles(responses, codes)
-    report_children(codes, responses)
+    report_children(codes, responses, reporter=reporter)
     return capsys.readouterr().out
 
 
@@ -278,7 +278,7 @@ def test_een_kind_zonder_toewijzingen_staat_er_met_zijn_nul_bij(capsys):
     dus elk kind wordt genoemd — ook het lege."""
     uit = _kindblok(BLOK_CODES, [("Service en advies", "+", "A1"),
                                  ("Vol kind", "-", "A1")], capsys)
-    assert "CHILDREN OF 'Overig' (2)" in uit
+    assert "CHILDREN OF 'OVERIG' (2)" in uit
     assert "Vol kind (negative): 1 ideas" in uit
     assert "Leeg kind (negative): 0 ideas   ← ZERO" in uit
 
@@ -302,4 +302,18 @@ def test_kinderloos_codeboek_drukt_geen_kindblok_af(capsys):
     kinderen verandert er geen regel aan de uitvoer."""
     codes = [code("Service en advies", "K2", ["A1"]), code("Overig", "K9", [])]
     uit = _kindblok(codes, [("Service en advies", "+", "A1")], capsys)
+    assert uit == ""
+
+
+def test_report_children_loopt_door_de_meegegeven_reporter(capsys):
+    """`report_children` gebruikte kale `print()`, terwijl zijn buurman
+    `report_filter` (`valence_filter.py`) een `VerboseReporter` aanneemt. Een
+    uitgeschakelde reporter moet daarom ook hier alles onderdrukken — dat kan
+    alleen als de functie er zelf doorheen loopt in plaats van naar zijn eigen
+    `print()` te grijpen."""
+    from utils.verboseReporter import VerboseReporter
+
+    uit = _kindblok(BLOK_CODES, [("Service en advies", "+", "A1"),
+                                 ("Vol kind", "-", "A1")], capsys,
+                    reporter=VerboseReporter(enabled=False))
     assert uit == ""
