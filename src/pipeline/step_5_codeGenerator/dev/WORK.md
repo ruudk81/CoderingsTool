@@ -197,6 +197,94 @@ meetartefact en blijft de facetbetekenis staan. Geen LLM-vraag, Python.
 Gevolg voor het promotiebesluit: de keuze is niet "vlag aan of uit" maar
 drie-weg. De vlag blijft UIT tot die derde weg gewogen is.
 
+## De promotie is geoefend — hij loopt vast op `stability.py` (open — 2026-08-22)
+
+De afspraak achter `consensus/` is dat je step 5's ketenmodules kunt verwijderen,
+`consensus/` op hun plek kunt zetten, en `run_pipeline.py` step 5 gewoon blijft
+draaien. Taken 1-3 maakten dat waar en legden het vast in twee bewakers
+(`consensus/test_zelfstandigheid.py`). Op 2026-08-22 is de verhuizing daarnaast
+één keer daadwerkelijk uitgevoerd en weer teruggedraaid — een repetitie, want een
+bewaker toetst wat hij bevraagt en de repetitie toetst wat er overblijft.
+
+**Uitkomst: de afspraak klopt nog niet.** De keten zelf verhuist schoon en
+`run_codebook(force_recalc=False)` draait erna precies zoals `run_pipeline.py`
+hem aanroept. Maar twee modules die NIET door `consensus/` worden vervangen
+blijven achter met een import die na de verhuizing nergens meer op uitkomt.
+
+### Blokkade: `stability.py` en `postmortem.py` overleven de verhuizing niet
+
+`stability.py` doet `from .consolidation import resolve_consolidation`
+(enkelvoud, één run). `consensus/consolidation.py` levert
+`resolve_consolidations` (meervoud, N runs) plus `build_tasks`, en geen
+`resolve_consolidation`. `postmortem.py` importeert `StabilityReport` uit
+`stability.py` en valt in dezelfde fout mee.
+
+Dat is geen falende test maar een ImportError tijdens collectie, dus pytest
+breekt de hele suite af — 24 tests (10 + 14) komen niet eens aan de start. Beide
+modules zijn het meetgereedschap achter "De consolidatiecall reproduceert niet"
+en "Post-mortem" hieronder; ze horen dus niet zomaar met de oude keten mee weg.
+
+Drie wegen, geen ervan gekozen: `consensus/consolidation.py` een
+`resolve_consolidation` laten houden voor N=1; `stability.py`/`postmortem.py`
+meeverhuizen naar de consensusvorm; of beide bij de oude keten in
+`_quarantine_v1/` zetten en accepteren dat het meetgereedschap met v2 met
+pensioen gaat. Zolang die keuze niet gemaakt is, kan de promotie niet doorgaan.
+
+### De verhuisrecept vraagt vier ingrepen, niet één
+
+1. **24 productiebestanden weg**: de 5 die `consensus/` met een eigen versie
+   vervangt (`run_codebook`, `consolidation`, `prompts_consolidation`,
+   `view_codebook`, `view_prompts`), de 11 gekopieerde ketenmodules, en de 8
+   testbestanden die `consensus/` ook heeft.
+2. **`__init__.py` is een 25e botsing.** `git mv consensus/*.py .` valt er
+   meteen over. Productie's `__init__.py` beschrijft de STAP en hoort te
+   blijven; die van `consensus/` beschrijft een submap die na de verhuizing niet
+   meer bestaat en gaat weg.
+3. **De importsubstitutie is twee regels, en de volgorde doet ertoe.** Naast
+   `pipeline.step_5_codeGenerator.consensus.<module>` bestaat de vorm
+   `from pipeline.step_5_codeGenerator.consensus import <module>`. Pas die
+   tweede EERST toe: `consensus/` bevat een module die óók `consensus.py` heet,
+   en `...consensus.consensus import` collapst anders eerst naar
+   `...consensus import` en daarna ten onrechte naar `... import` — waarna
+   `run_codebook.py` `consensus_partition` uit het pakket probeert te halen.
+4. **`codebook_io.py` heeft een tweede, niet-import-fix nodig.** Zijn
+   `project_root` is een positieafhankelijke constante; de kopie draagt bewust
+   één `.parent` extra omdat ze een map dieper ligt. Na de verhuizing moet die
+   er weer af, anders wijst de repo-root een niveau te hoog en schrijven
+   promptexport en logs naast de repo.
+
+### Wat de repetitie juist NIET nodig bleek te hebben
+
+- **De quarantainetests hoeven niet weg.** Stap 3b van de taakbrief ging ervan
+  uit dat `_quarantine_v1/` breekt zodra de geleende modules verdwijnen. Dat
+  gebeurt niet: de 11 modules verdwijnen niet, ze worden vervangen door hun
+  inhoudelijk identieke kopie op hetzelfde pad. Gemeten op de gepromoveerde
+  boom: **125 tests groen**. De v1-keten blijft dus leesbaar én draaibaar.
+- **`test_prompts_consolidation.py` overleeft en slaagt.** Dat bestand blijft
+  achter zonder tegenhanger in `consensus/` en toetst na de verhuizing dus de
+  ANDERE `prompts_consolidation.py`. Het gaat niet stuk: **11 groen**. Wat het
+  daar meet is daarmee wel een open vraag — het is geschreven op productie's
+  prompt en slaagt op die van de kandidaat.
+
+### Steigerwerk dat bij de verhuizing hoort te sneuvelen
+
+`consensus/test_zelfstandigheid.py` (13 tests) en
+`consensus/test_consolidation.py::test_prompt_is_byte_identiek_aan_productie_op_import_en_docstring_na`
+vergelijken de kopie met het origineel via `hier.parent`. Na de verhuizing is
+`hier.parent` `pipeline/` en bestaat dat origineel niet meer. Dat is geen
+regressie maar het einde van hun functie: ze bewaken het naast-elkaar-bestaan,
+en dat is precies wat de promotie opheft. Ze horen in dezelfde commit weg als
+de verhuizing.
+
+### Telling
+
+Basis 1046 groen. Op de gepromoveerde boom, met de blokkade uitgesloten:
+**906 groen**. Het verschil sluit exact — 102 (de 8 vervangen
+productietestbestanden) + 24 (geblokkeerd) + 13 (`test_zelfstandigheid`) + 1
+(de byte-identiteitstest) = 140. Er is dus niets stil omgevallen.
+
+Na terugdraaien staat de boom byte-identiek terug op 1046 groen.
+
 ## De consolidatiecall reproduceert niet (open — 2026-08-18)
 
 Vier runs op identieke invoer (ASN, 60 attributen) gaven **26, 31, 25 en 28
