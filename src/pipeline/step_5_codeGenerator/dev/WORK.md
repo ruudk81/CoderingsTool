@@ -201,7 +201,7 @@ drie-weg. De vlag blijft UIT tot die derde weg gewogen is.
 
 De afspraak achter `consensus/` is dat je step 5's ketenmodules kunt verwijderen,
 `consensus/` op hun plek kunt zetten, en `run_pipeline.py` step 5 gewoon blijft
-draaien. Taken 1-3 maakten dat waar en legden het vast in twee bewakers
+draaien. Taken 1-3 maakten dat waar en legden het vast in drie bewakers
 (`consensus/test_zelfstandigheid.py`). Op 2026-08-22 is de verhuizing daarnaast
 één keer daadwerkelijk uitgevoerd en weer teruggedraaid — een repetitie, want een
 bewaker toetst wat hij bevraagt en de repetitie toetst wat er overblijft.
