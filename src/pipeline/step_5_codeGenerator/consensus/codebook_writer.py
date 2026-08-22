@@ -185,9 +185,10 @@ async def write_codebook(
 ) -> List[ConsolidatedCode]:
     """One call across all fixed code shapes. A `nameable: false` verdict on a
     `pooled` shape drops it (recorded in `log` as a VETO); the same verdict on
-    a `solo` or `synonym` shape is ignored — those are single attributes and
-    are by definition nameable. `recovered` en `child` zijn evenmin vetobaar;
-    de reden staat bij de veto-toets zelf.
+    any other origin (`solo`, `recovered`, `child` — `code_shape.CodeShape`
+    kent er vier, niet vijf) is genegeerd. `solo` is één attribuut en dus per
+    definitie noembaar; `recovered` en `child` zijn evenmin vetobaar om een
+    andere reden — de veto-toets zelf legt uit waarom.
 
     `taken_names` is for a re-write that only sees a SUBSET of the book (e.g.
     the MECE-merged codes) — the names already committed for the codes NOT in
