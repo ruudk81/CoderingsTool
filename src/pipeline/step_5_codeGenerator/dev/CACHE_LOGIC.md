@@ -36,7 +36,7 @@ the one the cache advertises is worse than not building at all.
 
 | Step name | Prefix | Model class | Type | Method | Contents |
 |-----------|--------|-------------|------|--------|----------|
-| `"mece_codes"` | 006 | `CodingResultsCache` | Metadata (single) | `save_metadata_to_cache()` | partition_set, partition_results, label_counts, total_categories, raw_codes. Written by `run_codebook.py` **or** `consensus/run_codebook.py` — same key, see "Eén cachesleutel, twee schrijvers" below; **not** written when `GeneratedCodebook.degeneration` is set — see Gotchas in `CLAUDE.md`. |
+| `"mece_codes"` | 006 | `CodingResultsCache` | Metadata (single) | `save_metadata_to_cache()` | partition_set, partition_results, label_counts, total_categories, raw_codes. Written by `run_codebook.py` **or** `consensus/run_codebook.py` — same key, see "Eén cachesleutel, drie schrijvers" below; **not** written when `GeneratedCodebook.degeneration` is set — see Gotchas in `CLAUDE.md`. |
 
 ### CodingResultsCache Contents
 

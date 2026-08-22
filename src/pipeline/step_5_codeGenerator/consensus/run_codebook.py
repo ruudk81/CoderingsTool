@@ -37,28 +37,28 @@ from utils.saveVerbose import VerboseCapture  # noqa: E402
 
 from pipeline.step_3_ideaExtractor.dimension_data import get_dimension  # noqa: E402
 
-from pipeline.step_5_codeGenerator.attribute_cards import build_cards  # noqa: E402
-from pipeline.step_5_codeGenerator.code_shape import (  # noqa: E402
+from pipeline.step_5_codeGenerator.consensus.attribute_cards import build_cards  # noqa: E402
+from pipeline.step_5_codeGenerator.consensus.code_shape import (  # noqa: E402
     CodeShape, _match_shape, _shape_lookup,
 )
-from pipeline.step_5_codeGenerator.codebook_io import (  # noqa: E402
+from pipeline.step_5_codeGenerator.consensus.codebook_io import (  # noqa: E402
     FALLBACK_DIAGNOSTIC, FILENAME, SAMPLE_SIZE, VARIABLE, apply_overig_sweep,
     cache_mece_results, load_classified_ideas, load_extraction_metadata,
     load_taxonomy_cache, print_codebook_results, run_scorecard,
     save_prompts_to_json,
 )
-from pipeline.step_5_codeGenerator.codebook_writer import (  # noqa: E402
+from pipeline.step_5_codeGenerator.consensus.codebook_writer import (  # noqa: E402
     find_duplicate_definitions, find_naming_mismatches, resolve_duplicate_names,
     write_codebook,
 )
-from pipeline.step_5_codeGenerator.concept_inventory import (  # noqa: E402
+from pipeline.step_5_codeGenerator.consensus.concept_inventory import (  # noqa: E402
     Concept, build_inventory, t_keep,
 )
-from pipeline.step_5_codeGenerator.grouping import (  # noqa: E402
+from pipeline.step_5_codeGenerator.consensus.grouping import (  # noqa: E402
     Group, build_shapes, check_degeneration, pool_thin_within_facet,
     repair_partition,
 )
-from pipeline.step_5_codeGenerator.taxonomy_input import (  # noqa: E402
+from pipeline.step_5_codeGenerator.consensus.taxonomy_input import (  # noqa: E402
     IdeaUnit, build_attribute_refs, build_idea_units,
 )
 from models import ConsolidatedCode  # noqa: E402

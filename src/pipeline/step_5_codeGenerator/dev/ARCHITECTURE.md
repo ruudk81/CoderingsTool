@@ -294,8 +294,14 @@ Where the two differ:
 Where they do not differ: everything from `build_shapes` onward — grouping's
 partition repair and degeneration check, `codebook_writer.py`'s single writer
 call, the three deterministic naming/definition guards, the Overig sweep, the
-scorecard — is the same code, imported via relative import, not copied. Both
-chains write `mece_codes`; whichever runs last is what steps 6 and 7 read.
+scorecard — is the same code. Since 2026-08-22 it is not shared by import: each
+of the eleven modules involved lives as its own copy inside `consensus/` (see
+CLAUDE.md's Key Files), so `consensus/` imports nothing from outside itself
+within step 5. Three guards in `consensus/test_zelfstandigheid.py` keep that
+true — an import guard, a drift guard that fails the moment a copy stops
+matching its production original, and a `project_root` guard added after the
+2026-08-22 promotion rehearsal. Both chains write `mece_codes`; whichever runs
+last is what steps 6 and 7 read.
 
 **Status: not promoted.** The consensus measurement this chain exists to
 support missed its own bar — ARI 0.788 between two independent consensus

@@ -43,9 +43,10 @@ more** — a leftover reference to one is stale, not a second chain.
   reported and blocks the cache write)
 - `code_shape.py` — `CodeShape` plus `_shape_lookup`/`_match_shape`: the form of
   a code, and how a written code is matched back to the form it came from.
-  `stored_valence()` also translates `two_pole`'s fourth valence value
-  (`non_negative`) to `neutral` for `models.py`'s three-value contract —
-  experiment-only today, see ARCHITECTURE.md
+  `stored_valence()` returns its argument unchanged: the contract carries
+  four valence values since 2026-08-22, so there is nothing left to translate.
+  It stays because `_shape_lookup` and `codebook_writer` call it on both sides
+  of the reassembly — see ARCHITECTURE.md
 - `prompts_writer.py` + `codebook_writer.py` — phase 4: one LLM call
   writes name/definition/diagnostic_test/indicators/boundary_note for every
   fixed `CodeShape`; also the three deterministic guards over the full
@@ -86,11 +87,20 @@ more** — a leftover reference to one is stale, not a second chain.
   `prompts_consolidation.py`, `consolidation.py` (N runs in one
   `SmoothRequester`, `phase_key` `step5c_consolidation`), `consensus.py`,
   `analysis.py`, `storage.py`, `run_codebook.py`, `view_prompts.py`,
-  `view_codebook.py` and its own tests; it borrows everything from
-  `build_shapes` onward via relative imports (`taxonomy_input.py`,
-  `concept_inventory.py`, `attribute_cards.py`, `code_shape.py`,
-  `grouping.py`, `codebook_writer.py`, `prompts_writer.py`,
-  `prompts_common.py`, `codebook_io.py`, `codebook_verifier.py`). Since
+  `view_codebook.py` and its own tests; since 2026-08-22 it does not import
+  everything from `build_shapes` onward from production, it OWNS a copy of it
+  — eleven modules: `taxonomy_input.py`, `concept_inventory.py`,
+  `attribute_cards.py`, `code_shape.py`, `grouping.py`, `codebook_writer.py`,
+  `prompts_writer.py`, `prompts_common.py`, `codebook_io.py`,
+  `codebook_verifier.py`, `config_codeGenerator.py`. `test_zelfstandigheid.py`
+  holds three guards over that ownership: an import guard (AST over both
+  `ast.ImportFrom` and `ast.Import` — nothing in `consensus/` may reach outside
+  itself within step 5), a drift guard (each of the eleven copies must still
+  match its production original — `codebook_io.py`'s `project_root` line is
+  normalised away, not the whole file, so its other 344 lines stay covered),
+  and a `project_root` guard, added after the 2026-08-22 promotion rehearsal
+  (asserts where `project_root` resolves rather than how many `.parent` steps
+  it has, so it holds at both the pre- and post-promotion depth). Since
   2026-08-21 it has one clickable runner: `consensus/run_codebook.py` carries
   a settings block at the top (`ACTIE`, `CONFIG`, `RUNS`, `TAU`, `SET`, ...)
   and dispatches on click to one of five actions — `alles`, `verzamelen`,

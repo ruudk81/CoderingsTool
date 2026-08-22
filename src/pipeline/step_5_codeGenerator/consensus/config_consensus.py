@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import config as project_config
 
-from ..config_codeGenerator import CodebookConfig
+from .config_codeGenerator import CodebookConfig
 
 # De twee beproefde configuraties: welk model draait, en met welke reasoning
 # effort. Dit was tot 2026-08-21 een tweede defaultlijst in de losse

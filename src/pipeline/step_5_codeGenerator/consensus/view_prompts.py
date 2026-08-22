@@ -12,7 +12,7 @@ from utils.promptViewer import render
 
 from test_data import TEST_DATA
 
-from pipeline.step_5_codeGenerator.prompts_writer import WriterResult, make_writer_model
+from pipeline.step_5_codeGenerator.consensus.prompts_writer import WriterResult, make_writer_model
 from pipeline.step_5_codeGenerator.consensus.prompts_consolidation import (
     ConsolidationResult, make_consolidation_model,
 )
