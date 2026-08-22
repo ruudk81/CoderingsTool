@@ -202,3 +202,32 @@ def test_pakketgrens_wordt_op_de_punt_getrokken():
     assert not _leent_buiten_consensus(EIGEN)
     assert not _leent_buiten_consensus("pipeline.step_4_classifier.classifier")
     assert not _leent_buiten_consensus("pipeline.step_5_codeGeneratorX.iets")
+
+
+def test_project_root_wijst_naar_de_repo_root():
+    """De ene regel die bewaker 2 per constructie niet kan zien.
+
+    `codebook_io.project_root` telt `.parent`-stappen vanaf `__file__`. De
+    kopie draagt er bewust één extra omdat ze een map dieper ligt, en bewaker 2
+    normaliseert precies die regel weg — anders zou een vastgelegde afwijking
+    als drift tellen. Gevolg: het aantal stappen is het enige aan dit bestand
+    dat GEEN enkele toets dekt, terwijl het bij de promotie met de hand terug
+    moet naar vier.
+
+    De repetitie van 2026-08-22 vond dat als losse ingreep in het verhuisrecept.
+    Een recept is een voornemen; deze toets is een test. Hij vraagt niet hoeveel
+    stappen er staan maar waar ze uitkomen, en klopt daarom op beide dieptes —
+    hier én na de verhuizing.
+    """
+    from pipeline.step_5_codeGenerator.consensus import codebook_io
+
+    wortel = codebook_io.project_root
+    assert (wortel / "src" / "pipeline").is_dir(), (
+        f"project_root komt uit op {wortel}, en daar staat geen src/pipeline. "
+        "Tel de `.parent`-stappen in codebook_io.py na: ze horen op de repo-root "
+        "uit te komen, en dat aantal hangt af van hoe diep het bestand ligt."
+    )
+    assert (wortel / ".git").exists(), (
+        f"project_root komt uit op {wortel}, en dat is niet de repo-root. "
+        "Promptexport en logs belanden dan naast de repo in plaats van erin."
+    )
