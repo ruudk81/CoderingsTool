@@ -65,7 +65,7 @@ def test_concept_erft_de_vangnetmarkering_van_zijn_ref():
     """Een vangnet houdt zijn Concept — de respondenten erop moeten in de
     boekhouding blijven — maar draagt de markering mee, zodat de kaartenfase
     hem kan overslaan."""
-    from pipeline.step_5_codeGenerator.taxonomy_input import AttributeRef, IdeaUnit
+    from pipeline.step_5_codeGenerator.consensus.taxonomy_input import AttributeRef, IdeaUnit
     refs = {
         "A1": AttributeRef(attribute_id="A1", name="Prijs", definition="d",
                            domain="D", facet="F"),
