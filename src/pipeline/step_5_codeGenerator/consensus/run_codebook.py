@@ -856,16 +856,24 @@ def run_codebook(filename: str = None, var_name: str = None,
               "taxonomie gebeuren.")
         return
 
-    # Dezelfde drempelbasis als productie: het totale aantal responses, niet
-    # het aantal respondenten mét een idee. Wijkt deze keten hiervan af, dan
-    # vergelijkt een codeboek-vergelijking twee codeboeken op verschillende
-    # drempels.
-    n_resp_total = len(classified)
+    # De drempel telt in RESPONDENTEN, niet in responses. `build_shapes` toetst
+    # hem tegen `len(pool.resp_ids)` — een verzameling unieke respondenten — dus
+    # een noemer in responses zet teller en noemer in verschillende eenheden.
+    # Deze keten week tot 2026-08-22 af: hij rekende met `len(classified)` om
+    # dezelfde drempelbasis te houden als productie (en daarvóór als v1), zodat
+    # twee codeboeken op één lat lagen. Op de ASN-set scheelde dat 27 tegen 23,
+    # dus poolen met 23 t/m 26 respondenten vielen af op een grens die over iets
+    # anders ging dan wat er geteld werd.
+    #
+    # LET OP bij vergelijken: productie's `run_codebook.py` rekent nog met
+    # responses, dus een codeboek van deze keten en een van productie liggen nu
+    # NIET meer op dezelfde drempel.
+    n_resp_total = m.n_respondents
     threshold = t_keep(n_resp_total, config)
     survey_question = (getattr(metadata, "var_lab", "") or "").strip()
 
-    print(f"  {len(m.concepts)} attributen, {m.n_respondents} met een idee, "
-          f"T_keep = {threshold} over {n_resp_total} responses")
+    print(f"  {len(m.concepts)} attributen, {len(classified)} responses, "
+          f"T_keep = {threshold} over {n_resp_total} respondenten")
 
     # Aangereikt betekent: je bent onderdeel van een ronde die zelf afsluit.
     # Zie de toelichting in `verzamelen`.
