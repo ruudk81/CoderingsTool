@@ -31,6 +31,56 @@ verwijderd. Maar vergelijk ze niet één-op-één met een nieuwe run: een versch
 kan van het model komen, van de boom, of van allebei — niet noodzakelijk van
 wat er in de tussentijd aan step 5 zelf is veranderd.
 
+## "Echt-overig" betekent gedropt, niet geveegd (open — 2026-08-22)
+
+`grouping.build_shapes` verzamelt in `overig_ids` de attributen wier facetunie
+onder de bodem (`t_keep_min_respondents`) bleef. `codebook_io.apply_overig_sweep`
+leidt Overig daar NIET uit af: die neemt de taxonomie-attributen die geen enkele
+code noemt. Voor een attribuut wiens ene pool hoofdcode werd en wiens andere pool
+door de bodem zakte is dat verschil beslissend — de overlevende code noemt het
+attribuut, dus het is geen wees, dus de respondenten van die afgevallen pool
+worden nergens geteld.
+
+Gemeten op set 7 (luna, tau=0,7, drempel 23): 14 attributen bleven onder de
+bodem, 9 belandden in Overig, **5 niet**. Zelfde gedrag als de productieketen,
+dus geen regressie — maar wel het verschil tussen wat het plan van 2026-08-22
+belooft en wat de keten levert. `run_codebook.report_true_overig` zet het getal
+op de console, zodat het geen stille aanname meer is.
+
+Niet gerepareerd, en waarom niet: Overig die namen laten claimen zet hetzelfde
+attribuut TWEE keer in het codeboek (één keer onder zijn hoofdcode, één keer
+onder Overig). Wat nodig is, is een Overig die één VALENTIE van een attribuut
+opneemt, en dat kan `ConsolidatedCode` niet uitdrukken — één code draagt één
+valentie over al zijn bronattributen. Dat is een wijziging aan `models.py` en aan
+step 6's toewijzing, niet aan step 5.
+
+## De facetunie is smaller dan de simulatie in de spec (open besluit — 2026-08-22)
+
+De spec van 2026-08-22 rekende op set 7 voor: 29 → **32** hoofdcodes, **12**
+kinderen, **118** respondenten in kinderen. De gebouwde keten levert op exact
+dezelfde set, drempel en tau: **30** hoofdcodes, **8** kinderen, **74**
+respondenten. Twee oorzaken, allebei een besluit en geen defect — nagerekend
+door de ruimere regel naast de gebouwde te draaien, wat de spec-cijfers exact
+reproduceert (32 / 11 / 113):
+
+1. `build_shapes` verzamelt afgevallen polen ALLEEN uit groepen waar een
+   zusterpool overleeft (`if not kept: continue`). De simulatie deed het uit
+   álle groepen. Een groep waar geen enkele pool de drempel haalt gaat in zijn
+   geheel naar Overig, en daar beweert niets het tegenovergestelde — dat is het
+   defect niet dat deze operatie opheft. Kost 2 hoofdcodes en 3 kinderen, en
+   maakt de overlevende unies kleiner (Koersprofilering 24 → 7, Klantcontact
+   25 → 20, Presentatiestijl 27 → 25), want de polen van die weggevallen groepen
+   zouden zich erbij hebben gevoegd.
+2. Een afgevallen pool zonder eenduidig facet gaat rechtstreeks naar Overig. De
+   spec-PROZA schrijft dat zelf voor; de spec-SIMULATIE telde hem toch als kind
+   ("8 negative (meerdere facetten)"). Kost 1 kind.
+
+Het open besluit is oorzaak 1: de vier `non_negative`-unies die nu in Overig
+verdwijnen (21, 15, 14, 14 respondenten) zouden onder de ruimere regel een eigen
+naam krijgen. Dat is een leesbaarder Overig, maar het is een ander voorstel dan
+"tel kritiek niet onder een positieve code" — en het raakt open vraag 1 van de
+spec (telt het Overig-plafond de ouder, de kinderen, of allebei?).
+
 ## tau is een invoer, geen constante (open — 2026-08-20)
 
 Zolang er op een tweede dataset niets gemeten is, blijft tau een expliciet

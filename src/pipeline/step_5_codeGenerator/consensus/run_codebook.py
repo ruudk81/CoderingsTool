@@ -102,9 +102,9 @@ POLES   = "two"        # two (niet-negatief/negatief) | three (pos/neu/neg)
 DRAINS  = "uit"        # vangnetten op de kaarten: uit | aan
 SALT    = "aan"        # aan = volgorde varieert per run; uit = kale servervariatie
 
-#   alles        verzamelen x2 -> analyse -> vergelijk -> codeboek   RUNS*2+1 calls
+#   alles        verzamelen x2 -> analyse -> vergelijk -> codeboek   RUNS*2+2 calls
 #   verzamelen   alleen deel 1, partities naar schijf                RUNS calls
-#   codeboek     uit de partities van SET                            1 call
+#   codeboek     uit de partities van SET                            2 calls
 #   analyse      een set lezen: ARI, matrixvorm, tau-sweep           0 calls
 #   vergelijk    SET tegen SET_B: hoofdmaat en merge-recurrentie     0 calls
 

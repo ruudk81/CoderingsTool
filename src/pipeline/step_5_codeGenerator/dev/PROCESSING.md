@@ -155,15 +155,21 @@ this file describes — `taxonomy_input.py`, `concept_inventory.py`,
 `attribute_cards.py`, `grouping.py`, `codebook_writer.py`,
 `codebook_verifier.py`, `codebook_io.py`, `code_shape.py`,
 `config_codeGenerator.py`, `prompts_writer.py`, `prompts_common.py` — instead
-of importing them. `test_zelfstandigheid.py`'s drift guard holds every copy
-byte-identical to its production original (imports aside), so Steps 1, 3, 4,
-5 and 6 above (concept inventory, grouping's three deterministic checks, the
-writer, the three guards, the Overig sweep) run the exact same processing on
-either chain. Nothing in this document's Processing Strategy differs between
-them.
+of importing them. `test_zelfstandigheid.py`'s drift guard holds every
+REMAINING copy byte-identical to its production original (imports aside), so
+Steps 1 and 6 above (concept inventory, the three guards) run the exact same
+processing on either chain.
 
-What differs is orchestration, not processing: the candidate runs under its
-own runner (`consensus/run_codebook.py`) rather than production's
+Five of the eleven no longer are copies (see ARCHITECTURE.md's "The consensus
+candidate chain"). Since 2026-08-22 the candidate's grouping keeps fallen
+valence poles instead of dropping them, its writer makes a SECOND call for the
+children that come out of that (`write_miscellaneous`, `phase_key`
+`step5c_miscellaneous`), and its Overig sweep mints the K# so those children can
+name their parent in `parent_code_id`. Steps 3, 4 and 5 above therefore differ
+between the chains; the rest of this document's Processing Strategy does not.
+
+What differs further is orchestration, not processing: the candidate runs under
+its own runner (`consensus/run_codebook.py`) rather than production's
 `run_codebook.py`, and its consolidation phase (step 2 above) dispatches
 `config.runs` parallel tasks instead of one — a difference in HOW MANY times
 the one judgement call runs, covered under Rate-Limiting Machinery below, not
@@ -192,8 +198,11 @@ consolidation phase dispatches `config.runs` (default 30) tasks through one
 `SmoothRequester` under its own `phase_key`, `step5c_consolidation` — one run
 of the chain supplies 30 observations to that buffer in a single call, past
 `MIN_PHASE_N`. Its buffer warms on the FIRST run, not the fifth. `step5_writer`
-is unaffected — the candidate reuses that phase key for its single writer
-call, which still supplies one observation per run.
+is unaffected — the candidate reuses that phase key for its main-code writer
+call, which still supplies one observation per run. Its second writing call
+(the children) has its own key, `step5c_miscellaneous`, for the same reason:
+a shorter prompt and shorter answers would otherwise pollute the writer's
+warm start.
 
 ## Divergent Paths
 

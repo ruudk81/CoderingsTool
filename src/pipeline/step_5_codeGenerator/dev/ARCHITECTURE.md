@@ -295,21 +295,33 @@ Where the two differ:
   which unions them per (facet, valence): a union that clears `t_keep` becomes
   a main code, one between `t_keep_min_respondents` and `t_keep` becomes a
   child of Overig (`CodeShape.origin == "child"`, never vetoable), one below
-  the floor becomes true-Overig. The old `direction_loss` metric counted what
-  fell away and is replaced by `coverage_recovered` — the unique respondents
-  who gained a code they would not otherwise have had. Production still drops
-  the pole, and its attribute stays a source of the surviving, opposite-facing
-  sibling code.
+  the floor becomes true-Overig. Only poles from a group whose SIBLING pole
+  survived are collected — a group where nothing clears `t_keep` goes to Overig
+  whole, and nothing there claims the opposite direction. The old
+  `direction_loss` metric counted what fell away and is replaced by
+  `coverage_recovered` — the unique respondents who gained a code they would not
+  otherwise have had. Production still drops the pole, and its attribute stays a
+  source of the surviving, opposite-facing sibling code.
+- **Two writing calls, split on origin.** `child` shapes go to
+  `write_miscellaneous` (own prompt in `prompts_miscellaneous.py`, own phase
+  `step5c_miscellaneous`, no veto and no `nameable` field); everything else goes
+  to `write_codebook`. The main-code names travel along as `taken_names`, and
+  `resolve_duplicate_names` runs over the REUNITED list. Both result lists are
+  matched back to their shapes through ONE `_shape_lookup` over all shapes —
+  never zipped, since order is not identity.
+- **The hierarchy lives in a field.** `apply_overig_sweep` returns the Overig
+  CODE (not its name) and mints the K# there, after which
+  `run_codebook.link_children_to_overig` sets each child's `parent_code_id`.
+  Ordering is forced: the parent has no id before the sweep. Production's sweep
+  returns a name and knows no children.
 
-Where they no longer differ only in phase 1: `build_shapes` itself diverged on
-2026-08-22, when the candidate learned to pool fallen valence poles per facet
-(`pool_minority_poles`, `origin="child"`, `coverage_recovered` in place of
-`direction_loss`). Three of the eleven modules — `grouping.py`, `code_shape.py`
-and `test_grouping.py` — stopped being copies that day and are now consensus's
-own versions, listed in `test_zelfstandigheid.py`'s `EIGEN_VERSIE` with the
-reason. The rest from the writer onward — `codebook_writer.py`'s single writer
-call, the three deterministic naming/definition guards, the Overig sweep, the
-scorecard — is still the same code. Since 2026-08-22 none of it is shared by
+Where they no longer differ only in phase 1: everything from `build_shapes` to
+the Overig sweep diverged on 2026-08-22. `grouping.py`, `code_shape.py`,
+`codebook_writer.py`, `codebook_io.py` and `test_grouping.py` stopped being
+copies that day and are now consensus's own versions, listed in
+`test_zelfstandigheid.py`'s `EIGEN_VERSIE` with the reason per file. What is
+still the same code: the three deterministic naming/definition guards, the
+scorecard, and everything upstream of grouping. Since 2026-08-22 none of it is shared by
 import: each of the eleven modules involved lives as its own copy inside `consensus/` (see
 CLAUDE.md's Key Files), so `consensus/` imports nothing from outside itself
 within step 5. Three guards in `consensus/test_zelfstandigheid.py` keep that
