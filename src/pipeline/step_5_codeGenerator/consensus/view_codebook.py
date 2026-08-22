@@ -1,14 +1,12 @@
 #%%
 """
-Bekijk het codeboek uit de consensus-keten.
+View codebook results: codes with definitions, indicators, source attributes.
 
-De cachesleutel `mece_codes` is gedeeld met de productiepijplijn. Dit venster
-toont wat er MOMENTEEL onder die sleutel staat — dat is de laatst gedraaide
-keten (productie of consensus), niet per se deze.
+Loads from cached MECE results (step "mece_codes"). That key is shared with
+the production chain, so this window shows whatever is currently under it —
+whichever chain (production or consensus) ran last, not necessarily this one.
 
-Voor details over de uitvoer, zie ../view_codebook.py.
-
-Gebruik:
+Usage:
     cd src && python -m pipeline.step_5_codeGenerator.consensus.view_codebook
 """
 
@@ -16,13 +14,78 @@ import sys
 from pathlib import Path
 
 src_dir = Path(__file__).parent.parent.parent.parent
+project_root = src_dir.parent
 sys.path.insert(0, str(src_dir))
 
-# Import and call the production module's main function
-from pipeline.step_5_codeGenerator import view_codebook as production_view
+from utils.cacheManager import CacheManager, generate_enhanced_variable_key
+
+from test_data import TEST_DATA
+
+from models import CodingResultsCache
+from models import ConsolidatedCode
+
+FILENAME = TEST_DATA.filename
+VAR_NAME = TEST_DATA.var_name
+SAMPLE_SIZE = TEST_DATA.sample_size
+
+
+def main():
+    print("=" * 80)
+    print("CODEBOOK VIEWER")
+    print("=" * 80)
+    print(f"Variable:     {VAR_NAME}")
+    print(f"Sample size:  {SAMPLE_SIZE}")
+
+    variable_key = generate_enhanced_variable_key([VAR_NAME], False, SAMPLE_SIZE)
+    cache_manager = CacheManager()
+    mece_cache = cache_manager.load_metadata_from_cache(
+        filename=FILENAME,
+        step="mece_codes",
+        variable_key=variable_key,
+        model_cls=CodingResultsCache,
+    )
+
+    if mece_cache is None:
+        print("\nNo cached codebook results found.")
+        print("Run codebook generation first: python -m pipeline.step_5_codeGenerator.run_codebook")
+        return
+
+    # Reconstruct ConsolidatedCode objects
+    codes = [ConsolidatedCode(**d) for d in mece_cache.raw_codes] if mece_cache.raw_codes else []
+
+    print(f"\n{len(codes)} codes")
+    print("=" * 80)
+
+    for j, code in enumerate(codes, 1):
+        indicators = ", ".join(code.typical_indicators[:5]) if code.typical_indicators else "(none)"
+        sources = ", ".join(code.source_attributes[:5]) if code.source_attributes else "(none)"
+        valence = getattr(code, 'valence', '') or ''
+        diagnostic = getattr(code, 'diagnostic_test', '') or ''
+
+        print(f"\n  [{j}] {code.code_name}")
+        print(f"      Definition:    {code.definition}")
+        if diagnostic:
+            print(f"      Diagnostic:    {diagnostic}")
+        if valence:
+            print(f"      Valence:       {valence}")
+        print(f"      Indicators:    {indicators}")
+        print(f"      Source attrs:  {sources}")
+
+    # Summary by domain (from partition_results)
+    print(f"\n{'='*80}")
+    print(f"DOMAIN SUMMARY")
+    print(f"{'='*80}")
+    for name, result in mece_cache.partition_results.items():
+        n_facets = len(result.facets)
+        n_attrs = sum(len(a) for a in result.attributes.values())
+        print(f"  {name}: {n_facets} facets, {n_attrs} attributes")
+
+    print(f"\n{'='*80}")
+    print(f"Total codes: {len(codes)}")
+    print(f"{'='*80}")
 
 
 if __name__ == "__main__":
-    production_view.main()
+    main()
 
 # %%

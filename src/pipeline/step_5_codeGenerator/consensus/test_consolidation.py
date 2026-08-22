@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline.step_5_codeGenerator.attribute_cards import AttributeCard
+from pipeline.step_5_codeGenerator.consensus.attribute_cards import AttributeCard
 from pipeline.step_5_codeGenerator.consensus import consolidation
 from pipeline.step_5_codeGenerator.consensus.config_consensus import ConsensusConfig
 from pipeline.step_5_codeGenerator.consensus.consolidation import build_tasks

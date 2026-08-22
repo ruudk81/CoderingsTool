@@ -17,7 +17,7 @@ from typing import Dict, List, Tuple
 from config import get_reasoning_params
 from utils.smoothRequester import SmoothRequester
 
-from ..attribute_cards import AttributeCard
+from .attribute_cards import AttributeCard
 from .config_consensus import ConsensusConfig
 from .prompts_consolidation import (
     ConsolidationResult, build_consolidation_prompt, make_consolidation_model,

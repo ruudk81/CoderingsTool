@@ -2,7 +2,7 @@
 de deterministische bedrading tussen consensus en de bestaande keten."""
 import asyncio
 
-from pipeline.step_5_codeGenerator.concept_inventory import Concept
+from pipeline.step_5_codeGenerator.consensus.concept_inventory import Concept
 from pipeline.step_5_codeGenerator.consensus import run_codebook as runner
 from pipeline.step_5_codeGenerator.consensus.config_consensus import ConsensusConfig
 from pipeline.step_5_codeGenerator.consensus.run_codebook import (
@@ -151,7 +151,7 @@ def test_de_herkomst_landt_op_het_gecachte_codeboek(monkeypatch):
     echt op het object staan dat `CacheManager` bewaart, anders bouwt de
     aanroep de herkomst en laat hem toch vallen."""
     from models import DomainSet
-    from pipeline.step_5_codeGenerator import codebook_io
+    from pipeline.step_5_codeGenerator.consensus import codebook_io
 
     captured = {}
 
