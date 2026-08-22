@@ -299,7 +299,7 @@ hieronder) begint met een terugzet uit git, niet met een bestand in de boom.
 
 ### Steigerwerk dat bij de verhuizing hoort te sneuvelen
 
-`consensus/test_zelfstandigheid.py` (13 tests) en
+`consensus/test_zelfstandigheid.py` (14 tests) en
 `consensus/test_consolidation.py::test_prompt_is_byte_identiek_aan_productie_op_import_en_docstring_na`
 vergelijken de kopie met het origineel via `hier.parent`. Na de verhuizing is
 `hier.parent` `pipeline/` en bestaat dat origineel niet meer. Dat is geen
@@ -309,12 +309,12 @@ de verhuizing.
 
 ### Telling
 
-Basis 1046 groen. Op de gepromoveerde boom, met de blokkade uitgesloten:
+Basis 1047 groen. Op de gepromoveerde boom, met de blokkade uitgesloten:
 **906 groen**. Het verschil sluit exact — 102 (de 8 vervangen
-productietestbestanden) + 24 (geblokkeerd) + 13 (`test_zelfstandigheid`) + 1
-(de byte-identiteitstest) = 140. Er is dus niets stil omgevallen.
+productietestbestanden) + 24 (geblokkeerd) + 14 (`test_zelfstandigheid`) + 1
+(de byte-identiteitstest) = 141. Er is dus niets stil omgevallen.
 
-Na terugdraaien staat de boom byte-identiek terug op 1046 groen.
+Na terugdraaien staat de boom byte-identiek terug op 1047 groen.
 
 ## De consolidatiecall reproduceert niet (open — 2026-08-18)
 
