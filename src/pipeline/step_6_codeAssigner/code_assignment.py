@@ -531,9 +531,26 @@ class CodeAssigner:
         longer collide. Both the A#s and the name→A# resolver come from the mece
         cache (structure ↔ source_attribute_ids), so the id space is consistent
         even for legacy per-artifact minting.
+
+        Codes carrying a `parent_code_id` are skipped here. Such a code is a
+        child under Overig: a residual pole that did not clear the prevalence
+        gate. It is a full code and takes part in the candidate menu, but it may
+        never become an idea's GUARANTEED fallback — the seeded home code is
+        meant to be coverage, and a residual bucket is the opposite of that.
+        Both loops below apply the rule, and both look at the field, never at
+        the name: a child's name is written by an LLM and could land on a
+        catch-all word, so the parent is only ever the code that carries no
+        parent itself. Same discipline as step 4's `drain_key`.
+
+        An attribute claimed ONLY by a child therefore gets no home code and no
+        seeding. That is intended, and the idea is not stranded: the child is
+        still reachable through the embedding pre-filter, and the no-fit option
+        resolves to that same child's parent — the bucket it hangs under.
         """
         self._attr_to_code_idx = {}
         for i, code in enumerate(self._codes):
+            if getattr(code, 'parent_code_id', None):
+                continue
             for attr_id in (getattr(code, 'source_attribute_ids', None) or []):
                 if attr_id and attr_id not in self._attr_to_code_idx:
                     self._attr_to_code_idx[attr_id] = i
@@ -557,6 +574,8 @@ class CodeAssigner:
         overig_names = {v.strip().lower() for v in MISCELLANEOUS_CODE_LABELS.values()} | {"overig"}
         self._overig_code_idx = None
         for i, code in enumerate(self._codes):
+            if getattr(code, 'parent_code_id', None):
+                continue
             if (code.code_name or "").strip().lower() in overig_names:
                 self._overig_code_idx = i
                 break
@@ -950,3 +969,22 @@ class CodeAssigner:
                 stats["attributes"].items(), key=lambda x: -x[1]
             ):
                 print(f"        {attr}: {count}")
+
+        # Children of the Overig code, listed WITH their zeros. A child is a
+        # residual pole that was given its own name precisely so its respondents
+        # stop lying under a code with the opposite direction. A child that
+        # catches nothing means that construction did not pay off — and an
+        # absence from the list above is not something a reader can see, so the
+        # zero has to be printed. Silent on a codebook without children.
+        overig_id, overig_name = self._no_fit_resolves_to
+        children = [c for c in self._codes
+                    if getattr(c, 'parent_code_id', None) == overig_id]
+        if children:
+            print(f"\n  {'─'*60}")
+            print(f"  CHILDREN OF {overig_name!r} ({len(children)})")
+            print(f"  {'─'*60}")
+            for c in children:
+                n = code_stats.get(c.code_name, {}).get("count", 0)
+                tail = "   ← ZERO — this child caught nothing" if n == 0 else ""
+                print(f"    {c.code_name} ({getattr(c, 'valence', '')}): "
+                      f"{n} ideas{tail}")
