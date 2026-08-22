@@ -255,6 +255,9 @@ en ervoor), maar er blijft geen code voor achter — wie de vraagvorm ooit
 herziet ("welke twee onderwerpen horen het minst bij elkaar?", zie "Post-mortem"
 hieronder) begint met een terugzet uit git, niet met een bestand in de boom.
 
+Die afweging is op 2026-08-22 aan de gebruiker voorgelegd en akkoord bevonden.
+Daarmee is dit geen open oordeel meer: het recept verwijdert ze.
+
 ### De verhuisrecept vraagt vier ingrepen, niet één
 
 1. **24 productiebestanden weg**: de 5 die `consensus/` met een eigen versie
