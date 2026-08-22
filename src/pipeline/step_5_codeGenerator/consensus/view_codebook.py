@@ -47,7 +47,7 @@ def main():
 
     if mece_cache is None:
         print("\nNo cached codebook results found.")
-        print("Run codebook generation first: python -m pipeline.step_5_codeGenerator.run_codebook")
+        print("Run codebook generation first: python -m pipeline.step_5_codeGenerator.consensus.run_codebook")
         return
 
     # Reconstruct ConsolidatedCode objects
